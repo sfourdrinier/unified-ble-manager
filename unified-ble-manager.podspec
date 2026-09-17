@@ -20,7 +20,10 @@ Pod::Spec.new do |s|
   # CoreBluetooth radio. Keep this list explicit: the retired 3.x bridge must never
   # be pulled into an Apple target through a future glob expansion.
   s.module_name  = "BlePlx"
-  s.source_files = [
+  # Hoisted locals: the 5.x branch below extends both lists, and `+=` on
+  # the attributes fails (no getter in the installed CocoaPods) — plain
+  # `=` from locals works everywhere.
+  base_source_files = [
     "ios/UnifiedBleProtocolControl.mm",
     "ios/UnifiedBleExpoRuntime.mm",
     "ios/Generated/**/*.swift",
@@ -33,10 +36,12 @@ Pod::Spec.new do |s|
     "ios/Owned/OwnedCoreBluetoothProtocolRadioSupport.swift",
     "native/protocol/src/**/*.cpp"
   ]
-  s.preserve_paths = [
+  s.source_files = base_source_files
+  base_preserve_paths = [
     "native/protocol/include/**/*.hpp",
     "native/protocol/generated/**/*.hpp"
   ]
+  s.preserve_paths = base_preserve_paths
   s.resource_bundles = { 'BlePlx' => ['ios/PrivacyInfo.xcprivacy'] }
   s.frameworks = "CoreBluetooth", "Security"
   # Do not add -fmodules/-fcxx-modules: React Native's source build owns the
@@ -72,9 +77,9 @@ Pod::Spec.new do |s|
   # 4.x keeps the Owned-only selection (no Rust core).
   if package["version"].start_with?("5.")
     s.prepare_command = 'sh ios/build-rust-core.sh'
-    s.source_files += ['bindings/uniffi/generated/swift/ubm_echo.swift']
+    s.source_files = base_source_files + ['bindings/uniffi/generated/swift/ubm_echo.swift']
     s.vendored_frameworks = ['ios/RustCore/RustCore.xcframework']
-    s.preserve_paths += [
+    s.preserve_paths = base_preserve_paths + [
       'bindings/uniffi/generated/swift/ubm_echoFFI.h',
       'bindings/uniffi/generated/swift/ubm_echoFFI.modulemap'
     ]

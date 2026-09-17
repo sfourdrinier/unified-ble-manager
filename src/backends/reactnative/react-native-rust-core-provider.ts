@@ -83,10 +83,7 @@ import type {
   AttachmentRecord,
   NativeBackendIdentity
 } from '../../backend-contract/identity'
-import type {
-  AdvertisementObservation,
-  OwnerScanOptions
-} from '../../backend-contract/advertisement'
+import type { AdvertisementObservation, OwnerScanOptions } from '../../backend-contract/advertisement'
 import {
   createAttachmentBoundIdFactory,
   canonicalUuid,
@@ -120,11 +117,7 @@ import {
   type WriteRequest,
   type WriteResult
 } from '../../backend-contract/operations'
-import type {
-  CharacteristicPath,
-  DescriptorPath,
-  GattDatabase
-} from '../../backend-contract/gatt'
+import type { CharacteristicPath, DescriptorPath, GattDatabase } from '../../backend-contract/gatt'
 import type { BoundedAsyncStream } from '../../backend-contract/streams'
 import { CoreBoundedStream } from '../../core/bounded-stream'
 import {
@@ -414,14 +407,13 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       { itemCapacity: capacity(256), byteCapacity: capacity(262144), reservedControlCapacity: capacity(1024) },
       'drop-oldest'
     )
-    const backend = this
     this.adapter = Object.freeze({
-      currentState: () => backend.currentAdapterState(),
-      watchState: async () => backend.watchAdapterState()
+      currentState: () => this.currentAdapterState(),
+      watchState: async () => this.watchAdapterState()
     })
     this.scanner = Object.freeze({
       start: (options: OwnerScanOptions<string, string>, clientId: ClientId<string, string>) =>
-        backend.startScan(options, clientId),
+        this.startScan(options, clientId),
       join: (
         _sharedLeaseId: LeaseId<string, string>,
         _shareToken: ScanShareToken<string, string>,
@@ -432,41 +424,41 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     })
     this.connections = Object.freeze({
       connect: (peerId: PeerId<string>, clientId: ClientId<string, string>, options: ConnectionOptions) =>
-        backend.connect(peerId, clientId, options),
-      peerFromAddress: (descriptor: PeerAddressDescriptor) => backend.peerFromAddress(descriptor)
+        this.connect(peerId, clientId, options),
+      peerFromAddress: (descriptor: PeerAddressDescriptor) => this.peerFromAddress(descriptor)
     })
     this.gatt = Object.freeze({
       discover: (connection: BackendConnection<string, string>, options: PublicOperationOptions) =>
-        backend.discover(connection, options),
+        this.discover(connection, options),
       read: (
         path: CharacteristicPath<string, string, string, string, string, 'current'>,
         request: ReadRequest<string, string>
-      ) => backend.read(path, request),
+      ) => this.read(path, request),
       write: (
         path: CharacteristicPath<string, string, string, string, string, 'current'>,
         request: WriteRequest<string, string>
-      ) => backend.write(path, request),
+      ) => this.write(path, request),
       readDescriptor: (
         path: DescriptorPath<string, string, string, string, string, string, 'current'>,
         request: ReadRequest<string, string>
-      ) => backend.readDescriptor(path, request),
+      ) => this.readDescriptor(path, request),
       writeDescriptor: (
         path: DescriptorPath<string, string, string, string, string, string, 'current'>,
         request: WriteRequest<string, string>
-      ) => backend.writeDescriptor(path, request),
+      ) => this.writeDescriptor(path, request),
       subscribe: (
         path: CharacteristicPath<string, string, string, string, string, 'current'>,
         request: SubscribeRequest<string, string>
-      ) => backend.subscribe(path, request),
+      ) => this.subscribe(path, request),
       unsubscribe: (
         subscription: BackendSubscription<string, string, string, string, string>,
         operation: OperationOptions<string, string>
-      ) => backend.unsubscribe(subscription, operation)
+      ) => this.unsubscribe(subscription, operation)
     })
     this.peers = Object.freeze({
-      resolve: (reference: PeerReference, options: BackendPeerQuery) => backend.resolvePeer(reference, options),
-      known: (options: BackendPeerQuery) => backend.knownPeers(options),
-      connected: (options: BackendPeerQuery) => backend.connectedPeers(options),
+      resolve: (reference: PeerReference, options: BackendPeerQuery) => this.resolvePeer(reference, options),
+      known: (options: BackendPeerQuery) => this.knownPeers(options),
+      connected: (options: BackendPeerQuery) => this.connectedPeers(options),
       bonded: async (_options: BackendPeerQuery) => Object.freeze([]),
       authorized: async (_options: BackendPeerQuery) => Object.freeze([]),
       restored: async (_options: BackendPeerQuery) => Object.freeze([])
@@ -488,10 +480,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   }
 
   activateRestoration(restoration: ReactNativeRestorationCoordinator): void {
-    this.restorationActivation = restoration.activate(
-      this.attachment,
-      this.nativeVersions() as NativeVersionAxes
-    )
+    this.restorationActivation = restoration.activate(this.attachment, this.nativeVersions() as NativeVersionAxes)
   }
 
   private nativeVersions(): NativeVersionAxes {
@@ -519,9 +508,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     })
   }
 
-  async attach(
-    _request: BackendAttachmentRequest
-  ): Promise<BackendAttachment<string, NativeBackendIdentity<string>>> {
+  async attach(_request: BackendAttachmentRequest): Promise<BackendAttachment<string, NativeBackendIdentity<string>>> {
     this.assertOperational('react-native-rust-core.attach')
     return Object.freeze({ attachment: this.attachment, identity: this.identity })
   }
@@ -538,7 +525,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     if (snapshot === null) {
       throw contractError('lifecycle.invariant-violation', 'core', 'react-native-rust-core.counters-unavailable')
     }
-    void this.refreshCounters()
+    this.refreshCounters().catch(() => undefined)
     return snapshot
   }
 
@@ -619,7 +606,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private async requestCancellation(correlation: string): Promise<CancellationAcknowledgement<string>> {
     try {
       const record = await this.invokeRecord('op.cancel', { operationId: correlation })
-      const state = record['state']
+      const state = record.state
       if (state === 'cancellation-requested' || state === 'already-terminal' || state === 'not-cancellable') {
         return { handle: this.identifiers.backendOperationHandle(correlation), state }
       }
@@ -647,19 +634,19 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         throw contractError('protocol.malformed', 'core', `react-native-rust-core.adapter-state.${field}`)
       }
     }
-    if (typeof record['backendGeneration'] !== 'string' || typeof record['updatedAt'] !== 'number') {
+    if (typeof record.backendGeneration !== 'string' || typeof record.updatedAt !== 'number') {
       throw contractError('protocol.malformed', 'core', 'react-native-rust-core.adapter-state.generation')
     }
-    if (record['safeReason'] !== null && record['safeReason'] !== undefined && typeof record['safeReason'] !== 'string') {
+    if (record.safeReason !== null && record.safeReason !== undefined && typeof record.safeReason !== 'string') {
       throw contractError('protocol.malformed', 'core', 'react-native-rust-core.adapter-state.reason')
     }
     return Object.freeze({
-      availability: record['availability'] as AdapterStateSnapshot<string>['availability'],
-      authorization: record['authorization'] as AdapterStateSnapshot<string>['authorization'],
-      power: record['power'] as AdapterStateSnapshot<string>['power'],
+      availability: record.availability as AdapterStateSnapshot<string>['availability'],
+      authorization: record.authorization as AdapterStateSnapshot<string>['authorization'],
+      power: record.power as AdapterStateSnapshot<string>['power'],
       backendGeneration: this.attachment.adapter.state.backendGeneration,
-      updatedAt: record['updatedAt'] as AdapterStateSnapshot<string>['updatedAt'],
-      safeReason: (record['safeReason'] as string | null | undefined) ?? null
+      updatedAt: record.updatedAt as AdapterStateSnapshot<string>['updatedAt'],
+      safeReason: (record.safeReason as string | null | undefined) ?? null
     })
   }
 
@@ -742,19 +729,19 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       throw contractError('protocol.malformed', 'core', operation)
     }
     const record = value as Record<string, unknown>
-    if (typeof record['peerId'] !== 'string') {
+    if (typeof record.peerId !== 'string') {
       throw contractError('protocol.malformed', 'core', operation)
     }
     return this.mapPeerRecord({
-      peerId: record['peerId'] as string,
-      name: typeof record['name'] === 'string' ? (record['name'] as string) : null,
-      rssi: typeof record['rssi'] === 'number' ? (record['rssi'] as number) : null,
-      source: typeof record['source'] === 'string' ? (record['source'] as string) : 'scan-observed',
-      reachability: typeof record['reachability'] === 'string' ? (record['reachability'] as string) : 'unknown',
-      connection: typeof record['connection'] === 'string' ? (record['connection'] as string) : 'unknown',
-      bond: typeof record['bond'] === 'string' ? (record['bond'] as string) : 'unknown',
+      peerId: record.peerId as string,
+      name: typeof record.name === 'string' ? (record.name as string) : null,
+      rssi: typeof record.rssi === 'number' ? (record.rssi as number) : null,
+      source: typeof record.source === 'string' ? (record.source as string) : 'scan-observed',
+      reachability: typeof record.reachability === 'string' ? (record.reachability as string) : 'unknown',
+      connection: typeof record.connection === 'string' ? (record.connection as string) : 'unknown',
+      bond: typeof record.bond === 'string' ? (record.bond as string) : 'unknown',
       lastSeenAtMonotonicMs:
-        typeof record['lastSeenAtMonotonicMs'] === 'number' ? (record['lastSeenAtMonotonicMs'] as number) : null
+        typeof record.lastSeenAtMonotonicMs === 'number' ? (record.lastSeenAtMonotonicMs as number) : null
     })
   }
 
@@ -812,10 +799,10 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       duplicatePolicy: options.duplicatePolicy,
       timestampPolicy: options.timestampPolicy
     })
-    if (typeof started['operationId'] !== 'string' || (started['operationId'] as string).length === 0) {
+    if (typeof started.operationId !== 'string' || (started.operationId as string).length === 0) {
       throw contractError('protocol.malformed', 'core', 'react-native-rust-core.scan.start.shape')
     }
-    const operationId = started['operationId'] as string
+    const operationId = started.operationId as string
     const scanSessionId = this.identifiers.scanSessionId(`rust-core-scan-session-${ordinal}`)
     const leaseId = this.identifiers.leaseId(`rust-core-scan-lease-${ordinal}`)
     const shareToken =
@@ -838,9 +825,9 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       return { state: 'released', failures: [] }
     }
     this.watchAbort(options.signal, () => {
-      void stop().catch(() => undefined)
+      stop().catch(() => undefined)
     })
-    void this.pumpScanObservations(observations, scanSessionId, () => stopped, stop)
+    this.pumpScanObservations(observations, scanSessionId, () => stopped, stop).catch(() => undefined)
     return Object.freeze({ scanSessionId, leaseId, shareToken, observations, stop })
   }
 
@@ -916,8 +903,12 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
             )
           : null
       ),
-      solicitedServiceUuids: absentField<readonly import('../../backend-contract/primitives').Uuid[]>('solicited services not reported by the core observation'),
-      overflowServiceUuids: absentField<readonly import('../../backend-contract/primitives').Uuid[]>('overflow services not reported by the core observation'),
+      solicitedServiceUuids: absentField<readonly import('../../backend-contract/primitives').Uuid[]>(
+        'solicited services not reported by the core observation'
+      ),
+      overflowServiceUuids: absentField<readonly import('../../backend-contract/primitives').Uuid[]>(
+        'overflow services not reported by the core observation'
+      ),
       serviceData: presentField(
         Array.isArray(record.serviceData)
           ? Object.freeze(
@@ -942,8 +933,12 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
             )
           : null
       ),
-      rawRecord: absentField<import('../../backend-contract/primitives').OwnedBytes>('raw record not reported by the core observation'),
-      scanResponseRecord: absentField<import('../../backend-contract/primitives').OwnedBytes>('scan response record not reported by the core observation')
+      rawRecord: absentField<import('../../backend-contract/primitives').OwnedBytes>(
+        'raw record not reported by the core observation'
+      ),
+      scanResponseRecord: absentField<import('../../backend-contract/primitives').OwnedBytes>(
+        'scan response record not reported by the core observation'
+      )
     })
   }
 
@@ -971,13 +966,13 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       transport: options.transport ?? 'auto',
       preferredPhy: options.preferredPhy ?? []
     })
-    if (typeof connected['peerKey'] !== 'string' || typeof connected['connectionGeneration'] !== 'string') {
+    if (typeof connected.peerKey !== 'string' || typeof connected.connectionGeneration !== 'string') {
       throw contractError('protocol.malformed', 'core', 'react-native-rust-core.connection.connect.shape')
     }
     const connectionId = this.identifiers.connectionId(`rust-core-connection-${ordinal}`)
     const leaseId = this.identifiers.leaseId(`rust-core-connection-lease-${leaseOrdinal}`)
     const connectionGeneration = opaqueId(
-      String(connected['connectionGeneration']),
+      String(connected.connectionGeneration),
       'connection-generation',
       'react-native-rust-core'
     )
@@ -985,7 +980,6 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     // connect established: retain the raw core lease (not the branded
     // public leaseId) so every op on this connection addresses one lease.
     this.connectionLeases.set(String(connectionId), { lease, nativePeerId })
-    const backend = this
     const connection: BackendConnection<string, string> = Object.freeze({
       attachment: this.attachment,
       attachmentId: this.attachment.attachmentId,
@@ -993,12 +987,12 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       connectionId,
       connectionGeneration,
       state: 'connected',
-      disconnect: async () => backend.disconnectConnection(nativePeerId, lease)
+      disconnect: async () => this.disconnectConnection(nativePeerId, lease)
     })
     return Object.freeze({
       leaseId,
       connection,
-      release: async () => backend.disconnectConnection(nativePeerId, lease)
+      release: async () => this.disconnectConnection(nativePeerId, lease)
     })
   }
 
@@ -1023,14 +1017,11 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       }
     }
     return {
-      serviceUuid: service['serviceUuid'] as string,
-      serviceOccurrence: this.occurrenceNumeral(
-        String(service['serviceOccurrence']),
-        `${operation}.service-occurrence`
-      ),
-      characteristicUuid: service['characteristicUuid'] as string,
+      serviceUuid: service.serviceUuid as string,
+      serviceOccurrence: this.occurrenceNumeral(String(service.serviceOccurrence), `${operation}.service-occurrence`),
+      characteristicUuid: service.characteristicUuid as string,
       characteristicOccurrence: this.occurrenceNumeral(
-        String(service['characteristicOccurrence']),
+        String(service.characteristicOccurrence),
         `${operation}.characteristic-occurrence`
       )
     }
@@ -1042,21 +1033,20 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   ): Record<string, unknown> {
     const selector = this.selectorFor(path, operation)
     const record = path as unknown as Record<string, unknown>
-    if (typeof record['descriptorUuid'] !== 'string') {
+    if (typeof record.descriptorUuid !== 'string') {
       throw contractError('protocol.malformed', 'core', `${operation}.selector`)
     }
     return {
       ...selector,
-      descriptorUuid: record['descriptorUuid'] as string,
+      descriptorUuid: record.descriptorUuid as string,
       descriptorOccurrence: this.occurrenceNumeral(
-        String(record['descriptorOccurrence']),
+        String(record.descriptorOccurrence),
         `${operation}.descriptor-occurrence`
       )
     }
   }
 
   private nativePeerForPath(path: { peerId?: unknown }, operation: string): string {
-    void operation
     const peerId = (path as { peerId?: unknown }).peerId
     // Characteristic paths carry the connection-scoped peer through their
     // connection path; resolve the native id from the mapped opaque peer.
@@ -1108,7 +1098,6 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       timeoutMs: this.timeoutMs(options)
     })
     const tree = parseDatabase(report, 'react-native-rust-core.gatt.discover.shape')
-    const backend = this
     const databaseOrdinal = this.nextOperation
     this.nextOperation += 1
     const databaseId = this.identifiers.databaseId(`rust-core-database-${databaseOrdinal}`)
@@ -1128,18 +1117,15 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       databaseGeneration
     })
     // Mint stable occurrence identities once per discovery: snapshot paths
-    // flow back into backend.gatt.* unchanged, and the numerals map back to
+    // flow back into this.gatt.* unchanged, and the numerals map back to
     // the core selector occurrences for the wire.
     const stored: StoredRustCoreDatabase = { tree, base: path, services: [] }
     tree.services.forEach(service => {
-      const serviceOccurrence = backend.mintOccurrence('service-occurrence', service.occurrence)
+      const serviceOccurrence = this.mintOccurrence('service-occurrence', service.occurrence)
       const characteristics = service.characteristics.map(characteristic => {
-        const characteristicOccurrence = backend.mintOccurrence(
-          'characteristic-occurrence',
-          characteristic.occurrence
-        )
+        const characteristicOccurrence = this.mintOccurrence('characteristic-occurrence', characteristic.occurrence)
         const descriptors = characteristic.descriptors.map(descriptor =>
-          backend.mintOccurrence('descriptor-occurrence', descriptor.occurrence)
+          this.mintOccurrence('descriptor-occurrence', descriptor.occurrence)
         )
         return { characteristic, characteristicOccurrence, descriptors }
       })
@@ -1148,29 +1134,29 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     this.databases.set(String(databaseId), stored)
     return Object.freeze({
       path,
-      snapshot: async () => backend.databaseSnapshot(path),
+      snapshot: async () => this.databaseSnapshot(path),
       read: async (
         characteristic: CharacteristicPath<string, string, string, string, string, 'current'>,
         readOptions: PublicOperationOptions
-      ) => backend.databaseRead(path, characteristic, readOptions),
+      ) => this.databaseRead(path, characteristic, readOptions),
       write: async (
         characteristic: CharacteristicPath<string, string, string, string, string, 'current'>,
         value: import('../../backend-contract/primitives').BorrowedBytes,
         writeOptions: import('../../backend-contract/operations').WritePolicy
-      ) => backend.databaseWrite(path, characteristic, value, writeOptions),
+      ) => this.databaseWrite(path, characteristic, value, writeOptions),
       readDescriptor: async (
         descriptor: DescriptorPath<string, string, string, string, string, string, 'current'>,
         readOptions: PublicOperationOptions
-      ) => backend.databaseReadDescriptor(path, descriptor, readOptions),
+      ) => this.databaseReadDescriptor(path, descriptor, readOptions),
       writeDescriptor: async (
         descriptor: DescriptorPath<string, string, string, string, string, string, 'current'>,
         value: import('../../backend-contract/primitives').BorrowedBytes,
         writeOptions: import('../../backend-contract/operations').WritePolicy
-      ) => backend.databaseWriteDescriptor(path, descriptor, value, writeOptions),
+      ) => this.databaseWriteDescriptor(path, descriptor, value, writeOptions),
       subscribe: async (
         characteristic: CharacteristicPath<string, string, string, string, string, 'current'>,
         subscribeOptions: import('../../backend-contract/operations').SubscriptionOptions
-      ) => backend.databaseSubscribe(path, characteristic, subscribeOptions)
+      ) => this.databaseSubscribe(path, characteristic, subscribeOptions)
     })
   }
 
@@ -1220,9 +1206,11 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
             characteristicEntry.characteristic.uuid,
             'react-native-rust-core.gatt.snapshot.characteristic'
           ),
-          characteristicOccurrence: characteristicEntry.characteristicOccurrence as import(
-            '../../backend-contract/primitives'
-          ).GenerationId<'characteristic-occurrence', string>,
+          characteristicOccurrence:
+            characteristicEntry.characteristicOccurrence as import('../../backend-contract/primitives').GenerationId<
+              'characteristic-occurrence',
+              string
+            >,
           validity: 'current' as const
         })
         characteristics.push(
@@ -1237,13 +1225,10 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
             Object.freeze({
               path: Object.freeze({
                 ...characteristicPath,
-                descriptorUuid: uuidFromCore(
-                  descriptor.uuid,
-                  'react-native-rust-core.gatt.snapshot.descriptor'
-                ),
-                descriptorOccurrence: characteristicEntry.descriptors[descriptorIndex] as import(
-                  '../../backend-contract/primitives'
-                ).GenerationId<'descriptor-occurrence', string>
+                descriptorUuid: uuidFromCore(descriptor.uuid, 'react-native-rust-core.gatt.snapshot.descriptor'),
+                descriptorOccurrence: characteristicEntry.descriptors[
+                  descriptorIndex
+                ] as import('../../backend-contract/primitives').GenerationId<'descriptor-occurrence', string>
               }),
               properties: Object.freeze({
                 read: true,
@@ -1256,12 +1241,22 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         })
       }
     }
-    return Object.freeze({ path: stored.base, services: Object.freeze(services), characteristics: Object.freeze(characteristics), descriptors: Object.freeze(descriptors) })
+    return Object.freeze({
+      path: stored.base,
+      services: Object.freeze(services),
+      characteristics: Object.freeze(characteristics),
+      descriptors: Object.freeze(descriptors)
+    })
   }
 
   private resolveCharacteristic(
     stored: StoredRustCoreDatabase,
-    characteristic: { serviceUuid?: unknown; serviceOccurrence?: unknown; characteristicUuid?: unknown; characteristicOccurrence?: unknown },
+    characteristic: {
+      serviceUuid?: unknown
+      serviceOccurrence?: unknown
+      characteristicUuid?: unknown
+      characteristicOccurrence?: unknown
+    },
     operation: string
   ): CharacteristicPath<string, string, string, string, string, 'current'> {
     for (const entry of stored.services) {
@@ -1283,9 +1278,11 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         return Object.freeze({
           ...servicePath,
           characteristicUuid: uuidFromCore(characteristicEntry.characteristic.uuid, `${operation}.characteristic`),
-          characteristicOccurrence: characteristicEntry.characteristicOccurrence as import(
-            '../../backend-contract/primitives'
-          ).GenerationId<'characteristic-occurrence', string>,
+          characteristicOccurrence:
+            characteristicEntry.characteristicOccurrence as import('../../backend-contract/primitives').GenerationId<
+              'characteristic-occurrence',
+              string
+            >,
           validity: 'current' as const
         })
       }
@@ -1293,7 +1290,9 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     throw contractError('gatt.not-found', 'gatt', operation)
   }
 
-  private mintedCorrelation(kind: string): import('../../backend-contract/primitives').OperationCorrelation<string, string> {
+  private mintedCorrelation(
+    kind: string
+  ): import('../../backend-contract/primitives').OperationCorrelation<string, string> {
     const ordinal = this.nextOperation
     this.nextOperation += 1
     return this.identifiers.operationCorrelation(`rust-core-${kind}-${ordinal}`)
@@ -1321,7 +1320,11 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const stored = this.storedDatabase(path, 'react-native-rust-core.gatt.database-write')
     const resolved = this.resolveCharacteristic(stored, characteristic, 'react-native-rust-core.gatt.database-write')
     const dispatch = this.write(resolved, {
-      operation: { signal: options.signal, deadline: options.deadline, correlation: this.mintedCorrelation('gdb-write') },
+      operation: {
+        signal: options.signal,
+        deadline: options.deadline,
+        correlation: this.mintedCorrelation('gdb-write')
+      },
       bytes: value,
       mode: options.mode
     })
@@ -1334,14 +1337,27 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     options: PublicOperationOptions
   ): Promise<import('../../backend-contract/primitives').OwnedBytes> {
     const stored = this.storedDatabase(path, 'react-native-rust-core.gatt.database-read-descriptor')
-    const resolved = this.resolveCharacteristic(stored, descriptor, 'react-native-rust-core.gatt.database-read-descriptor')
+    const resolved = this.resolveCharacteristic(
+      stored,
+      descriptor,
+      'react-native-rust-core.gatt.database-read-descriptor'
+    )
     const full = Object.freeze({
       ...resolved,
-      descriptorUuid: (descriptor as unknown as Record<string, unknown>)['descriptorUuid'] as import('../../backend-contract/primitives').Uuid,
-      descriptorOccurrence: (descriptor as unknown as Record<string, unknown>)['descriptorOccurrence'] as import('../../backend-contract/primitives').GenerationId<'descriptor-occurrence', string>
+      descriptorUuid: (descriptor as unknown as Record<string, unknown>)
+        .descriptorUuid as import('../../backend-contract/primitives').Uuid,
+      descriptorOccurrence: (descriptor as unknown as Record<string, unknown>)
+        .descriptorOccurrence as import('../../backend-contract/primitives').GenerationId<
+        'descriptor-occurrence',
+        string
+      >
     })
     const dispatch = this.readDescriptor(full, {
-      operation: { signal: options.signal, deadline: options.deadline, correlation: this.mintedCorrelation('gdb-read-desc') }
+      operation: {
+        signal: options.signal,
+        deadline: options.deadline,
+        correlation: this.mintedCorrelation('gdb-read-desc')
+      }
     })
     return (await dispatch.completion).value
   }
@@ -1353,14 +1369,27 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     options: import('../../backend-contract/operations').WritePolicy
   ): Promise<import('../../backend-contract/operations').WriteReceipt<string, string>> {
     const stored = this.storedDatabase(path, 'react-native-rust-core.gatt.database-write-descriptor')
-    const resolved = this.resolveCharacteristic(stored, descriptor, 'react-native-rust-core.gatt.database-write-descriptor')
+    const resolved = this.resolveCharacteristic(
+      stored,
+      descriptor,
+      'react-native-rust-core.gatt.database-write-descriptor'
+    )
     const full = Object.freeze({
       ...resolved,
-      descriptorUuid: (descriptor as unknown as Record<string, unknown>)['descriptorUuid'] as import('../../backend-contract/primitives').Uuid,
-      descriptorOccurrence: (descriptor as unknown as Record<string, unknown>)['descriptorOccurrence'] as import('../../backend-contract/primitives').GenerationId<'descriptor-occurrence', string>
+      descriptorUuid: (descriptor as unknown as Record<string, unknown>)
+        .descriptorUuid as import('../../backend-contract/primitives').Uuid,
+      descriptorOccurrence: (descriptor as unknown as Record<string, unknown>)
+        .descriptorOccurrence as import('../../backend-contract/primitives').GenerationId<
+        'descriptor-occurrence',
+        string
+      >
     })
     const dispatch = this.writeDescriptor(full, {
-      operation: { signal: options.signal, deadline: options.deadline, correlation: this.mintedCorrelation('gdb-write-desc') },
+      operation: {
+        signal: options.signal,
+        deadline: options.deadline,
+        correlation: this.mintedCorrelation('gdb-write-desc')
+      },
       bytes: value,
       mode: options.mode
     })
@@ -1373,22 +1402,29 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     options: import('../../backend-contract/operations').SubscriptionOptions
   ): Promise<import('../../backend-contract/gatt').Subscription<string, string, string, string, string, string>> {
     const stored = this.storedDatabase(path, 'react-native-rust-core.gatt.database-subscribe')
-    const resolved = this.resolveCharacteristic(stored, characteristic, 'react-native-rust-core.gatt.database-subscribe')
+    const resolved = this.resolveCharacteristic(
+      stored,
+      characteristic,
+      'react-native-rust-core.gatt.database-subscribe'
+    )
     const dispatch = this.subscribe(resolved, {
-      operation: { signal: options.signal, deadline: options.deadline, correlation: this.mintedCorrelation('gdb-subscribe') },
+      operation: {
+        signal: options.signal,
+        deadline: options.deadline,
+        correlation: this.mintedCorrelation('gdb-subscribe')
+      },
       options
     })
     const backendSubscription = await dispatch.completion
-    const backend = this
     return Object.freeze({
       subscriptionId: backendSubscription.subscriptionId,
       path: backendSubscription.path,
       values: backendSubscription.notifications,
       remove: async () => {
-        const removal = backend.unsubscribe(backendSubscription, {
+        const removal = this.unsubscribe(backendSubscription, {
           signal: null,
           deadline: null,
-          correlation: backend.mintedCorrelation('gdb-unsubscribe')
+          correlation: this.mintedCorrelation('gdb-unsubscribe')
         })
         await removal.completion
         return { state: 'released', failures: [] } as import('../../backend-contract/errors').CleanupRecord
@@ -1418,16 +1454,15 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     )
     const correlation = String(request.operation.correlation)
     const timeoutMs = this.timeoutMs(request.operation)
-    const backend = this
     const completion = (async (): Promise<ReadResult<string, string>> => {
-      const result = await backend.invokeRecord('gatt.read', { peerId: nativePeerId, selector, timeoutMs })
+      const result = await this.invokeRecord('gatt.read', { peerId: nativePeerId, selector, timeoutMs })
       return Object.freeze({
-        value: ownedBytes(bytesFromCore(result['value'])),
-        terminal: backend.succeededTerminal(request.operation.correlation)
+        value: ownedBytes(bytesFromCore(result.value)),
+        terminal: this.succeededTerminal(request.operation.correlation)
       })
     })()
     this.watchAbort(request.operation.signal, () => {
-      void this.requestCancellation(correlation)
+      this.requestCancellation(correlation).catch(() => undefined)
     })
     return this.dispatchFor(correlation, completion)
   }
@@ -1446,16 +1481,15 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const timeoutMs = this.timeoutMs(request.operation)
     const value = bytesToCore(request.bytes)
     const mode = request.mode
-    const backend = this
     const completion = (async (): Promise<WriteResult<string, string>> => {
-      await backend.invokeRecord('gatt.write', { peerId: nativePeerId, selector, value, mode, timeoutMs })
+      await this.invokeRecord('gatt.write', { peerId: nativePeerId, selector, value, mode, timeoutMs })
       return Object.freeze({
-        terminal: backend.succeededTerminal(request.operation.correlation),
+        terminal: this.succeededTerminal(request.operation.correlation),
         commitState: 'confirmed'
       })
     })()
     this.watchAbort(request.operation.signal, () => {
-      void this.requestCancellation(correlation)
+      this.requestCancellation(correlation).catch(() => undefined)
     })
     return this.dispatchFor(correlation, completion)
   }
@@ -1472,16 +1506,15 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     )
     const correlation = String(request.operation.correlation)
     const timeoutMs = this.timeoutMs(request.operation)
-    const backend = this
     const completion = (async (): Promise<ReadResult<string, string>> => {
-      const result = await backend.invokeRecord('gatt.read-descriptor', { peerId: nativePeerId, selector, timeoutMs })
+      const result = await this.invokeRecord('gatt.read-descriptor', { peerId: nativePeerId, selector, timeoutMs })
       return Object.freeze({
-        value: ownedBytes(bytesFromCore(result['value'])),
-        terminal: backend.succeededTerminal(request.operation.correlation)
+        value: ownedBytes(bytesFromCore(result.value)),
+        terminal: this.succeededTerminal(request.operation.correlation)
       })
     })()
     this.watchAbort(request.operation.signal, () => {
-      void this.requestCancellation(correlation)
+      this.requestCancellation(correlation).catch(() => undefined)
     })
     return this.dispatchFor(correlation, completion)
   }
@@ -1500,16 +1533,15 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const timeoutMs = this.timeoutMs(request.operation)
     const value = bytesToCore(request.bytes)
     const mode = request.mode
-    const backend = this
     const completion = (async (): Promise<WriteResult<string, string>> => {
-      await backend.invokeRecord('gatt.write-descriptor', { peerId: nativePeerId, selector, value, mode, timeoutMs })
+      await this.invokeRecord('gatt.write-descriptor', { peerId: nativePeerId, selector, value, mode, timeoutMs })
       return Object.freeze({
-        terminal: backend.succeededTerminal(request.operation.correlation),
+        terminal: this.succeededTerminal(request.operation.correlation),
         commitState: 'confirmed'
       })
     })()
     this.watchAbort(request.operation.signal, () => {
-      void this.requestCancellation(correlation)
+      this.requestCancellation(correlation).catch(() => undefined)
     })
     return this.dispatchFor(correlation, completion)
   }
@@ -1534,29 +1566,26 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const consumerOrdinal = this.nextOperation
     this.nextOperation += 1
     const consumer = `rust-core-consumer-${consumerOrdinal}`
-    const backend = this
-    const completion = (async (): Promise<
-      BackendSubscription<string, string, string, string, string>
-    > => {
-      await backend.invokeRecord('gatt.subscribe', {
+    const completion = (async (): Promise<BackendSubscription<string, string, string, string, string>> => {
+      await this.invokeRecord('gatt.subscribe', {
         peerId: nativePeerId,
         selector,
         consumer,
         deliveryMode: request.options.deliveryMode ?? 'prefer-notification',
         timeoutMs
       })
-      const subscriptionId = backend.identifiers.subscriptionId(`rust-core-subscription-${consumerOrdinal}`)
+      const subscriptionId = this.identifiers.subscriptionId(`rust-core-subscription-${consumerOrdinal}`)
       const notifications = new CoreBoundedStream<import('../../backend-contract/gatt').NotificationValue>(
         request.options.delivery,
         request.options.delivery.overflowPolicy
       )
       const pumpState = { nativePeerId, selector, consumer, closed: false }
-      backend.subscriptionConsumers.set(String(subscriptionId), pumpState)
+      this.subscriptionConsumers.set(String(subscriptionId), pumpState)
       const pump = (async (): Promise<void> => {
         try {
           for (;;) {
-            if (pumpState.closed || backend.destroyed) return
-            const next = await dispatchReactNativeRustCoreOp(backend.session, 'notifications.take', {
+            if (pumpState.closed || this.destroyed) return
+            const next = await dispatchReactNativeRustCoreOp(this.session, 'notifications.take', {
               peerId: nativePeerId,
               selector,
               consumer
@@ -1570,7 +1599,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
             }
             notifications.emit(
               Object.freeze({
-                value: ownedBytes(bytesFromCore((next as Record<string, unknown>)['value'])),
+                value: ownedBytes(bytesFromCore((next as Record<string, unknown>).value)),
                 indication: false
               }),
               512
@@ -1582,17 +1611,17 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
           }
         }
       })()
-      void pump
+      pump.catch(() => undefined)
       const subscription = Object.freeze({
         subscriptionId,
         path,
-        terminal: backend.succeededTerminal(request.operation.correlation),
+        terminal: this.succeededTerminal(request.operation.correlation),
         notifications
       })
       return subscription as BackendSubscription<string, string, string, string, string>
     })()
     this.watchAbort(request.operation.signal, () => {
-      void this.requestCancellation(correlation)
+      this.requestCancellation(correlation).catch(() => undefined)
     })
     return this.dispatchFor(correlation, completion)
   }
@@ -1604,25 +1633,24 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     this.assertOperational('react-native-rust-core.gatt.unsubscribe')
     const stored = this.subscriptionConsumers.get(String(subscription.subscriptionId))
     const correlation = String(operation.correlation)
-    const backend = this
     const completion = (async (): Promise<OperationTerminalRecord<string, string>> => {
       if (stored !== undefined) {
         stored.closed = true
         try {
-          await backend.invokeRecord('gatt.unsubscribe', {
+          await this.invokeRecord('gatt.unsubscribe', {
             peerId: stored.nativePeerId,
             selector: stored.selector,
             consumer: stored.consumer
           })
         } finally {
-          backend.subscriptionConsumers.delete(String(subscription.subscriptionId))
+          this.subscriptionConsumers.delete(String(subscription.subscriptionId))
         }
       }
       await subscription.notifications.close().catch(() => undefined)
-      return backend.succeededTerminal(operation.correlation)
+      return this.succeededTerminal(operation.correlation)
     })()
     this.watchAbort(operation.signal, () => {
-      void this.requestCancellation(correlation)
+      this.requestCancellation(correlation).catch(() => undefined)
     })
     return this.dispatchFor(correlation, completion)
   }
@@ -1632,7 +1660,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private ensureEventsPump(): void {
     if (this.eventsPumpStarted) return
     this.eventsPumpStarted = true
-    void this.pumpBackendEvents()
+    this.pumpBackendEvents().catch(() => undefined)
   }
 
   private async pumpBackendEvents(): Promise<void> {
@@ -1656,11 +1684,11 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private emitBackendEvent(value: unknown): void {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return
     const record = value as Record<string, unknown>
-    if (typeof record['kind'] !== 'string') return
-    const kind = record['kind'] as string
+    if (typeof record.kind !== 'string') return
+    const kind = record.kind as string
     if (kind === 'adapter-state-changed') {
       try {
-        const state = this.parseAdapterState((record['state'] as Record<string, unknown>) ?? {})
+        const state = this.parseAdapterState((record.state as Record<string, unknown>) ?? {})
         for (const watcher of this.adapterWatchers) {
           try {
             watcher(state)
@@ -1669,7 +1697,12 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
           }
         }
         this.eventsStream.emit(
-          { kind: 'adapter-state', attachment: this.attachment, attachmentId: this.attachment.attachmentId, ingressOrdinal: this.nextEventOrdinal() },
+          {
+            kind: 'adapter-state',
+            attachment: this.attachment,
+            attachmentId: this.attachment.attachmentId,
+            ingressOrdinal: this.nextEventOrdinal()
+          },
           64
         )
       } catch {
@@ -1680,7 +1713,12 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     // Lifecycle events the typed surface cannot express ride as
     // diagnostics; dropping them silently would hide core truth.
     this.eventsStream.emit(
-      { kind: 'diagnostic', attachment: this.attachment, attachmentId: this.attachment.attachmentId, ingressOrdinal: this.nextEventOrdinal() },
+      {
+        kind: 'diagnostic',
+        attachment: this.attachment,
+        attachmentId: this.attachment.attachmentId,
+        ingressOrdinal: this.nextEventOrdinal()
+      },
       64
     )
   }
@@ -1724,12 +1762,10 @@ interface StoredRustCoreDatabase {
 }
 
 function parseDatabase(value: Record<string, unknown>, operation: string): RustCoreDatabase {
-  if (!Array.isArray(value['services'])) {
+  if (!Array.isArray(value.services)) {
     throw contractError('protocol.malformed', 'core', operation)
   }
-  const services = (value['services'] as unknown[]).map(entry =>
-    parseDatabaseService(entry, operation)
-  )
+  const services = (value.services as unknown[]).map(entry => parseDatabaseService(entry, operation))
   return { services }
 }
 
@@ -1738,16 +1774,16 @@ function parseDatabaseService(entry: unknown, operation: string): RustCoreDataba
     throw contractError('protocol.malformed', 'core', operation)
   }
   const record = entry as Record<string, unknown>
-  if (typeof record['uuid'] !== 'string' || typeof record['occurrence'] !== 'number') {
+  if (typeof record.uuid !== 'string' || typeof record.occurrence !== 'number') {
     throw contractError('protocol.malformed', 'core', operation)
   }
-  if (!Array.isArray(record['characteristics'])) {
+  if (!Array.isArray(record.characteristics)) {
     throw contractError('protocol.malformed', 'core', operation)
   }
   return {
-    uuid: record['uuid'] as string,
-    occurrence: Math.floor(record['occurrence'] as number),
-    characteristics: (record['characteristics'] as unknown[]).map(characteristic =>
+    uuid: record.uuid as string,
+    occurrence: Math.floor(record.occurrence as number),
+    characteristics: (record.characteristics as unknown[]).map(characteristic =>
       parseDatabaseCharacteristic(characteristic, operation)
     )
   }
@@ -1762,36 +1798,38 @@ function parseDatabaseCharacteristic(
   }
   const record = entry as Record<string, unknown>
   if (
-    typeof record['uuid'] !== 'string' ||
-    typeof record['occurrence'] !== 'number' ||
-    typeof record['properties'] !== 'number'
+    typeof record.uuid !== 'string' ||
+    typeof record.occurrence !== 'number' ||
+    typeof record.properties !== 'number'
   ) {
     throw contractError('protocol.malformed', 'core', operation)
   }
-  if (!Array.isArray(record['descriptors'])) {
+  if (!Array.isArray(record.descriptors)) {
     throw contractError('protocol.malformed', 'core', operation)
   }
   return {
-    uuid: record['uuid'] as string,
-    occurrence: Math.floor(record['occurrence'] as number),
-    properties: Math.floor(record['properties'] as number),
-    descriptors: (record['descriptors'] as unknown[]).map(descriptor => {
+    uuid: record.uuid as string,
+    occurrence: Math.floor(record.occurrence as number),
+    properties: Math.floor(record.properties as number),
+    descriptors: (record.descriptors as unknown[]).map(descriptor => {
       if (typeof descriptor !== 'object' || descriptor === null || Array.isArray(descriptor)) {
         throw contractError('protocol.malformed', 'core', operation)
       }
       const descriptorRecord = descriptor as Record<string, unknown>
-      if (typeof descriptorRecord['uuid'] !== 'string' || typeof descriptorRecord['occurrence'] !== 'number') {
+      if (typeof descriptorRecord.uuid !== 'string' || typeof descriptorRecord.occurrence !== 'number') {
         throw contractError('protocol.malformed', 'core', operation)
       }
       return {
-        uuid: descriptorRecord['uuid'] as string,
-        occurrence: Math.floor(descriptorRecord['occurrence'] as number)
+        uuid: descriptorRecord.uuid as string,
+        occurrence: Math.floor(descriptorRecord.occurrence as number)
       }
     })
   }
 }
 
-function parseResourceCounters(record: Record<string, unknown>): import('../../backend-contract/backend').ResourceCounters {
+function parseResourceCounters(
+  record: Record<string, unknown>
+): import('../../backend-contract/backend').ResourceCounters {
   return Object.freeze({
     activeScanControllers: resourceCount(numberField(record, 'activeScanControllers')),
     scanConsumers: resourceCount(numberField(record, 'scanConsumers')),
@@ -1840,15 +1878,29 @@ function uuidFromCore(value: unknown, operation: string): Uuid {
   }
 }
 
-function presentField<Value>(value: Value | null): import('../../backend-contract/advertisement').AdvertisementField<Value> {
+function presentField<Value>(
+  value: Value | null
+): import('../../backend-contract/advertisement').AdvertisementField<Value> {
   if (value === null || value === undefined) {
-    return Object.freeze({ state: 'absent', reason: 'not reported by the core observation', provenance: 'not-provided' }) as import('../../backend-contract/advertisement').AdvertisementField<Value>
+    return Object.freeze({
+      state: 'absent',
+      reason: 'not reported by the core observation',
+      provenance: 'not-provided'
+    }) as import('../../backend-contract/advertisement').AdvertisementField<Value>
   }
-  return Object.freeze({ state: 'present', value, provenance: 'observed' }) as import('../../backend-contract/advertisement').AdvertisementField<Value>
+  return Object.freeze({
+    state: 'present',
+    value,
+    provenance: 'observed'
+  }) as import('../../backend-contract/advertisement').AdvertisementField<Value>
 }
 
 function absentField<Value>(reason: string): import('../../backend-contract/advertisement').AdvertisementField<Value> {
-  return Object.freeze({ state: 'absent', reason, provenance: 'not-provided' }) as import('../../backend-contract/advertisement').AdvertisementField<Value>
+  return Object.freeze({
+    state: 'absent',
+    reason,
+    provenance: 'not-provided'
+  }) as import('../../backend-contract/advertisement').AdvertisementField<Value>
 }
 
 /**
@@ -1887,10 +1939,7 @@ function characteristicPropertiesFromBits(
 
 export function createReactNativeRustCoreFeatureRegistry(platform: ReactNativeRustCorePlatform) {
   return combineReactNativeFeatureRegistries(
-    createReactNativeConnectionControlFeatureRegistry(
-      platform,
-      REACT_NATIVE_RUST_CORE_IMPLEMENTATION_VERSION
-    ),
+    createReactNativeConnectionControlFeatureRegistry(platform, REACT_NATIVE_RUST_CORE_IMPLEMENTATION_VERSION),
     createReactNativeRustCoreScanPlatformFeatureRegistry(),
     createReactNativeRustCorePeerFeatureRegistry(),
     createReactNativeDescriptorFeatureRegistry(platform, REACT_NATIVE_RUST_CORE_IMPLEMENTATION_VERSION),

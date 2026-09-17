@@ -33,9 +33,7 @@ export async function createReactNativeBleManager(
   return rehydratePublicPromise(createReactNativeBleManagerInternal(options))
 }
 
-async function createReactNativeBleManagerInternal(
-  options: CreateReactNativeBleManagerOptions
-): Promise<BleManager> {
+async function createReactNativeBleManagerInternal(options: CreateReactNativeBleManagerOptions): Promise<BleManager> {
   const { rustCore, ...publicOptions } = options
   const normalized = normalizeBleManagerCreateOptions(publicOptions)
   const control = requireNativeControl()

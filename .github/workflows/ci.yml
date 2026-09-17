@@ -434,6 +434,14 @@ jobs:
       - name: Install pinned Rust
         run: cargo --version
 
+      - name: Install Linux build sysdeps
+        # napi -> ubm-desktop -> btleplug -> bluez-async -> libdbus-sys needs
+        # pkg-config + D-Bus headers at compile time (same subset as rust-5-0;
+        # required since wave E wired the addon to the shared core).
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libdbus-1-dev pkg-config
+
       - name: Rust parity proofs
         run: pnpm test:parity
 
@@ -585,16 +593,17 @@ jobs:
           # no longer exists upstream and fails install on new cmdline-tools.
           packages: 'platform-tools'
 
-      - name: Install pinned Rust + Android target
+      - name: Install pinned Rust + Android targets
         # buildUbmRustCdylib compiles bindings/jni via rustup-run on the
-        # pinned toolchain for x86_64-linux-android. The pin is
-        # single-sourced from rust-toolchain.toml (parsed here and by
+        # pinned toolchain for every ABI in android/build.gradle
+        # (ubmRustAbis: arm64-v8a + x86_64). The pin is single-sourced
+        # from rust-toolchain.toml (parsed here and by
         # android/build-rust-cdylib.sh) — never hardcode a version.
         run: |
           PINNED_TOOLCHAIN="$(grep -E '^channel[[:space:]]*=' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/' || true)"
           test -n "$PINNED_TOOLCHAIN" || { echo "could not parse pinned toolchain channel from rust-toolchain.toml"; exit 1; }
           cargo --version
-          rustup target add --toolchain "$PINNED_TOOLCHAIN" x86_64-linux-android
+          rustup target add --toolchain "$PINNED_TOOLCHAIN" aarch64-linux-android x86_64-linux-android
 
       - name: Install classic example dependencies
         # example/.npmrc uses node-linker=hoisted so @react-native/gradle-plugin is at

@@ -3382,7 +3382,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-unified-ble-manager"
-version = "4.0.0"
+version = "5.0.0-rc.0"
 dependencies = [
  "bluez-async",
  "btleplug",
@@ -3396,6 +3396,8 @@ dependencies = [
  "tauri-plugin",
  "tokio",
  "tokio-util",
+ "ubm-core",
+ "ubm-desktop",
  "uuid",
 ]
 
@@ -3877,6 +3879,21 @@ name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+
+[[package]]
+name = "ubm-core"
+version = "0.1.0"
+
+[[package]]
+name = "ubm-desktop"
+version = "0.1.0"
+dependencies = [
+ "btleplug",
+ "futures-util",
+ "tokio",
+ "ubm-core",
+ "uuid",
+]
 
 [[package]]
 name = "unic-char-property"

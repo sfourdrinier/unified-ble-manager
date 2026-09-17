@@ -205,7 +205,7 @@ def ubmRustInputFiles = [
     outputs.dir(stagingDir)
     doLast {
       if (!ubmRustDevCheckout) {
-        verifyUbmRustPrebuilts(taskName, stagingDir)
+        verifyUbmRustPrebuilts(taskName, stagingDir, ubmRustPrebuiltDir, ubmRustPrebuiltIdentity, ubmRustAbis)
         return
       }
       def identity = new StringBuilder()
@@ -213,19 +213,27 @@ def ubmRustInputFiles = [
       identity.append("abis=${ubmRustAbis.join(',')}\n")
       ubmRustAbis.each { abi ->
         def libDir = new File(stagingDir, abi)
-        def result = providers.exec {
-          commandLine("sh", ubmRustScript.absolutePath,
-            "--abi", abi,
-            "--profile", ubmRustProfile,
-            "--libdir", libDir.absolutePath)
-          workingDir(rootDir)
-        }.result.get()
-        if (result.exitValue != 0) {
+        // providers.exec captures the script streams (nothing reaches the
+        // build log), and .result.get() throws before exitValue is
+        // readable — so capture both streams and attach them to the
+        // failure. A silent red task is never acceptable here.
+        def scriptOut = new ByteArrayOutputStream()
+        def scriptErr = new ByteArrayOutputStream()
+        try {
+          providers.exec {
+            commandLine("sh", ubmRustScript.absolutePath,
+              "--abi", abi,
+              "--profile", ubmRustProfile,
+              "--libdir", libDir.absolutePath)
+            workingDir(rootDir)
+            standardOutput = scriptOut
+            errorOutput = scriptErr
+          }.result.get()
+        } catch (Exception execFailure) {
           throw new GradleException(
-            "${taskName} FAILED for ABI ${abi} (exit ${result.exitValue}). " +
-            "Run sh ${ubmRustScript} --abi ${abi} --profile ${ubmRustProfile} " +
-            "--libdir <dir> from the repo root for the actionable diagnostic " +
-            "(NDK 27.x, pinned Rust from rust-toolchain.toml + aarch64-linux-android and x86_64-linux-android targets).")
+            "${taskName} FAILED for ABI ${abi}: ${execFailure.message} " +
+            "(NDK 27.x, pinned Rust from rust-toolchain.toml + aarch64-linux-android and x86_64-linux-android targets).\n" +
+            "--- build-rust-cdylib.sh stdout ---\n${scriptOut}\n--- build-rust-cdylib.sh stderr ---\n${scriptErr}")
         }
         def staged = new File(libDir, "libubm5_jni_echo.so")
         if (!staged.isFile()) {
@@ -251,16 +259,19 @@ def ubmRustInputFiles = [
 // copies nothing: a second copy of the same SONAME would collide at merge.
 // Missing or mismatched prebuilts fail LOUD: a packed tree without a
 // loadable Rust library is a broken artifact, never a silent skip.
-// A closure (not a `def` method) so the script-local prebuilt paths above
-// stay visible: Gradle script methods cannot capture script locals.
-def verifyUbmRustPrebuilts = { String taskName, File stagingDir ->
-  if (!ubmRustPrebuiltIdentity.isFile()) {
+// A real script method (not a closure variable): doLast blocks resolve bare
+// calls delegate-first against the task, so a script-`def` closure is
+// invisible there ("Could not find method ... on task"). Everything the
+// check needs arrives as explicit params, since script methods cannot
+// capture script locals either.
+void verifyUbmRustPrebuilts(String taskName, File stagingDir, File prebuiltDir, File identity, List<String> abis) {
+  if (!identity.isFile()) {
     throw new GradleException(
-      "${taskName} FAILED: packed-consumer context (no ../.git) but no committed prebuilts at ${ubmRustPrebuiltDir} " +
-      "(build-identity.txt missing). The npm artifact must ship src/main/jniLibs/<abi>/libubm5_jni_echo.so for ${ubmRustAbis}.")
+      "${taskName} FAILED: packed-consumer context (no ../.git) but no committed prebuilts at ${prebuiltDir} " +
+      "(build-identity.txt missing). The npm artifact must ship src/main/jniLibs/<abi>/libubm5_jni_echo.so for ${abis}.")
   }
   def expected = [:]
-  ubmRustPrebuiltIdentity.eachLine { line ->
+  identity.eachLine { line ->
     def matcher = line =~ /^abi=(\S+) sha256=([0-9a-f]{64}) bytes=(\d+) file=(\S+)$/
     if (matcher.matches()) {
       expected[matcher.group(1)] = [sha256: matcher.group(2), bytes: matcher.group(3).toLong(), file: matcher.group(4)]
@@ -268,13 +279,13 @@ def verifyUbmRustPrebuilts = { String taskName, File stagingDir ->
   }
   def receipt = new StringBuilder()
   receipt.append("context=packed-prebuilt\n")
-  ubmRustAbis.each { abi ->
+  abis.each { abi ->
     def want = expected[abi]
     if (want == null) {
       throw new GradleException(
-        "${taskName} FAILED: build-identity.txt has no entry for ABI ${abi} (expected one abi= line per ABI in ${ubmRustAbis}).")
+        "${taskName} FAILED: build-identity.txt has no entry for ABI ${abi} (expected one abi= line per ABI in ${abis}).")
     }
-    def prebuilt = new File(new File(ubmRustPrebuiltDir, abi), want.file)
+    def prebuilt = new File(new File(prebuiltDir, abi), want.file)
     if (!prebuilt.isFile() || prebuilt.length() == 0) {
       throw new GradleException(
         "${taskName} FAILED: committed prebuilt missing or empty at ${prebuilt} for ABI ${abi}.")
@@ -294,7 +305,7 @@ def verifyUbmRustPrebuilts = { String taskName, File stagingDir ->
   }
   stagingDir.mkdirs()
   new File(stagingDir, "packed-prebuilt-receipt.txt").text = receipt.toString()
-  logger.lifecycle("${taskName} verified packed prebuilts at ${ubmRustPrebuiltDir}:\n${receipt}")
+  logger.lifecycle("${taskName} verified packed prebuilts at ${prebuiltDir}:\n${receipt}")
 }
 
 // Back-compat lifecycle task: builds (dev) or verifies (packed) both profiles.
