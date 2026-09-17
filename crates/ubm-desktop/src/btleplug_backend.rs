@@ -14,6 +14,7 @@
 //! `PARITY_GAPS.md`).
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::future::Future;
 use std::sync::{
     Arc, Mutex as StdMutex,
     atomic::{AtomicU64, Ordering},
@@ -38,24 +39,38 @@ use ubm_core::central::{
 };
 
 type EventStream = std::pin::Pin<Box<dyn futures_util::Stream<Item = CentralEvent> + Send>>;
-type NotificationStream =
+/// One peripheral-wide notification stream as btleplug 0.12 yields it from
+/// [`btleplug::api::Peripheral::notifications`]. Public so the
+/// production-path ingress harness can inject scripted streams into the real
+/// forwarder.
+pub type NotificationStream =
     std::pin::Pin<Box<dyn futures_util::Stream<Item = ValueNotification> + Send>>;
 
 /// One live notification forwarder: the task fanning one characteristic
 /// instance into the shared event channel, plus the instance address for
 /// best-effort OS unsubscribe at teardown.
-struct ForwarderEntry {
-    task: tokio::task::JoinHandle<()>,
-    peer_id: String,
-    service_uuid: String,
-    service_occurrence: u64,
-    characteristic_uuid: String,
-    characteristic_occurrence: u64,
+///
+/// Public (with public fields) so the production-path ingress harness can
+/// install a real forwarder task into a real consumer table and drive the
+/// genuine teardown-folding paths; production construction is unchanged.
+pub struct ForwarderEntry {
+    /// Fan-out task for this instance; aborted on successful teardown.
+    pub task: tokio::task::JoinHandle<()>,
+    /// Peer the subscription belongs to.
+    pub peer_id: String,
+    /// Owning service UUID (routing identity, F09).
+    pub service_uuid: String,
+    /// Occurrence among duplicate service UUIDs.
+    pub service_occurrence: u64,
+    /// Subscribed characteristic UUID (routing identity, F09).
+    pub characteristic_uuid: String,
+    /// Occurrence among duplicate characteristic UUIDs.
+    pub characteristic_occurrence: u64,
 }
 
 impl ForwarderEntry {
     /// Instance scope this forwarder owns, for ambiguity checks (F09).
-    fn scope(&self) -> InstanceKey {
+    pub fn scope(&self) -> InstanceKey {
         (
             self.peer_id.clone(),
             self.service_uuid.clone(),
@@ -70,8 +85,14 @@ impl ForwarderEntry {
 /// owned handoff. Forwarders `try_send` (never block the runtime worker);
 /// overload drops are counted, never silent, and adapter control (connect,
 /// disconnect, service-change) travels a separate stream so it never starves.
-const NOTIFICATION_CAP: usize = 256;
-const NOTIFICATION_BYTES: u64 = 262_144;
+///
+/// Public so the production-path ingress harness
+/// (`tests/production_ingress.rs`) derives its exact drop expectations from
+/// the real caps instead of restating them.
+pub const NOTIFICATION_CAP: usize = 256;
+/// Byte half of the bounded notification ingress (F07); see
+/// [`NOTIFICATION_CAP`].
+pub const NOTIFICATION_BYTES: u64 = 262_144;
 
 /// Production radio backend over one btleplug adapter.
 pub struct BtleplugRadio {
@@ -247,8 +268,7 @@ impl BtleplugRadio {
         let mut queue = self.notification_rx.lock().await;
         let event = queue.recv().await?;
         if let RadioEvent::Notification { ref value, .. } = event {
-            self.ingress_bytes
-                .fetch_sub(value.len() as u64, Ordering::Relaxed);
+            ingress_release(&self.ingress_bytes, value.len() as u64);
         }
         Some(event)
     }
@@ -304,7 +324,11 @@ impl BtleplugRadio {
 }
 
 /// Per-instance forwarder key: duplicate UUIDs never share a forwarder.
-fn forwarder_key(
+///
+/// Public so the production-path ingress harness addresses the same table
+/// slots production does.
+#[must_use]
+pub fn forwarder_key(
     peer_id: &str,
     service_uuid: &str,
     service_occurrence: u64,
@@ -323,17 +347,32 @@ fn forwarder_key(
 /// indistinguishable here and must be rejected at enable time (see
 /// [`route_is_ambiguous`]), never fanned out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct NotificationRoute {
-    service_uuid: uuid::Uuid,
-    characteristic_uuid: uuid::Uuid,
+/// Identity one notification forwarder routes by; see the field notes below.
+/// Public so the production-path ingress harness filters scripted streams
+/// through the genuine predicate.
+pub struct NotificationRoute {
+    /// Owning service identity from [`ValueNotification::service_uuid`].
+    pub service_uuid: uuid::Uuid,
+    /// Characteristic identity from [`ValueNotification::uuid`].
+    pub characteristic_uuid: uuid::Uuid,
 }
 
 impl NotificationRoute {
+    /// Build the route for one subscribed instance.
+    #[must_use]
+    pub fn new(service_uuid: uuid::Uuid, characteristic_uuid: uuid::Uuid) -> Self {
+        Self {
+            service_uuid,
+            characteristic_uuid,
+        }
+    }
+
     /// True when this notification belongs to the subscribed instance:
     /// both the service and the characteristic identity must match, or
     /// bytes for one service would misroute into another service's
     /// same-UUID subscription.
-    fn matches(&self, note: &ValueNotification) -> bool {
+    #[must_use]
+    pub fn matches(&self, note: &ValueNotification) -> bool {
         note.service_uuid == self.service_uuid && note.uuid == self.characteristic_uuid
     }
 }
@@ -344,7 +383,11 @@ impl NotificationRoute {
 /// carries no occurrence/handle identity, so the second enablement must
 /// fail explicitly instead of receiving misattributed bytes. Re-enabling
 /// the exact same instance is not ambiguous (idempotent replace).
-fn route_is_ambiguous(
+///
+/// Public so the production-path ingress harness gates scripted enablements
+/// through the genuine predicate.
+#[must_use]
+pub fn route_is_ambiguous(
     live_scopes: &[InstanceKey],
     peer_id: &str,
     service_uuid: &str,
@@ -364,7 +407,11 @@ fn route_is_ambiguous(
 /// plus cleanup-debt entries (native enablements without a consumer
 /// after a failed setup or teardown). The ambiguity check (F09) must see
 /// both — a debt CCCD can still emit unattributable bytes.
-fn live_scopes(
+///
+/// Public so the production-path ingress harness derives the genuine live
+/// set from a real consumer table.
+#[must_use]
+pub fn live_scopes(
     forwarders: &HashMap<String, ForwarderEntry>,
     debt: &HashSet<InstanceKey>,
 ) -> Vec<InstanceKey> {
@@ -379,7 +426,10 @@ fn live_scopes(
 /// retry disables it (the central's L7 path relies on this). When no
 /// consumer exists to preserve, a failed disable parks the scope as
 /// cleanup debt for retry/dispose instead of vanishing.
-fn apply_unsubscribe_outcome(
+///
+/// Public so the production-path ingress harness folds scripted native
+/// outcomes through the genuine teardown path.
+pub fn apply_unsubscribe_outcome(
     forwarders: &mut HashMap<String, ForwarderEntry>,
     debt: &mut HashSet<InstanceKey>,
     key: &str,
@@ -405,7 +455,10 @@ fn apply_unsubscribe_outcome(
 /// compensating unsubscribe leaves a possibly-live CCCD with no
 /// consumer — parked as debt for retry/dispose. A successful rollback
 /// (or a later full enable) clears it.
-fn apply_enable_stream_failure(
+///
+/// Public so the production-path ingress harness folds scripted setup
+/// failures through the genuine compensation path.
+pub fn apply_enable_stream_failure(
     debt: &mut HashSet<InstanceKey>,
     scope: &InstanceKey,
     rollback_ok: bool,
@@ -415,6 +468,277 @@ fn apply_enable_stream_failure(
     } else {
         debt.insert(scope.clone());
     }
+}
+
+/// Atomically reserve `len` bytes of bounded ingress (F07): succeeds only
+/// when the post-reservation total stays within [`NOTIFICATION_BYTES`].
+/// A compare-exchange loop (never load-then-add): concurrent forwarders
+/// racing the same counter cannot jointly overshoot the cap, and an
+/// oversized single item is refused up front. Every success must pair with
+/// exactly one [`ingress_release`] (on dequeue) or one rollback (on a
+/// failed `try_send`); every refusal is an explicit counted drop.
+#[must_use]
+pub fn ingress_try_reserve(queued_bytes: &AtomicU64, len: u64) -> bool {
+    let mut current = queued_bytes.load(Ordering::Relaxed);
+    loop {
+        let reserved = current.saturating_add(len);
+        if reserved > NOTIFICATION_BYTES {
+            return false;
+        }
+        match queued_bytes.compare_exchange_weak(
+            current,
+            reserved,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return true,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+/// Release `len` bytes of bounded ingress on dequeue (F07): the exact
+/// counterpart of a [`ingress_try_reserve`] success, keeping the queued
+/// total equal to the bytes actually sitting in the channel. Called by the
+/// consumer that just dequeued the owning item, mirroring
+/// [`BtleplugRadio::recv_notification`].
+pub fn ingress_release(queued_bytes: &AtomicU64, len: u64) {
+    queued_bytes.fetch_sub(len, Ordering::Relaxed);
+}
+
+/// Explicit rejection for an ambiguous duplicate-instance enablement (F09):
+/// the native stream carries no occurrence identity, so a second forwarder
+/// for the same (peer, service, characteristic) scope could only fan out
+/// misattributed bytes. Shared by [`BtleplugRadio::set_notifications`] and
+/// the production-path ingress harness so both reject with one identity.
+#[must_use]
+pub fn ambiguous_routing_error(service_uuid: &str, characteristic_uuid: &str) -> DesktopError {
+    DesktopError::subscribe_failed(format!(
+        "ambiguous notification routing: characteristic {characteristic_uuid} \
+         under service {service_uuid} already has a live subscription on \
+         another instance; the native stream carries no occurrence identity"
+    ))
+}
+
+/// Narrow native leaf the notification setup/teardown sequencing depends on
+/// (F13 production-path seam): subscribe, stream acquisition, and
+/// unsubscribe for one characteristic. The blanket implementation covers
+/// every [`btleplug::api::Peripheral`]; the harness implements this trait
+/// directly with scripted outcomes, so sequencing tests execute the genuine
+/// production functions with only the OS leaf stubbed. Everything below
+/// this trait (D-Bus session, adapter enumeration, peripheral lookup, the
+/// adapter event stream) stays hardware-gated: btleplug 0.12 exposes no
+/// public constructor for its platform peripheral or adapter
+/// (`Peripheral::new`, `Adapter::new`, and `DeviceId::new` are all
+/// `pub(crate)`), and `Manager::new` requires a live BlueZ D-Bus session.
+pub trait NotificationTransport: Send + Sync {
+    /// Enable the native CCCD for `characteristic`.
+    fn transport_subscribe<'a>(
+        &'a self,
+        characteristic: &'a Characteristic,
+    ) -> impl Future<Output = Result<(), btleplug::Error>> + Send + 'a;
+
+    /// Acquire the peripheral-wide notification stream.
+    fn transport_notifications(
+        &self,
+    ) -> impl Future<Output = Result<NotificationStream, btleplug::Error>> + Send + '_;
+
+    /// Disable the native CCCD for `characteristic`.
+    fn transport_unsubscribe<'a>(
+        &'a self,
+        characteristic: &'a Characteristic,
+    ) -> impl Future<Output = Result<(), btleplug::Error>> + Send + 'a;
+}
+
+impl<T> NotificationTransport for T
+where
+    T: btleplug::api::Peripheral,
+{
+    fn transport_subscribe<'a>(
+        &'a self,
+        characteristic: &'a Characteristic,
+    ) -> impl Future<Output = Result<(), btleplug::Error>> + Send + 'a {
+        btleplug::api::Peripheral::subscribe(self, characteristic)
+    }
+
+    fn transport_notifications(
+        &self,
+    ) -> impl Future<Output = Result<NotificationStream, btleplug::Error>> + Send + '_ {
+        btleplug::api::Peripheral::notifications(self)
+    }
+
+    fn transport_unsubscribe<'a>(
+        &'a self,
+        characteristic: &'a Characteristic,
+    ) -> impl Future<Output = Result<(), btleplug::Error>> + Send + 'a {
+        btleplug::api::Peripheral::unsubscribe(self, characteristic)
+    }
+}
+
+/// How the production enable sequencing failed (F13): either the native
+/// subscribe refused, or the stream acquisition failed after a successful
+/// subscribe (in which case a compensating unsubscribe was attempted and
+/// `rollback_ok` reports whether the orphaned CCCD was released).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnableStreamError {
+    /// Native subscribe refused; no CCCD was enabled, no rollback owed.
+    Subscribe(String),
+    /// Stream acquisition failed after a successful subscribe; the
+    /// compensating rollback ran, with `rollback_ok` reporting its outcome
+    /// for [`apply_enable_stream_failure`].
+    Stream {
+        /// Stream-acquisition failure detail.
+        detail: String,
+        /// Whether the compensating unsubscribe released the CCCD.
+        rollback_ok: bool,
+    },
+}
+
+/// Production enable sequencing for one characteristic (F13): native
+/// subscribe first, then stream acquisition; when the stream fails, roll
+/// back the already-enabled CCCD so no orphan subscription outlives the
+/// failure. Called by [`BtleplugRadio::set_notifications`] on the real
+/// peripheral and by the production-path ingress harness on a scripted
+/// transport — one shared implementation, not a reimplementation.
+pub async fn subscribe_and_stream<T>(
+    transport: &T,
+    characteristic: &Characteristic,
+) -> Result<NotificationStream, EnableStreamError>
+where
+    T: NotificationTransport,
+{
+    transport
+        .transport_subscribe(characteristic)
+        .await
+        .map_err(|error| EnableStreamError::Subscribe(error.to_string()))?;
+    match transport.transport_notifications().await {
+        Ok(stream) => Ok(stream),
+        Err(error) => {
+            let detail = error.to_string();
+            let rollback_ok = transport
+                .transport_unsubscribe(characteristic)
+                .await
+                .is_ok();
+            Err(EnableStreamError::Stream {
+                detail,
+                rollback_ok,
+            })
+        }
+    }
+}
+
+/// Production disable sequencing for one characteristic (F13): the native
+/// disable runs BEFORE the forwarder table is touched — only a successful
+/// unsubscribe removes the consumer, so a still-enabled CCCD keeps
+/// forwarding until a retry disables it. The outcome is folded through
+/// [`apply_unsubscribe_outcome`] under the table locks (acquired only after
+/// the native call resolves, never held across it). Called by
+/// [`BtleplugRadio::set_notifications`] and by the production-path ingress
+/// harness alike; the native error detail returns for contract attribution
+/// by the caller.
+pub async fn unsubscribe_and_fold<T>(
+    transport: &T,
+    characteristic: &Characteristic,
+    forwarders: &StdMutex<HashMap<String, ForwarderEntry>>,
+    debt: &StdMutex<HashSet<InstanceKey>>,
+    key: &str,
+    scope: &InstanceKey,
+) -> Result<(), String>
+where
+    T: NotificationTransport,
+{
+    let outcome = transport.transport_unsubscribe(characteristic).await;
+    let detail = outcome.as_ref().err().map(ToString::to_string);
+    apply_unsubscribe_outcome(
+        &mut forwarders.lock().expect("forwarder table"),
+        &mut debt.lock().expect("cleanup debt"),
+        key,
+        scope,
+        outcome.is_ok(),
+    );
+    detail.map_or(Ok(()), Err)
+}
+
+/// Address one notification forwarder stamps on every value it emits (F10):
+/// the subscribed instance plus the install-time epoch. Values already
+/// queued still carry the dead install-time epoch and fail the central's
+/// routing check after a disconnect or service change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForwardTarget {
+    /// Peer the subscription belongs to.
+    pub peer_id: String,
+    /// Owning service UUID (event label).
+    pub service_uuid: String,
+    /// Occurrence among duplicate service UUIDs.
+    pub service_occurrence: u64,
+    /// Subscribed characteristic UUID (event label).
+    pub characteristic_uuid: String,
+    /// Occurrence among duplicate characteristic UUIDs.
+    pub characteristic_occurrence: u64,
+    /// Subscription epoch captured at install, never minted at dequeue.
+    pub epoch: u64,
+}
+
+/// Spawn the production notification forwarder (F07/F09/F10) over an
+/// injected stream: filter on the full (service, characteristic) identity,
+/// reserve byte capacity atomically before the owned handoff, and `try_send`
+/// (never block the runtime worker) with explicit counted drops. The CCCD
+/// stays enabled across drops so later values still flow after the drain.
+/// Called by [`BtleplugRadio::set_notifications`] on the genuine btleplug
+/// stream and by the production-path ingress harness on scripted streams —
+/// one shared implementation.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_notification_forwarder<S>(
+    spawn: &tokio::runtime::Handle,
+    stream: S,
+    route: NotificationRoute,
+    target: ForwardTarget,
+    sender: mpsc::Sender<RadioEvent>,
+    queued_bytes: Arc<AtomicU64>,
+    dropped: Arc<AtomicU64>,
+) -> tokio::task::JoinHandle<()>
+where
+    S: futures_util::Stream<Item = ValueNotification> + Send + 'static,
+{
+    spawn.spawn(async move {
+        let mut stream = Box::pin(stream);
+        while let Some(note) = stream.next().await {
+            if !route.matches(&note) {
+                continue;
+            }
+            // F07: bounded ingress at the first owned handoff — reserve
+            // bytes atomically (never load-then-add across forwarders),
+            // `try_send` never blocks the runtime worker, overload drops
+            // are counted (never silent), and the CCCD stays enabled so
+            // later values still flow after the drain.
+            let len = note.value.len() as u64;
+            if !ingress_try_reserve(&queued_bytes, len) {
+                dropped.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            let event = RadioEvent::Notification {
+                peer_id: target.peer_id.clone(),
+                service_uuid: target.service_uuid.clone(),
+                service_occurrence: target.service_occurrence,
+                characteristic_uuid: target.characteristic_uuid.clone(),
+                characteristic_occurrence: target.characteristic_occurrence,
+                epoch: target.epoch,
+                value: note.value,
+            };
+            match sender.try_send(event) {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    // The reservation never materialized: release it.
+                    ingress_release(&queued_bytes, len);
+                    dropped.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    ingress_release(&queued_bytes, len);
+                    break;
+                }
+            }
+        }
+    })
 }
 
 /// Select the `occurrence`-th service with `uuid` in canonical
@@ -848,88 +1172,56 @@ impl RadioBoundary for BtleplugRadio {
                 )
             };
             if ambiguous {
-                return Err(DesktopError::subscribe_failed(format!(
-                    "ambiguous notification routing: characteristic {characteristic_uuid} \
-                     under service {service_uuid} already has a live subscription on \
-                     another instance; the native stream carries no occurrence identity"
-                )));
+                return Err(ambiguous_routing_error(service_uuid, characteristic_uuid));
             }
-            peripheral
-                .subscribe(&characteristic)
-                .await
-                .map_err(|error| DesktopError::subscribe_failed(error.to_string()))?;
-            let stream: NotificationStream = match peripheral.notifications().await {
-                Ok(stream) => stream,
-                Err(error) => {
-                    // F13: the CCCD is already enabled with no forwarder to
-                    // consume it — roll back the native enablement so no
-                    // orphan subscription outlives this failure. A failed
-                    // rollback parks cleanup debt for retry/dispose.
-                    let rollback_ok = peripheral.unsubscribe(&characteristic).await.is_ok();
-                    apply_enable_stream_failure(
-                        &mut self.cleanup_debt.lock().expect("cleanup debt"),
-                        &scope,
+            // F13: shared enable sequencing — native subscribe, stream
+            // acquisition, rollback-or-debt on the split failure. A failed
+            // rollback parks cleanup debt for retry/dispose.
+            let stream: NotificationStream =
+                match subscribe_and_stream(&peripheral, &characteristic).await {
+                    Ok(stream) => stream,
+                    Err(EnableStreamError::Subscribe(detail)) => {
+                        return Err(DesktopError::subscribe_failed(detail));
+                    }
+                    Err(EnableStreamError::Stream {
+                        detail,
                         rollback_ok,
-                    );
-                    return Err(DesktopError::subscribe_failed(error.to_string()));
-                }
-            };
-            let sender = self.notifications.clone();
-            let queued_bytes = Arc::clone(&self.ingress_bytes);
-            let dropped = Arc::clone(&self.ingress_dropped);
-            let peer = peer_id.to_owned();
-            let service = service_uuid.to_owned();
-            let instance_characteristic = characteristic_uuid.to_owned();
+                    }) => {
+                        apply_enable_stream_failure(
+                            &mut self.cleanup_debt.lock().expect("cleanup debt"),
+                            &scope,
+                            rollback_ok,
+                        );
+                        return Err(DesktopError::subscribe_failed(detail));
+                    }
+                };
             // The btleplug stream is peripheral-wide: filter on the full
             // (service, characteristic) identity so one subscription never
             // routes another scope's values. Same-scope duplicate
             // instances stay indistinguishable on this stream (no handles
             // exposed) and are rejected at enable time, never fanned
             // out; see PARITY_GAPS.md.
-            let route = NotificationRoute {
-                service_uuid: characteristic.service_uuid,
-                characteristic_uuid: characteristic.uuid,
-            };
+            let route = NotificationRoute::new(characteristic.service_uuid, characteristic.uuid);
             // The subscription epoch is captured at install, never minted
             // at dequeue: every value this forwarder emits is attributable
             // to exactly the enablement that installed it (F10).
-            let installed_epoch = epoch;
-            let forwarder = self.spawn.spawn(async move {
-                let mut stream = stream;
-                while let Some(note) = stream.next().await {
-                    if !route.matches(&note) {
-                        continue;
-                    }
-                    // F07: bounded ingress at the first owned handoff —
-                    // `try_send` never blocks the runtime worker, overload
-                    // drops are counted (never silent), and the CCCD stays
-                    // enabled so later values still flow after the drain.
-                    let len = note.value.len() as u64;
-                    if queued_bytes.load(Ordering::Relaxed).saturating_add(len) > NOTIFICATION_BYTES
-                    {
-                        dropped.fetch_add(1, Ordering::Relaxed);
-                        continue;
-                    }
-                    let event = RadioEvent::Notification {
-                        peer_id: peer.clone(),
-                        service_uuid: service.clone(),
-                        service_occurrence,
-                        characteristic_uuid: instance_characteristic.clone(),
-                        characteristic_occurrence,
-                        epoch: installed_epoch,
-                        value: note.value,
-                    };
-                    match sender.try_send(event) {
-                        Ok(()) => {
-                            queued_bytes.fetch_add(len, Ordering::Relaxed);
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                            dropped.fetch_add(1, Ordering::Relaxed);
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-                    }
-                }
-            });
+            let target = ForwardTarget {
+                peer_id: peer_id.to_owned(),
+                service_uuid: service_uuid.to_owned(),
+                service_occurrence,
+                characteristic_uuid: characteristic_uuid.to_owned(),
+                characteristic_occurrence,
+                epoch,
+            };
+            let forwarder = spawn_notification_forwarder(
+                &self.spawn,
+                stream,
+                route,
+                target,
+                self.notifications.clone(),
+                Arc::clone(&self.ingress_bytes),
+                Arc::clone(&self.ingress_dropped),
+            );
             // Defensive replace: a live entry under the same per-instance
             // key is aborted before overwrite so no forwarder ever leaks.
             let replaced = self.forwarders.lock().expect("forwarder table").insert(
@@ -953,20 +1245,20 @@ impl RadioBoundary for BtleplugRadio {
                 .expect("cleanup debt")
                 .remove(&scope);
         } else {
-            // F13: the native disable runs BEFORE the forwarder is
-            // touched — only a successful unsubscribe removes the
-            // consumer, so a still-enabled CCCD keeps forwarding until
-            // a retry disables it (the central's L7 path relies on
-            // values continuing to flow here).
-            let outcome = peripheral.unsubscribe(&characteristic).await;
-            apply_unsubscribe_outcome(
-                &mut self.forwarders.lock().expect("forwarder table"),
-                &mut self.cleanup_debt.lock().expect("cleanup debt"),
+            // F13: shared disable sequencing — the native disable runs
+            // BEFORE the forwarder is touched, so a still-enabled CCCD
+            // keeps forwarding until a retry disables it (the central's
+            // L7 path relies on values continuing to flow here).
+            unsubscribe_and_fold(
+                &peripheral,
+                &characteristic,
+                &self.forwarders,
+                &self.cleanup_debt,
                 &key,
                 &scope,
-                outcome.is_ok(),
-            );
-            outcome.map_err(|error| DesktopError::subscribe_failed(error.to_string()))?;
+            )
+            .await
+            .map_err(DesktopError::subscribe_failed)?;
         }
         Ok(())
     }
