@@ -20,6 +20,31 @@ function sha256(filePath) {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex')
 }
 
+// D2(iii): offline 16 KB page-size check (Android 15+ install requirement).
+// Pure-JS ELF program-header walk — no readelf, no NDK. Both shipped ABIs
+// are 64-bit little-endian; anything else fails closed (unsupported, not
+// assumed-aligned). Every PT_LOAD segment must carry p_align >= 0x4000.
+function loadSegmentAlignments(filePath) {
+  const bytes = fs.readFileSync(filePath)
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  const magic = [0x7f, 0x45, 0x4c, 0x46]
+  for (let i = 0; i < magic.length; i += 1) {
+    if (view.getUint8(i) !== magic[i]) throw new Error(`${filePath}: not an ELF file`)
+  }
+  if (view.getUint8(4) !== 2) throw new Error(`${filePath}: not 64-bit ELF (EI_CLASS=${view.getUint8(4)})`)
+  if (view.getUint8(5) !== 1) throw new Error(`${filePath}: not little-endian ELF (EI_DATA=${view.getUint8(5)})`)
+  const phoff = Number(view.getBigUint64(32, true))
+  const phentsize = view.getUint16(54, true)
+  const phnum = view.getUint16(56, true)
+  const aligns = []
+  for (let i = 0; i < phnum; i += 1) {
+    const base = phoff + i * phentsize
+    const type = view.getUint32(base, true)
+    if (type === 1) aligns.push(Number(view.getBigUint64(base + 48, true)))
+  }
+  return aligns
+}
+
 describe('committed Android prebuilts (F01)', () => {
   test('build-identity.txt names exactly the app ABI list', () => {
     expect(fs.existsSync(identityFile)).toBe(true)
@@ -48,6 +73,23 @@ describe('committed Android prebuilts (F01)', () => {
       expect(fs.statSync(absolute).size).toBe(Number(expectedBytes))
       expect(sha256(absolute)).toBe(expectedSha)
     }
+  })
+
+  test('every shipped .so is 16 KB page-aligned (Android 15+)', () => {
+    const lines = fs.readFileSync(identityFile, 'utf8').split('\n')
+    let checked = 0
+    for (const line of lines) {
+      const match = /^abi=(\S+) sha256=[0-9a-f]{64} bytes=\d+ file=(\S+)$/.exec(line)
+      if (match === null) continue
+      const [, abi, file] = match
+      const aligns = loadSegmentAlignments(path.join(prebuiltDir, abi, file))
+      expect(aligns.length).toBeGreaterThan(0)
+      for (const align of aligns) {
+        expect(align).toBeGreaterThanOrEqual(16384)
+      }
+      checked += 1
+    }
+    expect(checked).toBe(EXPECTED_ABIS.length)
   })
 
   test('no other files ride the prebuilt tree', () => {

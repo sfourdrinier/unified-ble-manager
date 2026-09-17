@@ -4,7 +4,7 @@ profile=release
 abis=arm64-v8a,x86_64
 toolchain=1.98.1 (rustc 1.98.1 (48a229cea 2026-09-01))
 ndk=27.1.12297006
-source-sha=5fd744b3fe5717dc59f10f6630d73d74e5ca3d70
-source-describe=v4.0.28-98-g5fd744b3-dirty
-abi=arm64-v8a sha256=9f24deee6c421348c8ba33544d3ef489d382c89505c5aa56e16d5ca978c86185 bytes=1334688 file=libubm5_jni_echo.so
-abi=x86_64 sha256=1607fa54aff893d72809b4b2ed58f1f572fe494d58f13782dc2d93fe85ed42e7 bytes=1321392 file=libubm5_jni_echo.so
+source-sha=35afbc83ded6fb01a65a7c0c2dd159f5cf53d000
+source-describe=v4.0.28-133-g35afbc83-dirty
+abi=arm64-v8a sha256=ce032844b2c789e934ebc9073ab5cc5c7b17b8aa2385e806aa5b58956fd18d2f bytes=1356904 file=libubm5_jni_echo.so
+abi=x86_64 sha256=e6ae8de5eb2aa9eb59daa6aaddab6247ae923816ebad94f55e718b188cb24e57 bytes=1342600 file=libubm5_jni_echo.so

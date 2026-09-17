@@ -26,16 +26,27 @@ describe('Android Rust cdylib packaging (UBM 5.0 HOST-ANDROID)', () => {
 
   test('Gradle verifies prebuilts in packed consumers and fails loud without them', () => {
     const buildGradle = fs.readFileSync(path.join(root, 'android/build.gradle'), 'utf8')
-    // .git (not source presence) selects source builds: the npm artifact
-    // ships sources AND prebuilts, and packed consumers need no NDK/Rust.
-    expect(buildGradle).toContain('def ubmRustDevCheckout =')
+    // D2(iii): mode selection is explicit-first (UBM_NATIVE_BUILD), never
+    // bare `.git` inference; unset backstops inference on BOTH Rust sources
+    // AND .git. The npm artifact ships sources AND prebuilts, and packed
+    // consumers need no NDK/Rust.
+    expect(buildGradle).toContain('def ubmNativeBuildEnv =')
+    expect(buildGradle).toContain("UBM_NATIVE_BUILD=source")
+    expect(buildGradle).toContain("UBM_NATIVE_BUILD=prebuilt")
+    expect(buildGradle).toContain('def ubmRustDevCheckout')
+    expect(buildGradle).toContain('ubmRustSourcesPresent && projectDir.toPath().resolve("../.git")')
     expect(buildGradle).toContain('def ubmRustPrebuiltDir = file("src/main/jniLibs")')
     expect(buildGradle).toContain('def ubmRustPrebuiltIdentity =')
     // Packed variants package the committed tree; a packed tree without
     // prebuilts fails LOUD (broken artifact), never silently.
     expect(buildGradle).toContain('android.sourceSets.main.jniLibs.srcDirs = [file("src/main/jniLibs")]')
-    expect(buildGradle).toContain('packed-consumer context')
+    expect(buildGradle).toContain('prebuilt context')
     expect(buildGradle).toContain('no committed prebuilts')
+    // D2(iii): the 16 KB page-size gate is wired into both paths (hard in
+    // source builds, opportunistic --offline-ok over packed prebuilts).
+    expect(buildGradle).toContain('def ubmRust16kScript = file("check-elf-16k-pages.sh")')
+    expect(buildGradle).toContain('inputs.file(ubmRust16kScript)')
+    expect(buildGradle).toContain('16 KB page check')
   })
 
   // F20: the Gradle input graph must cover the cdylib crate plus its

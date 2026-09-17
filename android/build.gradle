@@ -129,9 +129,10 @@ react {
 // android/build-rust-cdylib.sh (single source of truth, shared with the
 // five0 probe-app build); no cargo-ndk required.
 //
-// Two contexts, one loader (F01):
-//   * Dev checkout (Rust sources AND ../.git present): build from source
-//     per profile/ABI exactly as below (F20 semantics preserved).
+// Two contexts, one loader (F01); mode is explicit-first (D2(iii)):
+//   * Source mode (UBM_NATIVE_BUILD=source, or dev-checkout inference):
+//     build from source per profile/ABI exactly as below (F20 semantics
+//     preserved).
 //   * Packed consumer (Expo CNG, node_modules — no ../.git): the npm
 //     artifact ships COMMITTED release prebuilts under src/main/jniLibs
 //     plus build-identity.txt. The tasks VERIFY them (presence, bytes,
@@ -152,10 +153,30 @@ def ubmRustScript = file("build-rust-cdylib.sh")
 def ubmRustSrcDir = projectDir.toPath().resolve("../bindings/jni/src").toFile()
 def ubmRustManifest = projectDir.toPath().resolve("../bindings/jni/Cargo.toml").toFile()
 def ubmRustSourcesPresent = ubmRustSrcDir.isDirectory() && ubmRustManifest.isFile()
-// The npm artifact ships sources (for cargo path-deps) AND prebuilts; only
-// a development checkout carries .git, so .git — not source presence —
-// selects source builds. Packed consumers must never need NDK/Rust.
-def ubmRustDevCheckout = ubmRustSourcesPresent && projectDir.toPath().resolve("../.git").toFile().exists()
+def ubmRust16kScript = file("check-elf-16k-pages.sh")
+// Mode selection is explicit-first per docs/5.0.0-DISTRIBUTION_CONTRACT.md:
+//   UBM_NATIVE_BUILD=source   → build from source (fails loud without sources)
+//   UBM_NATIVE_BUILD=prebuilt → verify committed prebuilts (fails loud without them)
+//   unset/empty               → dev-checkout inference backstopped by BOTH
+//     Rust sources AND ../.git — never bare `.git` inference. Packed
+//     consumers must never need NDK/Rust.
+def ubmNativeBuildEnv = (System.getenv("UBM_NATIVE_BUILD") ?: "").trim().toLowerCase(Locale.ROOT)
+if (!["", "source", "prebuilt"].contains(ubmNativeBuildEnv)) {
+  throw new GradleException(
+    "UBM_NATIVE_BUILD must be unset, 'source', or 'prebuilt' — got '${System.getenv('UBM_NATIVE_BUILD')}'.")
+}
+def ubmRustDevCheckout
+if (ubmNativeBuildEnv == "source") {
+  if (!ubmRustSourcesPresent) {
+    throw new GradleException(
+      "UBM_NATIVE_BUILD=source but no Rust sources at ${ubmRustSrcDir} (expected in a dev checkout or source distribution).")
+  }
+  ubmRustDevCheckout = true
+} else if (ubmNativeBuildEnv == "prebuilt") {
+  ubmRustDevCheckout = false
+} else {
+  ubmRustDevCheckout = ubmRustSourcesPresent && projectDir.toPath().resolve("../.git").toFile().exists()
+}
 def ubmRustPrebuiltDir = file("src/main/jniLibs")
 def ubmRustPrebuiltIdentity = new File(ubmRustPrebuiltDir, "build-identity.txt")
 // Complete Rust input graph (F20): the cdylib crate plus its transitive
@@ -187,7 +208,9 @@ def ubmRustInputFiles = [
     inputs.property("ubmRustProfile", ubmRustProfile)
     inputs.property("ubmRustAbis", ubmRustAbis)
     inputs.property("ubmRustDevCheckout", ubmRustDevCheckout)
+    inputs.property("ubmNativeBuildEnv", ubmNativeBuildEnv)
     inputs.file(ubmRustScript)
+    inputs.file(ubmRust16kScript)
     if (ubmRustDevCheckout) {
       ubmRustInputDirs.each { dir ->
         if (dir.isDirectory()) {
@@ -206,6 +229,34 @@ def ubmRustInputFiles = [
     doLast {
       if (!ubmRustDevCheckout) {
         verifyUbmRustPrebuilts(taskName, stagingDir, ubmRustPrebuiltDir, ubmRustPrebuiltIdentity, ubmRustAbis)
+        // Packed path: opportunistic 16 KB check over the verified prebuilts.
+        // --offline-ok keeps NDK-less consumers green (consumers must never
+        // need the NDK); misalignment still fails loud wherever the tool
+        // resolves. File names come from the verify receipt, never assumed.
+        def receipt16k = new StringBuilder()
+        new File(stagingDir, "packed-prebuilt-receipt.txt").eachLine { line ->
+          def prebuiltMatcher = line =~ /^abi=(\S+) sha256=[0-9a-f]{64} bytes=\d+ file=(\S+)$/
+          if (prebuiltMatcher.matches()) {
+            def prebuiltAbi = prebuiltMatcher.group(1)
+            def prebuiltSo = new File(new File(ubmRustPrebuiltDir, prebuiltAbi), prebuiltMatcher.group(2))
+            def out16k = new ByteArrayOutputStream()
+            def result16k = project.exec {
+              commandLine("sh", ubmRust16kScript.absolutePath,
+                "--so", prebuiltSo.absolutePath, "--abi", prebuiltAbi, "--offline-ok")
+              workingDir(rootDir)
+              standardOutput = out16k
+              errorOutput = out16k
+              ignoreExitValue = true
+            }
+            if (result16k.exitValue != 0) {
+              throw new GradleException(
+                "${taskName} FAILED: 16 KB page check on packed prebuilt ${prebuiltSo}:\n${out16k}")
+            }
+            receipt16k.append("${out16k}".trim()).append("\n")
+          }
+        }
+        new File(stagingDir, "packed-16k-receipt.txt").text = receipt16k.toString()
+        logger.lifecycle("${taskName} 16K page check (packed):\n${receipt16k}")
         return
       }
       def identity = new StringBuilder()
@@ -241,6 +292,23 @@ def ubmRustInputFiles = [
             "${taskName} FAILED: staged cdylib missing at ${staged} " +
             "despite exit 0 — re-run the script by hand for diagnostics.")
         }
+        // Source path: hard 16 KB gate on the staged cdylib (Android 15+).
+        // The NDK exists by construction here, so no --offline-ok: a
+        // missing tool or a misaligned lib both fail loud.
+        def check16k = new ByteArrayOutputStream()
+        def check16kResult = project.exec {
+          commandLine("sh", ubmRust16kScript.absolutePath,
+            "--so", staged.absolutePath, "--abi", abi)
+          workingDir(rootDir)
+          standardOutput = check16k
+          errorOutput = check16k
+          ignoreExitValue = true
+        }
+        if (check16kResult.exitValue != 0) {
+          throw new GradleException(
+            "${taskName} FAILED: 16 KB page check on staged ${staged}:\n${check16k}")
+        }
+        identity.append("page16k=${abi} pass\n")
         def digest = java.security.MessageDigest.getInstance("SHA-256")
         staged.eachByte(65536) { buf, len -> digest.update(buf, 0, len) }
         identity.append("abi=${abi} sha256=${digest.digest().encodeHex().toString()} " +
@@ -267,7 +335,7 @@ def ubmRustInputFiles = [
 void verifyUbmRustPrebuilts(String taskName, File stagingDir, File prebuiltDir, File identity, List<String> abis) {
   if (!identity.isFile()) {
     throw new GradleException(
-      "${taskName} FAILED: packed-consumer context (no ../.git) but no committed prebuilts at ${prebuiltDir} " +
+      "${taskName} FAILED: prebuilt context (UBM_NATIVE_BUILD=prebuilt, or packed tree without dev-checkout markers) but no committed prebuilts at ${prebuiltDir} " +
       "(build-identity.txt missing). The npm artifact must ship src/main/jniLibs/<abi>/libubm5_jni_echo.so for ${abis}.")
   }
   def expected = [:]
