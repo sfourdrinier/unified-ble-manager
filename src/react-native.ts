@@ -27,7 +27,29 @@ export {
 export type { ReactNativeAppleBackendProviderOptions } from './backends/reactnative/react-native-apple-provider'
 export { createReactNativeBleManagerWithEnvironment } from './react-native-manager'
 export type { ReactNativeBleManagerOptions, ReactNativeBlePlatform } from './react-native-manager'
+export {
+  createReactNativeRustCoreBackendProvider,
+  REACT_NATIVE_RUST_CORE_BACKEND_ID,
+  REACT_NATIVE_RUST_CORE_IMPLEMENTATION_VERSION
+} from './backends/reactnative/react-native-rust-core-provider'
+export type {
+  ReactNativeRustCoreBackendProvider,
+  ReactNativeRustCorePlatform,
+  ReactNativeRustCoreProviderOptions
+} from './backends/reactnative/react-native-rust-core-provider'
+export {
+  RUST_CORE_CONTRACT_REVISION,
+  admitReactNativeRustCoreSession,
+  dispatchReactNativeRustCoreOp,
+  openAdmittedRustCoreSession,
+  resolveReactNativeRustCoreBinding
+} from './backends/reactnative/react-native-rust-core'
+export type {
+  ReactNativeRustCoreBinding,
+  ReactNativeRustCoreSession
+} from './backends/reactnative/react-native-rust-core'
 export { createReactNativeBleManager } from './react-native-app-manager'
+export type { CreateReactNativeBleManagerOptions } from './react-native-app-manager'
 export type { BleManagerCreateOptions } from './public/host-identity'
 export {
   combineReactNativeFeatureRegistries,

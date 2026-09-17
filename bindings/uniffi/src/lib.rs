@@ -232,6 +232,43 @@ impl EchoSession {
             Err(err) => err_counter_staged(err),
         }
     }
+
+    /// U8 first-class BLE scan start: drives a REAL kernel scan admission
+    /// (synthetic radio, scripted observations). The start observation JSON
+    /// travels in `value` and carries the core-minted scan op id
+    /// (`"op_id"`); the caller passes it to [EchoSession::ble_scan_stop].
+    /// The core owns duplicate/merge/timeout admission and the deadline.
+    pub fn ble_scan_start(
+        &self,
+        owner: String,
+        timeout_ms: String,
+        now_ms: String,
+    ) -> EchoCounterResult {
+        match self.inner.ble_scan_start(&owner, &timeout_ms, &now_ms) {
+            Ok(observation) => ok_counter(observation),
+            Err(err) => err_counter(err),
+        }
+    }
+
+    /// U8 first-class BLE scan take: drains the session observation log
+    /// (FIFO, newline-joined JSON lines; empty string when quiet) into
+    /// `value`. Delivery pacing only.
+    pub fn ble_scan_take(&self) -> EchoCounterResult {
+        match self.inner.ble_scan_take() {
+            Ok(log) => ok_counter(log),
+            Err(err) => err_counter(err),
+        }
+    }
+
+    /// U8 first-class BLE scan stop: stops the core scan admitted under
+    /// `op_id` and carries the stop observation JSON in `value`. An
+    /// unknown op id fails closed; a stop is never fabricated.
+    pub fn ble_scan_stop(&self, op_id: String, now_ms: String) -> EchoCounterResult {
+        match self.inner.ble_scan_stop(&op_id, &now_ms) {
+            Ok(observation) => ok_counter(observation),
+            Err(err) => err_counter(err),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -249,6 +286,72 @@ mod tests {
         assert!(counter.ok && counter.value == "18446744073709551615");
         let bad = session.echo_counter("nope".to_string());
         assert!(!bad.ok && bad.code == "bytes.invalid" && bad.domain == "core");
+    }
+
+    #[test]
+    fn udl_ble_scan_slice_runs_real_kernel_transitions() {
+        let session = EchoSession::new(REV.to_string());
+        let started = session.ble_scan_start(
+            "owner-a".to_string(),
+            "5000".to_string(),
+            "1000".to_string(),
+        );
+        assert!(
+            started.ok,
+            "scan start must admit: {}|{} {}",
+            started.code, started.domain, started.value
+        );
+        assert!(
+            started.value.contains("\"ok\":true"),
+            "unexpected start observation: {}",
+            started.value
+        );
+        let op_id = extract_test_op_id(&started.value);
+        assert!(
+            !op_id.is_empty(),
+            "start observation must carry op_id: {}",
+            started.value
+        );
+        let take = session.ble_scan_take();
+        assert!(take.ok, "take must drain: {}|{}", take.code, take.domain);
+        let stopped = session.ble_scan_stop(op_id, "2000".to_string());
+        assert!(
+            stopped.ok,
+            "scan stop must settle: {}|{} {}",
+            stopped.code, stopped.domain, stopped.value
+        );
+        // A second stop for the same op id fails closed: stops are never
+        // fabricated and op ids are single-use.
+        let again = session.ble_scan_stop("no-such-op".to_string(), "3000".to_string());
+        assert!(!again.ok && again.code == "argument.invalid" && again.domain == "core");
+        // Malformed decimal times fail before the radio.
+        let bad = session.ble_scan_start(
+            "owner-a".to_string(),
+            "nope".to_string(),
+            "1000".to_string(),
+        );
+        assert!(!bad.ok && bad.code == "bytes.invalid" && bad.domain == "core");
+        // Lifetime gates cover the new slice too.
+        let foreign = EchoSession::new("C-UBM.9.9.9-DRAFT".to_string());
+        let gated = foreign.ble_scan_start("o".to_string(), "5".to_string(), "1".to_string());
+        assert!(!gated.ok && gated.code == "protocol.incompatible");
+        let closed = EchoSession::new(REV.to_string());
+        assert!(closed.close().ok);
+        let after = closed.ble_scan_take();
+        assert!(!after.ok && after.code == "lifecycle.destroyed");
+    }
+
+    fn extract_test_op_id(observation: &str) -> String {
+        const KEY: &str = "\"op_id\":\"";
+        let start = observation
+            .find(KEY)
+            .map(|index| index + KEY.len())
+            .unwrap_or(0);
+        let end = observation[start..]
+            .find('"')
+            .map(|index| start + index)
+            .unwrap_or(start);
+        observation[start..end].to_string()
     }
 
     #[test]

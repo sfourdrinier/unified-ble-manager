@@ -49,21 +49,12 @@ const SCAN_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// released.
 const DISCONNECT_COMPLETION_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Host-neutral desktop executor seam (HOST-DESKTOP extraction point).
-///
-/// This file is single-sourced from `crates/ubm-desktop/src/executor.rs` and
-/// included by path so desktop execution stays shared without a Tauri
-/// dependency in `ubm-desktop` and without touching this crate's manifest.
-/// It carries only `std` + `tokio`, so it compiles in both editions.
-#[path = "../../../crates/ubm-desktop/src/executor.rs"]
-#[allow(dead_code)]
-mod desktop_executor_seam;
-
 fn btleplug_runtime() -> tokio::runtime::Handle {
     // Delegated: one shared desktop executor per process, owned by
-    // `ubm-desktop`. Behavior is unchanged (same dedicated thread, same two
-    // workers); only the owner moved.
-    desktop_executor_seam::desktop_runtime()
+    // `ubm-desktop` (a real crate dependency since the F01 authority
+    // migration; see `desktop_core.rs`). Behavior is unchanged (same
+    // dedicated thread, same two workers); only the owner moved.
+    ubm_desktop::executor::desktop_runtime()
 }
 
 #[derive(Clone, Debug, Default)]

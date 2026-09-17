@@ -673,6 +673,12 @@ internal object IntegrityCheckingUniffiLib {
         uniffiCheckContractApiVersion(this)
         uniffiCheckApiChecksums(this)
     }
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_ble_scan_start(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_ble_scan_stop(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_ble_scan_take(
+    ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_cancel_inflight(
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_central_status(
@@ -690,6 +696,12 @@ internal object IntegrityCheckingUniffiLib {
     external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_echo_counter(
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_request_ble_transition(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_counters(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_drain_log(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_step(
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new(
     ): Int
@@ -717,6 +729,12 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_ubm5_uniffi_echo_fn_constructor_echosession_new(`revision`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_start(`ptr`: Long,`owner`: RustBuffer.ByValue,`timeoutMs`: RustBuffer.ByValue,`nowMs`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_stop(`ptr`: Long,`opId`: RustBuffer.ByValue,`nowMs`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_take(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
     external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_cancel_inflight(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_central_status(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
@@ -734,6 +752,12 @@ internal object UniffiLib {
     external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_echo_counter(`ptr`: Long,`decimal`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_request_ble_transition(`ptr`: Long,`transition`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_counters(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_drain_log(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_step(`ptr`: Long,`line`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun ffi_ubm5_uniffi_echo_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -854,6 +878,15 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_ble_scan_start() and 0xFFFF) != 17628) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_ble_scan_stop() and 0xFFFF) != 26279) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_ble_scan_take() and 0xFFFF) != 44292) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_cancel_inflight() and 0xFFFF) != 10905) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -879,6 +912,15 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_request_ble_transition() and 0xFFFF) != 20292) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_counters() and 0xFFFF) != 53625) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_drain_log() and 0xFFFF) != 7699) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_step() and 0xFFFF) != 36705) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new() and 0xFFFF) != 28077) {
@@ -1261,6 +1303,12 @@ public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
 
 public interface EchoSessionInterface {
     
+    fun `bleScanStart`(`owner`: kotlin.String, `timeoutMs`: kotlin.String, `nowMs`: kotlin.String): EchoCounterResult
+    
+    fun `bleScanStop`(`opId`: kotlin.String, `nowMs`: kotlin.String): EchoCounterResult
+    
+    fun `bleScanTake`(): EchoCounterResult
+    
     fun `cancelInflight`(): EchoStatus
     
     fun `centralStatus`(): EchoCounterResult
@@ -1278,6 +1326,12 @@ public interface EchoSessionInterface {
     fun `echoCounter`(`decimal`: kotlin.String): EchoCounterResult
     
     fun `requestBleTransition`(`transition`: kotlin.String): EchoStatus
+    
+    fun `stagedCounters`(): EchoCounterResult
+    
+    fun `stagedDrainLog`(): EchoCounterResult
+    
+    fun `stagedStep`(`line`: kotlin.String): EchoCounterResult
     
     companion object
 }
@@ -1391,6 +1445,50 @@ open class EchoSession: Disposable, AutoCloseable, EchoSessionInterface
             UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_echosession(handle, status)
         }
     }
+
+    override fun `bleScanStart`(`owner`: kotlin.String, `timeoutMs`: kotlin.String, `nowMs`: kotlin.String): EchoCounterResult {
+            return FfiConverterTypeEchoCounterResult.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_start(
+        it,
+        
+        FfiConverterString.lower(`owner`),
+        FfiConverterString.lower(`timeoutMs`),
+        FfiConverterString.lower(`nowMs`),_status)
+}
+    }
+    )
+    }
+    
+
+    override fun `bleScanStop`(`opId`: kotlin.String, `nowMs`: kotlin.String): EchoCounterResult {
+            return FfiConverterTypeEchoCounterResult.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_stop(
+        it,
+        
+        FfiConverterString.lower(`opId`),
+        FfiConverterString.lower(`nowMs`),_status)
+}
+    }
+    )
+    }
+    
+
+    override fun `bleScanTake`(): EchoCounterResult {
+            return FfiConverterTypeEchoCounterResult.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_take(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
 
     override fun `cancelInflight`(): EchoStatus {
             return FfiConverterTypeEchoStatus.lift(
@@ -1509,6 +1607,46 @@ open class EchoSession: Disposable, AutoCloseable, EchoSessionInterface
         it,
         
         FfiConverterString.lower(`transition`),_status)
+}
+    }
+    )
+    }
+    
+
+    override fun `stagedCounters`(): EchoCounterResult {
+            return FfiConverterTypeEchoCounterResult.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_counters(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    override fun `stagedDrainLog`(): EchoCounterResult {
+            return FfiConverterTypeEchoCounterResult.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_drain_log(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    override fun `stagedStep`(`line`: kotlin.String): EchoCounterResult {
+            return FfiConverterTypeEchoCounterResult.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_step(
+        it,
+        
+        FfiConverterString.lower(`line`),_status)
 }
     }
     )

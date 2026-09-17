@@ -22,11 +22,11 @@ serde_json = "1"
 tauri = { version = "2", default-features = false }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 tokio-util = "0.7"
-# F01: the plugin emits shared-core-owned error identities and reports the
-# linked contract revision at bootstrap; ubm-core is that single owner.
-# (Driving op scheduling through ubm-desktop is the follow-up authority
-# migration; the dispatcher keeps radio ownership until then.)
+# F01: the plugin schedules BLE ops through the shared desktop authority
+# (`ubm-desktop`, itself over `ubm-core`); error and contract identities stay
+# single-owned by the shared core and cross verbatim.
 ubm-core = { path = "../../crates/ubm-core" }
+ubm-desktop = { path = "../../crates/ubm-desktop" }
 uuid = "1"
 
 # Linux only, and only to classify one BlueZ error. btleplug reports a removed

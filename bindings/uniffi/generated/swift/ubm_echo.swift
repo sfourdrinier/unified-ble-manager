@@ -571,6 +571,12 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 
 public protocol EchoSessionProtocol: AnyObject, Sendable {
     
+    func bleScanStart(owner: String, timeoutMs: String, nowMs: String)  -> EchoCounterResult
+    
+    func bleScanStop(opId: String, nowMs: String)  -> EchoCounterResult
+    
+    func bleScanTake()  -> EchoCounterResult
+    
     func cancelInflight()  -> EchoStatus
     
     func centralStatus()  -> EchoCounterResult
@@ -588,6 +594,12 @@ public protocol EchoSessionProtocol: AnyObject, Sendable {
     func echoCounter(decimal: String)  -> EchoCounterResult
     
     func requestBleTransition(transition: String)  -> EchoStatus
+    
+    func stagedCounters()  -> EchoCounterResult
+    
+    func stagedDrainLog()  -> EchoCounterResult
+    
+    func stagedStep(line: String)  -> EchoCounterResult
     
 }
 open class EchoSession: EchoSessionProtocol, @unchecked Sendable {
@@ -651,6 +663,38 @@ public convenience init(revision: String) {
 
     
 
+    
+open func bleScanStart(owner: String, timeoutMs: String, nowMs: String) -> EchoCounterResult  {
+    return try!  FfiConverterTypeEchoCounterResult_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_start(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(owner),
+        FfiConverterString.lower(timeoutMs),
+        FfiConverterString.lower(nowMs),uniffiCallStatus
+    )
+})
+}
+    
+open func bleScanStop(opId: String, nowMs: String) -> EchoCounterResult  {
+    return try!  FfiConverterTypeEchoCounterResult_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_stop(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(opId),
+        FfiConverterString.lower(nowMs),uniffiCallStatus
+    )
+})
+}
+    
+open func bleScanTake() -> EchoCounterResult  {
+    return try!  FfiConverterTypeEchoCounterResult_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_take(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
     
 open func cancelInflight() -> EchoStatus  {
     return try!  FfiConverterTypeEchoStatus_lift(try! rustCall() {
@@ -735,6 +779,34 @@ open func requestBleTransition(transition: String) -> EchoStatus  {
     uniffi_ubm5_uniffi_echo_fn_method_echosession_request_ble_transition(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(transition),uniffiCallStatus
+    )
+})
+}
+    
+open func stagedCounters() -> EchoCounterResult  {
+    return try!  FfiConverterTypeEchoCounterResult_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_counters(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+open func stagedDrainLog() -> EchoCounterResult  {
+    return try!  FfiConverterTypeEchoCounterResult_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_drain_log(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+open func stagedStep(line: String) -> EchoCounterResult  {
+    return try!  FfiConverterTypeEchoCounterResult_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_step(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(line),uniffiCallStatus
     )
 })
 }
@@ -995,6 +1067,15 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_echosession_ble_scan_start() != 17628) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_echosession_ble_scan_stop() != 26279) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_echosession_ble_scan_take() != 44292) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ubm5_uniffi_echo_checksum_method_echosession_cancel_inflight() != 10905) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -1020,6 +1101,15 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ubm5_uniffi_echo_checksum_method_echosession_request_ble_transition() != 20292) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_counters() != 53625) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_drain_log() != 7699) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_step() != 36705) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new() != 28077) {
