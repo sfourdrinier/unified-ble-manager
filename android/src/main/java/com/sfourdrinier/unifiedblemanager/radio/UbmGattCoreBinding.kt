@@ -25,9 +25,10 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * Fail-closed contract: when the session cannot open (missing native
  * library, foreign linked revision) the binding reports [isOpen] false and
- * every post returns null — the owner keeps driving the platform radio and
- * emits the [openFailure] as a diagnostic. A missing core never bricks BLE
- * and never passes silently.
+ * every post returns null — under R02 authority the owner then fails the
+ * covered command loud with a `coreUnavailable` terminal (never silent
+ * radio-only execution) and emits the [openFailure] as a diagnostic. A
+ * missing core never bricks BLE and never passes silently.
  *
  * Threading: [postEvent]-adjacent methods are binder-safe (permission gate
  * plus one enqueue, never a drain). [release] joins the worker drain and
@@ -206,8 +207,15 @@ class UbmGattCoreBinding(
     return post(GattCentralWire.peerResolve(peerDomainFor(deviceId), deviceId))
   }
 
+  /**
+   * R02 authority ordering: the peer resolve is admitted first and its
+   * refusal is returned WITHOUT posting the connect line, so a refused peer
+   * never leaves an orphaned core connect op behind. Callers gate on the
+   * single returned verdict (see `admitCoreCommand`).
+   */
   fun postConnect(deviceId: String, lease: String): UbmGattCentralBridge.PostResult? {
-    postPeerResolve(deviceId)
+    val resolved = postPeerResolve(deviceId)
+    if (resolved !is UbmGattCentralBridge.PostResult.Queued) return resolved
     return post(GattCentralWire.connect(peerKeyFor(deviceId), lease, NO_PROTOCOL_DEADLINE_MS, nowMs()))
   }
 

@@ -71,6 +71,14 @@ class DeferredCoreShadow(
   }
 
   /**
+   * The last distinct unavailable cause (null when never unavailable or
+   * recovered since). Read-only aid for fail-loud terminals: the diagnosis
+   * itself still flows through [diagnose], this only names the cause already
+   * reported so a refused command can quote it. Never opens.
+   */
+  fun lastCause(): String? = synchronized(gate) { lastDiagnosis }
+
+  /**
    * Releases the published shadow (if any) without opening a new one, and
    * shuts down the owned opener. A later [current] reopens lazily.
    */

@@ -13,27 +13,36 @@ import com.sfourdrinier.unifiedblemanager.radio.GattObservation
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio
 import com.sfourdrinier.unifiedblemanager.radio.OwnedRadioTeardownFailure
 import com.sfourdrinier.unifiedblemanager.radio.UbmGattCoreBinding
+import com.sfourdrinier.unifiedblemanager.radio.UbmGattCentralBridge
 import com.sfourdrinier.unifiedblemanager.radio.DeferredCoreShadow
 import com.sfourdrinier.unifiedblemanager.radio.AndroidGattOperationFailure
 import com.sfourdrinier.unifiedblemanager.radio.BondedPeerSnapshot
 import com.sfourdrinier.unifiedblemanager.radio.nextUuidOccurrence
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Owns protocol-v2 Android radio work and sends bytes only through the native protocol.
  *
- * F01 shared-core shadowing: every radio lifecycle/link/scan/discovery event
- * is also posted through [coreShadow] into the real core JNI session
- * ([UbmGattCoreBinding] over [UbmGattCentralBridge] with the real
- * `GattBridge` natives). The platform radio stays the BLE execution path;
- * the core shadow executes the same transitions in the shared kernel so the
- * release artifact provably runs the Rust core on the shipped provider. Core
- * rejections arrive as data and are surfaced as diagnostics — never silent,
- * never fatal to radio work.
+ * R02 core authority: covered commands (scan/connect/discover/disconnect —
+ * see [CoreCommandAuthority]) execute the platform radio ONLY after the core
+ * admits the same transition through [coreShadow] (the real core JNI session:
+ * [UbmGattCoreBinding] over [UbmGattCentralBridge] with the real `GattBridge`
+ * natives). A missing/failed shadow or a refused post at command time fails
+ * the command loud with a `core*`-coded ERROR terminal — never silent
+ * radio-only execution. Core drain rejections (`ok:false`) bind still-pending
+ * correlated commands the same way, so a command the core rejects never
+ * reports radio success. Commands without a native op surface (GATT IO, link
+ * quality, security, bonded enumeration) stay radio-only scoped exceptions,
+ * documented in [CoreCommandAuthority]. Event-path mirrors (adapter reset,
+ * services-changed, link reports, discovery completion reports) stay
+ * fire-and-forget with diagnostics: they report physical facts and gate no
+ * command.
  */
 class UnifiedBleProtocolAndroidDispatcher
 // @JvmOverloads: the Java JSI binding cannot see Kotlin default
@@ -49,8 +58,9 @@ constructor(
   // R02: the shadow opens off the constructing (JS) thread — construction
   // here must never touch JNI (first touch loads libubm5_jni_echo.so).
   // The gate retries a missing/failed shadow on demand and reports each
-  // distinct cause once; the cutover will harden this seam into a
-  // readiness gate when the core is promoted to authority.
+  // distinct cause once; [admitCoreCommand] hardens this seam into the
+  // authority readiness gate (missing/failed shadow at command time fails
+  // the command loud instead of dropping to radio-only).
   private val shadowGate = DeferredCoreShadow(
     factory = {
       if (coreShadowFactory != null) {
@@ -69,12 +79,181 @@ constructor(
   private val coreShadow: UbmGattCoreBinding?
     get() = shadowGate.current()
 
+  /**
+   * R02 authority verdict log. Every drained core rejection is journaled with
+   * a monotonic sequence so admission ([admitCoreCommand]) and pending-bind
+   * ([onCoreRejection]) can tell verdicts that predate a command from ones
+   * that bind it. Bounded: the oldest entry is evicted past the cap.
+   */
+  private val coreVerdictSeq = AtomicLong(0)
+  private data class CoreRejection(val seq: Long, val observation: GattObservation)
+  private val coreRejectionJournal = ConcurrentLinkedQueue<CoreRejection>()
+
+  /**
+   * Admission sequence per pending operation key, recorded by
+   * [admitCoreCommand] and removed on every terminal (see the emitters).
+   * Lets a late rejection bind only commands admitted before it.
+   */
+  private val coreAdmissionSeqByOp = ConcurrentHashMap<String, Long>()
+
+  /** The admitted core shadow plus the verdict sequence at admission time. */
+  private data class CoreAdmission(val shadow: UbmGattCoreBinding, val seqBefore: Long)
+
   private fun onCoreRejection(observation: GattObservation) {
     UnifiedBleProtocolJsiBinding.emitDiagnostic(
       nativeHandle,
       "coreShadowRejected",
       "${observation.code}|${observation.domain}|${observation.operation} ${observation.detail ?: ""}".trim()
     )
+    // Authority bind: a core rejection must never leave a correlated pending
+    // command reporting radio success. Fail every still-pending command of the
+    // mapped kinds admitted before this rejection (claim-guarded: settled
+    // commands are untouched). Attribution is by command kind — a rejection
+    // line carries no peer or dispatcher op key — see CoreCommandAuthority.
+    val seq = coreVerdictSeq.incrementAndGet()
+    while (coreRejectionJournal.size >= 128) coreRejectionJournal.poll()
+    coreRejectionJournal.offer(CoreRejection(seq, observation))
+    val kinds = CoreCommandAuthority.commandKindsForCoreEvent(observation.event)
+    if (kinds.isEmpty()) return
+    pendingCommands.values.toList().forEach { command ->
+      val kind = try {
+        command.requiredString(3)
+      } catch (_: IllegalArgumentException) {
+        return@forEach
+      }
+      if (kind !in kinds) return@forEach
+      val admittedSeq = try {
+        coreAdmissionSeqByOp[operationKey(command)] ?: -1L
+      } catch (_: IllegalArgumentException) {
+        -1L
+      }
+      if (admittedSeq >= seq) return@forEach
+      emitFailure(command, CoreCommandAuthority.CODE_REJECTED, coreRejectionMessage(kind, observation))
+    }
+  }
+
+  private fun coreRejectionMessage(kind: String, rejection: GattObservation): String =
+    "Android core rejected $kind " +
+      "(${rejection.code}|${rejection.domain}|${rejection.operation} ${rejection.detail ?: ""}".trim() +
+      "); radio success is not reported"
+
+  /** Latest rejection of one of [events] admitted after [seqBefore], if any. */
+  private fun coreRejectionSince(seqBefore: Long, events: Set<String>): GattObservation? =
+    coreRejectionJournal.firstOrNull { entry ->
+      entry.seq > seqBefore && entry.observation.event in events
+    }?.observation
+
+  /**
+   * Drops the authority admission record once a command reaches a terminal.
+   * Called from every terminal path (see the emitters); never throws.
+   */
+  private fun forgetCoreAdmission(command: ProtocolWireRecord) {
+    try {
+      coreAdmissionSeqByOp.remove(operationKey(command))
+    } catch (_: IllegalArgumentException) {
+    }
+  }
+
+  /**
+   * R02 authority gate for covered commands (see
+   * [CoreCommandAuthority.requiresAdmission]).
+   *
+   * Posts the core transition BEFORE the radio runs and returns the admission
+   * (with the verdict sequence at admission time) only when the core admitted
+   * it ([UbmGattCentralBridge.PostResult.Queued]) with no same-tick rejection
+   * for the command's wire events (synchronous attestation drain). Every
+   * other outcome emits the fail-loud terminal and returns null — the caller
+   * must then return WITHOUT touching the radio:
+   * - missing/failed/withdrawn shadow → `coreUnavailable` (quoting the
+   *   seam's recorded cause);
+   * - refused post → `corePermissionDenied` / `coreEnqueueFailed` /
+   *   `coreScheduleFailed` / `coreUnavailable`;
+   * - same-tick core rejection → `coreRejected`.
+   *
+   * The one legitimate null post is `scanStop` with a healthy shadow and no
+   * tracked core op (documented no-op shadow): it proceeds radio-only.
+   */
+  private fun admitCoreCommand(
+    command: ProtocolWireRecord,
+    commandKind: String,
+    post: (UbmGattCoreBinding) -> UbmGattCentralBridge.PostResult?
+  ): CoreAdmission? {
+    val seqBefore = coreVerdictSeq.get()
+    val shadow = coreShadow
+    if (shadow == null || shadow.openFailure != null || !shadow.isOpen) {
+      val unavailableCause = when {
+        shadow == null -> shadowGate.lastCause() ?: "shadow unavailable"
+        shadow.openFailure != null -> shadow.openFailure
+        else -> "session not open"
+      }
+      emitFailure(
+        command,
+        CoreCommandAuthority.CODE_UNAVAILABLE,
+        "Android core shadow is unavailable ($unavailableCause); $commandKind was not executed"
+      )
+      return null
+    }
+    val result = try {
+      post(shadow)
+    } catch (th: Throwable) {
+      emitFailure(
+        command,
+        CoreCommandAuthority.CODE_ENQUEUE_FAILED,
+        "Android core failed to enqueue $commandKind (${th.message ?: th.javaClass.simpleName}); $commandKind was not executed"
+      )
+      return null
+    }
+    if (result == null) {
+      if (commandKind == "scanStop" && shadow.isOpen && shadow.openFailure == null) {
+        coreAdmissionSeqByOp[operationKey(command)] = seqBefore
+        return CoreAdmission(shadow, seqBefore)
+      }
+      emitFailure(
+        command,
+        CoreCommandAuthority.CODE_UNAVAILABLE,
+        "Android core refused $commandKind (shadow withdrawn); $commandKind was not executed"
+      )
+      return null
+    }
+    // Synchronous attestation: drain same-tick verdicts before the radio
+    // runs, so a core rejection binds now instead of racing radio success.
+    // drainNow never throws: drain failures surface as data observations and
+    // observation consumers are isolated inside the bridge.
+    shadow.bridge.drainNow()
+    coreRejectionSince(seqBefore, CoreCommandAuthority.coreEventsFor(commandKind))?.let { rejection ->
+      // The pending-bind in onCoreRejection already attempted this terminal
+      // during the drain; the claim guard makes this a safe deterministic
+      // second attempt with the same code.
+      emitFailure(command, CoreCommandAuthority.CODE_REJECTED, coreRejectionMessage(commandKind, rejection))
+      return null
+    }
+    when (result) {
+      is UbmGattCentralBridge.PostResult.Queued -> {
+        coreAdmissionSeqByOp[operationKey(command)] = seqBefore
+        return CoreAdmission(shadow, seqBefore)
+      }
+      is UbmGattCentralBridge.PostResult.PermissionDenied -> emitFailure(
+        command,
+        CoreCommandAuthority.CODE_PERMISSION_DENIED,
+        "Android core denied $commandKind (${result.identity}); $commandKind was not executed"
+      )
+      is UbmGattCentralBridge.PostResult.EnqueueFailed -> emitFailure(
+        command,
+        CoreCommandAuthority.CODE_ENQUEUE_FAILED,
+        "Android core failed to enqueue $commandKind (${result.message}); $commandKind was not executed"
+      )
+      is UbmGattCentralBridge.PostResult.ScheduleFailed -> emitFailure(
+        command,
+        CoreCommandAuthority.CODE_SCHEDULE_FAILED,
+        "Android core queued $commandKind but no drain was scheduled (${result.message}); $commandKind was not executed"
+      )
+      is UbmGattCentralBridge.PostResult.Shutdown -> emitFailure(
+        command,
+        CoreCommandAuthority.CODE_UNAVAILABLE,
+        "Android core shadow is released; $commandKind was not executed"
+      )
+    }
+    return null
   }
 
   private fun coreLeaseFor(deviceId: String): String = "android-link-${deviceId.uppercase()}"
@@ -124,10 +303,30 @@ constructor(
       val deviceKey = deviceId.uppercase()
       val command = pendingConnects.remove(deviceKey)
       if (command != null) {
+        // The admission record is still present: no terminal has been emitted
+        // for this connect yet (emitters remove it). A missing record means a
+        // pre-authority path, which cannot happen post-cutover; fall back to
+        // reporting the radio outcome.
+        val admittedSeq = try {
+          coreAdmissionSeqByOp[operationKey(command)]
+        } catch (_: IllegalArgumentException) {
+          null
+        }
         if (connected && status == 0) {
           establishedConnections[deviceKey] = command.requiredRecord(10)
           coreShadow?.postLinkEstablished(deviceId)
-          emitSuccess(command, "connected")
+          // Authority re-check: refuse radio success when the core rejected
+          // this connect (admission lines or the link report above). The
+          // pending-bind in onCoreRejection may already have claimed the
+          // terminal; the guard below makes the survivors deterministic.
+          val rejection = admittedSeq?.let { seq ->
+            coreRejectionSince(seq, CoreCommandAuthority.coreEventsFor("connect"))
+          }
+          if (rejection != null) {
+            emitFailure(command, CoreCommandAuthority.CODE_REJECTED, coreRejectionMessage("connect", rejection))
+          } else {
+            emitSuccess(command, "connected")
+          }
         } else {
           // No link ever existed for the core either: leave the admitted
           // core connect op to its own deadline rather than overstating a
@@ -346,8 +545,19 @@ constructor(
     val options = command.requiredRecord(12)
     val serviceUuids = options.requiredStringList(1).toTypedArray()
     require(activeScanCommand.compareAndSet(null, command)) { "A protocol scan is already active" }
+    // Set only once the core admitted the scan: compensation runs for an
+    // admitted scan whose radio start then refuses, never for option parsing.
+    var admission: CoreAdmission? = null
     try {
       val allowDuplicates = options.requiredBoolean(2)
+      // Authority: admit the core scan BEFORE touching the radio. A refused
+      // command releases the active-scan claim here and never scans.
+      admission = admitCoreCommand(command, "scanStart") { shadow ->
+        shadow.postScanStart(serviceUuids.toList(), allowDuplicates)
+      } ?: run {
+        activeScanCommand.compareAndSet(command, null)
+        return
+      }
       radio.startScan(
         serviceUuids = serviceUuids,
         scanMode = options.requiredSignedInteger(3).toInt(),
@@ -356,9 +566,22 @@ constructor(
         allowDuplicates = allowDuplicates,
         deviceAddresses = options.optionalStringList(6).toTypedArray()
       )
-      coreShadow?.postScanStart(serviceUuids.toList(), allowDuplicates)
+      // Re-check before reporting: a worker verdict may have landed between
+      // admission and radio start. On rejection stop the radio scan rather
+      // than reporting success over a core refusal.
+      val admitted = admission
+      coreRejectionSince(admitted.seqBefore, CoreCommandAuthority.coreEventsFor("scanStart"))?.let { rejection ->
+        activeScanCommand.compareAndSet(command, null)
+        radio.stopScan()?.let { failure -> radio.reportCleanupFailure(failure) }
+        emitFailure(command, CoreCommandAuthority.CODE_REJECTED, coreRejectionMessage("scanStart", rejection))
+        return
+      }
       emitSuccess(command, "scanStarted")
     } catch (error: Exception) {
+      // Core-first compensation: the admitted core scan has no radio peer, so
+      // attempt its stop rather than orphaning the core op. Best effort — the
+      // rethrown radio error stays the loud terminal.
+      if (admission != null) compensateCoreScanStop()
       if (!radio.hasScanCleanupOwnership()) {
         activeScanCommand.compareAndSet(command, null)
       }
@@ -366,11 +589,33 @@ constructor(
     }
   }
 
+  /** Best-effort core scan-stop compensation after a radio refusal. */
+  private fun compensateCoreScanStop() {
+    val compensation = try {
+      coreShadow?.postScanStop()
+    } catch (_: Throwable) {
+      null
+    }
+    if (compensation !is UbmGattCentralBridge.PostResult.Queued) {
+      UnifiedBleProtocolJsiBinding.emitDiagnostic(
+        nativeHandle,
+        "coreCompensationFailed",
+        "Android core scan compensation failed after radio refusal"
+      )
+    }
+  }
+
   private fun stopScan(command: ProtocolWireRecord) {
+    // Authority: admit (or attest the no-op of) the core stop before the
+    // radio stop. A refused command never touches the radio.
+    val admission = admitCoreCommand(command, "scanStop") { shadow -> shadow.postScanStop() } ?: return
     val failure = radio.stopScan()
     if (failure == null) {
       activeScanCommand.set(null)
-      coreShadow?.postScanStop()
+      coreRejectionSince(admission.seqBefore, CoreCommandAuthority.coreEventsFor("scanStop"))?.let { rejection ->
+        emitFailure(command, CoreCommandAuthority.CODE_REJECTED, coreRejectionMessage("scanStop", rejection))
+        return
+      }
       completeCancelledScanCommands()
       emitSuccess(command, "accepted")
     } else {
@@ -384,14 +629,38 @@ constructor(
     val peerId = connection.requiredString(2)
     val prior = pendingConnects.putIfAbsent(peerId.uppercase(), command)
     require(prior == null) { "A protocol connect is already pending for this peer" }
+    val lease = coreLeaseFor(peerId)
+    var admittedShadow: UbmGattCoreBinding? = null
     try {
+      // Authority: admit the core connect BEFORE touching the radio.
+      val admission = admitCoreCommand(command, "connect") { shadow ->
+        shadow.postConnect(peerId, lease)
+      } ?: run {
+        pendingConnects.remove(peerId.uppercase(), command)
+        return
+      }
+      admittedShadow = admission.shadow
       val autoConnect = when (connectionIntent(command.requiredString(20))) {
         ConnectionIntents.DIRECT -> false
         ConnectionIntents.WHEN_AVAILABLE -> true
       }
       radio.connect(peerId, autoConnect)
-      coreShadow?.postConnect(peerId, coreLeaseFor(peerId))
     } catch (error: Exception) {
+      // Core-first compensation: the admitted core connect has no radio peer,
+      // so release it rather than orphaning the core op. Best effort — the
+      // rethrown radio error stays the loud terminal.
+      val compensation = try {
+        (admittedShadow ?: coreShadow)?.postDisconnect(peerId, lease)
+      } catch (_: Throwable) {
+        null
+      }
+      if (compensation !is UbmGattCentralBridge.PostResult.Queued) {
+        UnifiedBleProtocolJsiBinding.emitDiagnostic(
+          nativeHandle,
+          "coreCompensationFailed",
+          "Android core connect compensation failed after radio refusal for $peerId"
+        )
+      }
       pendingConnects.remove(peerId.uppercase(), command)
       throw error
     }
@@ -399,8 +668,17 @@ constructor(
 
   private fun disconnect(command: ProtocolWireRecord) {
     val peerId = command.requiredRecord(10).requiredString(2)
+    // Authority: admit the core disconnect BEFORE touching the radio.
+    val admission = admitCoreCommand(command, "disconnect") { shadow ->
+      shadow.postDisconnect(peerId, coreLeaseFor(peerId))
+    } ?: return
+    val events = CoreCommandAuthority.coreEventsFor("disconnect")
     val failure = radio.disconnect(peerId) { cleanupFailure ->
       if (cleanupFailure == null) {
+        coreRejectionSince(admission.seqBefore, events)?.let { rejection ->
+          emitFailure(command, CoreCommandAuthority.CODE_REJECTED, coreRejectionMessage("disconnect", rejection))
+          return@disconnect
+        }
         emitSuccess(command, "accepted")
       } else {
         emitFailure(
@@ -411,24 +689,49 @@ constructor(
       }
     }
     if (failure != null) return
-    coreShadow?.postDisconnect(peerId, coreLeaseFor(peerId))
   }
 
   private fun discover(command: ProtocolWireRecord) {
     val connection = command.requiredRecord(10)
     val database = command.requiredRecord(11)
     val peerId = connection.requiredString(2)
-    coreShadow?.postDiscoveryBegin(peerId)
-    val radioOperationId = radio.discover(peerId) { successful ->
-      if (!successful) {
-        coreShadow?.postDiscoveryFail(peerId)
-        emitFailure(command, "discoverFailed", "Android GATT service discovery failed")
-        return@discover
+    // Authority: admit the core discovery BEFORE touching the radio.
+    val admission = admitCoreCommand(command, "discover") { shadow ->
+      shadow.postDiscoveryBegin(peerId)
+    } ?: return
+    val events = CoreCommandAuthority.coreEventsFor("discover")
+    val radioOperationId = try {
+      radio.discover(peerId) { successful ->
+        if (!successful) {
+          coreShadow?.postDiscoveryFail(peerId)
+          emitFailure(command, "discoverFailed", "Android GATT service discovery failed")
+          return@discover
+        }
+        val snapshot = databaseSnapshot(database, connection.requiredString(2))
+        activeDatabases[connection.requiredString(2).uppercase()] = database
+        coreShadow?.postDiscoveryComplete(peerId)
+        coreRejectionSince(admission.seqBefore, events)?.let { rejection ->
+          emitFailure(command, CoreCommandAuthority.CODE_REJECTED, coreRejectionMessage("discover", rejection))
+          return@discover
+        }
+        emitSuccess(command, "database", mapOf(4 to ProtocolWireValue.RecordValue(database), 12 to ProtocolWireValue.RecordValue(snapshot)))
       }
-      val snapshot = databaseSnapshot(database, connection.requiredString(2))
-      activeDatabases[connection.requiredString(2).uppercase()] = database
-      coreShadow?.postDiscoveryComplete(peerId)
-      emitSuccess(command, "database", mapOf(4 to ProtocolWireValue.RecordValue(database), 12 to ProtocolWireValue.RecordValue(snapshot)))
+    } catch (error: Exception) {
+      // Core-first compensation: the begun core discovery will never complete,
+      // so fail it rather than wedging core discovery state. Best effort.
+      val compensation = try {
+        admission.shadow.postDiscoveryFail(peerId)
+      } catch (_: Throwable) {
+        null
+      }
+      if (compensation !is UbmGattCentralBridge.PostResult.Queued) {
+        UnifiedBleProtocolJsiBinding.emitDiagnostic(
+          nativeHandle,
+          "coreCompensationFailed",
+          "Android core discovery compensation failed after radio refusal for $peerId"
+        )
+      }
+      throw error
     }
     radioOperationIds[operationKey(command)] = radioOperationId
   }
@@ -925,6 +1228,7 @@ constructor(
         ProtocolWireEncoder.encode(bondedPeerResultRecord(command.requiredRecord(2), records.value))
       )
       radioOperationIds.remove(operationKey(command))
+      forgetCoreAdmission(command)
       return
     }
     if (!isPending(command)) return
@@ -945,6 +1249,7 @@ constructor(
     UnifiedBleProtocolJsiBinding.emitRecord(nativeHandle, ProtocolWireEncoder.encode(result))
     claimExactPendingCommand(pendingCommands, operationKey(command), command)
     radioOperationIds.remove(operationKey(command))
+    forgetCoreAdmission(command)
   }
 
   private fun emitGattOperationFailure(
@@ -996,6 +1301,7 @@ constructor(
     )
     UnifiedBleProtocolJsiBinding.emitRecord(nativeHandle, ProtocolWireEncoder.encode(result))
     radioOperationIds.remove(operationKey(command))
+    forgetCoreAdmission(command)
   }
 
   private fun emitCancelled(command: ProtocolWireRecord) {
@@ -1026,6 +1332,7 @@ constructor(
     UnifiedBleProtocolJsiBinding.emitRecord(nativeHandle, ProtocolWireEncoder.encode(result))
     if (!bondedPeerCommand) claimExactPendingCommand(pendingCommands, operationKey(command), command)
     radioOperationIds.remove(operationKey(command))
+    forgetCoreAdmission(command)
   }
 
   private fun emitCancellationAcknowledgement(command: ProtocolWireRecord, state: String) {
@@ -1041,6 +1348,7 @@ constructor(
     )
     UnifiedBleProtocolJsiBinding.emitRecord(nativeHandle, ProtocolWireEncoder.encode(result))
     claimExactPendingCommand(pendingCommands, operationKey(command), command)
+    forgetCoreAdmission(command)
   }
 
   private fun emitConnectionLost(connection: ProtocolWireRecord, status: Int) {
