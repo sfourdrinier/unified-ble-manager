@@ -13,8 +13,8 @@ echo "--- napi: production guards (L1 safe-Rust + L2 doc names)"
 python3 "$ROOT/bindings/guard_wiring.py"
 
 echo "--- napi: build addon"
-cargo build -p ubm5_napi_echo --locked
-cp "$ROOT/target/debug/libubm5_napi_echo.so" ubm_echo.linux-x64.node
+# Single source of truth (build + platform-correct stage): shared with CI.
+sh ./build-addon.sh
 
 echo "--- napi: round-trip exchange"
 node js/roundtrip.cjs
