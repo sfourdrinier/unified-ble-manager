@@ -13,8 +13,9 @@ echo "--- napi: production guards (L1 safe-Rust + L2 doc names)"
 python3 "$ROOT/bindings/guard_wiring.py"
 
 echo "--- napi: build addon"
-# Single source of truth (build + platform-correct stage): shared with CI.
-sh ./build-addon.sh
+# Single source of truth (build + platform-correct stage): shared with
+# pretest:package and CI (Node, so the platform tag is exact on every OS).
+node "$ROOT/scripts/ci/build-napi-addon.js"
 
 echo "--- napi: round-trip exchange"
 node js/roundtrip.cjs

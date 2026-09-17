@@ -31,8 +31,8 @@ describe('Android Rust cdylib packaging (UBM 5.0 HOST-ANDROID)', () => {
     // AND .git. The npm artifact ships sources AND prebuilts, and packed
     // consumers need no NDK/Rust.
     expect(buildGradle).toContain('def ubmNativeBuildEnv =')
-    expect(buildGradle).toContain("UBM_NATIVE_BUILD=source")
-    expect(buildGradle).toContain("UBM_NATIVE_BUILD=prebuilt")
+    expect(buildGradle).toContain('UBM_NATIVE_BUILD=source')
+    expect(buildGradle).toContain('UBM_NATIVE_BUILD=prebuilt')
     expect(buildGradle).toContain('def ubmRustDevCheckout')
     expect(buildGradle).toContain('ubmRustSourcesPresent && projectDir.toPath().resolve("../.git")')
     expect(buildGradle).toContain('def ubmRustPrebuiltDir = file("src/main/jniLibs")')

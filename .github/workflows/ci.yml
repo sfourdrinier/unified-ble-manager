@@ -148,12 +148,22 @@ jobs:
         # offline metadata reads succeed on a fresh runner.
         run: cargo fetch --locked
 
+      - name: Install Linux build sysdeps
+        # napi -> ubm-desktop -> btleplug -> bluez-async -> libdbus-sys needs
+        # pkg-config + D-Bus headers at compile time (same subset as the
+        # rust-parity-5-0 job). macOS/Windows backends need no sysdeps.
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libdbus-1-dev pkg-config
+
       - name: Build NAPI dispatch addon (R03 converged path)
         # The bluez-rust-core-routing converged-path tests require the REAL
         # addon (bindings/napi/ubm_echo.<platform>-<arch>.node); a fresh
         # runner has no staged binary, so build it on every leg before jest.
-        shell: bash
-        run: sh bindings/napi/build-addon.sh
+        # (pretest:package rebuilds it too — this explicit step keeps addon
+        # failures diagnosable apart from jest.)
+        run: node scripts/ci/build-napi-addon.js
 
       - name: Run package tests
         run: pnpm test:package
