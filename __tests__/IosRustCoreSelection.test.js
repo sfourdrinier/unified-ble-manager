@@ -21,8 +21,11 @@ test('5.x podspec stub declares the loud-failure consumer contract (no silent so
   const podspec = fs.readFileSync(path.join(root, 'unified-ble-manager.podspec'), 'utf8')
   // Prebuilt consumption: the exact framework the builder assembles.
   expect(podspec).toContain("s.vendored_frameworks = ['ios/RustCore/RustCore.xcframework']")
-  // Source mode stays the canonical builder (CI + contributors), never a stale prebuilt.
+  // D2 modes: prebuilt default, explicit source selection only, canonical
+  // builder in source mode, verified staging in both modes.
+  expect(podspec).toContain("ubm_native_source_build = ENV['UBM_NATIVE_BUILD'] == 'source'")
   expect(podspec).toContain("s.prepare_command = 'sh ios/build-rust-core.sh'")
+  expect(podspec).toContain("'Verify staged RustCore'")
   // The generated UniFFI Swift joins the pod module (never hand-edited outputs).
   expect(podspec).toContain('bindings/uniffi/generated/swift/ubm_echo.swift')
 })

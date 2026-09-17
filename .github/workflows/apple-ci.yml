@@ -55,6 +55,10 @@ jobs:
 
       - name: Install CocoaPods
         working-directory: example/ios
+        # Source checkout without CI-staged prebuilts: explicit source mode
+        # (D2 distribution contract) builds ios/RustCore via prepare_command.
+        env:
+          UBM_NATIVE_BUILD: source
         run: BUNDLE_GEMFILE="$GITHUB_WORKSPACE/example/Gemfile" bundle exec pod install
 
       # Executes host C++ protocol tests plus the Swift CoreBluetooth parser harness.
@@ -126,6 +130,10 @@ jobs:
 
       - name: Install CocoaPods
         working-directory: example-expo/ios
+        # Source checkout without CI-staged prebuilts: explicit source mode
+        # (D2 distribution contract) builds ios/RustCore via prepare_command.
+        env:
+          UBM_NATIVE_BUILD: source
         run: |
           set -euo pipefail
           BUNDLE_GEMFILE="$GITHUB_WORKSPACE/example/Gemfile" bundle exec pod install
