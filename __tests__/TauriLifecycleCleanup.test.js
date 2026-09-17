@@ -28,7 +28,14 @@ describe('Tauri caller lifecycle cleanup', () => {
     expect(dispatcher).toContain('tauri.connect-stale-lease')
     expect(dispatcher).toContain('tauri.scan-stale-lease')
     expect(dispatcher).toContain('tauri.subscribe-stale-lease')
-    expect(dispatcher).toContain('quarantine_lease')
+    // R03 contract update (justified): the dispatcher-side quarantine is
+    // deleted with the second scheduling authority — orphaned core work is
+    // compensated inline at the late-validation sites (core disconnect for
+    // a stale connect, core stop for a stale/duplicate scan) instead of
+    // retained for a dispatcher-owned retry. The lease binding itself is
+    // unchanged and still pinned above.
+    expect(dispatcher).toContain('authority.disconnect(&peer_id, &lease).await')
+    expect(dispatcher).toContain('authority.stop_scan().await')
     expect(dispatcher).toContain('bootstrap_admission')
     expect(dispatcher).toContain('emit_connection_failure')
   })

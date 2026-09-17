@@ -957,7 +957,7 @@ impl BtleplugDispatcher {
                 match forward_authority.take_advertisement().await {
                     Ok(Some(snapshot)) => {
                         let observation = core_scan_observation(&snapshot);
-                        let _ = forwarder
+                        match forwarder
                             .emit(
                                 &forward_key,
                                 Some((&forward_lease_id, &forward_lease_generation)),
@@ -965,13 +965,45 @@ impl BtleplugDispatcher {
                                 observation,
                                 true,
                             )
-                            .await;
+                            .await
+                        {
+                            Ok(()) => {}
+                            Err(error) if error.code == BleErrorCode::StreamQuota => {
+                                // Quota-drop: the observation is dropped,
+                                // never aborting the scan (the core keeps
+                                // producing).
+                            }
+                            Err(error) => {
+                                forwarder
+                                    .terminal(
+                                        &forward_key,
+                                        (&forward_lease_id, &forward_lease_generation),
+                                        &forward_handle,
+                                        "source-failed",
+                                        Some(&error),
+                                    )
+                                    .await
+                                    .ok();
+                                return;
+                            }
+                        }
                     }
                     Ok(None) => tokio::time::sleep(FORWARD_POLL_INTERVAL).await,
-                    Err(_) => {
-                        // Core-side failure ends delivery; the scan verdict
-                        // itself surfaces through stop_scan/release, never as
-                        // a guessed stream error.
+                    Err(error) => {
+                        // Core-side failure ends delivery with the verbatim
+                        // core verdict (never a guessed stream error, never
+                        // silent).
+                        let terminal_error = DispatchError::from_core(&error);
+                        forwarder
+                            .terminal(
+                                &forward_key,
+                                (&forward_lease_id, &forward_lease_generation),
+                                &forward_handle,
+                                "source-failed",
+                                Some(&terminal_error),
+                            )
+                            .await
+                            .ok();
                         return;
                     }
                 }
@@ -982,6 +1014,20 @@ impl BtleplugDispatcher {
             let caller_state = state.callers.get_mut(&key).ok_or_else(|| {
                 DispatchError::new(BleErrorCode::OwnershipDenied, "scan", "tauri.scan-owner")
             })?;
+            // Late validation: the caller may have been released and
+            // readmitted while the core admitted (caller keys survive
+            // reattach), so rebind to the admitted lease before committing
+            // the scan to the live entry — never attribute a stale scan to
+            // a new caller.
+            if !expected_lease_matches(caller_state, &payload) {
+                task.abort();
+                let _ = authority.stop_scan().await;
+                return Err(DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "scan",
+                    "tauri.scan-stale-lease",
+                ));
+            }
             // Late validation: the caller may have been released while the
             // core admitted — stop the core scan instead of stranding it.
             if caller_state.scan.is_some() {
@@ -1098,6 +1144,21 @@ impl BtleplugDispatcher {
                     "tauri.connect-owner",
                 ));
             };
+            if !expected_lease_matches(caller_state, &payload) {
+                // Late validation: the caller was released and readmitted
+                // while the core connected. Caller keys survive reattach,
+                // so the live entry belongs to a new lease — disconnect
+                // through the core instead of attributing a stale link to
+                // the new caller.
+                let _ = caller_state;
+                drop(state);
+                let _ = authority.disconnect(&peer_id, &lease).await;
+                return Err(DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "connection",
+                    "tauri.connect-stale-lease",
+                ));
+            }
             let owner_lease_id = caller_state.lease_id.clone();
             caller_state.connections.insert(
                 handle.clone(),
@@ -1776,7 +1837,7 @@ impl BtleplugDispatcher {
                         let observed_at_monotonic_ms =
                             i64::try_from(dispatcher.started_at.elapsed().as_millis())
                                 .unwrap_or(i64::MAX);
-                        let failed = dispatcher
+                        if let Err(error) = dispatcher
                             .emit(
                                 &forward_key,
                                 Some((&forward_lease_id, &forward_lease_generation)),
@@ -1790,15 +1851,14 @@ impl BtleplugDispatcher {
                                 false,
                             )
                             .await
-                            .is_err();
-                        if failed {
+                        {
                             dispatcher
                                 .terminal(
                                     &forward_key,
                                     (&forward_lease_id, &forward_lease_generation),
                                     &forward_handle,
                                     "source-failed",
-                                    None,
+                                    Some(&error),
                                 )
                                 .await
                                 .ok();
@@ -1806,17 +1866,18 @@ impl BtleplugDispatcher {
                         }
                     }
                     Ok(None) => tokio::time::sleep(FORWARD_POLL_INTERVAL).await,
-                    Err(_) => {
-                        // Core-side failure ends delivery; the verdict
-                        // surfaces through unsubscribe/release, never as a
-                        // guessed stream error.
+                    Err(error) => {
+                        // Core-side failure ends delivery with the verbatim
+                        // core verdict (never a guessed stream error, never
+                        // silent).
+                        let terminal_error = DispatchError::from_core(&error);
                         dispatcher
                             .terminal(
                                 &forward_key,
                                 (&forward_lease_id, &forward_lease_generation),
                                 &forward_handle,
                                 "source-failed",
-                                None,
+                                Some(&terminal_error),
                             )
                             .await
                             .ok();
