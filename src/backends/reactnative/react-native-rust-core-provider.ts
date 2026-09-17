@@ -24,24 +24,26 @@
 //   scan.take {} -> core observation record | null (null = none queued now)
 //   scan.stop { operationId: string } -> { state: 'released' | ... }
 //   connection.connect { peerId: string, lease: string,
-//     timeoutMs: number | null } -> { peerKey: string,
+//     timeoutMs: number | null, operationId: string } -> { peerKey: string,
 //     connectionGeneration: string }
 //   connection.disconnect { peerId: string, lease: string } -> {}
-//   gatt.discover { peerId: string, lease: string }
+//   gatt.discover { peerId: string, lease: string, operationId: string }
 //     -> { services: [{ uuid, occurrence, characteristics:
 //        [{ uuid, occurrence, properties, descriptors:
 //        [{ uuid, occurrence }] }] }] }
-//   gatt.read { peerId: string, selector, timeoutMs: number | null }
-//     -> { value: bytes }
+//   gatt.read { peerId: string, selector, timeoutMs: number | null,
+//     operationId: string } -> { value: bytes }
 //   gatt.write { peerId: string, selector, value: bytes,
 //     mode: 'with-response' | 'without-response',
-//     timeoutMs: number | null } -> {}
+//     timeoutMs: number | null, operationId: string } -> {}
 //   gatt.subscribe { peerId: string, selector, consumer: string,
-//     timeoutMs: number | null } -> {}
+//     timeoutMs: number | null, operationId: string } -> {}
 //   notifications.take { peerId: string, selector, consumer: string }
 //     -> { value: bytes } | null
-//   gatt.unsubscribe { peerId: string, selector, consumer: string }
-//     -> { disabled: boolean }
+//   gatt.unsubscribe { peerId: string, selector, consumer: string,
+//     operationId: string } -> { disabled: boolean }
+// (operationId links an invocation to a later op.cancel; bindings must
+// tolerate it as opaque routing data alongside the documented fields.)
 //   peers.resolve { reference: PeerReference }
 //     -> backend peer record | null
 //   peers.known { services?: string[] } -> backend peer records
@@ -86,6 +88,7 @@ import type {
 import type { AdvertisementObservation, OwnerScanOptions } from '../../backend-contract/advertisement'
 import {
   createAttachmentBoundIdFactory,
+  canonicalBleAddress,
   canonicalUuid,
   capacity,
   negotiateCoreVersions,
@@ -155,8 +158,8 @@ import {
   REACT_NATIVE_APPLE_PLATFORM_ID
 } from './react-native-apple-provider'
 import {
+  admitReactNativeRustCoreSession,
   dispatchReactNativeRustCoreOp,
-  openAdmittedRustCoreSession,
   type ReactNativeRustCoreBinding,
   type ReactNativeRustCoreSession
 } from './react-native-rust-core'
@@ -266,7 +269,18 @@ async function openRustCoreBackend(
   if (sessionOwner.length === 0) {
     throw contractError('argument.invalid', 'core', 'react-native-rust-core.provider.owner-id')
   }
-  const session = await openAdmittedRustCoreSession(options.binding, `${options.owner}/${sessionOwner}`)
+  // Open-then-admit without leaking: a session whose revision fails
+  // admission must still be closed before the rejection propagates, or
+  // every foreign-revision probe (create and listAdapters) strands one
+  // native session.
+  const rawSession = await options.binding.openSession(`${options.owner}/${sessionOwner}`)
+  let session: ReactNativeRustCoreSession
+  try {
+    session = await admitReactNativeRustCoreSession(rawSession)
+  } catch (error) {
+    await rawSession.close().catch(() => undefined)
+    throw error
+  }
   const backend = new ReactNativeRustCoreBackend(options.platform, session, options.now, restoration)
   try {
     await backend.open()
@@ -347,6 +361,17 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private readonly eventsStream: CoreBoundedStream<BackendEvent<string>>
   private eventsPumpStarted = false
   private eventsStopped = false
+  /**
+   * Streams owned by this backend that outlive a single op: every scan
+   * observation stream, every subscription notification stream, and every
+   * adapter-watch transition stream. destroy() retires all of them so no
+   * pump or consumer is left polling a closed core on an open stream.
+   */
+  private readonly activeScanObservations = new Set<CoreBoundedStream<AdvertisementObservation<string>>>()
+  private readonly activeNotificationStreams = new Set<
+    BoundedAsyncStream<import('../../backend-contract/gatt').NotificationValue>
+  >()
+  private readonly activeAdapterTransitions = new Set<CoreBoundedStream<AdapterStateSnapshot<string>>>()
 
   constructor(
     private readonly platform: ReactNativeRustCorePlatform,
@@ -568,6 +593,26 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private async destroyInternal(): Promise<import('../../backend-contract/errors').CleanupRecord> {
     this.destroyed = true
     this.eventsStopped = true
+    // Retire owned streams first: mark subscription pumps closed, drop
+    // adapter watchers, and close every tracked scan/notification/watch
+    // stream so consumers observe terminal state. Core teardown below
+    // still runs (and still reports verbatim) when this succeeds.
+    this.adapterWatchers.clear()
+    for (const pumpState of this.subscriptionConsumers.values()) {
+      pumpState.closed = true
+    }
+    this.subscriptionConsumers.clear()
+    const ownedStreams: Array<{ close(): Promise<unknown> }> = [
+      ...this.activeScanObservations,
+      ...this.activeNotificationStreams,
+      ...this.activeAdapterTransitions
+    ]
+    this.activeScanObservations.clear()
+    this.activeNotificationStreams.clear()
+    this.activeAdapterTransitions.clear()
+    for (const stream of ownedStreams) {
+      await stream.close().catch(() => undefined)
+    }
     try {
       if (this.restorationActivation !== null) {
         await this.restoration.deactivate(this.restorationActivation)
@@ -617,13 +662,21 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     return { handle: this.identifiers.backendOperationHandle(correlation), state: 'not-cancellable' }
   }
 
-  private watchAbort(signal: AbortSignal | null, onAbort: () => void): void {
-    if (signal === null) return
+  /**
+   * Attaches the abort listener BEFORE the core op starts so an abort can
+   * never miss the window between dispatch and subscription. Returns a
+   * remover the op must call when it settles, or every completed op leaks
+   * one listener (and a post-settle abort would send a spurious op.cancel
+   * for an already-terminal correlation).
+   */
+  private watchAbort(signal: AbortSignal | null, onAbort: () => void): () => void {
+    if (signal === null) return () => undefined
     if (signal.aborted) {
       onAbort()
-      return
+      return () => undefined
     }
     signal.addEventListener('abort', onAbort, { once: true })
+    return () => signal.removeEventListener('abort', onAbort)
   }
 
   // -- adapter -----------------------------------------------------------
@@ -665,6 +718,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       transitions.emit(state, 64)
     }
     this.adapterWatchers.add(watcher)
+    this.activeAdapterTransitions.add(transitions)
     return Object.freeze({ initial, transitions })
   }
 
@@ -696,11 +750,18 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
    * on connect, exactly as the reference backend canonicalizes addresses
    * before mapping them.
    */
-  private peerFromAddress(descriptor: { address: string }): PeerId<string> {
-    if (typeof descriptor?.address !== 'string' || descriptor.address.length === 0) {
+  private peerFromAddress(descriptor: PeerAddressDescriptor): PeerId<string> {
+    // Mirror the sibling backends: the address must be a canonical BLE
+    // address and the type explicit, or the core would resolve connect
+    // against an unroutable native id.
+    if (descriptor.addressType !== 'public' && descriptor.addressType !== 'random') {
       throw contractError('argument.invalid', 'connection', 'react-native-rust-core.peer-from-address')
     }
-    return this.peerIdForNativeId(descriptor.address.toLowerCase())
+    try {
+      return this.peerIdForNativeId(canonicalBleAddress(descriptor.address))
+    } catch {
+      throw contractError('argument.invalid', 'connection', 'react-native-rust-core.peer-from-address')
+    }
   }
 
   private mapPeerRecord(record: RustCorePeerRecord): BackendPeerRecord<string> {
@@ -813,6 +874,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       options.delivery,
       options.delivery.overflowPolicy
     )
+    this.activeScanObservations.add(observations)
     let stopped = false
     const stop = async (): Promise<import('../../backend-contract/errors').CleanupRecord> => {
       if (stopped) return { state: 'released', failures: [] }
@@ -820,6 +882,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       try {
         await dispatchReactNativeRustCoreOp(this.session, 'scan.stop', { operationId })
       } finally {
+        this.activeScanObservations.delete(observations)
         await observations.close()
       }
       return { state: 'released', failures: [] }
@@ -839,19 +902,46 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   ): Promise<void> {
     try {
       for (;;) {
-        if (isStopped()) return
+        if (isStopped() || this.destroyed) return
         const next = await dispatchReactNativeRustCoreOp(this.session, 'scan.take', {})
         if (next === null || next === undefined) {
           await pumpDelay()
           continue
         }
-        observations.emit(this.mapObservation(next, scanSessionId), 512)
+        let observation: AdvertisementObservation<string>
+        try {
+          observation = this.mapObservation(next, scanSessionId)
+        } catch {
+          // One malformed core record must not tear down the scan or burn
+          // its core-side terminal accounting: skip it with a diagnostic
+          // trace and keep pumping. Transport failures still stop below.
+          this.noteSkippedCoreRecord()
+          continue
+        }
+        observations.emit(observation, 512)
       }
     } catch {
-      if (!isStopped()) {
+      if (!isStopped() && !this.destroyed) {
         await stop().catch(() => undefined)
       }
     }
+  }
+
+  /**
+   * Evidence for a skipped malformed core record: lifecycle events the
+   * typed surface cannot express ride as diagnostics, so the skip is
+   * never silent.
+   */
+  private noteSkippedCoreRecord(): void {
+    this.eventsStream.emit(
+      {
+        kind: 'diagnostic',
+        attachment: this.attachment,
+        attachmentId: this.attachment.attachmentId,
+        ingressOrdinal: this.nextEventOrdinal()
+      },
+      64
+    )
   }
 
   private mapObservation(
@@ -958,14 +1048,27 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const leaseOrdinal = this.nextLease
     this.nextLease += 1
     const lease = `rust-core-lease-${leaseOrdinal}`
-    const connected = await this.invokeRecord('connection.connect', {
-      peerId: nativePeerId,
-      lease,
-      timeoutMs: this.timeoutMs(options),
-      intent: options.intent ?? 'direct',
-      transport: options.transport ?? 'auto',
-      preferredPhy: options.preferredPhy ?? []
+    // The connect has no caller correlation, so mint one: the core needs
+    // the operationId up front to link a later op.cancel, and the abort
+    // listener must be attached before dispatch so the abort cannot miss.
+    const correlation = String(this.mintedCorrelation('connect'))
+    const removeAbort = this.watchAbort(options.signal, () => {
+      this.requestCancellation(correlation).catch(() => undefined)
     })
+    let connected: Record<string, unknown>
+    try {
+      connected = await this.invokeRecord('connection.connect', {
+        peerId: nativePeerId,
+        lease,
+        timeoutMs: this.timeoutMs(options),
+        intent: options.intent ?? 'direct',
+        transport: options.transport ?? 'auto',
+        preferredPhy: options.preferredPhy ?? [],
+        operationId: correlation
+      })
+    } finally {
+      removeAbort()
+    }
     if (typeof connected.peerKey !== 'string' || typeof connected.connectionGeneration !== 'string') {
       throw contractError('protocol.malformed', 'core', 'react-native-rust-core.connection.connect.shape')
     }
@@ -1091,12 +1194,28 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   ): Promise<GattDatabase<string, string, string>> {
     this.assertOperational('react-native-rust-core.gatt.discover')
     const nativePeerId = this.nativeIdForPeerId(connection.peerId, 'react-native-rust-core.gatt.discover.peer')
-    const lease = this.connectionLeases.get(String(connection.connectionId))?.lease ?? ''
-    const report = await this.invokeRecord('gatt.discover', {
-      peerId: nativePeerId,
-      lease,
-      timeoutMs: this.timeoutMs(options)
+    // Never address the core with an empty lease: without a live
+    // connection lease the handle is stale and the core cannot route it.
+    const leaseEntry = this.connectionLeases.get(String(connection.connectionId))
+    if (leaseEntry === undefined) {
+      throw contractError('gatt.stale-handle', 'gatt', 'react-native-rust-core.gatt.discover.lease')
+    }
+    const lease = leaseEntry.lease
+    const correlation = String(this.mintedCorrelation('discover'))
+    const removeAbort = this.watchAbort(options.signal, () => {
+      this.requestCancellation(correlation).catch(() => undefined)
     })
+    let report: Record<string, unknown>
+    try {
+      report = await this.invokeRecord('gatt.discover', {
+        peerId: nativePeerId,
+        lease,
+        timeoutMs: this.timeoutMs(options),
+        operationId: correlation
+      })
+    } finally {
+      removeAbort()
+    }
     const tree = parseDatabase(report, 'react-native-rust-core.gatt.discover.shape')
     const databaseOrdinal = this.nextOperation
     this.nextOperation += 1
@@ -1454,16 +1573,25 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     )
     const correlation = String(request.operation.correlation)
     const timeoutMs = this.timeoutMs(request.operation)
-    const completion = (async (): Promise<ReadResult<string, string>> => {
-      const result = await this.invokeRecord('gatt.read', { peerId: nativePeerId, selector, timeoutMs })
-      return Object.freeze({
-        value: ownedBytes(bytesFromCore(result.value)),
-        terminal: this.succeededTerminal(request.operation.correlation)
-      })
-    })()
-    this.watchAbort(request.operation.signal, () => {
+    const removeAbort = this.watchAbort(request.operation.signal, () => {
       this.requestCancellation(correlation).catch(() => undefined)
     })
+    const completion = (async (): Promise<ReadResult<string, string>> => {
+      try {
+        const result = await this.invokeRecord('gatt.read', {
+          peerId: nativePeerId,
+          selector,
+          timeoutMs,
+          operationId: correlation
+        })
+        return Object.freeze({
+          value: ownedBytes(bytesFromCore(result.value)),
+          terminal: this.succeededTerminal(request.operation.correlation)
+        })
+      } finally {
+        removeAbort()
+      }
+    })()
     return this.dispatchFor(correlation, completion)
   }
 
@@ -1481,16 +1609,27 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const timeoutMs = this.timeoutMs(request.operation)
     const value = bytesToCore(request.bytes)
     const mode = request.mode
-    const completion = (async (): Promise<WriteResult<string, string>> => {
-      await this.invokeRecord('gatt.write', { peerId: nativePeerId, selector, value, mode, timeoutMs })
-      return Object.freeze({
-        terminal: this.succeededTerminal(request.operation.correlation),
-        commitState: 'confirmed'
-      })
-    })()
-    this.watchAbort(request.operation.signal, () => {
+    const removeAbort = this.watchAbort(request.operation.signal, () => {
       this.requestCancellation(correlation).catch(() => undefined)
     })
+    const completion = (async (): Promise<WriteResult<string, string>> => {
+      try {
+        await this.invokeRecord('gatt.write', {
+          peerId: nativePeerId,
+          selector,
+          value,
+          mode,
+          timeoutMs,
+          operationId: correlation
+        })
+        return Object.freeze({
+          terminal: this.succeededTerminal(request.operation.correlation),
+          commitState: 'confirmed'
+        })
+      } finally {
+        removeAbort()
+      }
+    })()
     return this.dispatchFor(correlation, completion)
   }
 
@@ -1506,16 +1645,25 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     )
     const correlation = String(request.operation.correlation)
     const timeoutMs = this.timeoutMs(request.operation)
-    const completion = (async (): Promise<ReadResult<string, string>> => {
-      const result = await this.invokeRecord('gatt.read-descriptor', { peerId: nativePeerId, selector, timeoutMs })
-      return Object.freeze({
-        value: ownedBytes(bytesFromCore(result.value)),
-        terminal: this.succeededTerminal(request.operation.correlation)
-      })
-    })()
-    this.watchAbort(request.operation.signal, () => {
+    const removeAbort = this.watchAbort(request.operation.signal, () => {
       this.requestCancellation(correlation).catch(() => undefined)
     })
+    const completion = (async (): Promise<ReadResult<string, string>> => {
+      try {
+        const result = await this.invokeRecord('gatt.read-descriptor', {
+          peerId: nativePeerId,
+          selector,
+          timeoutMs,
+          operationId: correlation
+        })
+        return Object.freeze({
+          value: ownedBytes(bytesFromCore(result.value)),
+          terminal: this.succeededTerminal(request.operation.correlation)
+        })
+      } finally {
+        removeAbort()
+      }
+    })()
     return this.dispatchFor(correlation, completion)
   }
 
@@ -1533,16 +1681,27 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const timeoutMs = this.timeoutMs(request.operation)
     const value = bytesToCore(request.bytes)
     const mode = request.mode
-    const completion = (async (): Promise<WriteResult<string, string>> => {
-      await this.invokeRecord('gatt.write-descriptor', { peerId: nativePeerId, selector, value, mode, timeoutMs })
-      return Object.freeze({
-        terminal: this.succeededTerminal(request.operation.correlation),
-        commitState: 'confirmed'
-      })
-    })()
-    this.watchAbort(request.operation.signal, () => {
+    const removeAbort = this.watchAbort(request.operation.signal, () => {
       this.requestCancellation(correlation).catch(() => undefined)
     })
+    const completion = (async (): Promise<WriteResult<string, string>> => {
+      try {
+        await this.invokeRecord('gatt.write-descriptor', {
+          peerId: nativePeerId,
+          selector,
+          value,
+          mode,
+          timeoutMs,
+          operationId: correlation
+        })
+        return Object.freeze({
+          terminal: this.succeededTerminal(request.operation.correlation),
+          commitState: 'confirmed'
+        })
+      } finally {
+        removeAbort()
+      }
+    })()
     return this.dispatchFor(correlation, completion)
   }
 
@@ -1566,63 +1725,79 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const consumerOrdinal = this.nextOperation
     this.nextOperation += 1
     const consumer = `rust-core-consumer-${consumerOrdinal}`
-    const completion = (async (): Promise<BackendSubscription<string, string, string, string, string>> => {
-      await this.invokeRecord('gatt.subscribe', {
-        peerId: nativePeerId,
-        selector,
-        consumer,
-        deliveryMode: request.options.deliveryMode ?? 'prefer-notification',
-        timeoutMs
-      })
-      const subscriptionId = this.identifiers.subscriptionId(`rust-core-subscription-${consumerOrdinal}`)
-      const notifications = new CoreBoundedStream<import('../../backend-contract/gatt').NotificationValue>(
-        request.options.delivery,
-        request.options.delivery.overflowPolicy
-      )
-      const pumpState = { nativePeerId, selector, consumer, closed: false }
-      this.subscriptionConsumers.set(String(subscriptionId), pumpState)
-      const pump = (async (): Promise<void> => {
-        try {
-          for (;;) {
-            if (pumpState.closed || this.destroyed) return
-            const next = await dispatchReactNativeRustCoreOp(this.session, 'notifications.take', {
-              peerId: nativePeerId,
-              selector,
-              consumer
-            })
-            if (next === null || next === undefined) {
-              await pumpDelay()
-              continue
-            }
-            if (typeof next !== 'object' || next === null || Array.isArray(next)) {
-              throw contractError('protocol.malformed', 'core', 'react-native-rust-core.notifications.shape')
-            }
-            notifications.emit(
-              Object.freeze({
-                value: ownedBytes(bytesFromCore((next as Record<string, unknown>).value)),
-                indication: false
-              }),
-              512
-            )
-          }
-        } catch {
-          if (!pumpState.closed) {
-            await notifications.close().catch(() => undefined)
-          }
-        }
-      })()
-      pump.catch(() => undefined)
-      const subscription = Object.freeze({
-        subscriptionId,
-        path,
-        terminal: this.succeededTerminal(request.operation.correlation),
-        notifications
-      })
-      return subscription as BackendSubscription<string, string, string, string, string>
-    })()
-    this.watchAbort(request.operation.signal, () => {
+    const removeAbort = this.watchAbort(request.operation.signal, () => {
       this.requestCancellation(correlation).catch(() => undefined)
     })
+    const completion = (async (): Promise<BackendSubscription<string, string, string, string, string>> => {
+      try {
+        await this.invokeRecord('gatt.subscribe', {
+          peerId: nativePeerId,
+          selector,
+          consumer,
+          deliveryMode: request.options.deliveryMode ?? 'prefer-notification',
+          timeoutMs,
+          operationId: correlation
+        })
+        const subscriptionId = this.identifiers.subscriptionId(`rust-core-subscription-${consumerOrdinal}`)
+        const notifications = new CoreBoundedStream<import('../../backend-contract/gatt').NotificationValue>(
+          request.options.delivery,
+          request.options.delivery.overflowPolicy
+        )
+        this.activeNotificationStreams.add(notifications)
+        const pumpState = { nativePeerId, selector, consumer, closed: false }
+        this.subscriptionConsumers.set(String(subscriptionId), pumpState)
+        const pump = (async (): Promise<void> => {
+          try {
+            for (;;) {
+              if (pumpState.closed || this.destroyed) return
+              const next = await dispatchReactNativeRustCoreOp(this.session, 'notifications.take', {
+                peerId: nativePeerId,
+                selector,
+                consumer
+              })
+              if (next === null || next === undefined) {
+                await pumpDelay()
+                continue
+              }
+              if (typeof next !== 'object' || next === null || Array.isArray(next)) {
+                // One malformed notification must not retire the
+                // subscription: skip it with a diagnostic trace.
+                this.noteSkippedCoreRecord()
+                continue
+              }
+              let value: import('../../backend-contract/primitives').OwnedBytes
+              try {
+                value = ownedBytes(bytesFromCore((next as Record<string, unknown>).value))
+              } catch {
+                this.noteSkippedCoreRecord()
+                continue
+              }
+              notifications.emit(
+                Object.freeze({
+                  value,
+                  indication: false
+                }),
+                512
+              )
+            }
+          } catch {
+            if (!pumpState.closed && !this.destroyed) {
+              await notifications.close().catch(() => undefined)
+            }
+          }
+        })()
+        pump.catch(() => undefined)
+        const subscription = Object.freeze({
+          subscriptionId,
+          path,
+          terminal: this.succeededTerminal(request.operation.correlation),
+          notifications
+        })
+        return subscription as BackendSubscription<string, string, string, string, string>
+      } finally {
+        removeAbort()
+      }
+    })()
     return this.dispatchFor(correlation, completion)
   }
 
@@ -1633,25 +1808,31 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     this.assertOperational('react-native-rust-core.gatt.unsubscribe')
     const stored = this.subscriptionConsumers.get(String(subscription.subscriptionId))
     const correlation = String(operation.correlation)
-    const completion = (async (): Promise<OperationTerminalRecord<string, string>> => {
-      if (stored !== undefined) {
-        stored.closed = true
-        try {
-          await this.invokeRecord('gatt.unsubscribe', {
-            peerId: stored.nativePeerId,
-            selector: stored.selector,
-            consumer: stored.consumer
-          })
-        } finally {
-          this.subscriptionConsumers.delete(String(subscription.subscriptionId))
-        }
-      }
-      await subscription.notifications.close().catch(() => undefined)
-      return this.succeededTerminal(operation.correlation)
-    })()
-    this.watchAbort(operation.signal, () => {
+    const removeAbort = this.watchAbort(operation.signal, () => {
       this.requestCancellation(correlation).catch(() => undefined)
     })
+    const completion = (async (): Promise<OperationTerminalRecord<string, string>> => {
+      try {
+        if (stored !== undefined) {
+          stored.closed = true
+          try {
+            await this.invokeRecord('gatt.unsubscribe', {
+              peerId: stored.nativePeerId,
+              selector: stored.selector,
+              consumer: stored.consumer,
+              operationId: correlation
+            })
+          } finally {
+            this.subscriptionConsumers.delete(String(subscription.subscriptionId))
+          }
+        }
+        this.activeNotificationStreams.delete(subscription.notifications)
+        await subscription.notifications.close().catch(() => undefined)
+        return this.succeededTerminal(operation.correlation)
+      } finally {
+        removeAbort()
+      }
+    })()
     return this.dispatchFor(correlation, completion)
   }
 
@@ -1851,7 +2032,16 @@ function parseResourceCounters(
 function bytesFromCore(value: unknown): Uint8Array {
   if (value instanceof Uint8Array) return value
   if (typeof Buffer !== 'undefined' && Buffer.isBuffer(value)) return new Uint8Array(value)
-  if (Array.isArray(value)) return Uint8Array.from(value as number[])
+  if (Array.isArray(value)) {
+    // Reject out-of-range elements loudly: Uint8Array.from would wrap
+    // them modulo 256 and silently corrupt the value.
+    for (const entry of value as unknown[]) {
+      if (typeof entry !== 'number' || !Number.isInteger(entry) || entry < 0 || entry > 255) {
+        throw contractError('protocol.malformed', 'core', 'react-native-rust-core.bytes')
+      }
+    }
+    return Uint8Array.from(value as number[])
+  }
   if (typeof value === 'object' && value !== null && typeof (value as { base64?: unknown }).base64 === 'string') {
     const binary = Buffer.from((value as { base64: string }).base64, 'base64')
     return new Uint8Array(binary)
@@ -1860,6 +2050,11 @@ function bytesFromCore(value: unknown): Uint8Array {
 }
 
 function bytesToCore(value: Uint8Array): Uint8Array {
+  // Outbound bytes are BorrowedBytes: accept the typed array (Buffers
+  // included) and reject anything else rather than coercing garbage.
+  if (!(value instanceof Uint8Array)) {
+    throw contractError('argument.invalid', 'gatt', 'react-native-rust-core.bytes')
+  }
   return Uint8Array.from(value)
 }
 
