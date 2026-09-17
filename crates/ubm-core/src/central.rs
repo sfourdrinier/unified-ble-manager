@@ -2050,6 +2050,30 @@ impl Central {
                 "scan.unknown",
             )
         })?;
+        // A radio start landing after its backing op died (timed out,
+        // cancelled, or reaped) lost the race: the timeout arm already owns
+        // the verdict, so the late start must never effect an ownerless
+        // `Active` session. Fail the session closed instead; a `Starting`
+        // session reaches `Failed` so a fresh start stays admissible, while
+        // any other state is left for its own driver (stop/shutdown
+        // compensation) to settle.
+        let op_live = matches!(
+            self.kernel.operation_state(id),
+            Some(OpStateView::Queued) | Some(OpStateView::Dispatched)
+        );
+        if !op_live {
+            if self.scans[index].state == ScanSessionState::Starting {
+                let next =
+                    step_scan_session(self.scans[index].state, ScanPlatformEvent::StartFailed)?;
+                self.scans[index].state = next;
+                self.stage_effect(CentralEffectKind::ScanSettled, id, "scan.start-late");
+            }
+            return Err(err(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Core,
+                "scan.start-late",
+            ));
+        }
         let next = step_scan_session(self.scans[index].state, ScanPlatformEvent::PlatformStarted)?;
         self.scans[index].state = next;
         self.stage_effect(CentralEffectKind::ScanSettled, id, "scan.platform-started");
@@ -2110,7 +2134,7 @@ impl Central {
         };
         if next.is_terminal() {
             self.dispatch_before_success(id, kind, out)?;
-            self.kernel.handle(
+            match self.kernel.handle(
                 KernelInput::Complete {
                     operation_id: id.clone(),
                     generation,
@@ -2118,7 +2142,21 @@ impl Central {
                 },
                 now,
                 out,
-            )?;
+            ) {
+                Ok(_) => {}
+                Err(error)
+                    if error.code() == BleErrorCode::ArgumentInvalid
+                        && self.kernel.operation_state(id).is_none() =>
+                {
+                    // The kernel op was already reaped (cancelled/timed-out
+                    // and released) before the platform verdict landed.
+                    // Settling the op and settling the session are
+                    // independent facts: the session still advances, so a
+                    // cancelled-then-stopped scan never wedges in
+                    // `Stopping` behind `scan.already-active`.
+                }
+                Err(error) => return Err(error),
+            }
         }
         self.scans[index].state = next;
         self.stage_effect(CentralEffectKind::ScanSettled, id, "scan.platform-event");
@@ -3822,6 +3860,22 @@ impl Central {
                     .collect();
                 for id in expired.iter() {
                     self.release_pending_connect_claim(id);
+                    // A timed-out scan start owns no radio verdict anymore:
+                    // fail its `Starting` session so no live ownerless
+                    // session survives behind the dead op (and a late radio
+                    // start can never activate it afterwards). Sessions past
+                    // `Starting` stay with their own driver (stop/shutdown
+                    // compensation settles them).
+                    if let Some(index) = self.scan_position(id)
+                        && self.scans[index].state == ScanSessionState::Starting
+                    {
+                        let next = step_scan_session(
+                            self.scans[index].state,
+                            ScanPlatformEvent::StartFailed,
+                        )?;
+                        self.scans[index].state = next;
+                        self.stage_effect(CentralEffectKind::ScanSettled, id, "scan.timeout");
+                    }
                 }
                 Ok((settled, truncated))
             }
