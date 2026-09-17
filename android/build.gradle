@@ -239,20 +239,13 @@ def ubmRustInputFiles = [
           if (prebuiltMatcher.matches()) {
             def prebuiltAbi = prebuiltMatcher.group(1)
             def prebuiltSo = new File(new File(ubmRustPrebuiltDir, prebuiltAbi), prebuiltMatcher.group(2))
-            def out16k = new ByteArrayOutputStream()
-            def result16k = project.exec {
-              commandLine("sh", ubmRust16kScript.absolutePath,
-                "--so", prebuiltSo.absolutePath, "--abi", prebuiltAbi, "--offline-ok")
-              workingDir(rootDir)
-              standardOutput = out16k
-              errorOutput = out16k
-              ignoreExitValue = true
-            }
+            def result16k = runUbmScript(["sh", ubmRust16kScript.absolutePath,
+              "--so", prebuiltSo.absolutePath, "--abi", prebuiltAbi, "--offline-ok"], rootDir)
             if (result16k.exitValue != 0) {
               throw new GradleException(
-                "${taskName} FAILED: 16 KB page check on packed prebuilt ${prebuiltSo}:\n${out16k}")
+                "${taskName} FAILED: 16 KB page check on packed prebuilt ${prebuiltSo}:\n${result16k.stdout}\n${result16k.stderr}")
             }
-            receipt16k.append("${out16k}".trim()).append("\n")
+            receipt16k.append("${result16k.stdout}".trim()).append("\n")
           }
         }
         new File(stagingDir, "packed-16k-receipt.txt").text = receipt16k.toString()
@@ -264,27 +257,17 @@ def ubmRustInputFiles = [
       identity.append("abis=${ubmRustAbis.join(',')}\n")
       ubmRustAbis.each { abi ->
         def libDir = new File(stagingDir, abi)
-        // project.exec (execution-time API): providers.exec is a
-        // configuration-time value source and cannot run inside doLast.
         // Both script streams are captured and attached to the failure —
         // a silent red task is never acceptable here.
-        def scriptOut = new ByteArrayOutputStream()
-        def scriptErr = new ByteArrayOutputStream()
-        def execResult = project.exec {
-          commandLine("sh", ubmRustScript.absolutePath,
-            "--abi", abi,
-            "--profile", ubmRustProfile,
-            "--libdir", libDir.absolutePath)
-          workingDir(rootDir)
-          standardOutput = scriptOut
-          errorOutput = scriptErr
-          ignoreExitValue = true
-        }
+        def execResult = runUbmScript(["sh", ubmRustScript.absolutePath,
+          "--abi", abi,
+          "--profile", ubmRustProfile,
+          "--libdir", libDir.absolutePath], rootDir)
         if (execResult.exitValue != 0) {
           throw new GradleException(
             "${taskName} FAILED for ABI ${abi} (exit ${execResult.exitValue}). " +
             "(NDK 27.x, pinned Rust from rust-toolchain.toml + aarch64-linux-android and x86_64-linux-android targets).\n" +
-            "--- build-rust-cdylib.sh stdout ---\n${scriptOut}\n--- build-rust-cdylib.sh stderr ---\n${scriptErr}")
+            "--- build-rust-cdylib.sh stdout ---\n${execResult.stdout}\n--- build-rust-cdylib.sh stderr ---\n${execResult.stderr}")
         }
         def staged = new File(libDir, "libubm5_jni_echo.so")
         if (!staged.isFile()) {
@@ -295,18 +278,11 @@ def ubmRustInputFiles = [
         // Source path: hard 16 KB gate on the staged cdylib (Android 15+).
         // The NDK exists by construction here, so no --offline-ok: a
         // missing tool or a misaligned lib both fail loud.
-        def check16k = new ByteArrayOutputStream()
-        def check16kResult = project.exec {
-          commandLine("sh", ubmRust16kScript.absolutePath,
-            "--so", staged.absolutePath, "--abi", abi)
-          workingDir(rootDir)
-          standardOutput = check16k
-          errorOutput = check16k
-          ignoreExitValue = true
-        }
+        def check16kResult = runUbmScript(["sh", ubmRust16kScript.absolutePath,
+          "--so", staged.absolutePath, "--abi", abi], rootDir)
         if (check16kResult.exitValue != 0) {
           throw new GradleException(
-            "${taskName} FAILED: 16 KB page check on staged ${staged}:\n${check16k}")
+            "${taskName} FAILED: 16 KB page check on staged ${staged}:\n${check16kResult.stdout}\n${check16kResult.stderr}")
         }
         identity.append("page16k=${abi} pass\n")
         def digest = java.security.MessageDigest.getInstance("SHA-256")
@@ -374,6 +350,22 @@ void verifyUbmRustPrebuilts(String taskName, File stagingDir, File prebuiltDir, 
   stagingDir.mkdirs()
   new File(stagingDir, "packed-prebuilt-receipt.txt").text = receipt.toString()
   logger.lifecycle("${taskName} verified packed prebuilts at ${prebuiltDir}:\n${receipt}")
+}
+
+// Version-proof script runner: Project.exec() was REMOVED in Gradle 9 (Expo
+// CNG generates Gradle 9.3.x; the classic example pins 8.13), so every
+// script invocation goes through plain Groovy Process execution — identical
+// semantics (inherited environment, explicit working dir, both streams
+// captured, exit code) on every Gradle version. A real script method (see
+// the verifyUbmRustPrebuilts comment): command and working dir arrive as
+// explicit params. Returns [exitValue, stdout, stderr].
+Map<String, Object> runUbmScript(List<String> command, File workingDir) {
+  def proc = command.execute(null, workingDir)
+  def stdout = new StringBuilder()
+  def stderr = new StringBuilder()
+  proc.consumeProcessOutput(stdout, stderr)
+  proc.waitFor()
+  return [exitValue: proc.exitValue(), stdout: stdout.toString(), stderr: stderr.toString()]
 }
 
 // Back-compat lifecycle task: builds (dev) or verifies (packed) both profiles.
