@@ -47,6 +47,10 @@ describe('Android Rust cdylib packaging (UBM 5.0 HOST-ANDROID)', () => {
   // a path-dep without declaring it, fails here.
   test('Gradle inputs cover the transitive Rust path-dependency graph', () => {
     const jniDir = path.join(root, 'bindings', 'jni')
+    // Repo-relative keys always use forward slashes: path.relative emits
+    // backslashes on Windows, which would never match the Gradle-declared
+    // (forward-slash) refs or the expected literals below.
+    const repoKey = absolute => path.relative(root, absolute).split(path.sep).join('/')
     // Transitive path-deps from the manifests (single-line `{ path = ... }`
     // form, as written in this repo).
     const transitive = new Map() // crate dir (repo-relative) -> manifest path
@@ -56,7 +60,7 @@ describe('Android Rust cdylib packaging (UBM 5.0 HOST-ANDROID)', () => {
       const depPattern = /^\s*[A-Za-z0-9_-]+\s*=\s*\{[^}\n]*path\s*=\s*"([^"]+)"/gm
       for (const match of manifest.matchAll(depPattern)) {
         const depDir = path.normalize(path.join(dir, match[1]))
-        const key = path.relative(root, depDir)
+        const key = repoKey(depDir)
         if (!transitive.has(key)) {
           transitive.set(key, path.join(depDir, 'Cargo.toml'))
           visit(path.join(depDir, 'Cargo.toml'))
@@ -79,7 +83,7 @@ describe('Android Rust cdylib packaging (UBM 5.0 HOST-ANDROID)', () => {
       if (ref === 'ubmRustManifest') return 'bindings/jni/Cargo.toml'
       const inline = ref.match(/resolve\("([^"]+)"\)/)
       expect(inline).not.toBeNull()
-      return path.normalize(path.join('android', inline[1]))
+      return path.normalize(path.join('android', inline[1])).split(path.sep).join('/')
     }
     const declaredDirs = new Set(
       listBlock('ubmRustInputDirs')
