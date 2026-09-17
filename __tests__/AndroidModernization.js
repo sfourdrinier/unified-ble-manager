@@ -90,6 +90,12 @@ describe('Android RN 0.86 unified protocol boundary', () => {
       'background/ForegroundServiceControlException.java',
       'background/ForegroundServiceNotificationConfiguration.java',
       'expo/UnifiedBleExpoRuntimeModule.java',
+      // R02 contract update (justified): `CoreCommandAuthority` is the
+      // admission table the dispatcher consults before radio execution
+      // (covered commands + scoped exceptions + core*-coded terminals),
+      // covered by `CoreCommandAuthorityTest`. Current protocol graph
+      // member by design, not legacy residue.
+      'protocol/CoreCommandAuthority.kt',
       'protocol/ProtocolCommandDecoder.kt',
       'protocol/ProtocolWireEncoder.kt',
       'protocol/UnifiedBleProtocolAndroidDispatcher.kt',

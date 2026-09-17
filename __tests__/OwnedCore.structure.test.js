@@ -44,6 +44,11 @@ describe('Unified Android native protocol structure', () => {
       'background/ForegroundServiceControlException.java',
       'background/ForegroundServiceNotificationConfiguration.java',
       'expo/UnifiedBleExpoRuntimeModule.java',
+      // R02 contract update (justified): `CoreCommandAuthority` is the
+      // admission table the dispatcher consults before radio execution
+      // (covered commands + scoped exceptions + core*-coded terminals),
+      // covered by `CoreCommandAuthorityTest`. Boundary member by design.
+      'protocol/CoreCommandAuthority.kt',
       'protocol/ProtocolCommandDecoder.kt',
       'protocol/ProtocolWireEncoder.kt',
       'protocol/UnifiedBleProtocolAndroidDispatcher.kt',
