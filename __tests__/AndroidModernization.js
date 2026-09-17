@@ -57,7 +57,7 @@ describe('Android RN 0.86 unified protocol boundary', () => {
     expect(buildGradle).not.toContain('prefab true')
   })
 
-  test('registers only the generated protocol and Expo runtime TurboModules', () => {
+  test('registers only the generated protocol, Expo runtime, and Rust core TurboModules', () => {
     const packageJava = read('android/src/main/java/com/sfourdrinier/unifiedblemanager/BlePlxPackage.java')
     const controlJava = read(
       'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java'
@@ -70,8 +70,15 @@ describe('Android RN 0.86 unified protocol boundary', () => {
     expect(packageJava).toContain('UnifiedBleProtocolControlModule.class.getName()')
     expect(packageJava).toContain('UnifiedBleExpoRuntimeModule.NAME')
     expect(packageJava).toContain('UnifiedBleExpoRuntimeModule.class.getName()')
+    // R01 contract update (justified): `UnifiedBleRustCoreModule` is the
+    // D3(a) production session facade over the JNI cdylib (router +
+    // JVM-tested op table), registered alongside the protocol modules.
+    // Third TurboModule by design, not legacy residue.
+    expect(packageJava).toContain('import com.sfourdrinier.unifiedblemanager.rustcore.UnifiedBleRustCoreModule;')
+    expect(packageJava).toContain('if (UnifiedBleRustCoreModule.NAME.equals(name))')
+    expect(packageJava).toContain('UnifiedBleRustCoreModule.class.getName()')
     expect(packageJava).not.toMatch(/\bBlePlxModule\b|\bNativeBlePlxSpec\b/)
-    expect(packageJava.match(/moduleInfos\.put\(/g)).toHaveLength(2)
+    expect(packageJava.match(/moduleInfos\.put\(/g)).toHaveLength(3)
     expect(controlJava).toContain('extends NativeUnifiedBleProtocolControlSpec')
     expect(controlJava).toContain('public static final String NAME = "UnifiedBleProtocolControl"')
     expect(controlJava).toContain('UnifiedBleProtocolJsiBinding.install')
@@ -113,7 +120,14 @@ describe('Android RN 0.86 unified protocol boundary', () => {
       // (the gap F01 flagged) — a thin fail-closed Android adapter in the
       // same `radio` package, covered by `UbmGattCoreBindingTest`. Current
       // protocol graph member by design, not legacy residue.
-      'radio/UbmGattCoreBinding.kt'
+      'radio/UbmGattCoreBinding.kt',
+      // R01 contract update (justified): the `rustcore` package is the
+      // D3(a) production session facade (module shell + JVM-tested op
+      // router over the JNI cdylib), covered by
+      // `RustCoreSessionRouterTest`. Current protocol graph member by
+      // design, not legacy residue.
+      'rustcore/RustCoreSessionRouter.java',
+      'rustcore/UnifiedBleRustCoreModule.java'
     ].sort())
     const protocolDispatcher = read(
       'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt'

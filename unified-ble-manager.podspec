@@ -26,6 +26,8 @@ Pod::Spec.new do |s|
   base_source_files = [
     "ios/UnifiedBleProtocolControl.mm",
     "ios/UnifiedBleExpoRuntime.mm",
+    "ios/UnifiedBleRustCore.mm",
+    "ios/UnifiedBleRustCoreSessions.swift",
     "ios/Generated/**/*.swift",
     "ios/NativeProtocol/**/*.{h,m,mm}",
     "ios/Owned/OwnedCoreBluetoothCentralDelegate.swift",

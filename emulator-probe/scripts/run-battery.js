@@ -401,6 +401,51 @@ async function main() {
     });
   }
 
+  if (want('RUSTCORE')) {
+    check(records, 'RUSTCORE', 'producer binding session: openSession/invoke/close through the real TurboModule + JNI core', 'REAL-EMULATOR', (ctx) => {
+      if (!args.attemptMetro) {
+        ctx.boundary('Needs the probe Metro (`npx react-native start --port 8081` in emulator-probe/consumer + `adb reverse tcp:8081 tcp:8081`); rerun with --attempt-metro. Dev APK has no embedded bundle.');
+        return;
+      }
+      ctx.note('metro packager reachable [HOST-JVM host-side]', metroUpSync(), 'host-side curl http://127.0.0.1:8081/status (not device-observed)');
+      sh(args.serial, `am force-stop ${PKG}`, { timeoutMs: 30000 });
+      sleepMs(2000);
+      sh(args.serial, 'logcat -c', { timeoutMs: 20000 });
+      ctx.snap('launch on Metro', sh(args.serial, `am start -n ${ACTIVITY}`, { timeoutMs: 30000 }));
+      let log = '';
+      let mounted = false;
+      for (let i = 0; i < 9; i++) {
+        sleepMs(10000);
+        log = logcatDump(args.serial, ctx, `logcat mount poll ${i}`);
+        if (/app-mounted/.test(log)) { mounted = true; break; }
+      }
+      ctx.note('JS bundle executed (app-mounted)', mounted, grepLines(log, /app-mounted|rustcore-error/, 2).join(' ').slice(0, 200) || 'no mount line');
+      if (!mounted) return;
+      // The RustCore button is the 5th stacked button (no fixed PROBE_TAP
+      // coords; T8's first-four coords are unaffected): tap by exact text.
+      // Android renders RN Button titles uppercased in the UI dump.
+      const tapped = tapText(args.serial, ctx, 'RUSTCORE', 'RUSTCORE SESSION');
+      ctx.note('RustCore session button tapped', tapped !== null, tapped ? `tapped at ${tapped}` : 'button text missing from UI dump');
+      if (!tapped) return;
+      sleepMs(14000);
+      log = logcatDump(args.serial, ctx, 'logcat after rustcore session');
+      const okLine = grepLines(log, /rustcore-ok/, 1).join(' ');
+      const errLine = grepLines(log, /rustcore-error/, 1).join(' ');
+      // grepLines truncates to 300 chars; the receipt line carries late
+      // tokens (scanStop, closed) past that cut, so match them on the full
+      // untruncated line. Both tokens are emitted only by this receipt.
+      const fullOk = (log.match(/\[UBM_PROBE\] rustcore-ok[^\n]*/) || [''])[0];
+      ctx.note('session opened on the frozen contract revision', /rustcore-ok contract=C-UBM\.0\.1\.2-DRAFT/.test(log), okLine.slice(0, 240) || errLine.slice(0, 240) || 'neither rustcore-ok nor rustcore-error');
+      ctx.note('central.status round-trips core-minted JSON', /live_operations/.test(okLine), okLine.slice(0, 240));
+      ctx.note('echo.counter round-trips decimal 41', /echo=41/.test(okLine), okLine.slice(0, 240));
+      ctx.note('scan.start mints a core op id', /scanOp=\S+/.test(okLine), okLine.slice(0, 240));
+      ctx.note('scan.take drains staged scan steps', /scan\.start/.test(okLine), okLine.slice(0, 240));
+      ctx.note('scan.stop settles the minted op', /"event":"stop"/.test(fullOk), fullOk.slice(-160));
+      ctx.note('session closed cleanly', /closed=true/.test(fullOk), fullOk.slice(-160));
+      ctx.note('no UnsatisfiedLinkError', !/UnsatisfiedLinkError/.test(log), 'host-matched over full logcat');
+    });
+  }
+
   if (want('T11')) {
     check(records, 'T11', 'bounded byte delivery (512 records / 1 MiB ingress bound)', 'REAL-EMULATOR', (ctx) => {
       ctx.boundary('No notification burst can be driven on the virtual adapter (no peers, scans reject fast), so the bounded ingress queue cannot fill on-emulator. Overflow semantics are covered host-side by the deterministic TCK vector deterministic-tck-subscription-overflow.ts plus the 104-test android unit suite; filling the queue needs a chatty physical peripheral (U-ANDROID-PHYSICAL).');

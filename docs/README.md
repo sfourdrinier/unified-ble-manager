@@ -186,5 +186,6 @@ The `review/` directory also holds machine-readable findings data
 | [`superpowers/plans/2026-08-24-pr-c-react-hooks.md`](superpowers/plans/2026-08-24-pr-c-react-hooks.md) | Plan C: React hooks and adapter store ownership fixes | Historical |
 | [`superpowers/plans/2026-08-30-web-bluetooth-example.md`](superpowers/plans/2026-08-30-web-bluetooth-example.md) | Plan: TypeScript/Vite Web Bluetooth example and `docs/WEB.md` | Historical |
 | [`superpowers/plans/2026-09-05-release-4.0.25-reliability.md`](superpowers/plans/2026-09-05-release-4.0.25-reliability.md) | Plan: 4.0.25 reliability fixes for BLE-01..BLE-18 | Historical |
+| [`superpowers/plans/2026-09-17-r01-binding-producer.md`](superpowers/plans/2026-09-17-r01-binding-producer.md) | Plan: R01 binding producer (Codegen spec, Kotlin/Swift facades, TS producer, emulator leg) | Historical |
 | [`superpowers/specs/2026-07-23-ios-tvos-ci-design.md`](superpowers/specs/2026-07-23-ios-tvos-ci-design.md) | Design spec: CI iOS and tvOS compile checks | Historical |
 | [`superpowers/specs/2026-08-30-web-bluetooth-example-design.md`](superpowers/specs/2026-08-30-web-bluetooth-example-design.md) | Design spec for the Web Bluetooth TypeScript example | Historical |

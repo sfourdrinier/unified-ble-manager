@@ -250,7 +250,8 @@
     "ios": {
       "modulesProvider": {
         "UnifiedBleProtocolControl": "UnifiedBleProtocolControl",
-        "UnifiedBleExpoRuntime": "UnifiedBleExpoRuntime"
+        "UnifiedBleExpoRuntime": "UnifiedBleExpoRuntime",
+        "UnifiedBleRustCore": "UnifiedBleRustCore"
       }
     }
   },

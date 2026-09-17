@@ -1,0 +1,1570 @@
+$ logcat after rustcore session
+[exit=0]
+--------- beginning of system
+D/CompatibilityChangeReporter(  543): Compat change id reported: 161252188; UID 10193; state: DISABLED
+W/ActivityTaskManager(  543): callingPackage for (uid=2000, pid=4812) has no WPC
+D/CompatibilityChangeReporter(  543): Compat change id reported: 265464455; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 265452344; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 266124927; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 265451093; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 265456536; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 255940284; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 236283604; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 263959004; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 264304459; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 264301586; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 254631730; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 273509367; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 263259275; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 174042980; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 174042936; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 181136395; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 194480991; UID 10193; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 184838306; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 185004937; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 205907456; UID 10193; state: ENABLED
+V/WindowManagerShell(  755): Transition requested: android.os.BinderProxy@484bc73 TransitionRequestInfo { type = OPEN, triggerTask = TaskInfo{userId=0 taskId=14 displayId=0 isRunning=true baseIntent=Intent { flg=0x10000000 cmp=com.ubmprobe/.MainActivity } baseActivity=ComponentInfo{com.ubmprobe/com.ubmprobe.MainActivity} topActivity=ComponentInfo{com.ubmprobe/com.ubmprobe.MainActivity} origActivity=null realActivity=ComponentInfo{com.ubmprobe/com.ubmprobe.MainActivity} numActivities=1 lastActiveTime=300412 supportsMultiWindow=true resizeMode=1 isResizeable=true minWidth=-1 minHeight=-1 defaultMinSize=220 token=WCT{android.window.IWindowContainerToken$Stub$Proxy@1e17730} topActivityType=1 pictureInPictureParams=null shouldDockBigOverlays=false launchIntoPipHostTaskId=-1 lastParentTaskIdBeforePip=-1 displayCutoutSafeInsets=null topActivityInfo=ActivityInfo{e708fa9 com.ubmprobe.MainActivity} launchCookies=[] positionInParent=Point(0, 0) parentTaskId=-1 isFocused=false isVisible=false isVisibleRequested=false isSleeping=false topActivityInSizeCompat=false topActivityEligibleForLetterboxEducation= false topActivityLetterboxed= false isFromDoubleTap= false topActivityLetterboxVerticalPosition= -1 topActivityLetterboxHorizontalPosition= -1 topActivityLetterboxWidth=-1 topActivityLetterboxHeight=-1 locusId=null displayAreaFeatureId=1 cameraCompatControlState=hidden}, remoteTransition = null, displayChange = null }
+I/ActivityTaskManager(  543): START u0 {flg=0x10000000 cmp=com.ubmprobe/.MainActivity} with LAUNCH_SINGLE_TASK from uid 2000 (BAL_ALLOW_PERMISSION) result code=0
+D/CompatibilityChangeReporter(  543): Compat change id reported: 135634846; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 143937733; UID 10193; state: ENABLED
+--------- beginning of main
+D/Zygote  (  356): Forked child process 4816
+I/ActivityManager(  543): Start proc 4816:com.ubmprobe/u0a193 for next-top-activity {com.ubmprobe/com.ubmprobe.MainActivity}
+D/SplashScreenView(  755): Build android.window.SplashScreenView{32d5a3a V.E...... ......ID 0,0-0,0}
+D/SplashScreenView(  755): Icon: view: android.widget.ImageView{ea946eb V.ED..... ......I. 0,0-0,0 #10204f0 android:id/splashscreen_icon_view} drawable: com.android.wm.shell.startingsurface.SplashscreenIconDrawableFactory$ImmobileIconDrawable@670fc48 size: 420
+D/SplashScreenView(  755): Branding: view: android.view.View{2a98ae1 G.ED..... ......I. 0,0-0,0 #10204ef android:id/splashscreen_branding_view} drawable: null size w: 0 h: 0
+D/CompatibilityChangeReporter(  543): Compat change id reported: 265195908; UID 10193; state: ENABLED
+I/BpBinder(  419): onLastStrongRef automatically unlinking death recipients: 
+D/CompatibilityChangeReporter(  543): Compat change id reported: 168419799; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 273564678; UID 10193; state: DISABLED
+D/CoreBackPreview(  543): Window{65b4e37 u0 Splash Screen com.ubmprobe}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@92a410d, mPriority=0, mIsAnimationCallback=false}
+W/BugleRcsEngine( 2033): [118] bpxc.w: Unable to send diagnostic log
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): RequestWithImsiState: event HTTP Response [288c2cfd-919a-4755-912a-8d1931857425]
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): InProgressState: event HTTP Response [288c2cfd-919a-4755-912a-8d1931857425]
+W/BugleRcsEngine( 2033): [117] bpxc.w: Unable to send diagnostic log
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): RequestWithImsiState: event HTTP 400 (Bad request) [288c2cfd-919a-4755-912a-8d1931857425]
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): InProgressState: event HTTP 400 (Bad request) [288c2cfd-919a-4755-912a-8d1931857425]
+W/BugleRcsEngine( 2033): [117] bpxc.w: Unable to send diagnostic log
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): transitionTo: destState=RetryState [288c2cfd-919a-4755-912a-8d1931857425]
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): onTransitionRequested RequestWithImsiState [288c2cfd-919a-4755-912a-8d1931857425]
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): Exit RequestWithImsiState [288c2cfd-919a-4755-912a-8d1931857425]
+W/BugleRcsEngine( 2033): [117] bpxc.w: Unable to send diagnostic log
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): Exit InProgressState [288c2cfd-919a-4755-912a-8d1931857425]
+W/BugleRcsEngine( 2033): [117] bpxc.w: Unable to send diagnostic log
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): Enter RetryState [288c2cfd-919a-4755-912a-8d1931857425]
+I/com.ubmprobe( 4816): Late-enabling -Xcheck:jni
+W/BugleRcsEngine( 2033): [117] bpxc.w: Unable to send diagnostic log
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): nextRetry = 0 [288c2cfd-919a-4755-912a-8d1931857425]
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): scheduleRetry, currentRetry = 0, retryMillis = 28800000 [288c2cfd-919a-4755-912a-8d1931857425]
+W/BugleRcsEngine( 2033): [48] bpxc.w: Unable to send diagnostic log
+D/EGL_emulation( 1305): app_time_stats: avg=357.67ms min=19.79ms max=1911.14ms count=6
+I/BugleRcsEngine( 2033): [117] brjv.b: RcsAvailabilityManager: Calculating Rcs Availability
+I/BugleRcsEngine( 2033): [117] brnl.C: Bugle is default SMS app: true
+I/BugleRcsEngine( 2033): [117] brjv.b: Bugle has minimum required RCS permissions: true
+I/BugleRcsEngine( 2033): [117] brnl.B: Rcs is enabled from user settings: true
+I/BugleRcsEngine( 2033): [117] brox.b: Using config server URL from bqas
+I/BugleRcsEngine( 2033): [117] brnl.e: No RCS Configuration was found in Bugle for simID: redacted-pii:sim_id[chars:20,last3:897]
+I/BugleRcsEngine( 2033): [117] brnl.e: No RCS Configuration was found in Bugle for simID: redacted-pii:sim_id[chars:20,last3:897]
+I/com.ubmprobe( 4816): Using CollectorTypeCC GC.
+W/com.ubmprobe( 4816): Unexpected CPU variant for x86: x86_64.
+W/com.ubmprobe( 4816): Known variants: atom, sandybridge, silvermont, goldmont, goldmont-plus, tremont, kabylake, default
+I/BugleRcsEngine( 2033): [117] brjv.b: Config state is not ACCEPTED, provisioning still in progress
+I/BugleRcsEngine( 2033): [117] brjv.b: RcsAvailabilityManager: Rcs Availability still CARRIER_SETUP_PENDING (Carrier RCS is not set up)
+W/BugleRcsEngine( 2033): [41] bpxc.w: Unable to send diagnostic log
+W/BugleRcsEngine( 2033): [41] bpxc.w: Unable to send diagnostic log
+V/WindowManager(  543): Sent Transition #11 createdAt=09-17 14:44:19.118 via request=TransitionRequestInfo { type = OPEN, triggerTask = TaskInfo{userId=0 taskId=14 displayId=0 isRunning=true baseIntent=Intent { flg=0x10000000 cmp=com.ubmprobe/.MainActivity } baseActivity=ComponentInfo{com.ubmprobe/com.ubmprobe.MainActivity} topActivity=ComponentInfo{com.ubmprobe/com.ubmprobe.MainActivity} origActivity=null realActivity=ComponentInfo{com.ubmprobe/com.ubmprobe.MainActivity} numActivities=1 lastActiveTime=300412 supportsMultiWindow=true resizeMode=1 isResizeable=true minWidth=-1 minHeight=-1 defaultMinSize=220 token=WCT{RemoteToken{648df3c Task{32ae66a #14 type=standard A=10193:com.ubmprobe}}} topActivityType=1 pictureInPictureParams=null shouldDockBigOverlays=false launchIntoPipHostTaskId=-1 lastParentTaskIdBeforePip=-1 displayCutoutSafeInsets=null topActivityInfo=ActivityInfo{57384c5 com.ubmprobe.MainActivity} launchCookies=[] positionInParent=Point(0, 0) parentTaskId=-1 isFocused=false isVisible=false isVisibleRequested=false isSleeping=false topActivityInSizeCompat=false topActivityEligibleForLetterboxEducation= false topActivityLetterboxed= false isFromDoubleTap= false topActivityLetterboxVerticalPosition= -1 topActivityLetterboxHorizontalPosition= -1 topActivityLetterboxWidth=-1 topActivityLetterboxHeight=-1 locusId=null displayAreaFeatureId=1 cameraCompatControlState=hidden}, remoteTransition = null, displayChange = null }
+V/WindowManager(  543):     startWCT=WindowContainerTransaction { changes = {} hops = [] errorCallbackToken=null taskFragmentOrganizer=null }
+V/WindowManager(  543):     info={id=11 t=OPEN f=0x0 trk=0 r=[0@Point(0, 0)] c=[{WCT{RemoteToken{648df3c Task{32ae66a #14 type=standard A=10193:com.ubmprobe}}} m=OPEN f=NONE leash=Surface(name=Task=14)/@0x3ddd8c2 sb=Rect(0, 0 - 1080, 1920) eb=Rect(0, 0 - 1080, 1920) d=0},{WCT{RemoteToken{9a68643 Task{d3ba2cd #1 type=home}}} m=TO_BACK f=SHOW_WALLPAPER leash=Surface(name=Task=1)/@0x66ff3b1 sb=Rect(0, 0 - 1080, 1920) eb=Rect(0, 0 - 1080, 1920) d=0}]}
+I/BugleRcsWorker( 2033): [seqId=2][workId=c5d5e292-cb79-4f7b-ba8f-c607d37e25ed] Received a provisioning state changed event from the provisioning engine RETRY
+I/BugleRcsWorker( 2033): [seqId=2][workId=c5d5e292-cb79-4f7b-ba8f-c607d37e25ed] Provisioning Engine entered RetryState, provisioning task will be rescheduled with exponential backoff
+I/BugleRcsWorker( 2033): [seqId=2][workId=c5d5e292-cb79-4f7b-ba8f-c607d37e25ed] finish provisioning task with result Success {mOutputData=Data {}}
+I/BugleRcsWorker( 2033): [seqId=2][workId=c5d5e292-cb79-4f7b-ba8f-c607d37e25ed] RCS provisioning task has finished with result Success {mOutputData=Data {}}
+I/BugleRcsEngine( 2033): [115] brfq.d: (PEv2-SM-Bugle-87789962): quit [null]
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): transitionTo: destState=bqjk [null]
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): Exit RetryState [null]
+W/BugleRcsEngine( 2033): [117] bpxc.w: Unable to send diagnostic log
+W/BugleRcsEngine( 2033): [117] brfq.e: (PEv2-SM-Bugle-87789962): onQuitting [null]
+I/BugleRcsEngine( 2033): [117] brjv.b: RcsAvailabilityManager: Calculating Rcs Availability
+I/BugleRcsEngine( 2033): [117] brnl.C: Bugle is default SMS app: true
+I/BugleRcsEngine( 2033): [117] brjv.b: Bugle has minimum required RCS permissions: true
+I/BugleRcsEngine( 2033): [117] brnl.B: Rcs is enabled from user settings: true
+I/BugleRcsEngine( 2033): [117] brox.b: Using config server URL from bqas
+I/WM-WorkerWrapper( 2033): Worker result SUCCESS for Work [ id=b992f475-960c-4f96-9acf-5c3ff5dfc85d, tags={ com.google.android.apps.messaging.rcsprovisioning.RcsProvisioningListenableWorker, provisioning } ]
+I/BugleRcsEngine( 2033): [117] brnl.e: No RCS Configuration was found in Bugle for simID: redacted-pii:sim_id[chars:20,last3:897]
+I/BugleRcsEngine( 2033): [117] brnl.e: No RCS Configuration was found in Bugle for simID: redacted-pii:sim_id[chars:20,last3:897]
+I/BugleRcsEngine( 2033): [117] brjv.b: Config state is not ACCEPTED, provisioning still in progress
+I/BugleRcsEngine( 2033): [117] brjv.b: RcsAvailabilityManager: Rcs Availability still CARRIER_SETUP_PENDING (Carrier RCS is not set up)
+I/adbd    (  431): jdwp connection from 4816
+D/EGL_emulation(  755): app_time_stats: avg=19364.08ms min=19364.08ms max=19364.08ms count=1
+W/JobScheduler(  543): Job didn't exist in JobStore: 28e1b1 #u0a131/1024 com.google.android.apps.messaging/androidx.work.impl.background.systemjob.SystemJobService
+I/Bugle   ( 2033): Scheduling custom retry
+W/Looper  (  755): Slow dispatch took 154ms wmshell.main h=android.os.Handler c=com.android.wm.shell.common.ShellExecutor$$ExternalSyntheticLambda1@800778 m=0
+W/Looper  (  755): Slow delivery took 150ms wmshell.main h=android.os.Handler c=null m=1
+V/WindowManagerShell(  755): onTransitionReady android.os.BinderProxy@484bc73: {id=11 t=OPEN f=0x0 trk=0 r=[0@Point(0, 0)] c=[{WCT{android.window.IWindowContainerToken$Stub$Proxy@799ee51} m=OPEN f=NONE leash=Surface(name=Task=14)/@0x82fb519 sb=Rect(0, 0 - 1080, 1920) eb=Rect(0, 0 - 1080, 1920) d=0},{WCT{android.window.IWindowContainerToken$Stub$Proxy@6cd56b6} m=TO_BACK f=SHOW_WALLPAPER leash=Surface(name=Task=1)/@0xfd3e9de sb=Rect(0, 0 - 1080, 1920) eb=Rect(0, 0 - 1080, 1920) d=0}]}
+V/WindowManagerShell(  755): Playing animation for (#11)android.os.BinderProxy@484bc73@0
+V/WindowManagerShell(  755):  try handler com.android.wm.shell.transition.DefaultMixedHandler@3751c04
+V/WindowManagerShell(  755):  try handler com.android.wm.shell.keyguard.KeyguardTransitionHandler@67e55ed
+V/WindowManagerShell(  755):  try handler com.android.wm.shell.activityembedding.ActivityEmbeddingController@446fc22
+V/WindowManagerShell(  755):  try handler com.android.wm.shell.recents.RecentsTransitionHandler@757e6b3
+W/Bugle   ( 2033): TextClassifierLibManagerImpl: Reclaiming memory at level: 40
+V/ShellRecents(  755): RecentsTransitionHandler.startAnimation: no controller found
+V/WindowManagerShell(  755):  try handler com.android.wm.shell.pip.PipTransition@a29f470
+V/WindowManagerShell(  755):  try handler com.android.wm.shell.splitscreen.StageCoordinator@af763e9
+V/WindowManagerShell(  755):  try handler com.android.wm.shell.transition.RemoteTransitionHandler@afcb86e
+V/WindowManagerShell(  755): Transition doesn't have explicit remote, search filters for match for {id=11 t=OPEN f=0x0 trk=0 r=[0@Point(0, 0)] c=[{WCT{android.window.IWindowContainerToken$Stub$Proxy@799ee51} m=OPEN f=NONE leash=Surface(name=Task=14)/@0x82fb519 sb=Rect(0, 0 - 1080, 1920) eb=Rect(0, 0 - 1080, 1920) d=0},{WCT{android.window.IWindowContainerToken$Stub$Proxy@6cd56b6} m=TO_BACK f=SHOW_WALLPAPER leash=Surface(name=Task=1)/@0xfd3e9de sb=Rect(0, 0 - 1080, 1920) eb=Rect(0, 0 - 1080, 1920) d=0}]}
+V/WindowManagerShell(  755):  Checking filter Pair{{types=[] flags=0x0] notFlags=0x0 checks=[{atype=dream independent=true modes=[OPEN,TO_FRONT] flags=NONE mustBeTask=false order=ANY topActivity=null},{atype=home independent=true modes=[CLOSE,TO_BACK] flags=NONE mustBeTask=false order=ANY topActivity=null}]} RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@e03b0f, appThread = android.app.IApplicationThread$Stub$Proxy@e11e79c, debugName = LauncherToDream }}
+V/WindowManagerShell(  755):  Checking filter Pair{{types=[] flags=0x0] notFlags=0x100 checks=[{atype=home independent=true modes=[OPEN,TO_FRONT] flags=NONE mustBeTask=false order=TOP topActivity=ComponentInfo{com.google.android.apps.nexuslauncher/com.google.android.apps.nexuslauncher.NexusLauncherActivity}},{atype=standard independent=true modes=[CLOSE,TO_BACK] flags=NONE mustBeTask=false order=ANY topActivity=null}]} RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@d955a5, appThread = android.app.IApplicationThread$Stub$Proxy@73fed7a, debugName = QuickstepLaunchHome }}
+V/WindowManagerShell(  755):  Delegate animation for #11 to null
+V/WindowManagerShell(  755):  try handler com.android.wm.shell.transition.DefaultTransitionHandler@6ef792b
+V/WindowManagerShell(  755): start default transition animation, info = {id=11 t=OPEN f=0x0 trk=0 r=[0@Point(0, 0)] c=[{WCT{android.window.IWindowContainerToken$Stub$Proxy@799ee51} m=OPEN f=NONE leash=Surface(name=Task=14)/@0x82fb519 sb=Rect(0, 0 - 1080, 1920) eb=Rect(0, 0 - 1080, 1920) d=0},{WCT{android.window.IWindowContainerToken$Stub$Proxy@6cd56b6} m=TO_BACK f=SHOW_WALLPAPER leash=Surface(name=Task=1)/@0xfd3e9de sb=Rect(0, 0 - 1080, 1920) eb=Rect(0, 0 - 1080, 1920) d=0}]}
+V/WindowManagerShell(  755): loadAnimation: anim=android.view.animation.AnimationSet@f6a2324 animAttr=0x13 type=OPEN isEntrance=false
+V/WindowManagerShell(  755): loadAnimation: anim=android.view.animation.AnimationSet@eb84d90 animAttr=0x12 type=OPEN isEntrance=true
+W/BugleRcsEngine( 2033): [116] brcu.d: [SR]: Single Registration is disabled. Skipping Single Registration capability check for subId: 1, OS.isAtLeastS:[true], enableSingleRegistrationProvisioning:[false]
+I/BugleRcsEngine( 2033): [116] brnl.e: No RCS Configuration was found in Bugle for simID: redacted-pii:sim_id[chars:20,last3:897]
+D/StrictMode( 1222): StrictMode policy violation: android.os.strictmode.SqliteObjectLeakedViolation: Finalizing a Cursor that has not been deactivated or closed. database = /data/user/0/com.android.providers.contacts/databases/contacts2.db, table = raw_contacts, query = SELECT contacts_view._id AS _id, contacts_view.display_name AS display_name, contacts_view.photo_thumb_uri AS photo_thumb_uri, data1 AS number, data2 AS type, data3 AS label, contacts_view.lookup AS lookup FROM raw_contacts JOIN view_contacts as contacts_view ON (contacts_view._id = raw_contacts.contact_id) JOIN (SELECT data_id,normalized_number FROM phone_lookup WHERE (phone_lookup.min_match = '7654321')) AS lookup ON lookup.data_id=data._id JOIN data ON data.raw_contact_id=raw_contacts._id WHERE (PHONE_NUMBERS_EQUAL(data.data1, '+15551234567', 0, 7)) ORDER BY  length(lookup.normalized_number) DESC
+D/StrictMode( 1222): 	at android.os.StrictMode.onSqliteObjectLeaked(StrictMode.java:2222)
+D/StrictMode( 1222): 	at android.database.sqlite.SQLiteCursor.finalize(SQLiteCursor.java:282)
+D/StrictMode( 1222): 	at java.lang.Daemons$FinalizerDaemon.doFinalize(Daemons.java:339)
+D/StrictMode( 1222): 	at java.lang.Daemons$FinalizerDaemon.processReference(Daemons.java:324)
+D/StrictMode( 1222): 	at java.lang.Daemons$FinalizerDaemon.runInternal(Daemons.java:300)
+D/StrictMode( 1222): 	at java.lang.Daemons$Daemon.run(Daemons.java:145)
+D/StrictMode( 1222): 	at java.lang.Thread.run(Thread.java:1012)
+V/WindowManagerShell(  755):  animated by com.android.wm.shell.transition.DefaultTransitionHandler@6ef792b
+W/Looper  (  755): Slow dispatch took 38ms wmshell.main h=android.os.Handler c=com.android.wm.shell.transition.Transitions$TransitionPlayerImpl$$ExternalSyntheticLambda0@13c868e m=0
+D/CompatibilityChangeReporter( 4816): Compat change id reported: 171979766; UID 10193; state: ENABLED
+D/CompatibilityChangeReporter( 4816): Compat change id reported: 242716250; UID 10193; state: ENABLED
+D/StrictMode( 1222): StrictMode policy violation: android.os.strictmode.LeakedClosableViolation: A resource was acquired at attached stack trace but never released. See java.io.Closeable for information on avoiding resource leaks.
+D/StrictMode( 1222): 	at android.os.StrictMode$AndroidCloseGuardReporter.report(StrictMode.java:1994)
+D/StrictMode( 1222): 	at dalvik.system.CloseGuard.warnIfOpen(CloseGuard.java:336)
+D/StrictMode( 1222): 	at android.database.AbstractCursor.finalize(AbstractCursor.java:531)
+D/StrictMode( 1222): 	at android.database.sqlite.SQLiteCursor.finalize(SQLiteCursor.java:291)
+D/StrictMode( 1222): 	at java.lang.Daemons$FinalizerDaemon.doFinalize(Daemons.java:339)
+D/StrictMode( 1222): 	at java.lang.Daemons$FinalizerDaemon.processReference(Daemons.java:324)
+D/StrictMode( 1222): 	at java.lang.Daemons$FinalizerDaemon.runInternal(Daemons.java:300)
+D/StrictMode( 1222): 	at java.lang.Daemons$Daemon.run(Daemons.java:145)
+D/StrictMode( 1222): 	at java.lang.Thread.run(Thread.java:1012)
+D/StrictMode( 1222): Caused by: java.lang.Throwable: Explicit termination method 'AbstractCursor.close' not called
+D/StrictMode( 1222): 	at dalvik.system.CloseGuard.openWithCallSite(CloseGuard.java:288)
+D/StrictMode( 1222): 	at dalvik.system.CloseGuard.open(CloseGuard.java:257)
+D/StrictMode( 1222): 	at android.database.AbstractCursor.<init>(AbstractCursor.java:227)
+D/StrictMode( 1222): 	at android.database.AbstractWindowedCursor.<init>(AbstractWindowedCursor.java:39)
+D/StrictMode( 1222): 	at android.database.sqlite.SQLiteCursor.<init>(SQLiteCursor.java:98)
+D/StrictMode( 1222): 	at android.database.sqlite.SQLiteDirectCursorDriver.query(SQLiteDirectCursorDriver.java:52)
+D/StrictMode( 1222): 	at android.database.sqlite.SQLiteDatabase.rawQueryWithFactory(SQLiteDatabase.java:1714)
+D/StrictMode( 1222): 	at android.database.sqlite.SQLiteQueryBuilder.query(SQLiteQueryBuilder.java:592)
+D/StrictMode( 1222): 	at com.android.providers.contacts.ContactsProvider2.doQuery(ContactsProvider2.java:7543)
+D/StrictMode( 1222): 	at com.android.providers.contacts.ContactsProvider2.queryLocal(ContactsProvider2.java:7249)
+D/StrictMode( 1222): 	at com.android.providers.contacts.ContactsProvider2.queryCorpLookupIfNecessary(ContactsProvider2.java:7728)
+D/StrictMode( 1222): 	at com.android.providers.contacts.ContactsProvider2.queryLookupEnterprise(ContactsProvider2.java:7867)
+D/StrictMode( 1222): 	at com.android.providers.contacts.ContactsProvider2.queryPhoneLookupEnterprise(ContactsProvider2.java:7838)
+D/StrictMode( 1222): 	at com.android.providers.contacts.ContactsProvider2.queryLocal(ContactsProvider2.java:7172)
+D/StrictMode( 1222): 	at com.android.providers.contacts.ContactsProvider2.queryDirectoryIfNecessary(ContactsProvider2.java:5883)
+D/StrictMode( 1222): 	at com.android.providers.contacts.ContactsProvider2.queryInternal(ContactsProvider2.java:5728)
+D/StrictMode( 1222): 	at com.android.providers.contacts.ContactsProvider2.query(ContactsProvider2.java:5673)
+D/StrictMode( 1222): 	at android.content.ContentProvider.query(ContentProvider.java:1692)
+D/StrictMode( 1222): 	at android.content.ContentProvider$Transport.query(ContentProvider.java:292)
+D/StrictMode( 1222): 	at android.content.ContentProviderNative.onTransact(ContentProviderNative.java:107)
+D/StrictMode( 1222): 	at android.os.Binder.execTransactInternal(Binder.java:1339)
+D/StrictMode( 1222): 	at android.os.Binder.execTransact(Binder.java:1275)
+I/BugleRcsEngine( 2033): [116] zzo.l: Scheduled provisioning task with 480 seconds delay, APPEND policy, trigger is STATE_MACHINE_RETRY, workerId is e3999ba0-0708-497b-b7ef-6f720b426544
+D/CompatibilityChangeReporter(  543): Compat change id reported: 170503758; UID 10193; state: ENABLED
+D/ApplicationLoaders( 4816): Returning zygote-cached class loader: /system_ext/framework/androidx.window.extensions.jar
+D/ApplicationLoaders( 4816): Returning zygote-cached class loader: /system_ext/framework/androidx.window.sidecar.jar
+W/ziparchive( 4816): Unable to open '/data/app/~~3U9XCrb0_rC027NWbt44PA==/com.ubmprobe-bYMVDWsMBiKttkU0JEtNJQ==/base.dm': No such file or directory
+W/ziparchive( 4816): Unable to open '/data/app/~~3U9XCrb0_rC027NWbt44PA==/com.ubmprobe-bYMVDWsMBiKttkU0JEtNJQ==/base.dm': No such file or directory
+W/Looper  (  755): Slow delivery took 32ms wmshell.anim h=android.view.Choreographer$FrameHandler c=android.view.Choreographer$FrameDisplayEventReceiver@e15f2c4 m=0
+W/Looper  (  755): Drained
+D/nativeloader( 4816): Configuring clns-6 for other apk /data/app/~~3U9XCrb0_rC027NWbt44PA==/com.ubmprobe-bYMVDWsMBiKttkU0JEtNJQ==/base.apk. target_sdk_version=36, uses_libraries=, library_path=/data/app/~~3U9XCrb0_rC027NWbt44PA==/com.ubmprobe-bYMVDWsMBiKttkU0JEtNJQ==/lib/x86_64:/data/app/~~3U9XCrb0_rC027NWbt44PA==/com.ubmprobe-bYMVDWsMBiKttkU0JEtNJQ==/base.apk!/lib/x86_64, permitted_path=/data:/mnt/expand:/data/user/0/com.ubmprobe
+V/GraphicsEnvironment( 4816): Currently set values for:
+V/GraphicsEnvironment( 4816):   angle_gl_driver_selection_pkgs=[]
+V/GraphicsEnvironment( 4816):   angle_gl_driver_selection_values=[]
+V/GraphicsEnvironment( 4816): ANGLE GameManagerService for com.ubmprobe: false
+V/GraphicsEnvironment( 4816): com.ubmprobe is not listed in per-application setting
+V/GraphicsEnvironment( 4816): Neither updatable production driver nor prerelease driver is supported.
+W/Looper  (  755): Drained
+V/WindowManagerShell(  755): Transition animation finished (aborted=false), notifying core (#11)android.os.BinderProxy@484bc73@0
+V/WindowManager(  543): Finish Transition #11: created at 09-17 14:44:19.118 collect-started=0.027ms request-sent=11.716ms started=24.723ms ready=147.484ms sent=184.927ms finished=651.299ms
+V/WindowManagerShell(  755): Track 0 became idle
+V/WindowManagerShell(  755): All active transition animations finished
+D/EGL_emulation(  755): app_time_stats: avg=110.84ms min=8.44ms max=758.88ms count=13
+W/SoLoader( 4816): Initializing SoLoader: 0
+W/SoLoader( 4816): Recording new base apk path: /data/app/~~3U9XCrb0_rC027NWbt44PA==/com.ubmprobe-bYMVDWsMBiKttkU0JEtNJQ==/base.apk
+W/SoLoader( 4816): Previously recorded 0 base apk paths.
+I/SoLoader( 4816): Preparing SO source: DirectorySoSource[root = /vendor/lib64 flags = 2]
+I/SoLoader( 4816): Preparing SO source: DirectorySoSource[root = /system/lib64 flags = 2]
+I/SoLoader( 4816): Preparing SO source: DirectApkSoSource[root = [/data/app/~~3U9XCrb0_rC027NWbt44PA==/com.ubmprobe-bYMVDWsMBiKttkU0JEtNJQ==/base.apk!/lib/x86_64]]
+I/SoLoader( 4816): Preparing SO source: ApplicationSoSource[DirectorySoSource[root = /data/app/~~3U9XCrb0_rC027NWbt44PA==/com.ubmprobe-bYMVDWsMBiKttkU0JEtNJQ==/lib/x86_64 flags = 0]]
+I/SoLoader( 4816): init finish: 4 SO sources prepared
+W/SoLoader( 4816): SoLoader initialized: 8
+D/jni_lib_merge( 4816): Entering merged library JNI_OnLoad.
+D/jni_lib_merge( 4816): Preparing 13 pre-merged libs (including stub)
+D/jni_lib_merge( 4816): Preparing to register libfabricjni_so.  onload_func: 0x79236be76530
+D/jni_lib_merge( 4816): Preparing to register libreact_devsupportjni_so.  onload_func: 0x79236c0c2110
+D/jni_lib_merge( 4816): Preparing to register libreact_featureflagsjni_so.  onload_func: 0x79236c0d49a0
+D/jni_lib_merge( 4816): Preparing to register libreact_newarchdefaults_so.  onload_func: 0x79236c17d560
+D/jni_lib_merge( 4816): Preparing to register libreact_tracingjni_so.  onload_func: 0x79236c47fbb0
+D/jni_lib_merge( 4816): Preparing to register libreactnativeblob_so.  onload_func: 0x79236c492b00
+D/jni_lib_merge( 4816): Preparing to register libreactnativejni_so.  onload_func: 0x79236c4b5d70
+D/jni_lib_merge( 4816): Preparing to register libreactnativejni_common_so.  onload_func: 0x79236c4bb860
+D/jni_lib_merge( 4816): Preparing to register librninstance_so.  onload_func: 0x79236c538590
+D/jni_lib_merge( 4816): Preparing to register libturbomodulejsijni_so.  onload_func: 0x79236c69b3b0
+D/jni_lib_merge( 4816): Preparing to register libuimanagerjni_so.  onload_func: 0x79236c6b1780
+D/jni_lib_merge( 4816): Preparing to register libyoga_so.  onload_func: 0x79236c6c0780
+D/jni_lib_merge( 4816): About to register 12 actual methods.
+I/ActivityManager(  543): Flag disabled. Ignoring finishAttachApplication from uid: 10193. pid: 4816
+D/libEGL  ( 4816): loaded /vendor/lib64/egl/libEGL_emulation.so
+D/AppCompatDelegate( 4816): Checking for metadata for AppLocalesMetadataHolderService : Service not found
+D/libEGL  ( 4816): loaded /vendor/lib64/egl/libGLESv1_CM_emulation.so
+D/libEGL  ( 4816): loaded /vendor/lib64/egl/libGLESv2_emulation.so
+D/jni_lib_merge( 4816): Entering merged library JNI_OnLoad.
+D/jni_lib_merge( 4816): Preparing 4 pre-merged libs (including stub)
+D/jni_lib_merge( 4816): Preparing to register libhermes_executor_so.  onload_func: 0x792372adc6e0
+D/jni_lib_merge( 4816): Preparing to register libhermesinstancejni_so.  onload_func: 0x792372b08b60
+D/jni_lib_merge( 4816): Preparing to register libjsijniprofiler_so.  onload_func: 0x792372b0a900
+D/jni_lib_merge( 4816): About to register 3 actual methods.
+D/CompatibilityChangeReporter(  543): Compat change id reported: 161145287; UID 10193; state: ENABLED
+D/TrafficStats( 4816): tagSocket(79) with statsTag=0xffffffff, statsUid=-1
+W/unknown:BridgelessReact( 4816): ReactHost{0}.startSurface(surfaceId = 0): Schedule
+W/unknown:BridgelessReact( 4816): ReactHost{0}.attachSurface(surfaceId = 0)
+W/unknown:BridgelessReact( 4816): ReactHost{0}.getOrCreateReactInstanceTask()
+W/unknown:BridgelessReact( 4816): ReactHost{0}.getOrCreateReactInstanceTask(): Start
+W/unknown:BridgelessReact( 4816): ReactHost{0}.getJSBundleLoader()
+W/unknown:BridgelessReact( 4816): ReactHost{0}.isMetroRunning()
+D/TrafficStats( 4816): tagSocket(81) with statsTag=0xffffffff, statsUid=-1
+W/com.ubmprobe( 4816): Accessing hidden method Landroid/view/ViewGroup;->makeOptionalFitsSystemWindows()V (unsupported, reflection, allowed)
+D/EGL_emulation(  755): app_time_stats: avg=12.20ms min=1.28ms max=53.30ms count=40
+W/unknown:BridgelessReact( 4816): ReactHost{0}.onHostResume(activity)
+W/unknown:ReactNative( 4816): Packager connection already open, nooping.
+D/CompatibilityChangeReporter( 4816): Compat change id reported: 237531167; UID 10193; state: DISABLED
+W/OpenGLRenderer( 4816): Unknown dataspace 0
+I/Choreographer( 4816): Skipped 64 frames!  The application may be doing too much work on its main thread.
+D/CoreBackPreview(  543): Window{118df3b u0 com.ubmprobe/com.ubmprobe.MainActivity}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@1585096, mPriority=0, mIsAnimationCallback=false}
+W/OpenGLRenderer( 4816): Failed to initialize 101010-2 format, error = EGL_SUCCESS
+I/hwservicemanager(  159): getTransport: Cannot find entry android.hardware.graphics.mapper@4.0::IMapper/default in either framework or device VINTF manifest.
+I/Gralloc4( 4816): mapper 4.x is not supported
+--------- beginning of kernel
+I/servicemanager(    0): Could not find android.hardware.graphics.allocator.IAllocator/default in the VINTF manifest.
+W/ziparchive(  543): Unable to open '/data/app/~~3U9XCrb0_rC027NWbt44PA==/com.ubmprobe-bYMVDWsMBiKttkU0JEtNJQ==/base.dm': No such file or directory
+I/ActivityTaskManager(  543): Displayed com.ubmprobe/.MainActivity for user 0: +2s210ms
+I/OpenGLRenderer( 4816): Davey! duration=1491ms; Flags=1, FrameTimelineVsyncId=125951, IntendedVsync=301100391596, Vsync=302167058220, InputEventId=0, HandleInputStart=302181057379, AnimationStart=302181063674, PerformTraversalsStart=302181252044, DrawStart=302390203145, FrameDeadline=301117058262, FrameInterval=302180312198, FrameStartTime=16666666, SyncQueued=302400730138, SyncStart=302401401175, IssueDrawCommandsStart=302403426929, SwapBuffers=302434105800, FrameCompleted=302592243074, DequeueBufferDuration=5293, QueueBufferDuration=384608, GpuCompleted=302592176047, SwapBuffersCompleted=302592243074, DisplayPresentTime=0, CommandSubmissionCompleted=302434105800, 
+D/OneSearchSuggestProvider( 1305): Shut down the binder channel
+D/OomAdjuster(  543): Not killing cached processes
+I/IPCThreadState( 1305): oneway function results for code 2 on binder at 0x79245f852470 will be dropped but finished with status UNKNOWN_TRANSACTION
+I/ImeTracker( 1305): com.google.android.apps.nexuslauncher:ae30ad4c: onRequestHide at ORIGIN_CLIENT_HIDE_SOFT_INPUT reason HIDE_SOFT_INPUT
+W/unknown:BridgelessReact( 4816): ReactHost{0}.raiseSoftException(onWindowFocusChange(hasFocus = "true")): Tried to access onWindowFocusChange while context is not ready
+I/ImeTracker(  543): com.google.android.apps.nexuslauncher:ae30ad4c: onCancelled at PHASE_SERVER_SHOULD_HIDE
+E/unknown:ReactHost( 4816): Unhandled SoftException
+E/unknown:ReactHost( 4816): com.facebook.react.bridge.ReactNoCrashSoftException: raiseSoftException(onWindowFocusChange(hasFocus = "true")): Tried to access onWindowFocusChange while context is not ready
+E/unknown:ReactHost( 4816): 	at com.facebook.react.runtime.ReactHostImpl.raiseSoftException(ReactHostImpl.kt:919)
+E/unknown:ReactHost( 4816): 	at com.facebook.react.runtime.ReactHostImpl.raiseSoftException$default(ReactHostImpl.kt:910)
+E/unknown:ReactHost( 4816): 	at com.facebook.react.runtime.ReactHostImpl.onWindowFocusChange(ReactHostImpl.kt:682)
+E/unknown:ReactHost( 4816): 	at com.facebook.react.ReactDelegate.onWindowFocusChanged(ReactDelegate.kt:229)
+E/unknown:ReactHost( 4816): 	at com.facebook.react.ReactActivityDelegate.onWindowFocusChanged(ReactActivityDelegate.java:235)
+E/unknown:ReactHost( 4816): 	at com.facebook.react.ReactActivity.onWindowFocusChanged(ReactActivity.java:161)
+E/unknown:ReactHost( 4816): 	at androidx.appcompat.view.WindowCallbackWrapper.onWindowFocusChanged(WindowCallbackWrapper.java:124)
+E/unknown:ReactHost( 4816): 	at com.android.internal.policy.DecorView.onWindowFocusChanged(DecorView.java:1788)
+E/unknown:ReactHost( 4816): 	at android.view.View.dispatchWindowFocusChanged(View.java:15933)
+E/unknown:ReactHost( 4816): 	at android.view.ViewGroup.dispatchWindowFocusChanged(ViewGroup.java:1509)
+E/unknown:ReactHost( 4816): 	at android.view.ViewRootImpl.dispatchFocusEvent(ViewRootImpl.java:4059)
+E/unknown:ReactHost( 4816): 	at android.view.ViewRootImpl.handleWindowFocusChanged(ViewRootImpl.java:3963)
+E/unknown:ReactHost( 4816): 	at android.view.ViewRootImpl.-$$Nest$mhandleWindowFocusChanged(Unknown Source:0)
+E/unknown:ReactHost( 4816): 	at android.view.ViewRootImpl$ViewRootHandler.handleMessageImpl(ViewRootImpl.java:5954)
+E/unknown:ReactHost( 4816): 	at android.view.ViewRootImpl$ViewRootHandler.handleMessage(ViewRootImpl.java:5862)
+E/unknown:ReactHost( 4816): 	at android.os.Handler.dispatchMessage(Handler.java:106)
+E/unknown:ReactHost( 4816): 	at android.os.Looper.loopOnce(Looper.java:205)
+E/unknown:ReactHost( 4816): 	at android.os.Looper.loop(Looper.java:294)
+E/unknown:ReactHost( 4816): 	at android.app.ActivityThread.main(ActivityThread.java:8177)
+E/unknown:ReactHost( 4816): 	at java.lang.reflect.Method.invoke(Native Method)
+E/unknown:ReactHost( 4816): 	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:552)
+E/unknown:ReactHost( 4816): 	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:971)
+D/CompatibilityChangeReporter(  543): Compat change id reported: 214016041; UID 10193; state: ENABLED
+I/ImeTracker(  543): com.ubmprobe:23172185: onRequestHide at ORIGIN_SERVER_HIDE_INPUT reason HIDE_UNSPECIFIED_WINDOW
+I/ImeTracker(  543): com.ubmprobe:23172185: onCancelled at PHASE_SERVER_SHOULD_HIDE
+I/GoogleInputMethodService( 1442): GoogleInputMethodService.onFinishInput():3227 
+I/GoogleInputMethodService( 1442): GoogleInputMethodService.updateDeviceLockedStatus():2087 repeatCheckTimes = 0, unlocked = true
+I/GoogleInputMethodService( 1442): GoogleInputMethodService.onStartInput():1877 onStartInput(EditorInfo{inputType=0x0(NULL) imeOptions=0x0 privateImeOptions=null actionName=UNSPECIFIED actionLabel=null actionId=0 initialSelStart=-1 initialSelEnd=-1 initialCapsMode=0x0 hintText=null label=null packageName=com.ubmprobe fieldId=0 fieldName=null extras=null}, false)
+I/GoogleInputMethodService( 1442): GoogleInputMethodService.shouldHideHeaderOnInitialState():4008 ShouldHideHeaderOnInitialState = false
+D/BtGatt.ScanManager(  873): uid 10128 isForeground true scanMode 1
+I/GoogleInputMethodService( 1442): GoogleInputMethodService.updateDeviceLockedStatus():2087 repeatCheckTimes = 2, unlocked = true
+D/BtGatt.ScanManager(  873): uid 10128 isForeground true scanMode -1
+I/FontLog ( 1171): Received query Noto Color Emoji Compat, URI content://com.google.android.gms.fonts [CONTEXT service_id=132 ]
+I/FontLog ( 1171): Query [emojicompat-emoji-font] resolved to {Noto Color Emoji Compat, wdth 100.0, wght 400, ital 0.0, bestEffort false} [CONTEXT service_id=132 ]
+E/TaskPersister(  543): File error accessing recents directory (directory doesn't exist?).
+I/FontLog ( 1171): Fetch {Noto Color Emoji Compat, wdth 100.0, wght 400, ital 0.0, bestEffort false} end status Status{statusCode=SUCCESS, resolution=null} [CONTEXT service_id=132 ]
+D/BtGatt.ScanManager(  873): uid 10128 isForeground true scanMode 1
+D/BtGatt.ScanManager(  873): uid 10128 isForeground true scanMode -1
+I/FontLog ( 1171): Pulling font file for id = 12, cache size = 8 [CONTEXT service_id=132 ]
+I/FontLog ( 1171): Pulling font file for id = 12, cache size = 8 [CONTEXT service_id=132 ]
+D/EGL_emulation(  755): app_time_stats: avg=356.83ms min=2.55ms max=1996.56ms count=6
+W/earchbox:search( 1696): Cleared Reference was only reachable from finalizer (only reported once)
+W/unknown:BridgelessReact( 4816): ReactHost{0}.isMetroRunning(): Async result = true
+W/unknown:BridgelessReact( 4816): ReactHost{0}.loadJSBundleFromMetro()
+I/wpa_supplicant(  741): wlan0: CTRL-EVENT-BEACON-LOSS 
+D/CompatibilityChangeReporter( 4816): Compat change id reported: 210923482; UID 10193; state: ENABLED
+W/WindowOnBackDispatcher(  755): sendCancelIfRunning: isInProgress=falsecallback=android.view.ViewRootImpl$$ExternalSyntheticLambda17@abd94f4
+W/InputManager-JNI(  543): Input channel object '65b4e37 Splash Screen com.ubmprobe (client)' was disposed without first being removed with the input manager!
+D/CoreBackPreview(  543): Window{65b4e37 u0 Splash Screen com.ubmprobe EXITING}: Setting back callback null
+D/CoreBackPreview(  543): Window{8433d1e u0 PopupWindow:8179642}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@33033cc, mPriority=0, mIsAnimationCallback=false}
+D/EGL_emulation(  755): app_time_stats: avg=56.97ms min=1.49ms max=644.99ms count=19
+I/netd    (  355): setProcSysNet(4, 2, wlan0, retrans_time_ms, 750) <0.12ms>
+I/netd    (  355): setProcSysNet(4, 2, wlan0, ucast_solicit, 10) <0.02ms>
+I/netd    (  355): setProcSysNet(6, 2, wlan0, retrans_time_ms, 750) <0.03ms>
+I/netd    (  355): setProcSysNet(6, 2, wlan0, ucast_solicit, 10) <0.01ms>
+D/EGL_emulation(  755): app_time_stats: avg=10.68ms min=1.03ms max=36.16ms count=42
+W/WindowOnBackDispatcher( 4816): sendCancelIfRunning: isInProgress=falsecallback=android.view.ViewRootImpl$$ExternalSyntheticLambda17@30df4af
+W/unknown:BridgelessReact( 4816): ReactHost{0}.loadJSBundleFromMetro(): Creating BundleLoader
+D/CoreBackPreview(  543): Window{8433d1e u0 PopupWindow:8179642}: Setting back callback null
+W/unknown:BridgelessReact( 4816): ReactHost{0}.getOrCreateReactInstanceTask(): Creating BridgelessReactContext
+I/netd    (  355): tetherGetStats() -> {[]} <6.84ms>
+W/InputManager-JNI(  543): Input channel object '8433d1e PopupWindow:8179642 (client)' was disposed without first being removed with the input manager!
+W/unknown:BridgelessReact( 4816): ReactHost{0}.getOrCreateReactInstanceTask(): Creating ReactInstance
+I/netd    (  355): bandwidthSetGlobalAlert(2097152) <0.15ms>
+I/netd    (  355): bandwidthRemoveInterfaceQuota(eth0) <0.74ms>
+I/netd    (  355): bandwidthSetInterfaceQuota(eth0, 9223372036854775807) <0.44ms>
+D/TrafficStats( 4816): tagSocket(104) with statsTag=0xffffffff, statsUid=-1
+W/unknown:BridgelessReact( 4816): ReactHost{0}.getOrCreateReactInstanceTask(): Loading JS Bundle
+W/unknown:BridgelessReact( 4816): ReactHost{0}.getOrCreateReactInstanceTask(): DevSupportManager.onNewReactContextCreated()
+W/unknown:ReactNative( 4816): Packager connection already open, nooping.
+W/unknown:BridgelessReact( 4816): ReactHost{0}.ReactContext.onHostResume()
+W/unknown:BridgelessReact( 4816): ReactHost{0}.getOrCreateReactInstanceTask(): Executing ReactInstanceEventListeners
+W/unknown:BridgelessReact( 4816): ReactHost{0}.startSurface(surfaceId = 0): Execute
+I/WebViewFactory( 4816): Loading com.google.android.webview version 113.0.5672.136 (code 567263637)
+W/ziparchive( 4816): Unable to open '/data/app/~~bUmJ5FC0feGZjAMnkSYJmg==/com.google.android.trichromelibrary_567263637-u7uBci3WP44XNugmNcd9bQ==/TrichromeLibrary.dm': No such file or directory
+W/ziparchive( 4816): Unable to open '/data/app/~~bUmJ5FC0feGZjAMnkSYJmg==/com.google.android.trichromelibrary_567263637-u7uBci3WP44XNugmNcd9bQ==/TrichromeLibrary.dm': No such file or directory
+W/com.ubmprobe( 4816): Entry not found
+D/nativeloader( 4816): Configuring clns-7 for other apk /data/app/~~bUmJ5FC0feGZjAMnkSYJmg==/com.google.android.trichromelibrary_567263637-u7uBci3WP44XNugmNcd9bQ==/TrichromeLibrary.apk. target_sdk_version=34, uses_libraries=ALL, library_path=/data/app/~~748pTeMuw3lqJa8vQRkT1A==/com.google.android.webview-CfXryH9_KbTZ6IIS5ngpww==/lib/x86_64:/data/app/~~748pTeMuw3lqJa8vQRkT1A==/com.google.android.webview-CfXryH9_KbTZ6IIS5ngpww==/WebViewGoogle.apk!/lib/x86_64:/data/app/~~bUmJ5FC0feGZjAMnkSYJmg==/com.google.android.trichromelibrary_567263637-u7uBci3WP44XNugmNcd9bQ==/TrichromeLibrary.apk!/lib/x86_64, permitted_path=/data:/mnt/expand
+D/nativeloader( 4816): Configuring clns-8 for other apk /data/app/~~748pTeMuw3lqJa8vQRkT1A==/com.google.android.webview-CfXryH9_KbTZ6IIS5ngpww==/WebViewGoogle.apk. target_sdk_version=34, uses_libraries=, library_path=/data/app/~~748pTeMuw3lqJa8vQRkT1A==/com.google.android.webview-CfXryH9_KbTZ6IIS5ngpww==/lib/x86_64:/data/app/~~748pTeMuw3lqJa8vQRkT1A==/com.google.android.webview-CfXryH9_KbTZ6IIS5ngpww==/WebViewGoogle.apk!/lib/x86_64:/data/app/~~bUmJ5FC0feGZjAMnkSYJmg==/com.google.android.trichromelibrary_567263637-u7uBci3WP44XNugmNcd9bQ==/TrichromeLibrary.apk!/lib/x86_64, permitted_path=/data:/mnt/expand
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{bba3e27 com.android.cts.priv.ctsshim/10178} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{66688d4 com.google.android.youtube/10139} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{f510a7d com.android.internal.display.cutout.emulation.corner/10022} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{61bd72 com.android.internal.display.cutout.emulation.double/10045} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{98295c3 com.google.android.googlequicksearchbox/10132} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{e0d5e40 com.google.android.onetimeinitializer/10125} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{3e8d179 com.google.android.ext.shared/10101} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{68a3ebe com.android.internal.systemui.navbar.gestural_wide_back/10004} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{ceecb1f com.android.virtualmachine.res/10189} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{c8a1e6c com.google.android.federatedcompute/10172} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{f9c0c35 com.android.managedprovisioning.auto_generated_rro_product__/10021} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{72788ca com.android.carrierconfig.auto_generated_rro_vendor__/10079} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{dbefa3b com.android.systemui.emulation.pixel_3_xl/10031} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{f30b558 com.android.systemui.emulation.pixel_4_xl/10059} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{90e36b1 com.android.systemui.emulation.pixel_fold/10006} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{d9d6796 com.android.simappdialog.auto_generated_rro_product__/10027} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{598ff17 com.android.htmlviewer/10116} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{2a7cf04 com.google.android.health.connect.backuprestore/10191} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{39e8ced com.android.systemui.auto_generated_rro_product__/10028} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{5c06722 com.google.android.apps.messaging/10131} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{8a475b3 com.google.android.soundpicker/10137} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{554d770 com.google.android.marvin.talkbackoverlay/10075} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{f640ae9 com.google.android.configupdater/10129} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{221d36e com.android.internal.emulation.pixel_3a_xl/10044} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{be6ba0f com.android.internal.emulation.pixel_6_pro/10018} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{487fa9c com.android.internal.emulation.pixel_7_pro/10015} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{ce96ca5 com.android.internal.emulation.pixel_8_pro/10058} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{b1bb87a com.android.internal.emulation.pixel_3a/10053} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{55ee82b com.android.internal.emulation.pixel_4a/10008} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{682488 com.android.internal.emulation.pixel_6a/10036} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{a92e21 com.android.internal.emulation.pixel_7a/10030} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{29ce246 com.google.android.overlay.googlewebview/10049} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{1e1dc07 com.google.android.hotspot2.osulogin/10176} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{29f0134 com.android.simappdialog/10112} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{2498b5d com.android.internal.display.cutout.emulation.hole/10073} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{8b4dcd2 com.android.internal.display.cutout.emulation.tall/10065} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{cb631a3 com.android.internal.systemui.navbar.threebutton/10068} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{3c4fca0 com.android.camera2/10145} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{3988059 com.android.systemui.auto_generated_rro_vendor__/10076} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{cdff41e com.google.android.deskclock/10153} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{4f044ff com.android.internal.systemui.navbar.twobutton/10019} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{b8d42cc com.google.android.as/10127} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{b47c915 com.google.android.gm/10142} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{813342a com.android.internal.systemui.navbar.gestural_extra_wide_back/10048} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{c8e321b com.android.systemui.emulation.pixel_3/10012} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{7b1bfb8 com.android.systemui.emulation.pixel_4/10037} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{f68e191 com.android.systemui.emulation.pixel_5/10071} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{b8868f6 com.android.systemui.emulation.pixel_6/10074} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{d53d4f7 com.android.systemui.emulation.pixel_7/10072} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{59f1f64 com.android.systemui.emulation.pixel_8/10070} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{ba905cd com.android.nfc.auto_generated_rro_product__/10024} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{4a1e82 com.android.printspooler/10104} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{f66c993 com.android.emergency.auto_generated_rro_product__/10041} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{ae0cdd0 com.google.android.connectivity.resources.goldfish.overlay/10078} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{f4d31c9 com.android.dreams.basic/10103} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{37fa0ce com.google.android.networkstack.tethering.emulator/10020} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{daa6bef com.android.providers.settings.auto_generated_rro_product__/10000} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{84cf6fc com.google.android.as.oss/10121} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{eee2185 com.android.traceur.auto_generated_rro_product__/10013} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{b78fbda com.google.android.devicelockcontroller/10184} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{3dbd80b com.google.android.dialer/10130} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{3f086e8 com.android.internal.emulation.pixel_3/10046} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{5f45101 com.android.internal.emulation.pixel_4/10060} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{17afba6 com.android.internal.emulation.pixel_5/10009} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{26de9e7 com.android.internal.emulation.pixel_6/10038} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{5bb2994 com.android.internal.emulation.pixel_7/10067} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{3d3fc3d com.android.internal.emulation.pixel_8/10039} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{c4b2c32 com.google.android.captiveportallogin/10113} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{4253d83 com.android.musicfx/10088} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{2eb4b00 com.google.android.apps.docs/10154} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{3fc915f com.google.android.apps.maps/10152} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{1091f39 com.google.android.modulemetadata/10147} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{77bd97e com.google.android.markup/10135} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{1742edf com.android.providers.settings.auto_generated_rro_vendor__/10080} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{43a172c com.google.android.rkpdapp/10183} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{7d375f5 com.google.android.contacts/10156} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{3780f8a com.android.server.telecom.auto_generated_rro_product__/10029} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{d96d9fb com.google.android.overlay.googleconfig/10055} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{2c77a18 com.android.chrome/10149} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{cb27c71 com.android.bips.auto_generated_rro_product__/10032} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{a4f9a56 com.google.android.apps.customization.pixel/10144} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{96f1ad7 com.google.android.tag/10082} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{7c61fc4 com.google.android.overlay.permissioncontroller/10002} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{2a16ead com.google.android.partnersetup/10124} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{54305e2 com.google.android.apps.wallpaper.nexus/10141} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{8208d73 com.google.android.apps.nexuslauncher/10169} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{ae77430 com.google.android.nearby.halfsheet/10181} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{71348a9 com.android.theme.font.notoserifsource/10066} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{f0f9e2e com.google.android.safetycenter.resources/10170} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{16c8dcf com.android.internal.display.cutout.emulation.waterfall/10040} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{b87a35c com.android.internal.systemui.navbar.transparent/10026} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{1aec665 com.google.android.connectivity.resources/10180} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{efb6f3a com.android.providers.contacts.auto_generated_rro_product__/10035} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{dce37eb com.google.android.feedback/10162} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{999948 com.google.android.printservice.recommendation/10110} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{3ca63e1 com.google.android.apps.photos/10143} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{b47803 com.google.android.calendar/10140} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{8a14506 com.google.android.documentsui/10098} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{85667c7 com.android.systemui.emulation.pixel_3a_xl/10034} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{b5301f4 com.android.systemui.emulation.pixel_6_pro/10063} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{3a85d1d com.android.systemui.emulation.pixel_7_pro/10054} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{c7cab92 com.android.systemui.emulation.pixel_8_pro/10014} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{247b963 com.google.mainline.telemetry/10151} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{8984960 com.android.carrierconfig.auto_generated_rro_product__/10064} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{f72ae19 com.android.providers.partnerbookmarks/10100} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{535eede com.android.wallpaper.livepicker/10090} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{47288bf com.android.providers.telephony.auto_generated_rro_product__/10062} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{d289b8c com.android.phone.auto_generated_rro_vendor__/10081} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{3f712d5 com.google.mainline.adservices/10136} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{dae1aea com.android.imsserviceentitlement/10117} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{a50f1db com.google.android.healthconnect.controller/10190} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{889e478 com.android.internal.emulation.pixel_2_xl/10017} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{3230751 com.android.internal.emulation.pixel_3_xl/10056} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{bcafbb6 com.android.internal.emulation.pixel_4_xl/10047} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{2e2d0b7 com.android.internal.emulation.pixel_fold/10003} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{ab4d024 com.android.bookmarkprovider/10115} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{63fc78d com.google.android.overlay.pixelconfigcommon/10011} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{c031d42 com.android.systemui.accessibility.accessibilitymenu.auto_generated_rro_product__/10050} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{349c153 com.android.systemui.emulation.pixel_3a/10010} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{880ca90 com.android.systemui.emulation.pixel_4a/10001} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{7ee4f89 com.android.systemui.emulation.pixel_6a/10042} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{9a9cb8e com.android.systemui.emulation.pixel_7a/10016} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{7251faf com.google.android.settings.intelligence/10119} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{b968012 com.google.android.projection.gearhead/10123} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{acfffbc com.google.android.uwb.resources/10182} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{a0633e3 com.android.cts.ctsshim/10179} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{1e35b45 com.google.android.wifi.resources/10174} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{ffb129a com.google.android.wifi.dialog/10175} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{aae07cb com.google.android.apps.wallpaper/10161} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{47b5ba8 com.google.android.odad/10122} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{a6366c1 com.android.settings.auto_generated_rro_product__/10025} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{fe7be66 com.android.internal.systemui.navbar.gestural/10051} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{a9355a7 com.google.android.apps.youtube.music/10155} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{afe8a54 com.android.bluetoothmidiservice/10106} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{d7eadfd com.android.storagemanager.auto_generated_rro_product__/10023} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{6a15af2 com.google.android.cellbroadcastreceiver/10188} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{595a543 com.android.phone.auto_generated_rro_product__/10061} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{de3f7c0 android.auto_generated_rro_product__/10069} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{e0d2cf9 com.android.internal.systemui.navbar.gestural_narrow_back/10052} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{e6343e com.google.android.inputmethod.latin/10146} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{be3529f android.auto_generated_rro_vendor__/10077} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{8f0cfec com.google.android.apps.restore/10120} BLOCKED
+W/com.ubmprobe( 4816): Accessing hidden method Landroid/os/Trace;->isTagEnabled(J)Z (unsupported, reflection, allowed)
+W/com.ubmprobe( 4816): Accessing hidden method Landroid/os/Trace;->traceBegin(JLjava/lang/String;)V (unsupported, reflection, allowed)
+W/com.ubmprobe( 4816): Accessing hidden method Landroid/os/Trace;->traceEnd(J)V (unsupported, reflection, allowed)
+W/com.ubmprobe( 4816): Accessing hidden method Landroid/os/Trace;->asyncTraceBegin(JLjava/lang/String;I)V (unsupported, reflection, allowed)
+W/com.ubmprobe( 4816): Accessing hidden method Landroid/os/Trace;->asyncTraceEnd(JLjava/lang/String;I)V (unsupported, reflection, allowed)
+I/cr_WVCFactoryProvider( 4816): Loaded version=113.0.5672.136 minSdkVersion=29 isBundle=false multiprocess=true packageId=2
+I/cr_VariationsUtils( 4816): Failed reading seed file "/data/user/0/com.ubmprobe/app_webview/variations_seed_new"
+I/cr_LibraryLoader( 4816): Successfully loaded native library
+I/cr_CachingUmaRecorder( 4816): Flushed 8 samples from 8 histograms.
+D/TrafficStats( 4816): tagSocket(115) with statsTag=0xffffffff, statsUid=-1
+I/ReactNativeJS( 4816): Running "UbmProbe" with {"rootTag":1,"initialProps":{},"fabric":true}
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.debuggingoverlay.DebuggingOverlayManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.uimanager.LayoutShadowNode
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.safeareaview.ReactSafeAreaViewManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.modal.ReactModalHostManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.progressbar.ReactProgressBarViewManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.scroll.ReactHorizontalScrollViewManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.image.ReactImageManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.text.ReactTextViewManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.scroll.ReactHorizontalScrollContainerViewManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.unimplementedview.ReactUnimplementedViewManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.scroll.ReactScrollViewManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.view.ReactViewManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.drawer.ReactDrawerLayoutManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.switchview.ReactSwitchManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.swiperefresh.SwipeRefreshLayoutManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.textinput.ReactTextInputManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.text.SelectableTextViewManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.virtual.view.ReactVirtualViewManager
+D/CompatibilityChangeReporter( 4816): Compat change id reported: 289878283; UID 10193; state: ENABLED
+D/TrafficStats( 4816): tagSocket(106) with statsTag=0xffffffff, statsUid=-1
+I/ReactNativeJS( 4816): [UBM_PROBE] app-mounted
+D/CompatibilityChangeReporter( 4816): Compat change id reported: 171228096; UID 10193; state: ENABLED
+W/com.ubmprobe( 4816): Accessing hidden field Landroid/widget/ScrollView;->mScroller:Landroid/widget/OverScroller; (unsupported, reflection, allowed)
+W/healthd (    0): battery l=100 v=5000 t=25.0 h=2 st=2 c=900000 fc=3000000 cc=10 chg=a
+D/StatusBarIconController(  755): ignoring old pipeline callbacks, because the new mobile icons are enabled
+I/ResourceTimer(  543): GetResourceValue count=4081 pvalues=1000,5000,8000,19000
+I/ResourceTimer(  543): RetrieveAttributes count=2175 pvalues=1000,1000,3000,19000
+D/ProfileInstaller( 4816): Installing profile for com.ubmprobe
+D/EGL_emulation( 4816): app_time_stats: avg=1336.28ms min=22.98ms max=4188.28ms count=4
+D/BtGatt.ScanManager(  873): uid 10128 isForeground true scanMode 1
+D/BtGatt.ScanManager(  873): uid 10128 isForeground true scanMode -1
+I/DropBoxManagerService(  543): add tag=system_server_strictmode isTagEnabled=true flags=0x2
+I/DropBoxManagerService(  543): add tag=system_server_strictmode isTagEnabled=true flags=0x2
+I/DropBoxManagerService(  543): add tag=system_server_strictmode isTagEnabled=true flags=0x2
+I/DropBoxManagerService(  543): add tag=system_server_strictmode isTagEnabled=true flags=0x2
+D/ConnectivityService(  543): releasing NetworkRequest [ REQUEST id=149, [ Transports: CELLULAR Capabilities: INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VPN&NOT_VCN_MANAGED Uid: 10132 RequestorUid: 10132 RequestorPkg: com.google.android.googlequicksearchbox UnderlyingNetworks: Null] ] (release request)
+I/ConnectivityService(  543): Update capabilities for net 100 : -FOREGROUND
+I/netd    (  355): networkSetPermissionForNetwork(100, 1) <13.27ms>
+I/logd    (    0): logdr: UID=2000 GID=2000 PID=4873 n tail=0 logMask=99 pid=0 start=0ns deadline=0ns
+D/AndroidRuntime( 4876): >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+I/AndroidRuntime( 4876): Using default boot image
+I/AndroidRuntime( 4876): Leaving lock profiling enabled
+I/app_process( 4876): Core platform API reporting enabled, enforcing=false
+I/app_process( 4876): Using CollectorTypeCC GC.
+D/ActivityManager(  543): freezing 2033 com.google.android.apps.messaging
+D/ActivityManager(  543): freezing 1222 android.process.acore
+D/nativeloader( 4876): InitDefaultPublicLibraries for_preload=1: libandroid.so:libaaudio.so:libamidi.so:libbinder_ndk.so:libc.so:libcamera2ndk.so:libdl.so:libEGL.so:libGLESv1_CM.so:libGLESv2.so:libGLESv3.so:libicu.so:libicui18n.so:libicuuc.so:libjnigraphics.so:liblog.so:libmediandk.so:libm.so:libnativehelper.so:libnativewindow.so:libOpenMAXAL.so:libOpenSLES.so:libRS.so:libstdc++.so:libsync.so:libvulkan.so:libwebviewchromium_plat_support.so:libz.so
+D/app_process( 4876): Time zone APEX ICU file found: /apex/com.android.tzdata/etc/icu/icu_tzdata.dat
+D/app_process( 4876): I18n APEX ICU file found: /apex/com.android.i18n/etc/icu/icudt72l.dat
+W/app_process( 4876): Unexpected CPU variant for x86: x86_64.
+W/app_process( 4876): Known variants: atom, sandybridge, silvermont, goldmont, goldmont-plus, tremont, kabylake, default
+W/app_process( 4876): ClassLoaderContext shared library size mismatch. Expected=2, found=0 (PCL[]{PCL[/system/framework/android.test.base.jar*836642756]#PCL[/system/framework/android.test.mock.jar*3186112116]} | PCL[])
+W/app_process( 4876): ClassLoaderContext classpath size mismatch. expected=0, found=1 (PCL[]{PCL[/system/framework/android.test.runner.jar*4168958247]{PCL[/system/framework/android.test.base.jar*836642756]#PCL[/system/framework/android.test.mock.jar*3186112116]}#PCL[/system/framework/android.test.base.jar*836642756]} | PCL[/system/framework/android.test.runner.jar*4168958247])
+W/main    ( 4876): type=1400 audit(0.0:37): avc:  denied  { read } for  name="u:object_r:build_attestation_prop:s0" dev="tmpfs" ino=86 scontext=u:r:shell:s0 tcontext=u:object_r:build_attestation_prop:s0 tclass=file permissive=0
+W/libc    ( 4876): Access denied finding property "ro.product.name_for_attestation"
+W/libc    ( 4876): Access denied finding property "ro.product.brand_for_attestation"
+W/libc    ( 4876): Access denied finding property "ro.product.model_for_attestation"
+D/AndroidRuntime( 4876): Calling main entry com.android.commands.uiautomator.Launcher
+W/main    ( 4876): type=1400 audit(0.0:38): avc:  denied  { read } for  name="u:object_r:build_attestation_prop:s0" dev="tmpfs" ino=86 scontext=u:r:shell:s0 tcontext=u:object_r:build_attestation_prop:s0 tclass=file permissive=0
+W/main    ( 4876): type=1400 audit(0.0:39): avc:  denied  { read } for  name="u:object_r:build_attestation_prop:s0" dev="tmpfs" ino=86 scontext=u:r:shell:s0 tcontext=u:object_r:build_attestation_prop:s0 tclass=file permissive=0
+D/UiAutomationConnection( 4876): Created on user UserHandle{0}
+I/UiAutomation( 4876): Initialized for user 0 on display 0
+W/UiAutomation( 4876): Created with deprecatead constructor, assumes DEFAULT_DISPLAY
+D/AccessibilityManagerService(  543): changeCurrentUserForTestAutomationIfNeededLocked(0): ignoring because device doesn't support visible background users
+I/UiAutomationManager(  543): Registering UiTestAutomationService (id=com.android.server.accessibility/UiAutomation) when called by user 0
+W/WindowMagnificationMgr(  543): requestConnection duplicated request: connect=false, mConnectionState=DISCONNECTED
+I/AiAiEcho( 1490): Settings changed for uri: content://settings/secure/accessibility_enabled
+D/BatterySaverPolicy(  543): accessibility changed to true, updating policy.
+I/AiAiEcho( 1490): Predicting[0]: 
+I/AiAiEcho( 1490): EchoTargets: 
+I/AiAiEcho( 1490): Filtered by AiAi flag check: 
+I/AiAiEcho( 1490): Ranked targets strategy: SORT, count: 0, ranking metadata: 
+I/AiAiEcho( 1490): Predicting[0]: 
+I/AiAiEcho( 1490): EchoTargets: 
+I/AiAiEcho( 1490): Filtered by AiAi flag check: 
+I/AiAiEcho( 1490): Ranked targets strategy: SORT, count: 0, ranking metadata: 
+I/AiAiEcho( 1490): Predicting[0]: 
+I/AiAiEcho( 1490): EchoTargets: 
+I/AiAiEcho( 1490): Filtered by AiAi flag check: 
+I/AiAiEcho( 1490): Ranked targets strategy: SORT, count: 0, ranking metadata: 
+V/UiAutomation( 4876): Init UiAutomation@6a9431c[id=3, displayId=0, flags=0]
+W/WindowMagnificationMgr(  543): requestConnection duplicated request: connect=false, mConnectionState=DISCONNECTED
+I/AiAiEcho( 1490): Settings changed for uri: content://settings/secure/accessibility_enabled
+I/AiAiEcho( 1490): #postPredictionTargets: Sending updates to UISurface lockscreen with targets# 0 (types=[])
+I/AiAiEcho( 1490): #postPredictionTargets: Sending updates to UISurface media_data_manager with targets# 0 (types=[])
+I/AiAiEcho( 1490): #postPredictionTargets: Sending updates to UISurface home with targets# 0 (types=[])
+I/AiAiEcho( 1490): Predicting[0]: 
+I/AiAiEcho( 1490): EchoTargets: 
+I/AiAiEcho( 1490): Filtered by AiAi flag check: 
+I/AiAiEcho( 1490): Ranked targets strategy: SORT, count: 0, ranking metadata: 
+I/AiAiEcho( 1490): Predicting[0]: 
+I/AiAiEcho( 1490): EchoTargets: 
+I/AiAiEcho( 1490): Filtered by AiAi flag check: 
+I/AiAiEcho( 1490): Ranked targets strategy: SORT, count: 0, ranking metadata: 
+I/AiAiEcho( 1490): Predicting[0]: 
+I/AiAiEcho( 1490): EchoTargets: 
+I/AiAiEcho( 1490): Filtered by AiAi flag check: 
+I/AiAiEcho( 1490): Ranked targets strategy: SORT, count: 0, ranking metadata: 
+I/AiAiEcho( 1490): #postPredictionTargets: Sending updates to UISurface lockscreen with targets# 0 (types=[])
+I/AiAiEcho( 1490): #postPredictionTargets: Sending updates to UISurface media_data_manager with targets# 0 (types=[])
+I/AiAiEcho( 1490): #postPredictionTargets: Sending updates to UISurface home with targets# 0 (types=[])
+W/PageIndicator(  755): Total number of pages invalid: 0. Assuming 1 page.
+D/SsMediaDataProvider(  755): Forwarding Smartspace updates []
+W/PageIndicator(  755): Total number of pages invalid: 0. Assuming 1 page.
+D/SsMediaDataProvider(  755): Forwarding Smartspace updates []
+I/A       ( 1696): NGA disabled since it's running Panthera and at least one a11y feature is on.
+I/A       ( 1696): Nga state changed to NgaStateDetails{state=DISABLED, isSpecialExperience=false}
+I/A       ( 1511): APA or Classic session decision: SessionDecision(sessionVariance=CLASSIC, platformVariance=CLASSIC, justification=CURRENT_PLATFORM_VARIANCE).
+I/A       ( 1511): [Memory] eligibility: StashEligibility{4}
+I/A       ( 1511): Unsubscribed to apa or classic variant change.
+I/wpa_supplicant(  741): wlan0: CTRL-EVENT-BEACON-LOSS 
+W/AccessibilityNodeInfoDumper( 4876): Fetch time: 155ms
+W/WindowMagnificationMgr(  543): requestConnection duplicated request: connect=false, mConnectionState=DISCONNECTED
+D/AccessibilityManagerService(  543): restoreCurrentUserForTestAutomationIfNeededLocked(): ignoring because device doesn't support visible background users
+I/AiAiEcho( 1490): Settings changed for uri: content://settings/secure/accessibility_enabled
+D/BatterySaverPolicy(  543): accessibility changed to false, updating policy.
+I/AiAiEcho( 1490): Predicting[0]: 
+I/AiAiEcho( 1490): EchoTargets: 
+I/AiAiEcho( 1490): Filtered by AiAi flag check: 
+I/AiAiEcho( 1490): Ranked targets strategy: SORT, count: 0, ranking metadata: 
+I/AiAiEcho( 1490): Predicting[0]: 
+I/AiAiEcho( 1490): EchoTargets: 
+I/AiAiEcho( 1490): Filtered by AiAi flag check: 
+I/AiAiEcho( 1490): Ranked targets strategy: SORT, count: 0, ranking metadata: 
+I/AiAiEcho( 1490): Predicting[0]: 
+I/AiAiEcho( 1490): EchoTargets: 
+I/AiAiEcho( 1490): Filtered by AiAi flag check: 
+I/AiAiEcho( 1490): Ranked targets strategy: SORT, count: 0, ranking metadata: 
+I/AiAiEcho( 1490): #postPredictionTargets: Sending updates to UISurface lockscreen with targets# 0 (types=[])
+I/AiAiEcho( 1490): #postPredictionTargets: Sending updates to UISurface media_data_manager with targets# 0 (types=[])
+I/AiAiEcho( 1490): #postPredictionTargets: Sending updates to UISurface home with targets# 0 (types=[])
+W/PageIndicator(  755): Total number of pages invalid: 0. Assuming 1 page.
+D/SsMediaDataProvider(  755): Forwarding Smartspace updates []
+I/A       ( 1696): NGA enabled in interactor.
+I/A       ( 1696): Nga state changed to NgaStateDetails{state=ENABLED, isSpecialExperience=false}
+D/AndroidRuntime( 4876): Shutting down VM
+I/A       ( 1511): Initializing all components
+I/A       ( 1511): APA or Classic session decision: SessionDecision(sessionVariance=CLASSIC, platformVariance=CLASSIC, justification=CURRENT_PLATFORM_VARIANCE).
+I/A       ( 1511): [Memory] eligibility: StashEligibility{6}
+I/A       ( 1511): onIsEnabledChanged, isEnabled: false
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+I/A       ( 1511): onOpaVisibilityChanged: false
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+I/A       ( 1511): Setting session to type: NO_SESSION
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+I/A       ( 1511): setNavBarVisible: GestureNavBarVisible{navbarVisible=true}
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1511): Disposing empty manager. Did you forgot to subscribe observables?
+I/A       ( 1511): onDisabled. Registered: false
+D/OomAdjuster(  543): Not killing cached processes
+I/A       ( 1511): State changed: IDLE => IDLE by NGA_STATE_CHANGED and N/A with Optional.empty
+I/A       ( 1511): Recognizer choice: (recognizer_type: 1, recognizer_mode: 1, choice_reason: 4)
+I/A       ( 1511): onActiveStateChangeEvent: IDLE => IDLE
+I/A       ( 1511): #onActiveStateChangeEvent, newState: IDLE, previousState: IDLE.
+E/GsaVoiceSerConnection( 1511): gsaVis null binding
+D/CompatibilityChangeReporter(  543): Compat change id reported: 197654537; UID 10193; state: ENABLED
+I/A       ( 1511): Initialize
+I/A       ( 1511): stopListening(NGA_PAUSED_UNKNOWN_REASON, NGA_CREATE), idleOverride=NOT_LISTENING
+I/NgaEntryPointEventSendr( 1511): setupConnection
+W/ProcessStats(  543): Tracking association SourceState{ecc6f96 com.google.android.googlequicksearchbox:search/10132 BFgs #3647} whose proc state 4 is better than process ProcessState{fc3e567 com.google.android.gms/10128 pkg=com.google.android.gms} proc state 14 (192 skipped)
+I/NgaEntryPointEventSendr( 1511): State changed: Disconnected => Connecting
+I/A       ( 1511): on opa visibility changed false
+I/A       ( 1511): Successfully initialized all components
+I/A       ( 1696): Creating pss binder().
+I/A       ( 1511): on opa visibility changed false
+I/NgaEntryPointEventSendr( 1511): onServiceConnected
+I/A       ( 1696): Calling beginBinderSession().
+I/A       ( 1696): beginBinderSession(): calling binder
+I/NgaEntryPointEventSendr( 1511): State changed: Connecting => Ready
+V/ClearcutMetricXmitter( 1511): Transmission is done.
+W/ActivityManager(  543): Unable to start service Intent { cmp=com.google.android.apps.tachyon/.clientapi.ClientApiService } U=0: not found
+I/PBSessionCacheImpl( 1696): Deleted sessionId[7460876564009172] from persistence.
+W/A       ( 1696): UiCallbackStub-onGenericEvent[ServiceEvent = 60] task was not run. Callback from Service received after client was disposed.
+I/NgaEntryPointEventSendr( 1511): State changed: Ready => Disconnected (onOpaDisconnected)
+W/SearchServiceCore( 1696): Abort, client detached.
+I/earchbox:search( 1696): JIT allocated 59KB for compiled code of java.lang.Object com.google.android.apps.gsa.binaries.velvet.app.ael.b()
+D/TaplEvents( 1305): TIS / TouchInteractionService.onInputEvent: MotionEvent { action=ACTION_DOWN, actionButton=0, id[0]=0, x[0]=540.0, y[0]=710.0, toolType[0]=TOOL_TYPE_FINGER, buttonState=0, classification=NONE, metaState=0, flags=0x0, edgeFlags=0x0, pointerCount=1, historySize=0, eventTime=313181, downTime=313181, deviceId=-1, source=0x1002, displayId=0, eventId=-629820999 }
+D/TaplEvents( 1305): TIS / TouchInteractionService.onInputEvent: MotionEvent { action=ACTION_UP, actionButton=0, id[0]=0, x[0]=540.0, y[0]=710.0, toolType[0]=TOOL_TYPE_FINGER, buttonState=0, classification=NONE, metaState=0, flags=0x0, edgeFlags=0x0, pointerCount=1, historySize=0, eventTime=313181, downTime=313181, deviceId=-1, source=0x1002, displayId=0, eventId=-587396956 }
+D/audioserver(  416): FGS Logger Transaction failed
+D/audioserver(  416): -129
+I/GnssLocationProvider(  543): WakeLock acquired by handleDownloadPsdsData()
+E/GnssPsdsDownloader(  543): No Long-Term PSDS servers were specified in the GnssConfiguration
+I/ReactNativeJS( 4816): [UBM_PROBE] rustcore-ok contract=C-UBM.0.1.2-DRAFT status={"revision":"C-UBM.0.1.2-DRAFT","live_operations":0,"retained_cleanup":0} echo=41 scanOp=central-op-0 scanTake={"step":"scan.start","ok":true,"op_id":"central-op-0","owner":"ubm-probe","staged":1,"effects":"central.scan-start#central-op-0:scan.start"} scanStop={"step":"scan.platform","ok":true,"event":"stop","state":"stopping","staged":0,"effects":"central.scan-settled#central-op-0:scan.stop"} closed=true
+D/audioserver(  416): FGS Logger Transaction failed
+D/audioserver(  416): -129
+D/EGL_emulation( 4816): app_time_stats: avg=546.72ms min=22.37ms max=5205.42ms count=10
+D/ActivityManager(  543): freezing 2969 com.google.android.gms.unstable
+D/android.hardware.audio@7.1-impl.ranchu(  361): threadLoop: entering standby, frames: 298112
+D/StatusBarIconController(  755): ignoring old pipeline callbacks, because the new mobile icons are enabled
+D/ActivityManager(  543): sync unfroze 1518 com.google.process.gservices for 7
+I/wpa_supplicant(  741): wlan0: CTRL-EVENT-BEACON-LOSS 
+D/OomAdjuster(  543): Not killing cached processes
+I/NamespaceManager( 1171): Package com.android.refreshratecontrol name not found! Using module version.
+I/NamespaceManager( 1171): Package com.google.oslo name not found! Using module version.
+I/NamespaceManager( 1171): Package com.android.media name not found! Using module version.
+I/NamespaceManager( 1171): Package com.android.media.swcodec name not found! Using module version.
+I/NamespaceManager( 1171): Package com.android.neuralnetworks name not found! Using module version.
+I/NamespaceManager( 1171): Package com.android.media name not found! Using module version.
+I/NamespaceManager( 1171): Package 1 name not found! Using module version.
+I/NamespaceManager( 1171): Package rkpd name not found! Using module version.
+I/NamespaceManager( 1171): Package android.companion name not found! Using module version.
+I/NamespaceManager( 1171): Package com.google.android.aicore name not found! Using module version.
+I/NamespaceManager( 1171): Package com.google.android.audioproxy name not found! Using module version.
+I/NamespaceManager( 1171): Package com.google.android.apps.pixel.psi name not found! Using module version.
+I/NamespaceManager( 1171): Package com.google.android.apps.safetycore name not found! Using module version.
+I/NamespaceManager( 1171): Package com.google.android.crashrecovery name not found! Using module version.
+I/NamespaceManager( 1171): Package com.google.android.profiling name not found! Using module version.
+I/NamespaceManager( 1171): Package com.google.android.bt name not found! Using module version.
+I/NamespaceManager( 1171): Package com.google.android.nfcservices name not found! Using module version.
+I/NamespaceManager( 1171): Package com.google.android.webapp name not found! Using module version.
+I/NamespaceManager( 1171): Package com.google.android.telephonycore name not found! Using module version.
+I/NamespaceManager( 1171): Package com.google.android.uprobestats name not found! Using module version.
+I/RescueParty(  543): Starting to observe: [com.google.android.ext.services, com.google.android.providers.media.module, android], updated namespace: storage_native_boot
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [com.google.android.ext.services, com.google.android.providers.media.module, android]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Not pruning observers, elapsed time: 0ms
+I/PackageWatchdog(  543): Saving observer state to file
+D/CompatibilityChangeReporter( 1486): Compat change id reported: 150939131; UID 10177; state: ENABLED
+I/PackageWatchdog(  543): Syncing health check requests for packages: {com.google.android.ext.services}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/TranscodeHelper( 1486): Empty transcode compat stale
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {com.google.android.ext.services}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/TranscodeHelper( 1486): Parsed 0 packages from resource
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+I/TranscodeHelper( 1486): Parsed 8 packages from device config
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+I/PackageWatchdog(  543): Updated health check state for package com.google.android.ext.services: INACTIVE -> PASSED
+I/PackageWatchdog(  543): Syncing state, reason: updated health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/PackageWatchdog(  543): Saving observer state to file
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+I/MediaApplication( 1486): PhotoPickerSettingsActivity is now disabled.
+I/MediaProvider( 1486): Changed PhotoPickerGetContentActivity component state to STATE_ENABLED ( 1 )
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/MediaProvider( 1486): Changed PhotoPickerUserSelectActivity component state to STATE_ENABLED ( 1 )
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+E/SettingsToPropertiesMapper(  543): key=persist.device_config.storage_native_boot.transcode_compat_manifest value=com.yelp.android,0,com.yy.biu,0,com.groupme.android,0,air.tv.douyu.android,0,com.baidu.mbaby,0,com.vlocker.locker,0,com.znxh.hyhuo,0,com.yixia.xiaokaxiu,0 exceeds system property max length.
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+I/bwir    ( 1171): updateFromConfigurations using legacy put method [CONTEXT service_id=204 ]
+I/NamespaceManager( 1171): Package com.android.refreshratecontrol name not found! Using module version.
+I/NamespaceManager( 1171): Package com.google.oslo name not found! Using module version.
+I/NamespaceManager( 1171): Package com.android.media name not found! Using module version.
+I/NamespaceManager( 1171): Package com.android.media.swcodec name not found! Using module version.
+I/NamespaceManager( 1171): Package com.android.neuralnetworks name not found! Using module version.
+I/NamespaceManager( 1171): Package com.android.media name not found! Using module version.
+I/NamespaceManager( 1171): Package 1 name not found! Using module version.
+I/NamespaceManager( 1171): Package rkpd name not found! Using module version.
+I/NamespaceManager( 1171): Package android.companion name not found! Using module version.
+I/NamespaceManager( 1171): Package com.google.android.aicore name not found! Using module version.
+I/NamespaceManager( 1171): Package com.google.android.audioproxy name not found! Using module version.
+I/NamespaceManager( 1171): Package com.google.android.apps.pixel.psi name not found! Using module version.
+I/NamespaceManager( 1171): Package com.google.android.apps.safetycore name not found! Using module version.
+I/NamespaceManager( 1171): Package com.google.android.crashrecovery name not found! Using module version.
+I/NamespaceManager( 1171): Package com.google.android.profiling name not found! Using module version.
+I/NamespaceManager( 1171): Package com.google.android.bt name not found! Using module version.
+I/NamespaceManager( 1171): Package com.google.android.nfcservices name not found! Using module version.
+I/NamespaceManager( 1171): Package com.google.android.webapp name not found! Using module version.
+I/NamespaceManager( 1171): Package com.google.android.telephonycore name not found! Using module version.
+I/NamespaceManager( 1171): Package com.google.android.uprobestats name not found! Using module version.
+I/RescueParty(  543): Starting to observe: [android], updated namespace: clipboard
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Not pruning observers, elapsed time: 0ms
+I/PackageWatchdog(  543): Saving observer state to file
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Not binding to service, service already connecting
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/RescueParty(  543): Starting to observe: [android], updated namespace: nearby
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Not pruning observers, elapsed time: 0ms
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/PackageWatchdog(  543): Saving observer state to file
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Not binding to service, service already connecting
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+I/RescueParty(  543): Starting to observe: [com.google.android.networkstack], updated namespace: connectivity
+D/CompatibilityChangeReporter(  834): Compat change id reported: 150939131; UID 1073; state: ENABLED
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [com.google.android.networkstack]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/PackageWatchdog(  543): Saving observer state to file
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+I/RescueParty(  543): Starting to observe: [com.google.android.permissioncontroller], updated namespace: permissions
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [com.google.android.permissioncontroller]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/PackageWatchdog(  543): Saving observer state to file
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+I/RescueParty(  543): Starting to observe: [android], updated namespace: wifi
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Not pruning observers, elapsed time: 0ms
+I/PackageWatchdog(  543): Saving observer state to file
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+I/RescueParty(  543): Starting to observe: [android], updated namespace: appsearch
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Not pruning observers, elapsed time: 0ms
+I/PackageWatchdog(  543): Saving observer state to file
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Not binding to service, service already connecting
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+I/RescueParty(  543): Starting to observe: [com.google.android.apps.nexuslauncher, com.android.settings, com.android.systemui], updated namespace: interaction_jank_monitor
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [com.google.android.apps.nexuslauncher, com.android.settings, com.android.systemui]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Saving observer state to file
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/RescueParty(  543): Starting to observe: [android], updated namespace: wearable_sensing
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Not binding to service, service already connecting
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Not pruning observers, elapsed time: 0ms
+I/PackageWatchdog(  543): Saving observer state to file
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+I/RescueParty(  543): Starting to observe: [android], updated namespace: adservices
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Not pruning observers, elapsed time: 0ms
+I/PackageWatchdog(  543): Saving observer state to file
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Not binding to service, service already connecting
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+V/NativeCrypto( 1171): SSL shutdown failed: ssl=0x7923ff80dcd8: I/O error during system call, Software caused connection abort
+I/RescueParty(  543): Starting to observe: [android], updated namespace: tare
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Not pruning observers, elapsed time: 0ms
+I/PackageWatchdog(  543): Saving observer state to file
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+I/init    (    0): processing action (persist.device_config.lmkd_native.thrashing_limit_critical=*) from (/system/etc/init/lmkd.rc:44)
+I/init    (    0): processing action (lmkd.reinit=1) from (/system/etc/init/lmkd.rc:10)
+I/init    (    0): starting service 'exec 24 (/system/bin/lmkd --reinit)'...
+I/RescueParty(  543): Starting to observe: [android], updated namespace: display_manager
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Not pruning observers, elapsed time: 0ms
+I/PackageWatchdog(  543): Saving observer state to file
+W/BrightnessThrottler(  543): DeviceConfig ThermalBrightnessThrottlingData is null
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+I/init    (    0): ... started service 'exec 24 (/system/bin/lmkd --reinit)' has pid 4922
+I/RescueParty(  543): Starting to observe: [com.android.settings], updated namespace: activity_manager
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [com.android.settings]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Not pruning observers, elapsed time: 0ms
+I/PackageWatchdog(  543): Saving observer state to file
+I/lowmemorykiller(  156): lmkd data connection established
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+I/AutofillManagerService(  543): Ignoring change on package_deny_list_for_unimportant_view
+D/AutofillUI(  543): destroySaveUiUiThread(): already destroyed
+D/AutofillManagerServiceImpl(  543): Set component for user 0 as ComponentInfo{com.google.android.gms/com.google.android.gms.autofill.service.AutofillService} and info as ServiceInfo{ee1da5f com.google.android.gms.autofill.service.AutofillService}
+I/AutofillManagerService(  543): Ignoring change on trigger_fill_request_on_filtered_important_views
+I/AutofillManagerService(  543): Ignoring change on package_and_activity_allowlist_for_triggering_fill_request
+I/AutofillManagerService(  543): Ignoring change on multiline_filter_enabled
+I/AutofillManagerService(  543): Ignoring change on augmented_autofill_mode
+I/AutofillManagerService(  543): Ignoring change on autofill_dialog_hints
+I/AutofillManagerService(  543): Ignoring change on include_all_views_in_assist_structure
+I/AutofillManagerService(  543): Ignoring change on should_enable_autofill_on_all_view_types
+I/AutofillManagerService(  543): Ignoring change on autofill_save_dialog_landscape_body_height_max_percent
+I/AutofillManagerService(  543): Ignoring change on non_autofillable_ime_action_ids
+I/AutofillManagerService(  543): Ignoring change on autofill_save_dialog_portrait_body_height_max_percent
+I/AutofillManagerService(  543): Ignoring change on include_all_autofill_type_not_none_views_in_assist_structure
+I/AutofillManagerService(  543): Ignoring change on trigger_fill_request_on_unimportant_view
+I/AutofillManagerService(  543): Ignoring change on autofill_dialog_enabled
+W/ServiceConnector.Impl(  543): mayInterruptIfRunning not supported - ignoring
+D/AugmentedAutofillService( 1490): onUnbind(): no proxy to destroy
+I/AiAiAutofill( 1490): Disconnected AiAiAugmentedAutofillService.
+I/AiAiAutofill( 1490): Created AiAiAugmentedAutofillService.
+D/AugmentedAutofillService( 1490): handleOnConnected(): debug=true, verbose=false
+I/AiAiAutofill( 1490): Connected AiAiAugmentedAutofillService.
+I/lowmemorykiller(  156): Using psi monitors for memory pressure detection
+I/lowmemorykiller(  156): Properties reinitilized
+I/lowmemorykiller( 4922): lmkd updated properties successfully
+I/lowmemorykiller(  156): lmkd data connection dropped
+I/lowmemorykiller(  156): closing lmkd data connection
+I/init    (    0): Service 'exec 24 (/system/bin/lmkd --reinit)' (pid 4922) exited with status 0 oneshot service took 0.064000 seconds in background
+I/init    (    0): Sending signal 9 to service 'exec 24 (/system/bin/lmkd --reinit)' (pid 4922) process group...
+I/libprocessgroup(    0): Successfully killed process cgroup uid 0 pid 4922 in 0ms
+I/RescueParty(  543): Starting to observe: [com.google.android.as, com.google.android.as.oss], updated namespace: device_personalization_services
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [com.google.android.as, com.google.android.as.oss]
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/PackageWatchdog(  543): Not pruning observers, elapsed time: 0ms
+I/PackageWatchdog(  543): Saving observer state to file
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Not binding to service, service already connecting
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+W/Zygote  (  356): forkRepeatedly terminated due to non-simple command
+D/Zygote  (  356): mbuffer starts with 1 , nice name is , mEnd = 35, mNext = 35, mLinesLeft = 0, mFd = 6
+W/hrtimer (    0): interrupt took 9894189 ns
+I/RescueParty(  543): Starting to observe: [android], updated namespace: credential_manager
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Not pruning observers, elapsed time: 0ms
+I/PackageWatchdog(  543): Saving observer state to file
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+I/RescueParty(  543): Starting to observe: [android, com.android.phone], updated namespace: telephony
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android, com.android.phone]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Not pruning observers, elapsed time: 0ms
+I/PackageWatchdog(  543): Saving observer state to file
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+I/RescueParty(  543): Starting to observe: [android], updated namespace: media_better_together
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Not pruning observers, elapsed time: 0ms
+I/PackageWatchdog(  543): Saving observer state to file
+I/RescueParty(  543): Starting to observe: [android], updated namespace: health_fitness
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Saving observer state to file
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Not binding to service, service already connecting
+I/RescueParty(  543): Starting to observe: [android], updated namespace: app_standby
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Not pruning observers, elapsed time: 0ms
+I/PackageWatchdog(  543): Saving observer state to file
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Not binding to service, service already connecting
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10139; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10139; state: ENABLED
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10132; state: DISABLED
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10132; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 171306433; UID 10132; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 226439802; UID 10132; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10087; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10087; state: ENABLED
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10125; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10125; state: ENABLED
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10085; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10085; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10131; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10131; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10193; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10193; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10129; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10129; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10177; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10177; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10138; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10138; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10145; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10145; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10127; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10127; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10104; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10104; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10121; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10121; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10130; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10130; state: DISABLED
+I/RescueParty(  543): Starting to observe: [com.google.android.apps.nexuslauncher], updated namespace: launcher
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [com.google.android.apps.nexuslauncher]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Not pruning observers, elapsed time: 0ms
+I/PackageWatchdog(  543): Saving observer state to file
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10133; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10133; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10183; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10183; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10149; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10149; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10093; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10093; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10128; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10150; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10150; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10124; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10124; state: DISABLED
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10099; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10099; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10098; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10098; state: ENABLED
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/ActivityThread( 1305): Schedule relaunch activity: com.google.android.apps.nexuslauncher.NexusLauncherActivity
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10190; state: ENABLED
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10190; state: ENABLED
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+D/b/254119092( 1305): clearActivity
+D/b/254119092( 1305): mActivity and mContext agree taskbarIsPresent=false
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10119; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10119; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10123; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10123; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10161; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10161; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10155; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10155; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10114; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10114; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 218533173; UID 10146; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 262645982; UID 10146; state: DISABLED
+W/WindowOnBackDispatcher( 1305): sendCancelIfRunning: isInProgress=falsecallback=android.view.ViewRootImpl$$ExternalSyntheticLambda17@2cde8d9
+D/CoreBackPreview(  543): Window{a788a93 u0 com.google.android.apps.nexuslauncher/com.google.android.apps.nexuslauncher.NexusLauncherActivity}: Setting back callback null
+D/AutofillManager( 1305): view is not autofillable - activity denied for autofill
+D/SearchUiPerUserService(  543): Removing callback for session Id=com.google.android.apps.nexuslauncher:1ccc03a1-43cd-44b3-9cef-6df18389ee8b,0 and callback=android.os.BinderProxy@df1e6a4
+D/SearchUiPerUserService(  543): Removing all callbacks for session Id=com.google.android.apps.nexuslauncher:1ccc03a1-43cd-44b3-9cef-6df18389ee8b,0 and 0 callbacks.
+W/InputManager-JNI(  543): Input channel object 'a788a93 com.google.android.apps.nexuslauncher/com.google.android.apps.nexuslauncher.NexusLauncherActivity (client)' was disposed without first being removed with the input manager!
+W/WindowOnBackDispatcher( 1305): OnBackInvokedCallback is not enabled for the application.
+W/WindowOnBackDispatcher( 1305): Set 'android:enableOnBackInvokedCallback="true"' in the application manifest.
+I/DropBoxManagerService(  543): add tag=system_server_strictmode isTagEnabled=true flags=0x2
+I/RescueParty(  543): Starting to observe: [android], updated namespace: companion
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Not pruning observers, elapsed time: 0ms
+I/PackageWatchdog(  543): Saving observer state to file
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+I/RescueParty(  543): Starting to observe: [android], updated namespace: package_manager_service
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Saving observer state to file
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/AiAiSuggestUi( 1305): Connecting to system intelligence module.
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/RescueParty(  543): Starting to observe: [android, com.google.android.permissioncontroller, com.android.settings, com.android.systemui], updated namespace: privacy
+I/AiAiSuggestUi( 1305): Successfully connected to system intelligence: 
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+E/SettingsToPropertiesMapper(  543): key=persist.device_config.configuration.AdbWritableFlags__adb_writable_flags_list value=adservices/disable_sdk_sandbox,adservices/enforce_broadcast_receiver_restrictions,adservices/fledge_ad_selection_enforce_foreground_status_custom_audience,adservices/fledge_custom_audience_max_count,adservices/fledge_custom_audience_max_num_ads,adservices/fledge_custom_audience_max_owner_count,adservices/fledge_custom_audience_per_app_max_count,adservices/fledge_js_isolate_enforce_max_heap_size,adservices/fledge_js_isolate_max_heap_size_bytes,adservices/sdk_request_permits_per_second,adservices/sdksandbox_customized_sdk_context_enabled,configuration/namespace_to_package_mapping,constrain_display_apis/always_constrain_display_apis,constrain_display_apis/never_constrain_display_apis,constrain_display_apis/never_constrain_display_apis_all_packages,device_policy_manager/disable_resources_updatability,flipendo/default_savings_mode_launch,flipendo/essential_apps,flipendo/flipendo_enabled_launch,flipendo/grayscale_enabled_launch,flipendo/lever_ble_scanning_enabled_launch,flipendo/lever_hotspot_enabled_launch,flipendo/lever_work_profile_enabled_launch,flipendo/resuspend_delay_minutes,namespace/key,namespace1/key1,namespace1/key2,namespace2/key1,namespace2/key2,package_manager_service/incfs_default_timeouts,package_manager_service/known_digesters_list,privacy/location_access_check_periodic_interval_millis,rollback/enable_rollback_timeout,rollback/watchdog_explicit_health_check_enabled,rollback/watchdog_request_timeout_millis,rollback/watchdog_trigger_failure_count,rollback/watchdog_trigger_failure_duration_millis,rollback_boot/rollback_lifetime_in_millis,systemui/nas_generate_actions,systemui/nas_generate_replies,systemui/nas_max_messages_to_extract,systemui/nas_max_suggestions,testspace/another,testspace/flagname,textclassifier/config_updater_model_enabled,textclassifier/key,textclassifier/key2,textclassifier/manifest_url_annotator_en,textclassifier/manifest_url_annotator_ru,textclassifier/model_download_backoff_delay_in_millis,textclassifier/model_download_manager_enabled,textclassifier/multi_language_support_enabled,textclassifier/testing_locale_list_override,textclassifier/textclassifier_service_package_override,window_manager/enable_default_rescind_bal_privileges_from_pending_intent_sender,wrong/nas_generate_replies, exceeds system property max length.
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android, com.google.android.permissioncontroller, com.android.settings, com.android.systemui]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Not binding to service, service already connecting
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+I/PackageWatchdog(  543): Saving observer state to file
+I/RescueParty(  543): Starting to observe: [android, com.google.android.as, com.android.systemui], updated namespace: systemui
+D/CompatibilityChangeReporter(  543): Compat change id reported: 161252188; UID 10128; state: DISABLED
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+D/AutofillManager( 1305): Fill dialog is enabled:false, hints=[password, passwordAuto, creditCardNumber, creditCardSecurityCode, creditCardExpirationDate]
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android, com.google.android.as, com.android.systemui]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Not binding to service, service already connecting
+I/PackageWatchdog(  543): Saving observer state to file
+I/AiAiEcho( 1490): Settings changed for uri: content://settings/secure/show_qr_code_scanner_setting
+D/DeviceSearchAlg( 1305): search timeout = %d200
+I/AiAiEcho( 1490): Predicting[0]: 
+I/AiAiEcho( 1490): EchoTargets: 
+I/AiAiEcho( 1490): Filtered by AiAi flag check: 
+I/AiAiEcho( 1490): Ranked targets strategy: SORT, count: 0, ranking metadata: 
+I/AiAiEcho( 1490): Predicting[0]: 
+W/PageIndicator( 1305): Total number of pages invalid: 0. Assuming 1 page.
+W/BcSmartspaceView( 1305): Current card is not present in the Adapter; cannot log.
+I/RescueParty(  543): Starting to observe: [android], updated namespace: media
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Not pruning observers, elapsed time: 0ms
+I/PackageWatchdog(  543): Saving observer state to file
+I/AiAiEcho( 1490): EchoTargets: 
+I/AiAiEcho( 1490): Filtered by AiAi flag check: 
+I/AiAiEcho( 1490): Ranked targets strategy: SORT, count: 0, ranking metadata: 
+I/AiAiEcho( 1490): Predicting[0]: 
+I/AiAiEcho( 1490): EchoTargets: 
+I/AiAiEcho( 1490): Filtered by AiAi flag check: 
+I/AiAiEcho( 1490): Ranked targets strategy: SORT, count: 0, ranking metadata: 
+I/AiAiEcho( 1490): #postPredictionTargets: Sending updates to UISurface lockscreen with targets# 0 (types=[])
+I/AiAiEcho( 1490): #postPredictionTargets: Sending updates to UISurface media_data_manager with targets# 0 (types=[])
+I/AiAiEcho( 1490): #postPredictionTargets: Sending updates to UISurface home with targets# 0 (types=[])
+I/OverviewComponentObserver( 1305): updateOverviewTargets: mIsHomeDisabled=false, isDefaultHomeNull=false, mIsDefaultHome=true
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Not binding to service, service already connecting
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+D/NavigationModeController(  755): getCurrentUserContext: contextUser=0 currentUser=0
+W/PageIndicator(  755): Total number of pages invalid: 0. Assuming 1 page.
+D/SsMediaDataProvider(  755): Forwarding Smartspace updates []
+I/bwir    ( 1171): updateFromConfigurations using legacy put method [CONTEXT service_id=204 ]
+D/SearchUiPerUserService(  543): Creating SearchSessionInfo for session Id=com.google.android.apps.nexuslauncher:8f331666-c82b-474a-bf30-c0aaa5ce130f,0
+I/RescueParty(  543): Starting to observe: [android], updated namespace: alarm_manager
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Not pruning observers, elapsed time: 0ms
+I/PackageWatchdog(  543): Saving observer state to file
+D/SearchUiPerUserService(  543): Storing callback for session Id=com.google.android.apps.nexuslauncher:8f331666-c82b-474a-bf30-c0aaa5ce130f,0 and callback=android.os.BinderProxy@3e085e9
+I/AiAiEcho( 1490): SearchContextManagerImpl::setSearchContext resultTypes=[141151] extras=[Bundle[mParcelledData.dataSize=684]] sessionId=[com.google.android.apps.nexuslauncher:8f331666-c82b-474a-bf30-c0aaa5ce130f,0]
+D/SearchTargetUtil( 1305):  query= size=1
+D/SearchTargetUtil( 1305): layoutType=icon_row resultType=4096 packageName= extras=Bundle{icon_container_enabled=true,zero_state_all_apps_web_suggest_count=3,rank=1.0,key_ipc_start=321406,hide_subtitle=true,zero_state_qsb_web_suggest_count=10,}ParentID: null targetID: SESSION_INFO:0::zero_state_flags
+I/ContentCaptureHelper( 1305): Setting logging level to DEBUG
+D/ContentCaptureManager( 1305): setFlushViewTreeAppearingEventDisabled(): setting to false
+D/ContentCaptureManager( 1305): updateWindowAttributes(): window flags=-2137980672
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+I/AiAiStatsd( 1490): Successfully logged feature usage for VISUAL_CORTEX.
+D/AutofillManager( 1305): view is not autofillable - activity denied for autofill
+D/CoreBackPreview(  543): Window{efdd834 u0 com.google.android.apps.nexuslauncher/com.google.android.apps.nexuslauncher.NexusLauncherActivity}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@430131e, mPriority=0, mIsAnimationCallback=false}
+I/ImeTracker( 1305): com.google.android.apps.nexuslauncher:47dd9d4c: onRequestHide at ORIGIN_CLIENT_HIDE_SOFT_INPUT reason HIDE_SOFT_INPUT
+I/ImeTracker( 1305): com.google.android.apps.nexuslauncher:47dd9d4c: onFailed at PHASE_CLIENT_VIEW_SERVED
+D/TISBindHelper( 1305): TIS service connected
+D/b/254119092( 1305): Set mActivity=com.google.android.apps.nexuslauncher.NexusLauncherActivity@ba88441
+D/b/254119092( 1305): mActivity and mContext agree taskbarIsPresent=false
+D/MainContentCaptureSession( 1305): handleScheduleFlush(act:com.google.android.apps.nexuslauncher/.NexusLauncherActivity [state=1 (WAITING_FOR_SERVER), disabled=false], reason=FORCE_FLUSH): not a timeout reason because mDirectServiceInterface is not ready yet
+I/RescueParty(  543): Starting to observe: [android, com.android.settings], updated namespace: app_hibernation
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android, com.android.settings]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Not pruning observers, elapsed time: 0ms
+I/PackageWatchdog(  543): Saving observer state to file
+I/ActivityTaskManager(  543): Activity reported stop, but no longer stopping: ActivityRecord{895c5b7 u0 com.google.android.apps.nexuslauncher/.NexusLauncherActivity t11} STOPPED
+W/WindowOnBackDispatcher( 1696): sendCancelIfRunning: isInProgress=falsecallback=android.view.ViewRootImpl$$ExternalSyntheticLambda17@cae1818
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+W/InputManager-JNI(  543): Input channel object 'db8383d com.google.android.apps.nexuslauncher/com.google.android.apps.nexuslauncher.NexusLauncherActivity (client)' was disposed without first being removed with the input manager!
+W/WindowManager(  543): Failed looking up window session=Session{3bf1088 1696:u0a10132} callers=com.android.server.wm.WindowManagerService.windowForClientLocked:6034 com.android.server.wm.Session.setOnBackInvokedCallbackInfo:944 android.view.IWindowSession$Stub.onTransact:1145 
+I/WindowManager(  543): setOnBackInvokedCallback(): No window state for package:com.google.android.googlequicksearchbox
+D/AppHibernationService(  543): App hibernation changed to enabled=true
+D/CoreBackPreview(  543): Window{25d951b u0 com.google.android.apps.nexuslauncher/com.google.android.apps.nexuslauncher.NexusLauncherActivity}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@9700d82, mPriority=0, mIsAnimationCallback=false}
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+I/RescueParty(  543): Starting to observe: [android, com.android.systemui], updated namespace: window_manager
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android, com.android.systemui]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Not pruning observers, elapsed time: 0ms
+I/PackageWatchdog(  543): Saving observer state to file
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+I/RescueParty(  543): Starting to observe: [android, com.google.android.bluetooth], updated namespace: bluetooth
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android, com.google.android.bluetooth]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Saving observer state to file
+I/RescueParty(  543): Starting to observe: [android, com.google.android.apps.nexuslauncher, com.android.systemui], updated namespace: latency_tracker
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android, com.google.android.apps.nexuslauncher, com.android.systemui]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Not pruning observers, elapsed time: 0ms
+I/PackageWatchdog(  543): Saving observer state to file
+D/BluetoothDeviceConfigChangeTracker(  543): shouldRestartWhenPropertiesUpdated: INIT_gd_hal_snoop_logger_filtering='true',scan_timeout_millis='300000',location_denylist_name='',audio_policy_hf_enabled='true',INIT_gd_hal_snoop_logger_socket='true',location_denylist_advertising_data='⊈0016AAFE40/00FFFFFFF0,⊆0016AAFE/00FFFFFF,⊆00FF4C0002/00FFFFFFFF',le_audio_enabled_by_default='false',location_denylist_mac='',audio_policy_ag_enabled='true'
+D/BluetoothDeviceConfigListener(  543): All properties unchanged, skipping restart
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/RescueParty(  543): Starting to observe: [android], updated namespace: battery_saver
+E/DeviceConfig(  543): Parsing int failed for location_mode
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Saving observer state to file
+I/RescueParty(  543): Starting to observe: [android], updated namespace: constrain_display_apis
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Saving observer state to file
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Not binding to service, service already connecting
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+I/RescueParty(  543): Starting to observe: [android], updated namespace: backup_and_restore
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Not pruning observers, elapsed time: 0ms
+I/PackageWatchdog(  543): Saving observer state to file
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+I/RescueParty(  543): Starting to observe: [android, com.google.android.networkstack], updated namespace: tethering
+I/PackageWatchdog(  543): Syncing state, reason: observing new packages
+D/PackageWatchdog(  543): rescue-party-observer added the following packages to monitor [android, com.google.android.networkstack]
+I/PackageWatchdog(  543): Syncing state, reason: updated observers
+I/PackageWatchdog(  543): Saving observer state to file
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+I/ExplicitHealthCheckController(  543): Service not ready to get health check supported packages. Binding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is bound
+I/ExplicitHealthCheckController(  543): Explicit health check service is connected ComponentInfo{com.google.android.ext.services/android.ext.services.watchdog.ExplicitHealthCheckServiceImpl}
+I/ExplicitHealthCheckController(  543): Service initialized, syncing requests
+I/PackageWatchdog(  543): Syncing health check requests for packages: {}
+D/ExplicitHealthCheckController(  543): Getting health check supported packages
+I/ExplicitHealthCheckController(  543): Explicit health check supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/PackageWatchdog(  543): Received supported packages [PackageConfig{com.google.android.networkstack, 86400000}]
+D/ExplicitHealthCheckController(  543): Getting health check requested packages
+I/ExplicitHealthCheckController(  543): Explicit health check requested packages []
+I/ExplicitHealthCheckController(  543): No more health check requests, unbinding...
+I/ExplicitHealthCheckController(  543): Explicit health check service is unbound
+D/OomAdjuster(  543): Not killing cached processes
+D/BoundBrokerSvc( 1803): onUnbind: Intent { act=com.google.android.gms.credential.manager.service.firstparty.START dat=chimera-action:/... cmp=com.google.android.gms/.chimera.GmsApiService }
+D/BoundBrokerSvc( 1171): onUnbind: Intent { act=com.google.android.gms.cast.service.BIND_CAST_DEVICE_CONTROLLER_SERVICE pkg=com.google.android.gms }
+D/BoundBrokerSvc( 1171): onUnbind: Intent { act=com.google.android.gms.auth.account.data.service.START pkg=com.google.android.gms }
+D/BoundBrokerSvc( 1803): onUnbind: Intent { act=com.google.android.gms.wallet.service.BIND pkg=com.google.android.gms }
+D/BoundBrokerSvc( 1803): onUnbind: Intent { act=com.google.android.gms.pay.service.BIND dat=chimera-action:/... cmp=com.google.android.gms/.chimera.GmsApiService }
+D/BoundBrokerSvc( 1171): onUnbind: Intent { act=com.google.android.gms.semanticlocation.service.START_ODLH pkg=com.google.android.gms }
+D/StatusBarIconController(  755): ignoring old pipeline callbacks, because the new mobile icons are enabled
+D/EGL_emulation(  755): app_time_stats: avg=5938.96ms min=60.14ms max=23533.60ms count=4
+I/wpa_supplicant(  741): wlan0: CTRL-EVENT-BEACON-LOSS 
+I/logd    (    0): logdr: UID=2000 GID=2000 PID=4942 n tail=0 logMask=99 pid=0 start=0ns deadline=0ns
+
+

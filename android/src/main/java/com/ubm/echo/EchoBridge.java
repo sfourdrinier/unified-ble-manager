@@ -56,4 +56,10 @@ public final class EchoBridge {
     public static native String nativeStagedDrainLog(long handle);
 
     public static native String nativeStagedCounters(long handle);
+
+    public static native String nativeBleScanStart(long handle, String owner, String timeoutMs, String nowMs);
+
+    public static native String nativeBleScanTake(long handle);
+
+    public static native String nativeBleScanStop(long handle, String opId, String nowMs);
 }

@@ -15,6 +15,7 @@ battery needs from a consumer is duplicated here, in slice-owned files.
 | Scan 8s then cancel (`scanCancelButton`) | `find()` with a 1.5 s abort timer; reports the terminal outcome |
 | Bonded peers (`bondedButton`) | `peers.bonded()`; reports `bonded-count=N` or the error shape |
 | Aborted find (`abortedFindButton`) | `find()` with a pre-aborted signal; reports the cancellation receipt |
+| RustCore session (`rustCoreButton`) | R01 producer probe: `openSession` → `central.status` + `echo.counter` + `scan.start/take/stop` invokes → `close` through `UnifiedBleRustCore`; reports `rustcore-ok` or `rustcore-error` |
 | Teardown (`teardownButton`) | `manager.destroy()` |
 
 Every outcome is logged to logcat with the `[UBM_PROBE]` tag
