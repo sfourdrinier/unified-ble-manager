@@ -535,20 +535,25 @@ function assertPackedAndroidPrebuilts(files) {
   return totalBytes
 }
 
-// D2(iv): the npm artifact ships the macOS-built RustCore XCFramework staged
-// into ios/RustCore before pack. Require the identity file, the framework
-// Info.plist with exactly PACKED_APPLE_SLICE_COUNT slices, and every
-// LibraryPath the plist declares (present + non-empty). Returns total
-// staged bytes (T5 size measurement).
+// D2(iv): the RELEASE artifact ships the macOS-built RustCore XCFramework
+// staged into ios/RustCore before pack. This verifier runs on dev-tree
+// packs too (CI smoke), where no macOS staging exists — so it verifies
+// coherence WHEN STAGED (identity + plist + exactly
+// PACKED_APPLE_SLICE_COUNT declared LibraryPaths, present + non-empty)
+// and passes unstaged trees with 0 bytes. The release REQUIREMENT (staging
+// must exist) lives in publish.yml's "Verify staged RustCore before pack"
+// step, which fails the release — never a consumer. Returns total staged
+// bytes (T5 size measurement; 0 when unstaged).
 function assertPackedRustCore(files) {
   const identityPath = 'package/ios/RustCore/build-identity.txt'
-  if (!files.has(identityPath)) {
-    throw new Error(`Packed canonical package is missing Apple staging identity: ${identityPath}`)
+  const identityBuffer = files.get(identityPath)
+  if (!identityBuffer) {
+    return 0
   }
   const infoPath = 'package/ios/RustCore/RustCore.xcframework/Info.plist'
   const infoBuffer = files.get(infoPath)
   if (!infoBuffer) {
-    throw new Error(`Packed canonical package is missing Apple framework plist: ${infoPath}`)
+    throw new Error(`Packed Apple staging identity present but framework plist missing: ${infoPath}`)
   }
   const info = infoBuffer.toString('utf8')
   const identifiers = [...info.matchAll(/<key>LibraryIdentifier<\/key>\s*<string>([^<]+)<\/string>/g)].map(
@@ -847,7 +852,7 @@ function verifyRootTarball(tarballPath) {
   }
 
   console.log(
-    `canonical tarball verified: ${sourceFiles.length} published source files, ${codegenSourceFiles.length} exact React Native Codegen source files, ${internalRuntimeSourceFiles.length} exact internal runtime sources, ${internalTypeOnlySourceFiles.length} exact internal declaration-only sources, ${expectedArtifacts.size} required runtime/type artifacts, ${pluginSourceFiles.length} plugin source files, ${targets.length} current entrypoint targets, ${packedAndroidBytes + packedAppleBytes} native prebuilt bytes (android ${packedAndroidBytes}, apple ${packedAppleBytes})`
+    `canonical tarball verified: ${sourceFiles.length} published source files, ${codegenSourceFiles.length} exact React Native Codegen source files, ${internalRuntimeSourceFiles.length} exact internal runtime sources, ${internalTypeOnlySourceFiles.length} exact internal declaration-only sources, ${expectedArtifacts.size} required runtime/type artifacts, ${pluginSourceFiles.length} plugin source files, ${targets.length} current entrypoint targets, ${packedAndroidBytes + packedAppleBytes} native prebuilt bytes (android ${packedAndroidBytes}, apple ${packedAppleBytes}${packedAppleBytes === 0 ? ' unstaged-dev-pack' : ''})`
   )
   return packageJson.version
 }
