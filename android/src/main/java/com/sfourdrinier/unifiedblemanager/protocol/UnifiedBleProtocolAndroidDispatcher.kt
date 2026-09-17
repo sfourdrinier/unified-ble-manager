@@ -13,11 +13,13 @@ import com.sfourdrinier.unifiedblemanager.radio.GattObservation
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio
 import com.sfourdrinier.unifiedblemanager.radio.OwnedRadioTeardownFailure
 import com.sfourdrinier.unifiedblemanager.radio.UbmGattCoreBinding
+import com.sfourdrinier.unifiedblemanager.radio.DeferredCoreShadow
 import com.sfourdrinier.unifiedblemanager.radio.AndroidGattOperationFailure
 import com.sfourdrinier.unifiedblemanager.radio.BondedPeerSnapshot
 import com.sfourdrinier.unifiedblemanager.radio.nextUuidOccurrence
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -44,26 +46,28 @@ constructor(
   coreShadowFactory: ((Context, (GattObservation) -> Unit) -> UbmGattCoreBinding?)? = null
 ) {
   private val radio = OwnedAndroidGattRadio(context.applicationContext)
-  private val coreShadow: UbmGattCoreBinding? = try {
-    if (coreShadowFactory != null) {
-      coreShadowFactory.invoke(context.applicationContext, this::onCoreRejection)
-    } else {
-      UbmGattCoreBinding(context.applicationContext, onCoreRejection = this::onCoreRejection)
+  // R02: the shadow opens off the constructing (JS) thread — construction
+  // here must never touch JNI (first touch loads libubm5_jni_echo.so).
+  // The gate retries a missing/failed shadow on demand and reports each
+  // distinct cause once; the cutover will harden this seam into a
+  // readiness gate when the core is promoted to authority.
+  private val shadowGate = DeferredCoreShadow(
+    factory = {
+      if (coreShadowFactory != null) {
+        coreShadowFactory.invoke(context.applicationContext, this::onCoreRejection)
+      } else {
+        UbmGattCoreBinding(context.applicationContext, onCoreRejection = this::onCoreRejection)
+      }
+    },
+    diagnose = { code, detail ->
+      UnifiedBleProtocolJsiBinding.emitDiagnostic(nativeHandle, code, detail)
+    },
+    opener = Executors.newSingleThreadExecutor { runnable ->
+      Thread(runnable, "ubm-core-shadow-opener").apply { isDaemon = true }
     }
-  } catch (th: Throwable) {
-    UnifiedBleProtocolJsiBinding.emitDiagnostic(
-      nativeHandle,
-      "coreShadowUnavailable",
-      "Shared-core shadow disabled: ${th.message ?: th.javaClass.simpleName}"
-    )
-    null
-  }
-
-  init {
-    coreShadow?.openFailure?.let { failure ->
-      UnifiedBleProtocolJsiBinding.emitDiagnostic(nativeHandle, "coreShadowUnavailable", "Shared-core shadow disabled: $failure")
-    }
-  }
+  )
+  private val coreShadow: UbmGattCoreBinding?
+    get() = shadowGate.current()
 
   private fun onCoreRejection(observation: GattObservation) {
     UnifiedBleProtocolJsiBinding.emitDiagnostic(
@@ -315,7 +319,7 @@ constructor(
     attachmentCloseRequested.set(true)
     securityEventsEnabled.set(false)
     radio.onSecurityState = null
-    coreShadow?.release()
+    shadowGate.release()
     val result = radio.destroy()
     if (!result.isSuccessful) {
       UnifiedBleProtocolJsiBinding.emitDiagnostic(
@@ -733,7 +737,7 @@ constructor(
   private fun destroy(command: ProtocolWireRecord) {
     securityEventsEnabled.set(false)
     radio.onSecurityState = null
-    coreShadow?.release()
+    shadowGate.release()
     val pendingBeforeDestroy = pendingCommands.values
       .filter { it !== command }
       .toList()
