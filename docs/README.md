@@ -97,6 +97,7 @@ and coding agents should read [`../AGENTS.md`](../AGENTS.md) first.
 | [`5.0.0-GATE-LEDGER.md`](5.0.0-GATE-LEDGER.md) | UBM 5.0 gate ledger: U-LICENSE + U0–U12 owners, states, evidence, limitations | Current |
 | [`5.0.0-U12-HANDOFF.md`](5.0.0-U12-HANDOFF.md) | UBM 5.0 U12 candidate handoff: identity, gate mapping, reproduction, honest blockers | Current |
 | [`5.0.0-PACKAGING.md`](5.0.0-PACKAGING.md) | UBM 5.0 packaging slice: ship/dev-only surface decisions, license inclusion, SBOM/Rust status, 4.x→5.0 migration notes | Current |
+| [`5.0.0-DISTRIBUTION_CONTRACT.md`](5.0.0-DISTRIBUTION_CONTRACT.md) | UBM 5.0 D2(i) distribution contract: prebuilt/source modes, Apple/Android artifact + identity rules, verification gates | Current |
 | [`../SECURITY.md`](../SECURITY.md) | Vulnerability reporting policy | Current |
 | [`../SUPPORT.md`](../SUPPORT.md) | Support policy: package SemVer vs evidence-backed backend labels | Current |
 | [`../LICENSE-UBM-SOURCE-AVAILABLE-1.0.md`](../LICENSE-UBM-SOURCE-AVAILABLE-1.0.md) | UBM Source Available License 1.0 text, package authority for new 5.0 material (source-available, not OSI-approved open source) | Current |
