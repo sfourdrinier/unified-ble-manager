@@ -423,17 +423,25 @@ async function main() {
       if (!mounted) return;
       // The RustCore button is the 5th stacked button (no fixed PROBE_TAP
       // coords; T8's first-four coords are unaffected): tap by exact text.
-      const tapped = tapText(args.serial, ctx, 'RUSTCORE', 'RustCore session');
+      // Android renders RN Button titles uppercased in the UI dump.
+      const tapped = tapText(args.serial, ctx, 'RUSTCORE', 'RUSTCORE SESSION');
       ctx.note('RustCore session button tapped', tapped !== null, tapped ? `tapped at ${tapped}` : 'button text missing from UI dump');
       if (!tapped) return;
       sleepMs(14000);
       log = logcatDump(args.serial, ctx, 'logcat after rustcore session');
       const okLine = grepLines(log, /rustcore-ok/, 1).join(' ');
       const errLine = grepLines(log, /rustcore-error/, 1).join(' ');
+      // grepLines truncates to 300 chars; the receipt line carries late
+      // tokens (scanStop, closed) past that cut, so match them on the full
+      // untruncated line. Both tokens are emitted only by this receipt.
+      const fullOk = (log.match(/\[UBM_PROBE\] rustcore-ok[^\n]*/) || [''])[0];
       ctx.note('session opened on the frozen contract revision', /rustcore-ok contract=C-UBM\.0\.1\.2-DRAFT/.test(log), okLine.slice(0, 240) || errLine.slice(0, 240) || 'neither rustcore-ok nor rustcore-error');
       ctx.note('central.status round-trips core-minted JSON', /live_operations/.test(okLine), okLine.slice(0, 240));
       ctx.note('echo.counter round-trips decimal 41', /echo=41/.test(okLine), okLine.slice(0, 240));
-      ctx.note('session closed cleanly', /closed=true/.test(okLine), okLine.slice(0, 240));
+      ctx.note('scan.start mints a core op id', /scanOp=\S+/.test(okLine), okLine.slice(0, 240));
+      ctx.note('scan.take drains staged scan steps', /scan\.start/.test(okLine), okLine.slice(0, 240));
+      ctx.note('scan.stop settles the minted op', /"event":"stop"/.test(fullOk), fullOk.slice(-160));
+      ctx.note('session closed cleanly', /closed=true/.test(fullOk), fullOk.slice(-160));
       ctx.note('no UnsatisfiedLinkError', !/UnsatisfiedLinkError/.test(log), 'host-matched over full logcat');
     });
   }

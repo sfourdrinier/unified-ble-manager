@@ -143,8 +143,11 @@ export function App() {
       const contractRevision = session.contractRevision()
       const status = await session.invoke('central.status', {})
       const echo = await session.invoke('echo.counter', { decimal: '41' })
+      const scanStart = await session.invoke('scan.start', { owner: 'ubm-probe', timeoutMs: '8000', nowMs: Date.now().toString() })
+      const scanTake = await session.invoke('scan.take', {})
+      const scanStop = await session.invoke('scan.stop', { opId: String(scanStart.op_id), nowMs: Date.now().toString() })
       await session.close()
-      say(setStatus, `rustcore-ok contract=${contractRevision} status=${JSON.stringify(status)} echo=${echo} closed=true`)
+      say(setStatus, `rustcore-ok contract=${contractRevision} status=${JSON.stringify(status)} echo=${echo} scanOp=${scanStart.op_id} scanTake=${JSON.stringify(scanTake)} scanStop=${JSON.stringify(scanStop)} closed=true`)
     } catch (err) {
       say(setStatus, `rustcore-error name=${err?.name} code=${err?.code} message=${String(err?.message)}`)
     } finally {

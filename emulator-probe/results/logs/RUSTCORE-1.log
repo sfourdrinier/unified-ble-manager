@@ -1,0 +1,530 @@
+$ logcat mount poll 0
+[exit=0]
+--------- beginning of system
+D/CompatibilityChangeReporter(  543): Compat change id reported: 161252188; UID 10193; state: DISABLED
+W/ActivityTaskManager(  543): callingPackage for (uid=2000, pid=4812) has no WPC
+D/CompatibilityChangeReporter(  543): Compat change id reported: 265464455; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 265452344; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 266124927; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 265451093; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 265456536; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 255940284; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 236283604; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 263959004; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 264304459; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 264301586; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 254631730; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 273509367; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 263259275; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 174042980; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 174042936; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 181136395; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 194480991; UID 10193; state: ENABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 184838306; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 185004937; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 205907456; UID 10193; state: ENABLED
+V/WindowManagerShell(  755): Transition requested: android.os.BinderProxy@484bc73 TransitionRequestInfo { type = OPEN, triggerTask = TaskInfo{userId=0 taskId=14 displayId=0 isRunning=true baseIntent=Intent { flg=0x10000000 cmp=com.ubmprobe/.MainActivity } baseActivity=ComponentInfo{com.ubmprobe/com.ubmprobe.MainActivity} topActivity=ComponentInfo{com.ubmprobe/com.ubmprobe.MainActivity} origActivity=null realActivity=ComponentInfo{com.ubmprobe/com.ubmprobe.MainActivity} numActivities=1 lastActiveTime=300412 supportsMultiWindow=true resizeMode=1 isResizeable=true minWidth=-1 minHeight=-1 defaultMinSize=220 token=WCT{android.window.IWindowContainerToken$Stub$Proxy@1e17730} topActivityType=1 pictureInPictureParams=null shouldDockBigOverlays=false launchIntoPipHostTaskId=-1 lastParentTaskIdBeforePip=-1 displayCutoutSafeInsets=null topActivityInfo=ActivityInfo{e708fa9 com.ubmprobe.MainActivity} launchCookies=[] positionInParent=Point(0, 0) parentTaskId=-1 isFocused=false isVisible=false isVisibleRequested=false isSleeping=false topActivityInSizeCompat=false topActivityEligibleForLetterboxEducation= false topActivityLetterboxed= false isFromDoubleTap= false topActivityLetterboxVerticalPosition= -1 topActivityLetterboxHorizontalPosition= -1 topActivityLetterboxWidth=-1 topActivityLetterboxHeight=-1 locusId=null displayAreaFeatureId=1 cameraCompatControlState=hidden}, remoteTransition = null, displayChange = null }
+I/ActivityTaskManager(  543): START u0 {flg=0x10000000 cmp=com.ubmprobe/.MainActivity} with LAUNCH_SINGLE_TASK from uid 2000 (BAL_ALLOW_PERMISSION) result code=0
+D/CompatibilityChangeReporter(  543): Compat change id reported: 135634846; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 143937733; UID 10193; state: ENABLED
+--------- beginning of main
+D/Zygote  (  356): Forked child process 4816
+I/ActivityManager(  543): Start proc 4816:com.ubmprobe/u0a193 for next-top-activity {com.ubmprobe/com.ubmprobe.MainActivity}
+D/SplashScreenView(  755): Build android.window.SplashScreenView{32d5a3a V.E...... ......ID 0,0-0,0}
+D/SplashScreenView(  755): Icon: view: android.widget.ImageView{ea946eb V.ED..... ......I. 0,0-0,0 #10204f0 android:id/splashscreen_icon_view} drawable: com.android.wm.shell.startingsurface.SplashscreenIconDrawableFactory$ImmobileIconDrawable@670fc48 size: 420
+D/SplashScreenView(  755): Branding: view: android.view.View{2a98ae1 G.ED..... ......I. 0,0-0,0 #10204ef android:id/splashscreen_branding_view} drawable: null size w: 0 h: 0
+D/CompatibilityChangeReporter(  543): Compat change id reported: 265195908; UID 10193; state: ENABLED
+I/BpBinder(  419): onLastStrongRef automatically unlinking death recipients: 
+D/CompatibilityChangeReporter(  543): Compat change id reported: 168419799; UID 10193; state: DISABLED
+D/CompatibilityChangeReporter(  543): Compat change id reported: 273564678; UID 10193; state: DISABLED
+D/CoreBackPreview(  543): Window{65b4e37 u0 Splash Screen com.ubmprobe}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@92a410d, mPriority=0, mIsAnimationCallback=false}
+W/BugleRcsEngine( 2033): [118] bpxc.w: Unable to send diagnostic log
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): RequestWithImsiState: event HTTP Response [288c2cfd-919a-4755-912a-8d1931857425]
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): InProgressState: event HTTP Response [288c2cfd-919a-4755-912a-8d1931857425]
+W/BugleRcsEngine( 2033): [117] bpxc.w: Unable to send diagnostic log
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): RequestWithImsiState: event HTTP 400 (Bad request) [288c2cfd-919a-4755-912a-8d1931857425]
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): InProgressState: event HTTP 400 (Bad request) [288c2cfd-919a-4755-912a-8d1931857425]
+W/BugleRcsEngine( 2033): [117] bpxc.w: Unable to send diagnostic log
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): transitionTo: destState=RetryState [288c2cfd-919a-4755-912a-8d1931857425]
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): onTransitionRequested RequestWithImsiState [288c2cfd-919a-4755-912a-8d1931857425]
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): Exit RequestWithImsiState [288c2cfd-919a-4755-912a-8d1931857425]
+W/BugleRcsEngine( 2033): [117] bpxc.w: Unable to send diagnostic log
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): Exit InProgressState [288c2cfd-919a-4755-912a-8d1931857425]
+W/BugleRcsEngine( 2033): [117] bpxc.w: Unable to send diagnostic log
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): Enter RetryState [288c2cfd-919a-4755-912a-8d1931857425]
+I/com.ubmprobe( 4816): Late-enabling -Xcheck:jni
+W/BugleRcsEngine( 2033): [117] bpxc.w: Unable to send diagnostic log
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): nextRetry = 0 [288c2cfd-919a-4755-912a-8d1931857425]
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): scheduleRetry, currentRetry = 0, retryMillis = 28800000 [288c2cfd-919a-4755-912a-8d1931857425]
+W/BugleRcsEngine( 2033): [48] bpxc.w: Unable to send diagnostic log
+D/EGL_emulation( 1305): app_time_stats: avg=357.67ms min=19.79ms max=1911.14ms count=6
+I/BugleRcsEngine( 2033): [117] brjv.b: RcsAvailabilityManager: Calculating Rcs Availability
+I/BugleRcsEngine( 2033): [117] brnl.C: Bugle is default SMS app: true
+I/BugleRcsEngine( 2033): [117] brjv.b: Bugle has minimum required RCS permissions: true
+I/BugleRcsEngine( 2033): [117] brnl.B: Rcs is enabled from user settings: true
+I/BugleRcsEngine( 2033): [117] brox.b: Using config server URL from bqas
+I/BugleRcsEngine( 2033): [117] brnl.e: No RCS Configuration was found in Bugle for simID: redacted-pii:sim_id[chars:20,last3:897]
+I/BugleRcsEngine( 2033): [117] brnl.e: No RCS Configuration was found in Bugle for simID: redacted-pii:sim_id[chars:20,last3:897]
+I/com.ubmprobe( 4816): Using CollectorTypeCC GC.
+W/com.ubmprobe( 4816): Unexpected CPU variant for x86: x86_64.
+W/com.ubmprobe( 4816): Known variants: atom, sandybridge, silvermont, goldmont, goldmont-plus, tremont, kabylake, default
+I/BugleRcsEngine( 2033): [117] brjv.b: Config state is not ACCEPTED, provisioning still in progress
+I/BugleRcsEngine( 2033): [117] brjv.b: RcsAvailabilityManager: Rcs Availability still CARRIER_SETUP_PENDING (Carrier RCS is not set up)
+W/BugleRcsEngine( 2033): [41] bpxc.w: Unable to send diagnostic log
+W/BugleRcsEngine( 2033): [41] bpxc.w: Unable to send diagnostic log
+V/WindowManager(  543): Sent Transition #11 createdAt=09-17 14:44:19.118 via request=TransitionRequestInfo { type = OPEN, triggerTask = TaskInfo{userId=0 taskId=14 displayId=0 isRunning=true baseIntent=Intent { flg=0x10000000 cmp=com.ubmprobe/.MainActivity } baseActivity=ComponentInfo{com.ubmprobe/com.ubmprobe.MainActivity} topActivity=ComponentInfo{com.ubmprobe/com.ubmprobe.MainActivity} origActivity=null realActivity=ComponentInfo{com.ubmprobe/com.ubmprobe.MainActivity} numActivities=1 lastActiveTime=300412 supportsMultiWindow=true resizeMode=1 isResizeable=true minWidth=-1 minHeight=-1 defaultMinSize=220 token=WCT{RemoteToken{648df3c Task{32ae66a #14 type=standard A=10193:com.ubmprobe}}} topActivityType=1 pictureInPictureParams=null shouldDockBigOverlays=false launchIntoPipHostTaskId=-1 lastParentTaskIdBeforePip=-1 displayCutoutSafeInsets=null topActivityInfo=ActivityInfo{57384c5 com.ubmprobe.MainActivity} launchCookies=[] positionInParent=Point(0, 0) parentTaskId=-1 isFocused=false isVisible=false isVisibleRequested=false isSleeping=false topActivityInSizeCompat=false topActivityEligibleForLetterboxEducation= false topActivityLetterboxed= false isFromDoubleTap= false topActivityLetterboxVerticalPosition= -1 topActivityLetterboxHorizontalPosition= -1 topActivityLetterboxWidth=-1 topActivityLetterboxHeight=-1 locusId=null displayAreaFeatureId=1 cameraCompatControlState=hidden}, remoteTransition = null, displayChange = null }
+V/WindowManager(  543):     startWCT=WindowContainerTransaction { changes = {} hops = [] errorCallbackToken=null taskFragmentOrganizer=null }
+V/WindowManager(  543):     info={id=11 t=OPEN f=0x0 trk=0 r=[0@Point(0, 0)] c=[{WCT{RemoteToken{648df3c Task{32ae66a #14 type=standard A=10193:com.ubmprobe}}} m=OPEN f=NONE leash=Surface(name=Task=14)/@0x3ddd8c2 sb=Rect(0, 0 - 1080, 1920) eb=Rect(0, 0 - 1080, 1920) d=0},{WCT{RemoteToken{9a68643 Task{d3ba2cd #1 type=home}}} m=TO_BACK f=SHOW_WALLPAPER leash=Surface(name=Task=1)/@0x66ff3b1 sb=Rect(0, 0 - 1080, 1920) eb=Rect(0, 0 - 1080, 1920) d=0}]}
+I/BugleRcsWorker( 2033): [seqId=2][workId=c5d5e292-cb79-4f7b-ba8f-c607d37e25ed] Received a provisioning state changed event from the provisioning engine RETRY
+I/BugleRcsWorker( 2033): [seqId=2][workId=c5d5e292-cb79-4f7b-ba8f-c607d37e25ed] Provisioning Engine entered RetryState, provisioning task will be rescheduled with exponential backoff
+I/BugleRcsWorker( 2033): [seqId=2][workId=c5d5e292-cb79-4f7b-ba8f-c607d37e25ed] finish provisioning task with result Success {mOutputData=Data {}}
+I/BugleRcsWorker( 2033): [seqId=2][workId=c5d5e292-cb79-4f7b-ba8f-c607d37e25ed] RCS provisioning task has finished with result Success {mOutputData=Data {}}
+I/BugleRcsEngine( 2033): [115] brfq.d: (PEv2-SM-Bugle-87789962): quit [null]
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): transitionTo: destState=bqjk [null]
+I/BugleRcsEngine( 2033): [117] brfq.d: (PEv2-SM-Bugle-87789962): Exit RetryState [null]
+W/BugleRcsEngine( 2033): [117] bpxc.w: Unable to send diagnostic log
+W/BugleRcsEngine( 2033): [117] brfq.e: (PEv2-SM-Bugle-87789962): onQuitting [null]
+I/BugleRcsEngine( 2033): [117] brjv.b: RcsAvailabilityManager: Calculating Rcs Availability
+I/BugleRcsEngine( 2033): [117] brnl.C: Bugle is default SMS app: true
+I/BugleRcsEngine( 2033): [117] brjv.b: Bugle has minimum required RCS permissions: true
+I/BugleRcsEngine( 2033): [117] brnl.B: Rcs is enabled from user settings: true
+I/BugleRcsEngine( 2033): [117] brox.b: Using config server URL from bqas
+I/WM-WorkerWrapper( 2033): Worker result SUCCESS for Work [ id=b992f475-960c-4f96-9acf-5c3ff5dfc85d, tags={ com.google.android.apps.messaging.rcsprovisioning.RcsProvisioningListenableWorker, provisioning } ]
+I/BugleRcsEngine( 2033): [117] brnl.e: No RCS Configuration was found in Bugle for simID: redacted-pii:sim_id[chars:20,last3:897]
+I/BugleRcsEngine( 2033): [117] brnl.e: No RCS Configuration was found in Bugle for simID: redacted-pii:sim_id[chars:20,last3:897]
+I/BugleRcsEngine( 2033): [117] brjv.b: Config state is not ACCEPTED, provisioning still in progress
+I/BugleRcsEngine( 2033): [117] brjv.b: RcsAvailabilityManager: Rcs Availability still CARRIER_SETUP_PENDING (Carrier RCS is not set up)
+I/adbd    (  431): jdwp connection from 4816
+D/EGL_emulation(  755): app_time_stats: avg=19364.08ms min=19364.08ms max=19364.08ms count=1
+W/JobScheduler(  543): Job didn't exist in JobStore: 28e1b1 #u0a131/1024 com.google.android.apps.messaging/androidx.work.impl.background.systemjob.SystemJobService
+I/Bugle   ( 2033): Scheduling custom retry
+W/Looper  (  755): Slow dispatch took 154ms wmshell.main h=android.os.Handler c=com.android.wm.shell.common.ShellExecutor$$ExternalSyntheticLambda1@800778 m=0
+W/Looper  (  755): Slow delivery took 150ms wmshell.main h=android.os.Handler c=null m=1
+V/WindowManagerShell(  755): onTransitionReady android.os.BinderProxy@484bc73: {id=11 t=OPEN f=0x0 trk=0 r=[0@Point(0, 0)] c=[{WCT{android.window.IWindowContainerToken$Stub$Proxy@799ee51} m=OPEN f=NONE leash=Surface(name=Task=14)/@0x82fb519 sb=Rect(0, 0 - 1080, 1920) eb=Rect(0, 0 - 1080, 1920) d=0},{WCT{android.window.IWindowContainerToken$Stub$Proxy@6cd56b6} m=TO_BACK f=SHOW_WALLPAPER leash=Surface(name=Task=1)/@0xfd3e9de sb=Rect(0, 0 - 1080, 1920) eb=Rect(0, 0 - 1080, 1920) d=0}]}
+V/WindowManagerShell(  755): Playing animation for (#11)android.os.BinderProxy@484bc73@0
+V/WindowManagerShell(  755):  try handler com.android.wm.shell.transition.DefaultMixedHandler@3751c04
+V/WindowManagerShell(  755):  try handler com.android.wm.shell.keyguard.KeyguardTransitionHandler@67e55ed
+V/WindowManagerShell(  755):  try handler com.android.wm.shell.activityembedding.ActivityEmbeddingController@446fc22
+V/WindowManagerShell(  755):  try handler com.android.wm.shell.recents.RecentsTransitionHandler@757e6b3
+W/Bugle   ( 2033): TextClassifierLibManagerImpl: Reclaiming memory at level: 40
+V/ShellRecents(  755): RecentsTransitionHandler.startAnimation: no controller found
+V/WindowManagerShell(  755):  try handler com.android.wm.shell.pip.PipTransition@a29f470
+V/WindowManagerShell(  755):  try handler com.android.wm.shell.splitscreen.StageCoordinator@af763e9
+V/WindowManagerShell(  755):  try handler com.android.wm.shell.transition.RemoteTransitionHandler@afcb86e
+V/WindowManagerShell(  755): Transition doesn't have explicit remote, search filters for match for {id=11 t=OPEN f=0x0 trk=0 r=[0@Point(0, 0)] c=[{WCT{android.window.IWindowContainerToken$Stub$Proxy@799ee51} m=OPEN f=NONE leash=Surface(name=Task=14)/@0x82fb519 sb=Rect(0, 0 - 1080, 1920) eb=Rect(0, 0 - 1080, 1920) d=0},{WCT{android.window.IWindowContainerToken$Stub$Proxy@6cd56b6} m=TO_BACK f=SHOW_WALLPAPER leash=Surface(name=Task=1)/@0xfd3e9de sb=Rect(0, 0 - 1080, 1920) eb=Rect(0, 0 - 1080, 1920) d=0}]}
+V/WindowManagerShell(  755):  Checking filter Pair{{types=[] flags=0x0] notFlags=0x0 checks=[{atype=dream independent=true modes=[OPEN,TO_FRONT] flags=NONE mustBeTask=false order=ANY topActivity=null},{atype=home independent=true modes=[CLOSE,TO_BACK] flags=NONE mustBeTask=false order=ANY topActivity=null}]} RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@e03b0f, appThread = android.app.IApplicationThread$Stub$Proxy@e11e79c, debugName = LauncherToDream }}
+V/WindowManagerShell(  755):  Checking filter Pair{{types=[] flags=0x0] notFlags=0x100 checks=[{atype=home independent=true modes=[OPEN,TO_FRONT] flags=NONE mustBeTask=false order=TOP topActivity=ComponentInfo{com.google.android.apps.nexuslauncher/com.google.android.apps.nexuslauncher.NexusLauncherActivity}},{atype=standard independent=true modes=[CLOSE,TO_BACK] flags=NONE mustBeTask=false order=ANY topActivity=null}]} RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@d955a5, appThread = android.app.IApplicationThread$Stub$Proxy@73fed7a, debugName = QuickstepLaunchHome }}
+V/WindowManagerShell(  755):  Delegate animation for #11 to null
+V/WindowManagerShell(  755):  try handler com.android.wm.shell.transition.DefaultTransitionHandler@6ef792b
+V/WindowManagerShell(  755): start default transition animation, info = {id=11 t=OPEN f=0x0 trk=0 r=[0@Point(0, 0)] c=[{WCT{android.window.IWindowContainerToken$Stub$Proxy@799ee51} m=OPEN f=NONE leash=Surface(name=Task=14)/@0x82fb519 sb=Rect(0, 0 - 1080, 1920) eb=Rect(0, 0 - 1080, 1920) d=0},{WCT{android.window.IWindowContainerToken$Stub$Proxy@6cd56b6} m=TO_BACK f=SHOW_WALLPAPER leash=Surface(name=Task=1)/@0xfd3e9de sb=Rect(0, 0 - 1080, 1920) eb=Rect(0, 0 - 1080, 1920) d=0}]}
+V/WindowManagerShell(  755): loadAnimation: anim=android.view.animation.AnimationSet@f6a2324 animAttr=0x13 type=OPEN isEntrance=false
+V/WindowManagerShell(  755): loadAnimation: anim=android.view.animation.AnimationSet@eb84d90 animAttr=0x12 type=OPEN isEntrance=true
+W/BugleRcsEngine( 2033): [116] brcu.d: [SR]: Single Registration is disabled. Skipping Single Registration capability check for subId: 1, OS.isAtLeastS:[true], enableSingleRegistrationProvisioning:[false]
+I/BugleRcsEngine( 2033): [116] brnl.e: No RCS Configuration was found in Bugle for simID: redacted-pii:sim_id[chars:20,last3:897]
+D/StrictMode( 1222): StrictMode policy violation: android.os.strictmode.SqliteObjectLeakedViolation: Finalizing a Cursor that has not been deactivated or closed. database = /data/user/0/com.android.providers.contacts/databases/contacts2.db, table = raw_contacts, query = SELECT contacts_view._id AS _id, contacts_view.display_name AS display_name, contacts_view.photo_thumb_uri AS photo_thumb_uri, data1 AS number, data2 AS type, data3 AS label, contacts_view.lookup AS lookup FROM raw_contacts JOIN view_contacts as contacts_view ON (contacts_view._id = raw_contacts.contact_id) JOIN (SELECT data_id,normalized_number FROM phone_lookup WHERE (phone_lookup.min_match = '7654321')) AS lookup ON lookup.data_id=data._id JOIN data ON data.raw_contact_id=raw_contacts._id WHERE (PHONE_NUMBERS_EQUAL(data.data1, '+15551234567', 0, 7)) ORDER BY  length(lookup.normalized_number) DESC
+D/StrictMode( 1222): 	at android.os.StrictMode.onSqliteObjectLeaked(StrictMode.java:2222)
+D/StrictMode( 1222): 	at android.database.sqlite.SQLiteCursor.finalize(SQLiteCursor.java:282)
+D/StrictMode( 1222): 	at java.lang.Daemons$FinalizerDaemon.doFinalize(Daemons.java:339)
+D/StrictMode( 1222): 	at java.lang.Daemons$FinalizerDaemon.processReference(Daemons.java:324)
+D/StrictMode( 1222): 	at java.lang.Daemons$FinalizerDaemon.runInternal(Daemons.java:300)
+D/StrictMode( 1222): 	at java.lang.Daemons$Daemon.run(Daemons.java:145)
+D/StrictMode( 1222): 	at java.lang.Thread.run(Thread.java:1012)
+V/WindowManagerShell(  755):  animated by com.android.wm.shell.transition.DefaultTransitionHandler@6ef792b
+W/Looper  (  755): Slow dispatch took 38ms wmshell.main h=android.os.Handler c=com.android.wm.shell.transition.Transitions$TransitionPlayerImpl$$ExternalSyntheticLambda0@13c868e m=0
+D/CompatibilityChangeReporter( 4816): Compat change id reported: 171979766; UID 10193; state: ENABLED
+D/CompatibilityChangeReporter( 4816): Compat change id reported: 242716250; UID 10193; state: ENABLED
+D/StrictMode( 1222): StrictMode policy violation: android.os.strictmode.LeakedClosableViolation: A resource was acquired at attached stack trace but never released. See java.io.Closeable for information on avoiding resource leaks.
+D/StrictMode( 1222): 	at android.os.StrictMode$AndroidCloseGuardReporter.report(StrictMode.java:1994)
+D/StrictMode( 1222): 	at dalvik.system.CloseGuard.warnIfOpen(CloseGuard.java:336)
+D/StrictMode( 1222): 	at android.database.AbstractCursor.finalize(AbstractCursor.java:531)
+D/StrictMode( 1222): 	at android.database.sqlite.SQLiteCursor.finalize(SQLiteCursor.java:291)
+D/StrictMode( 1222): 	at java.lang.Daemons$FinalizerDaemon.doFinalize(Daemons.java:339)
+D/StrictMode( 1222): 	at java.lang.Daemons$FinalizerDaemon.processReference(Daemons.java:324)
+D/StrictMode( 1222): 	at java.lang.Daemons$FinalizerDaemon.runInternal(Daemons.java:300)
+D/StrictMode( 1222): 	at java.lang.Daemons$Daemon.run(Daemons.java:145)
+D/StrictMode( 1222): 	at java.lang.Thread.run(Thread.java:1012)
+D/StrictMode( 1222): Caused by: java.lang.Throwable: Explicit termination method 'AbstractCursor.close' not called
+D/StrictMode( 1222): 	at dalvik.system.CloseGuard.openWithCallSite(CloseGuard.java:288)
+D/StrictMode( 1222): 	at dalvik.system.CloseGuard.open(CloseGuard.java:257)
+D/StrictMode( 1222): 	at android.database.AbstractCursor.<init>(AbstractCursor.java:227)
+D/StrictMode( 1222): 	at android.database.AbstractWindowedCursor.<init>(AbstractWindowedCursor.java:39)
+D/StrictMode( 1222): 	at android.database.sqlite.SQLiteCursor.<init>(SQLiteCursor.java:98)
+D/StrictMode( 1222): 	at android.database.sqlite.SQLiteDirectCursorDriver.query(SQLiteDirectCursorDriver.java:52)
+D/StrictMode( 1222): 	at android.database.sqlite.SQLiteDatabase.rawQueryWithFactory(SQLiteDatabase.java:1714)
+D/StrictMode( 1222): 	at android.database.sqlite.SQLiteQueryBuilder.query(SQLiteQueryBuilder.java:592)
+D/StrictMode( 1222): 	at com.android.providers.contacts.ContactsProvider2.doQuery(ContactsProvider2.java:7543)
+D/StrictMode( 1222): 	at com.android.providers.contacts.ContactsProvider2.queryLocal(ContactsProvider2.java:7249)
+D/StrictMode( 1222): 	at com.android.providers.contacts.ContactsProvider2.queryCorpLookupIfNecessary(ContactsProvider2.java:7728)
+D/StrictMode( 1222): 	at com.android.providers.contacts.ContactsProvider2.queryLookupEnterprise(ContactsProvider2.java:7867)
+D/StrictMode( 1222): 	at com.android.providers.contacts.ContactsProvider2.queryPhoneLookupEnterprise(ContactsProvider2.java:7838)
+D/StrictMode( 1222): 	at com.android.providers.contacts.ContactsProvider2.queryLocal(ContactsProvider2.java:7172)
+D/StrictMode( 1222): 	at com.android.providers.contacts.ContactsProvider2.queryDirectoryIfNecessary(ContactsProvider2.java:5883)
+D/StrictMode( 1222): 	at com.android.providers.contacts.ContactsProvider2.queryInternal(ContactsProvider2.java:5728)
+D/StrictMode( 1222): 	at com.android.providers.contacts.ContactsProvider2.query(ContactsProvider2.java:5673)
+D/StrictMode( 1222): 	at android.content.ContentProvider.query(ContentProvider.java:1692)
+D/StrictMode( 1222): 	at android.content.ContentProvider$Transport.query(ContentProvider.java:292)
+D/StrictMode( 1222): 	at android.content.ContentProviderNative.onTransact(ContentProviderNative.java:107)
+D/StrictMode( 1222): 	at android.os.Binder.execTransactInternal(Binder.java:1339)
+D/StrictMode( 1222): 	at android.os.Binder.execTransact(Binder.java:1275)
+I/BugleRcsEngine( 2033): [116] zzo.l: Scheduled provisioning task with 480 seconds delay, APPEND policy, trigger is STATE_MACHINE_RETRY, workerId is e3999ba0-0708-497b-b7ef-6f720b426544
+D/CompatibilityChangeReporter(  543): Compat change id reported: 170503758; UID 10193; state: ENABLED
+D/ApplicationLoaders( 4816): Returning zygote-cached class loader: /system_ext/framework/androidx.window.extensions.jar
+D/ApplicationLoaders( 4816): Returning zygote-cached class loader: /system_ext/framework/androidx.window.sidecar.jar
+W/ziparchive( 4816): Unable to open '/data/app/~~3U9XCrb0_rC027NWbt44PA==/com.ubmprobe-bYMVDWsMBiKttkU0JEtNJQ==/base.dm': No such file or directory
+W/ziparchive( 4816): Unable to open '/data/app/~~3U9XCrb0_rC027NWbt44PA==/com.ubmprobe-bYMVDWsMBiKttkU0JEtNJQ==/base.dm': No such file or directory
+W/Looper  (  755): Slow delivery took 32ms wmshell.anim h=android.view.Choreographer$FrameHandler c=android.view.Choreographer$FrameDisplayEventReceiver@e15f2c4 m=0
+W/Looper  (  755): Drained
+D/nativeloader( 4816): Configuring clns-6 for other apk /data/app/~~3U9XCrb0_rC027NWbt44PA==/com.ubmprobe-bYMVDWsMBiKttkU0JEtNJQ==/base.apk. target_sdk_version=36, uses_libraries=, library_path=/data/app/~~3U9XCrb0_rC027NWbt44PA==/com.ubmprobe-bYMVDWsMBiKttkU0JEtNJQ==/lib/x86_64:/data/app/~~3U9XCrb0_rC027NWbt44PA==/com.ubmprobe-bYMVDWsMBiKttkU0JEtNJQ==/base.apk!/lib/x86_64, permitted_path=/data:/mnt/expand:/data/user/0/com.ubmprobe
+V/GraphicsEnvironment( 4816): Currently set values for:
+V/GraphicsEnvironment( 4816):   angle_gl_driver_selection_pkgs=[]
+V/GraphicsEnvironment( 4816):   angle_gl_driver_selection_values=[]
+V/GraphicsEnvironment( 4816): ANGLE GameManagerService for com.ubmprobe: false
+V/GraphicsEnvironment( 4816): com.ubmprobe is not listed in per-application setting
+V/GraphicsEnvironment( 4816): Neither updatable production driver nor prerelease driver is supported.
+W/Looper  (  755): Drained
+V/WindowManagerShell(  755): Transition animation finished (aborted=false), notifying core (#11)android.os.BinderProxy@484bc73@0
+V/WindowManager(  543): Finish Transition #11: created at 09-17 14:44:19.118 collect-started=0.027ms request-sent=11.716ms started=24.723ms ready=147.484ms sent=184.927ms finished=651.299ms
+V/WindowManagerShell(  755): Track 0 became idle
+V/WindowManagerShell(  755): All active transition animations finished
+D/EGL_emulation(  755): app_time_stats: avg=110.84ms min=8.44ms max=758.88ms count=13
+W/SoLoader( 4816): Initializing SoLoader: 0
+W/SoLoader( 4816): Recording new base apk path: /data/app/~~3U9XCrb0_rC027NWbt44PA==/com.ubmprobe-bYMVDWsMBiKttkU0JEtNJQ==/base.apk
+W/SoLoader( 4816): Previously recorded 0 base apk paths.
+I/SoLoader( 4816): Preparing SO source: DirectorySoSource[root = /vendor/lib64 flags = 2]
+I/SoLoader( 4816): Preparing SO source: DirectorySoSource[root = /system/lib64 flags = 2]
+I/SoLoader( 4816): Preparing SO source: DirectApkSoSource[root = [/data/app/~~3U9XCrb0_rC027NWbt44PA==/com.ubmprobe-bYMVDWsMBiKttkU0JEtNJQ==/base.apk!/lib/x86_64]]
+I/SoLoader( 4816): Preparing SO source: ApplicationSoSource[DirectorySoSource[root = /data/app/~~3U9XCrb0_rC027NWbt44PA==/com.ubmprobe-bYMVDWsMBiKttkU0JEtNJQ==/lib/x86_64 flags = 0]]
+I/SoLoader( 4816): init finish: 4 SO sources prepared
+W/SoLoader( 4816): SoLoader initialized: 8
+D/jni_lib_merge( 4816): Entering merged library JNI_OnLoad.
+D/jni_lib_merge( 4816): Preparing 13 pre-merged libs (including stub)
+D/jni_lib_merge( 4816): Preparing to register libfabricjni_so.  onload_func: 0x79236be76530
+D/jni_lib_merge( 4816): Preparing to register libreact_devsupportjni_so.  onload_func: 0x79236c0c2110
+D/jni_lib_merge( 4816): Preparing to register libreact_featureflagsjni_so.  onload_func: 0x79236c0d49a0
+D/jni_lib_merge( 4816): Preparing to register libreact_newarchdefaults_so.  onload_func: 0x79236c17d560
+D/jni_lib_merge( 4816): Preparing to register libreact_tracingjni_so.  onload_func: 0x79236c47fbb0
+D/jni_lib_merge( 4816): Preparing to register libreactnativeblob_so.  onload_func: 0x79236c492b00
+D/jni_lib_merge( 4816): Preparing to register libreactnativejni_so.  onload_func: 0x79236c4b5d70
+D/jni_lib_merge( 4816): Preparing to register libreactnativejni_common_so.  onload_func: 0x79236c4bb860
+D/jni_lib_merge( 4816): Preparing to register librninstance_so.  onload_func: 0x79236c538590
+D/jni_lib_merge( 4816): Preparing to register libturbomodulejsijni_so.  onload_func: 0x79236c69b3b0
+D/jni_lib_merge( 4816): Preparing to register libuimanagerjni_so.  onload_func: 0x79236c6b1780
+D/jni_lib_merge( 4816): Preparing to register libyoga_so.  onload_func: 0x79236c6c0780
+D/jni_lib_merge( 4816): About to register 12 actual methods.
+I/ActivityManager(  543): Flag disabled. Ignoring finishAttachApplication from uid: 10193. pid: 4816
+D/libEGL  ( 4816): loaded /vendor/lib64/egl/libEGL_emulation.so
+D/AppCompatDelegate( 4816): Checking for metadata for AppLocalesMetadataHolderService : Service not found
+D/libEGL  ( 4816): loaded /vendor/lib64/egl/libGLESv1_CM_emulation.so
+D/libEGL  ( 4816): loaded /vendor/lib64/egl/libGLESv2_emulation.so
+D/jni_lib_merge( 4816): Entering merged library JNI_OnLoad.
+D/jni_lib_merge( 4816): Preparing 4 pre-merged libs (including stub)
+D/jni_lib_merge( 4816): Preparing to register libhermes_executor_so.  onload_func: 0x792372adc6e0
+D/jni_lib_merge( 4816): Preparing to register libhermesinstancejni_so.  onload_func: 0x792372b08b60
+D/jni_lib_merge( 4816): Preparing to register libjsijniprofiler_so.  onload_func: 0x792372b0a900
+D/jni_lib_merge( 4816): About to register 3 actual methods.
+D/CompatibilityChangeReporter(  543): Compat change id reported: 161145287; UID 10193; state: ENABLED
+D/TrafficStats( 4816): tagSocket(79) with statsTag=0xffffffff, statsUid=-1
+W/unknown:BridgelessReact( 4816): ReactHost{0}.startSurface(surfaceId = 0): Schedule
+W/unknown:BridgelessReact( 4816): ReactHost{0}.attachSurface(surfaceId = 0)
+W/unknown:BridgelessReact( 4816): ReactHost{0}.getOrCreateReactInstanceTask()
+W/unknown:BridgelessReact( 4816): ReactHost{0}.getOrCreateReactInstanceTask(): Start
+W/unknown:BridgelessReact( 4816): ReactHost{0}.getJSBundleLoader()
+W/unknown:BridgelessReact( 4816): ReactHost{0}.isMetroRunning()
+D/TrafficStats( 4816): tagSocket(81) with statsTag=0xffffffff, statsUid=-1
+W/com.ubmprobe( 4816): Accessing hidden method Landroid/view/ViewGroup;->makeOptionalFitsSystemWindows()V (unsupported, reflection, allowed)
+D/EGL_emulation(  755): app_time_stats: avg=12.20ms min=1.28ms max=53.30ms count=40
+W/unknown:BridgelessReact( 4816): ReactHost{0}.onHostResume(activity)
+W/unknown:ReactNative( 4816): Packager connection already open, nooping.
+D/CompatibilityChangeReporter( 4816): Compat change id reported: 237531167; UID 10193; state: DISABLED
+W/OpenGLRenderer( 4816): Unknown dataspace 0
+I/Choreographer( 4816): Skipped 64 frames!  The application may be doing too much work on its main thread.
+D/CoreBackPreview(  543): Window{118df3b u0 com.ubmprobe/com.ubmprobe.MainActivity}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@1585096, mPriority=0, mIsAnimationCallback=false}
+W/OpenGLRenderer( 4816): Failed to initialize 101010-2 format, error = EGL_SUCCESS
+I/hwservicemanager(  159): getTransport: Cannot find entry android.hardware.graphics.mapper@4.0::IMapper/default in either framework or device VINTF manifest.
+I/Gralloc4( 4816): mapper 4.x is not supported
+--------- beginning of kernel
+I/servicemanager(    0): Could not find android.hardware.graphics.allocator.IAllocator/default in the VINTF manifest.
+W/ziparchive(  543): Unable to open '/data/app/~~3U9XCrb0_rC027NWbt44PA==/com.ubmprobe-bYMVDWsMBiKttkU0JEtNJQ==/base.dm': No such file or directory
+I/ActivityTaskManager(  543): Displayed com.ubmprobe/.MainActivity for user 0: +2s210ms
+I/OpenGLRenderer( 4816): Davey! duration=1491ms; Flags=1, FrameTimelineVsyncId=125951, IntendedVsync=301100391596, Vsync=302167058220, InputEventId=0, HandleInputStart=302181057379, AnimationStart=302181063674, PerformTraversalsStart=302181252044, DrawStart=302390203145, FrameDeadline=301117058262, FrameInterval=302180312198, FrameStartTime=16666666, SyncQueued=302400730138, SyncStart=302401401175, IssueDrawCommandsStart=302403426929, SwapBuffers=302434105800, FrameCompleted=302592243074, DequeueBufferDuration=5293, QueueBufferDuration=384608, GpuCompleted=302592176047, SwapBuffersCompleted=302592243074, DisplayPresentTime=0, CommandSubmissionCompleted=302434105800, 
+D/OneSearchSuggestProvider( 1305): Shut down the binder channel
+D/OomAdjuster(  543): Not killing cached processes
+I/IPCThreadState( 1305): oneway function results for code 2 on binder at 0x79245f852470 will be dropped but finished with status UNKNOWN_TRANSACTION
+I/ImeTracker( 1305): com.google.android.apps.nexuslauncher:ae30ad4c: onRequestHide at ORIGIN_CLIENT_HIDE_SOFT_INPUT reason HIDE_SOFT_INPUT
+W/unknown:BridgelessReact( 4816): ReactHost{0}.raiseSoftException(onWindowFocusChange(hasFocus = "true")): Tried to access onWindowFocusChange while context is not ready
+I/ImeTracker(  543): com.google.android.apps.nexuslauncher:ae30ad4c: onCancelled at PHASE_SERVER_SHOULD_HIDE
+E/unknown:ReactHost( 4816): Unhandled SoftException
+E/unknown:ReactHost( 4816): com.facebook.react.bridge.ReactNoCrashSoftException: raiseSoftException(onWindowFocusChange(hasFocus = "true")): Tried to access onWindowFocusChange while context is not ready
+E/unknown:ReactHost( 4816): 	at com.facebook.react.runtime.ReactHostImpl.raiseSoftException(ReactHostImpl.kt:919)
+E/unknown:ReactHost( 4816): 	at com.facebook.react.runtime.ReactHostImpl.raiseSoftException$default(ReactHostImpl.kt:910)
+E/unknown:ReactHost( 4816): 	at com.facebook.react.runtime.ReactHostImpl.onWindowFocusChange(ReactHostImpl.kt:682)
+E/unknown:ReactHost( 4816): 	at com.facebook.react.ReactDelegate.onWindowFocusChanged(ReactDelegate.kt:229)
+E/unknown:ReactHost( 4816): 	at com.facebook.react.ReactActivityDelegate.onWindowFocusChanged(ReactActivityDelegate.java:235)
+E/unknown:ReactHost( 4816): 	at com.facebook.react.ReactActivity.onWindowFocusChanged(ReactActivity.java:161)
+E/unknown:ReactHost( 4816): 	at androidx.appcompat.view.WindowCallbackWrapper.onWindowFocusChanged(WindowCallbackWrapper.java:124)
+E/unknown:ReactHost( 4816): 	at com.android.internal.policy.DecorView.onWindowFocusChanged(DecorView.java:1788)
+E/unknown:ReactHost( 4816): 	at android.view.View.dispatchWindowFocusChanged(View.java:15933)
+E/unknown:ReactHost( 4816): 	at android.view.ViewGroup.dispatchWindowFocusChanged(ViewGroup.java:1509)
+E/unknown:ReactHost( 4816): 	at android.view.ViewRootImpl.dispatchFocusEvent(ViewRootImpl.java:4059)
+E/unknown:ReactHost( 4816): 	at android.view.ViewRootImpl.handleWindowFocusChanged(ViewRootImpl.java:3963)
+E/unknown:ReactHost( 4816): 	at android.view.ViewRootImpl.-$$Nest$mhandleWindowFocusChanged(Unknown Source:0)
+E/unknown:ReactHost( 4816): 	at android.view.ViewRootImpl$ViewRootHandler.handleMessageImpl(ViewRootImpl.java:5954)
+E/unknown:ReactHost( 4816): 	at android.view.ViewRootImpl$ViewRootHandler.handleMessage(ViewRootImpl.java:5862)
+E/unknown:ReactHost( 4816): 	at android.os.Handler.dispatchMessage(Handler.java:106)
+E/unknown:ReactHost( 4816): 	at android.os.Looper.loopOnce(Looper.java:205)
+E/unknown:ReactHost( 4816): 	at android.os.Looper.loop(Looper.java:294)
+E/unknown:ReactHost( 4816): 	at android.app.ActivityThread.main(ActivityThread.java:8177)
+E/unknown:ReactHost( 4816): 	at java.lang.reflect.Method.invoke(Native Method)
+E/unknown:ReactHost( 4816): 	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:552)
+E/unknown:ReactHost( 4816): 	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:971)
+D/CompatibilityChangeReporter(  543): Compat change id reported: 214016041; UID 10193; state: ENABLED
+I/ImeTracker(  543): com.ubmprobe:23172185: onRequestHide at ORIGIN_SERVER_HIDE_INPUT reason HIDE_UNSPECIFIED_WINDOW
+I/ImeTracker(  543): com.ubmprobe:23172185: onCancelled at PHASE_SERVER_SHOULD_HIDE
+I/GoogleInputMethodService( 1442): GoogleInputMethodService.onFinishInput():3227 
+I/GoogleInputMethodService( 1442): GoogleInputMethodService.updateDeviceLockedStatus():2087 repeatCheckTimes = 0, unlocked = true
+I/GoogleInputMethodService( 1442): GoogleInputMethodService.onStartInput():1877 onStartInput(EditorInfo{inputType=0x0(NULL) imeOptions=0x0 privateImeOptions=null actionName=UNSPECIFIED actionLabel=null actionId=0 initialSelStart=-1 initialSelEnd=-1 initialCapsMode=0x0 hintText=null label=null packageName=com.ubmprobe fieldId=0 fieldName=null extras=null}, false)
+I/GoogleInputMethodService( 1442): GoogleInputMethodService.shouldHideHeaderOnInitialState():4008 ShouldHideHeaderOnInitialState = false
+D/BtGatt.ScanManager(  873): uid 10128 isForeground true scanMode 1
+I/GoogleInputMethodService( 1442): GoogleInputMethodService.updateDeviceLockedStatus():2087 repeatCheckTimes = 2, unlocked = true
+D/BtGatt.ScanManager(  873): uid 10128 isForeground true scanMode -1
+I/FontLog ( 1171): Received query Noto Color Emoji Compat, URI content://com.google.android.gms.fonts [CONTEXT service_id=132 ]
+I/FontLog ( 1171): Query [emojicompat-emoji-font] resolved to {Noto Color Emoji Compat, wdth 100.0, wght 400, ital 0.0, bestEffort false} [CONTEXT service_id=132 ]
+E/TaskPersister(  543): File error accessing recents directory (directory doesn't exist?).
+I/FontLog ( 1171): Fetch {Noto Color Emoji Compat, wdth 100.0, wght 400, ital 0.0, bestEffort false} end status Status{statusCode=SUCCESS, resolution=null} [CONTEXT service_id=132 ]
+D/BtGatt.ScanManager(  873): uid 10128 isForeground true scanMode 1
+D/BtGatt.ScanManager(  873): uid 10128 isForeground true scanMode -1
+I/FontLog ( 1171): Pulling font file for id = 12, cache size = 8 [CONTEXT service_id=132 ]
+I/FontLog ( 1171): Pulling font file for id = 12, cache size = 8 [CONTEXT service_id=132 ]
+D/EGL_emulation(  755): app_time_stats: avg=356.83ms min=2.55ms max=1996.56ms count=6
+W/earchbox:search( 1696): Cleared Reference was only reachable from finalizer (only reported once)
+W/unknown:BridgelessReact( 4816): ReactHost{0}.isMetroRunning(): Async result = true
+W/unknown:BridgelessReact( 4816): ReactHost{0}.loadJSBundleFromMetro()
+I/wpa_supplicant(  741): wlan0: CTRL-EVENT-BEACON-LOSS 
+D/CompatibilityChangeReporter( 4816): Compat change id reported: 210923482; UID 10193; state: ENABLED
+W/WindowOnBackDispatcher(  755): sendCancelIfRunning: isInProgress=falsecallback=android.view.ViewRootImpl$$ExternalSyntheticLambda17@abd94f4
+W/InputManager-JNI(  543): Input channel object '65b4e37 Splash Screen com.ubmprobe (client)' was disposed without first being removed with the input manager!
+D/CoreBackPreview(  543): Window{65b4e37 u0 Splash Screen com.ubmprobe EXITING}: Setting back callback null
+D/CoreBackPreview(  543): Window{8433d1e u0 PopupWindow:8179642}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@33033cc, mPriority=0, mIsAnimationCallback=false}
+D/EGL_emulation(  755): app_time_stats: avg=56.97ms min=1.49ms max=644.99ms count=19
+I/netd    (  355): setProcSysNet(4, 2, wlan0, retrans_time_ms, 750) <0.12ms>
+I/netd    (  355): setProcSysNet(4, 2, wlan0, ucast_solicit, 10) <0.02ms>
+I/netd    (  355): setProcSysNet(6, 2, wlan0, retrans_time_ms, 750) <0.03ms>
+I/netd    (  355): setProcSysNet(6, 2, wlan0, ucast_solicit, 10) <0.01ms>
+D/EGL_emulation(  755): app_time_stats: avg=10.68ms min=1.03ms max=36.16ms count=42
+W/WindowOnBackDispatcher( 4816): sendCancelIfRunning: isInProgress=falsecallback=android.view.ViewRootImpl$$ExternalSyntheticLambda17@30df4af
+W/unknown:BridgelessReact( 4816): ReactHost{0}.loadJSBundleFromMetro(): Creating BundleLoader
+D/CoreBackPreview(  543): Window{8433d1e u0 PopupWindow:8179642}: Setting back callback null
+W/unknown:BridgelessReact( 4816): ReactHost{0}.getOrCreateReactInstanceTask(): Creating BridgelessReactContext
+I/netd    (  355): tetherGetStats() -> {[]} <6.84ms>
+W/InputManager-JNI(  543): Input channel object '8433d1e PopupWindow:8179642 (client)' was disposed without first being removed with the input manager!
+W/unknown:BridgelessReact( 4816): ReactHost{0}.getOrCreateReactInstanceTask(): Creating ReactInstance
+I/netd    (  355): bandwidthSetGlobalAlert(2097152) <0.15ms>
+I/netd    (  355): bandwidthRemoveInterfaceQuota(eth0) <0.74ms>
+I/netd    (  355): bandwidthSetInterfaceQuota(eth0, 9223372036854775807) <0.44ms>
+D/TrafficStats( 4816): tagSocket(104) with statsTag=0xffffffff, statsUid=-1
+W/unknown:BridgelessReact( 4816): ReactHost{0}.getOrCreateReactInstanceTask(): Loading JS Bundle
+W/unknown:BridgelessReact( 4816): ReactHost{0}.getOrCreateReactInstanceTask(): DevSupportManager.onNewReactContextCreated()
+W/unknown:ReactNative( 4816): Packager connection already open, nooping.
+W/unknown:BridgelessReact( 4816): ReactHost{0}.ReactContext.onHostResume()
+W/unknown:BridgelessReact( 4816): ReactHost{0}.getOrCreateReactInstanceTask(): Executing ReactInstanceEventListeners
+W/unknown:BridgelessReact( 4816): ReactHost{0}.startSurface(surfaceId = 0): Execute
+I/WebViewFactory( 4816): Loading com.google.android.webview version 113.0.5672.136 (code 567263637)
+W/ziparchive( 4816): Unable to open '/data/app/~~bUmJ5FC0feGZjAMnkSYJmg==/com.google.android.trichromelibrary_567263637-u7uBci3WP44XNugmNcd9bQ==/TrichromeLibrary.dm': No such file or directory
+W/ziparchive( 4816): Unable to open '/data/app/~~bUmJ5FC0feGZjAMnkSYJmg==/com.google.android.trichromelibrary_567263637-u7uBci3WP44XNugmNcd9bQ==/TrichromeLibrary.dm': No such file or directory
+W/com.ubmprobe( 4816): Entry not found
+D/nativeloader( 4816): Configuring clns-7 for other apk /data/app/~~bUmJ5FC0feGZjAMnkSYJmg==/com.google.android.trichromelibrary_567263637-u7uBci3WP44XNugmNcd9bQ==/TrichromeLibrary.apk. target_sdk_version=34, uses_libraries=ALL, library_path=/data/app/~~748pTeMuw3lqJa8vQRkT1A==/com.google.android.webview-CfXryH9_KbTZ6IIS5ngpww==/lib/x86_64:/data/app/~~748pTeMuw3lqJa8vQRkT1A==/com.google.android.webview-CfXryH9_KbTZ6IIS5ngpww==/WebViewGoogle.apk!/lib/x86_64:/data/app/~~bUmJ5FC0feGZjAMnkSYJmg==/com.google.android.trichromelibrary_567263637-u7uBci3WP44XNugmNcd9bQ==/TrichromeLibrary.apk!/lib/x86_64, permitted_path=/data:/mnt/expand
+D/nativeloader( 4816): Configuring clns-8 for other apk /data/app/~~748pTeMuw3lqJa8vQRkT1A==/com.google.android.webview-CfXryH9_KbTZ6IIS5ngpww==/WebViewGoogle.apk. target_sdk_version=34, uses_libraries=, library_path=/data/app/~~748pTeMuw3lqJa8vQRkT1A==/com.google.android.webview-CfXryH9_KbTZ6IIS5ngpww==/lib/x86_64:/data/app/~~748pTeMuw3lqJa8vQRkT1A==/com.google.android.webview-CfXryH9_KbTZ6IIS5ngpww==/WebViewGoogle.apk!/lib/x86_64:/data/app/~~bUmJ5FC0feGZjAMnkSYJmg==/com.google.android.trichromelibrary_567263637-u7uBci3WP44XNugmNcd9bQ==/TrichromeLibrary.apk!/lib/x86_64, permitted_path=/data:/mnt/expand
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{bba3e27 com.android.cts.priv.ctsshim/10178} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{66688d4 com.google.android.youtube/10139} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{f510a7d com.android.internal.display.cutout.emulation.corner/10022} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{61bd72 com.android.internal.display.cutout.emulation.double/10045} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{98295c3 com.google.android.googlequicksearchbox/10132} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{e0d5e40 com.google.android.onetimeinitializer/10125} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{3e8d179 com.google.android.ext.shared/10101} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{68a3ebe com.android.internal.systemui.navbar.gestural_wide_back/10004} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{ceecb1f com.android.virtualmachine.res/10189} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{c8a1e6c com.google.android.federatedcompute/10172} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{f9c0c35 com.android.managedprovisioning.auto_generated_rro_product__/10021} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{72788ca com.android.carrierconfig.auto_generated_rro_vendor__/10079} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{dbefa3b com.android.systemui.emulation.pixel_3_xl/10031} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{f30b558 com.android.systemui.emulation.pixel_4_xl/10059} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{90e36b1 com.android.systemui.emulation.pixel_fold/10006} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{d9d6796 com.android.simappdialog.auto_generated_rro_product__/10027} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{598ff17 com.android.htmlviewer/10116} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{2a7cf04 com.google.android.health.connect.backuprestore/10191} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{39e8ced com.android.systemui.auto_generated_rro_product__/10028} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{5c06722 com.google.android.apps.messaging/10131} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{8a475b3 com.google.android.soundpicker/10137} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{554d770 com.google.android.marvin.talkbackoverlay/10075} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{f640ae9 com.google.android.configupdater/10129} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{221d36e com.android.internal.emulation.pixel_3a_xl/10044} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{be6ba0f com.android.internal.emulation.pixel_6_pro/10018} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{487fa9c com.android.internal.emulation.pixel_7_pro/10015} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{ce96ca5 com.android.internal.emulation.pixel_8_pro/10058} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{b1bb87a com.android.internal.emulation.pixel_3a/10053} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{55ee82b com.android.internal.emulation.pixel_4a/10008} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{682488 com.android.internal.emulation.pixel_6a/10036} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{a92e21 com.android.internal.emulation.pixel_7a/10030} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{29ce246 com.google.android.overlay.googlewebview/10049} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{1e1dc07 com.google.android.hotspot2.osulogin/10176} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{29f0134 com.android.simappdialog/10112} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{2498b5d com.android.internal.display.cutout.emulation.hole/10073} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{8b4dcd2 com.android.internal.display.cutout.emulation.tall/10065} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{cb631a3 com.android.internal.systemui.navbar.threebutton/10068} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{3c4fca0 com.android.camera2/10145} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{3988059 com.android.systemui.auto_generated_rro_vendor__/10076} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{cdff41e com.google.android.deskclock/10153} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{4f044ff com.android.internal.systemui.navbar.twobutton/10019} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{b8d42cc com.google.android.as/10127} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{b47c915 com.google.android.gm/10142} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{813342a com.android.internal.systemui.navbar.gestural_extra_wide_back/10048} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{c8e321b com.android.systemui.emulation.pixel_3/10012} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{7b1bfb8 com.android.systemui.emulation.pixel_4/10037} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{f68e191 com.android.systemui.emulation.pixel_5/10071} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{b8868f6 com.android.systemui.emulation.pixel_6/10074} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{d53d4f7 com.android.systemui.emulation.pixel_7/10072} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{59f1f64 com.android.systemui.emulation.pixel_8/10070} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{ba905cd com.android.nfc.auto_generated_rro_product__/10024} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{4a1e82 com.android.printspooler/10104} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{f66c993 com.android.emergency.auto_generated_rro_product__/10041} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{ae0cdd0 com.google.android.connectivity.resources.goldfish.overlay/10078} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{f4d31c9 com.android.dreams.basic/10103} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{37fa0ce com.google.android.networkstack.tethering.emulator/10020} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{daa6bef com.android.providers.settings.auto_generated_rro_product__/10000} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{84cf6fc com.google.android.as.oss/10121} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{eee2185 com.android.traceur.auto_generated_rro_product__/10013} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{b78fbda com.google.android.devicelockcontroller/10184} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{3dbd80b com.google.android.dialer/10130} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{3f086e8 com.android.internal.emulation.pixel_3/10046} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{5f45101 com.android.internal.emulation.pixel_4/10060} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{17afba6 com.android.internal.emulation.pixel_5/10009} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{26de9e7 com.android.internal.emulation.pixel_6/10038} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{5bb2994 com.android.internal.emulation.pixel_7/10067} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{3d3fc3d com.android.internal.emulation.pixel_8/10039} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{c4b2c32 com.google.android.captiveportallogin/10113} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{4253d83 com.android.musicfx/10088} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{2eb4b00 com.google.android.apps.docs/10154} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{3fc915f com.google.android.apps.maps/10152} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{1091f39 com.google.android.modulemetadata/10147} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{77bd97e com.google.android.markup/10135} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{1742edf com.android.providers.settings.auto_generated_rro_vendor__/10080} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{43a172c com.google.android.rkpdapp/10183} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{7d375f5 com.google.android.contacts/10156} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{3780f8a com.android.server.telecom.auto_generated_rro_product__/10029} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{d96d9fb com.google.android.overlay.googleconfig/10055} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{2c77a18 com.android.chrome/10149} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{cb27c71 com.android.bips.auto_generated_rro_product__/10032} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{a4f9a56 com.google.android.apps.customization.pixel/10144} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{96f1ad7 com.google.android.tag/10082} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{7c61fc4 com.google.android.overlay.permissioncontroller/10002} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{2a16ead com.google.android.partnersetup/10124} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{54305e2 com.google.android.apps.wallpaper.nexus/10141} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{8208d73 com.google.android.apps.nexuslauncher/10169} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{ae77430 com.google.android.nearby.halfsheet/10181} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{71348a9 com.android.theme.font.notoserifsource/10066} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{f0f9e2e com.google.android.safetycenter.resources/10170} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{16c8dcf com.android.internal.display.cutout.emulation.waterfall/10040} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{b87a35c com.android.internal.systemui.navbar.transparent/10026} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{1aec665 com.google.android.connectivity.resources/10180} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{efb6f3a com.android.providers.contacts.auto_generated_rro_product__/10035} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{dce37eb com.google.android.feedback/10162} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{999948 com.google.android.printservice.recommendation/10110} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{3ca63e1 com.google.android.apps.photos/10143} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{b47803 com.google.android.calendar/10140} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{8a14506 com.google.android.documentsui/10098} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{85667c7 com.android.systemui.emulation.pixel_3a_xl/10034} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{b5301f4 com.android.systemui.emulation.pixel_6_pro/10063} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{3a85d1d com.android.systemui.emulation.pixel_7_pro/10054} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{c7cab92 com.android.systemui.emulation.pixel_8_pro/10014} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{247b963 com.google.mainline.telemetry/10151} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{8984960 com.android.carrierconfig.auto_generated_rro_product__/10064} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{f72ae19 com.android.providers.partnerbookmarks/10100} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{535eede com.android.wallpaper.livepicker/10090} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{47288bf com.android.providers.telephony.auto_generated_rro_product__/10062} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{d289b8c com.android.phone.auto_generated_rro_vendor__/10081} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{3f712d5 com.google.mainline.adservices/10136} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{dae1aea com.android.imsserviceentitlement/10117} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{a50f1db com.google.android.healthconnect.controller/10190} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{889e478 com.android.internal.emulation.pixel_2_xl/10017} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{3230751 com.android.internal.emulation.pixel_3_xl/10056} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{bcafbb6 com.android.internal.emulation.pixel_4_xl/10047} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{2e2d0b7 com.android.internal.emulation.pixel_fold/10003} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{ab4d024 com.android.bookmarkprovider/10115} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{63fc78d com.google.android.overlay.pixelconfigcommon/10011} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{c031d42 com.android.systemui.accessibility.accessibilitymenu.auto_generated_rro_product__/10050} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{349c153 com.android.systemui.emulation.pixel_3a/10010} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{880ca90 com.android.systemui.emulation.pixel_4a/10001} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{7ee4f89 com.android.systemui.emulation.pixel_6a/10042} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{9a9cb8e com.android.systemui.emulation.pixel_7a/10016} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{7251faf com.google.android.settings.intelligence/10119} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{b968012 com.google.android.projection.gearhead/10123} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{acfffbc com.google.android.uwb.resources/10182} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{a0633e3 com.android.cts.ctsshim/10179} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{1e35b45 com.google.android.wifi.resources/10174} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{ffb129a com.google.android.wifi.dialog/10175} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{aae07cb com.google.android.apps.wallpaper/10161} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{47b5ba8 com.google.android.odad/10122} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{a6366c1 com.android.settings.auto_generated_rro_product__/10025} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{fe7be66 com.android.internal.systemui.navbar.gestural/10051} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{a9355a7 com.google.android.apps.youtube.music/10155} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{afe8a54 com.android.bluetoothmidiservice/10106} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{d7eadfd com.android.storagemanager.auto_generated_rro_product__/10023} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{6a15af2 com.google.android.cellbroadcastreceiver/10188} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{595a543 com.android.phone.auto_generated_rro_product__/10061} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{de3f7c0 android.auto_generated_rro_product__/10069} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{e0d2cf9 com.android.internal.systemui.navbar.gestural_narrow_back/10052} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{e6343e com.google.android.inputmethod.latin/10146} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{be3529f android.auto_generated_rro_vendor__/10077} BLOCKED
+I/AppsFilter(  543): interaction: PackageSetting{6493ec9 com.ubmprobe/10193} -> PackageSetting{8f0cfec com.google.android.apps.restore/10120} BLOCKED
+W/com.ubmprobe( 4816): Accessing hidden method Landroid/os/Trace;->isTagEnabled(J)Z (unsupported, reflection, allowed)
+W/com.ubmprobe( 4816): Accessing hidden method Landroid/os/Trace;->traceBegin(JLjava/lang/String;)V (unsupported, reflection, allowed)
+W/com.ubmprobe( 4816): Accessing hidden method Landroid/os/Trace;->traceEnd(J)V (unsupported, reflection, allowed)
+W/com.ubmprobe( 4816): Accessing hidden method Landroid/os/Trace;->asyncTraceBegin(JLjava/lang/String;I)V (unsupported, reflection, allowed)
+W/com.ubmprobe( 4816): Accessing hidden method Landroid/os/Trace;->asyncTraceEnd(JLjava/lang/String;I)V (unsupported, reflection, allowed)
+I/cr_WVCFactoryProvider( 4816): Loaded version=113.0.5672.136 minSdkVersion=29 isBundle=false multiprocess=true packageId=2
+I/cr_VariationsUtils( 4816): Failed reading seed file "/data/user/0/com.ubmprobe/app_webview/variations_seed_new"
+I/cr_LibraryLoader( 4816): Successfully loaded native library
+I/cr_CachingUmaRecorder( 4816): Flushed 8 samples from 8 histograms.
+D/TrafficStats( 4816): tagSocket(115) with statsTag=0xffffffff, statsUid=-1
+I/ReactNativeJS( 4816): Running "UbmProbe" with {"rootTag":1,"initialProps":{},"fabric":true}
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.debuggingoverlay.DebuggingOverlayManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.uimanager.LayoutShadowNode
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.safeareaview.ReactSafeAreaViewManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.modal.ReactModalHostManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.progressbar.ReactProgressBarViewManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.scroll.ReactHorizontalScrollViewManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.image.ReactImageManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.text.ReactTextViewManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.scroll.ReactHorizontalScrollContainerViewManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.unimplementedview.ReactUnimplementedViewManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.scroll.ReactScrollViewManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.view.ReactViewManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.drawer.ReactDrawerLayoutManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.switchview.ReactSwitchManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.swiperefresh.SwipeRefreshLayoutManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.textinput.ReactTextInputManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.text.SelectableTextViewManager
+W/unknown:ViewManagerPropertyUpdater( 4816): Could not find generated setter for class com.facebook.react.views.virtual.view.ReactVirtualViewManager
+D/CompatibilityChangeReporter( 4816): Compat change id reported: 289878283; UID 10193; state: ENABLED
+D/TrafficStats( 4816): tagSocket(106) with statsTag=0xffffffff, statsUid=-1
+I/ReactNativeJS( 4816): [UBM_PROBE] app-mounted
+D/CompatibilityChangeReporter( 4816): Compat change id reported: 171228096; UID 10193; state: ENABLED
+W/com.ubmprobe( 4816): Accessing hidden field Landroid/widget/ScrollView;->mScroller:Landroid/widget/OverScroller; (unsupported, reflection, allowed)
+W/healthd (    0): battery l=100 v=5000 t=25.0 h=2 st=2 c=900000 fc=3000000 cc=10 chg=a
+D/StatusBarIconController(  755): ignoring old pipeline callbacks, because the new mobile icons are enabled
+I/ResourceTimer(  543): GetResourceValue count=4081 pvalues=1000,5000,8000,19000
+I/ResourceTimer(  543): RetrieveAttributes count=2175 pvalues=1000,1000,3000,19000
+D/ProfileInstaller( 4816): Installing profile for com.ubmprobe
+D/EGL_emulation( 4816): app_time_stats: avg=1336.28ms min=22.98ms max=4188.28ms count=4
+D/BtGatt.ScanManager(  873): uid 10128 isForeground true scanMode 1
+D/BtGatt.ScanManager(  873): uid 10128 isForeground true scanMode -1
+I/DropBoxManagerService(  543): add tag=system_server_strictmode isTagEnabled=true flags=0x2
+I/DropBoxManagerService(  543): add tag=system_server_strictmode isTagEnabled=true flags=0x2
+I/DropBoxManagerService(  543): add tag=system_server_strictmode isTagEnabled=true flags=0x2
+I/DropBoxManagerService(  543): add tag=system_server_strictmode isTagEnabled=true flags=0x2
+D/ConnectivityService(  543): releasing NetworkRequest [ REQUEST id=149, [ Transports: CELLULAR Capabilities: INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VPN&NOT_VCN_MANAGED Uid: 10132 RequestorUid: 10132 RequestorPkg: com.google.android.googlequicksearchbox UnderlyingNetworks: Null] ] (release request)
+I/ConnectivityService(  543): Update capabilities for net 100 : -FOREGROUND
+I/netd    (  355): networkSetPermissionForNetwork(100, 1) <13.27ms>
+I/logd    (    0): logdr: UID=2000 GID=2000 PID=4873 n tail=0 logMask=99 pid=0 start=0ns deadline=0ns
+
+

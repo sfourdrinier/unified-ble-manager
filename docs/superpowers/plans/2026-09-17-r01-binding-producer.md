@@ -247,11 +247,12 @@ git commit -m "feat(rn): production Rust core binding producer + tests (lane onl
 - Modify: `emulator-probe/consumer/App.jsx` (add `rustCoreButton`: openSession → invoke `central.status` + `scan.start/take/stop` → close; log `[UBM_PROBE]` receipts)
 - Modify: `emulator-probe/scripts/run-battery.js` (tap + assert the new receipts; add tap center constant)
 
-- [ ] **Step 1: Add the probe leg + battery assertions**
-- [ ] **Step 2: Build + run on the task-owned emulator**
+- [x] **Step 1: Add the probe leg + battery assertions**
+- [x] **Step 2: Build + run on the task-owned emulator**
 
 Run: `cd emulator-probe/consumer && pnpm install --no-frozen-lockfile && cd android && <gradle8.13> :app:assembleDebug -PreactNativeArchitectures=x86_64 --no-daemon && node ../scripts/run-battery.js --only RUSTCORE`
 Expected: receipts show real central status + scan observations from Rust; no `capability.unsupported`.
+Observed 2026-09-17: RUSTCORE 11/11 PASS (`results/battery-rustcore-producer.json`): `rustcore-ok contract=C-UBM.0.1.2-DRAFT … echo=41 scanOp=central-op-0 … "event":"stop" closed=true` on `sdk_gphone64_x86_64` API 34. Fixes along the way: Metro `watchFolders` += `<repo>/src` (out-of-root alias refused), uppercase tap text (`RUSTCORE SESSION`), full-line match past the 300-char `grepLines` cut. One vehicle flake: fresh-boot logspam rotated `app-mounted` out of the ring; rerun on the settled device green.
 
 - [ ] **Step 3: Commit**
 
