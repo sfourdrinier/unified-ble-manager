@@ -10,6 +10,7 @@ import android.os.SystemClock
 import com.ubm.echo.EchoBridge
 import com.ubm.gatt.GattBridge
 import java.util.concurrent.Executor
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -42,6 +43,15 @@ import java.util.concurrent.atomic.AtomicReference
  * the JNI round-trip harness); a stop posted before the start observation
  * drains is a documented no-op shadow, never a fabricated stop.
  *
+ * Authority barriers (R02): the bridge drains on a worker thread while stops
+ * run on the dispatcher thread. [postScanStop]/[postAdapterReset] latch a
+ * post-stop barrier under the same lock that admits drain observations, so a
+ * late `central.scan-start` for the dead scan is dropped and can never
+ * resurrect the op into a stale second stop; [postScanStart] re-arms it.
+ * [release]/[shutdown] latch a disabled barrier: afterwards every post is a
+ * null shadow and every drain observation is dropped, so no callback can
+ * observe the bridge after stop.
+ *
  * Follow-up (not in this slice): GATT IO shadowing (`path.register`,
  * `read.start`/`write.start`, `op.settle`, `notify.deliver`) needs the
  * path/lease context the dispatcher owns per command; wire it once the
@@ -72,6 +82,17 @@ class UbmGattCoreBinding(
   private var handle: Long = -1
   private var openFailureValue: String? = null
   private val scanOp = AtomicReference<String?>(null)
+
+  /**
+   * R02 barriers. [scanGuard] linearizes the post-stop barrier against drain
+   * admission: stops latch [scanStopped] and take [scanOp] atomically, so a
+   * racing `central.scan-start` is either consumed by the stop or dropped by
+   * the latch — never resurrected after it. [disabled] is set once by
+   * [release]/[shutdown] and needs no lock.
+   */
+  private val scanGuard = Any()
+  private var scanStopped = false
+  private val disabled = AtomicBoolean(false)
 
   /** Why the session failed to open, null when open. Never silent. */
   val openFailure: String? get() = openFailureValue
@@ -121,9 +142,14 @@ class UbmGattCoreBinding(
   // -- drain observation handling ------------------------------------------
 
   private fun onDrained(observations: List<GattObservation>) {
+    if (disabled.get()) return
     for (observation in observations) {
       if (observation.ok && observation.raw.contains("\"kind\":\"central.scan-start\"")) {
-        scanOpFrom(observation.raw)?.let { scanOp.set(it) }
+        scanOpFrom(observation.raw)?.let { op ->
+          synchronized(scanGuard) {
+            if (!scanStopped) scanOp.set(op)
+          }
+        }
       }
       if (!observation.ok) {
         try {
@@ -137,6 +163,7 @@ class UbmGattCoreBinding(
   // -- posting --------------------------------------------------------------
 
   private fun post(wire: String): UbmGattCentralBridge.PostResult? {
+    if (disabled.get()) return null
     if (!isOpen) return null
     return bridge.postEvent(wire)
   }
@@ -151,6 +178,9 @@ class UbmGattCoreBinding(
   fun peerKeyFor(deviceId: String): String = "${peerDomainFor(deviceId)}:$deviceId"
 
   fun postScanStart(serviceUuids: List<String>, allowDuplicates: Boolean): UbmGattCentralBridge.PostResult? {
+    synchronized(scanGuard) {
+      scanStopped = false
+    }
     return post(
       GattCentralWire.scanStart(
         PROTOCOL_SCAN_OWNER,
@@ -164,7 +194,11 @@ class UbmGattCoreBinding(
   }
 
   fun postScanStop(): UbmGattCentralBridge.PostResult? {
-    val op = scanOp.getAndSet(null) ?: return null
+    if (disabled.get()) return null
+    val op = synchronized(scanGuard) {
+      scanStopped = true
+      scanOp.getAndSet(null)
+    } ?: return null
     return post(GattCentralWire.scanStop(op, nowMs()))
   }
 
@@ -210,7 +244,11 @@ class UbmGattCoreBinding(
   }
 
   fun postAdapterReset(): UbmGattCentralBridge.PostResult? {
-    scanOp.set(null)
+    if (disabled.get()) return null
+    synchronized(scanGuard) {
+      scanStopped = true
+      scanOp.set(null)
+    }
     return post(GattCentralWire.adapterReset(nowMs()))
   }
 
@@ -224,6 +262,9 @@ class UbmGattCoreBinding(
    */
   fun release(): List<GattObservation> {
     val observations = bridge.releaseOnDestroy()
+    // Latched after the joined final drain (which still forwards, as before):
+    // only truly late callbacks are dropped from here on.
+    disabled.set(true)
     if (isOpen) {
       try {
         jni.close(handle)
@@ -239,6 +280,9 @@ class UbmGattCoreBinding(
 
   /** Abandon path when the owner is going away without destroy. */
   fun shutdown() {
+    // Latched first: shutdown does not join a running drain, so an in-flight
+    // worker callback must already be barred from the gone owner.
+    disabled.set(true)
     bridge.shutdown()
     if (isOpen) {
       try {
