@@ -4,24 +4,39 @@
 // bridge only: session ownership and the op table live in
 // `UnifiedBleRustCoreSessions.swift` (mirroring Android's
 // `RustCoreSessionRouter`); this file maps results onto RN promises.
+// New Arch only, like the sibling protocol control module: the class
+// conforms to the codegen `NativeUnifiedBleRustCoreSpec` (promise methods
+// use the spec `resolve:`/`reject:` selectors, never the old-arch
+// `RCT_EXPORT_METHOD` bridge macros).
 
 #import <Foundation/Foundation.h>
+#import <CoreBluetooth/CoreBluetooth.h>
+#import <React/RCTBridgeModule.h>
 #import <React/RCTLog.h>
+#import <ReactCommon/RCTTurboModule.h>
 
 #if __has_include("BlePlx-Swift.h")
 #import "BlePlx-Swift.h"
 #endif
 
-@interface UnifiedBleRustCore : NSObject <RCTBridgeModule>
+#ifdef RCT_NEW_ARCH_ENABLED
+#import <UnifiedBleProtocolSpec/UnifiedBleProtocolSpec.h>
+
+@interface UnifiedBleRustCore : NSObject <NativeUnifiedBleRustCoreSpec>
 @end
 
 @implementation UnifiedBleRustCore
 
 RCT_EXPORT_MODULE(UnifiedBleRustCore)
 
-RCT_EXPORT_METHOD(openSession:(NSString *)owner
-                  resolver:(RCTPromiseResolveBlock)resolve
-                  rejecter:(RCTPromiseRejectBlock)reject) {
+- (std::shared_ptr<facebook::react::TurboModule>)getTurboModule:
+    (const facebook::react::ObjCTurboModule::InitParams &)params {
+  return std::make_shared<facebook::react::NativeUnifiedBleRustCoreSpecJSI>(params);
+}
+
+- (void)openSession:(NSString *)owner
+            resolve:(RCTPromiseResolveBlock)resolve
+             reject:(RCTPromiseRejectBlock)reject {
   NSError *error = nil;
   NSString *sessionId = [[UnifiedBleRustCoreSessions shared] openSession:owner error:&error];
   if (error != nil) {
@@ -31,11 +46,11 @@ RCT_EXPORT_METHOD(openSession:(NSString *)owner
   resolve(@{@"sessionId": sessionId});
 }
 
-RCT_EXPORT_METHOD(invoke:(NSString *)sessionId
-                  op:(NSString *)op
-                  argsJson:(NSString *)argsJson
-                  resolver:(RCTPromiseResolveBlock)resolve
-                  rejecter:(RCTPromiseRejectBlock)reject) {
+- (void)invoke:(NSString *)sessionId
+            op:(NSString *)op
+      argsJson:(NSString *)argsJson
+       resolve:(RCTPromiseResolveBlock)resolve
+        reject:(RCTPromiseRejectBlock)reject {
   // Domain failures travel as data (the frozen wire record), never as
   // rejections — the Swift layer only returns records.
   NSDictionary *record = [[UnifiedBleRustCoreSessions shared] invokeWithSessionId:sessionId
@@ -44,16 +59,18 @@ RCT_EXPORT_METHOD(invoke:(NSString *)sessionId
   resolve(record);
 }
 
-RCT_EXPORT_METHOD(close:(NSString *)sessionId
-                  resolver:(RCTPromiseResolveBlock)resolve
-                  rejecter:(RCTPromiseRejectBlock)reject) {
+- (void)close:(NSString *)sessionId
+      resolve:(RCTPromiseResolveBlock)resolve
+       reject:(RCTPromiseRejectBlock)reject {
   [[UnifiedBleRustCoreSessions shared] closeSession:sessionId];
   resolve(nil);
 }
 
-RCT_EXPORT_METHOD(contractRevision:(RCTPromiseResolveBlock)resolve
-                  rejecter:(RCTPromiseRejectBlock)reject) {
+- (void)contractRevision:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject {
   resolve([[UnifiedBleRustCoreSessions shared] revision]);
 }
 
 @end
+
+#endif
