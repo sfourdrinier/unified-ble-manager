@@ -110,16 +110,17 @@ describe('packed RustCore checks (D2 iv)', () => {
     expect(assertPackedRustCore(files)).toBe(expected)
   })
 
-  test('missing staging identity fails', () => {
+  test('unstaged tree passes with zero bytes (dev pack; release requires staging)', () => {
     const files = appleFixture()
     files.delete('package/ios/RustCore/build-identity.txt')
-    expect(() => assertPackedRustCore(files)).toThrow(/missing Apple staging identity/)
+    files.delete('package/ios/RustCore/RustCore.xcframework/Info.plist')
+    expect(assertPackedRustCore(files)).toBe(0)
   })
 
-  test('missing Info.plist fails', () => {
+  test('staged identity without plist fails', () => {
     const files = appleFixture()
     files.delete('package/ios/RustCore/RustCore.xcframework/Info.plist')
-    expect(() => assertPackedRustCore(files)).toThrow(/missing Apple framework plist/)
+    expect(() => assertPackedRustCore(files)).toThrow(/identity present but framework plist missing/)
   })
 
   test('wrong slice count fails', () => {
