@@ -93,10 +93,14 @@ describe('Tauri v2 Rust plugin boundary', () => {
     expect(dispatcher).toContain('peripherals()')
     expect(dispatcher).toContain('for service in peripheral.services()')
     expect(dispatcher).toContain('("schemaVersion", number(2))')
-    // Runtime construction moved to the shared desktop executor seam
-    // (HOST-DESKTOP extraction); the dispatcher must delegate and the
-    // executor must preserve the retained runtime shape and identity.
-    expect(dispatcher).toContain('desktop_executor_seam::desktop_runtime()')
+    // Runtime construction moved to the shared desktop executor
+    // (HOST-DESKTOP extraction, then the F01 authority migration from the
+    // tauri-local seam to the real `ubm-desktop` crate dependency); the
+    // dispatcher must delegate and the executor must preserve the retained
+    // runtime shape and identity. F01 contract update (justified): only the
+    // owner moved (same thread, same two workers) — the delegation
+    // requirement itself is unchanged and still pinned here.
+    expect(dispatcher).toContain('ubm_desktop::executor::desktop_runtime()')
     expect(executor).toContain('new_multi_thread')
     expect(executor).toContain('worker_threads(2)')
     expect(executor).toContain('ubm-btleplug')

@@ -100,7 +100,13 @@ describe('Android RN 0.86 unified protocol boundary', () => {
       'radio/GattOccurrenceResolver.kt',
       'radio/OwnedAndroidLog.kt',
       'radio/OwnedAndroidGattRadio.kt',
-      'radio/UbmGattCentralBridge.kt'
+      'radio/UbmGattCentralBridge.kt',
+      // F01 contract update (justified): `UbmGattCoreBinding` is the
+      // production call site that instantiates the bridge with real JNI
+      // (the gap F01 flagged) — a thin fail-closed Android adapter in the
+      // same `radio` package, covered by `UbmGattCoreBindingTest`. Current
+      // protocol graph member by design, not legacy residue.
+      'radio/UbmGattCoreBinding.kt'
     ].sort())
     const protocolDispatcher = read(
       'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt'

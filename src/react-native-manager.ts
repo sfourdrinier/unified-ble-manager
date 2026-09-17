@@ -16,6 +16,11 @@ import {
   type ReactNativeAppleBackendProviderOptions
 } from './backends/reactnative/react-native-apple-provider'
 import { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS, type BleManager } from './manager/ble-manager'
+import {
+  createReactNativeRustCoreBackendProvider,
+  type ReactNativeRustCorePlatform
+} from './backends/reactnative/react-native-rust-core-provider'
+import type { ReactNativeRustCoreBinding } from './backends/reactnative/react-native-rust-core'
 import { rehydratePublicPromise } from './public/error-bridge'
 import type { Spec as NativeUnifiedBleProtocolControl } from './NativeUnifiedBleProtocolControl'
 import type { ReactNativeRestorationBackendProvider } from './backends/reactnative/react-native-restoration'
@@ -35,6 +40,15 @@ export interface ReactNativeBleManagerOptions {
   readonly adapterId?: string
   readonly diagnostics?: DiagnosticsOptions
   readonly createOwnerId?: () => string
+  /**
+   * F01 shared-core binding. When present, manager creation, scan, connect,
+   * subscribe, timeout, and dispose execute the native Rust core through the
+   * binding-backed provider (no TypeScript scheduling, subscription, or
+   * timeout authority). When absent, the manager builds on the TypeScript
+   * protocol providers; the F01 acceptance proof always injects a binding
+   * and fails if the TypeScript surface executes BLE work.
+   */
+  readonly rustCore?: ReactNativeRustCoreBinding
 }
 
 /**
@@ -61,17 +75,11 @@ async function createReactNativeBleManagerWithEnvironmentInternal(
   if (options.adapterId !== undefined && options.adapterId !== String(expectedAdapterId)) {
     throw contractError('adapter.unavailable', 'adapter', 'react-native-manager.adapter')
   }
-  const provider = providerFor(options)
-  const managerOptions = {
-    ...DEFAULT_BLE_MANAGER_OPTIONS,
-    now: options.now,
-    maximumValueBytes:
-      options.diagnostics?.maximumValueBytes === undefined
-        ? DEFAULT_BLE_MANAGER_OPTIONS.maximumValueBytes
-        : byteLimit(options.diagnostics.maximumValueBytes),
-    traceMaximumRecords: options.diagnostics?.traceMaximumRecords ?? DEFAULT_BLE_MANAGER_OPTIONS.traceMaximumRecords,
-    traceMaximumBytes: options.diagnostics?.traceMaximumBytes ?? DEFAULT_BLE_MANAGER_OPTIONS.traceMaximumBytes
+  if (options.rustCore !== undefined) {
+    return createRustCoreManager(options)
   }
+  const provider = providerFor(options)
+  const managerOptions = managerOptionsFor(options)
   const scope: `${string}:${string}` = `react-native:${options.platform}`
   const clientId = opaqueId(options.clientId, 'client', scope)
   return createBleManagerFromProvider(
@@ -91,6 +99,65 @@ async function createReactNativeBleManagerWithEnvironmentInternal(
     },
     managerOptions
   )
+}
+
+/**
+ * F01 shared-core path: the manager builds on the binding-backed provider,
+ * so every BLE data-path operation dispatches through the admitted native
+ * Rust core session. The generated protocol control is used only for
+ * restoration identity, never for BLE work.
+ */
+async function createRustCoreManager(
+  options: ReactNativeBleManagerOptions
+): Promise<BleManager<string, NativeBackendIdentity<string>>> {
+  if (options.hostSessionScope.length === 0) {
+    throw contractError('argument.invalid', 'restoration', 'react-native-manager.host-session-scope')
+  }
+  const platform: ReactNativeRustCorePlatform = options.platform
+  const provider = createReactNativeRustCoreBackendProvider({
+    platform,
+    binding: options.rustCore ?? missingRustCoreBinding(),
+    owner: `${options.clientId}/${options.managerId}`,
+    now: options.now,
+    control: options.control,
+    ...(options.createOwnerId === undefined ? {} : { createOwnerId: options.createOwnerId })
+  })
+  const scope: `${string}:${string}` = `react-native:${options.platform}`
+  const clientId = opaqueId(options.clientId, 'client', scope)
+  return createBleManagerFromProvider(
+    {
+      provider,
+      selection: { selectedAdapterId: adapterIdFor(options.platform) },
+      coreCompatibility: compatibilityFor(options.platform),
+      manager: {
+        clientId,
+        managerId: opaqueId(options.managerId, 'manager', scope),
+        ownerMode: 'owning',
+        restoration: Object.freeze({
+          client: Object.freeze({ clientId, hostSessionScope: options.hostSessionScope }),
+          coordinator: provider.restoration
+        })
+      }
+    },
+    managerOptionsFor(options)
+  )
+}
+
+function missingRustCoreBinding(): ReactNativeRustCoreBinding {
+  throw contractError('capability.unsupported', 'capability', 'react-native-manager.rust-core-missing')
+}
+
+function managerOptionsFor(options: ReactNativeBleManagerOptions) {
+  return {
+    ...DEFAULT_BLE_MANAGER_OPTIONS,
+    now: options.now,
+    maximumValueBytes:
+      options.diagnostics?.maximumValueBytes === undefined
+        ? DEFAULT_BLE_MANAGER_OPTIONS.maximumValueBytes
+        : byteLimit(options.diagnostics.maximumValueBytes),
+    traceMaximumRecords: options.diagnostics?.traceMaximumRecords ?? DEFAULT_BLE_MANAGER_OPTIONS.traceMaximumRecords,
+    traceMaximumBytes: options.diagnostics?.traceMaximumBytes ?? DEFAULT_BLE_MANAGER_OPTIONS.traceMaximumBytes
+  }
 }
 
 function providerFor(options: ReactNativeBleManagerOptions): ReactNativeRestorationBackendProvider {

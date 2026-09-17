@@ -54,7 +54,13 @@ describe('Unified Android native protocol structure', () => {
       'radio/GattOccurrenceResolver.kt',
       'radio/OwnedAndroidGattRadio.kt',
       'radio/OwnedAndroidLog.kt',
-      'radio/UbmGattCentralBridge.kt'
+      'radio/UbmGattCentralBridge.kt',
+      // F01 contract update (justified): `UbmGattCoreBinding` is the
+      // production call site that instantiates the bridge with real JNI
+      // (the gap F01 flagged) — a thin fail-closed Android adapter in the
+      // same `radio` package, covered by `UbmGattCoreBindingTest`. It is a
+      // boundary member by design, not boundary growth by accident.
+      'radio/UbmGattCoreBinding.kt'
     ])
     expect(dispatcher).toContain('OwnedAndroidGattRadio')
     expect(dispatcher).not.toMatch(/com\.sfourdrinier\.unifiedblemanager\.(adapter|converter)|Base64|BlePlxModule/)

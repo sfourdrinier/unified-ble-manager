@@ -23,6 +23,7 @@
 //! scope labels, but never assumed), every driving call reports
 //! `lifecycle.invariant-violation` instead of operating degraded.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -200,6 +201,38 @@ fn central_error(core: CoreError, operation: &'static str) -> EchoError {
     )
 }
 
+/// Escapes one host-supplied string for embedding in a staged step line.
+/// The staged JSON reader accepts the standard `\"`/`\\` escapes.
+fn json_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Extracts the core-minted scan op id (`"op_id":"..."`) from a staged
+/// scan-start observation. `None` when the line carries none (a step-level
+/// rejection as data, or a foreign shape that must never be guessed at).
+fn extract_op_id(observation: &str) -> Option<String> {
+    const KEY: &str = "\"op_id\":\"";
+    let start = observation.find(KEY)? + KEY.len();
+    let end = observation[start..].find('"')?;
+    let op_id = &observation[start..start + end];
+    if op_id.is_empty() {
+        None
+    } else {
+        Some(op_id.to_owned())
+    }
+}
+
 /// Parses a host-supplied monotonic millisecond reading over the
 /// single-owned decimal-string mapping (DATA-02); anything else is
 /// `bytes.invalid`, exactly like the counter path.
@@ -233,6 +266,10 @@ pub struct CoreSession {
     cancel: Arc<CancelFlag>,
     central: Option<Central>,
     staged: Option<StagedDriver>,
+    /// First-class BLE scan slice (U8): staged op-name sequence plus the
+    /// core-minted op id to staged-name map for stop attribution.
+    scan_seq: u64,
+    scan_names: HashMap<String, String>,
 }
 
 impl CoreSession {
@@ -256,6 +293,8 @@ impl CoreSession {
             cancel: Arc::new(CancelFlag::default()),
             central,
             staged,
+            scan_seq: 0,
+            scan_names: HashMap::new(),
         }
     }
 
@@ -473,6 +512,98 @@ impl CoreSession {
             driver.staged_cap()
         ))
     }
+
+    /// U8 first-class BLE scan start: drives a REAL kernel scan admission
+    /// through the session-owned staged transition core (synthetic radio,
+    /// scripted observations) and returns the start observation JSON, which
+    /// carries the core-minted scan op id (`"op_id"`). The caller owns no
+    /// scan policy: duplicate/merge/timeout admission is the kernel's;
+    /// `timeout_ms`/`now_ms` cross as decimal strings (DATA-02 mapping) and
+    /// the core owns the deadline. Step-level core rejections come back as
+    /// data (`{"ok":false,...}`); only the session lifetime fails closed.
+    pub fn ble_scan_start(
+        &mut self,
+        owner: &str,
+        timeout_ms_decimal: &str,
+        now_ms_decimal: &str,
+        operation: &'static str,
+    ) -> Result<String, EchoError> {
+        let timeout_ms = parse_monotonic_ms(timeout_ms_decimal, operation)?;
+        let now_ms = parse_monotonic_ms(now_ms_decimal, operation)?;
+        let name = format!("apple-scan-{}", self.scan_seq);
+        self.scan_seq = self.scan_seq.saturating_add(1);
+        let line = format!(
+            "{{\"step\":\"scan.start\",\"op\":\"{name}\",\"owner\":\"{}\",\"duplicate\":\"first\",\"merge\":\"none\",\"timeout_ms\":{timeout_ms},\"services\":[],\"now\":{now_ms}}}",
+            json_escape(owner),
+        );
+        let observation = self.staged_mut_echo(operation)?.run_step(&line);
+        if let Some(op_id) = extract_op_id(&observation) {
+            self.scan_names.insert(op_id, name);
+        }
+        Ok(observation)
+    }
+
+    /// U8 first-class BLE scan take: drains the session observation log
+    /// (FIFO, newline-joined JSON lines; empty string when quiet) into the
+    /// caller. Delivery pacing only — admission/overflow stay core-owned.
+    pub fn ble_scan_take(&mut self, operation: &'static str) -> Result<String, EchoError> {
+        let staged = self.staged_mut_echo(operation)?;
+        Ok(staged.drain_log().join("\n"))
+    }
+
+    /// U8 first-class BLE scan stop: stops the core scan admitted under
+    /// `op_id` (the `"op_id"` from [`CoreSession::ble_scan_start`]) at host
+    /// time and returns the stop observation JSON. An unknown op id fails
+    /// closed (`argument.invalid`); a stop is never fabricated.
+    pub fn ble_scan_stop(
+        &mut self,
+        op_id: &str,
+        now_ms_decimal: &str,
+        operation: &'static str,
+    ) -> Result<String, EchoError> {
+        let now_ms = parse_monotonic_ms(now_ms_decimal, operation)?;
+        let Some(name) = self.scan_names.remove(op_id) else {
+            return Err(EchoError::new(
+                "argument.invalid",
+                "core",
+                operation,
+                "unknown-scan-op",
+            ));
+        };
+        let line = format!(
+            "{{\"step\":\"scan.platform\",\"op\":\"{name}\",\"event\":\"stop\",\"now\":{now_ms}}}"
+        );
+        Ok(self.staged_mut_echo(operation)?.run_step(&line))
+    }
+
+    fn staged_mut_echo(&mut self, operation: &'static str) -> Result<&mut StagedDriver, EchoError> {
+        // Lifetime gate in the EchoError identity (the UDL surface reports
+        // one typed failure); the driver core itself never degrades.
+        if self.destroyed {
+            return Err(EchoError::new(
+                "lifecycle.destroyed",
+                "core",
+                operation,
+                "session-closed",
+            ));
+        }
+        if !self.revision_valid {
+            return Err(EchoError::new(
+                "protocol.incompatible",
+                "core",
+                operation,
+                "contract-revision.mismatch",
+            ));
+        }
+        self.staged.as_mut().ok_or_else(|| {
+            EchoError::new(
+                "lifecycle.invariant-violation",
+                "core",
+                operation,
+                "staged-missing",
+            )
+        })
+    }
 }
 
 impl CoreBackend for CoreSession {
@@ -537,6 +668,33 @@ impl SharedCore {
         guard.check_usable("cancel-inflight")?;
         guard.cancel_inflight();
         Ok(())
+    }
+
+    /// U8 first-class BLE scan start (see
+    /// [`CoreSession::ble_scan_start`]).
+    pub fn ble_scan_start(
+        &self,
+        owner: &str,
+        timeout_ms_decimal: &str,
+        now_ms_decimal: &str,
+    ) -> Result<String, EchoError> {
+        const OP: &str = "ble-scan-start";
+        let mut guard = self.lock(OP)?;
+        guard.ble_scan_start(owner, timeout_ms_decimal, now_ms_decimal, OP)
+    }
+
+    /// U8 first-class BLE scan take (see [`CoreSession::ble_scan_take`]).
+    pub fn ble_scan_take(&self) -> Result<String, EchoError> {
+        const OP: &str = "ble-scan-take";
+        let mut guard = self.lock(OP)?;
+        guard.ble_scan_take(OP)
+    }
+
+    /// U8 first-class BLE scan stop (see [`CoreSession::ble_scan_stop`]).
+    pub fn ble_scan_stop(&self, op_id: &str, now_ms_decimal: &str) -> Result<String, EchoError> {
+        const OP: &str = "ble-scan-stop";
+        let mut guard = self.lock(OP)?;
+        guard.ble_scan_stop(op_id, now_ms_decimal, OP)
     }
 
     /// U7: observes the session-owned REAL Central (frozen revision plus

@@ -524,6 +524,12 @@ def _uniffi_check_contract_api_version(lib):
         raise InternalError("UniFFI contract version mismatch: try cleaning and rebuilding your project")
 
 def _uniffi_check_api_checksums(lib):
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_ble_scan_start() != 17628:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_ble_scan_stop() != 26279:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_ble_scan_take() != 44292:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_cancel_inflight() != 10905:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_central_status() != 24094:
@@ -541,6 +547,12 @@ def _uniffi_check_api_checksums(lib):
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_echo_counter() != 38882:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_request_ble_transition() != 20292:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_counters() != 53625:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_drain_log() != 7699:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_step() != 36705:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new() != 28077:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
@@ -573,6 +585,15 @@ _UniffiLib.ffi_ubm5_uniffi_echo_rustbuffer_reserve.restype = _UniffiRustBuffer
 _UniffiLib.ffi_ubm5_uniffi_echo_uniffi_contract_version.argtypes = (
 )
 _UniffiLib.ffi_ubm5_uniffi_echo_uniffi_contract_version.restype = ctypes.c_uint32
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_ble_scan_start.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_ble_scan_start.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_ble_scan_stop.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_ble_scan_stop.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_ble_scan_take.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_ble_scan_take.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_cancel_inflight.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_cancel_inflight.restype = ctypes.c_uint16
@@ -600,9 +621,38 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_echo_counter.rest
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_request_ble_transition.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_request_ble_transition.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_counters.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_counters.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_drain_log.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_drain_log.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_step.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_step.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_start.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_start.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_stop.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_stop.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_take.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_take.restype = _UniffiRustBuffer
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_cancel_inflight.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
@@ -654,6 +704,22 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_request_ble_transition.
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_request_ble_transition.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_counters.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_counters.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_drain_log.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_drain_log.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_step.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_step.restype = _UniffiRustBuffer
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_constructor_echosession_new.argtypes = (
     _UniffiRustBuffer,
     ctypes.POINTER(_UniffiRustCallStatus),
@@ -923,6 +989,12 @@ class _UniffiFfiConverterUInt32(_UniffiConverterPrimitiveInt):
 
 class EchoSessionProtocol(typing.Protocol):
     
+    def ble_scan_start(self, owner: str,timeout_ms: str,now_ms: str) -> EchoCounterResult:
+        raise NotImplementedError
+    def ble_scan_stop(self, op_id: str,now_ms: str) -> EchoCounterResult:
+        raise NotImplementedError
+    def ble_scan_take(self, ) -> EchoCounterResult:
+        raise NotImplementedError
     def cancel_inflight(self, ) -> EchoStatus:
         raise NotImplementedError
     def central_status(self, ) -> EchoCounterResult:
@@ -940,6 +1012,12 @@ class EchoSessionProtocol(typing.Protocol):
     def echo_counter(self, decimal: str) -> EchoCounterResult:
         raise NotImplementedError
     def request_ble_transition(self, transition: str) -> EchoStatus:
+        raise NotImplementedError
+    def staged_counters(self, ) -> EchoCounterResult:
+        raise NotImplementedError
+    def staged_drain_log(self, ) -> EchoCounterResult:
+        raise NotImplementedError
+    def staged_step(self, line: str) -> EchoCounterResult:
         raise NotImplementedError
 
 class EchoSession(EchoSessionProtocol):
@@ -977,6 +1055,57 @@ class EchoSession(EchoSessionProtocol):
         inst = cls.__new__(cls)
         inst._handle = handle
         return inst
+    def ble_scan_start(self, owner: str,timeout_ms: str,now_ms: str) -> EchoCounterResult:
+        
+        _UniffiFfiConverterString.check_lower(owner)
+
+        _UniffiFfiConverterString.check_lower(timeout_ms)
+
+        _UniffiFfiConverterString.check_lower(now_ms)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(owner),
+            _UniffiFfiConverterString.lower(timeout_ms),
+            _UniffiFfiConverterString.lower(now_ms),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeEchoCounterResult.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_start,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def ble_scan_stop(self, op_id: str,now_ms: str) -> EchoCounterResult:
+        
+        _UniffiFfiConverterString.check_lower(op_id)
+
+        _UniffiFfiConverterString.check_lower(now_ms)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(op_id),
+            _UniffiFfiConverterString.lower(now_ms),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeEchoCounterResult.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_stop,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def ble_scan_take(self, ) -> EchoCounterResult:
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeEchoCounterResult.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_take,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
     def cancel_inflight(self, ) -> EchoStatus:
         _uniffi_lowered_args = (
             self._uniffi_clone_handle(),
@@ -1100,6 +1229,45 @@ class EchoSession(EchoSessionProtocol):
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
             _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_request_ble_transition,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def staged_counters(self, ) -> EchoCounterResult:
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeEchoCounterResult.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_counters,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def staged_drain_log(self, ) -> EchoCounterResult:
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeEchoCounterResult.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_drain_log,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def staged_step(self, line: str) -> EchoCounterResult:
+        
+        _UniffiFfiConverterString.check_lower(line)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(line),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeEchoCounterResult.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_step,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)

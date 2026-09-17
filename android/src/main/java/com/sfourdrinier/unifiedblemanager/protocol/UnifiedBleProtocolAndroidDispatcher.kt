@@ -9,8 +9,10 @@ import android.os.SystemClock
 import com.sfourdrinier.unifiedblemanager.protocol.generated.NATIVE_PROTOCOL_VERSION
 import com.sfourdrinier.unifiedblemanager.protocol.generated.ConnectionIntents
 import com.sfourdrinier.unifiedblemanager.protocol.generated.RecordKind
+import com.sfourdrinier.unifiedblemanager.radio.GattObservation
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio
 import com.sfourdrinier.unifiedblemanager.radio.OwnedRadioTeardownFailure
+import com.sfourdrinier.unifiedblemanager.radio.UbmGattCoreBinding
 import com.sfourdrinier.unifiedblemanager.radio.AndroidGattOperationFailure
 import com.sfourdrinier.unifiedblemanager.radio.BondedPeerSnapshot
 import com.sfourdrinier.unifiedblemanager.radio.nextUuidOccurrence
@@ -19,12 +21,54 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
-/** Owns protocol-v2 Android radio work and sends bytes only through the native protocol. */
+/**
+ * Owns protocol-v2 Android radio work and sends bytes only through the native protocol.
+ *
+ * F01 shared-core shadowing: every radio lifecycle/link/scan/discovery event
+ * is also posted through [coreShadow] into the real core JNI session
+ * ([UbmGattCoreBinding] over [UbmGattCentralBridge] with the real
+ * `GattBridge` natives). The platform radio stays the BLE execution path;
+ * the core shadow executes the same transitions in the shared kernel so the
+ * release artifact provably runs the Rust core on the shipped provider. Core
+ * rejections arrive as data and are surfaced as diagnostics — never silent,
+ * never fatal to radio work.
+ */
 class UnifiedBleProtocolAndroidDispatcher(
   context: Context,
-  private val nativeHandle: Long
+  private val nativeHandle: Long,
+  coreShadowFactory: ((Context, (GattObservation) -> Unit) -> UbmGattCoreBinding?)? = null
 ) {
   private val radio = OwnedAndroidGattRadio(context.applicationContext)
+  private val coreShadow: UbmGattCoreBinding? = try {
+    if (coreShadowFactory != null) {
+      coreShadowFactory.invoke(context.applicationContext, this::onCoreRejection)
+    } else {
+      UbmGattCoreBinding(context.applicationContext, onCoreRejection = this::onCoreRejection)
+    }
+  } catch (th: Throwable) {
+    UnifiedBleProtocolJsiBinding.emitDiagnostic(
+      nativeHandle,
+      "coreShadowUnavailable",
+      "Shared-core shadow disabled: ${th.message ?: th.javaClass.simpleName}"
+    )
+    null
+  }
+
+  init {
+    coreShadow?.openFailure?.let { failure ->
+      UnifiedBleProtocolJsiBinding.emitDiagnostic(nativeHandle, "coreShadowUnavailable", "Shared-core shadow disabled: $failure")
+    }
+  }
+
+  private fun onCoreRejection(observation: GattObservation) {
+    UnifiedBleProtocolJsiBinding.emitDiagnostic(
+      nativeHandle,
+      "coreShadowRejected",
+      "${observation.code}|${observation.domain}|${observation.operation} ${observation.detail ?: ""}".trim()
+    )
+  }
+
+  private fun coreLeaseFor(deviceId: String): String = "android-link-${deviceId.uppercase()}"
   private val pendingCommands = ConcurrentHashMap<String, ProtocolWireRecord>()
   private val pendingConnects = ConcurrentHashMap<String, ProtocolWireRecord>()
   private val establishedConnections = ConcurrentHashMap<String, ProtocolWireRecord>()
@@ -42,6 +86,9 @@ class UnifiedBleProtocolAndroidDispatcher(
   init {
     radio.onAdapterState = { adapterState ->
       clearGattProtocolOwnershipForAdapterLoss(adapterState)
+      if (adapterState == "PoweredOff" || adapterState == "Resetting") {
+        coreShadow?.postAdapterReset()
+      }
       emitCurrentAdapterState()
     }
     radio.onCleanupFailure = { failure ->
@@ -57,6 +104,7 @@ class UnifiedBleProtocolAndroidDispatcher(
     }
     radio.onServicesChanged = { deviceId ->
       clearSubscriptionRoutesForDevice(deviceId)
+      coreShadow?.postServicesChanged(deviceId)
       activeDatabases[deviceId.uppercase()]?.let { database ->
         emitDatabaseChanged(database)
       }
@@ -69,8 +117,12 @@ class UnifiedBleProtocolAndroidDispatcher(
       if (command != null) {
         if (connected && status == 0) {
           establishedConnections[deviceKey] = command.requiredRecord(10)
+          coreShadow?.postLinkEstablished(deviceId)
           emitSuccess(command, "connected")
         } else {
+          // No link ever existed for the core either: leave the admitted
+          // core connect op to its own deadline rather than overstating a
+          // peer loss for a peer that may still be advertising.
           emitFailure(command, "connectionFailed", "Android GATT connection failed with status $status")
         }
       }
@@ -80,7 +132,10 @@ class UnifiedBleProtocolAndroidDispatcher(
         failPendingCommandsForDevice(deviceKey, "Android GATT link was lost")
         if (established != null) {
           clearSubscriptionRoutesForDevice(deviceId)
+          coreShadow?.postLinkReleased(deviceId)
           emitConnectionLost(established, status)
+        } else if (command == null) {
+          coreShadow?.postPeerLoss(deviceId)
         }
       }
     }
@@ -255,6 +310,7 @@ class UnifiedBleProtocolAndroidDispatcher(
     attachmentCloseRequested.set(true)
     securityEventsEnabled.set(false)
     radio.onSecurityState = null
+    coreShadow?.release()
     val result = radio.destroy()
     if (!result.isSuccessful) {
       UnifiedBleProtocolJsiBinding.emitDiagnostic(
@@ -282,14 +338,16 @@ class UnifiedBleProtocolAndroidDispatcher(
     val serviceUuids = options.requiredStringList(1).toTypedArray()
     require(activeScanCommand.compareAndSet(null, command)) { "A protocol scan is already active" }
     try {
+      val allowDuplicates = options.requiredBoolean(2)
       radio.startScan(
         serviceUuids = serviceUuids,
         scanMode = options.requiredSignedInteger(3).toInt(),
         callbackType = options.requiredSignedInteger(4).toInt(),
         legacyScan = options.requiredBoolean(5),
-        allowDuplicates = options.requiredBoolean(2),
+        allowDuplicates = allowDuplicates,
         deviceAddresses = options.optionalStringList(6).toTypedArray()
       )
+      coreShadow?.postScanStart(serviceUuids.toList(), allowDuplicates)
       emitSuccess(command, "scanStarted")
     } catch (error: Exception) {
       if (!radio.hasScanCleanupOwnership()) {
@@ -303,6 +361,7 @@ class UnifiedBleProtocolAndroidDispatcher(
     val failure = radio.stopScan()
     if (failure == null) {
       activeScanCommand.set(null)
+      coreShadow?.postScanStop()
       completeCancelledScanCommands()
       emitSuccess(command, "accepted")
     } else {
@@ -322,6 +381,7 @@ class UnifiedBleProtocolAndroidDispatcher(
         ConnectionIntents.WHEN_AVAILABLE -> true
       }
       radio.connect(peerId, autoConnect)
+      coreShadow?.postConnect(peerId, coreLeaseFor(peerId))
     } catch (error: Exception) {
       pendingConnects.remove(peerId.uppercase(), command)
       throw error
@@ -329,7 +389,8 @@ class UnifiedBleProtocolAndroidDispatcher(
   }
 
   private fun disconnect(command: ProtocolWireRecord) {
-    val failure = radio.disconnect(command.requiredRecord(10).requiredString(2)) { cleanupFailure ->
+    val peerId = command.requiredRecord(10).requiredString(2)
+    val failure = radio.disconnect(peerId) { cleanupFailure ->
       if (cleanupFailure == null) {
         emitSuccess(command, "accepted")
       } else {
@@ -341,18 +402,23 @@ class UnifiedBleProtocolAndroidDispatcher(
       }
     }
     if (failure != null) return
+    coreShadow?.postDisconnect(peerId, coreLeaseFor(peerId))
   }
 
   private fun discover(command: ProtocolWireRecord) {
     val connection = command.requiredRecord(10)
     val database = command.requiredRecord(11)
-    val radioOperationId = radio.discover(connection.requiredString(2)) { successful ->
+    val peerId = connection.requiredString(2)
+    coreShadow?.postDiscoveryBegin(peerId)
+    val radioOperationId = radio.discover(peerId) { successful ->
       if (!successful) {
+        coreShadow?.postDiscoveryFail(peerId)
         emitFailure(command, "discoverFailed", "Android GATT service discovery failed")
         return@discover
       }
       val snapshot = databaseSnapshot(database, connection.requiredString(2))
       activeDatabases[connection.requiredString(2).uppercase()] = database
+      coreShadow?.postDiscoveryComplete(peerId)
       emitSuccess(command, "database", mapOf(4 to ProtocolWireValue.RecordValue(database), 12 to ProtocolWireValue.RecordValue(snapshot)))
     }
     radioOperationIds[operationKey(command)] = radioOperationId
@@ -662,6 +728,7 @@ class UnifiedBleProtocolAndroidDispatcher(
   private fun destroy(command: ProtocolWireRecord) {
     securityEventsEnabled.set(false)
     radio.onSecurityState = null
+    coreShadow?.release()
     val pendingBeforeDestroy = pendingCommands.values
       .filter { it !== command }
       .toList()

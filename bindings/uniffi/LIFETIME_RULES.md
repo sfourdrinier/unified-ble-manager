@@ -33,11 +33,31 @@ built cdylib. Contract `C-UBM.0.1.2-DRAFT`, single-owned by `ubm-core`
     every BLE transition beyond the driven slice:
     `capability.unsupported|capability` (the frozen contract pairing),
     never silent or faked; empty names are `argument.invalid`.
+- U8 first-class BLE scan slice (PARTIAL completion of the Apple F01 path):
+  `ble_scan_start(owner, timeout_ms, now_ms)` drives a REAL kernel scan
+  admission through the session-owned staged transition core (synthetic
+  radio, scripted observations) and returns the start observation JSON
+  carrying the core-minted scan op id (`"op_id"`); `ble_scan_take()`
+  drains queued observation JSON (`""` when quiet); `ble_scan_stop(op_id,
+  now_ms)` stops the admitted scan. Times cross as decimal strings
+  (DATA-02); the core owns duplicate/merge/timeout admission and the
+  deadline. Unknown stop op ids fail closed (`argument.invalid`); stops are
+  never fabricated.
 - The echo transport itself stays feasibility-echo (NOT BLE functionality).
   Follow-ups: unique per-instance attachment identity (fixed scope labels
   this slice); surfacing staged kernel effects to a host executor (driven
   batches are bounded and dropped after the call — nothing is staged yet,
   so nothing is lost yet).
+- FOLLOW-UP (Apple F01 completion): extend the U8 scan pattern to
+  connect/subscribe/dispose first-class methods over the same staged core,
+  then replace the synthetic radio with a production CoreBluetooth adapter
+  that feeds the identical staged wire (same step schema, same observation
+  JSON, same op-id attribution) from real radio callbacks — the binding
+  surface does not change, only the step source. Finally adopt the new
+  methods at the Swift call site (nothing in `ios/` calls `EchoSession`
+  yet). A full UniFFI BLE surface (bonding, PHY, MTU, background modes) is
+  deliberately not in this slice: one coherent op path now, the surface
+  next, rather than churn.
 
 ## Thread / runtime lifetimes
 

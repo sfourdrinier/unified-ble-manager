@@ -1,7 +1,10 @@
-// UBM 5.0 FFI feasibility: UniFFI interface for the echo scaffold
-// (FFI-NATIVE card). Echo-only: proves owned bytes, lossless u64 counters,
-// typed C-UBM failures, cancellation, and close invalidation across the
-// generated UniFFI boundary. NOT BLE functionality.
+// UBM 5.0 FFI: UniFFI interface for the Apple binding (FFI-NATIVE card).
+// Beyond echo (owned bytes, lossless u64 counters, typed C-UBM failures,
+// cancellation, close invalidation), the U8 slice adds a REAL first-class
+// BLE scan path through non-echo core (`ble_scan_start` / `ble_scan_take` /
+// `ble_scan_stop`: kernel scan admission over the synthetic radio with
+// scripted observations, core-owned deadline). Connect/subscribe and the
+// production radio are the documented FOLLOW-UP in LIFETIME_RULES.md.
 //
 // Failure mapping (deliberate feasibility choice, documented in
 // LIFETIME_RULES.md): methods return result records carrying the frozen
@@ -61,4 +64,16 @@ interface EchoSession {
     EchoCounterResult staged_step(string line);
     EchoCounterResult staged_drain_log();
     EchoCounterResult staged_counters();
+
+    // U8 first-class BLE scan slice: real kernel scan admission (synthetic
+    // radio) through non-echo core. ble_scan_start carries the start
+    // observation JSON (with the core-minted "op_id") in value;
+    // ble_scan_take drains queued observation JSON ("" when quiet);
+    // ble_scan_stop stops the admitted scan and carries the stop
+    // observation JSON. Decimal-string times (DATA-02); the core owns the
+    // deadline. See FOLLOW-UP in LIFETIME_RULES.md for connect/subscribe
+    // and the production radio.
+    EchoCounterResult ble_scan_start(string owner, string timeout_ms, string now_ms);
+    EchoCounterResult ble_scan_take();
+    EchoCounterResult ble_scan_stop(string op_id, string now_ms);
 };

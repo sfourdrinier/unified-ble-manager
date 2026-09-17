@@ -7,6 +7,21 @@
 // Two backends: `openSynthetic` (deterministic, hardware-free: the CI leg)
 // and `open` (production radio: must fail LOUDLY with adapter.unavailable
 // when no adapter exists, never silently).
+//
+// Hardware boundary (F01 Leg F real-radio coverage):
+//   * Synthetic (`openSynthetic`) is fully deterministic and runs
+//     everywhere, including headless CI: scan/connect/discover/read/write/
+//     subscribe/timeout/dispose below exercise the REAL DesktopCentral op
+//     surface in Rust, no host Bluetooth involved.
+//   * Production (`open`) needs a host adapter. Headless CI (no adapter)
+//     proves the boundary from the other side: open MUST reject with the
+//     frozen `adapter.unavailable|adapter` identity, never hang and never
+//     return a fake central. That loud failure IS the headless assertion.
+//   * Where hardware exists (workstation/device/macOS CI), open succeeds
+//     and the round-trip additionally drives a bounded production
+//     startScan/stopScan through the real radio before close: the same op
+//     surface, the physical backend. The branch taken is printed, so a log
+//     always shows which side of the boundary was proven.
 const assert = require('node:assert/strict');
 const path = require('node:path');
 
@@ -232,14 +247,25 @@ async function main() {
   await rejectsWith(central.startScan({ owner: 'x', timeoutMs: 100 }), 'adapter.unavailable', 'adapter', 'post-close scan');
 
   // Production radio without hardware fails loudly (or, on a machine with
-  // Bluetooth, opens and closes cleanly — never a silent third outcome).
+  // Bluetooth, opens and scans bounded through the real radio — never a
+  // silent third outcome).
   try {
     const prod = await addon.UbmCentral.open('dispatch-roundtrip-prod');
-    await prod.close();
-    console.log('dispatch-roundtrip: production radio present; open+close clean');
+    try {
+      const prodSession = await prod.startScan({ owner: 'dispatch-roundtrip-prod', serviceUuids: [], timeoutMs: 2000 });
+      assert.ok(
+        prodSession && typeof prodSession.operationId === 'string' && prodSession.operationId.length > 0,
+        'production scan session carries an op id'
+      );
+      await prod.stopScan();
+    } finally {
+      await prod.close();
+    }
+    console.log('dispatch-roundtrip: production radio present; open+scan+close clean');
   } catch (err) {
     const got = codeOf(err);
     assert.equal(got.code, 'adapter.unavailable', `production open without hardware: ${err && err.message}`);
+    assert.equal(got.domain, 'adapter', `production refusal domain: ${err && err.message}`);
     console.log('dispatch-roundtrip: production radio absent; loud adapter.unavailable');
   }
 
