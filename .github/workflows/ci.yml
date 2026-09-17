@@ -148,6 +148,13 @@ jobs:
         # offline metadata reads succeed on a fresh runner.
         run: cargo fetch --locked
 
+      - name: Build NAPI dispatch addon (R03 converged path)
+        # The bluez-rust-core-routing converged-path tests require the REAL
+        # addon (bindings/napi/ubm_echo.<platform>-<arch>.node); a fresh
+        # runner has no staged binary, so build it on every leg before jest.
+        shell: bash
+        run: sh bindings/napi/build-addon.sh
+
       - name: Run package tests
         run: pnpm test:package
 
@@ -534,7 +541,9 @@ jobs:
         with:
           # Default is 'tools platform-tools'; the obsolete `tools` package
           # no longer exists upstream and fails install on new cmdline-tools.
-          packages: 'platform-tools'
+          # The NDK is pinned explicitly: AGP auto-install flaked in CI
+          # (InstallFailedException on a PR leg while the push leg passed).
+          packages: 'platform-tools ndk;27.1.12297006'
 
       - name: Install Expo example dependencies
         run: pnpm --dir example-expo install --no-frozen-lockfile
@@ -597,7 +606,9 @@ jobs:
         with:
           # Default is 'tools platform-tools'; the obsolete `tools` package
           # no longer exists upstream and fails install on new cmdline-tools.
-          packages: 'platform-tools'
+          # The NDK is pinned explicitly: AGP auto-install flaked in CI
+          # (InstallFailedException on a PR leg while the push leg passed).
+          packages: 'platform-tools ndk;27.1.12297006'
 
       - name: Install pinned Rust + Android targets
         # buildUbmRustCdylib compiles bindings/jni via rustup-run on the
