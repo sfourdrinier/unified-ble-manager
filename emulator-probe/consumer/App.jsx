@@ -7,6 +7,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Button, PermissionsAndroid, Platform, ScrollView, Text, View } from 'react-native'
 import { createReactNativeBleManager } from 'unified-ble-manager/react-native'
+import { createReactNativeRustCoreBinding } from '@ubm-rustcore-producer'
 
 function say(setStatus, line) {
   const tagged = `[UBM_PROBE] ${line}`
@@ -133,6 +134,24 @@ export function App() {
     }
   }
 
+  async function onRustCore() {
+    if (busy) return
+    setBusy(true)
+    try {
+      const binding = createReactNativeRustCoreBinding()
+      const session = await binding.openSession('ubm-probe')
+      const contractRevision = session.contractRevision()
+      const status = await session.invoke('central.status', {})
+      const echo = await session.invoke('echo.counter', { decimal: '41' })
+      await session.close()
+      say(setStatus, `rustcore-ok contract=${contractRevision} status=${JSON.stringify(status)} echo=${echo} closed=true`)
+    } catch (err) {
+      say(setStatus, `rustcore-error name=${err?.name} code=${err?.code} message=${String(err?.message)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function onTeardown() {
     try {
       await managerRef.current?.destroy()
@@ -153,6 +172,8 @@ export function App() {
       <Button testID="bondedButton" title="Bonded peers" onPress={onBonded} />
       <View style={{ height: 8 }} />
       <Button testID="abortedFindButton" title="Aborted find" onPress={onAbortedFind} />
+      <View style={{ height: 8 }} />
+      <Button testID="rustCoreButton" title="RustCore session" onPress={onRustCore} />
       <View style={{ height: 8 }} />
       <Button testID="teardownButton" title="Teardown" onPress={onTeardown} />
       <ScrollView style={{ marginTop: 12 }}>

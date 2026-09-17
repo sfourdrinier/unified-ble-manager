@@ -25,6 +25,20 @@ const config = {
     blockList: exclusionList(modules.map(m => new RegExp(`^${escape(path.join(root, 'node_modules', m))}\\/.*$`))),
     disableHierarchicalLookup: true,
 
+    // R01 producer probe alias (probe-only scaffolding, never shipped):
+    // resolves the pre-R01 production binding source directly. The binding
+    // has no package export yet (R01 owns the entrypoint flip); the alias
+    // keeps the probe independent of packaging decisions.
+    resolveRequest: (context, moduleName, platform) => {
+      if (moduleName === '@ubm-rustcore-producer') {
+        return {
+          filePath: path.join(root, 'src', 'backends', 'reactnative', 'react-native-rust-core-binding.ts'),
+          type: 'sourceFile'
+        }
+      }
+      return context.resolveRequest(context, moduleName, platform)
+    },
+
     nodeModulesPaths: [
       path.join(__dirname, 'node_modules')
     ],
