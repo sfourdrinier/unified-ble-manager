@@ -213,25 +213,25 @@ def ubmRustInputFiles = [
       identity.append("abis=${ubmRustAbis.join(',')}\n")
       ubmRustAbis.each { abi ->
         def libDir = new File(stagingDir, abi)
-        // providers.exec captures the script streams (nothing reaches the
-        // build log), and .result.get() throws before exitValue is
-        // readable — so capture both streams and attach them to the
-        // failure. A silent red task is never acceptable here.
+        // project.exec (execution-time API): providers.exec is a
+        // configuration-time value source and cannot run inside doLast.
+        // Both script streams are captured and attached to the failure —
+        // a silent red task is never acceptable here.
         def scriptOut = new ByteArrayOutputStream()
         def scriptErr = new ByteArrayOutputStream()
-        try {
-          providers.exec {
-            commandLine("sh", ubmRustScript.absolutePath,
-              "--abi", abi,
-              "--profile", ubmRustProfile,
-              "--libdir", libDir.absolutePath)
-            workingDir(rootDir)
-            standardOutput = scriptOut
-            errorOutput = scriptErr
-          }.result.get()
-        } catch (Exception execFailure) {
+        def execResult = project.exec {
+          commandLine("sh", ubmRustScript.absolutePath,
+            "--abi", abi,
+            "--profile", ubmRustProfile,
+            "--libdir", libDir.absolutePath)
+          workingDir(rootDir)
+          standardOutput = scriptOut
+          errorOutput = scriptErr
+          ignoreExitValue = true
+        }
+        if (execResult.exitValue != 0) {
           throw new GradleException(
-            "${taskName} FAILED for ABI ${abi}: ${execFailure.message} " +
+            "${taskName} FAILED for ABI ${abi} (exit ${execResult.exitValue}). " +
             "(NDK 27.x, pinned Rust from rust-toolchain.toml + aarch64-linux-android and x86_64-linux-android targets).\n" +
             "--- build-rust-cdylib.sh stdout ---\n${scriptOut}\n--- build-rust-cdylib.sh stderr ---\n${scriptErr}")
         }

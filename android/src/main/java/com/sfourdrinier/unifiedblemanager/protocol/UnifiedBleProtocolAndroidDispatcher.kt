@@ -33,7 +33,12 @@ import java.util.concurrent.atomic.AtomicReference
  * rejections arrive as data and are surfaced as diagnostics — never silent,
  * never fatal to radio work.
  */
-class UnifiedBleProtocolAndroidDispatcher(
+class UnifiedBleProtocolAndroidDispatcher
+// @JvmOverloads: the Java JSI binding cannot see Kotlin default
+// arguments — without generated overloads the 2-arg construction in
+// UnifiedBleProtocolJsiBinding fails to compile.
+@JvmOverloads
+constructor(
   context: Context,
   private val nativeHandle: Long,
   coreShadowFactory: ((Context, (GattObservation) -> Unit) -> UbmGattCoreBinding?)? = null

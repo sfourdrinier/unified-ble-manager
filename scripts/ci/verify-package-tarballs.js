@@ -457,10 +457,24 @@ function isRootArchiveEntryAllowed(
   if (entryPath.startsWith('package/docs/')) {
     return !entryPath.startsWith('package/docs/evidence/g0/')
   }
+  // Wave E ships the Rust-first sources (crates, bindings, workspace
+  // manifests, toolchain pin); the pack `files` list already excludes
+  // build outputs (targets, .node, jvm-classes), so the verifier mirrors
+  // the shipped source surface exactly. Anything outside these prefixes
+  // still fails closed below.
+  if (
+    entryPath === 'package/Cargo.toml' ||
+    entryPath === 'package/Cargo.lock' ||
+    entryPath === 'package/rust-toolchain.toml'
+  ) {
+    return true
+  }
   return (
     entryPath.startsWith('package/android/') ||
     entryPath.startsWith('package/ios/') ||
-    entryPath.startsWith('package/native/')
+    entryPath.startsWith('package/native/') ||
+    entryPath.startsWith('package/crates/') ||
+    entryPath.startsWith('package/bindings/')
   )
 }
 
@@ -482,6 +496,11 @@ function verifyRootTarball(tarballPath) {
   }
   if (!files.has('package/bin/ubm.js')) {
     throw new Error('Packed canonical package is missing CLI entrypoint bin/ubm.js')
+  }
+  for (const required of ['package/Cargo.toml', 'package/Cargo.lock', 'package/rust-toolchain.toml']) {
+    if (!files.has(required)) {
+      throw new Error(`Packed canonical package is missing Rust source-build input ${required}`)
+    }
   }
   assertExactObjectKeys(
     packageJson.optionalDependencies,
