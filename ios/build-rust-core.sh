@@ -100,6 +100,16 @@ for target in $TARGETS; do
 done
 
 if [ "$CHECK_ONLY" = "1" ]; then
+  # Linux-runnable anchor coherence: the attested symbols below must still
+  # be the exact surface the owned UDL generates. A regenerated binding that
+  # renames them fails here (in the F01 packed proof), not silently in the
+  # macOS-only attestation that consumes them.
+  for anchor in ffi_ubm5_uniffi_echo_fn_constructor_echosession_new ffi_ubm5_uniffi_echo_fn_method_echosession_close ffi_ubm5_uniffi_echo_fn_method_echosession_central_status ffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_start; do
+    if ! grep -q "$anchor" "$ROOT/bindings/uniffi/generated/swift/ubm_echo.swift"; then
+      echo "build-rust-core: attested anchor $anchor missing from bindings/uniffi/generated/swift/ubm_echo.swift (regenerate bindings and re-pin anchors)" >&2
+      exit 1
+    fi
+  done
   for target in $TARGETS; do
     echo "build-rust-core: checking $CRATE for $target"
     (cd "$ROOT" && rustup run "$PINNED_TOOLCHAIN" cargo check --locked -p "$CRATE" --target "$target")
@@ -114,6 +124,29 @@ if [ "$(uname -s)" != "Darwin" ]; then
 fi
 need xcodebuild
 need lipo
+need nm
+
+# R02 Apple cutover: the assembled framework must PROVE it carries the real
+# UniFFI core session. Slice counts and digests pass for any well-formed
+# archive — including a stub or mismatched staticlib — so every assembled
+# input is attested for the DEFINED session symbols below (open + close +
+# real-Central status + first-class scan start, the exact symbols the
+# generated Swift binding references). A synthetic archive fails HERE,
+# never on device.
+# shellcheck disable=SC2086
+CORE_FFI_ANCHORS="ffi_ubm5_uniffi_echo_fn_constructor_echosession_new ffi_ubm5_uniffi_echo_fn_method_echosession_close ffi_ubm5_uniffi_echo_fn_method_echosession_central_status ffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_start"
+
+attest_core_symbols() {
+  # $1 = staticlib path. nm exits nonzero on an unrecognized archive; the
+  # anchor loop rejects a well-formed archive carrying the wrong object
+  # code (no defined core symbol, no XCFramework assembly).
+  for anchor in $CORE_FFI_ANCHORS; do
+    if ! nm -g "$1" 2>/dev/null | grep -q "T .*$anchor"; then
+      echo "build-rust-core: $1 carries no defined core symbol $anchor (not the ubm-core UniFFI staticlib?)" >&2
+      exit 1
+    fi
+  done
+}
 
 case "$PROFILE" in
   release) CARGO_PROFILE="--release"; PROFILE_DIR="release" ;;
@@ -199,6 +232,14 @@ rm -f "$OUT_DIR"/fat-ios-simulator-*.a "$OUT_DIR"/fat-tvos-simulator-*.a
 
 FRAMEWORK_DIR="$OUT_DIR/RustCore.xcframework"
 rm -rf "$FRAMEWORK_DIR"
+# Attest every assembled input BEFORE xcodebuild consumes it: a well-formed
+# archive carrying stub or mismatched objects must fail here, never link
+# into a framework that reports healthy digests.
+echo "build-rust-core: attesting core symbols in assembled inputs"
+attest_core_symbols "$IOS_DEVICE_LIB"
+attest_core_symbols "$IOS_SIM_FAT"
+attest_core_symbols "$TVOS_DEVICE_LIB"
+attest_core_symbols "$TVOS_SIM_FAT"
 echo "build-rust-core: assembling $FRAMEWORK_DIR"
 xcodebuild -create-xcframework -output "$FRAMEWORK_DIR" \
   -library "$IOS_DEVICE_LIB" -headers "$HEADERS" \

@@ -6,11 +6,9 @@ const {
   createCoreBluetoothFirstPartyTckRegistration,
   createBluezFirstPartyTckRegistration,
   createWinRtFirstPartyTckRegistration,
-  createReactNativeAndroidFirstPartyTckRegistration,
-  createReactNativeAppleFirstPartyTckRegistration
+  createReactNativeAndroidFirstPartyTckRegistration
 } = require('../../src/testing')
 const { decodeNativeProtocolRecord, encodeNativeProtocolRecord } = require('../../src/native-protocol/v2-codec')
-const { BUILT_IN_FEATURE_IDS } = require('../../src/backend-contract/capabilities')
 const { InMemoryCoreBluetoothBoundary } = require('../../test-support/corebluetooth/in-memory-corebluetooth-boundary')
 const { InMemoryWebBluetoothTckBoundary } = require('../../test-support/web/in-memory-web-bluetooth-tck-boundary')
 const {
@@ -45,14 +43,15 @@ describe('first-party deterministic backend TCK registry', () => {
     global.__unifiedBleNativeProtocolV2 = previousRuntime
   })
 
-  test('registers and executes every first-party deterministic backend while retaining explicit exclusions', async () => {
+  // R02 Apple cutover: the Apple leg is deleted from this registry proof
+  // (see the tombstone below) — "every" here means every remaining
+  // core-gated-or-transport-honest registration, not the removed
+  // Swift-without-core Apple leg.
+  test('registers and executes the remaining first-party deterministic backends while retaining explicit exclusions', async () => {
     const androidControl = new DeterministicNativeControl(true)
     const androidRuntime = new DeterministicReactNativeProtocolRuntime(androidControl, false)
-    const appleControl = new DeterministicNativeControl()
-    const appleRuntime = new DeterministicReactNativeProtocolRuntime(appleControl, false)
     const webBoundaries = []
     let androidOwner = 0
-    let appleOwner = 0
     const registry = createFirstPartyBackendTckRegistry([
       createWebBluetoothFirstPartyTckRegistration({
         createBoundary: () => {
@@ -95,19 +94,14 @@ describe('first-party deterministic backend TCK registry', () => {
           return `first-party-registry-android-${androidOwner}`
         }
       }),
-      createReactNativeAppleFirstPartyTckRegistration({
-        control: appleControl,
-        now: () => 20,
-        nativePeerId: REACT_NATIVE_PEER_ID,
-        boundary: {
-          ...deterministicReactNativeTckBoundary(appleRuntime),
-          seedRestorationJournal: () => appleControl.seedRestorationJournal()
-        },
-        createOwnerId: () => {
-          appleOwner += 1
-          return `first-party-registry-apple-${appleOwner}`
-        }
-      })
+      // R02 Apple cutover: DELETED the Apple deterministic registration. It
+      // drives the Swift JSI boundary without the Rust core binding, so it
+      // bypasses the component it would need to prove (R16 proof
+      // substitution) and cannot pass the now core-gated provider.
+      // Re-admit it only against a production binding with the test radio
+      // below the native seam; until the owner of
+      // src/tck/first-party/react-native-tck-registration.ts forwards a
+      // rustCore binding, the Apple leg stays out of this registry proof.
     ])
     const registrations = [
       {
@@ -134,13 +128,6 @@ describe('first-party deterministic backend TCK registry', () => {
           global.__unifiedBleNativeProtocolV2 = androidRuntime
         },
         exclusions: ['state:restoration-adoption']
-      },
-      {
-        backendId: 'unified-ble:react-native-apple',
-        prepare: () => {
-          global.__unifiedBleNativeProtocolV2 = appleRuntime
-        },
-        exclusions: [BUILT_IN_FEATURE_IDS.connectionRequestMtu]
       }
     ]
 

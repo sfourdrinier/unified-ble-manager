@@ -7,9 +7,12 @@ const { normalizeScanQuery } = require('../../../src/public/scan-query')
 const { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS } = require('../../../src/manager/ble-manager')
 const { createPublicBleManager } = require('../../../src/public/ble-manager')
 const { REACT_NATIVE_ANDROID_PLATFORM_ID } = require('../../../src/backends/reactnative/react-native-android-provider')
+// R02 Apple cutover: createReactNativeAppleBackendProvider is no longer
+// exercised here — its Swift-without-core success claims are deleted (see
+// tombstones below) and its authority is proven in
+// react-native-apple-rust-authority.test.js.
 const {
   createReactNativeAndroidBackendProvider,
-  createReactNativeAppleBackendProvider,
   createReactNativeBleManagerWithEnvironment
 } = require('../../../src/react-native')
 const { decodeNativeProtocolRecord, encodeNativeProtocolRecord } = require('../../../src/native-protocol/v2-codec')
@@ -17,17 +20,13 @@ const { ReactNativeAndroidProtocolBoundary } = require('../../../src/native-prot
 const { ReactNativeAppleProtocolBoundary } = require('../../../src/native-protocol/rn-apple-boundary')
 const { CoreBluetoothBackend } = require('../../../src/backends/corebluetooth/corebluetooth-backend')
 const {
-  createReactNativeAndroidFirstPartyTckRegistration,
-  createReactNativeAppleFirstPartyTckRegistration
+  createReactNativeAndroidFirstPartyTckRegistration
 } = require('../../../src/tck/first-party/react-native-tck-registration')
 const { runBackendTck } = require('../../../src/tck/runner')
 const {
   planReactNativeAndroidScan,
-  planReactNativeAppleScan,
   diagnosticReactNativeAndroidScanPlan,
-  diagnosticReactNativeAppleScanPlan,
-  reactNativeAndroidScanPlanningContext,
-  reactNativeAppleScanPlanningContext
+  reactNativeAndroidScanPlanningContext
 } = require('../../../src/backends/reactnative/react-native-scan-planner')
 
 const serviceUuid = '0000180d-0000-1000-8000-00805f9b34fb'
@@ -207,16 +206,11 @@ describe('React Native Android canonical protocol vertical slice', () => {
       execution: planReactNativeAndroidScan,
       plan: diagnosticReactNativeAndroidScanPlan,
       context: reactNativeAndroidScanPlanningContext
-    },
-    {
-      name: 'Apple',
-      createProvider: createReactNativeAppleBackendProvider,
-      adapterId: 'apple-corebluetooth-default-adapter',
-      ownerId: 'deterministic-react-native-apple-scan-planner',
-      execution: planReactNativeAppleScan,
-      plan: diagnosticReactNativeAppleScanPlan,
-      context: reactNativeAppleScanPlanningContext
     }
+    // R02 Apple cutover: the Apple provider no longer wires a TypeScript scan
+    // planner over the Swift radio — BLE admission requires the Rust core
+    // binding (see react-native-apple-rust-authority.test.js). The Apple
+    // planner units stay covered by the planner-differential suite.
   ])('$name provider wires its truthful native scan planner and retains the complete residual', async fixture => {
     const control = new DeterministicAndroidControl()
     const runtime = new DeterministicAndroidProtocolRuntime(control)
@@ -239,8 +233,8 @@ describe('React Native Android canonical protocol vertical slice', () => {
 
     expect(backend.scanner.plan).toBe(fixture.plan)
     expect(fixture.context).toEqual({
-      backendId: fixture.name === 'Android' ? 'unified-ble:react-native-android' : 'unified-ble:react-native-apple',
-      platformId: fixture.name === 'Android' ? 'unified-ble:android-gatt' : 'unified-ble:apple-corebluetooth',
+      backendId: 'unified-ble:react-native-android',
+      platformId: 'unified-ble:android-gatt',
       availableObservationFields: [
         'localName',
         'rssi',
@@ -248,7 +242,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
         'serviceUuids',
         'manufacturerData',
         'serviceData',
-        ...(fixture.name === 'Android' ? ['address'] : [])
+        'address'
       ]
     })
     expect(backend.scanner.plan(query)).toMatchObject({
@@ -605,12 +599,10 @@ describe('React Native Android canonical protocol vertical slice', () => {
       name: 'Android',
       createProvider: createReactNativeAndroidBackendProvider,
       ownerId: 'deterministic-react-native-android-rich-advertisement'
-    },
-    {
-      name: 'Apple',
-      createProvider: createReactNativeAppleBackendProvider,
-      ownerId: 'deterministic-react-native-apple-rich-advertisement'
     }
+    // R02 Apple cutover: deleted the Apple entry — the Apple provider no
+    // longer delivers Swift-radio advertisements without the Rust core
+    // binding (proven loud in react-native-apple-rust-authority.test.js).
   ])('$name provider preserves every native-protocol advertisement field as detached public bytes', async fixture => {
     const control = new DeterministicAndroidControl()
     const runtime = new DeterministicAndroidProtocolRuntime(control)
@@ -780,13 +772,9 @@ describe('React Native Android canonical protocol vertical slice', () => {
       createProvider: createReactNativeAndroidBackendProvider,
       displayName: 'Android default BLE adapter',
       ownerId: 'deterministic-react-native-android-attachment-refresh'
-    },
-    {
-      name: 'Apple',
-      createProvider: createReactNativeAppleBackendProvider,
-      displayName: 'Apple CoreBluetooth central adapter',
-      ownerId: 'deterministic-react-native-apple-attachment-refresh'
     }
+    // R02 Apple cutover: deleted the Apple entry — adapter state now loads
+    // from the core (`adapter.state` op), not the Swift boundary handshake.
   ])(
     '$name provider refreshes the opened adapter state without changing the bound attachment identity',
     async fixture => {
@@ -830,12 +818,8 @@ describe('React Native Android canonical protocol vertical slice', () => {
       name: 'Android',
       createProvider: createReactNativeAndroidBackendProvider,
       ownerId: 'deterministic-react-native-android-unavailable-adapter'
-    },
-    {
-      name: 'Apple',
-      createProvider: createReactNativeAppleBackendProvider,
-      ownerId: 'deterministic-react-native-apple-unavailable-adapter'
     }
+    // R02 Apple cutover: deleted the Apple entry — same authority reason as above.
   ])('$name provider opens an unavailable adapter and preserves its reported state', async fixture => {
     const unavailableState = {
       availability: 'unavailable',
@@ -1281,8 +1265,10 @@ describe('React Native Android canonical protocol vertical slice', () => {
   })
 
   test.each([
-    ['Android', createReactNativeAndroidBackendProvider, 'deterministic-react-native-android-probe-cleanup'],
-    ['Apple', createReactNativeAppleBackendProvider, 'deterministic-react-native-apple-probe-cleanup']
+    ['Android', createReactNativeAndroidBackendProvider, 'deterministic-react-native-android-probe-cleanup']
+    // R02 Apple cutover: deleted the Apple entry — provider cleanup for Apple
+    // now runs through the admitted core session (session.dispose + close),
+    // covered by react-native-apple-rust-authority.test.js.
   ])(
     '%s provider rejects adapter enumeration and retains cleanup retry ownership after release-failed destroy',
     async (_name, createProvider, ownerId) => {
@@ -1316,8 +1302,8 @@ describe('React Native Android canonical protocol vertical slice', () => {
   )
 
   test.each([
-    ['Android', createReactNativeAndroidBackendProvider, 'deterministic-react-native-android-malformed-cleanup'],
-    ['Apple', createReactNativeAppleBackendProvider, 'deterministic-react-native-apple-malformed-cleanup']
+    ['Android', createReactNativeAndroidBackendProvider, 'deterministic-react-native-android-malformed-cleanup']
+    // R02 Apple cutover: deleted the Apple entry (same authority reason).
   ])(
     '%s provider retries a released cleanup record that still reports failures',
     async (_name, createProvider, ownerId) => {
@@ -1361,8 +1347,8 @@ describe('React Native Android canonical protocol vertical slice', () => {
   )
 
   test.each([
-    ['Android', createReactNativeAndroidBackendProvider, 'deterministic-react-native-android-probe-rejection'],
-    ['Apple', createReactNativeAppleBackendProvider, 'deterministic-react-native-apple-probe-rejection']
+    ['Android', createReactNativeAndroidBackendProvider, 'deterministic-react-native-android-probe-rejection']
+    // R02 Apple cutover: deleted the Apple entry (same authority reason).
   ])(
     '%s provider rejects adapter enumeration and retains cleanup retry ownership after destroy rejection',
     async (_name, createProvider, ownerId) => {
@@ -1396,8 +1382,8 @@ describe('React Native Android canonical protocol vertical slice', () => {
   )
 
   test.each([
-    ['Android', createReactNativeAndroidBackendProvider, 'deterministic-react-native-android-open-cleanup'],
-    ['Apple', createReactNativeAppleBackendProvider, 'deterministic-react-native-apple-open-cleanup']
+    ['Android', createReactNativeAndroidBackendProvider, 'deterministic-react-native-android-open-cleanup']
+    // R02 Apple cutover: deleted the Apple entry (same authority reason).
   ])(
     '%s provider aggregates initialization and retained release-failed cleanup errors',
     async (_name, createProvider, ownerId) => {
@@ -1442,8 +1428,8 @@ describe('React Native Android canonical protocol vertical slice', () => {
   )
 
   test.each([
-    ['Android', createReactNativeAndroidBackendProvider, 'deterministic-react-native-android-open-rejection'],
-    ['Apple', createReactNativeAppleBackendProvider, 'deterministic-react-native-apple-open-rejection']
+    ['Android', createReactNativeAndroidBackendProvider, 'deterministic-react-native-android-open-rejection']
+    // R02 Apple cutover: deleted the Apple entry (same authority reason).
   ])(
     '%s provider aggregates initialization and retained rejected cleanup errors',
     async (_name, createProvider, ownerId) => {
@@ -1549,108 +1535,14 @@ describe('React Native Android canonical protocol vertical slice', () => {
     expect(control.closedAttachments).toHaveLength(1)
   })
 
-  test('routes the public Apple provider through the same canonical manager-to-JSI boundary', async () => {
-    const control = new DeterministicAndroidControl()
-    const runtime = new DeterministicAndroidProtocolRuntime(control)
-    global.__unifiedBleNativeProtocolV2 = runtime
-    const provider = createReactNativeAppleBackendProvider({
-      control,
-      now: () => 20,
-      createOwnerId: () => 'deterministic-react-native-apple-owner'
-    })
-
-    const adapters = await provider.listAdapters()
-    expect(adapters).toHaveLength(1)
-    expect(adapters[0]).toMatchObject({
-      displayName: 'Apple CoreBluetooth central adapter',
-      state: { availability: 'available', authorization: 'granted', power: 'on', safeReason: null }
-    })
-
-    const manager = await createBleManagerFromProvider(
-      {
-        provider,
-        selection: { selectedAdapterId: adapters[0].adapterId },
-        coreCompatibility: compatibility(),
-        manager: {
-          clientId: opaqueId('apple-manager-client', 'client', 'react-native-apple:test'),
-          managerId: opaqueId('apple-manager', 'manager', 'react-native-apple:test'),
-          ownerMode: 'owning'
-        }
-      },
-      DEFAULT_BLE_MANAGER_OPTIONS
-    )
-    const scan = await manager.scan(scanOptions())
-    runtime.emitAdvertisement()
-    const observation = await scan.observations[Symbol.asyncIterator]().next()
-    if (observation.done || observation.value.kind !== 'value') {
-      throw new Error('Apple canonical JSI boundary did not deliver a scan observation')
-    }
-    await scan.stop()
-    const connection = await manager.connect(observation.value.value.device.id, operation())
-    expect(manager.features.registrations).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id: BUILT_IN_FEATURE_IDS.connectionRssi, state: 'limited' }),
-        expect.objectContaining({
-          id: 'gatt:descriptor-operations',
-          state: 'limited',
-          evidence: expect.objectContaining({ evidenceLevel: 'deterministic' }),
-          tck: expect.objectContaining({
-            suiteId: 'descriptor-operations',
-            requiredScenarioIds: ['gatt.descriptor-discovery-read-write']
-          })
-        }),
-        expect.objectContaining({
-          id: BUILT_IN_FEATURE_IDS.connectionRequestMtu,
-          state: 'unsupported',
-          evidence: expect.objectContaining({ evidenceLevel: 'blocked' }),
-          limits: { attMtu: { maximum: 0, minimum: null, unit: 'bytes' } }
-        })
-      ])
-    )
-    await expect(connection.readRssi(operation())).resolves.toMatchObject({ rssi: -47 })
-    await expect(connection.requestMtu(300, operation())).rejects.toMatchObject({
-      normalized: { code: 'capability.unsupported' }
-    })
-    const database = await connection.discover(operation())
-    const snapshot = await database.snapshot()
-    const characteristic = snapshot.characteristics[0].path
-    await expect(database.read(characteristic, operation())).resolves.toEqual(new Uint8Array([0, 1]))
-    const descriptor = snapshot.descriptors[0]
-    if (descriptor === undefined) {
-      throw new Error('Apple canonical JSI boundary did not discover a descriptor path')
-    }
-    await expect(database.readDescriptor(descriptor.path, operation())).resolves.toEqual(new Uint8Array([8, 7]))
-    const descriptorWrite = new Uint8Array([6, 5])
-    await expect(
-      database.writeDescriptor(descriptor.path, descriptorWrite, { ...operation(), mode: 'with-response' })
-    ).resolves.toMatchObject({ commitState: 'confirmed' })
-    descriptorWrite[0] = 1
-    await expect(database.readDescriptor(descriptor.path, operation())).resolves.toEqual(new Uint8Array([6, 5]))
-    expect(runtime.descriptorWrites).toEqual([new Uint8Array([6, 5])])
-    const subscription = await database.subscribe(characteristic, { ...operation(), delivery: delivery() })
-    await expect(subscription.values[Symbol.asyncIterator]().next()).resolves.toMatchObject({
-      value: { kind: 'value', value: { value: new Uint8Array([3, 4]) } }
-    })
-    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
-    expect(runtime.retainedPayloadCount()).toBe(0)
-    expect(runtime.commandKinds).toEqual([
-      'destroy',
-      'scanStart',
-      'scanStop',
-      'connect',
-      'readRssi',
-      'discover',
-      'read',
-      'readDescriptor',
-      'writeDescriptor',
-      'readDescriptor',
-      'subscribe',
-      'unsubscribe',
-      'disconnect',
-      'destroy'
-    ])
-    expect(control.closedAttachments).toHaveLength(2)
-  })
+  // R02 Apple cutover: DELETED 'routes the public Apple provider through the
+  // same canonical manager-to-JSI boundary'. That claim — full scan/connect/
+  // GATT/notify over the Swift radio with no core binding — cannot be made
+  // true under Rust authority and must not read as a passing success. The
+  // Apple provider now requires the Rust core binding and fails loudly
+  // without it; authority + loud failure are proven in
+  // react-native-apple-rust-authority.test.js. The transport-level Apple
+  // boundary tests above (kept) still cover the JSI codec mapping itself.
 })
 
 describe('React Native first-party standard TCK registrations', () => {
@@ -1703,64 +1595,18 @@ describe('React Native first-party standard TCK registrations', () => {
     )
   })
 
-  test('Apple executes its deterministic provider, RSSI, restoration, and descriptor suites while excluding only MTU', async () => {
-    const control = new DeterministicAndroidControl()
-    const runtime = new DeterministicAndroidProtocolRuntime(control, null, false)
-    global.__unifiedBleNativeProtocolV2 = runtime
-    let owner = 0
-    const registration = createReactNativeAppleFirstPartyTckRegistration({
-      control,
-      now: () => 20,
-      nativePeerId: peerId,
-      boundary: {
-        ...deterministicTckBoundary(runtime),
-        seedRestorationJournal: () => control.seedRestorationJournal()
-      },
-      createOwnerId: () => {
-        owner += 1
-        return `apple-tck-owner-${owner}`
-      }
-    })
-
-    const report = await runBackendTck(registration.factory, registration.featureSuites, {
-      proofScope: 'deterministic',
-      baseScenarioIds: registration.suites.flatMap(suite => suite.baseScenarioIds)
-    })
-
-    expect(report.featureSuiteIds).toEqual(
-      expect.arrayContaining(['connection-controls', 'restoration', 'descriptor-operations'])
-    )
-    expect(report.receipts).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ scenarioId: 'restoration.provider-journal-adoption-and-rejection', error: null }),
-        expect.objectContaining({ scenarioId: 'gatt.descriptor-discovery-read-write', error: null })
-      ])
-    )
-    expect(report.featureBindings).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          featureId: 'gatt:descriptor-operations',
-          suiteId: 'descriptor-operations',
-          evidenceLevel: 'deterministic',
-          requiredScenarioIds: ['gatt.descriptor-discovery-read-write']
-        })
-      ])
-    )
-    expect(registration.capabilityExclusions).toEqual([
-      expect.objectContaining({ featureId: BUILT_IN_FEATURE_IDS.connectionRequestMtu, state: 'unsupported' })
-    ])
-    expect(runtime.descriptorCommandPaths).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          kind: 'descriptorPath',
-          fields: expect.arrayContaining([
-            expect.objectContaining({ id: 2, value: descriptorUuid }),
-            expect.objectContaining({ id: 3, value: '0' })
-          ])
-        })
-      ])
-    )
-  })
+  // R02 Apple cutover: DELETED 'Apple executes its deterministic provider,
+  // RSSI, restoration, and descriptor suites while excluding only MTU'. That
+  // deterministic Swift-boundary leg bypasses the core it would need to
+  // prove (R16 proof substitution) and cannot pass through the now
+  // core-gated provider. Re-admit an Apple TCK leg only against a production
+  // binding with the test radio below the native seam — never by injecting
+  // a replacement at the boundary under test. NOTE for the owner of
+  // src/tck/first-party/react-native-tck-registration.ts (out of this
+  // lane's ownership): createReactNativeAppleFirstPartyTckRegistration
+  // still constructs the Apple provider without a binding, so its factory
+  // now fails loudly at create() until it accepts and forwards a rustCore
+  // binding.
 })
 
 function deterministicTckBoundary(runtime) {
