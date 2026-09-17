@@ -59,7 +59,7 @@ host/test seam; its internal options remain separate from the application API.
 - `REACT_NATIVE_RUST_CORE_IMPLEMENTATION_VERSION :: "5.0.0-rc.0"`
 - `RUST_CORE_CONTRACT_REVISION :: "C-UBM.0.1.2-DRAFT"`
 - `ReactNativeAndroidBackendProviderOptions :: { readonly control: Spec; readonly now: () => number; readonly createOwnerId?: (() => string) | undefined }`
-- `ReactNativeAppleBackendProviderOptions :: { readonly control: Spec; readonly now: () => number; readonly createOwnerId?: (() => string) | undefined }`
+- `ReactNativeAppleBackendProviderOptions :: { readonly control: Spec; readonly now: () => number; readonly createOwnerId?: (() => string) | undefined; readonly rustCore?: ReactNativeRustCoreBinding | undefined }`
 - `ReactNativeBleManagerOptions :: { readonly platform: ReactNativeBlePlatform; readonly control: Spec; readonly now: () => number; readonly clientId: string; readonly managerId: string; readonly hostSessionScope: string; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly createOwnerId?: (() => string) | undefined; readonly rustCore?: ReactNativeRustCoreBinding | undefined }`
 - `ReactNativeBlePlatform :: "android" | "apple"`
 - `ReactNativeRestorationActivation :: typeof ReactNativeRestorationActivation`
