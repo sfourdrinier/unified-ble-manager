@@ -14,6 +14,10 @@ ARGV.each_with_index do |arg, i|
   dir = ARGV[i + 1] if arg == '--dir'
 end
 abort 'usage: podspec-stub-eval.rb --dir <dir>' if dir.nil?
+# Ruby glob treats backslashes as escapes even on Windows, so a native
+# Windows --dir (D:\a\...) matches nothing — normalize once; forward
+# slashes work everywhere in Ruby file APIs.
+dir = dir.gsub('\\', '/')
 
 module Pod
   class SpecStub
