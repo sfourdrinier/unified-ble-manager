@@ -118,8 +118,8 @@ class UbmGattCoreBindingTest {
     assertTrue(result is UbmGattCentralBridge.PostResult.Queued)
     assertEquals(1, jni.enqueued.size)
     val line = jni.enqueued.single()
-    assertTrue(line.startsWith("scan.start|android-protocol-scan|2147483647|"), line)
-    assertTrue(line.endsWith("|180d,180f|all|none"), line)
+    assertTrue(line, line.startsWith("scan.start|android-protocol-scan|2147483647|"))
+    assertTrue(line, line.endsWith("|180d,180f|all|none"))
   }
 
   @Test
@@ -138,8 +138,8 @@ class UbmGattCoreBindingTest {
     assertEquals(2, jni.enqueued.size)
     assertEquals("peer.resolve|public-address|AA:BB:CC:DD:EE:FF", jni.enqueued[0])
     assertTrue(
-      jni.enqueued[1].startsWith("connect|public-address:AA:BB:CC:DD:EE:FF|android-link-AA:BB:CC:DD:EE:FF|2147483647|"),
-      jni.enqueued[1]
+      jni.enqueued[1],
+      jni.enqueued[1].startsWith("connect|public-address:AA:BB:CC:DD:EE:FF|android-link-AA:BB:CC:DD:EE:FF|2147483647|")
     )
   }
 
@@ -187,7 +187,7 @@ class UbmGattCoreBindingTest {
     val result = bound.postScanStop()
     assertTrue(result is UbmGattCentralBridge.PostResult.Queued)
     val stop = jni.enqueued.last()
-    assertTrue(stop.startsWith("scan.stop|scan-op-9|"), stop)
+    assertTrue(stop, stop.startsWith("scan.stop|scan-op-9|"))
   }
 
   @Test
