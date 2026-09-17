@@ -33,6 +33,9 @@
 //! ops would create the very second scheduling authority F01 forbids, so the
 //! dispatcher keeps single (if legacy) radio ownership until that cutover.
 
+use std::future::Future;
+use std::pin::Pin;
+
 use ubm_core::contracts::OperationId;
 use ubm_desktop::{
     ConnectionHandle, DesktopCentral, DesktopError, DiscoveredPath, DiscoveryReport, PeerSnapshot,
@@ -308,6 +311,307 @@ pub fn error_identity(error: &DesktopError) -> (&'static str, &'static str, Stri
         error.operation().to_owned(),
         error.detail().unwrap_or("").to_owned(),
     )
+}
+
+/// One boxed core future behind the authority trait.
+pub type CoreFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, DesktopError>> + Send + 'a>>;
+
+/// Shared-core scheduling authority behind the Tauri IPC dispatcher.
+///
+/// Every BLE verdict the dispatcher serves comes through this trait: the
+/// production implementation is [`DesktopCore`] over the btleplug radio, and
+/// tests inject [`DesktopCore`] over a scripted boundary through the same
+/// object. The dispatcher holds `Arc<dyn CoreAuthority>` so the radio type
+/// never leaks into IPC code, and it performs no BLE scheduling of its own —
+/// no scan policy, no retry, no timeout timers, no ownership generations.
+pub trait CoreAuthority: Send + Sync {
+    /// Start a scan through the core; returns the core scan operation id.
+    fn start_scan<'a>(
+        &'a self,
+        owner: &'a str,
+        service_uuids: &'a [String],
+        timeout_ms: u64,
+    ) -> CoreFuture<'a, String>;
+    /// Stop the owned scan (idempotent in the core).
+    fn stop_scan(&self) -> CoreFuture<'_, ()>;
+    /// Take one queued advertisement (`None` = none queued now).
+    fn take_advertisement(&self) -> CoreFuture<'_, Option<PeerSnapshot>>;
+    /// Connect through the core (deadline-owned by the core).
+    fn connect<'a>(
+        &'a self,
+        peer_id: &'a str,
+        lease: &'a str,
+        timeout_ms: u64,
+    ) -> CoreFuture<'a, ConnectionHandle>;
+    /// Disconnect through the core.
+    fn disconnect<'a>(&'a self, peer_id: &'a str, lease: &'a str) -> CoreFuture<'a, ()>;
+    /// Run discovery through the core (partial-failure report).
+    fn discover<'a>(&'a self, peer_id: &'a str, lease: &'a str) -> CoreFuture<'a, DiscoveryReport>;
+    /// Read the whole current discovery tree for one peer.
+    fn discovered_paths<'a>(&'a self, peer_id: &'a str) -> CoreFuture<'a, Vec<DiscoveredPath>>;
+    /// Read through the core (deadline-owned by the core).
+    fn read<'a>(
+        &'a self,
+        peer_id: &'a str,
+        selector: &'a CoreSelector,
+        timeout_ms: u64,
+    ) -> CoreFuture<'a, Vec<u8>>;
+    /// Write through the core (`mode`: `with-response` / `without-response`).
+    fn write<'a>(
+        &'a self,
+        peer_id: &'a str,
+        selector: &'a CoreSelector,
+        value: Vec<u8>,
+        mode: &'a str,
+        timeout_ms: u64,
+    ) -> CoreFuture<'a, ()>;
+    /// Descriptor read through the core.
+    fn read_descriptor<'a>(
+        &'a self,
+        peer_id: &'a str,
+        selector: &'a CoreSelector,
+        timeout_ms: u64,
+    ) -> CoreFuture<'a, Vec<u8>>;
+    /// Descriptor write through the core.
+    fn write_descriptor<'a>(
+        &'a self,
+        peer_id: &'a str,
+        selector: &'a CoreSelector,
+        value: Vec<u8>,
+        timeout_ms: u64,
+    ) -> CoreFuture<'a, ()>;
+    /// Subscribe through the core (enablement is core-arbitrated).
+    fn subscribe<'a>(
+        &'a self,
+        peer_id: &'a str,
+        selector: &'a CoreSelector,
+        consumer: &'a str,
+        timeout_ms: u64,
+    ) -> CoreFuture<'a, ()>;
+    /// Take one queued notification for a subscribed consumer.
+    fn take_notification<'a>(
+        &'a self,
+        peer_id: &'a str,
+        selector: &'a CoreSelector,
+        consumer: &'a str,
+    ) -> CoreFuture<'a, Option<Vec<u8>>>;
+    /// Unsubscribe through the core (last consumer disables the CCCD).
+    fn unsubscribe<'a>(
+        &'a self,
+        peer_id: &'a str,
+        selector: &'a CoreSelector,
+        consumer: &'a str,
+    ) -> CoreFuture<'a, bool>;
+    /// Cancel one core operation by id (the settled core outcome is still
+    /// the caller result).
+    fn cancel_operation<'a>(
+        &'a self,
+        operation_id: &'a str,
+    ) -> CoreFuture<'a, ubm_desktop::CompletionOutcome>;
+    /// Shut the central down (idempotent).
+    fn shutdown(&self) -> CoreFuture<'_, ()>;
+    /// Radio adapter label through the core boundary (attachment identity).
+    fn adapter_name(&self) -> CoreFuture<'_, String>;
+    /// Live ATT MTU for one connected peer through the core boundary
+    /// (`None` = withheld by the OS; never synthesized).
+    fn mtu<'a>(&'a self, peer_id: &'a str) -> CoreFuture<'a, Option<u16>>;
+    /// Currently visible radio peers through the core boundary (heard facts).
+    fn peers(&self) -> CoreFuture<'_, Vec<PeerSnapshot>>;
+}
+
+/// Shared dispatch over one [`DesktopCore`]: lock, open, delegate. The mutex
+/// is the only dispatcher-side serialization; every verdict stays core-made.
+impl<B: RadioBoundary> CoreAuthority for tokio::sync::Mutex<DesktopCore<B>> {
+    fn start_scan<'a>(
+        &'a self,
+        owner: &'a str,
+        service_uuids: &'a [String],
+        timeout_ms: u64,
+    ) -> CoreFuture<'a, String> {
+        Box::pin(async move {
+            self.lock()
+                .await
+                .start_scan(owner, service_uuids, timeout_ms)
+                .await
+        })
+    }
+
+    fn stop_scan(&self) -> CoreFuture<'_, ()> {
+        Box::pin(async move { self.lock().await.stop_scan().await })
+    }
+
+    fn take_advertisement(&self) -> CoreFuture<'_, Option<PeerSnapshot>> {
+        Box::pin(async move {
+            let mut core = self.lock().await;
+            core.ensure_open().await?;
+            core.take_advertisement().await
+        })
+    }
+
+    fn connect<'a>(
+        &'a self,
+        peer_id: &'a str,
+        lease: &'a str,
+        timeout_ms: u64,
+    ) -> CoreFuture<'a, ConnectionHandle> {
+        Box::pin(async move { self.lock().await.connect(peer_id, lease, timeout_ms).await })
+    }
+
+    fn disconnect<'a>(&'a self, peer_id: &'a str, lease: &'a str) -> CoreFuture<'a, ()> {
+        Box::pin(async move { self.lock().await.disconnect(peer_id, lease).await })
+    }
+
+    fn discover<'a>(&'a self, peer_id: &'a str, lease: &'a str) -> CoreFuture<'a, DiscoveryReport> {
+        Box::pin(async move { self.lock().await.discover(peer_id, lease).await })
+    }
+
+    fn discovered_paths<'a>(&'a self, peer_id: &'a str) -> CoreFuture<'a, Vec<DiscoveredPath>> {
+        Box::pin(async move { self.lock().await.discovered_paths(peer_id).await })
+    }
+
+    fn read<'a>(
+        &'a self,
+        peer_id: &'a str,
+        selector: &'a CoreSelector,
+        timeout_ms: u64,
+    ) -> CoreFuture<'a, Vec<u8>> {
+        let owned = selector.clone();
+        Box::pin(async move { self.lock().await.read(peer_id, &owned, timeout_ms).await })
+    }
+
+    fn write<'a>(
+        &'a self,
+        peer_id: &'a str,
+        selector: &'a CoreSelector,
+        value: Vec<u8>,
+        mode: &'a str,
+        timeout_ms: u64,
+    ) -> CoreFuture<'a, ()> {
+        let owned = selector.clone();
+        Box::pin(async move {
+            self.lock()
+                .await
+                .write(peer_id, &owned, value, mode, timeout_ms)
+                .await
+        })
+    }
+
+    fn read_descriptor<'a>(
+        &'a self,
+        peer_id: &'a str,
+        selector: &'a CoreSelector,
+        timeout_ms: u64,
+    ) -> CoreFuture<'a, Vec<u8>> {
+        let owned = selector.clone();
+        Box::pin(async move {
+            self.lock()
+                .await
+                .read_descriptor(peer_id, &owned, timeout_ms)
+                .await
+        })
+    }
+
+    fn write_descriptor<'a>(
+        &'a self,
+        peer_id: &'a str,
+        selector: &'a CoreSelector,
+        value: Vec<u8>,
+        timeout_ms: u64,
+    ) -> CoreFuture<'a, ()> {
+        let owned = selector.clone();
+        Box::pin(async move {
+            self.lock()
+                .await
+                .write_descriptor(peer_id, &owned, value, timeout_ms)
+                .await
+        })
+    }
+
+    fn subscribe<'a>(
+        &'a self,
+        peer_id: &'a str,
+        selector: &'a CoreSelector,
+        consumer: &'a str,
+        timeout_ms: u64,
+    ) -> CoreFuture<'a, ()> {
+        let owned = selector.clone();
+        Box::pin(async move {
+            self.lock()
+                .await
+                .subscribe(peer_id, &owned, consumer, timeout_ms)
+                .await
+        })
+    }
+
+    fn take_notification<'a>(
+        &'a self,
+        peer_id: &'a str,
+        selector: &'a CoreSelector,
+        consumer: &'a str,
+    ) -> CoreFuture<'a, Option<Vec<u8>>> {
+        let owned = selector.clone();
+        Box::pin(async move {
+            self.lock()
+                .await
+                .take_notification(peer_id, &owned, consumer)
+                .await
+        })
+    }
+
+    fn unsubscribe<'a>(
+        &'a self,
+        peer_id: &'a str,
+        selector: &'a CoreSelector,
+        consumer: &'a str,
+    ) -> CoreFuture<'a, bool> {
+        let owned = selector.clone();
+        Box::pin(async move {
+            self.lock()
+                .await
+                .unsubscribe(peer_id, &owned, consumer)
+                .await
+        })
+    }
+
+    fn cancel_operation<'a>(
+        &'a self,
+        operation_id: &'a str,
+    ) -> CoreFuture<'a, ubm_desktop::CompletionOutcome> {
+        Box::pin(async move { self.lock().await.cancel_operation(operation_id).await })
+    }
+
+    fn shutdown(&self) -> CoreFuture<'_, ()> {
+        Box::pin(async move {
+            self.lock().await.shutdown().await;
+            Ok(())
+        })
+    }
+
+    fn adapter_name(&self) -> CoreFuture<'_, String> {
+        Box::pin(async move {
+            let mut core = self.lock().await;
+            let central = core.ensure_open().await?;
+            central.boundary().adapter_name().await
+        })
+    }
+
+    fn mtu<'a>(&'a self, peer_id: &'a str) -> CoreFuture<'a, Option<u16>> {
+        Box::pin(async move {
+            let mut core = self.lock().await;
+            let central = core.ensure_open().await?;
+            // The boundary reports an unmeasured MTU as `None` directly
+            // (never an error): withhold, never synthesize.
+            Ok(central.boundary().mtu(peer_id).await)
+        })
+    }
+
+    fn peers(&self) -> CoreFuture<'_, Vec<PeerSnapshot>> {
+        Box::pin(async move {
+            let mut core = self.lock().await;
+            let central = core.ensure_open().await?;
+            central.boundary().peers().await
+        })
+    }
 }
 
 #[cfg(test)]
