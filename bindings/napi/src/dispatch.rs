@@ -28,6 +28,7 @@ use ubm_desktop::{
     FaultOp, ManufacturerData, PathSelector, PeerSnapshot, PropertyFlags, RadioBoundary,
     RadioCloseFailure, RadioEvent, ScanFilterSpec, ServiceData, ServiceSnapshot,
 };
+use ubm_desktop::executor::desktop_runtime;
 
 /// Typed dispatch failure carrying a frozen C-UBM identity. [`DesktopError`]
 /// and [`CoreError`] identities pass through verbatim; only malformed JS
@@ -945,14 +946,11 @@ impl UbmCentral {
                 "owner must not be empty",
             )));
         }
-        let handle = tokio::runtime::Handle::try_current().map_err(|_| {
-            to_napi(DispatchError::new(
-                "lifecycle.invariant-violation",
-                "core",
-                "dispatch.open",
-                "no tokio runtime",
-            ))
-        })?;
+        // The radio must never ride the host-owned ambient runtime: napi
+        // tears its executor down during environment cleanup (before
+        // finalizers run), stranding radio drops and forwarders on a dead
+        // handle. The shared desktop executor outlives every central.
+        let handle = desktop_runtime();
         let radio = BtleplugRadio::open(handle, None)
             .await
             .map_err(|error| to_napi(DispatchError::from(error)))?;

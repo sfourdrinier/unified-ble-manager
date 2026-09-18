@@ -121,9 +121,16 @@ pub struct BtleplugRadio {
 impl Drop for BtleplugRadio {
     /// Safety net for a radio dropped without [`RadioBoundary::close`]
     /// (e.g. a NAPI finalizer on a V8 thread): the event stream's Drop
-    /// spawns a task, so an off-runtime drop aborts the host process. A
-    /// leftover stream is handed to the shared executor instead; an
-    /// in-context drop stays inline. `try_lock` cannot be contended here:
+    /// spawns a task, so an off-runtime drop aborts the host process.
+    /// The stream is dropped inline inside an entered context of the
+    /// shared executor — never handed off via `spawn`. A handoff is
+    /// unsound here: when the executor is already shutting down (host
+    /// teardown runs finalizers after executor shutdown), the spawned
+    /// task is cancelled immediately and the stream is dropped with no
+    /// ambient context anyway, panicking the host. Entering the context
+    /// is correct in both states: on a live executor the stream's inner
+    /// spawn schedules normally, and on a dead one it degrades to a
+    /// silent canceled-task drop. `try_lock` cannot be contended here:
     /// the guard is only held by polls borrowing a live owner, and this
     /// runs at last-owner drop.
     fn drop(&mut self) {
@@ -136,9 +143,8 @@ impl Drop for BtleplugRadio {
             if tokio::runtime::Handle::try_current().is_ok() {
                 drop(stream);
             } else {
-                self.spawn.spawn(async move {
-                    drop(stream);
-                });
+                let _guard = self.spawn.enter();
+                drop(stream);
             }
         }
     }

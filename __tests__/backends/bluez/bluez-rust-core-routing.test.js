@@ -526,6 +526,77 @@ describe('node-bluez R03 shared-core routing', () => {
       }
     })
 
+    test('active subscription pump holds the event loop until unsubscribe', async () => {
+      const central = new FakeCoreCentral()
+      central.services.set('native-peer-9', true)
+      const backend = await openBackendWithFake(central)
+      // Spy the 5ms pacing signature: jest sandboxes hide loop handles from
+      // process._getActiveHandles, so observe unref calls directly. An
+      // unref'd pacing timer lets the host evaporate mid-subscribe while
+      // the consumer awaits values.
+      const realSetTimeout = global.setTimeout
+      let pacingTimers = 0
+      let pacingUnrefs = 0
+      global.setTimeout = (callback, delay, ...args) => {
+        const timer = realSetTimeout(callback, delay, ...args)
+        if (delay === 5 && timer !== undefined && timer !== null && typeof timer.unref === 'function') {
+          pacingTimers += 1
+          const originalUnref = timer.unref.bind(timer)
+          timer.unref = (...unrefArgs) => {
+            pacingUnrefs += 1
+            return originalUnref(...unrefArgs)
+          }
+        }
+        return timer
+      }
+      try {
+        central.advertisements.push({ peerId: 'native-peer-9', serviceUuids: [], manufacturerData: [], serviceData: [] })
+        const lease = await backend.scanner.start(scanOptions(), 'client-1')
+        let peerId = null
+        try {
+          peerId = (await takeStreamValue(lease.observations)).device.id
+        } finally {
+          await lease.stop()
+        }
+        const connected = await backend.connections.connect(peerId, 'client-1', { signal: null, deadline: null })
+        const database = await backend.gatt.discover(connected.connection, { signal: null, deadline: null })
+        const snapshot = await database.snapshot()
+        const [characteristic] = snapshot.characteristics
+        // Empty core queue: the pump spins on pacing delay only.
+        const takesBefore = central.calls.filter(call => call[0] === 'notifications.take').length
+        const subscription = await database.subscribe(
+          { ...characteristic.path },
+          {
+            signal: null,
+            deadline: null,
+            delivery: {
+              itemCapacity: capacity(16),
+              byteCapacity: capacity(65536),
+              reservedControlCapacity: capacity(1024),
+              overflowPolicy: 'drop-oldest'
+            }
+          }
+        )
+        try {
+          await new Promise(resolve => realSetTimeout(resolve, 50))
+          const takesDuring = central.calls.filter(call => call[0] === 'notifications.take').length
+          expect(takesDuring).toBeGreaterThan(takesBefore)
+          expect(pacingTimers).toBeGreaterThan(0)
+          expect(pacingUnrefs).toBe(0)
+        } finally {
+          await subscription.remove()
+        }
+        const takesAtRemove = central.calls.filter(call => call[0] === 'notifications.take').length
+        await new Promise(resolve => realSetTimeout(resolve, 50))
+        const takesAfter = central.calls.filter(call => call[0] === 'notifications.take').length
+        expect(takesAfter).toBe(takesAtRemove)
+        await connected.connection.disconnect()
+      } finally {
+        global.setTimeout = realSetTimeout
+        await backend.destroy()
+      }
+    })
+
     test('destroy disposes the central once and retires later ops', async () => {
       const central = new FakeCoreCentral()
       const backend = await openBackendWithFake(central)

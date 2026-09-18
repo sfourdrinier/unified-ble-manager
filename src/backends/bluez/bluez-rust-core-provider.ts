@@ -2064,12 +2064,12 @@ function absentField<Value>(reason: string): import('../../backend-contract/adve
  */
 function pumpDelay(): Promise<void> {
   return new Promise<void>(resolve => {
-    const timer = setTimeout(resolve, 5)
-    // Delivery pacing must never hold the process (or a test runner) open.
-    const unref = (timer as unknown as { unref?: () => void }).unref
-    if (typeof unref === 'function') {
-      unref.call(timer)
-    }
+    // The pacing timer stays ref'd: an active subscription pump is
+    // outstanding work, and an unref'd timer lets the host evaporate
+    // mid-subscribe (a bare `for await` on `values` holds no handle of
+    // its own). Pumps always terminate on unsubscribe/destroy, so a
+    // cleaned-up consumer never holds the process open.
+    setTimeout(resolve, 5)
   })
 }
 
