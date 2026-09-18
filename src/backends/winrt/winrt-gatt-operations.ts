@@ -4,8 +4,10 @@ import type { BackendConnection, BackendSubscription } from '../../backend-contr
 import { contractError, type CleanupRecord } from '../../backend-contract/errors'
 import type { CharacteristicPath, DatabasePath, DescriptorPath, GattDatabase } from '../../backend-contract/gatt'
 import type {
+  CharacteristicRead,
   OperationOptions,
   PublicOperationOptions,
+  ReadProvenance,
   ReadRequest,
   ReadResult,
   SubscribeRequest,
@@ -48,6 +50,8 @@ import { winRtPlatformError } from './winrt-backend-helpers'
 import type { WinRtTrackedAsyncOperation } from './winrt-operation-dispatcher'
 
 const maximumValueBytes = byteLimit(512 * 1024)
+/** `ReadValueAsync` (uncached) answers with this read's own response; notifications arrive as `ValueChanged`. */
+const WINRT_READ_PROVENANCE: ReadProvenance = 'read-response'
 
 interface WinRtSubscribedResult {
   readonly outcome: 'subscribed'
@@ -108,6 +112,7 @@ export class WinRtGattOperations {
             value =>
               Object.freeze({
                 value: ownBytes(value, maximumValueBytes),
+                provenance: WINRT_READ_PROVENANCE,
                 terminal: successfulTerminal(request.operation)
               }),
             error => {
@@ -296,7 +301,7 @@ export class WinRtGattOperations {
     record: WinRtConnectionRecord,
     address: WinRtCharacteristicAddress,
     options: PublicOperationOptions
-  ): Promise<OwnedBytes> {
+  ): Promise<CharacteristicRead> {
     this.backend.assertGattUsable('winrt.gatt.database-read')
     const adapterResetEpoch = this.backend.captureAdapterResetEpoch()
     const dispatch = this.backend.trackConnectionOperation(
@@ -307,7 +312,10 @@ export class WinRtGattOperations {
       adapterResetEpoch
     )
     try {
-      return ownBytes(await dispatch.completion, maximumValueBytes)
+      return Object.freeze({
+        value: ownBytes(await dispatch.completion, maximumValueBytes),
+        provenance: WINRT_READ_PROVENANCE
+      })
     } catch (error) {
       throw winRtPlatformError('gatt.read-failed', 'gatt', 'winrt.gatt.database-read', error)
     }

@@ -145,15 +145,17 @@ const MACOS_WRITE_LENGTH_NOTE: &str = "Unpatched btleplug 0.12: CoreBluetooth mt
 /// macOS `gatt:write-without-response-readiness`: with the vendored patch
 /// (UBM_PATCHES.md #4) the legacy readiness watch exists
 /// (`DesktopCentral::write_readiness` + `write_readiness_events`); without
-/// it only btleplug's own flow control does.
+/// it no readiness signal exists at all — `write_without_response_ready`
+/// answers `capability.unsupported` — so the row stays open work (F11),
+/// never a claim that btleplug provides it.
 #[cfg(btleplug_ubm_write_readiness)]
 const MACOS_READINESS_VERDICT: CapabilityVerdict = CapabilityVerdict::OsAdapterProvides;
 #[cfg(btleplug_ubm_write_readiness)]
 const MACOS_READINESS_LIMITATION: Option<&str> = Some("deterministic-only");
 #[cfg(not(btleplug_ubm_write_readiness))]
-const MACOS_READINESS_VERDICT: CapabilityVerdict = CapabilityVerdict::BtleplugProvides;
+const MACOS_READINESS_VERDICT: CapabilityVerdict = CapabilityVerdict::NarrowOsAdapterNeeded;
 #[cfg(not(btleplug_ubm_write_readiness))]
-const MACOS_READINESS_LIMITATION: Option<&str> = Some("btleplug-flow-controlled");
+const MACOS_READINESS_LIMITATION: Option<&str> = None;
 
 /// One required desktop central capability and its parity verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -546,7 +548,7 @@ pub const DESKTOP_CAPABILITIES: &[DesktopCapability] = &[
             os: DesktopOs::MacOs,
             verdict: MACOS_READINESS_VERDICT,
             limitation: MACOS_READINESS_LIMITATION,
-            note: "Readiness probe (canSendWriteWithoutResponse) and readiness reports (peripheralIsReadyToSendWriteWithoutResponse) through vendored btleplug patch 4; btleplug itself queues a write without response until CoreBluetooth is ready.",
+            note: "Readiness probe (canSendWriteWithoutResponse) and readiness reports (peripheralIsReadyToSendWriteWithoutResponse) through vendored btleplug patch 4, which the row requires: without it no readiness signal exists and the probe answers capability.unsupported.",
             needs_pairing_generation_controller: false,
         }],
     },
@@ -892,6 +894,39 @@ mod tests {
             }
         }
         assert_eq!(DesktopOs::ALL.len(), 3);
+    }
+
+    /// F11: the macOS readiness row names its patch or its absence. With
+    /// the vendored patch the OS adapter provides the legacy watch;
+    /// without it no readiness signal exists (the probe answers
+    /// `capability.unsupported`), so the row stays open work rather than
+    /// claiming btleplug provides it. Each side is asserted under its own
+    /// build configuration.
+    #[test]
+    fn macos_readiness_names_its_patch_or_its_absence() {
+        use super::DesktopOs;
+        let row = super::DESKTOP_CAPABILITIES
+            .iter()
+            .find(|row| row.id == "gatt:write-without-response-readiness")
+            .expect("readiness row");
+        let macos = row
+            .per_os
+            .iter()
+            .find(|entry| entry.os == DesktopOs::MacOs)
+            .expect("macOS readiness override");
+        #[cfg(btleplug_ubm_write_readiness)]
+        {
+            assert_eq!(macos.verdict, super::CapabilityVerdict::OsAdapterProvides);
+            assert_eq!(macos.limitation, Some("deterministic-only"));
+        }
+        #[cfg(not(btleplug_ubm_write_readiness))]
+        {
+            assert_eq!(
+                macos.verdict,
+                super::CapabilityVerdict::NarrowOsAdapterNeeded
+            );
+            assert_eq!(macos.limitation, None);
+        }
     }
 
     #[test]

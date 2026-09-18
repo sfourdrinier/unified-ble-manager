@@ -182,6 +182,12 @@ impl Args {
         }
     }
 
+    /// The key's value, `null` included (presence, whatever its value).
+    #[must_use]
+    pub fn get_raw(&self, key: &str) -> Option<&Value> {
+        self.fields.get(key)
+    }
+
     fn get(&self, key: &str) -> Option<&Value> {
         self.fields.get(key).filter(|value| !value.is_null())
     }
@@ -357,12 +363,24 @@ fn platform_value(detail: &PlatformDetail) -> Value {
 }
 
 /// Failure envelope text. `commit` must be `Some` exactly for writes.
+/// `retryability` is the owner's own answer (`never` / `caller-decides`),
+/// never re-derived from the code by the caller; a write whose commit is
+/// `uncertain` is always `never`.
 #[must_use]
 pub fn error_envelope(error: &DesktopError, commit: Option<&str>) -> String {
+    let retryability = if commit == Some("uncertain") {
+        ubm_desktop::Retryability::Never
+    } else {
+        error.retryability()
+    };
     let mut map = Map::new();
     map.insert("ok".to_owned(), Value::Bool(false));
     map.insert("error".to_owned(), Value::Object(error_object(error)));
     map.insert("commit".to_owned(), commit.map_or(Value::Null, Value::from));
+    map.insert(
+        "retryability".to_owned(),
+        Value::from(retryability.as_str()),
+    );
     Value::Object(map).to_string()
 }
 

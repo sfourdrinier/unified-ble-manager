@@ -16,13 +16,28 @@ export function normalizeWebBluetoothError(error: Error, context: WebErrorContex
     return error
   }
   const namedCode = normalizedNamedErrorCode(error.name, context)
-  return contractError(namedCode, context.domain, context.operation, {
+  const normalized = contractError(namedCode, context.domain, context.operation, {
     domain: 'web-bluetooth',
     code: error.name.length === 0 ? 'Error' : error.name,
     safeMessage: 'The Web Bluetooth operation failed.',
     metadata: { browserErrorName: error.name.length === 0 ? 'Error' : error.name }
   })
+  return isTransientEstablishmentFailure(error.name, context)
+    ? new BackendContractError({ ...normalized.normalized, retryability: 'caller-decides' })
+    : normalized
 }
+
+/**
+ * `BluetoothRemoteGATTServer.connect()` rejects with a NetworkError when the
+ * browser could not establish the link — the Web answer to Android GATT 133
+ * or `CBError.connectionFailed`. Nothing was committed, so repeating it is
+ * the caller's policy (owner decision, 5.0); the backend never retries it.
+ */
+function isTransientEstablishmentFailure(name: string, context: WebErrorContext): boolean {
+  return name === 'NetworkError' && context.operation === WEB_CONNECT_OPERATION
+}
+
+export const WEB_CONNECT_OPERATION = 'web-connection.connect'
 
 function normalizedNamedErrorCode(name: string, context: WebErrorContext): BleErrorCode {
   if (name === 'AbortError') {

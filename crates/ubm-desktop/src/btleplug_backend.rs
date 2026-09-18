@@ -39,7 +39,7 @@ use futures_util::{FutureExt, StreamExt};
 use tokio::sync::{Mutex, mpsc};
 
 use crate::boundary::{
-    AdapterAuthorization, AdapterPowerState, AddressType, CharacteristicAccess,
+    AdapterAuthorization, AdapterPowerState, AddressType, CharacteristicAccess, CharacteristicRead,
     CharacteristicSnapshot, DeliveryMode, DescriptorSnapshot, InstanceKey, ManufacturerData,
     ObservedDelivery, PairOutcome, PeerSnapshot, PropertyFlags, RadioBoundary, RadioCloseFailure,
     RadioEvent, ScanFilterSpec, SecurityState, ServiceData, ServiceSnapshot, UnpairOutcome,
@@ -232,8 +232,8 @@ pub fn adapter_identity(info: &str) -> &str {
 /// Choose one adapter out of an OS listing of btleplug labels (finding
 /// 43; the Tauri attach path's rule): a withheld label fails the
 /// selection, an empty listing is `adapter.unavailable`, an unmatched name
-/// `adapter.selection-required`, and no name with several adapters
-/// `adapter.ambiguous`.
+/// is `adapter.unavailable` (W-R2, as every legacy desktop provider
+/// reported it), and no name with several adapters is `adapter.ambiguous`.
 pub fn choose_adapter(
     labels: &[Result<String, DesktopError>],
     wanted: Option<&str>,
@@ -250,16 +250,14 @@ pub fn choose_adapter(
         .filter_map(|label| label.as_deref().ok())
         .collect();
     match wanted {
+        // W-R2: a name the listing never held is `adapter.unavailable`,
+        // as every legacy desktop provider reported it.
         Some(wanted) => infos
             .iter()
             .position(|info| adapter_matches(info, wanted))
             .ok_or_else(|| {
-                DesktopError::new(
-                    BleErrorCode::AdapterSelectionRequired,
-                    BleErrorDomain::Adapter,
-                    "adapter.select",
-                )
-                .with_detail(format!("no adapter is named {wanted:?}"))
+                DesktopError::adapter_unavailable("adapter.select")
+                    .with_detail(format!("no adapter is named {wanted:?}"))
             }),
         None if infos.len() == 1 => Ok(0),
         None => Err(DesktopError::new(
@@ -818,7 +816,7 @@ impl BtleplugRadio {
     /// same rule the Tauri attach path applies — an adapter whose identity
     /// the OS withholds fails the selection (never skipped, never labelled
     /// "unknown"), no adapter is `adapter.unavailable`, a name that matches
-    /// none is `adapter.selection-required`, and no name with several
+    /// none is `adapter.unavailable` (W-R2), and no name with several
     /// adapters is `adapter.ambiguous` instead of silently taking the first.
     #[cfg(not(target_os = "windows"))]
     async fn select_adapter(
@@ -1053,6 +1051,41 @@ impl BtleplugRadio {
                 ),
             }
         }
+    }
+
+    /// CoreBluetooth reports read responses and notifications through one
+    /// callback; the vendored btleplug (UBM_PATCHES.md #14) says which the
+    /// value can be. WinRT (`ReadValueAsync`, uncached) and BlueZ
+    /// (`ReadValue`) answer a read with its own response, never a
+    /// notification.
+    #[cfg(target_os = "macos")]
+    async fn read_with_provenance(
+        peripheral: &Peripheral,
+        characteristic: &btleplug::api::Characteristic,
+    ) -> btleplug::Result<CharacteristicRead> {
+        let (value, provenance) = peripheral.read_with_provenance(characteristic).await?;
+        Ok(CharacteristicRead {
+            value,
+            provenance: match provenance {
+                btleplug::api::ReadProvenance::ReadResponse => {
+                    crate::boundary::ReadProvenance::ReadResponse
+                }
+                btleplug::api::ReadProvenance::ReadOrNotification => {
+                    crate::boundary::ReadProvenance::ReadOrNotification
+                }
+            },
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    async fn read_with_provenance(
+        peripheral: &Peripheral,
+        characteristic: &btleplug::api::Characteristic,
+    ) -> btleplug::Result<CharacteristicRead> {
+        peripheral
+            .read(characteristic)
+            .await
+            .map(CharacteristicRead::read_response)
     }
 
     /// Occurrence-aware instance lookup over the cached GATT database.
@@ -2112,6 +2145,21 @@ fn property_flags(flags: CharPropFlags) -> PropertyFlags {
 /// (F22): company IDs plus payload bytes verbatim, sorted by company ID
 /// so the unordered OS map yields a deterministic snapshot. Empty payloads
 /// are preserved (section present), never dropped.
+/// True when a disconnect error proves the peer is no longer present
+/// (T-R1, legacy `error_confirms_device_released`): the D-Bus error *name*,
+/// a protocol constant rather than rendered text. Off Linux nothing reaches
+/// here — CoreBluetooth and WinRT report a missing peer as `Ok(false)`
+/// rather than as an error — so no `cfg` gate is needed.
+fn disconnect_error_confirms_released(error: &btleplug::Error) -> bool {
+    match error {
+        btleplug::Error::Platform(detail) => matches!(
+            detail.code.as_str(),
+            "org.freedesktop.DBus.Error.UnknownObject" | "org.bluez.Error.DoesNotExist"
+        ),
+        _ => false,
+    }
+}
+
 /// The btleplug identity a peer id names (finding 127): the CoreBluetooth
 /// identifier, the WinRT address. `None` on Linux, where BlueZ resolves
 /// peers itself, or for an id that names neither.
@@ -2280,23 +2328,32 @@ impl RadioBoundary for BtleplugRadio {
     }
 
     async fn disconnect(&self, peer_id: &str) -> Result<(), DesktopError> {
+        // T-R2: straight to the radio, as legacy went straight to
+        // `peripheral.disconnect()` — no pre-disconnect `is_connected()`
+        // query (an extra D-Bus read the legacy path never made).
         let peripheral = self.peripheral_by_id(peer_id).await?;
-        // btleplug maps an already-released peripheral to success-or-error
-        // per platform: the peripheral's own "not connected" answer is this
-        // release's answer, so an already-gone link reports released.
-        if !peripheral.is_connected().await.unwrap_or(true) {
-            self.gatt.evict(peer_id);
-            return self.release_link_state(peer_id);
+        if let Err(error) = peripheral.disconnect().await {
+            // T-R1: a removed device object is not a failure of this
+            // release — it is the answer. BlueZ drops the D-Bus object, so
+            // the object never comes back and every retry would fail
+            // identically; the link reports released. Reported, not
+            // swallowed: the error is still the only account of why the
+            // radio call failed.
+            if disconnect_error_confirms_released(&error) {
+                eprintln!(
+                    "[ubm-desktop] the peer's device object is gone, so it is released \
+                     despite the disconnect erroring: {error}"
+                );
+            } else {
+                return Err(DesktopError::new(
+                    ubm_core::contracts::BleErrorCode::ConnectionLost,
+                    ubm_core::contracts::BleErrorDomain::Connection,
+                    "connection.disconnect",
+                )
+                .with_detail(error.to_string())
+                .with_os(&error));
+            }
         }
-        peripheral.disconnect().await.map_err(|error| {
-            DesktopError::new(
-                ubm_core::contracts::BleErrorCode::ConnectionLost,
-                ubm_core::contracts::BleErrorDomain::Connection,
-                "connection.disconnect",
-            )
-            .with_detail(error.to_string())
-            .with_os(&error)
-        })?;
         self.gatt.evict(peer_id);
         self.release_link_state(peer_id)
     }
@@ -2320,7 +2377,7 @@ impl RadioBoundary for BtleplugRadio {
         service_occurrence: u64,
         characteristic_uuid: &str,
         characteristic_occurrence: u64,
-    ) -> Result<Vec<u8>, DesktopError> {
+    ) -> Result<CharacteristicRead, DesktopError> {
         let peripheral = self.cached_peripheral(peer_id).await?;
         let characteristic = Self::find_characteristic(
             &peripheral,
@@ -2336,8 +2393,7 @@ impl RadioBoundary for BtleplugRadio {
                 "gatt.read",
             )
         })?;
-        peripheral
-            .read(&characteristic)
+        Self::read_with_provenance(&peripheral, &characteristic)
             .await
             .map_err(|error| DesktopError::read_failed(error.to_string()).with_os(&error))
     }
@@ -3416,6 +3472,88 @@ mod tests {
         assert!(super::platform_peripheral_id("not an id").is_none());
     }
 
+    /// Finding 127: the OS identity a peer id names round-trips — the
+    /// string the adapter lists a peripheral under is what the resolve
+    /// path (`add_peripheral`) re-resolves it by, with no scan first.
+    #[test]
+    fn f127_a_listed_identity_resolves_without_a_scan() {
+        #[cfg(target_vendor = "apple")]
+        {
+            use btleplug::platform::PeripheralId;
+            let peer = "5e0b1c9a-6c0f-4f60-a1c1-3b5f2a0e7d11";
+            let id = PeripheralId::from(uuid::Uuid::parse_str(peer).expect("fixture uuid"));
+            assert_eq!(id.to_string(), peer);
+            assert_eq!(
+                super::platform_peripheral_id(peer).map(|id| id.to_string()),
+                Some(peer.to_owned())
+            );
+            assert!(super::platform_peripheral_id("AA:BB:CC:DD:EE:FF").is_none());
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use btleplug::platform::PeripheralId;
+            let peer = "AA:BB:CC:DD:EE:FF";
+            let address: btleplug::api::BDAddr = peer.parse().expect("fixture address");
+            let id = PeripheralId::from(address);
+            assert_eq!(id.to_string(), peer);
+            assert_eq!(
+                super::platform_peripheral_id(peer).map(|id| id.to_string()),
+                Some(peer.to_owned())
+            );
+            assert!(
+                super::platform_peripheral_id("5e0b1c9a-6c0f-4f60-a1c1-3b5f2a0e7d11").is_none()
+            );
+        }
+        #[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
+        {
+            // BlueZ resolves peers itself; no peer id names an OS identity.
+            assert!(super::platform_peripheral_id("AA:BB:CC:DD:EE:FF").is_none());
+            assert!(
+                super::platform_peripheral_id("5e0b1c9a-6c0f-4f60-a1c1-3b5f2a0e7d11").is_none()
+            );
+        }
+    }
+
+    /// T-R1: a removed BlueZ device object confirms the peer is released.
+    /// The D-Bus error name is the protocol constant, not rendered text.
+    #[test]
+    fn t_r1_a_gone_device_object_confirms_the_peer_is_released() {
+        for name in [
+            "org.freedesktop.DBus.Error.UnknownObject",
+            "org.bluez.Error.DoesNotExist",
+        ] {
+            assert!(
+                super::disconnect_error_confirms_released(&btleplug::Error::Platform(
+                    btleplug::PlatformError::bluez_dbus(Some(name), Some("device object is gone")),
+                )),
+                "{name} proves the peer is gone",
+            );
+        }
+    }
+
+    /// T-R1: transport failures are not release evidence; ownership stays.
+    #[test]
+    fn t_r1_a_transport_failure_is_not_release_evidence() {
+        for name in [
+            "org.freedesktop.DBus.Error.Timeout",
+            "org.freedesktop.DBus.Error.NoReply",
+            "org.bluez.Error.Failed",
+        ] {
+            assert!(
+                !super::disconnect_error_confirms_released(&btleplug::Error::Platform(
+                    btleplug::PlatformError::bluez_dbus(Some(name), Some("no answer")),
+                )),
+                "{name} does not prove the peer is gone",
+            );
+        }
+        assert!(!super::disconnect_error_confirms_released(
+            &btleplug::Error::NotConnected
+        ));
+        assert!(!super::disconnect_error_confirms_released(
+            &btleplug::Error::DeviceNotFound
+        ));
+    }
+
     /// Findings 120 and 122: an OS sighting becomes an observation with its
     /// own data and an honest label, whatever the peripheral's merged
     /// state holds.
@@ -4011,8 +4149,10 @@ mod tests {
             choose_adapter(&two, Some("hci1 (usb:v0A12p0001d8891)")).expect("by full label"),
             1
         );
+        // W-R2: a name the listing never held is `adapter.unavailable`,
+        // as every legacy desktop provider reported it.
         let missing = choose_adapter(&two, Some("hci9")).expect_err("no such adapter");
-        assert_eq!(missing.code_str(), "adapter.selection-required");
+        assert_eq!(missing.code_str(), "adapter.unavailable");
         let withheld = [
             Ok("hci0 (usb:v1D6Bp0246d0540)".to_owned()),
             Err(crate::errors::DesktopError::adapter_unavailable(
@@ -4072,11 +4212,24 @@ mod tests {
         let listing: Result<Vec<String>, btleplug::Error> =
             Err(btleplug::Error::RuntimeError("dbus gone".to_owned()));
         let error = find_peer(listing, "peer-1", String::clone).expect_err("listing failed");
+        // Finding 124: on BlueZ every failure takes the legacy BlueZ
+        // identity (`normalizeBluezFailure`); elsewhere the listing failure
+        // is the adapter's. Neither is a miss.
+        let expected = if cfg!(target_os = "linux") {
+            "platform.failure"
+        } else {
+            "adapter.unavailable"
+        };
         assert_eq!(
             error.code_str(),
-            "adapter.unavailable",
+            expected,
             "a listing failure is not a miss"
         );
+        if cfg!(target_os = "linux") {
+            let platform = error.platform().expect("the BlueZ answer rides the error");
+            assert_eq!(platform.domain, "bluez-dbus");
+            assert_eq!(platform.code, "org.bluez.Error.Failed");
+        }
         assert_eq!(error.operation(), "peer.list");
         let miss = find_peer(Ok(vec!["peer-2".to_owned()]), "peer-1", String::clone)
             .expect_err("peer absent");

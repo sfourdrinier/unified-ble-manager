@@ -25,7 +25,10 @@ interface MobileCorePort {
   fun drain(sessionId: Long, maxItems: Int, maxBytes: Int): String
 
   fun completeUnit(requestId: Long): Int
+  /** A descriptor read's value. */
   fun completeBytes(requestId: Long, value: ByteArray): Int
+  /** A characteristic read's value and what the platform says it is (`read-response` | `read-or-notification`). */
+  fun completeRead(requestId: Long, value: ByteArray, provenance: String): Int
   fun completeAdapter(requestId: Long, availability: String, authorization: String, power: String, safeReason: String?): Int
   fun completeDiscovered(requestId: Long, levels: IntArray, uuids: Array<String>, occurrences: LongArray, properties: IntArray): Int
   fun completeNotifyEnabled(requestId: Long, delivery: String): Int
@@ -87,6 +90,8 @@ object JniMobileCorePort : MobileCorePort {
 
   override fun completeUnit(requestId: Long): Int = MobileCoreBridge.nativeCompleteUnit(requestId)
   override fun completeBytes(requestId: Long, value: ByteArray): Int = MobileCoreBridge.nativeCompleteBytes(requestId, value)
+  override fun completeRead(requestId: Long, value: ByteArray, provenance: String): Int =
+    MobileCoreBridge.nativeCompleteRead(requestId, value, provenance)
   override fun completeAdapter(requestId: Long, availability: String, authorization: String, power: String, safeReason: String?): Int =
     MobileCoreBridge.nativeCompleteAdapter(requestId, availability, authorization, power, safeReason)
 

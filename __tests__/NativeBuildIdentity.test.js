@@ -318,7 +318,8 @@ describe('patched and vendored crates, implicit build scripts', () => {
       expect(tree.status).toBe(0)
       const local = new Set()
       for (const line of tree.stdout.split('\n')) {
-        const match = /\((\/[^)]+)\)/.exec(line)
+        // A local crate's absolute path: POSIX `/…` or Windows `C:\…`.
+        const match = /\(((?:[A-Za-z]:)?[\\/][^)]+)\)/.exec(line)
         if (match === null) continue
         const relative = path.relative(repoRoot, match[1]).split(path.sep).join('/')
         if (relative !== identity.BINDINGS[binding].crateDir) local.add(relative)

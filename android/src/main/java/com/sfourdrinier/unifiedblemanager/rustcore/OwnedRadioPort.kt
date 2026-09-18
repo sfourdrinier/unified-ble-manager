@@ -117,9 +117,12 @@ class OwnedRadioPort(
   }
 
   override fun discover(peerId: String, onResult: (Result<List<GattServiceNode>>) -> Unit): Long =
-    radio.discover(peerId) { successful ->
-      if (!successful) {
-        onResult(Result.failure(RadioPortFailure(RadioFailureKind.PLATFORM, "Android GATT service discovery failed")))
+    radio.discover(peerId) { result ->
+      // The driver's own failure crosses as is: a link loss stays an
+      // AndroidGattLinkLost, which the host adapter reports as NOT_CONNECTED.
+      val failure = result.exceptionOrNull()
+      if (failure != null) {
+        onResult(Result.failure(failure))
       } else {
         onResult(Result.success(radio.services(peerId).map { service ->
           GattServiceNode(

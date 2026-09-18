@@ -95,13 +95,16 @@ import type {
   GattDatabaseSnapshot,
   NotificationValue
 } from '../../backend-contract/gatt'
-import { createBackendOperationDispatch } from '../../backend-contract/operations'
+import { createBackendOperationDispatch, isReadProvenance } from '../../backend-contract/operations'
 import type {
   BackendOperationDispatch,
   CancellationAcknowledgement,
   OperationOptions,
   OperationTerminalRecord,
   PublicOperationOptions,
+  CharacteristicRead,
+  CharacteristicReadResult,
+  ReadProvenance,
   ReadRequest,
   ReadResult,
   SubscribeRequest,
@@ -516,15 +519,15 @@ function unlabelledAdapterId(index: number): string {
 async function listRustCoreAdapters(context: BackendOpenContext): Promise<readonly ListedAdapter[]> {
   const { profile } = context
   if (context.radio === 'synthetic') {
-    const backend = await openRustCoreBackend(context, {
-      adapterId: desktopRustCoreAdapterId(profile.platform, 'synthetic'),
-      label: null,
-      descriptor: pendingAdapterDescriptor(
-        profile,
-        desktopRustCoreAdapterId(profile.platform, 'synthetic'),
-        'synthetic'
-      )
-    })
+    const backend = await openRustCoreBackend(
+      context,
+      {
+        adapterId: desktopRustCoreAdapterId(profile.platform, 'synthetic'),
+        label: null,
+        descriptor: pendingAdapterDescriptor(profile, desktopRustCoreAdapterId(profile.platform, 'synthetic'), null)
+      },
+      'listing'
+    )
     try {
       return Object.freeze([
         {
@@ -565,16 +568,11 @@ async function listRustCoreAdapters(context: BackendOpenContext): Promise<readon
       adapterId,
       label: listing.label,
       deployment: listing.deployment ?? null,
-      descriptor: pendingAdapterDescriptor(
-        profile,
-        adapterId,
-        listing.displayName ?? listing.label,
-        listing.deployment ?? null
-      )
+      descriptor: pendingAdapterDescriptor(profile, adapterId, listing.displayName ?? null, listing.deployment ?? null)
     }
     let backend: DesktopRustCoreBackend
     try {
-      backend = await openRustCoreBackend(context, pending)
+      backend = await openRustCoreBackend(context, pending, 'listing')
     } catch (error) {
       const normalized = desktopRustCoreError(
         error,
@@ -611,28 +609,98 @@ async function listRustCoreAdapters(context: BackendOpenContext): Promise<readon
   return Object.freeze(adapters)
 }
 
-function adapterGeneration(profile: DesktopRustCoreProfile, adapterId: string) {
-  return opaqueId(`${adapterId}:generation`, 'adapter-generation', `${profile.platform}-rust-core`)
+/**
+ * Each desktop host's legacy identity formats (origin/main):
+ * CoreBluetooth `corebluetooth-backend.ts` / `corebluetooth-attachment-lifecycle.ts` /
+ * `corebluetooth-gatt-operations.ts`; WinRT `winrt-backend.ts:450,587-600,994-996,
+ * 1164-1166,1474`, `winrt-gatt-operations.ts:698-699`, `winrt-subscription-runtime.ts:313`;
+ * BlueZ `bluez-backend.ts:78`, `bluez-backend-runtime.ts:239-251,682-686,1012`,
+ * `bluez-connection-runtime.ts:620-677`, `bluez-scan-runtime.ts:38-40,214`,
+ * `bluez-subscription-runtime.ts:107`. Generations start at `1` and advance by
+ * one per adapter loss; every counter is the backend's own and starts at 1.
+ */
+interface LegacyDesktopNames {
+  readonly attachmentId: (
+    instance: string,
+    backendGeneration: number,
+    adapterId: string,
+    adapterGeneration: number
+  ) => string
+  readonly peer: (backendGeneration: number, ordinal: number) => string
+  readonly scanLease: (ordinal: number) => string
+  readonly connectionGeneration: (ordinal: number) => string
+  /** BlueZ numbered databases per connection record; the others per backend. */
+  readonly databasePerConnection: boolean
+  readonly databaseGeneration: (ordinal: number) => string
+  /** The adapter name the legacy backend published (`null` when the OS gave none). */
+  readonly displayName: (osName: string | null) => string | null
+}
+
+const LEGACY_DESKTOP_NAMES: Readonly<Record<DesktopRustCorePlatform, LegacyDesktopNames>> = Object.freeze({
+  corebluetooth: Object.freeze({
+    attachmentId: (instance: string, backendGeneration: number, _adapterId: string, adapterOrdinal: number) =>
+      `${instance}:${backendGeneration}:${adapterOrdinal}`,
+    peer: (backendGeneration: number, ordinal: number) => `corebluetooth-peer-${backendGeneration}-${ordinal}`,
+    scanLease: (ordinal: number) => `corebluetooth-scan-lease-${ordinal}`,
+    connectionGeneration: (ordinal: number) => `corebluetooth-connection-generation-${ordinal}`,
+    databasePerConnection: false,
+    databaseGeneration: (ordinal: number) => `corebluetooth-database-generation-${ordinal}`,
+    displayName: () => 'CoreBluetooth default adapter'
+  }),
+  winrt: Object.freeze({
+    attachmentId: (instance: string, backendGeneration: number, _adapterId: string, adapterOrdinal: number) =>
+      `${instance}:${backendGeneration}:${adapterOrdinal}`,
+    peer: (_backendGeneration: number, ordinal: number) => `winrt-peer-${ordinal}`,
+    scanLease: (ordinal: number) => `winrt-scan-lease-${ordinal}`,
+    connectionGeneration: (ordinal: number) => String(ordinal),
+    databasePerConnection: false,
+    databaseGeneration: (ordinal: number) => `winrt-database-generation-${ordinal}`,
+    displayName: (osName: string | null) => osName
+  }),
+  bluez: Object.freeze({
+    attachmentId: (instance: string, backendGeneration: number, adapterId: string, adapterOrdinal: number) =>
+      `${instance}:${backendGeneration}:${adapterId}:${adapterOrdinal}`,
+    peer: (backendGeneration: number, ordinal: number) => `bluez-peer-${backendGeneration}-${ordinal}`,
+    scanLease: (ordinal: number) => `bluez-scan-${ordinal}`,
+    connectionGeneration: (ordinal: number) => String(ordinal),
+    databasePerConnection: true,
+    databaseGeneration: (ordinal: number) => String(ordinal),
+    displayName: (osName: string | null) => osName
+  })
+})
+
+/** Legacy numbered backend instances per host module and process, from 1. */
+const nextLegacyInstance: Record<DesktopRustCorePlatform, number> = { corebluetooth: 1, winrt: 1, bluez: 1 }
+
+function allocateLegacyInstance(platform: DesktopRustCorePlatform): string {
+  const ordinal = nextLegacyInstance[platform]
+  nextLegacyInstance[platform] += 1
+  return `${platform}-backend-${ordinal}`
+}
+
+function adapterGeneration(profile: DesktopRustCoreProfile) {
+  // Legacy listings reported the first adapter generation, `1`.
+  return opaqueId('1', 'adapter-generation', `${profile.platform}-rust-core`)
 }
 
 function pendingAdapterDescriptor(
   profile: DesktopRustCoreProfile,
   adapterId: string,
-  label: string,
+  osName: string | null,
   deployment: 'packaged' | 'unpackaged' | null = null
 ): AdapterDescriptor<string> {
   return Object.freeze({
     adapterId: opaqueId(adapterId, 'adapter', `${profile.platform}-rust-core`),
-    displayName: `${profile.displayName}: ${label}`,
+    displayName: LEGACY_DESKTOP_NAMES[profile.platform].displayName(osName),
     state: Object.freeze({
       availability: 'unknown' as const,
       authorization: 'unknown' as const,
       power: 'unknown' as const,
-      backendGeneration: opaqueId(`${adapterId}:backend`, 'backend-generation', `${profile.platform}-rust-core`),
+      backendGeneration: opaqueId('1', 'backend-generation', `${profile.platform}-rust-core`),
       updatedAt: monotonicTimestamp(0),
       safeReason: 'adapter state loads when a central opens on it'
     }),
-    adapterGeneration: adapterGeneration(profile, adapterId),
+    adapterGeneration: adapterGeneration(profile),
     limitations: Object.freeze([
       'The shared Rust core owns radio scheduling; this backend carries no TypeScript radio policy',
       // The legacy WinRT adapter record's deployment limitation.
@@ -662,7 +730,8 @@ function unavailableAdapterDescriptor(
 
 async function openRustCoreBackend(
   context: BackendOpenContext,
-  adapter: ListedAdapter
+  adapter: ListedAdapter,
+  purpose: 'listing' | 'backend' = 'backend'
 ): Promise<DesktopRustCoreBackend> {
   const { profile } = context
   const sessionOwner = context.createOwnerId()
@@ -705,7 +774,10 @@ async function openRustCoreBackend(
     }),
     coreStates: context.binding.capabilityStates(profile.platform, context.pairingGeneration !== null),
     pairingGeneration: context.pairingGeneration,
-    firstStateTimeoutMs: context.firstStateTimeoutMs
+    firstStateTimeoutMs: context.firstStateTimeoutMs,
+    // Legacy listings opened no backend: a listing probe takes no instance number.
+    backendInstance:
+      purpose === 'listing' ? `${profile.platform}-backend-listing` : allocateLegacyInstance(profile.platform)
   })
   try {
     await backend.open()
@@ -738,6 +810,8 @@ interface DesktopRustCoreBackendConstruction {
   readonly coreStates: readonly DesktopRustCoreCapabilityState[]
   readonly pairingGeneration: DesktopRustCoreGenerationController | null
   readonly firstStateTimeoutMs: number
+  /** The legacy backend instance (`{host}-backend-{n}`); a listing probe takes none. */
+  readonly backendInstance: string
 }
 
 interface CoreDescriptorNode {
@@ -785,6 +859,8 @@ interface ConnectionRecord {
   state: 'connected' | 'disconnecting' | 'disconnected' | 'lost'
   readonly databases: Set<string>
   readonly subscriptions: Set<string>
+  /** The next database ordinal of this link (BlueZ numbered databases per connection record). */
+  nextDatabase: number
 }
 
 interface SubscriptionRecord {
@@ -817,6 +893,18 @@ interface ReadinessWatch {
   readonly record: ConnectionRecord
   readonly stream: CoreBoundedStream<ConnectionWriteReadinessObservation<string>>
   ordinal: number
+  /** The last reported state (F2: the reprobe runs while this is false). */
+  ready: boolean
+  /** The initial probe resolved (F3: earlier reports buffer, never drop). */
+  probed: boolean
+  /** The latest report that arrived before the probe resolved (F3). */
+  buffered: { readonly ready: boolean; readonly generation: string | null } | null
+  /** The pending 100 ms reprobe timer, if any (F2). */
+  reprobeTimer: ReturnType<typeof setTimeout> | null
+  /** The caller's deadline bounding the reprobe loop, if any (F2). */
+  readonly deadline: number | null
+  /** The caller's signal bounding the reprobe loop, if any (F2). */
+  readonly signal: AbortSignal | null | undefined
 }
 
 interface ScanConsumer {
@@ -885,6 +973,14 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   private attachment: AttachmentRecord<string>
   /** Advances once per core adapter reset (LEGACY-AUDIT-1 #57); handles of an older generation are stale. */
   private generation = 1
+  /** The legacy backend instance name (`{host}-backend-{n}`). */
+  private readonly backendInstance: string
+  // Legacy per-backend resource counters, each from 1.
+  private nextPeer = 1
+  private nextScan = 1
+  private nextConnection = 1
+  private nextDatabase = 1
+  private nextSubscription = 1
   private adapterState: AdapterStateSnapshot<string>
   private readonly peerIdsByNativeId = new Map<string, PeerId<string>>()
   private readonly nativeIdsByPeerId = new Map<string, string>()
@@ -898,6 +994,12 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   private readonly pendingAddresses = new Map<string, PeerAddressDescriptor>()
   private readonly addressTypes = new Map<string, 'public' | 'random' | null>()
   private readonly readinessWatches = new Set<ReadinessWatch>()
+  /**
+   * Connections with one GATT verb in flight (F6, CoreBluetooth only): the
+   * legacy dispatcher admitted one verb per connection and failed a second
+   * concurrent verb fast with `lifecycle.invalid-state`.
+   */
+  private readonly gattVerbsInFlight = new Set<string>()
   private readonly wiring: DesktopRustCoreWiring
   /** One stream per `events()` caller (each manager on this backend), as the 4.x backends fanned out. */
   private readonly eventStreams = new Set<OwnedCoreBoundedStream<BackendEvent<string>>>()
@@ -933,6 +1035,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     this.hostKind = construction.hostKind
     this.bindingDiagnostics = construction.bindingDiagnostics
     this.firstStateTimeoutMs = construction.firstStateTimeoutMs
+    this.backendInstance = construction.backendInstance
     this.adapterState = construction.adapter.state
     this.attachment = this.attachmentFor(construction.adapter, construction.adapter.state)
     this.adapterState = this.attachment.adapter.state
@@ -1039,23 +1142,26 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     adapter: AdapterDescriptor<string>,
     state: AdapterStateSnapshot<string>
   ): AttachmentRecord<string> {
+    // The legacy attachment of this host: backend and adapter generations
+    // advance together from 1 (legacy `advanceGeneration`).
     const scope = `${this.profile.platform}-rust-core`
-    const backendGeneration = opaqueId(
-      `${scope}-generation:${this.owner}:${this.generation}`,
-      'backend-generation',
-      scope
-    )
+    const backendGeneration = opaqueId(String(this.generation), 'backend-generation', scope)
     return Object.freeze({
-      attachmentId: opaqueId(`${scope}-attachment:${this.owner}:${this.generation}`, 'attachment', scope),
-      backendInstanceId: opaqueId(`${scope}-backend:${this.owner}`, 'backend-instance', scope),
+      attachmentId: opaqueId(
+        LEGACY_DESKTOP_NAMES[this.profile.platform].attachmentId(
+          this.backendInstance,
+          this.generation,
+          String(adapter.adapterId),
+          this.generation
+        ),
+        'attachment',
+        scope
+      ),
+      backendInstanceId: opaqueId(this.backendInstance, 'backend-instance', scope),
       backendGeneration,
       adapter: Object.freeze({
         ...adapter,
-        adapterGeneration: opaqueId(
-          `${String(adapter.adapterId)}:generation:${this.generation}`,
-          'adapter-generation',
-          scope
-        ),
+        adapterGeneration: opaqueId(String(this.generation), 'adapter-generation', scope),
         state: Object.freeze({ ...state, backendGeneration, updatedAt: monotonicTimestamp(this.now()) })
       })
     })
@@ -1166,7 +1272,8 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   events(): BoundedAsyncStream<BackendEvent<string>> {
     this.assertAlive(this.op('events'))
     const stream: OwnedCoreBoundedStream<BackendEvent<string>> = new OwnedCoreBoundedStream<BackendEvent<string>>(
-      { itemCapacity: capacity(256), byteCapacity: capacity(262144), reservedControlCapacity: capacity(1024) },
+      // F10: legacy backend-event quotas (64/64KiB/1).
+      { itemCapacity: capacity(64), byteCapacity: capacity(64 * 1024), reservedControlCapacity: capacity(1) },
       'drop-oldest',
       () => this.eventStreams.delete(stream)
     )
@@ -1246,8 +1353,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     for (const stream of this.adapterTransitions) stream.closeWithReason('owner-released')
     this.adapterTransitions.clear()
     this.security?.close?.()
-    for (const watch of this.readinessWatches) watch.stream.closeWithReason('owner-released')
-    this.readinessWatches.clear()
+    for (const watch of [...this.readinessWatches]) this.closeReadinessWatch(watch, 'owner-released')
     // The core's shutdown stops the scan, releases every link and CCCD, and
     // reports each release failure; that report is the cleanup record.
     let report
@@ -1343,7 +1449,8 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
    * the call is issued, so an abort racing the call is recorded by the core
    * (the op ends `operation.aborted` without a radio call) and an abort after
    * admission cancels exactly that core operation. An already-aborted signal
-   * refuses before any dispatch.
+   * refuses before any dispatch, carrying the bare operation id as the
+   * legacy dispatcher reported it (F4, no `.aborted` suffix).
    */
   private async withTicket<Result>(
     correlation: string,
@@ -1352,7 +1459,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     run: (ticket: string) => Promise<Result>
   ): Promise<Result> {
     if (signal?.aborted === true) {
-      throw contractError('operation.aborted', 'core', `${operation}.aborted`)
+      throw contractError('operation.aborted', 'core', operation)
     }
     let ticket: string
     try {
@@ -1394,6 +1501,39 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     } catch (error) {
       throwDesktopRustCoreError(error, this.op('operation.cancel'))
     }
+  }
+
+  /**
+   * Admit one GATT verb on a connection (F6): CoreBluetooth serializes GATT
+   * verbs per connection — a second concurrent verb fails fast with
+   * `lifecycle.invalid-state` under the verb's own operation id, as the
+   * legacy dispatcher refused it. Other radios admit concurrent verbs; the
+   * radio itself refuses same-characteristic races.
+   */
+  private admitGattVerb(connectionId: string, verb: string): void {
+    if (this.profile.platform !== 'corebluetooth') return
+    if (this.gattVerbsInFlight.has(connectionId)) {
+      throw contractError('lifecycle.invalid-state', 'core', this.op(verb))
+    }
+    this.gattVerbsInFlight.add(connectionId)
+  }
+
+  /** Release the per-connection GATT verb slot when its completion settles. */
+  private trackGattVerb<Result>(connectionId: string, completion: Promise<Result>): Promise<Result> {
+    if (this.profile.platform !== 'corebluetooth') return completion
+    const release = (): void => {
+      this.gattVerbsInFlight.delete(connectionId)
+    }
+    return completion.then(
+      value => {
+        release()
+        return value
+      },
+      error => {
+        release()
+        throw error
+      }
+    )
   }
 
   private dispatchFor<Result>(
@@ -1507,7 +1647,8 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   private async watchAdapterState(): Promise<AdapterStateWatch<string>> {
     const initial = await this.currentAdapterState()
     const transitions = new CoreBoundedStream<AdapterStateSnapshot<string>>(
-      { itemCapacity: capacity(16), byteCapacity: capacity(4096), reservedControlCapacity: capacity(512) },
+      // F10: legacy adapter-state quotas (16/16KiB/1).
+      { itemCapacity: capacity(16), byteCapacity: capacity(16 * 1024), reservedControlCapacity: capacity(1) },
       'latest'
     )
     this.adapterTransitions.add(transitions)
@@ -1708,8 +1849,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     record.databases.clear()
     for (const watch of [...this.readinessWatches]) {
       if (watch.record !== record) continue
-      watch.stream.closeWithReason('connection-lost')
-      this.readinessWatches.delete(watch)
+      this.closeReadinessWatch(watch, 'connection-lost')
     }
     if (ADAPTER_LOSS_SEQUENCE[this.profile.platform].connectionStateChanged) {
       this.emitEvent({
@@ -1844,10 +1984,9 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     this.attachment = this.attachmentFor(this.attachment.adapter, this.adapterState)
     this.identifiers = this.identifiersFor(this.attachment)
     this.adapterState = Object.freeze({ ...this.adapterState, backendGeneration: this.attachment.backendGeneration })
-    this.peerIdsByNativeId.clear()
-    this.nativeIdsByPeerId.clear()
-    this.pendingAddresses.clear()
-    this.addressTypes.clear()
+    // 5.0 keeps peer handles (and their address facts) across the advance:
+    // the peer is the same device, so a supervisor reconnects with the handle
+    // it holds. Legacy cleared them with the generation and ended the manager.
     for (const streams of this.securityWatches.values()) {
       for (const stream of streams) stream.closeWithReason('source-failed')
     }
@@ -1969,14 +2108,27 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   private peerIdForNativeId(nativePeerId: string): PeerId<string> {
     const existing = this.peerIdsByNativeId.get(nativePeerId)
     if (existing !== undefined) return existing
-    const peerId = opaqueId(
-      `${this.profile.platform}-core-peer-${this.nextOrdinal()}`,
-      'peer',
-      `${this.profile.platform}-rust-core`
-    )
+    const peerId = this.mintPeer()
     this.peerIdsByNativeId.set(nativePeerId, peerId)
     this.nativeIdsByPeerId.set(String(peerId), nativePeerId)
     return peerId
+  }
+
+  /** The next legacy peer name of this backend. */
+  private mintPeer(): PeerId<string> {
+    const ordinal = this.nextPeer
+    this.nextPeer += 1
+    return opaqueId(
+      LEGACY_DESKTOP_NAMES[this.profile.platform].peer(this.generation, ordinal),
+      'peer',
+      `${this.profile.platform}-rust-core`
+    )
+  }
+
+  private mintScanOrdinal(): number {
+    const ordinal = this.nextScan
+    this.nextScan += 1
+    return ordinal
   }
 
   // -- scan ------------------------------------------------------------------
@@ -2036,13 +2188,15 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     if (typeof started.operationId !== 'string' || started.operationId.length === 0) {
       throw contractError('protocol.malformed', 'core', `${operation}.shape`)
     }
-    const ownerLeaseId = this.identifiers.leaseId(`${this.profile.platform}-core-scan-lease-${ordinal}`)
+    const scanOrdinal = this.mintScanOrdinal()
+    const platform = this.profile.platform
+    const ownerLeaseId = this.identifiers.leaseId(LEGACY_DESKTOP_NAMES[platform].scanLease(scanOrdinal))
     const group: ScanGroup = {
       coreOperationId: started.operationId,
-      scanSessionId: this.identifiers.scanSessionId(`${this.profile.platform}-core-scan-session-${ordinal}`),
+      scanSessionId: this.identifiers.scanSessionId(`${platform}-scan-session-${scanOrdinal}`),
       ownerLeaseId,
       shareToken: options.sharing.allowSharing
-        ? this.identifiers.scanShareToken(`${this.profile.platform}-core-scan-share-${ordinal}`)
+        ? this.identifiers.scanShareToken(`${platform}-scan-share-${scanOrdinal}`)
         : null,
       consumers: new Map(),
       state: 'active',
@@ -2076,7 +2230,9 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     if (owner === undefined) {
       throw contractError('lifecycle.invariant-violation', 'scan', `${operation}.owner`)
     }
-    const leaseId = this.identifiers.leaseId(`${this.profile.platform}-core-scan-lease-${this.nextOrdinal()}`)
+    const leaseId = this.identifiers.leaseId(
+      LEGACY_DESKTOP_NAMES[this.profile.platform].scanLease(this.mintScanOrdinal())
+    )
     const consumer = this.addScanConsumer(group, leaseId, owner.options, owner.filter)
     return this.scanLease(group, consumer)
   }
@@ -2308,35 +2464,64 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     // Stamped when the core received it, on this host's clock.
     const receivedAt = Math.max(0, this.now() - ageMs)
     const peerId = this.peerIdForNativeId(value.peerId)
+    // F8: unprovided fields report per-host vocabulary (CoreBluetooth
+    // `unavailable`, elsewhere `absent`).
+    const unprovided = <Item>(reason: string): AdvertisementField<Item> =>
+      unprovidedField<Item>(this.profile.platform, reason)
+    const present = <Item>(found: Item | null, reason: string): AdvertisementField<Item> =>
+      found === null ? unprovided<Item>(reason) : presentField(found)
+    const reported = <Item>(found: Item | null | undefined, reason: string): AdvertisementField<Item> =>
+      found === null || found === undefined ? unprovided<Item>(reason) : presentField(found)
     return Object.freeze({
       device: Object.freeze({
         id: peerId,
         backendInstanceId: this.attachment.backendInstanceId,
-        scope: 'session',
+        // F8: backend-scoped, as every legacy backend reported it.
+        scope: 'backend',
         stableAcrossRestarts: false,
         address:
           typeof value.address === 'string' && value.address.length > 0
-            ? Object.freeze({ value: value.address, type: this.addressTypes.get(value.peerId) ?? ('opaque' as const) })
+            ? Object.freeze({
+                value: value.address,
+                // B-R3: BlueZ maps every non-public (including unreported)
+                // address type to random, as its legacy backend did; other
+                // radios stay opaque rather than guess.
+                type:
+                  this.addressTypes.get(value.peerId) ??
+                  (this.profile.platform === 'bluez' ? ('random' as const) : ('opaque' as const))
+              })
             : null
       }),
       provenance,
-      sourceTimestamp: absentField<SourceTimestamp>('source timestamp not reported by the dispatch surface'),
+      sourceTimestamp: unprovided<SourceTimestamp>('source timestamp not reported by the dispatch surface'),
       receivedAtMonotonicMs: monotonicTimestamp(receivedAt),
       ingressOrdinal: this.nextEventOrdinal(),
       scanSessionId,
-      localName: presentField<string>(typeof value.localName === 'string' ? value.localName : null),
-      rssi: presentField<number>(typeof value.rssi === 'number' ? value.rssi : null),
-      txPower: presentField<number>(typeof value.txPower === 'number' ? value.txPower : null),
-      connectable: reportedField<boolean>(value.connectable, 'connectable not reported by this radio'),
-      appearance: absentField<number>('appearance not reported by the dispatch surface'),
-      serviceUuids: presentField<readonly Uuid[]>(
-        Object.freeze(value.serviceUuids.map(entry => uuidFromCore(entry, `${operation}.service-uuids`)))
+      localName: present<string>(
+        typeof value.localName === 'string' ? value.localName : null,
+        'local name not reported by this radio'
       ),
-      solicitedServiceUuids: reportedField<readonly Uuid[]>(
+      rssi: present<number>(typeof value.rssi === 'number' ? value.rssi : null, 'RSSI not reported by this radio'),
+      txPower: present<number>(
+        typeof value.txPower === 'number' ? value.txPower : null,
+        'TX power not reported by this radio'
+      ),
+      connectable: reported<boolean>(value.connectable, 'connectable not reported by this radio'),
+      appearance: unprovided<number>('appearance not reported by the dispatch surface'),
+      // B-R4: BlueZ cannot distinguish "none" from "not reported": no
+      // UUIDs property is absent, as its legacy backend mapped it — never
+      // present([]). Other radios report their own answer.
+      serviceUuids:
+        this.profile.platform === 'bluez' && value.serviceUuids.length === 0
+          ? absentField<readonly Uuid[]>('no UUIDs reported by BlueZ ObjectManager')
+          : presentField<readonly Uuid[]>(
+              Object.freeze(value.serviceUuids.map(entry => uuidFromCore(entry, `${operation}.service-uuids`)))
+            ),
+      solicitedServiceUuids: reported<readonly Uuid[]>(
         uuidListFromCore(value.solicitedServiceUuids, `${operation}.solicited`),
         'solicited services not reported by this radio'
       ),
-      overflowServiceUuids: reportedField<readonly Uuid[]>(
+      overflowServiceUuids: reported<readonly Uuid[]>(
         uuidListFromCore(value.overflowServiceUuids, `${operation}.overflow`),
         'overflow services not reported by this radio'
       ),
@@ -2360,8 +2545,8 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
           )
         )
       ),
-      rawRecord: absentField<OwnedBytes>('raw record not reported by the dispatch surface'),
-      scanResponseRecord: absentField<OwnedBytes>('scan response record not reported by the dispatch surface')
+      rawRecord: unprovided<OwnedBytes>('raw record not reported by the dispatch surface'),
+      scanResponseRecord: unprovided<OwnedBytes>('scan response record not reported by the dispatch surface')
     })
   }
 
@@ -2371,6 +2556,9 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
    * A readiness watch for one connection: the core's probe answers the
    * current state, then each OS readiness report for this connection's
    * generation follows (legacy CoreBluetooth `onWriteWithoutResponseReadiness`).
+   * Reports arriving before the probe resolves buffer (latest wins) and
+   * replay after it (F3); while the link stays unready the probe re-runs
+   * every 100 ms as a safety net against a lost OS edge (F2).
    */
   private async writeWithoutResponseReadiness(
     connection: BackendConnection<string, string>,
@@ -2380,27 +2568,77 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     this.assertOperational(operation)
     const record = this.liveConnection(connection, operation)
     const correlation = String(this.mintedCorrelation('write-readiness'))
-    const ready = await this.withTicket(correlation, options.signal, operation, ticket =>
-      this.central.writeReadiness({ peerId: record.nativePeerId, lease: record.lease, ticket, ...this.budget(options) })
-    )
     const stream = new CoreBoundedStream<ConnectionWriteReadinessObservation<string>>(
       { itemCapacity: capacity(64), byteCapacity: capacity(16 * 1024), reservedControlCapacity: capacity(1) },
-      'latest'
+      // F1: the legacy watch dropped the oldest observation on overflow.
+      'drop-oldest'
     )
-    const watch: ReadinessWatch = { record, stream, ordinal: 0 }
+    const watch: ReadinessWatch = {
+      record,
+      stream,
+      ordinal: 0,
+      ready: false,
+      probed: false,
+      buffered: null,
+      reprobeTimer: null,
+      deadline: options.deadline ?? null,
+      signal: options.signal
+    }
+    // F3: registered before the probe so reports arriving mid-probe buffer
+    // instead of dropping.
     this.readinessWatches.add(watch)
+    let ready: boolean
+    try {
+      ready = await this.withTicket(correlation, options.signal, operation, ticket =>
+        this.central.writeReadiness({
+          peerId: record.nativePeerId,
+          lease: record.lease,
+          ticket,
+          ...this.budget(options)
+        })
+      )
+    } catch (error) {
+      this.closeReadinessWatch(watch, 'source-failed', desktopRustCoreError(error, operation).normalized)
+      throw error
+    }
+    if (!this.readinessWatches.has(watch)) {
+      // The watch ended while the probe was in flight (connection lost).
+      throw contractError('connection.stale', 'connection', `${operation}.closed`)
+    }
+    watch.probed = true
     this.emitReadiness(watch, ready)
+    const pending = watch.buffered
+    watch.buffered = null
+    // F3: replay the latest pre-probe report for this generation, if any.
+    if (pending !== null && (pending.generation === null || pending.generation === watch.record.coreGeneration)) {
+      this.emitReadiness(watch, pending.ready)
+    }
+    if (!watch.ready) this.scheduleReadinessReprobe(watch)
     return Object.freeze({
       events: stream,
       close: async (): Promise<CleanupRecord> => {
-        this.readinessWatches.delete(watch)
-        stream.closeWithReason('owner-released')
+        this.closeReadinessWatch(watch, 'owner-released')
         return Object.freeze({ state: 'released', failures: Object.freeze([]) })
       }
     })
   }
 
+  /** Close a readiness watch: stop its reprobe, end its stream, forget it. */
+  private closeReadinessWatch(
+    watch: ReadinessWatch,
+    reason: 'owner-released' | 'connection-lost' | 'source-failed',
+    normalized: NormalizedBleError | null = null
+  ): void {
+    if (watch.reprobeTimer !== null) {
+      clearTimeout(watch.reprobeTimer)
+      watch.reprobeTimer = null
+    }
+    this.readinessWatches.delete(watch)
+    watch.stream.closeWithReason(reason, normalized)
+  }
+
   private emitReadiness(watch: ReadinessWatch, ready: boolean): void {
+    watch.ready = ready
     watch.ordinal += 1
     const observation: ConnectionWriteReadinessObservation<string> = Object.freeze({
       connectionId: watch.record.path.connectionId,
@@ -2409,7 +2647,61 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       observedAtMonotonicMs: this.now(),
       ordinal: watch.ordinal
     })
-    if (watch.stream.emit(observation, 128).terminated) this.readinessWatches.delete(watch)
+    if (watch.stream.emit(observation, 128).terminated) {
+      // The stream ended itself (overflow/error policy): forget the watch
+      // and stop its reprobe without re-closing the stream.
+      if (watch.reprobeTimer !== null) {
+        clearTimeout(watch.reprobeTimer)
+        watch.reprobeTimer = null
+      }
+      this.readinessWatches.delete(watch)
+    } else if (ready) {
+      if (watch.reprobeTimer !== null) {
+        clearTimeout(watch.reprobeTimer)
+        watch.reprobeTimer = null
+      }
+    } else this.scheduleReadinessReprobe(watch)
+  }
+
+  /**
+   * The 100 ms readiness reprobe safety net (F2, legacy
+   * `READINESS_REPROBE_DELAY_MS`): `peripheralIsReadyToSendWriteWithoutResponse`
+   * is best-effort and an edge can be missed, so while the link stays unready
+   * the probe re-runs on an interval — bounded by the caller's deadline and
+   * signal, never past them. A failed re-read ends the watch `source-failed`,
+   * as the legacy reprobe did.
+   */
+  private scheduleReadinessReprobe(watch: ReadinessWatch): void {
+    if (watch.reprobeTimer !== null || watch.ready || !watch.probed) return
+    if (!this.readinessWatches.has(watch) || this.destroyed) return
+    watch.reprobeTimer = setTimeout(() => {
+      watch.reprobeTimer = null
+      this.reprobeReadiness(watch).catch(() => undefined)
+    }, 100)
+  }
+
+  private async reprobeReadiness(watch: ReadinessWatch): Promise<void> {
+    if (!this.readinessWatches.has(watch) || this.destroyed || watch.ready || !watch.probed) return
+    if (watch.signal?.aborted === true) return
+    if (watch.deadline !== null && this.now() > watch.deadline) return
+    if (watch.record.state !== 'connected') {
+      this.closeReadinessWatch(watch, 'connection-lost')
+      return
+    }
+    let ready: boolean
+    try {
+      ready = await this.central.writeReadiness({ peerId: watch.record.nativePeerId, lease: watch.record.lease })
+    } catch (error) {
+      if (this.readinessWatches.has(watch)) {
+        this.closeReadinessWatch(
+          watch,
+          'source-failed',
+          desktopRustCoreError(error, this.op('connection.write-readiness.reconcile')).normalized
+        )
+      }
+      return
+    }
+    if (this.readinessWatches.has(watch)) this.emitReadiness(watch, ready)
   }
 
   /**
@@ -2424,19 +2716,18 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     for (const watch of [...this.readinessWatches]) {
       if (this.destroyed) return
       if (watch.record.state !== 'connected') {
-        watch.stream.closeWithReason('connection-lost')
-        this.readinessWatches.delete(watch)
+        this.closeReadinessWatch(watch, 'connection-lost')
         continue
       }
       let ready: boolean
       try {
         ready = await this.central.writeReadiness({ peerId: watch.record.nativePeerId, lease: watch.record.lease })
       } catch (error) {
-        watch.stream.closeWithReason(
+        this.closeReadinessWatch(
+          watch,
           'source-failed',
           desktopRustCoreError(error, this.op('connection.write-readiness.reconcile')).normalized
         )
-        this.readinessWatches.delete(watch)
         continue
       }
       if (this.readinessWatches.has(watch)) this.emitReadiness(watch, ready)
@@ -2459,8 +2750,13 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       if (typeof event.connectionGeneration === 'string' && event.connectionGeneration !== watch.record.coreGeneration)
         continue
       if (watch.record.state !== 'connected') {
-        watch.stream.closeWithReason('connection-lost')
-        this.readinessWatches.delete(watch)
+        this.closeReadinessWatch(watch, 'connection-lost')
+        continue
+      }
+      // F3: a report arriving before the probe resolves buffers (latest
+      // wins) and replays after it — it is never dropped.
+      if (!watch.probed) {
+        watch.buffered = Object.freeze({ ready: event.ready === true, generation: event.connectionGeneration ?? null })
         continue
       }
       this.emitReadiness(watch, event.ready === true)
@@ -2569,7 +2865,13 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   ): Promise<MaximumWriteLengthFeatureOutput> {
     const operation = this.op('gatt.maximum-write-length')
     this.assertOperational(operation)
-    if (input.mode !== 'with-response' && input.mode !== 'without-response') {
+    // F9: an empty connection identity is a malformed argument, not a
+    // missing connection, as the legacy backend validated it.
+    if (
+      input.connectionId.length === 0 ||
+      input.connectionGeneration.length === 0 ||
+      (input.mode !== 'with-response' && input.mode !== 'without-response')
+    ) {
       throw contractError('argument.invalid', 'gatt', operation)
     }
     const record = this.connectionRecordFor(input.connectionId, input.connectionGeneration, operation)
@@ -2622,11 +2924,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
    */
   private peerFromAddress(descriptor: PeerAddressDescriptor): PeerId<string> {
     this.assertOperational(this.op('peer.address-targeting'))
-    const peerId = opaqueId(
-      `${this.profile.platform}-core-address-peer-${this.nextOrdinal()}`,
-      'peer',
-      `${this.profile.platform}-rust-core`
-    )
+    const peerId = this.mintPeer()
     this.pendingAddresses.set(String(peerId), Object.freeze({ ...descriptor }))
     return peerId
   }
@@ -2639,7 +2937,16 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     const known = this.nativeIdsByPeerId.get(String(peerId))
     if (known !== undefined) return known
     const pending = this.pendingAddresses.get(String(peerId))
-    if (pending === undefined) throw contractError('peer.not-found', 'connection', `${operation}.unknown-peer`)
+    // W-R3: a never-observed peer is `connection.not-found`, as every
+    // legacy backend reported it — under the connect op on BlueZ, with the
+    // `.peer` segment on CoreBluetooth and WinRT.
+    if (pending === undefined) {
+      throw contractError(
+        'connection.not-found',
+        'connection',
+        this.profile.platform === 'bluez' ? operation : `${operation}.peer`
+      )
+    }
     const correlation = String(this.mintedCorrelation('resolve-address'))
     const nativePeerId = await this.withTicket(
       correlation,
@@ -2859,8 +3166,13 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     this.assertOperational(operation)
     // The core connects directly over LE: intents, transports and PHY
     // selections it cannot express fail closed before any dispatch.
+    // F5: the when-available intent keeps its legacy operation id.
     if (options.intent !== undefined && options.intent !== 'direct') {
-      throw contractError('capability.unsupported', 'connection', `${operation}.intent`)
+      throw contractError(
+        'capability.unsupported',
+        'connection',
+        options.intent === 'when-available' ? `${operation}.when-available` : `${operation}.intent`
+      )
     }
     if (options.transport !== undefined && options.transport !== 'le' && options.transport !== 'auto') {
       throw contractError('argument.invalid', 'connection', `${operation}.transport`)
@@ -2880,9 +3192,18 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       throw contractError('protocol.malformed', 'core', `${operation}.shape`)
     }
     const scope = `${this.profile.platform}-rust-core`
-    const connectionId = this.identifiers.connectionId(`${this.profile.platform}-core-connection-${ordinal}`)
-    const leaseId = this.identifiers.leaseId(`${this.profile.platform}-core-connection-lease-${ordinal}`)
-    const connectionGeneration = opaqueId(connected.connectionGeneration, 'connection-generation', scope)
+    // Legacy numbered the link after the core admitted it; the public
+    // generation is this host's legacy name for the core's `coreGeneration`.
+    const linkOrdinal = this.nextConnection
+    this.nextConnection += 1
+    const platform = this.profile.platform
+    const connectionId = this.identifiers.connectionId(`${platform}-connection-${linkOrdinal}`)
+    const leaseId = this.identifiers.leaseId(`${platform}-connection-lease-${linkOrdinal}`)
+    const connectionGeneration = opaqueId(
+      LEGACY_DESKTOP_NAMES[platform].connectionGeneration(linkOrdinal),
+      'connection-generation',
+      scope
+    )
     const path: ConnectionPath<string, string> = Object.freeze({
       attachment: this.attachment,
       attachmentId: this.attachment.attachmentId,
@@ -2898,7 +3219,8 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       path,
       state: 'connected',
       databases: new Set(),
-      subscriptions: new Set()
+      subscriptions: new Set(),
+      nextDatabase: 1
     }
     this.connectionsById.set(String(connectionId), record)
     const release = (): Promise<CleanupRecord> => this.disconnectConnection(record)
@@ -3072,17 +3394,16 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       return this.central.discoveredPaths(record.nativePeerId)
     })
     const tree = groupCorePaths(paths, `${operation}.shape`)
-    const databaseOrdinal = this.nextOrdinal()
+    const names = LEGACY_DESKTOP_NAMES[this.profile.platform]
+    const databaseOrdinal = names.databasePerConnection ? record.nextDatabase : this.nextDatabase
+    if (names.databasePerConnection) record.nextDatabase += 1
+    else this.nextDatabase += 1
     const scope = `${this.profile.platform}-rust-core`
-    const databaseId = this.identifiers.databaseId(`${this.profile.platform}-core-database-${databaseOrdinal}`)
+    const databaseId = this.identifiers.databaseId(`${this.profile.platform}-database-${databaseOrdinal}`)
     const base: DatabasePath<string, string, string> = Object.freeze({
       ...record.path,
       databaseId,
-      databaseGeneration: opaqueId(
-        `${this.profile.platform}-core-database-generation-${databaseOrdinal}`,
-        'database-generation',
-        scope
-      )
+      databaseGeneration: opaqueId(names.databaseGeneration(databaseOrdinal), 'database-generation', scope)
     })
     const services = tree.map(service => ({
       service,
@@ -3103,20 +3424,20 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       read: async (
         characteristic: CharacteristicPath<string, string, string, string, string, 'current'>,
         readOptions: PublicOperationOptions
-      ) =>
-        (
-          await this.read(
-            this.resolveCharacteristic(base, characteristic, this.op('gatt.database-read')),
-            {
-              operation: {
-                signal: readOptions.signal,
-                deadline: readOptions.deadline,
-                correlation: this.mintedCorrelation('gdb-read')
-              }
-            },
-            'gatt.database-read'
-          ).completion
-        ).value,
+      ): Promise<CharacteristicRead> => {
+        const { value, provenance } = await this.read(
+          this.resolveCharacteristic(base, characteristic, this.op('gatt.database-read')),
+          {
+            operation: {
+              signal: readOptions.signal,
+              deadline: readOptions.deadline,
+              correlation: this.mintedCorrelation('gdb-read')
+            }
+          },
+          'gatt.database-read'
+        ).completion
+        return Object.freeze({ value, provenance })
+      },
       write: async (
         characteristic: CharacteristicPath<string, string, string, string, string, 'current'>,
         value: Uint8Array,
@@ -3346,22 +3667,25 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     request: ReadRequest<string, string>,
     /** The 4.x operation this call reports (a database handle's own id). */
     name = 'gatt.read'
-  ): BackendOperationDispatch<string, ReadResult<string, string>> {
+  ): BackendOperationDispatch<string, CharacteristicReadResult<string, string>> {
     const operation = this.op(name)
     this.assertOperational(operation)
     const selector = this.selectorFor(path, operation)
     const record = this.connectionForPath(path, `${operation}.peer`)
     const correlation = String(request.operation.correlation)
-    const completion = (async (): Promise<ReadResult<string, string>> => {
+    const gattConnection = String(record.path.connectionId)
+    this.admitGattVerb(gattConnection, 'gatt.read')
+    const completion = (async (): Promise<CharacteristicReadResult<string, string>> => {
       const raw = await this.withTicket(correlation, request.operation.signal, operation, ticket =>
         this.central.read({ peerId: record.nativePeerId, selector, ticket, ...this.budget(request.operation) })
       )
       return Object.freeze({
-        value: ownedBytes(bytesFromCore(raw, operation)),
+        value: ownedBytes(bytesFromCore(raw.value, operation)),
+        provenance: readProvenanceFromCore(raw.provenance, operation),
         terminal: this.succeededTerminal(request.operation.correlation)
       })
     })()
-    return this.dispatchFor(correlation, completion)
+    return this.dispatchFor(correlation, this.trackGattVerb(gattConnection, completion))
   }
 
   /**
@@ -3383,6 +3707,8 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     const correlation = String(request.operation.correlation)
     const value = bytesToCore(request.bytes, operation)
     const mode = request.mode
+    const gattConnection = String(record.path.connectionId)
+    this.admitGattVerb(gattConnection, 'gatt.write')
     const completion = (async (): Promise<WriteResult<string, string>> => {
       await this.withTicket(correlation, request.operation.signal, operation, ticket =>
         this.central.write({
@@ -3399,7 +3725,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         commitState: mode === 'without-response' ? ('unknown' as const) : ('confirmed' as const)
       })
     })()
-    return this.dispatchFor(correlation, completion)
+    return this.dispatchFor(correlation, this.trackGattVerb(gattConnection, completion))
   }
 
   private readDescriptor(
@@ -3413,6 +3739,8 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     const selector = this.descriptorSelectorFor(path, operation)
     const record = this.connectionForPath(path, `${operation}.peer`)
     const correlation = String(request.operation.correlation)
+    const gattConnection = String(record.path.connectionId)
+    this.admitGattVerb(gattConnection, 'gatt.read-descriptor')
     const completion = (async (): Promise<ReadResult<string, string>> => {
       const raw = await this.withTicket(correlation, request.operation.signal, operation, ticket =>
         this.central.readDescriptor({
@@ -3427,7 +3755,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         terminal: this.succeededTerminal(request.operation.correlation)
       })
     })()
-    return this.dispatchFor(correlation, completion)
+    return this.dispatchFor(correlation, this.trackGattVerb(gattConnection, completion))
   }
 
   private writeDescriptor(
@@ -3443,10 +3771,21 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     // The core writes descriptors with a response only
     // (`DesktopCentral::write_descriptor` takes no mode): a without-response
     // descriptor write fails closed before dispatch, never silently upgraded.
+    // The refusal takes no serialization slot: nothing dispatches (F6).
     if (request.mode !== 'with-response') {
+      // W-R1: WinRT keeps the legacy refusal identity (the native
+      // boundary threw, wrapped as `gatt.write-failed` under the backend
+      // verb). Other hosts keep the fail-closed unsupported refusal: their
+      // legacy backends had no error here (CoreBluetooth ignored the mode,
+      // BlueZ sent a command).
+      if (this.profile.platform === 'winrt') {
+        throw contractError('gatt.write-failed', 'gatt', this.op('gatt.write-descriptor'))
+      }
       throw contractError('capability.unsupported', 'gatt', `${operation}.mode`)
     }
     const correlation = String(request.operation.correlation)
+    const gattConnection = String(record.path.connectionId)
+    this.admitGattVerb(gattConnection, 'gatt.write-descriptor')
     const value = bytesToCore(request.bytes, operation)
     const completion = (async (): Promise<WriteResult<string, string>> => {
       await this.withTicket(correlation, request.operation.signal, operation, ticket =>
@@ -3463,7 +3802,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         commitState: 'confirmed' as const
       })
     })()
-    return this.dispatchFor(correlation, completion)
+    return this.dispatchFor(correlation, this.trackGattVerb(gattConnection, completion))
   }
 
   /**
@@ -3528,8 +3867,12 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     const record = this.connectionForPath(path, `${operation}.peer`)
     this.assertDeliveryMode(path, request.options.deliveryMode, operation)
     const correlation = String(request.operation.correlation)
+    const gattConnection = String(record.path.connectionId)
+    this.admitGattVerb(gattConnection, 'gatt.subscribe')
     const consumerOrdinal = this.nextOrdinal()
     const consumer = `${this.profile.platform}-core-consumer-${consumerOrdinal}`
+    const subscriptionOrdinal = this.nextSubscription
+    this.nextSubscription += 1
     const completion = (async (): Promise<BackendSubscription<string, string, string, string, string>> => {
       const requirement = this.coreRequirement(request.options.deliveryMode)
       const enabled = await this.withTicket(correlation, request.operation.signal, operation, ticket =>
@@ -3544,7 +3887,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         })
       )
       const subscriptionId: SubscriptionId<string, string, string, string, string, string> =
-        this.identifiers.subscriptionId(`${this.profile.platform}-core-subscription-${consumerOrdinal}`)
+        this.identifiers.subscriptionId(`${this.profile.platform}-subscription-${subscriptionOrdinal}`)
       const notifications = new CoreBoundedStream<NotificationValue>(
         request.options.delivery,
         request.options.delivery.overflowPolicy
@@ -3573,7 +3916,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         notifications
       })
     })()
-    return this.dispatchFor(correlation, completion)
+    return this.dispatchFor(correlation, this.trackGattVerb(gattConnection, completion))
   }
 
   /**
@@ -3761,6 +4104,10 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     this.assertOperational(operation)
     const stored = this.subscriptions.get(String(subscription.subscriptionId))
     const correlation = String(operationOptions.correlation)
+    // F6: unsubscribe serializes on the subscription's connection, as the
+    // legacy dispatcher keyed it by connection id.
+    const gattConnection = String(subscription.path.connectionId)
+    this.admitGattVerb(gattConnection, 'gatt.unsubscribe')
     const completion = (async (): Promise<OperationTerminalRecord<string, string>> => {
       if (stored !== undefined) {
         stored.closed = true
@@ -3779,7 +4126,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       }
       return this.succeededTerminal(operationOptions.correlation)
     })()
-    return this.dispatchFor(correlation, completion)
+    return this.dispatchFor(correlation, this.trackGattVerb(gattConnection, completion))
   }
 }
 
@@ -3925,6 +4272,12 @@ function bytesFromCore(value: unknown, operation: string): Uint8Array {
   throw contractError('protocol.malformed', 'core', `${operation}.bytes`)
 }
 
+/** The radio's own provenance word; anything else is a malformed core answer, never a guess. */
+function readProvenanceFromCore(value: unknown, operation: string): ReadProvenance {
+  if (isReadProvenance(value)) return value
+  throw contractError('protocol.malformed', 'core', `${operation}.provenance`)
+}
+
 function bytesToCore(value: Uint8Array, operation: string): Uint8Array {
   // Outbound bytes are BorrowedBytes: accept the typed array (Buffers
   // included) and reject anything else rather than coercing garbage.
@@ -3963,12 +4316,6 @@ function presentField<Value>(value: Value | null): AdvertisementField<Value> {
   return Object.freeze({ state: 'present', value, provenance: 'observed' })
 }
 
-/** A field the radio may or may not report: `null`/absent is `absent` with the reason, never a guess. */
-function reportedField<Value>(value: Value | null | undefined, reason: string): AdvertisementField<Value> {
-  if (value === null || value === undefined) return absentField(reason)
-  return Object.freeze({ state: 'present', value, provenance: 'observed' })
-}
-
 function uuidListFromCore(value: readonly string[] | null | undefined, operation: string): readonly Uuid[] | null {
   if (value === null || value === undefined) return null
   return Object.freeze(value.map(entry => uuidFromCore(entry, operation)))
@@ -3976,6 +4323,18 @@ function uuidListFromCore(value: readonly string[] | null | undefined, operation
 
 function absentField<Value>(reason: string): AdvertisementField<Value> {
   return Object.freeze({ state: 'absent', reason, provenance: 'not-provided' })
+}
+
+/**
+ * F8: a field the radio did not provide. CoreBluetooth reports it
+ * `unavailable`, as its legacy backend did; WinRT and BlueZ report it
+ * `absent`. Provenance is `not-provided` on every host, as legacy.
+ */
+function unprovidedField<Value>(platform: DesktopRustCorePlatform, reason: string): AdvertisementField<Value> {
+  if (platform === 'corebluetooth') {
+    return Object.freeze({ state: 'unavailable' as const, reason, provenance: 'not-provided' as const })
+  }
+  return absentField<Value>(reason)
 }
 
 /**
@@ -4129,7 +4488,17 @@ export function createDesktopRustCoreFeatureRegistry(
     registration(BUILT_IN_FEATURE_IDS.connectionDirect, 'capability.catalog-v2'),
     registration(BUILT_IN_FEATURE_IDS.gattDescriptors, 'capability.catalog-v2')
   ]
-  if (wiring.rssi) registrations.push(registration(BUILT_IN_FEATURE_IDS.connectionRssi, 'connection-controls'))
+  // F7: RSSI reports integer dBm precision, as the legacy registry did.
+  if (wiring.rssi) {
+    registrations.push(
+      Object.freeze({
+        ...registration(BUILT_IN_FEATURE_IDS.connectionRssi, 'connection-controls'),
+        limits: Object.freeze({
+          minimumRssiIntegerPrecision: Object.freeze({ minimum: 1, maximum: 1, unit: 'dBm' })
+        })
+      })
+    )
+  }
   if (wiring.addressTargeting) {
     registrations.push(registration(BUILT_IN_FEATURE_IDS.peerAddressTargeting, 'capability.catalog-v2'))
   }

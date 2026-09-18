@@ -10,7 +10,7 @@ const { normalizeScanQuery } = require('../src/public/scan-query')
 const { snapshotScanPlan } = require('../src/backend-contract/scan-planning')
 
 function negotiated(axis) {
-  const selected = version(axis, axis === 'ipc-protocol' ? 3 : 1)
+  const selected = version(axis, axis === 'ipc-protocol' ? 4 : 1)
   const range = versionRange(selected, selected)
   return { axis, selected, localRange: range, remoteRange: range }
 }
@@ -113,6 +113,7 @@ function createRouter(
     identity: { versions: authority.versions },
     capabilities: () => [],
     planScan: jest.fn(query => diagnosticPlan(query)),
+    onAttachmentAdvanced: () => () => undefined,
     destroy: jest.fn(async () => ({ state: 'released', failures: [] })),
     ...managerOverrides
   }
@@ -138,11 +139,7 @@ function trusted(clientId = 'hardening-client') {
 function rendererLease(value) {
   return {
     leaseId: opaqueId(`hardening-renderer-lease-${value}`, 'renderer-lease', `hardening:${value}`),
-    generation: opaqueId(
-      `hardening-renderer-generation-${value}`,
-      'renderer-lease-generation',
-      `hardening:${value}`
-    )
+    generation: opaqueId(`hardening-renderer-generation-${value}`, 'renderer-lease-generation', `hardening:${value}`)
   }
 }
 
@@ -348,10 +345,9 @@ describe('Electron IPC hardening', () => {
       normalized: { code: 'operation.aborted', operation: 'electron-main-router.connection.connect' }
     })
     expect(connect).not.toHaveBeenCalled()
-    expect(current.router.resources.get(String(bootstrapValue.rendererLease.leaseId)).preCancelledOperations).toHaveProperty(
-      'size',
-      0
-    )
+    expect(
+      current.router.resources.get(String(bootstrapValue.rendererLease.leaseId)).preCancelledOperations
+    ).toHaveProperty('size', 0)
     await current.router.destroy()
   })
 
@@ -406,7 +402,13 @@ describe('Electron IPC hardening', () => {
 
   test('expires lease-scoped pre-cancellation tombstones so their bounded capacity remains reusable', async () => {
     let now = 0
-    const current = createRouter({}, 4096, async () => 'delivered', 1, () => now)
+    const current = createRouter(
+      {},
+      4096,
+      async () => 'delivered',
+      1,
+      () => now
+    )
     const sender = trusted('pre-cancellation-expiry-client')
     const bootstrapValue = await bootstrap(current, sender)
 
@@ -647,7 +649,12 @@ describe('Electron IPC hardening', () => {
       terminateStream: jest.fn(async () => undefined),
       destroy: jest.fn(async () => released())
     }
-    const port = { handle(_channel, handler) { this.handler = handler }, removeHandler: jest.fn() }
+    const port = {
+      handle(_channel, handler) {
+        this.handler = handler
+      },
+      removeHandler: jest.fn()
+    }
     const binding = new ElectronMainBleBinding({ router, port, authenticate: event => event.sender.trusted })
     binding.install()
     await port.handler(mainFrameEvent(sender), { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
@@ -897,14 +904,10 @@ describe('Electron IPC hardening', () => {
       { observations: terminalStream, stop: terminalStop },
       { observations: bareStream, stop: bareStop }
     ]
-    const current = createRouter(
-      { scan: jest.fn(async () => scans.shift()) },
-      4096,
-      async (_clientId, event) => {
-        events.push(event)
-        return 'delivered'
-      }
-    )
+    const current = createRouter({ scan: jest.fn(async () => scans.shift()) }, 4096, async (_clientId, event) => {
+      events.push(event)
+      return 'delivered'
+    })
     const sender = trusted('streams-client')
     const bootstrapValue = await bootstrap(current, sender)
     await current.router.dispatch(
@@ -994,11 +997,18 @@ describe('Electron IPC hardening', () => {
       terminateStream: jest.fn(async () => undefined),
       destroy: jest.fn(async () => released())
     }
-    const port = { handle(_channel, handler) { this.handler = handler }, removeHandler: jest.fn() }
+    const port = {
+      handle(_channel, handler) {
+        this.handler = handler
+      },
+      removeHandler: jest.fn()
+    }
     const senderA = electronSender({
       trusted: trusted('bound-client'),
       sent: [],
-      send(_channel, event) { this.sent.push(event) },
+      send(_channel, event) {
+        this.sent.push(event)
+      },
       once: jest.fn(),
       on: jest.fn(),
       removeListener: jest.fn()
@@ -1006,7 +1016,9 @@ describe('Electron IPC hardening', () => {
     const senderB = electronSender({
       trusted: senderA.trusted,
       sent: [],
-      send(_channel, event) { this.sent.push(event) },
+      send(_channel, event) {
+        this.sent.push(event)
+      },
       once: jest.fn(),
       on: jest.fn(),
       removeListener: jest.fn()
@@ -1023,7 +1035,9 @@ describe('Electron IPC hardening', () => {
     await expect(
       port.handler(mainFrameEvent(senderB), { kind: 'event.ack', rendererLease: lease, eventId: 'event-bound' })
     ).resolves.toMatchObject({ kind: 'failure', error: { code: 'ownership.denied' } })
-    await expect(port.handler(mainFrameEvent(senderB), { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })).resolves.toMatchObject({
+    await expect(
+      port.handler(mainFrameEvent(senderB), { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
+    ).resolves.toMatchObject({
       kind: 'failure',
       error: { code: 'ownership.denied' }
     })
@@ -1037,9 +1051,11 @@ describe('Electron IPC hardening', () => {
   })
 
   test('aggregates router and manager destroy rejections into cleanup records', async () => {
-    const current = createRouter({ destroy: jest.fn(async () => {
-      throw new Error('manager destroy rejected')
-    }) })
+    const current = createRouter({
+      destroy: jest.fn(async () => {
+        throw new Error('manager destroy rejected')
+      })
+    })
     await expect(current.router.destroy()).resolves.toMatchObject({
       state: 'release-failed',
       failures: [{ resourceKind: 'manager' }]
@@ -1120,7 +1136,10 @@ describe('Electron IPC hardening', () => {
       await client.destroy()
       expectConsoleErrorMatching(
         '[ElectronRendererBleClient] Event acknowledgement failed; retry scheduled:',
-        expect.objectContaining({ eventId: 'event-retry', error: expect.objectContaining({ message: 'ack response lost' }) })
+        expect.objectContaining({
+          eventId: 'event-retry',
+          error: expect.objectContaining({ message: 'ack response lost' })
+        })
       )
     } finally {
       jest.useRealTimers()
@@ -1185,9 +1204,12 @@ describe('Electron IPC hardening', () => {
       await expect(client.destroy()).resolves.toEqual(released())
       expect(transport.invoke).toHaveBeenCalledTimes(1)
       expect(listeners).toEqual([])
-      expectConsoleError('[ElectronRendererBleClient] Event acknowledgement failed permanently; terminating event delivery:', {
-        error: rendererRegistrationFailure
-      })
+      expectConsoleError(
+        '[ElectronRendererBleClient] Event acknowledgement failed permanently; terminating event delivery:',
+        {
+          error: rendererRegistrationFailure
+        }
+      )
     } finally {
       jest.useRealTimers()
     }
@@ -1250,15 +1272,18 @@ describe('Electron IPC hardening', () => {
       rendererLease: bootstrapValue.rendererLease
     })
     expect(listeners).toEqual([])
-    expectConsoleError('[ElectronRendererBleClient] Event acknowledgement failed permanently; terminating event delivery:', {
-      error: {
-        code: 'protocol.violation',
-        domain: 'ipc',
-        operation: 'electron-main-binding.event-ack-replay',
-        platform: null,
-        retryability: 'never'
+    expectConsoleError(
+      '[ElectronRendererBleClient] Event acknowledgement failed permanently; terminating event delivery:',
+      {
+        error: {
+          code: 'protocol.violation',
+          domain: 'ipc',
+          operation: 'electron-main-binding.event-ack-replay',
+          platform: null,
+          retryability: 'never'
+        }
       }
-    })
+    )
   })
 
   test('retries destroyed WebContents cleanup until ownership is released', async () => {
@@ -1299,7 +1324,12 @@ describe('Electron IPC hardening', () => {
         terminateStream: jest.fn(),
         destroy: jest.fn(async () => released())
       }
-      const port = { handle(_channel, handler) { this.handler = handler }, removeHandler: jest.fn() }
+      const port = {
+        handle(_channel, handler) {
+          this.handler = handler
+        },
+        removeHandler: jest.fn()
+      }
       const binding = new ElectronMainBleBinding({ router, port, authenticate: event => event.sender.trusted })
       binding.install()
       await port.handler(mainFrameEvent(sender), { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
@@ -1558,9 +1588,21 @@ describe('Electron deadline budget across process clocks', () => {
       const client = new ElectronRendererBleClient(transport)
       await client.initialize()
 
-      await client.request({ command: 'connection.connect', payload: { peerId: 'a', deadline: 1_500.7 }, binaryPayload: null })
-      await client.request({ command: 'connection.connect', payload: { peerId: 'b', deadline: 900 }, binaryPayload: null })
-      await client.request({ command: 'connection.connect', payload: { peerId: 'c', deadline: null }, binaryPayload: null })
+      await client.request({
+        command: 'connection.connect',
+        payload: { peerId: 'a', deadline: 1_500.7 },
+        binaryPayload: null
+      })
+      await client.request({
+        command: 'connection.connect',
+        payload: { peerId: 'b', deadline: 900 },
+        binaryPayload: null
+      })
+      await client.request({
+        command: 'connection.connect',
+        payload: { peerId: 'c', deadline: null },
+        binaryPayload: null
+      })
       await client.request({ command: 'connection.connect', payload: { peerId: 'd' }, binaryPayload: null })
 
       expect(transport.routed).toEqual([
@@ -1570,7 +1612,11 @@ describe('Electron deadline budget across process clocks', () => {
         { peerId: 'd' }
       ])
       await expect(
-        client.request({ command: 'connection.connect', payload: { peerId: 'e', deadline: 'soon' }, binaryPayload: null })
+        client.request({
+          command: 'connection.connect',
+          payload: { peerId: 'e', deadline: 'soon' },
+          binaryPayload: null
+        })
       ).rejects.toMatchObject({ normalized: { code: 'protocol.malformed', operation: 'electron-renderer.deadline' } })
       await client.destroy()
     } finally {
@@ -1697,7 +1743,8 @@ describe('Electron deadline budget across process clocks', () => {
       const sender = trusted(`budget-e2e-${rendererNow}`)
       const transport = {
         invoke: jest.fn(async request => {
-          if (request.kind === 'route') return current.router.dispatch(sender, { kind: 'route', envelope: request.envelope })
+          if (request.kind === 'route')
+            return current.router.dispatch(sender, { kind: 'route', envelope: request.envelope })
           return current.router.dispatch(sender, request)
         }),
         acknowledge: jest.fn(async () => ({ kind: 'event.ack' })),
@@ -1763,16 +1810,16 @@ describe('Electron IPC protocol version 3', () => {
     }
   }
 
-  test('the renderer offers exactly IPC protocol 3', () => {
-    expect(IPC_PROTOCOL_VERSION).toBe(3)
-    expect(IPC_CLIENT_COMPATIBILITY_OFFER.ipcProtocol).toEqual(protocolRange(3))
+  test('the renderer offers exactly IPC protocol 4', () => {
+    expect(IPC_PROTOCOL_VERSION).toBe(4)
+    expect(IPC_CLIENT_COMPATIBILITY_OFFER.ipcProtocol).toEqual(protocolRange(4))
   })
 
   test('new main refuses an old renderer at bootstrap with no lease and no effects', async () => {
     const connect = jest.fn()
     const current = createRouter({ connect })
     const sender = trusted('old-renderer')
-    const oldOffer = { ...IPC_CLIENT_COMPATIBILITY_OFFER, ipcProtocol: protocolRange(2) }
+    const oldOffer = { ...IPC_CLIENT_COMPATIBILITY_OFFER, ipcProtocol: protocolRange(3) }
 
     await expect(current.router.dispatch(sender, { kind: 'bootstrap', offer: oldOffer })).rejects.toMatchObject({
       normalized: { code: 'protocol.incompatible' }
@@ -1781,21 +1828,21 @@ describe('Electron IPC protocol version 3', () => {
     expect(connect).not.toHaveBeenCalled()
 
     const response = await current.router.dispatch(sender, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
-    expect(response.bootstrap.versions.ipcProtocol.selected).toEqual(version('ipc-protocol', 3))
+    expect(response.bootstrap.versions.ipcProtocol.selected).toEqual(version('ipc-protocol', 4))
     await current.router.destroy()
   })
 
-  test('new renderer refuses an old main that cannot negotiate protocol 3', async () => {
+  test('new renderer refuses an old main that cannot negotiate protocol 4', async () => {
     const transport = {
       invoke: jest.fn(async request => {
         if (request.kind !== 'bootstrap') throw new Error(`unexpected ${request.kind}`)
         try {
-          negotiateVersion(protocolRange(2), request.offer.ipcProtocol)
+          negotiateVersion(protocolRange(3), request.offer.ipcProtocol)
         } catch (error) {
           if (error instanceof BackendContractError) return { kind: 'failure', error: error.normalized }
           throw error
         }
-        return { kind: 'bootstrap', bootstrap: clientBootstrap(2) }
+        return { kind: 'bootstrap', bootstrap: clientBootstrap(3) }
       }),
       acknowledge: jest.fn(),
       subscribe: () => () => {}
@@ -1806,10 +1853,10 @@ describe('Electron IPC protocol version 3', () => {
     expect(transport.invoke.mock.calls.map(([request]) => request.kind)).toEqual(['bootstrap'])
   })
 
-  test('new renderer refuses a bootstrap that selected protocol 2 and releases its lease', async () => {
+  test('new renderer refuses a bootstrap that selected protocol 3 and releases its lease', async () => {
     const transport = {
       invoke: jest.fn(async request => {
-        if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: clientBootstrap(2) }
+        if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: clientBootstrap(3) }
         if (request.kind === 'release') return { kind: 'release', cleanup: released() }
         throw new Error(`unexpected ${request.kind}`)
       }),

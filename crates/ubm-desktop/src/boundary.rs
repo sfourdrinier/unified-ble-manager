@@ -664,6 +664,61 @@ impl ObservedDelivery {
     }
 }
 
+/// What the platform says a characteristic read value is. Every backend
+/// answers from these two words, with the same meaning:
+/// - `ReadResponse`: the platform attributed the value to the ATT read
+///   response (Android `onCharacteristicRead`, WinRT `ReadValueAsync`,
+///   BlueZ `ReadValue`, CoreBluetooth while the characteristic cannot
+///   notify);
+/// - `ReadOrNotification`: the platform reports read responses and
+///   notifications through one callback (CoreBluetooth
+///   `didUpdateValueFor`) and the characteristic could notify when the value
+///   arrived, so the value is the read response or a notification/indication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReadProvenance {
+    ReadResponse,
+    ReadOrNotification,
+}
+
+impl ReadProvenance {
+    /// Frozen wire string.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadResponse => "read-response",
+            Self::ReadOrNotification => "read-or-notification",
+        }
+    }
+
+    /// Parse the frozen wire string; anything else is `None`.
+    #[must_use]
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "read-response" => Some(Self::ReadResponse),
+            "read-or-notification" => Some(Self::ReadOrNotification),
+            _ => None,
+        }
+    }
+}
+
+/// One characteristic read: the value and what the platform says it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CharacteristicRead {
+    pub value: Vec<u8>,
+    pub provenance: ReadProvenance,
+}
+
+impl CharacteristicRead {
+    /// A value the platform attributed to the read response.
+    #[must_use]
+    pub fn read_response(value: Vec<u8>) -> Self {
+        Self {
+            value,
+            provenance: ReadProvenance::ReadResponse,
+        }
+    }
+}
+
 /// One descriptor snapshot (UUID plus occurrence; values travel
 /// read/write calls).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -821,7 +876,7 @@ pub trait RadioBoundary: Send + Sync + 'static {
         service_occurrence: u64,
         characteristic_uuid: &'a str,
         characteristic_occurrence: u64,
-    ) -> impl Future<Output = Result<Vec<u8>, DesktopError>> + Send + 'a;
+    ) -> impl Future<Output = Result<CharacteristicRead, DesktopError>> + Send + 'a;
     #[allow(clippy::too_many_arguments)]
     fn write_characteristic<'a>(
         &'a self,
@@ -1176,6 +1231,8 @@ struct FakeInner {
     /// Per-instance read payloads: values returned for one addressed
     /// characteristic instance (unset instances return the canned default).
     values: HashMap<InstanceKey, Vec<u8>>,
+    /// Provenance the next reads report (unset: `ReadResponse`).
+    read_provenance: ReadProvenance,
     /// Live notification registrations: (peer, service, svc occ, char,
     /// char occ) with the CCCD currently enabled. [`FakeRadio::close`]
     /// releases all of them, modelling OS-side unsubscribe at teardown.
@@ -1258,6 +1315,7 @@ impl FakeRadio {
                 services: HashMap::new(),
                 mtu: HashMap::new(),
                 values: HashMap::new(),
+                read_provenance: ReadProvenance::ReadResponse,
                 live: HashSet::new(),
                 close_failures: Vec::new(),
                 writes: Vec::new(),
@@ -1575,6 +1633,12 @@ impl FakeRadio {
         );
     }
 
+    /// Script the provenance characteristic reads report (models a platform
+    /// that fuses read responses and notifications, like CoreBluetooth).
+    pub fn script_read_provenance(&self, provenance: ReadProvenance) {
+        self.state.lock().expect("fake radio state").read_provenance = provenance;
+    }
+
     /// Number of live notification registrations (CCCDs the fake believes
     /// are OS-enabled). Teardown must drive this to zero.
     pub fn live_subscription_count(&self) -> usize {
@@ -1854,16 +1918,14 @@ impl RadioBoundary for FakeRadio {
         service_occurrence: u64,
         characteristic_uuid: &str,
         characteristic_occurrence: u64,
-    ) -> Result<Vec<u8>, DesktopError> {
+    ) -> Result<CharacteristicRead, DesktopError> {
         self.record("read_characteristic");
         if let Some(ScriptedFault { detail, platform }) = self.take_fault(FaultOp::Read) {
             return Err(scripted(DesktopError::read_failed(detail), platform));
         }
         self.gate(FaultOp::Read).await;
-        Ok(self
-            .state
-            .lock()
-            .expect("fake radio state")
+        let state = self.state.lock().expect("fake radio state");
+        let value = state
             .values
             .get(&(
                 peer_id.to_owned(),
@@ -1873,7 +1935,11 @@ impl RadioBoundary for FakeRadio {
                 characteristic_occurrence,
             ))
             .cloned()
-            .unwrap_or_else(|| vec![0x42]))
+            .unwrap_or_else(|| vec![0x42]);
+        Ok(CharacteristicRead {
+            value,
+            provenance: state.read_provenance,
+        })
     }
 
     async fn write_characteristic(

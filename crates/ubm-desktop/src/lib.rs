@@ -27,6 +27,7 @@ pub mod central;
 pub mod delivery;
 pub mod errors;
 pub mod executor;
+pub mod identity;
 pub mod op_control;
 pub mod os;
 
@@ -34,11 +35,11 @@ pub use boundary::bluez_bus_supported;
 pub use boundary::{
     ATT_DEFAULT_LE_MTU, ATT_MAX_ATTRIBUTE_VALUE, AdapterAuthorization, AdapterAvailability,
     AdapterLossCause, AdapterPowerState, AddressType, AdmissionPolicy, AdvertisementExtras,
-    BluezBus, BondState, CharacteristicAccess, CharacteristicSnapshot, DeliveryMode, DescriptorKey,
-    DescriptorSnapshot, FakeRadio, FaultOp, HostDeployment, InstanceKey, ManufacturerData,
-    ObservationSource, ObservedDelivery, PairOutcome, PeerSnapshot, PropertyFlags, RadioBoundary,
-    RadioCloseFailure, RadioEvent, ScanFilterSpec, SecurityState, ServiceData, ServiceSnapshot,
-    UnpairOutcome, WriteLimits,
+    BluezBus, BondState, CharacteristicAccess, CharacteristicRead, CharacteristicSnapshot,
+    DeliveryMode, DescriptorKey, DescriptorSnapshot, FakeRadio, FaultOp, HostDeployment,
+    InstanceKey, ManufacturerData, ObservationSource, ObservedDelivery, PairOutcome, PeerSnapshot,
+    PropertyFlags, RadioBoundary, RadioCloseFailure, RadioEvent, ReadProvenance, ScanFilterSpec,
+    SecurityState, ServiceData, ServiceSnapshot, UnpairOutcome, WriteLimits,
 };
 #[cfg(feature = "btleplug")]
 pub use btleplug_backend::BtleplugRadio;
@@ -60,6 +61,7 @@ pub use central::{
 };
 pub use delivery::{BothPropertiesRule, DeliveryPlan, plan_delivery, platform_rule};
 pub use errors::{DesktopError, PlatformDetail, PlatformValue, Retryability};
+pub use identity::{AttachmentEpoch, DesktopIdentity, HostIdentity};
 pub use op_control::{
     Budget, COMPENSATION_TIMEOUT, CancelAck, CancelRequest, LIVENESS_BACKSTOP_DETAIL,
     LIVENESS_CLEANUP, LIVENESS_OP, LIVENESS_SCAN_START, OpControl, OpTicket,

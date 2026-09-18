@@ -130,6 +130,20 @@ for await (const item of watch.values) {
 await watch.stop()
 ```
 
+The manager survives an adapter loss on every host (React Native Android and
+Apple, CoreBluetooth, WinRT, BlueZ, Electron, Tauri): every live connection ends
+`adapter-loss`, its scans and subscriptions end `source-failed`, and the
+manager binds the backend's new attachment (new backend and adapter
+generations). Peer handles stay usable; a release of anything the loss already
+ended answers `released`, and `destroy()` after a loss answers `released`. Over
+Electron and Tauri the host rebinds the renderer or webview to that attachment
+(IPC protocol 4; see [`ELECTRON.md`](ELECTRON.md) and [`TAURI.md`](TAURI.md)).
+A `createConnectionSupervisor()` waits in `waiting-for-gate` while the adapter
+is not ready and keeps waiting across readiness timeouts, however long the
+adapter stays off, then reconnects through the same manager when it returns.
+Before 5.0 an adapter loss destroyed the manager (its supervisor ended
+`lifecycle.destroyed`) and the application had to create a new one.
+
 Do not create a second manager or reuse a connection/database from before the
 adapter loss. A backend may report a cleanup retry while native operations are
 settling; wait for a ready state and retry the application operation with a new

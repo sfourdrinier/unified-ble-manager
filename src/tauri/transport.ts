@@ -924,7 +924,7 @@ function isNormalizedBleError(value: unknown): value is NormalizedBleError {
     isBleErrorDomain(record.domain) &&
     nonEmptyString(record.domain) &&
     nonEmptyString(record.operation) &&
-    isNativeRetryability(record.code, record.retryability) &&
+    isNativeRetryability(record.code, record.operation, record.retryability) &&
     isPlatformErrorDetail(record.platform)
   )
 }
@@ -934,10 +934,12 @@ function isNormalizedBleError(value: unknown): value is NormalizedBleError {
  * transport validates the vocabulary and never derives the answer from the
  * code. An aborted or timed-out operation is `caller-decides` only when the
  * core never dispatched it; one that may have committed at the peripheral (a
- * dispatched write) is `never`. Every other code is `never`.
+ * dispatched write) is `never`. A connect commits nothing, so the core may
+ * answer `caller-decides` for a link the platform could not establish (owner
+ * decision, 5.0). Every other failure is `never`.
  */
-function isNativeRetryability(code: BleErrorCode, retryability: unknown): boolean {
-  if (code === 'operation.aborted' || code === 'operation.timed-out') {
+function isNativeRetryability(code: BleErrorCode, operation: unknown, retryability: unknown): boolean {
+  if (code === 'operation.aborted' || code === 'operation.timed-out' || operation === 'connection.connect') {
     return retryability === 'never' || retryability === 'caller-decides'
   }
   return retryability === 'never'

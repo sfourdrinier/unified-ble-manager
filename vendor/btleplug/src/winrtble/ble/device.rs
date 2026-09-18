@@ -127,6 +127,12 @@ impl BLEDevice {
 
         let service_result = self.get_gatt_services(BluetoothCacheMode::Uncached).await?;
         let status = service_result.Status().map_err(|_| Error::DeviceNotFound)?;
+        // UBM patch (UBM_PATCHES.md #15): a device the connect could not
+        // reach is the platform's answer (`gatt-status` `unreachable`), so
+        // the host can tell a link that was not established from a refusal.
+        if status == GattCommunicationStatus::Unreachable {
+            return Err(utils::gatt_status_error("connect", status));
+        }
         utils::to_error(status)
     }
 

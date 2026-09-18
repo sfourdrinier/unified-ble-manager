@@ -6,6 +6,138 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ### Changed
 
+- **Departure from 4.x — reading a characteristic while it notifies works on
+  Apple, with the same app code as Android, and every read says what the
+  platform knows about its value.** Subscribing to the Polar H10 PMD control
+  point and then reading it worked on Android and failed on the iPhone with
+  platform code 1031 ("Independent read is ambiguous while this characteristic
+  is notifying"); macOS Node/Electron refused it the same way (btleplug patch
+  #14, codes 413/414/415). The Apple radios now issue the read.
+  CoreBluetooth reports a read response and a notification through one
+  `didUpdateValueFor` callback, so the value is labelled instead of refused:
+  - new `GattCharacteristic.readReceipt()` resolves `{ value, provenance }`
+    (`GattReadReceipt`, `GattReadProvenance`); `read()` still resolves the
+    value. `provenance` is one vocabulary on every backend:
+    `read-response` — the platform attributed the value to this read's ATT
+    response (Android `onCharacteristicRead`, WinRT `ReadValueAsync`, BlueZ
+    `ReadValue`, Web Bluetooth `readValue()`, CoreBluetooth while the
+    characteristic cannot notify); `read-or-notification` — CoreBluetooth
+    while the characteristic notifies, has a subscription, or has a
+    notification state change in flight: the value is this read's response
+    or a notification/indication;
+  - the value that completes such a read is still delivered to the
+    characteristic's subscribers, so nothing is dropped from the stream; on
+    Apple the stream can therefore also carry read responses;
+  - reads of one characteristic queue and complete in request order (one
+    `readValue` outstanding at a time on iOS); a second read no longer fails
+    1011/414, and a subscribe while a read is pending no longer fails
+    1032/415. A read cancelled or timed out after it was issued leaves its
+    update owed, and that update never completes a later read;
+  - timeouts, cancellation and disconnect settle a pending read exactly as
+    before;
+  - backend SDK: `GattBackend.read` resolves `CharacteristicReadResult`
+    (`ReadResult` plus `provenance`) and `GattDatabase.read` resolves
+    `CharacteristicRead` (`{ value, provenance }`); `ReadProvenance`,
+    `READ_PROVENANCES` and `isReadProvenance` are exported. A backend that
+    cannot attribute a value must answer `read-or-notification`, never
+    `read-response`;
+  - wire: the `ubm-mobile-wire/1` `gatt.read` reply carries `provenance`
+    (`crates/ubm-mobile/golden/wire-vectors.json` regenerated); the radio
+    host answers a characteristic read with the new
+    `RadioCompletion::Read { value, provenance }` (UniFFI `Read`, JNI
+    `nativeCompleteRead`), `Bytes` stays for descriptor reads; the N-API
+    `UbmCentral.read` resolves `{ value, provenance }`; the Electron and
+    Tauri `gatt.read` IPC answer carries `provenance`, and a renderer
+    `readReceipt()` against a host that omits it fails `protocol.malformed`.
+  The legacy Native Protocol v2 path and the legacy Electron CoreBluetooth
+  addon, both unreachable from every package export, keep refusing: their
+  wires cannot carry a provenance. Native rebuilds: the iOS app (Swift radio
+  and `RustCore.xcframework`), the Android app (`jniLibs` for
+  `nativeCompleteRead`) and the Node N-API addon.
+
+- **Departure from 4.x — a manager survives an adapter loss on every host,
+  and a supervised connection reconnects when the adapter returns.** A
+  physical run (Samsung phone, Polar H10, Bluetooth off 12 s) left
+  `createConnectionSupervisor()` in `waiting-for-gate` after Bluetooth came
+  back, and `manager.destroy()` then answered `release-failed`
+  (`gatt.not-found`, `path.resolve`). 4.x (the legacy core,
+  `applyAdapterStateEvent` and `backend-restarted` →
+  `releaseResources('backend-restart')`) destroyed the manager on an adapter
+  loss: every resource was released, the supervisor ended
+  `lifecycle.destroyed`, and the application had to create a new manager. Now,
+  on React Native Android and Apple, CoreBluetooth, WinRT, BlueZ, Electron and
+  Tauri: every live connection ends `adapter-loss` (`connected → lost`), scans
+  and subscriptions end `source-failed` (React Native had said
+  `connection-lost`; `source-failed` is what legacy React Native, the desktop
+  backends and Tauri said), in-flight operations settle `operation.reset`, and
+  the manager binds the backend's new attachment (generations advance once per
+  loss episode, `1`, `2`, …) and stays ready. Peer handles stay usable. A
+  release of anything the loss ended answers `released`, as does `destroy()`
+  (the mobile owner and `DesktopCentral` remember the leases and consumers a
+  reset ended and answer them released once). The supervisor keeps waiting
+  when its readiness wait times out or the adapter is still not ready (any
+  `adapter.*` or `operation.timed-out` from the wait) instead of parking, so an
+  outage longer than the 10 s readiness window still reconnects. A backend
+  replaced by a different backend instance still ends the manager as 4.x did.
+  Electron and Tauri renderers follow through IPC protocol 4 (below).
+  Covered by deterministic off/on tests on each host, including an outage past
+  the readiness window and a later link loss on the recovered connection.
+
+- **React Native, desktop and Tauri report their 4.x resource identities
+  again.** React Native public operation correlations are `operation-{n}` per
+  manager again (the wire keeps its own ids internal). The Node/Electron
+  desktop provider names its instance, attachment, generations, adapter
+  display name, scans, peers, connections, leases, databases and subscriptions
+  as each OS's 4.x backend did. Tauri numbers `tauri-attachment-{n}`,
+  `tauri-btleplug-{n}`, `tauri-backend-generation-{n}`,
+  `tauri-adapter-generation-{n}`, leases and connection identities from the
+  plugin's one counter, as Tauri 4.x did; a reset advances them the same way.
+
+- **New in 5.0 — React Native answers `gatt:maximum-write-length`.**
+  `connection.controls.maximumWriteLength(mode)` and
+  `database.maximumWriteLength(path, mode)` on Android and iPhone now report
+  the platform's own answer through the Rust owner (new wire op
+  `connection.maximum-write-length`, `docs/MOBILE_RUST_WIRE.md`) instead of
+  `capability.unavailable`. iPhone reports `CBPeripheral
+  .maximumWriteValueLength(for:)` per type. Android reports 512 with response
+  (the stack performs the prepared/long write; `BluetoothGatt` refuses more
+  from API 33) and MTU − 3 without response, from the MTU `onMtuChanged`
+  reported, or 20 (ATT default MTU 23) before any exchange. The capability is
+  `limited`, with limits 1–512 bytes and platform-named limitations
+  (`android-att-default-mtu-before-exchange`,
+  `android-prepared-write-with-response`, `live-radio-qualification-pending`).
+  The borrowed `mobile-maximum-write-length-unavailable` limitation is gone.
+  With the capability executable the core also registers its emulated
+  `gatt:long-write` on React Native. Both React Native TCK legs now run the
+  `tck.feature.gatt.maximum-write-length` suite. The deterministic React
+  Native module reports no effective MTU before `connection.request-mtu`, as
+  Android's `readEffectiveMtu` does. Needs a native rebuild (the Rust owner
+  changed); the Kotlin and Swift adapters already answered `ReadWriteLimits`.
+
+- **The shared Rust central names no host; the React Native Rust route
+  reports the legacy React Native identity.** `DesktopCentral` minted every
+  attachment as the desktop host (`desktop-backend-gen-{n}`,
+  `desktop-adapter-gen-{n}`, `ubm-desktop-mobile-{platform}-{owner}`), so on
+  Android and iPhone `manager.readiness()` and every adapter record reported
+  `backendGeneration: "desktop-backend-gen-1"`. The owning host now supplies
+  its identity (`HostIdentity` in `CentralProfile`, replacing its `owner` and
+  `backend_label` fields): the Node/Electron addon and Tauri pass
+  `DesktopIdentity`, which keeps their names unchanged, and the mobile owner
+  passes `MobileIdentity`, which uses the legacy React Native formats —
+  generations `"1"`, instance `react-native-{android|apple}-backend-{n}`,
+  attachment `{instance}:{gen}:{gen}`. The central's own open failures and log
+  lines use the host's namespace (`ubm-mobile.host.open`, `ubm-mobile:`). The
+  React Native backend's attachment (`react-native-{platform}-backend-{n}`,
+  `{instance}:1:1`), Apple adapter display name (`Apple CoreBluetooth central
+adapter`) and public resource names (`corebluetooth-peer-{gen}-{n}`,
+  `corebluetooth-scan-session-{n}`, `corebluetooth-connection-{n}`,
+  `corebluetooth-connection-generation-{n}`, `corebluetooth-connection-lease-{n}`,
+  `corebluetooth-database-{n}`, `corebluetooth-database-generation-{n}`,
+  `corebluetooth-subscription-{n}`, each counter per backend from 1) are the
+  legacy ones again. An empty mobile `HostOptions.owner` now fails with
+  `ubm-mobile.host.owner` instead of `desktop.owner`. The golden wire vectors
+  are regenerated; they and a TS guard fail on any desktop name.
+
 - **Breaking — the desktop first-party TCK legs run the Rust route**
   (LEGACY-AUDIT-2 N3). `createCoreBluetoothFirstPartyTckRegistration`,
   `createBluezFirstPartyTckRegistration` and
@@ -152,20 +284,33 @@ All notable changes to `unified-ble-manager` are documented here.
   N10). `createElectronMainBluezBackendProvider` now takes the Node BlueZ
   factory's `busKind` and `pairingGeneration` options.
 
-- The desktop IPC protocol is now version 3 for both the Electron
-  renderer/main pair and the Tauri webview/plugin pair (PR210-73). Version 3
-  is the wire that carries relative `budgetMs` deadlines, optional `commit` on
-  normalized errors, subscribe `delivery` and connection-lifecycle events.
-  Each side offers exactly 3 (the renderer/webview client offer, Electron
-  main, the Rust plugin, and the public `TAURI_PLUGIN_COMPATIBILITY.ipcProtocol`,
-  now `3`), so a mixed pair where one side
-  speaks protocol 2 is refused at bootstrap with `protocol.incompatible` in
-  either direction, before any lease or operation, instead of failing later as
-  `protocol.malformed`. A Tauri plugin that selects any other version is now
-  refused with a `protocol.incompatible` `BleError`
-  (`tauri-manager.ipc-protocol`) rather than a plain `Error`, and is released.
-  Upgrade the npm package, the Electron preload/renderer bundle and main, and
-  the Tauri crate together.
+- **Breaking — the desktop IPC protocol is now version 4** for both the
+  Electron renderer/main pair and the Tauri webview/plugin pair (PR210-73 made
+  it 3; the adapter-loss rebind makes it 4). The wire carries relative
+  `budgetMs` deadlines, optional `commit` on normalized errors, subscribe
+  `delivery`, connection-lifecycle events and, new in 4, the host-announced
+  attachment rebind: after an adapter loss Electron main or the Tauri plugin
+  (never a renderer or webview) rebinds every active lease to the backend's new
+  attachment and announces it on the reserved `attachment` stream as
+  `{kind: 'value', value: {kind: 'backend-restarted', schemaVersion: 1,
+  previousAttachmentId, attachmentId, attachment}}`. The renderer/webview
+  client adopts only an announcement for its own lease that names the
+  attachment it holds, on the same backend instance, and refuses and reports
+  anything else. Until the announcement, and for the replaced attachment
+  afterwards, work is refused `backend.reset` before any radio effect, except
+  releases (`operation.cancel`, `scan.stop`, `gatt.unsubscribe`,
+  `gatt.database.release`, `connection.disconnect`,
+  `connection.events.unsubscribe`); a Tauri route naming an attachment the
+  plugin never gave fails `protocol.violation`. Tauri connection events keep
+  reporting the attachment the link lived on. Each side offers exactly 4 (the
+  renderer/webview client offer, Electron main, the Rust plugin, and the
+  public `TAURI_PLUGIN_COMPATIBILITY.ipcProtocol`, now `4`), so a mixed pair
+  where one side speaks protocol 3 or older is refused at bootstrap with
+  `protocol.incompatible` in either direction, before any lease or operation.
+  A Tauri plugin that selects any other version is refused with a
+  `protocol.incompatible` `BleError` (`tauri-manager.ipc-protocol`) and
+  released. Upgrade the npm package, the Electron preload/renderer bundle and
+  main, and the Tauri crate together.
 - **Breaking — React Native and Expo run only the Rust mobile owner**
   (PR210-01/09/12–18, FIX-PLAN decisions 11–13). Every factory in
   `unified-ble-manager/react-native` and `unified-ble-manager/expo` drives the
@@ -302,6 +447,7 @@ All notable changes to `unified-ble-manager` are documented here.
   - BlueZ: the D-Bus bus choice (`CentralProfile::bluez_bus`, the legacy
     `busKind`), backed by a vendored bluez-async that can connect on the
     session bus.
+
 - A disconnect that is retried successfully no longer leaves a stale
   `ReleaseFailed` in the destroy record (finding 38). Unsubscribe after a
   service change still disables the OS CCCD (finding 40). A dispatched write
@@ -336,6 +482,81 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ### Fixed
 
+- **Desktop Rust route: legacy reconnect, disconnect, BlueZ, WinRT and
+  CoreBluetooth parity (LEGACY-AUDIT-7 findings 127/135–138/141).** Every
+  behaviour below matches the legacy backend it replaces, with the same
+  outcome and the same error code, domain and operation id:
+  - Reconnect without rescan is now pinned at the btleplug layer: a
+    CoreBluetooth identifier re-resolves through
+    `retrievePeripheralsWithIdentifiers` (answered not-found, never a scan),
+    the adapter keeps known peripherals across disconnects, and WinRT
+    reopens by address. New tests in `vendor/btleplug`
+    (`an_unknown_identifier_resolves_without_a_scan`,
+    `a_disconnect_of_an_unknown_peripheral_sends_no_event`), the WinRT
+    model (`a_listed_address_reopens_without_a_scan`), the backend identity
+    round-trip (`f127_a_listed_identity_resolves_without_a_scan`), and an
+    adapter-only hardware test
+    (`cargo test -p ubm-desktop --test reconnect_without_rescan -- --ignored`).
+  - Disconnect goes straight to the radio (the extra pre-disconnect
+    `is_connected()` query is removed), and a disconnect whose radio answer
+    is "device gone" (BlueZ `UnknownObject`/`DoesNotExist`) reports the
+    link released — never stuck in `Disconnecting` — while transport
+    failures still keep it pending.
+  - BlueZ: `security.state().pairingPossible` is the legacy constant `true`
+    again; the custom-ceremony refusal is
+    `bluez.security.pair.custom-ceremony`; an unreported address type maps
+    to `random`; no reported UUIDs leave `serviceUuids` absent;
+    `Device.Connect` tolerates `AlreadyConnected`; and `Disconnect` waits
+    up to 1 s for `Connected=false` (a gone object confirms, a timeout
+    stays pending).
+  - WinRT: a without-response descriptor write fails closed with
+    `gatt.write-failed`/`winrt.gatt.write-descriptor`; an unknown adapter
+    id is `adapter.unavailable`; connect on a never-observed peer is
+    `connection.not-found` (`winrt.connect.peer`, `direct-gatt.connect.peer`,
+    `bluez.connect`).
+  - CoreBluetooth: the readiness watch drops the oldest observation on
+    overflow, reprobes every 100 ms while unready (bounded by the caller's
+    deadline/signal), and buffers pre-probe reports for replay; the
+    pre-admission abort carries the bare operation id; the when-available
+    intent refusal is `direct-gatt.connect.when-available`; GATT verbs
+    serialize per connection with fail-fast `lifecycle.invalid-state`; RSSI
+    keeps its integer-dBm precision limits; unprovided observation fields
+    are `unavailable` with a backend-scoped device (provenance was already
+    `not-provided`); empty maximum-write-length connection ids are
+    `argument.invalid`; backend-event and adapter-state streams keep their
+    64/64KiB/1 and 16/16KiB/1 quotas; and the readiness capability row no
+    longer claims btleplug provides it on unpatched builds.
+
+- **`connection.controls.effectiveMtu()` no longer throws a raw
+  `TypeError`.** The public controls read the connection's `effectiveMtu`
+  (and `writeWithoutResponseReadiness`) into a local and called it detached,
+  so a connection whose method reads its own receiver — the React Native Rust
+  connection, and the legacy manager connection before it — failed with
+  `Cannot read property 'control' of undefined` instead of answering. Seen on
+  a physical Android against a Polar H10, before and after `requestMtu(517)`.
+  Both controls now call the connection method on its receiver; Android
+  answers the measured ATT MTU (or `unavailable` before any exchange) and
+  iPhone answers `capability.unsupported` with
+  `corebluetooth-effective-mtu-unavailable`, as legacy registered them.
+
+- **React Native Rust core: `find` no longer rejects `stream.overflow` when
+  several advertisements arrive together, and notifications keep flowing with
+  the screen off.** The drain takes up to 256 records per native call and
+  delivered them in one synchronous loop, so three advertisements in one
+  batch overflowed a `latest` stream (one item) before its reader re-armed —
+  `manager.find({ query })`, which reads every advertisement through that one
+  slot, rejected ~400 ms into a scan on a Samsung Android phone. Data records
+  (`adv`, `value`) now reach JS one per native→JS task, as 4.x delivered one
+  native callback per record: taken records wait in a backlog, and the
+  boundary before each further data record is a one-record drain call, whose
+  promise resolves as a task of its own while the app is in the background.
+  No JS timer is involved (an interim `setTimeout(0)` boundary held values
+  ~26 s after screen lock, because React Native timers stop with the host).
+  Control records keep their drained order and neighbours, so a link loss
+  still ends its subscriptions `connection-lost`. Destroy drains every record
+  the owner still holds before it resolves. The desktop provider and the
+  Electron/Tauri IPC clients already deliver one record per native completion
+  or IPC message.
 - Tauri behaves as Tauri 4.x did again on the shared Rust core (findings 43,
   57, 58, 60, 90, 114, 116).
   - **Platform error identity.** A failure the OS answered carries the OS's own
@@ -423,6 +644,20 @@ All notable changes to `unified-ble-manager` are documented here.
   `gatt.read-failed` and `gatt.subscribe-failed`. The Rust route had
   reported `gatt.*-failed` codes, with the status only as free text. The
   mobile wire error gains a validated `platform` object.
+- React Native/Expo Android: several link-control and scan-option refusals
+  match legacy React Native again (finding 139):
+  - Scan `platform.phy` and `platform.reportDelayMs` are
+    `capability.unsupported` (`scan.start.platform-options`) at the owner
+    too. The provider already refused them.
+  - A `request-phy` with no preference is `argument.invalid` in the
+    `connection` domain.
+  - A `request-mtu` below 23 goes to the platform, whose refusal is
+    `platform.failure` with code `requestMtuFailed`.
+  - Reading or requesting the PHY below API 26 is `capability.unsupported`
+    before any radio call.
+    Aborting a pairing still ends the caller's operation at once, and the
+    Android bond ceremony and its pending record run to completion, as they
+    did on 4.x.
 - React Native/Expo Android: an operation in flight or queued when the link
   goes down (peer or app disconnect, a failed connect, a close timeout) fails
   `connection.lost` with code `connectionLost` and the disconnect's GATT
@@ -439,9 +674,9 @@ All notable changes to `unified-ble-manager` are documented here.
   - An unsupported platform is `capability.unsupported`.
   - Every companion-association failure is `capability.unavailable`.
   - Every restoration-claim failure is `capability.unavailable`.
-  The native code (for example `foregroundServiceNotConfigured` or
-  `associationCancelled`) is the error's `platform.code` under the `expo`
-  domain.
+    The native code (for example `foregroundServiceNotConfigured` or
+    `associationCancelled`) is the error's `platform.code` under the `expo`
+    domain.
 - React Native/Expo: `security.pair`, `security.cancel-pairing` and the
   Expo companion chooser (`companion.associate`) wait for the user or the OS
   without a deadline when the caller gives none, as legacy did (finding 123).
@@ -532,6 +767,7 @@ All notable changes to `unified-ble-manager` are documented here.
 
     Tauri also keeps its 4.x cadence, re-reading every known peripheral
     every 2 s during a scan.
+
   - **Observations belong to their scan.** Sightings are observations only
     while a scan runs. Each carries its scan's operation id and its age
     (`take_scan_observation`). A new scan never receives what an earlier
@@ -550,6 +786,7 @@ All notable changes to `unified-ble-manager` are documented here.
     detail. Every BlueZ failure, including non-D-Bus ones, is
     `platform.failure` with a `bluez-dbus` detail (`org.bluez.Error.Failed`
     when D-Bus gave none), as in 4.x.
+
 - Rust core connects, errors, CoreBluetooth reads and notification
   delivery match 4.x again (FIX-PLAN 110–113, 117, 118).
   - **A connect without a deadline waits.** A connect without a caller
@@ -568,6 +805,7 @@ All notable changes to `unified-ble-manager` are documented here.
     CoreBluetooth read, write and notification errors, which the vendored
     btleplug dropped, are now answered instead of waiting for a deadline.
     Failed descriptor operations no longer panic.
+
   - **CoreBluetooth reads cannot return a notification.** macOS refuses a
     read on a notifying characteristic (413), a second read while one is
     pending (414) and a subscribe while a read is pending (415), as the
@@ -584,6 +822,7 @@ All notable changes to `unified-ble-manager` are documented here.
   - **No value lost at invalidation.** Values already queued for a
     subscription when its link is lost, its services change or the adapter
     resets are delivered, in order, before the subscription ends.
+
 - Rust core discovery, adapter, BlueZ and test-radio behaviour matches 4.x
   again (FIX-PLAN 91, 94–98, 106, 107).
   - **No product limits on GATT databases, subscriptions, links or
@@ -621,8 +860,8 @@ All notable changes to `unified-ble-manager` are documented here.
     - the scan-observation queue was 256;
     - the desktop notification ingress was 256;
     - btleplug's event broadcasts held 16 (vendored patch 13).
-    They now hold up to the public stream maximum (65,536 items), with
-    4,096 slots for the broadcasts, and loss past that is still reported.
+      They now hold up to the public stream maximum (65,536 items), with
+      4,096 slots for the broadcasts, and loss past that is still reported.
   - **Test radio.** `FakeRadio` answers `AlreadyPaired` when asked to pair a
     peer that is already bonded, as a real OS does.
 - Rust core write and scan behaviour matches 4.x again (FIX-PLAN 81, 83, 86,
@@ -633,8 +872,7 @@ All notable changes to `unified-ble-manager` are documented here.
     performs the long write, as the 4.x WinRT addon and Tauri 4.x did.
     Before, anything longer than MTU − 3 failed `bytes.too-large`.
     Writes without response stay bounded by one ATT payload. The per-write
-    ceiling on every desktop host is now the ATT attribute-value maximum,
-    512. It was 509, which clipped the 512-byte long writes that BlueZ and
+    ceiling on every desktop host is now the ATT attribute-value maximum, 512. It was 509, which clipped the 512-byte long writes that BlueZ and
     CoreBluetooth report. Radios that perform long writes themselves
     declare it with `WriteLimits::os_long_write`. `ATT_MAX_ATTRIBUTE_VALUE`
     and `ATT_DEFAULT_LE_MTU` are public in `ubm-desktop`.
@@ -660,8 +898,10 @@ All notable changes to `unified-ble-manager` are documented here.
     bluetoothd. In-flight operations settle `operation.reset`. Scans and
     subscriptions end `source-failed`. Links are released: CoreBluetooth and
     WinRT emit `connection-state-changed` with reason `adapter`, and BlueZ
-    ends them silently. The backend generation advances, so earlier handles
-    and peer ids are stale. CoreBluetooth and BlueZ emit `backend-restarted`.
+    ends them silently. The backend generation advances, so earlier
+    connection, database and subscription handles are stale (peer handles stay
+    usable; see the adapter-loss entry above). CoreBluetooth and BlueZ emit
+    `backend-restarted`.
     Each OS keeps its 4.x sequence. Previously only an `adapter-state` event
     was emitted, and nothing was released.
   - **Admission errors are raised again** before any radio effect:
@@ -709,8 +949,8 @@ All notable changes to `unified-ble-manager` are documented here.
     answer the new `InvalidationCause::AdapterReset`, OS releases are
     requested (failures named), and the attachment moves to new backend and
     adapter generations. One `AdapterResetEvent { cause, previous, current,
-    cancelled_operations, ended_scan, released_links, ended_subscriptions,
-    release_failures }` reports it (`adapter_reset_events()`,
+cancelled_operations, ended_scan, released_links, ended_subscriptions,
+release_failures }` reports it (`adapter_reset_events()`,
     `CentralSignal::AdapterReset`). `attachment()` now returns an owned
     `AttachmentTuple`, which changes after each reset.
   - **Admission.** Operations refuse before any effect with
@@ -729,7 +969,7 @@ All notable changes to `unified-ble-manager` are documented here.
     BlueZ `DuplicateData`; BlueZ scans LE only; a CoreBluetooth scan
     requested while not powered on fails instead of silently not scanning.
   - **Connection write limit.** `connection_maximum_write_length(peer,
-    lease, with_response, ctl)` answers without discovery.
+lease, with_response, ctl)` answers without discovery.
   - **Repeated GATT UUIDs.** Same-UUID services, characteristics and
     descriptors stay distinct on macOS, Windows and Linux, and same-UUID
     instances can be subscribed side by side (the former "ambiguous
@@ -1020,9 +1260,9 @@ follow-ups (see the 5.0.0 gate ledger and `docs/5.0.0-PACKAGING.md`).
 - Public scan observation overflow is subscriber-local. Consuming only `events`
   at full speed with `duplicates: 'all'` and `overflowPolicy: 'error'` no longer
   terminates the scan because an unused observation queue filled.
-- Drop-policy public scan overflow (`balanced` / `latest` / drop-*) reports an
+- Drop-policy public scan overflow (`balanced` / `latest` / drop-\*) reports an
   overflow notice and keeps scanning. The radio stays up. `overflowPolicy:
-  'error'` (`lossless-bounded`) still fail-closes the consumed view as
+'error'` (`lossless-bounded`) still fail-closes the consumed view as
   `failed`/`overflow`; physical `stop()` remains cleanup.
 - In-process and IPC scan sessions leave `active` when the host source ends
   without `stop()`. An already-terminal source never publishes `active`; the

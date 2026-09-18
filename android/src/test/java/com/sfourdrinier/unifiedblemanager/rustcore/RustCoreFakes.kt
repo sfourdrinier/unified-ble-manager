@@ -72,6 +72,8 @@ class FakeCore : MobileCorePort {
 
   override fun completeUnit(requestId: Long) = record("unit:$requestId")
   override fun completeBytes(requestId: Long, value: ByteArray) = record("bytes:$requestId:${value.toList()}")
+  override fun completeRead(requestId: Long, value: ByteArray, provenance: String) =
+    record("read:$requestId:${value.toList()}:$provenance")
   override fun completeAdapter(requestId: Long, availability: String, authorization: String, power: String, safeReason: String?) =
     record("adapter:$requestId:$availability/$authorization/$power/$safeReason")
 

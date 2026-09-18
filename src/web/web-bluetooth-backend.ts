@@ -26,6 +26,7 @@ import type {
 import { attachmentRecordsEqual } from '../backend-contract/identity'
 import type { CharacteristicPath, DescriptorPath } from '../backend-contract/gatt'
 import type {
+  CharacteristicRead,
   PublicOperationOptions,
   SubscriptionOptions,
   WritePolicy,
@@ -65,7 +66,12 @@ import type {
   WebBluetoothRequestFilter,
   WebBluetoothTimerHandle
 } from './web-bluetooth-boundary'
-import { normalizeWebBluetoothError, validateWebChooserRequest, webCleanupFailure } from './web-bluetooth-errors'
+import {
+  normalizeWebBluetoothError,
+  validateWebChooserRequest,
+  WEB_CONNECT_OPERATION,
+  webCleanupFailure
+} from './web-bluetooth-errors'
 import { createWebBluetoothFeatureRegistry } from './web-feature-registry'
 import { diagnosticWebBluetoothScanPlan } from './web-bluetooth-scan-planner'
 import { WebBluetoothGattRuntime } from './web-bluetooth-gatt'
@@ -509,7 +515,7 @@ export class WebBluetoothBackend
     database: WebGattDatabase,
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     options: PublicOperationOptions
-  ): Promise<OwnedBytes> {
+  ): Promise<CharacteristicRead> {
     this.assertAttached('web-gatt.database-read')
     return this.gattRuntime.readDirect(database, path, options)
   }
@@ -863,15 +869,15 @@ export class WebBluetoothBackend
     peerId: PeerId<string>,
     options: PublicOperationOptions
   ): Promise<ConnectionLease<string, string, string>> {
-    this.assertAttached('web-connection.connect')
-    this.assertAbortableAdmission(options, 'connection', 'web-connection.connect')
+    this.assertAttached(WEB_CONNECT_OPERATION)
+    this.assertAbortableAdmission(options, 'connection', WEB_CONNECT_OPERATION)
     const peerKey = String(peerId)
     if (this.connectionsByPeer.has(peerKey) || this.pendingConnectionsByPeer.has(peerKey)) {
-      throw contractError('connection.already-owned', 'connection', 'web-connection.connect')
+      throw contractError('connection.already-owned', 'connection', WEB_CONNECT_OPERATION)
     }
     const selected = this.selectedDevices.get(String(peerId))
     if (selected === undefined) {
-      throw contractError('connection.not-found', 'connection', 'web-connection.connect')
+      throw contractError('connection.not-found', 'connection', WEB_CONNECT_OPERATION)
     }
     const pending: WebPendingConnection = {
       peerId,
@@ -884,7 +890,7 @@ export class WebBluetoothBackend
     }
     this.pendingConnectionsByPeer.set(peerKey, pending)
     pending.nativeConnect = Promise.resolve().then(async () => {
-      await this.assertBluetoothAvailable('web-connection.connect')
+      await this.assertBluetoothAvailable(WEB_CONNECT_OPERATION)
       await selected.device.gatt.connect()
     })
     pending.nativeConnect.then(
@@ -901,7 +907,7 @@ export class WebBluetoothBackend
         () => pending.nativeConnect,
         'connection.failed',
         'connection',
-        'web-connection.connect',
+        WEB_CONNECT_OPERATION,
         () => this.compensatePendingConnection(pending)
       )
     } catch (error) {
@@ -917,7 +923,7 @@ export class WebBluetoothBackend
     }
     if (this.pendingConnectionsByPeer.get(peerKey) !== pending || this.destroyed) {
       await this.compensatePendingConnection(pending)
-      throw contractError('operation.cancelled-by-destroy', 'connection', 'web-connection.connect')
+      throw contractError('operation.cancelled-by-destroy', 'connection', WEB_CONNECT_OPERATION)
     }
     const connectionNumber = this.nextConnection
     this.nextConnection += 1

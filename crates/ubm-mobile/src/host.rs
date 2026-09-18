@@ -24,14 +24,15 @@ use serde_json::Value;
 use tokio::runtime::Handle;
 use tokio::sync::Notify;
 use ubm_core::central::{Central, ConnectionState, PathSelector, canonical_uuid};
-use ubm_core::contracts::{BleErrorCode, BleErrorDomain, CoreError, OperationId};
+use ubm_core::contracts::{AttachmentTuple, BleErrorCode, BleErrorDomain, CoreError, OperationId};
 use ubm_desktop::{
     CentralProfile, CentralSignal, DesktopCentral, DesktopError, InstanceKey, LifecycleEvent,
     LifecycleKind, NotificationPoll, OpControl, PeerRecord, PeerSnapshot, RadioEvent,
 };
 
 use crate::drain::Outbox;
-use crate::foreign::{ForeignRadio, lock, power_state};
+use crate::foreign::{ForeignRadio, central_adapter_state, lock};
+use crate::identity::MobileIdentity;
 use crate::radio::{
     AdapterPower, AdapterSnapshot, Advertisement, AndroidScanOptions, BondState, IngressClass,
     IngressStatus, MobilePlatform, PlatformRadio, RadioCompletion, RadioIngress, RequestId,
@@ -44,7 +45,10 @@ use crate::wire::{self, object, opt_text};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostOptions {
     pub platform: MobilePlatform,
-    /// Attachment owner label (e.g. the app bundle id). Non-empty.
+    /// The installing host's label (e.g. the app bundle id). Non-empty
+    /// (`argument.invalid`, `ubm-mobile.host.owner`). It names no scope:
+    /// the attachment identity is [`crate::MobileIdentity`]'s, in the legacy
+    /// React Native formats, which carry no owner.
     pub owner: String,
     /// Adapter identity the platform reports (Android adapter address,
     /// `"corebluetooth"` on Apple). Non-empty.
@@ -110,7 +114,11 @@ enum HostSignal {
     Advertisements,
     Value(InstanceKey),
     Lifecycle(LifecycleEvent),
-    Adapter(AdapterSnapshot, u64),
+    /// A platform adapter change, with the attachment it happened under.
+    Adapter(AdapterSnapshot, u64, AttachmentTuple),
+    /// The core reset the attachment after an adapter loss: the new
+    /// attachment, and whether the reset ended the owned scan.
+    AdapterReset(AttachmentTuple, bool),
     ScanFailed(String),
     Security(String, SecurityState),
     Restored(Vec<RestoredPeer>),
@@ -397,9 +405,8 @@ pub(crate) fn advertisement_record(snapshot: &PeerSnapshot, observed_at_ms: u64)
 pub(crate) fn adapter_value(
     snapshot: &AdapterSnapshot,
     updated_at: u64,
-    central: &DesktopCentral<ForeignRadio>,
+    attachment: &AttachmentTuple,
 ) -> Value {
-    let attachment = central.attachment();
     object(vec![
         ("availability", Value::from(snapshot.availability.as_str())),
         (
@@ -564,12 +571,15 @@ impl HostInner {
             }
             HostSignal::Value(scope) => self.flush_scope(&scope).await,
             HostSignal::Lifecycle(event) => self.route_lifecycle(event).await,
-            HostSignal::Adapter(snapshot, updated_at) => {
+            HostSignal::Adapter(snapshot, updated_at, attachment) => {
                 let record = object(vec![
                     ("t", Value::from("adapter")),
-                    ("state", adapter_value(&snapshot, updated_at, &self.central)),
+                    ("state", adapter_value(&snapshot, updated_at, &attachment)),
                 ]);
                 self.broadcast(&record);
+            }
+            HostSignal::AdapterReset(attachment, ended_scan) => {
+                self.adapter_reset(&attachment, ended_scan).await;
             }
             HostSignal::ScanFailed(detail) => self.scan_failed(detail).await,
             HostSignal::Security(peer_id, state) => {
@@ -834,10 +844,63 @@ impl HostInner {
         }
     }
 
-    async fn scan_failed(&self, detail: String) {
-        let members: Vec<(u64, ScanMember)> = std::mem::take(&mut *lock(&self.scan_members))
+    /// Legacy order after an adapter loss (`releaseCoreBluetoothAdapterLossResources`,
+    /// then `advanceGeneration`): the scan members end `source-failed` (the
+    /// core already stopped and ended the owned scan), then the new
+    /// generations are published as an `adapter` record over the last
+    /// platform snapshot. Links and streams ended through their own
+    /// lifecycle records before this signal.
+    async fn adapter_reset(&self, attachment: &AttachmentTuple, ended_scan: bool) {
+        for session in self.session_list() {
+            for (scope, consumer) in session.end_by_reset() {
+                self.remove_route(&scope, session.id, &consumer);
+            }
+        }
+        if ended_scan {
+            let members = self.take_scan_members();
+            self.scan.lock().await.physical = None;
+            self.end_scan_members(members, "source-failed");
+        }
+        let last = lock(&self.adapter).clone();
+        match last {
+            Some((snapshot, updated_at)) => {
+                let record = object(vec![
+                    ("t", Value::from("adapter")),
+                    ("state", adapter_value(&snapshot, updated_at, attachment)),
+                ]);
+                self.broadcast(&record);
+            }
+            // A reset needs a lost adapter, which only a platform snapshot
+            // reports; without one the advance cannot be published.
+            None => {
+                for session in self.session_list() {
+                    session.outbox.push_ingress_drop(IngressClass::Control);
+                }
+            }
+        }
+    }
+
+    fn take_scan_members(&self) -> Vec<(u64, ScanMember)> {
+        std::mem::take(&mut *lock(&self.scan_members))
             .into_iter()
-            .collect();
+            .collect()
+    }
+
+    fn end_scan_members(&self, members: Vec<(u64, ScanMember)>, reason: &'static str) {
+        for (session_id, member) in members {
+            if let Some(session) = self.session(session_id) {
+                session.clear_scan(&member.membership);
+                session.outbox.push_control(object(vec![
+                    ("t", Value::from("scan-end")),
+                    ("operationId", Value::from(member.membership.as_str())),
+                    ("reason", Value::from(reason)),
+                ]));
+            }
+        }
+    }
+
+    async fn scan_failed(&self, detail: String) {
+        let members = self.take_scan_members();
         let physical = self.scan.lock().await.physical.take();
         if let Some(physical) = physical {
             // The OS already stopped; release the core's scan ownership.
@@ -848,16 +911,7 @@ impl HostInner {
                 .await;
         }
         let _ = detail;
-        for (session_id, member) in members {
-            if let Some(session) = self.session(session_id) {
-                session.clear_scan(&member.membership);
-                session.outbox.push_control(object(vec![
-                    ("t", Value::from("scan-end")),
-                    ("operationId", Value::from(member.membership.as_str())),
-                    ("reason", Value::from("source-failed")),
-                ]));
-            }
-        }
+        self.end_scan_members(members, "source-failed");
     }
 
     /// Start, join or widen the shared physical scan for one member.
@@ -1117,6 +1171,13 @@ impl MobileHost {
         options: HostOptions,
         runtime: Handle,
     ) -> Result<Self, DesktopError> {
+        if options.owner.is_empty() {
+            return Err(DesktopError::new(
+                BleErrorCode::ArgumentInvalid,
+                BleErrorDomain::Core,
+                "ubm-mobile.host.owner",
+            ));
+        }
         let radio = ForeignRadio::new(platform, options.platform, options.adapter_label.clone());
         let signals = Arc::new(Signals::default());
         let observer_signals = Arc::clone(&signals);
@@ -1127,12 +1188,16 @@ impl MobileHost {
                 observer_signals.push(HostSignal::Lifecycle(event));
             }
             // Adapter records come from the platform's full snapshot
-            // (authorization, resetting), not the power-only projection.
-            // The mobile radio does not opt into the core's adapter-loss
-            // teardown (`tears_down_on_adapter_loss` keeps its default), so
-            // the core never emits a reset for it: the platform's own
-            // adapter facts drive the `adapter` records.
-            CentralSignal::Adapter(_) | CentralSignal::AdapterReset(_) => {}
+            // (authorization, resetting), not the central's projection.
+            CentralSignal::Adapter(_) => {}
+            // The mobile radio opts into the core's adapter-loss teardown
+            // (legacy `startAdapterLossCleanup`/`advanceGeneration`).
+            CentralSignal::AdapterReset(event) => {
+                observer_signals.push(HostSignal::AdapterReset(
+                    event.current,
+                    event.ended_scan.is_some(),
+                ));
+            }
             // The platform delivers these facts to the host directly as
             // ingress (`SecurityChanged` → `security` record, `ScanFailed` →
             // `scan-end`) and never hands them to the central as radio
@@ -1148,8 +1213,7 @@ impl MobileHost {
             drop_signals.push(HostSignal::IngressDrop(class));
         }));
         let profile = CentralProfile {
-            owner: options.owner.clone(),
-            backend_label: format!("mobile-{}", options.platform.as_str()),
+            identity: Arc::new(MobileIdentity::new(options.platform)),
             register_capabilities: register_mobile_capabilities,
             observer: Some(observer),
             adapter_id: None,
@@ -1272,13 +1336,16 @@ impl MobileHost {
             RadioIngress::AdapterState(snapshot) => {
                 let updated_at = inner.now_ms();
                 *lock(&inner.adapter) = Some((snapshot.clone(), updated_at));
-                let pushed = inner
-                    .radio
-                    .push_event(RadioEvent::AdapterState(power_state(&snapshot)));
-                inner
-                    .signals
-                    .push(HostSignal::Adapter(snapshot, updated_at));
-                pushed
+                let state = central_adapter_state(&snapshot);
+                // The change is published under the attachment it happened
+                // in, queued before the central can reset it (legacy emitted
+                // the state, then advanced the generation after cleanup).
+                inner.signals.push(HostSignal::Adapter(
+                    snapshot,
+                    updated_at,
+                    inner.central.attachment(),
+                ));
+                inner.radio.push_event(RadioEvent::AdapterState(state))
             }
             RadioIngress::ScanFailed { detail } => {
                 inner.signals.push(HostSignal::ScanFailed(detail));

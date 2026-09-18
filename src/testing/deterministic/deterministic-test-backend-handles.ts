@@ -19,6 +19,7 @@ import {
   type Subscription
 } from '../../backend-contract/gatt'
 import type {
+  CharacteristicRead,
   OperationTerminalRecord,
   PublicOperationOptions,
   SubscriptionOptions,
@@ -276,7 +277,7 @@ export class DeterministicGattDatabase implements GattDatabase<string, string, s
   read<ServiceOccurrence extends string, CharacteristicOccurrence extends string>(
     path: CharacteristicPath<string, string, string, ServiceOccurrence, CharacteristicOccurrence, 'current'>,
     optionsValue: PublicOperationOptions
-  ): Promise<OwnedBytes> {
+  ): Promise<CharacteristicRead> {
     return this.backend
       .read(path, {
         operation: {
@@ -284,7 +285,7 @@ export class DeterministicGattDatabase implements GattDatabase<string, string, s
           correlation: opaqueId('database-read', 'core-operation', 'deterministic:database')
         }
       })
-      .then(result => result.value)
+      .then(({ value, provenance }) => Object.freeze({ value, provenance }))
   }
 
   write<ServiceOccurrence extends string, CharacteristicOccurrence extends string>(

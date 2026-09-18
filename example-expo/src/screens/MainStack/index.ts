@@ -5,3 +5,5 @@ export * from './DeviceConnectDisconnectTestScreen/DeviceConnectDisconnectTestSc
 export * from './InstanceDestroyScreen/InstanceDestroyScreen'
 export * from './DeviceOnDisconnectTestScreen/DeviceOnDisconnectTestScreen'
 export * from './ExpoDiagnosticsScreen/ExpoDiagnosticsScreen'
+export * from './ScenariosScreen/ScenariosScreen'
+export * from './ScenarioScreen/ScenarioScreen'

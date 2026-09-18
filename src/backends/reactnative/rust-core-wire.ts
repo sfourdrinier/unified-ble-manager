@@ -9,15 +9,22 @@
 import {
   BLE_ERROR_CODES,
   BLE_ERROR_DOMAINS,
+  BLE_RETRYABILITIES,
   BackendContractError,
   contractError,
   type BleErrorCode,
   type BleErrorDomain,
+  type BleRetryability,
   type PlatformErrorDetail
 } from '../../backend-contract/errors'
 import type { AdapterAuthorization, AdapterAvailability, AdapterPower } from '../../backend-contract/identity'
 import type { BlePeerState, PeerSource, ResourceCounters } from '../../backend-contract/backend'
-import type { CancellationAcknowledgement, WriteMode } from '../../backend-contract/operations'
+import {
+  READ_PROVENANCES,
+  type CancellationAcknowledgement,
+  type ReadProvenance,
+  type WriteMode
+} from '../../backend-contract/operations'
 import type { StreamTerminalNotice } from '../../backend-contract/streams'
 
 export const WIRE_REVISION = 'ubm-mobile-wire/1'
@@ -57,6 +64,7 @@ export const WIRE_OPS = Object.freeze([
   'connection.request-priority',
   'connection.read-phy',
   'connection.request-phy',
+  'connection.maximum-write-length',
   'security.state',
   'security.pair',
   'security.cancel-pairing',
@@ -138,6 +146,8 @@ const SECURITY_SECURE_CONNECTIONS = Object.freeze(['yes', 'no', 'unknown', 'unsu
 const PAIR_OUTCOMES = Object.freeze(['paired', 'already-paired', 'rejected'] as const)
 /** ATT MTU bounds the radio can report (23 minimum, 517 Android maximum request). */
 const ATT_MTU: IntegerRange = { min: 23, max: 517 }
+/** One byte up to the ATT maximum attribute value (Core Spec Vol 3 Part F §3.2.9). */
+const ATT_WRITE_LENGTH: IntegerRange = { min: 1, max: 512 }
 const PEER_CONNECTION = Object.freeze([
   'connected',
   'disconnected',
@@ -188,7 +198,13 @@ export interface WireRemoteFailure {
 
 export type WireInvokeEnvelope =
   | { readonly kind: 'value'; readonly value: unknown }
-  | { readonly kind: 'failure'; readonly failure: WireRemoteFailure; readonly commit: WireCommit | null }
+  | {
+      readonly kind: 'failure'
+      readonly failure: WireRemoteFailure
+      readonly commit: WireCommit | null
+      /** The owner's own answer; never re-derived from the code. */
+      readonly retryability: BleRetryability
+    }
 
 export interface WireAdapterState {
   readonly availability: AdapterAvailability
@@ -369,6 +385,8 @@ export interface WireOpResults {
   readonly 'connection.request-priority': { readonly accepted: boolean }
   readonly 'connection.read-phy': WirePhyObservation
   readonly 'connection.request-phy': { readonly accepted: boolean; readonly observation: WirePhyObservation | null }
+  /** The platform's largest single write in the requested mode, bounded by the ATT maximum attribute value. */
+  readonly 'connection.maximum-write-length': { readonly maximumWriteLength: number }
   readonly 'security.state': WireSecurityState
   readonly 'security.pair': { readonly outcome: (typeof PAIR_OUTCOMES)[number]; readonly state: WireSecurityState }
   readonly 'security.cancel-pairing': { readonly state: 'requested' }
@@ -382,7 +400,7 @@ export interface WireOpResults {
     readonly displayName: string | null
   }
   readonly 'gatt.discover': WireDiscovery
-  readonly 'gatt.read': { readonly value: Uint8Array }
+  readonly 'gatt.read': { readonly value: Uint8Array; readonly provenance: ReadProvenance }
   readonly 'gatt.read-descriptor': { readonly value: Uint8Array }
   readonly 'gatt.write': { readonly commitState: WireWriteCommitState }
   readonly 'gatt.write-descriptor': { readonly commitState: WireWriteCommitState }
@@ -879,13 +897,15 @@ export function parseInvokeEnvelope(text: unknown, op: WireOp): WireResult<WireI
       return Object.freeze({ kind: 'value', value: fields.get('value') })
     }
     if (ok !== false) throw malformed(`${path}.ok`)
-    const fields = exactObject(value, ['ok', 'error', 'commit'], path)
+    const fields = exactObject(value, ['ok', 'error', 'commit', 'retryability'], path)
     const failure = remoteFailureOrThrow(fields.get('error'), `${path}.error`)
     const commit = nullable(fields.get('commit'), `${path}.commit`, (entry, entryPath) =>
       enumOrThrow(entry, COMMIT_STATES, entryPath)
     )
     if (WRITE_OPS.includes(knownOp) !== (commit !== null)) throw malformed(`${path}.commit`)
-    return Object.freeze({ kind: 'failure', failure, commit })
+    const retryability = enumOrThrow(fields.get('retryability'), BLE_RETRYABILITIES, `${path}.retryability`)
+    if (commit === 'uncertain' && retryability !== 'never') throw malformed(`${path}.retryability`)
+    return Object.freeze({ kind: 'failure', failure, commit, retryability })
   })
 }
 
@@ -913,6 +933,22 @@ export function remotePlatformDetail(
 /** The contract error a remote failure reports. */
 export function remoteFailureError(failure: WireRemoteFailure): BackendContractError {
   return contractError(failure.code, failure.domain, failure.operation, remotePlatformDetail(failure))
+}
+
+/**
+ * The contract error a failure envelope reports: the owner's retryability,
+ * and its commit state on writes (a write that may have committed is never
+ * retryable — the parser refuses an envelope that says otherwise).
+ */
+export function failureEnvelopeError(
+  envelope: Extract<WireInvokeEnvelope, { readonly kind: 'failure' }>
+): BackendContractError {
+  const error = remoteFailureError(envelope.failure)
+  return new BackendContractError({
+    ...error.normalized,
+    retryability: envelope.retryability,
+    ...(envelope.commit === null ? {} : { commit: envelope.commit })
+  })
 }
 
 /**
@@ -1216,6 +1252,18 @@ function readValueOrThrow(value: unknown, path: string): { readonly value: Uint8
   return Object.freeze({ value: decodeBase64OrThrow(fields.get('valueB64'), `${path}.valueB64`) })
 }
 
+/** A characteristic read carries the radio's own provenance; a reply without one is malformed. */
+function characteristicReadOrThrow(
+  value: unknown,
+  path: string
+): { readonly value: Uint8Array; readonly provenance: ReadProvenance } {
+  const fields = exactObject(value, ['valueB64', 'provenance'], path)
+  return Object.freeze({
+    value: decodeBase64OrThrow(fields.get('valueB64'), `${path}.valueB64`),
+    provenance: enumOrThrow(fields.get('provenance'), READ_PROVENANCES, `${path}.provenance`)
+  })
+}
+
 function writeReceiptOrThrow(value: unknown, path: string): { readonly commitState: WireWriteCommitState } {
   const fields = exactObject(value, ['commitState'], path)
   return Object.freeze({
@@ -1375,6 +1423,16 @@ const OP_PARSERS: OpParsers = Object.freeze({
     if (accepted !== (observation !== null)) throw malformed(`${path}.observation`)
     return Object.freeze({ accepted, observation })
   },
+  'connection.maximum-write-length': (value: unknown, path: string) => {
+    const fields = exactObject(value, ['maximumWriteLength'], path)
+    return Object.freeze({
+      maximumWriteLength: integerOrThrow(
+        fields.get('maximumWriteLength'),
+        ATT_WRITE_LENGTH,
+        `${path}.maximumWriteLength`
+      )
+    })
+  },
   'security.state': securityStateOrThrow,
   'security.pair': (value: unknown, path: string) => {
     const fields = exactObject(value, ['outcome', 'state'], path)
@@ -1418,7 +1476,7 @@ const OP_PARSERS: OpParsers = Object.freeze({
   },
   'connection.disconnect': cleanupRecordOrThrow,
   'gatt.discover': discoveryOrThrow,
-  'gatt.read': readValueOrThrow,
+  'gatt.read': characteristicReadOrThrow,
   'gatt.read-descriptor': readValueOrThrow,
   'gatt.write': writeReceiptOrThrow,
   'gatt.write-descriptor': writeReceiptOrThrow,

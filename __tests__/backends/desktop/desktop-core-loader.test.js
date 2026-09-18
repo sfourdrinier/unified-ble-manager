@@ -51,7 +51,7 @@ function fakeModule(identity) {
 
 /** A throwaway copy of native/desktop-core + its loader helper, anchored at a temp dir. */
 function stagePackageCopy() {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-desktop-core-loader-')))
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-desktop-core-loader-')))
   fs.mkdirSync(path.join(root, 'native', 'desktop-core'), { recursive: true })
   fs.copyFileSync(
     path.join(ROOT, 'native', 'load-node-api-addon.js'),
@@ -93,9 +93,16 @@ describe('native/desktop-core loader (PR210-03)', () => {
       addonPath,
       path.join(copy.root, 'native', 'desktop-core', 'build', 'Release', 'ubm_desktop_core.node')
     )
-    const otherArch = path.join(copy.root, 'native', 'desktop-core', 'prebuilds', 'linux-x64')
-    fs.mkdirSync(otherArch, { recursive: true })
-    fs.copyFileSync(addonPath, path.join(otherArch, 'ubm_desktop_core.node'))
+    // Every shipped target except the running one: never the host's own.
+    const hostTarget = `${process.platform}-${process.arch}`
+    const otherTargets = ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64', 'win32-x64', 'win32-arm64'].filter(
+      target => target !== hostTarget
+    )
+    for (const target of otherTargets) {
+      const otherArch = path.join(copy.root, 'native', 'desktop-core', 'prebuilds', target)
+      fs.mkdirSync(otherArch, { recursive: true })
+      fs.copyFileSync(addonPath, path.join(otherArch, 'ubm_desktop_core.node'))
+    }
     expect(captureCode(() => loadDesktopCore({}))).toBe('no-prebuilt-for-target')
   })
 

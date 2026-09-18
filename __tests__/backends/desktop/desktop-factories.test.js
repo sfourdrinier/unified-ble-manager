@@ -108,7 +108,8 @@ describe('no public entrypoint reaches a legacy desktop backend', () => {
     ['node-winrt', 'WINRT_BACKEND_ID', 'winrt'],
     ['node-bluez', 'BLUEZ_BACKEND_ID', 'bluez'],
     ['electron-main', 'COREBLUETOOTH_BACKEND_ID', 'corebluetooth'],
-    ['electron-main', 'WINRT_BACKEND_ID', 'winrt']
+    ['electron-main', 'WINRT_BACKEND_ID', 'winrt'],
+    ['electron-main', 'BLUEZ_BACKEND_ID', 'bluez']
   ])('%s %s keeps its legacy value and names the Rust backend (LEGACY-AUDIT-1 #67)', (module, name, platform) => {
     const exported = load(module)
     expect(exported[name]).toBe(exported.DESKTOP_RUST_CORE_PROFILES[platform].backendId)
@@ -117,6 +118,33 @@ describe('no public entrypoint reaches a legacy desktop backend', () => {
         platform
       ]
     )
+  })
+})
+
+// A physical Linux run found the Electron example taking the BlueZ
+// compatibility offer from `node/bluez`: Electron main owns the radio on every
+// desktop OS, so it offers each backend's identity exactly as the Node
+// entrypoint does, BlueZ included.
+describe('Electron main offers every desktop backend identity', () => {
+  test.each([
+    [
+      'node-corebluetooth',
+      [
+        'coreBluetoothCompatibility',
+        'COREBLUETOOTH_BACKEND_ID',
+        'COREBLUETOOTH_PLATFORM_ID',
+        'COREBLUETOOTH_IMPLEMENTATION_VERSION'
+      ]
+    ],
+    ['node-winrt', ['winRtCompatibility', 'WINRT_BACKEND_ID', 'WINRT_PLATFORM_ID', 'WINRT_IMPLEMENTATION_VERSION']],
+    ['node-bluez', ['bluezCompatibility', 'BLUEZ_BACKEND_ID', 'BLUEZ_PLATFORM_ID', 'BLUEZ_IMPLEMENTATION_VERSION']]
+  ])('the same %s identity exports', (module, names) => {
+    const node = load(module)
+    const electronMain = load('electron-main')
+    for (const name of names) {
+      expect(node[name]).toBeDefined()
+      expect(electronMain[name]).toBe(node[name])
+    }
   })
 })
 
@@ -191,13 +219,20 @@ describe('BlueZ bus choice (PR210-20)', () => {
       { module: loadAddon(), path: addonPath, mode: 'source', sidecar: null }
     )
     if (process.platform === 'linux') {
+      // The vendored btleplug reaches BlueZ on the session bus (patch
+      // `bluez-session-bus`), so the listing is that bus's answer: its
+      // adapters, or — where no session bus or no BlueZ on it is reachable,
+      // as on a headless runner — the BlueZ D-Bus failure itself (finding
+      // 124), never the system bus's adapters in its place.
       const outcome = await binding.listAdapters('session').then(
         adapters => ({ adapters }),
-        error => ({ code: error.normalized?.code })
+        error => ({ error: error.normalized })
       )
-      expect(outcome.adapters ?? outcome.code).toEqual(
-        outcome.adapters === undefined ? 'capability.unsupported' : expect.any(Array)
-      )
+      if (outcome.adapters !== undefined) {
+        expect(outcome.adapters).toEqual(expect.any(Array))
+      } else {
+        expect(outcome.error).toMatchObject({ code: 'platform.failure', platform: { domain: 'bluez-dbus' } })
+      }
     } else {
       await expect(binding.listAdapters('session')).rejects.toMatchObject({
         normalized: { code: 'capability.unsupported', platform: { safeMessage: expect.stringMatching(/Linux only/) } }
@@ -297,6 +332,10 @@ describe('option audit: every rejected option fails with zero core dispatch', ()
       { code: 'argument.invalid' }
     ))
 
+  // W-R1: legacy WinRT forwarded the mode to the native boundary and wrapped
+  // the native refusal as `gatt.write-failed` (never `capability.unsupported`);
+  // the core takes no descriptor-write mode, so the new path fails closed
+  // before dispatch with the same code and domain.
   test('descriptor write without response (open blocker gatt.descriptor-write-mode)', () =>
     audited(
       'winrt',
@@ -307,7 +346,7 @@ describe('option audit: every rejected option fails with zero core dispatch', ()
           deadline: null,
           mode: 'without-response'
         }),
-      { code: 'capability.unsupported' }
+      { code: 'gatt.write-failed' }
     ))
 
   test('require-indication on a characteristic without indicate', () =>

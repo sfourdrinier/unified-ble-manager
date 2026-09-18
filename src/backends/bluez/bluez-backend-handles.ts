@@ -19,6 +19,7 @@ import {
 } from '../../backend-contract/gatt'
 import { attachmentRecordsEqual, type AttachmentRecord } from '../../backend-contract/identity'
 import type {
+  CharacteristicRead,
   OperationTerminalRecord,
   PublicOperationOptions,
   SubscriptionOptions,
@@ -46,7 +47,11 @@ import type {
   BluezScanConsumer,
   BluezSubscriptionRecord
 } from './bluez-runtime-types'
-import { BLUEZ_GATT_CHARACTERISTIC_INTERFACE, BLUEZ_GATT_DESCRIPTOR_INTERFACE } from './bluez-dbus-contract'
+import {
+  BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
+  BLUEZ_GATT_DESCRIPTOR_INTERFACE,
+  BLUEZ_READ_PROVENANCE
+} from './bluez-dbus-contract'
 
 function bluezAccessRequirement(
   flags: readonly string[],
@@ -307,9 +312,12 @@ export class BluezGattDatabase implements GattDatabase<string, string, string> {
   async read<ServiceOccurrence extends string, CharacteristicOccurrence extends string>(
     path: CharacteristicPath<string, string, string, ServiceOccurrence, CharacteristicOccurrence, 'current'>,
     options: PublicOperationOptions
-  ): Promise<OwnedBytes> {
+  ): Promise<CharacteristicRead> {
     this.assertCurrent('bluez.gatt.read')
-    return this.runtime.readCharacteristic(this, path, options)
+    return Object.freeze({
+      value: await this.runtime.readCharacteristic(this, path, options),
+      provenance: BLUEZ_READ_PROVENANCE
+    })
   }
 
   async write<ServiceOccurrence extends string, CharacteristicOccurrence extends string>(

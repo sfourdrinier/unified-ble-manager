@@ -33,7 +33,7 @@ public final class TestMobile {
             MobileCoreBridge.nativeCompleteDiscovered(id, new int[] {0, 1, 2},
                 new String[] {"180d", "2a37", "2902"}, new long[] {0, 0, 0}, new int[] {0, 0x1c, 0});
         }
-        public void read(long id, String p, String s, long so, String c, long co) { MobileCoreBridge.nativeCompleteBytes(id, new byte[] {0x42}); }
+        public void read(long id, String p, String s, long so, String c, long co) { MobileCoreBridge.nativeCompleteRead(id, new byte[] {0x42}, "read-response"); }
         public void write(long id, String p, String s, long so, String c, long co, byte[] v, boolean r) { MobileCoreBridge.nativeCompleteUnit(id); }
         public void readDescriptor(long id, String p, String s, long so, String c, long co, String d, long dco) { MobileCoreBridge.nativeCompleteBytes(id, new byte[] {1, 0}); }
         public void writeDescriptor(long id, String p, String s, long so, String c, long co, String d, long dco, byte[] v) { MobileCoreBridge.nativeCompleteUnit(id); }

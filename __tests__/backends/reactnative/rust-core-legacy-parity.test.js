@@ -82,6 +82,13 @@ afterEach(() => {
   delete global.__unifiedBleNativeProtocolV2
 })
 
+/**
+ * Deliberate 5.0 capability changes, not regressions: legacy React Native
+ * reported `gatt:maximum-write-length` unavailable; 5.0 answers it from the
+ * platform through the Rust owner (CHANGELOG, docs/MOBILE_RUST_WIRE.md).
+ */
+const FIVE_ZERO_STATES = Object.freeze({ 'gatt:maximum-write-length': 'limited' })
+
 describe.each([
   ['android', ['security:cancel-pairing']],
   ['apple', []]
@@ -93,7 +100,7 @@ describe.each([
     const { manager, backend } = await rustManager(platform)
     const rustStates = registrationStates(backend.features)
     for (const [id, state] of Object.entries(legacyStates)) {
-      expect({ id, state: rustStates[id] }).toEqual({ id, state })
+      expect({ id, state: rustStates[id] }).toEqual({ id, state: FIVE_ZERO_STATES[id] ?? state })
     }
     const added = Object.keys(rustStates).filter(id => !(id in legacyStates))
     expect(added.sort()).toEqual([...extras].sort())
@@ -315,6 +322,22 @@ describe('Apple: RSSI works; controls CoreBluetooth lacks are refused before the
   })
 })
 
+describe('Android scan platform options the legacy boundary refused (139, AN-1)', () => {
+  test.each([
+    ['phy', { phy: 'le-coded' }],
+    ['reportDelayMs', { reportDelayMs: 500 }]
+  ])('an Android scan %s is capability.unsupported with no owner call', async (_name, extra) => {
+    const { native, manager } = await rustManager('android')
+    const error = await failure(
+      manager.scan(scanOptions({ platform: { kind: 'android', mode: 'balanced', ...extra } }))
+    )
+    expect(error.code).toBe('capability.unsupported')
+    expect(error.domain).toBe('scan')
+    expect(native.opsInvoked('scan.start')).toHaveLength(0)
+    await manager.destroy()
+  })
+})
+
 describe('Apple state restoration adoption (legacy native journal semantics)', () => {
   const authority = Object.freeze({
     namespaceValue: 'ubm-ns:tck',
@@ -361,6 +384,12 @@ describe('Apple state restoration adoption (legacy native journal semantics)', (
       [2, 'connection']
     ])
     expect(String(adopted.replayedRecords[1].peerId)).toBe('C0FFEE00-0000-4000-8000-000000000001')
+    // origin/main ios/NativeProtocol/UnifiedBleProtocolAppleExecution.mm:1856-1863 (appendRestorationRecords):
+    // the connection path of restored record `n` is restoration-connection-n / -owner-n / -generation-n.
+    const replayed = JSON.stringify(adopted.replayedRecords[1].payload)
+    for (const legacyId of ['restoration-connection-2', 'restoration-owner-2', 'restoration-generation-2']) {
+      expect(replayed).toContain(`"${legacyId}"`)
+    }
     expect((await manager.adoptRestoration(adoptionRequest(manager))).outcome).toBe('already-consumed')
     await manager.destroy()
   })
@@ -543,5 +572,229 @@ describe('PR210-71 ownership transfer: the legacy factory never exposed a grant 
     // The refused borrower left the owner's session untouched.
     expect(native.liveSessions()).toHaveLength(1)
     await manager.destroy()
+  })
+})
+
+describe('attachment identity is the legacy React Native one, never a desktop host name', () => {
+  /** A backend's attachment with its per-process instance ordinal abstracted. */
+  function named(attachment) {
+    const instance = String(attachment.backendInstanceId)
+    return {
+      backendInstance: instance.replace(/-\d+$/, '-<n>'),
+      attachmentId: String(attachment.attachmentId).replace(instance, '<instance>'),
+      backendGeneration: String(attachment.backendGeneration),
+      adapterId: String(attachment.adapter.adapterId),
+      adapterGeneration: String(attachment.adapter.adapterGeneration),
+      displayName: attachment.adapter.displayName,
+      stateGeneration: String(attachment.adapter.state.backendGeneration)
+    }
+  }
+
+  test.each(['android', 'apple'])('%s: every attachment name has the legacy format', async platform => {
+    const legacy = await legacyBackend(platform)
+    const expected = named(legacy.identity.attachment)
+    await legacy.destroy()
+    expect(expected).toEqual({
+      backendInstance: `react-native-${platform}-backend-<n>`,
+      attachmentId: '<instance>:1:1',
+      backendGeneration: '1',
+      adapterId: platform === 'android' ? 'android-default-adapter' : 'apple-corebluetooth-default-adapter',
+      adapterGeneration: '1',
+      displayName: platform === 'android' ? 'Android default BLE adapter' : 'Apple CoreBluetooth central adapter',
+      stateGeneration: '1'
+    })
+
+    const { manager, backend } = await rustManager(platform)
+    expect(named(backend.identity.attachment)).toEqual(expected)
+    const state = await backend.adapter.currentState()
+    expect(String(state.backendGeneration)).toBe('1')
+    expect(JSON.stringify(backend.identity).toLowerCase()).not.toContain('desktop')
+    await manager.destroy()
+  })
+
+  test('each backend is its own instance, numbered per process as legacy numbered them', async () => {
+    const first = await rustManager('android')
+    const second = await rustManager('android')
+    const ordinal = backend => Number(/-(\d+)$/.exec(String(backend.identity.attachment.backendInstanceId))[1])
+    expect(ordinal(second.backend)).toBeGreaterThan(ordinal(first.backend))
+    await first.manager.destroy()
+    await second.manager.destroy()
+  })
+})
+
+describe('resource names have the legacy React Native formats', () => {
+  // origin/main src/backends/corebluetooth/corebluetooth-backend.ts:615-618,915-921,1437 and
+  // corebluetooth-gatt-operations.ts:80-82,207 — the shared direct-GATT core both legacy React
+  // Native providers ran on; every counter is the backend's own and starts at 1.
+  test.each(['android', 'apple'])('%s: scan, peer, connection, database and subscription', async platform => {
+    const { native, manager, backend } = await rustManager(platform)
+    const scan = await manager.scan(scanOptions())
+    expect(String(scan.scanSessionId)).toBe('corebluetooth-scan-session-1')
+    expect(String(scan.leaseId)).toBe('corebluetooth-scan-lease-1')
+    native.emitAdvertisement()
+    const observation = (await take(scan.observations)).value.value
+    const peerId = observation.device.id
+    expect(String(peerId)).toBe('corebluetooth-peer-1-1')
+    expect((await scan.stop()).state).toBe('released')
+    expect(backend.identity.registeredBackendId).toContain(platform)
+    const connection = await manager.connect(peerId, NO_OPTIONS)
+    expect(String(connection.connectionId)).toBe('corebluetooth-connection-1')
+    expect(String(connection.ownerLeaseId)).toBe('corebluetooth-connection-lease-1')
+    expect(String(connection.connectionGeneration)).toBe('corebluetooth-connection-generation-1')
+    const database = await connection.discover(NO_OPTIONS)
+    expect(String(database.path.databaseId)).toBe('corebluetooth-database-1')
+    expect(String(database.path.databaseGeneration)).toBe('corebluetooth-database-generation-1')
+    const path = (await database.snapshot()).characteristics[0].path
+    const subscription = await database.subscribe(path, subscribeOptions())
+    expect(String(subscription.subscriptionId)).toBe('corebluetooth-subscription-1')
+    expect((await subscription.remove()).state).toBe('released')
+
+    // A rediscovery and a reconnect advance the backend's own counters, as legacy did.
+    const rediscovered = await connection.discover(NO_OPTIONS)
+    expect(String(rediscovered.path.databaseId)).toBe('corebluetooth-database-2')
+    expect(String(rediscovered.path.databaseGeneration)).toBe('corebluetooth-database-generation-2')
+    expect((await connection.disconnect()).state).toBe('released')
+    const again = await manager.connect(peerId, NO_OPTIONS)
+    expect(String(again.connectionId)).toBe('corebluetooth-connection-2')
+    expect(String(again.connectionGeneration)).toBe('corebluetooth-connection-generation-2')
+    expect(native.opsInvoked('connection.connect')).toHaveLength(2)
+    await manager.destroy()
+  })
+})
+
+describe('adapter loss advances the generations and rebuilds the attachment as legacy did', () => {
+  // origin/main corebluetooth-backend.ts handleAdapterState :1146 and advanceGeneration :1282.
+  async function observeLoss(backend, lose) {
+    const events = backend.events()
+    const watch = await backend.adapter.watchState()
+    const iterator = events[Symbol.asyncIterator]()
+    const transitions = watch.transitions[Symbol.asyncIterator]()
+    await lose()
+    const kinds = []
+    for (;;) {
+      const item = await Promise.race([iterator.next(), settle(200).then(() => null)])
+      if (item === null) break
+      if (item.value.kind !== 'value') break
+      kinds.push(item.value.value.kind)
+      if (item.value.value.kind === 'backend-restarted') break
+    }
+    const snapshots = []
+    for (;;) {
+      const item = await Promise.race([transitions.next(), settle(50).then(() => null)])
+      if (item === null || item.value.kind !== 'value') break
+      snapshots.push([item.value.value.power, String(item.value.value.backendGeneration)])
+    }
+    return { kinds, snapshots, attachment: named(backend.identity.attachment) }
+  }
+
+  function named(attachment) {
+    const instance = String(attachment.backendInstanceId)
+    return {
+      attachmentId: String(attachment.attachmentId).replace(instance, '<instance>'),
+      backendGeneration: String(attachment.backendGeneration),
+      adapterGeneration: String(attachment.adapter.adapterGeneration)
+    }
+  }
+
+  test.each(['android', 'apple'])('%s', async platform => {
+    const legacy = await legacyBackend(platform)
+    const runtime = global.__unifiedBleNativeProtocolV2
+    const expected = await observeLoss(legacy, async () => {
+      runtime.emitEvent('adapterState', [
+        {
+          id: 15,
+          value: {
+            kind: 'adapterStateSnapshot',
+            fields: [
+              { id: 1, value: 'available' },
+              { id: 2, value: 'granted' },
+              { id: 3, value: 'off' }
+            ]
+          }
+        }
+      ])
+    })
+    await legacy.destroy()
+    expect(expected.attachment).toEqual({
+      attachmentId: '<instance>:2:2',
+      backendGeneration: '2',
+      adapterGeneration: '2'
+    })
+
+    const { native, manager, backend } = await rustManager(platform)
+    // The owner's order (crates/ubm-mobile/tests/adapter_loss.rs): the change
+    // under the old generations, then the advance as its own record.
+    const observed = await observeLoss(backend, async () => {
+      native.setAdapter({ power: 'off' })
+      native.setAdapter({ backendGeneration: '2', adapterGeneration: '2' })
+    })
+    expect(observed).toEqual(expected)
+    await manager.destroy()
+  })
+})
+
+describe('public operation correlations are the legacy core ones (`operation-{n}`)', () => {
+  // origin/main src/core/unified-ble-core.ts:179 minted every coordinator-run
+  // operation's correlation as `operation-{n}` from one per-manager counter;
+  // write receipts and connection-control results return it to the app
+  // (`PortableOperationTerminalRecord.correlation`). The owner's wire
+  // operation ids stay internal.
+  const legacyManager = require('../../../src/manager/ble-manager')
+  const { version, versionRange } = require('../../../src/backend-contract/primitives')
+
+  function compatibility() {
+    return {
+      backendContract: versionRange(version('backend-contract', 1), version('backend-contract', 1)),
+      capabilitySchema: versionRange(version('capability-schema', 1), version('capability-schema', 1)),
+      eventSchema: versionRange(version('event-schema', 1), version('event-schema', 1)),
+      traceFormat: versionRange(version('trace-format', 1), version('trace-format', 1))
+    }
+  }
+
+  async function correlations(manager, peerId) {
+    const connection = await manager.connect(peerId, NO_OPTIONS)
+    const first = await connection.readRssi(NO_OPTIONS)
+    const database = await connection.discover(NO_OPTIONS)
+    const snapshot = await database.snapshot()
+    await database.read(snapshot.characteristics[0].path, NO_OPTIONS)
+    const receipt = await database.writeDescriptor(snapshot.descriptors[0].path, new Uint8Array([1, 0]), {
+      ...NO_OPTIONS,
+      mode: 'with-response'
+    })
+    const second = await connection.readRssi(NO_OPTIONS)
+    return [first.terminal.correlation, receipt.terminal.correlation, second.terminal.correlation].map(String)
+  }
+
+  test('android and apple number them as the legacy manager did', async () => {
+    const backend = await legacyBackend('android')
+    const legacy = await legacyManager.createBleManagerFromBackend(
+      backend,
+      {
+        coreCompatibility: compatibility(),
+        manager: {
+          clientId: opaqueId('client-a', 'client', 'legacy:a'),
+          managerId: opaqueId('manager-a', 'manager', 'legacy:a'),
+          ownerMode: 'owning'
+        }
+      },
+      legacyManager.DEFAULT_BLE_MANAGER_OPTIONS
+    )
+    const expected = await correlations(
+      legacy,
+      backend.connections.peerFromAddress({ address: DEFAULT_PEER, addressType: 'public' })
+    )
+    await legacy.destroy()
+    expect(expected.every(value => /^operation-\d+$/.test(value))).toBe(true)
+
+    for (const platform of ['android', 'apple']) {
+      const { native, manager, backend: rust } = await rustManager(platform)
+      const scan = await manager.scan(scanOptions())
+      native.emitAdvertisement()
+      const peerId = (await take(scan.observations)).value.value.device.id
+      await scan.stop()
+      expect(await correlations(manager, peerId)).toEqual(expected)
+      expect(rust.identity.registeredBackendId).toContain(platform)
+      await manager.destroy()
+    }
   })
 })

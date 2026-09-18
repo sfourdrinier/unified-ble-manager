@@ -525,7 +525,10 @@ describe('WebBluetoothBackend availability and attachment lifecycle', () => {
       power: 'unknown'
     })
     expect(backend.resourceCounters()).toMatchObject({ connectionLeases: 1, physicalLinks: 1 })
-    await expect(database.read(path, noDeadline())).resolves.toEqual(new Uint8Array([0, 72]))
+    await expect(database.read(path, noDeadline())).resolves.toEqual({
+      value: new Uint8Array([0, 72]),
+      provenance: 'read-response'
+    })
     await backend.destroy()
   })
 
@@ -551,7 +554,10 @@ describe('WebBluetoothBackend availability and attachment lifecycle', () => {
       power: 'unknown'
     })
     expect(backend.resourceCounters()).toMatchObject({ connectionLeases: 1, physicalLinks: 1 })
-    await expect(database.read(path, noDeadline())).resolves.toEqual(new Uint8Array([0, 72]))
+    await expect(database.read(path, noDeadline())).resolves.toEqual({
+      value: new Uint8Array([0, 72]),
+      provenance: 'read-response'
+    })
     await backend.destroy()
   })
 

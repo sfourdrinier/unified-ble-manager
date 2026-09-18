@@ -125,6 +125,27 @@ stream limits and capability reports.
 
 Deterministic and mock boundaries are test-only. They prove contract/fault behavior, not live radio. Package, compile, ABI, and export checks prove only the level they actually exercise. Native compilation and package installation do not promote a backend to a higher support label.
 
+## Reading a characteristic while it notifies
+
+Every backend admits a read on a characteristic that notifies or indicates,
+and `characteristic.readReceipt()` reports what the platform knows about the
+value. This is a per-read answer, not a static capability:
+
+| Host | `provenance` |
+| --- | --- |
+| Android (React Native) | `read-response` (`onCharacteristicRead`) |
+| Apple (React Native iOS, Node/Electron macOS) | `read-response` while the characteristic cannot notify; `read-or-notification` while it notifies, has a subscription, or has a notification state change in flight |
+| WinRT | `read-response` (`ReadValueAsync`, uncached) |
+| BlueZ | `read-response` (`ReadValue`) |
+| Web Bluetooth | `read-response` (`readValue()`); the browser's own attribution on its host OS is not observable from the page |
+| Electron renderer, Tauri | the host's answer, verbatim |
+
+CoreBluetooth reports a read response and a notification through one
+`didUpdateValueFor` callback. A read on a notifying Apple characteristic
+completes with the first value that arrives after it was issued, which may be
+a notification; that value is also delivered to the subscribers, and reads of
+one characteristic complete in request order.
+
 ## Evidence records
 
 [`GAPS.4.0.md`](GAPS.4.0.md) inventories current evidence work. The generated support page consumes versioned evidence manifests containing backend identity, protocol versions, package digest where applicable, OS/runtime/hardware, commands, result artifacts, limitations, revalidation rules, and responsible maintainer.

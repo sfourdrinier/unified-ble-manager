@@ -6,7 +6,9 @@
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "driver": "node ../examples-shared/driver/server/cli.mjs",
+    "test:driver": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test '../examples-shared/driver/__tests__/*.test.mjs' '../examples-shared/driver/server/__tests__/*.test.mjs' 'src/driver/__tests__/*.test.mjs'"
   },
   "dependencies": {
     "@expo/dom-webview": "57.0.1",

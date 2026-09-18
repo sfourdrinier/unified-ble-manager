@@ -231,6 +231,8 @@ export type {
   GattValueStream,
   GattDatabaseChangedEvent,
   GattWriteReceipt,
+  GattReadReceipt,
+  GattReadProvenance,
   GattLongWriteReceipt,
   GattCharacteristicProperties,
   GattAccessRequirements,
@@ -1111,11 +1113,10 @@ function publicWriteReadinessStream<Attachment extends string, Identity extends 
 
       const open = async (): Promise<void> => {
         if (watch !== null) return
-        const observe = connection.writeWithoutResponseReadiness
-        if (observe === undefined) {
+        if (connection.writeWithoutResponseReadiness === undefined) {
           throw contractError('capability.unsupported', 'connection', 'public-connection.controls.write-readiness')
         }
-        watch = await observe()
+        watch = await connection.writeWithoutResponseReadiness()
         iterator = watch.events[Symbol.asyncIterator]()
       }
 
@@ -1292,11 +1293,10 @@ function createPublicConnectionControls<Attachment extends string, Identity exte
         'connection:effective-mtu',
         'public-connection.controls.effective-mtu'
       )
-      const observe = connection.effectiveMtu
-      if (observe === undefined) {
+      if (connection.effectiveMtu === undefined) {
         throw contractError('capability.unsupported', 'connection', 'public-connection.controls.effective-mtu')
       }
-      const result = await observe()
+      const result = await connection.effectiveMtu()
       assertPublicConnectionIdentity(connection, result, 'public-connection.controls.effective-mtu.identity')
       if (result.attMtu !== null) {
         if (

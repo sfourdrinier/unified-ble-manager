@@ -218,6 +218,66 @@ async fn polar_h10_script_runs_end_to_end() {
     assert_eq!(after["process"]["native"]["pendingRadioRequests"], 0);
 }
 
+/// A characteristic read reports the radio's own provenance: CoreBluetooth
+/// answering a read on a notifying characteristic says the value may be a
+/// notification, and the owner carries that verbatim to the wire.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_read_reports_the_radio_provenance_on_the_wire() {
+    for (provenance, wire) in [
+        (ubm_mobile::ReadProvenance::ReadResponse, "read-response"),
+        (
+            ubm_mobile::ReadProvenance::ReadOrNotification,
+            "read-or-notification",
+        ),
+    ] {
+        let radio = Scripted::new(Box::new(move |request| match request {
+            ubm_mobile::RadioRequest::Read { .. } => Reply::Now(RadioCompletion::Read {
+                value: vec![0x0f],
+                provenance,
+            }),
+            ubm_mobile::RadioRequest::Discover { .. } => {
+                let mut services = polar_services();
+                services[0].characteristics[0].properties.read = true;
+                Reply::Now(RadioCompletion::Discovered(services))
+            }
+            other => polar_responder(other),
+        }));
+        let (_host, _) = open(&radio, MobilePlatform::Apple).await;
+        let session = _host.open_session("rn").unwrap();
+        connect(&session, "c").await;
+        ok(&call(
+            &session,
+            "gatt.discover",
+            &json!({"peerId": POLAR, "lease": "lease-1", "operationId": "d"}).to_string(),
+        )
+        .await);
+        let reply = call(
+            &session,
+            "gatt.read",
+            &json!({"peerId": POLAR, "selector": selector(), "operationId": "r"}).to_string(),
+        )
+        .await;
+        assert_eq!(ok(&reply)["valueB64"], "Dw==");
+        assert_eq!(ok(&reply)["provenance"], wire);
+    }
+}
+
+/// A radio that answers a characteristic read without saying what the value
+/// is (a bare `Bytes`) is refused as the wrong answer shape: the owner never
+/// assumes a provenance the platform did not report.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_read_answered_without_provenance_is_refused() {
+    assert!(!RadioCompletion::Bytes(vec![1]).answers(RequestKind::Read));
+    assert!(
+        RadioCompletion::Read {
+            value: vec![1],
+            provenance: ubm_mobile::ReadProvenance::ReadResponse,
+        }
+        .answers(RequestKind::Read)
+    );
+    assert!(RadioCompletion::Bytes(vec![1]).answers(RequestKind::ReadDescriptor));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancel_targets_exactly_one_operation() {
     let radio = Scripted::new(Box::new(|request| match request {
@@ -245,6 +305,9 @@ async fn cancel_targets_exactly_one_operation() {
         let args = read("read-a");
         async move { call(&session, "gatt.read", &args).await }
     });
+    // read-a reaches the radio before read-b exists, so the cancelled op is
+    // the one in flight (spawned tasks otherwise start in any order).
+    wait_for(|| !radio.held_of(RequestKind::Read).is_empty()).await;
     let second = tokio::spawn({
         let session = session.clone();
         let args = read("read-b");
@@ -252,7 +315,6 @@ async fn cancel_targets_exactly_one_operation() {
     });
     // The core may queue the second read behind the first (one GATT op in
     // flight per link); either way exactly the cancelled op is cancelled.
-    wait_for(|| !radio.held_of(RequestKind::Read).is_empty()).await;
     let first_held = radio.held_of(RequestKind::Read)[0];
     let first_is_a = matches!(
         radio.held.lock().unwrap().get(&first_held),
@@ -282,11 +344,25 @@ async fn cancel_targets_exactly_one_operation() {
         .iter()
         .find(|id| !cancels.contains(id))
         .unwrap();
-    radio.answer(other, RadioCompletion::Bytes(vec![7]));
-    assert_eq!(ok(&second.await.unwrap())["valueB64"], "Bw==");
+    radio.answer(
+        other,
+        RadioCompletion::Read {
+            value: vec![7],
+            provenance: ubm_mobile::ReadProvenance::ReadResponse,
+        },
+    );
+    let second = second.await.unwrap();
+    assert_eq!(ok(&second)["valueB64"], "Bw==");
+    assert_eq!(ok(&second)["provenance"], "read-response");
     // A late answer for the cancelled request is counted, not dropped.
     assert_eq!(
-        radio.answer(cancels[0], RadioCompletion::Bytes(vec![1])),
+        radio.answer(
+            cancels[0],
+            RadioCompletion::Read {
+                value: vec![1],
+                provenance: ubm_mobile::ReadProvenance::ReadResponse,
+            }
+        ),
         ubm_mobile::CompletionStatus::Late
     );
     assert_eq!(host.radio_counters().late_completions, 1);
@@ -1460,6 +1536,93 @@ async fn a_withheld_write_limit_fails_closed_before_the_radio() {
     assert_eq!(radio.count(RequestKind::Write), 0);
 }
 
+// -- gatt:maximum-write-length: the platform's own per-mode answer -----------
+
+async fn maximum_write_length(
+    session: &ubm_mobile::MobileSession,
+    lease: &str,
+    mode: &str,
+    id: &str,
+) -> String {
+    call(
+        session,
+        "connection.maximum-write-length",
+        &json!({"peerId": POLAR, "lease": lease, "mode": mode, "operationId": id}).to_string(),
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn android_maximum_write_length_before_and_after_an_mtu_exchange() {
+    // Before `onMtuChanged` the adapter answers the ATT default MTU 23 for a
+    // command; with response the stack performs the long write up to the
+    // ATT maximum attribute value (512).
+    let limits = std::sync::Arc::new(std::sync::Mutex::new(ubm_desktop::WriteLimits {
+        with_response: 512,
+        without_response: 20,
+    }));
+    let answered = limits.clone();
+    let radio = Scripted::new(Box::new(move |request| match request {
+        ubm_mobile::RadioRequest::ReadWriteLimits { .. } => {
+            Reply::Now(RadioCompletion::WriteLimits(*answered.lock().unwrap()))
+        }
+        other => polar_responder(other),
+    }));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("rn").unwrap();
+    connect(&session, "c").await;
+
+    let before = ok(&maximum_write_length(&session, "lease-1", "with-response", "m1").await);
+    assert_eq!(before, json!({"maximumWriteLength": 512}));
+    let before = ok(&maximum_write_length(&session, "lease-1", "without-response", "m2").await);
+    assert_eq!(before, json!({"maximumWriteLength": 20}));
+
+    *limits.lock().unwrap() = ubm_desktop::WriteLimits {
+        with_response: 512,
+        without_response: 229,
+    };
+    let after = ok(&maximum_write_length(&session, "lease-1", "without-response", "m3").await);
+    assert_eq!(after, json!({"maximumWriteLength": 229}));
+    assert_eq!(
+        radio.count(RequestKind::ReadMtu),
+        0,
+        "answered from the platform's per-mode limits, never derived from the MTU"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apple_maximum_write_length_is_corebluetooth_maximum_write_value_length() {
+    let radio = Scripted::new(writable_responder(Some(ubm_desktop::WriteLimits {
+        with_response: 512,
+        without_response: 182,
+    })));
+    let (host, _) = open(&radio, MobilePlatform::Apple).await;
+    let session = host.open_session("rn").unwrap();
+    connect(&session, "c").await;
+    let with = ok(&maximum_write_length(&session, "lease-1", "with-response", "m1").await);
+    assert_eq!(with["maximumWriteLength"], 512);
+    let without = ok(&maximum_write_length(&session, "lease-1", "without-response", "m2").await);
+    assert_eq!(without["maximumWriteLength"], 182);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn maximum_write_length_refusals_are_contract_errors() {
+    let radio = Scripted::new(writable_responder(None));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("rn").unwrap();
+    connect(&session, "c").await;
+    let (error, _) =
+        failure(&maximum_write_length(&session, "lease-1", "with-response", "m1").await);
+    assert_eq!(
+        error["code"], "capability.unavailable",
+        "a withheld platform answer is never guessed"
+    );
+    let (error, _) = failure(&maximum_write_length(&session, "other", "with-response", "m2").await);
+    assert_eq!(error["code"], "ownership.denied");
+    let (error, _) = failure(&maximum_write_length(&session, "lease-1", "long-write", "m3").await);
+    assert_eq!(error["code"], "argument.invalid");
+}
+
 // -- 87 (N8): foreground-service leases live as long as their scope ---------
 
 fn leasing_responder() -> Box<dyn FnMut(&ubm_mobile::RadioRequest) -> Reply + Send> {
@@ -2067,16 +2230,6 @@ async fn an_apple_failure_carries_the_nserror_domain_and_code() {
         json!({"domain": "CBATTErrorDomain", "code": "3",
                "message": "Writing is not permitted.", "metadata": {}})
     );
-    // The owned radio's overlapping-read refusal keeps its legacy contract code.
-    let overlapping = PlatformFailure {
-        native_domain: Some("com.sfourdrinier.unifiedblemanager.corebluetooth".to_owned()),
-        native_code: Some(1031),
-        ..PlatformFailure::not_dispatched(FailureKind::Busy, "read already pending")
-    };
-    let envelope = failed_op(MobilePlatform::Apple, overlapping, "gatt.read").await;
-    assert_eq!(envelope["error"]["code"], "gatt.read-failed");
-    assert_eq!(envelope["error"]["domain"], "gatt");
-    assert_eq!(envelope["error"]["platform"]["code"], "1031");
     // Without an NSError the legacy native code names the verb.
     let bare = PlatformFailure::new(FailureKind::Platform, "no write limit");
     let envelope = failed_op(MobilePlatform::Apple, bare, "gatt.read").await;
@@ -2253,5 +2406,178 @@ async fn an_android_native_code_names_the_platform_detail_whatever_the_kind() {
             json!({"domain": "android", "code": "foregroundServiceNotConfigured",
                    "message": "Rebuild with configured notification metadata.", "metadata": {}})
         );
+    }
+}
+
+// -- 139 (AN-1..3): Android link-control and scan-option identities --------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn android_scan_phy_and_report_delay_are_capability_unsupported_as_legacy() {
+    for key in ["phy", "reportDelayMs"] {
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("rn").unwrap();
+        let mut platform = json!({"mode": "balanced"});
+        platform[key] = if key == "phy" {
+            json!("le-coded")
+        } else {
+            json!(500)
+        };
+        let (error, _) = failure(
+            &call(
+                &session,
+                "scan.start",
+                &json!({"serviceUuids": [], "duplicatePolicy": "all", "operationId": "s", "platform": platform})
+                    .to_string(),
+            )
+            .await,
+        );
+        assert_eq!(error["code"], "capability.unsupported", "{key}");
+        assert_eq!(error["domain"], "scan", "{key}");
+        assert_eq!(error["operation"], "scan.start.platform-options", "{key}");
+        assert_eq!(radio.count(RequestKind::StartScan), 0, "{key}: no effect");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_empty_phy_request_is_argument_invalid_in_the_connection_domain_as_legacy() {
+    let radio = Scripted::polar();
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("rn").unwrap();
+    connect(&session, "c").await;
+    let (error, _) = failure(
+        &call(
+            &session,
+            "connection.request-phy",
+            &json!({"peerId": POLAR, "lease": "lease-1", "operationId": "p"}).to_string(),
+        )
+        .await,
+    );
+    assert_eq!(error["code"], "argument.invalid");
+    assert_eq!(error["domain"], "connection");
+    assert_eq!(radio.count(RequestKind::RequestPhy), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_mtu_below_23_reaches_the_radio_as_legacy_did() {
+    let radio = Scripted::new(Box::new(|request| match request {
+        ubm_mobile::RadioRequest::RequestMtu { .. } => Reply::Now(RadioCompletion::Failed(
+            PlatformFailure::new(FailureKind::Platform, "requestMtu failed to start"),
+        )),
+        other => polar_responder(other),
+    }));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("rn").unwrap();
+    connect(&session, "c").await;
+    let (error, _) = failure(
+        &call(
+            &session,
+            "connection.request-mtu",
+            &json!({"peerId": POLAR, "lease": "lease-1", "mtu": 10, "operationId": "m"})
+                .to_string(),
+        )
+        .await,
+    );
+    let requested = radio
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|request| match request {
+            ubm_mobile::RadioRequest::RequestMtu { mtu, .. } => Some(*mtu),
+            _ => None,
+        });
+    assert_eq!(
+        requested,
+        Some(10),
+        "legacy passed the request to the platform"
+    );
+    assert_eq!(error["code"], "platform.failure");
+    assert_eq!(error["platform"]["code"], "requestMtuFailed");
+}
+
+/// Owner decision (5.0): a connect whose link the platform could not
+/// establish (Android GATT 133 / HCI 0x3E, CoreBluetooth `connectionFailed`)
+/// reports `caller-decides` on the wire, with the platform's answer kept;
+/// the owner never retries it. A connect refused for another reason, and
+/// a dispatched write, stay `never`: every failure envelope says which.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_transient_connect_failure_is_caller_decides_on_the_wire() {
+    let cases = [
+        (
+            MobilePlatform::Android,
+            PlatformFailure {
+                gatt_status: Some(133),
+                ..PlatformFailure::new(FailureKind::GattStatus, "Android GATT connection failed with status 133")
+            },
+            "caller-decides",
+        ),
+        (
+            MobilePlatform::Android,
+            PlatformFailure {
+                gatt_status: Some(62),
+                ..PlatformFailure::new(FailureKind::GattStatus, "Android GATT connection failed with status 62")
+            },
+            "caller-decides",
+        ),
+        (
+            MobilePlatform::Android,
+            PlatformFailure {
+                gatt_status: Some(5),
+                ..PlatformFailure::new(FailureKind::GattStatus, "insufficient authentication")
+            },
+            "never",
+        ),
+        (
+            MobilePlatform::Apple,
+            PlatformFailure {
+                native_domain: Some("CBErrorDomain".to_owned()),
+                native_code: Some(10),
+                ..PlatformFailure::new(FailureKind::Platform, "CBErrorDomain#10: Connection failed")
+            },
+            "caller-decides",
+        ),
+        (
+            MobilePlatform::Apple,
+            PlatformFailure {
+                native_domain: Some("CBErrorDomain".to_owned()),
+                native_code: Some(6),
+                ..PlatformFailure::new(FailureKind::Platform, "CBErrorDomain#6: The connection has timed out")
+            },
+            "caller-decides",
+        ),
+        (
+            MobilePlatform::Apple,
+            PlatformFailure {
+                native_domain: Some("CBErrorDomain".to_owned()),
+                native_code: Some(14),
+                ..PlatformFailure::new(FailureKind::Platform, "CBErrorDomain#14: Peer removed pairing information")
+            },
+            "never",
+        ),
+    ];
+    for (platform, answer, retryability) in cases {
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, platform).await;
+        let session = host.open_session("rn").unwrap();
+        let refusal = answer.clone();
+        radio.set_responder(Box::new(move |request| match request {
+            ubm_mobile::RadioRequest::Connect { .. } => {
+                Reply::Now(RadioCompletion::Failed(refusal.clone()))
+            }
+            other => polar_responder(other),
+        }));
+        let text = call(
+            &session,
+            "connection.connect",
+            &json!({"peerId": POLAR, "lease": "lease-1", "operationId": "c"}).to_string(),
+        )
+        .await;
+        let envelope = parse(&text);
+        assert_eq!(envelope["ok"], false, "{text}");
+        assert_eq!(envelope["retryability"], retryability, "{answer:?}: {text}");
+        assert_eq!(envelope["error"]["code"], "platform.failure");
+        assert!(envelope["error"]["platform"].is_object(), "the platform's answer is kept");
+        assert_eq!(radio.count(RequestKind::Connect), 1, "the owner never retries");
     }
 }

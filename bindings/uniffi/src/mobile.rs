@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use ubm_desktop::{
     CharacteristicSnapshot, DeliveryMode, DescriptorSnapshot, DesktopError, ObservedDelivery,
-    PropertyFlags, ServiceSnapshot,
+    PropertyFlags, ReadProvenance, ServiceSnapshot,
 };
 use ubm_mobile::{
     AdapterAuthorization, AdapterAvailability, AdapterPower, AdapterSnapshot, Advertisement,
@@ -523,6 +523,10 @@ pub enum MobileRadioCompletion {
     Bytes {
         value: Vec<u8>,
     },
+    Read {
+        value: Vec<u8>,
+        provenance: String,
+    },
     Adapter {
         snapshot: MobileAdapterSnapshot,
     },
@@ -631,6 +635,11 @@ pub fn completion(value: MobileRadioCompletion) -> Result<RadioCompletion, Strin
     Ok(match value {
         MobileRadioCompletion::Unit => RadioCompletion::Unit,
         MobileRadioCompletion::Bytes { value } => RadioCompletion::Bytes(value),
+        MobileRadioCompletion::Read { value, provenance } => RadioCompletion::Read {
+            value,
+            provenance: ReadProvenance::from_wire(&provenance)
+                .ok_or_else(|| format!("unknown read provenance {provenance}"))?,
+        },
         MobileRadioCompletion::Adapter { snapshot } => RadioCompletion::Adapter(adapter(snapshot)?),
         MobileRadioCompletion::Discovered { services } => RadioCompletion::Discovered(
             services

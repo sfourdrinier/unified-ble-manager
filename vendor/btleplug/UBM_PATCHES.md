@@ -34,8 +34,8 @@ same-UUID attributes collapse, adapter loss states are unreadable, scan
 duplicates ignore the caller, WinRT discovery reads a stale cache,
 broadcast loss is silent, WinRT scans actively, BlueZ discovery ignores
 the caller's name prefix, 16-slot broadcasts lose events below the
-legacy backends' queues, a CoreBluetooth notification can become a read
-result, platform failures lose their identity, WinRT scans without the legacy OS
+legacy backends' queues, a CoreBluetooth notification silently becomes a
+read result, platform failures lose their identity, WinRT scans without the legacy OS
 service filter, sightings are lost or carry another advertisement's
 data, and a BlueZ name-only change is invisible.
 
@@ -615,35 +615,37 @@ report exactly 4 lost. The test also asserts the capacity is at least
 **Problem.** CoreBluetooth reports a read response and a notification
 through the same callback (`peripheral:didUpdateValueForCharacteristic:error:`).
 Upstream handed the next value update to whichever read was waiting
-(`corebluetooth/internal.rs` `on_characteristic_read`), with no guard on
-`read_value` or `subscribe`. As a result, a notification could come back as a
-read result, and the real read response was then delivered as a
-notification (finding 110).
+(`corebluetooth/internal.rs` `on_characteristic_read`) and never said so. A
+notification could come back as a read result, and the real read response
+was then delivered as a notification (finding 110).
 
 Upstream also ignored the `NSError` of read, write and notification-state
 callbacks. A failed read, write or enable was never answered, so it waited
 until a deadline. A failed descriptor read or write panicked
 (`reply => panic!`).
 
-The legacy CoreBluetooth addon refused the ambiguous cases instead
-(`native/electron/corebluetooth/src/addon.mm`,
-`corebluetooth-read-notify-provenance.ts`):
-- 413: a read on a characteristic that is notifying or has a notification
-  change in flight;
-- 414: a second read while one is pending;
-- 415: a subscribe while a read is pending;
-- 411: an enable that left the characteristic not notifying.
-
-These surfaced as `gatt.read-failed` / `gatt.subscribe-failed`.
+The first version of this patch refused the ambiguous cases as the legacy
+addon did (413 read while notifying, 414 overlapping read, 415 subscribe
+during a read). 5.0 replaces the refusal: a read while notifying must work
+with the same application code as Android (the Polar H10 PMD control point
+is subscribed, then read).
 
 **Change.**
-- `corebluetooth/read_notify.rs` holds the same decisions:
-  - `ReadNotifyState::admit_read` and `admit_notify_change`;
-  - `route_value`: a value completes a pending read only when it cannot
-    be a notification; otherwise the read fails with 413 and the value is
-    not delivered, as in the addon.
-- `read_value` and `subscribe` apply these decisions before calling
-  CoreBluetooth.
+- `api::ReadProvenance` (`ReadResponse`, `ReadOrNotification`) says what a
+  characteristic read value is.
+- `corebluetooth::Peripheral::read_with_provenance` (inherent) returns the
+  value and its provenance; `api::Peripheral::read` returns the value of the
+  same read.
+- `read_value` and `subscribe` no longer refuse: every read calls
+  `readValueForCharacteristic`, and waiters complete in request order.
+- `corebluetooth/read_notify.rs` `ReadNotifyState::route_value`: a value
+  update completes the oldest pending read as `ReadResponse` when the
+  characteristic cannot notify, and as `ReadOrNotification` when it notifies
+  or a notification state change is in flight. A value that may be a
+  notification is also sent to the notification stream; with no read
+  pending every update is a notification, as upstream.
+- A read whose future was dropped (timeout, cancel) keeps its waiter in the
+  queue, so its update never completes a later read.
 - An unsubscribe callback that answers a pending enable fails it with 411.
 - Every attribute callback error now answers its waiter:
   - `CentralDelegateEvent::AttributeFailed` carries the error, and
@@ -651,11 +653,16 @@ These surfaced as `gatt.read-failed` / `gatt.subscribe-failed`.
   - a failed descriptor read or write returns an error instead of
     panicking.
 
-**Tests.** `corebluetooth::read_notify::tests` (`cargo test -p btleplug
---lib`, macOS) cover the four refusals and the value routing. The wiring into
-the CoreBluetooth thread is compile-verified only. Physical check, not yet
-run: on macOS, subscribe to a notifying characteristic, then read it. The
-read fails with 413, and no notification ever arrives as a read value.
+WinRT (`ReadValueAsync`, uncached) and BlueZ (`ReadValue`) answer a read
+with its own response; `crates/ubm-desktop` reports `ReadResponse` for them.
+
+**Tests.** `corebluetooth::read_notify::tests` cover the routing;
+`corebluetooth::internal::ubm_instance_tests::queued_reads_complete_in_order_as_read_responses`
+and `a_notification_before_the_read_reply_is_reported_ambiguous_and_still_notified`
+drive the waiter queue (`cargo test -p btleplug --lib`, macOS). Physical
+check, not yet run: on macOS, subscribe to the Polar H10 PMD control point,
+then read it. The read succeeds as `read-or-notification`, and the
+subscription keeps receiving values.
 
 ## Patch 15: `platform-errors`
 
@@ -677,11 +684,19 @@ on them (finding 113):
   - `CoreBluetoothReply::Failed(PlatformError)` is built from the callback's
     `NSError`: code is the error code, metadata `nsErrorDomain`;
   - the patch-14 refusals use codes 413, 414, 415 and 411 with
-    `nsErrorDomain` `UBMCoreBluetooth`.
+    `nsErrorDomain` `UBMCoreBluetooth`;
+  - `didFailToConnectPeripheral:error:` fails the connect with that
+    `NSError` too (upstream kept only its localized description), so a
+    `CBError.connectionTimeout` (6) or `connectionFailed` (10) is
+    recognizable as a link that was not established.
 - WinRT:
   - a non-success `GattCommunicationStatus` is `code:"gatt-status"` with
     `gattStatus` set to `success`, `unreachable`, `protocol-error`,
     `access-denied` or `unknown`;
+  - a connect whose `GetGattServicesAsync` answers `Unreachable` fails with
+    that answer (`gatt-status` `unreachable`) instead of
+    `Error::NotConnected`; the other connect statuses keep upstream's
+    mapping;
   - a `windows::core::Error` is `code:"hresult"` with `hresult` as
     `0xXXXXXXXX`;
   - the helpers `gatt_status_code` and `hresult_code` live in the pure
@@ -702,6 +717,10 @@ on them (finding 113):
   `platform.failure`.
 - `tests/parity_ops.rs` `the_platform_answer_survives_the_central`: the
   answer survives the central on read, dispatched write and connect.
+- `tests/parity_ops.rs`
+  `a_transient_connect_failure_is_caller_decides_through_the_central` and
+  `errors::tests::a_transient_link_establishment_failure_is_caller_decides`:
+  the connect answers above are `caller-decides` (owner decision, 5.0).
 - Physical check, not yet run: a peer that refuses a read with an ATT error
   reports its code on each host.
 
@@ -886,9 +905,23 @@ once on every `Device1` `PropertiesChanged` signal
 - `vendor/bluez-async`: `service_discovery_outcome` ends a pending discovery
   on the device's `Connected { connected: false }` with the new
   `BluetoothError::DisconnectedDuringServiceDiscovery`.
+- `vendor/bluez-async` (B-R5): `connect_with_timeout` tolerates
+  `org.bluez.Error.AlreadyConnected` from `Device1.Connect` — the
+  connect's own answer that the link exists, as the legacy backend's
+  `connectBluezPhysicalLink` did. Upstream failed the connect.
+- `vendor/bluez-async` (B-R6): `disconnect` confirms the link ended after
+  the `Disconnect` method returns: `Connected` reads `false` (or the
+  device object is gone — `UnknownObject`/`DoesNotExist`, the same answer
+  — as legacy's Tauri path classified it), within the legacy 1 s bound
+  (`DISCONNECT_CONFIRMATION_TIMEOUT_MS`). An unconfirmed link reports the
+  new `BluetoothError::DisconnectConfirmationTimedOut` and stays pending,
+  never released. Upstream returned after the method call.
 - ubm-desktop resolves a peer id it does not hold through `add_peripheral`
   (CoreBluetooth identifier, WinRT address). On Linux, BlueZ keeps the
   device object.
+- ubm-desktop `disconnect` goes straight to the radio (no pre-disconnect
+  `is_connected()` query, as legacy did) and reports a removed device
+  object (`UnknownObject`/`DoesNotExist`, T-R1) as released.
 - `build.rs` lists `disconnect-lifecycle`.
 
 **Tests.**
@@ -900,12 +933,28 @@ once on every `Device1` `PropertiesChanged` signal
   objects all receive the disconnect error.
 - `vendor/bluez-async/src/lib.rs`:
   - `a_disconnect_ends_a_pending_service_discovery`;
-  - `resolved_services_end_the_discovery`.
+  - `resolved_services_end_the_discovery`;
+  - `an_already_connected_device_is_connected` (B-R5);
+  - `a_gone_device_object_confirms_the_disconnection` (B-R6).
 
   These are type-checked for `x86_64-unknown-linux-gnu` only (no libdbus on
   macOS).
 - ubm-desktop `f127_a_peer_id_names_its_os_identity`: a peer id parses to
   the platform identifier.
+- ubm-desktop `f127_a_listed_identity_resolves_without_a_scan`,
+  `t_r1_a_gone_device_object_confirms_the_peer_is_released`,
+  `t_r1_a_transport_failure_is_not_release_evidence`;
+  `os::winrt_model::tests::a_listed_address_reopens_without_a_scan`;
+  `os::bluez_model::tests::pairing_is_possible_as_legacy_reported_it` (B-R1).
+- `corebluetooth/internal.rs` `an_unknown_identifier_resolves_without_a_scan`
+  and `a_disconnect_of_an_unknown_peripheral_sends_no_event` (finding 127,
+  Apple): the `ResolvePeripheral` / `retrievePeripheralsWithIdentifiers`
+  path answers not-found without a scan; an unknown disconnect publishes
+  nothing.
 - Physical checks, not yet run:
-  - on macOS and Windows: connect, disconnect, reconnect without a scan;
-  - on macOS: disconnect during discovery and during a descriptor read.
+  - on macOS and Windows: connect, disconnect, reconnect without a scan
+    (`cargo test -p ubm-desktop --test reconnect_without_rescan -- --ignored`
+    covers the never-observed miss path with an adapter only);
+  - on macOS: disconnect during discovery and during a descriptor read;
+  - on Linux: connect to an already-connected device, disconnect
+    confirmation (gone object and 1 s bound).

@@ -35,7 +35,7 @@ function runtimeGraph(entry) {
       if (target !== null) pending.push(target)
     }
   }
-  return [...visited].map(file => path.relative(SRC, file))
+  return [...visited].map(file => path.relative(SRC, file).split(path.sep).join('/'))
 }
 
 const FORBIDDEN = [

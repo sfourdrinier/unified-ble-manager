@@ -3,6 +3,7 @@
 import type { CharacteristicPath, DescriptorPath } from '../../backend-contract/gatt'
 import type {
   BackendOperationDispatch,
+  CharacteristicReadResult,
   PublicOperationOptions,
   ReadRequest,
   ReadResult,
@@ -14,7 +15,11 @@ import type {
 import { byteLimit, ownBytes, type OwnedBytes } from '../../backend-contract/primitives'
 import type { BluezBackendRuntime } from './bluez-backend-runtime'
 import { BluezGattDatabase } from './bluez-backend-handles'
-import { BLUEZ_GATT_CHARACTERISTIC_INTERFACE, BLUEZ_GATT_DESCRIPTOR_INTERFACE } from './bluez-dbus-contract'
+import {
+  BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
+  BLUEZ_GATT_DESCRIPTOR_INTERFACE,
+  BLUEZ_READ_PROVENANCE
+} from './bluez-dbus-contract'
 import { successfulTerminal } from './bluez-runtime-models'
 
 const maximumOperationBytes = byteLimit(512 * 1024)
@@ -23,7 +28,7 @@ export function dispatchBluezCharacteristicRead(
   runtime: BluezBackendRuntime,
   path: CharacteristicPath<string, string, string, string, string, 'current'>,
   request: ReadRequest<string, string>
-): BackendOperationDispatch<string, ReadResult<string, string>> {
+): BackendOperationDispatch<string, CharacteristicReadResult<string, string>> {
   const dispatch = runtime.dispatcher.dispatch(request.operation, 'bluez.gatt.read', async () => {
     const value = await runtime.boundary.methods.callBytes(
       runtime.resolveCharacteristicPath(path, 'bluez.gatt.read'),
@@ -32,7 +37,11 @@ export function dispatchBluezCharacteristicRead(
       {}
     )
     runtime.resolveCharacteristicPath(path, 'bluez.gatt.read.after-method')
-    return { value: ownBytes(value, maximumOperationBytes), terminal: successfulTerminal(request.operation) }
+    return {
+      value: ownBytes(value, maximumOperationBytes),
+      provenance: BLUEZ_READ_PROVENANCE,
+      terminal: successfulTerminal(request.operation)
+    }
   })
   return runtime.trackConnectionOperationForPath(path, dispatch, 'bluez.gatt.read')
 }

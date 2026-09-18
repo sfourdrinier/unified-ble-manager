@@ -62,6 +62,55 @@ impl PlatformDetail {
     }
 }
 
+/// Android GATT statuses a connect fails with when the link could not be
+/// established: 133 `GATT_ERROR` (the stack's generic connect failure),
+/// 62 (HCI 0x3E, "connection failed to be established") and 147
+/// `GATT_CONNECTION_TIMEOUT` (API 34).
+const ANDROID_TRANSIENT_CONNECT_STATUSES: [i64; 3] = [133, 62, 147];
+
+/// `CBError.connectionTimeout` (6) and `CBError.connectionFailed` (10).
+const COREBLUETOOTH_TRANSIENT_CONNECT_CODES: [&str; 2] = ["6", "10"];
+
+/// BlueZ `Device1.Connect` failures that mean the link attempt failed
+/// (`org.bluez.Error.Failed` carries the reason, e.g.
+/// `le-connection-abort-by-local`).
+const BLUEZ_TRANSIENT_CONNECT_ERRORS: [&str; 2] = [
+    "org.bluez.Error.Failed",
+    "org.bluez.Error.ConnectionAttemptFailed",
+];
+
+/// Whether the platform's answer to a connect is a transient failure to
+/// establish the link — one vocabulary for every platform:
+///
+/// - Android: `androidGattStatus` 133, 62 (0x3E) or 147;
+/// - CoreBluetooth: `CBErrorDomain` 6 or 10, as the mobile radio reports it
+///   (`{domain:"CBErrorDomain"}`) and as the desktop radio does
+///   (`{domain:"corebluetooth", metadata:{nsErrorDomain:"CBErrorDomain"}}`);
+/// - WinRT: `gatt-status` `unreachable` (`GetGattServicesAsync` could not
+///   reach the device);
+/// - BlueZ: `org.bluez.Error.Failed` or `ConnectionAttemptFailed`.
+#[must_use]
+pub fn is_transient_establishment_failure(platform: &PlatformDetail) -> bool {
+    let text = |key: &str| match platform.metadata.get(key) {
+        Some(PlatformValue::Text(value)) => Some(value.as_str()),
+        _ => None,
+    };
+    match platform.domain.as_str() {
+        "android" => matches!(
+            platform.metadata.get("androidGattStatus"),
+            Some(PlatformValue::Int(status)) if ANDROID_TRANSIENT_CONNECT_STATUSES.contains(status)
+        ),
+        "CBErrorDomain" => COREBLUETOOTH_TRANSIENT_CONNECT_CODES.contains(&platform.code.as_str()),
+        "corebluetooth" => {
+            text("nsErrorDomain") == Some("CBErrorDomain")
+                && COREBLUETOOTH_TRANSIENT_CONNECT_CODES.contains(&platform.code.as_str())
+        }
+        "winrt" => platform.code == "gatt-status" && text("gattStatus") == Some("unreachable"),
+        "bluez-dbus" => BLUEZ_TRANSIENT_CONNECT_ERRORS.contains(&platform.code.as_str()),
+        _ => false,
+    }
+}
+
 /// Whether the caller may safely repeat the operation (PR210-22). Set by
 /// the central from the core's settled outcome, never derived from the
 /// error code: a write that may have reached the peer is `Never`, whatever
@@ -136,6 +185,25 @@ impl DesktopError {
         self.commit = commit;
         self.retryability = retryability;
         self
+    }
+
+    /// Owner decision (5.0): a connect whose link the platform could not
+    /// establish, transiently, is `caller-decides` — nothing was committed,
+    /// so repeating it is the caller's policy. The library never retries it
+    /// itself. The platform's answer decides ([`is_transient_establishment_failure`]);
+    /// without one, or for any other operation, the error is unchanged.
+    #[must_use]
+    pub fn classify_establishment(self) -> Self {
+        let transient = self.operation == "connection.connect"
+            && self
+                .platform()
+                .is_some_and(is_transient_establishment_failure);
+        if transient {
+            let commit = self.commit;
+            self.with_outcome(commit, Retryability::CallerDecides)
+        } else {
+            self
+        }
     }
 
     /// Commit state of the operation, when the central knows it
@@ -420,6 +488,92 @@ mod tests {
         assert_eq!(error.code_str(), "operation.aborted");
         assert_eq!(Retryability::CallerDecides.as_str(), "caller-decides");
         assert_eq!(Retryability::Never.as_str(), "never");
+    }
+
+    /// Owner decision (5.0): a connect the platform could not establish is
+    /// `caller-decides` on every platform, with the platform's own answer
+    /// kept; every other connect failure, and any other operation, stays
+    /// `never`.
+    #[test]
+    fn a_transient_link_establishment_failure_is_caller_decides() {
+        use super::{PlatformDetail, PlatformValue};
+        let android = |status: i64| {
+            PlatformDetail::new("android", "connectionFailed")
+                .with_metadata("androidGattStatus", PlatformValue::Int(status))
+        };
+        let desktop_cb = |code: &str| {
+            PlatformDetail::new("corebluetooth", code)
+                .with_metadata("nsErrorDomain", PlatformValue::Text("CBErrorDomain".to_owned()))
+        };
+        let winrt = |status: &str| {
+            PlatformDetail::new("winrt", "gatt-status")
+                .with_metadata("gattStatus", PlatformValue::Text(status.to_owned()))
+        };
+        let transient = [
+            android(133),
+            android(62),
+            android(147),
+            PlatformDetail::new("CBErrorDomain", "6"),
+            PlatformDetail::new("CBErrorDomain", "10"),
+            desktop_cb("6"),
+            desktop_cb("10"),
+            winrt("unreachable"),
+            PlatformDetail::new("bluez-dbus", "org.bluez.Error.Failed")
+                .with_message("le-connection-abort-by-local"),
+            PlatformDetail::new("bluez-dbus", "org.bluez.Error.ConnectionAttemptFailed"),
+        ];
+        let permanent = [
+            android(5),
+            android(0),
+            PlatformDetail::new("android", "connectionFailed"),
+            PlatformDetail::new("CBErrorDomain", "14"),
+            PlatformDetail::new("corebluetooth", "10"),
+            desktop_cb("14"),
+            winrt("access-denied"),
+            PlatformDetail::new("bluez-dbus", "org.bluez.Error.InProgress"),
+            PlatformDetail::new("bluez-dbus", "org.bluez.Error.NotReady"),
+        ];
+        let connect = |platform: &PlatformDetail| {
+            DesktopError::new(
+                BleErrorCode::PlatformFailure,
+                BleErrorDomain::Platform,
+                "connection.connect",
+            )
+            .with_platform(platform.clone())
+            .classify_establishment()
+        };
+        for platform in &transient {
+            let error = connect(platform);
+            assert_eq!(
+                error.retryability(),
+                Retryability::CallerDecides,
+                "{platform:?} is a transient establishment failure"
+            );
+            assert_eq!(error.platform(), Some(platform), "platform detail kept");
+            assert_eq!(error.commit(), None);
+        }
+        for platform in &permanent {
+            assert_eq!(
+                connect(platform).retryability(),
+                Retryability::Never,
+                "{platform:?} is not"
+            );
+        }
+        let discover = DesktopError::new(
+            BleErrorCode::PlatformFailure,
+            BleErrorDomain::Platform,
+            "gatt.discover",
+        )
+        .with_platform(android(133))
+        .classify_establishment();
+        assert_eq!(discover.retryability(), Retryability::Never, "connect only");
+        assert_eq!(
+            DesktopError::connection_failed("no platform answer")
+                .classify_establishment()
+                .retryability(),
+            Retryability::Never,
+            "no platform answer, no second opinion"
+        );
     }
 
     #[test]

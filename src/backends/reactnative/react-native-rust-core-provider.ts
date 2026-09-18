@@ -48,7 +48,11 @@ import {
   type ScanFilter,
   type SourceTimestamp
 } from '../../backend-contract/advertisement'
-import type { FeatureRegistry } from '../../backend-contract/capabilities'
+import type {
+  FeatureRegistry,
+  MaximumWriteLengthFeatureInput,
+  MaximumWriteLengthFeatureOutput
+} from '../../backend-contract/capabilities'
 import type {
   ConnectionMaximumWriteLengthMeasurement,
   ConnectionMaximumWriteLengthRequest,
@@ -103,6 +107,8 @@ import {
   type OperationTerminalRecord,
   type PublicOperationOptions,
   type ReadRequest,
+  type CharacteristicRead,
+  type CharacteristicReadResult,
   type ReadResult,
   type SubscribeRequest,
   type SubscriptionOptions,
@@ -124,11 +130,13 @@ import {
   opaqueId,
   resourceCount,
   type AttachmentBoundIdFactory,
+  type BackendInstanceId,
   type BorrowedBytes,
   type ClientId,
   type GenerationId,
   type LeaseId,
   type NativeVersionAxes,
+  type OperationCorrelation,
   type OwnedBytes,
   type PeerId,
   type ScanSessionId,
@@ -246,6 +254,14 @@ export interface ReactNativeRustCoreBackendProvider extends ReactNativeRestorati
 }
 
 let nextOwner = 1
+/** Legacy numbered backend instances per process from 1 (`corebluetooth-backend.ts` `allocateBackendInstance`). */
+let nextBackendInstance = 1
+
+function allocateBackendInstance(): number {
+  const ordinal = nextBackendInstance
+  nextBackendInstance += 1
+  return ordinal
+}
 
 function allocateOwnerId(): string {
   const ordinal = nextOwner
@@ -625,7 +641,7 @@ interface IngressLossAccount {
 }
 
 /** Why the owner invalidated a peer's streams, as the next `stream-end` should say. */
-type InvalidationReason = Extract<CoreStreamTerminalReason, 'connection-lost' | 'service-changed'>
+type InvalidationReason = Extract<CoreStreamTerminalReason, 'connection-lost' | 'service-changed' | 'source-failed'>
 
 // -- the backend -------------------------------------------------------------------
 
@@ -645,8 +661,9 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   /** Session services the Expo layer reaches through the manager (background, companion). */
   readonly hostServices: ReactNativeRustCoreHostServices
 
-  private readonly attachmentRecord: AttachmentRecord<string>
-  private readonly identifiers: AttachmentBoundIdFactory<string>
+  private readonly backendInstanceId: BackendInstanceId<string>
+  private attachmentRecord: AttachmentRecord<string>
+  private identifiers: AttachmentBoundIdFactory<string>
   private readonly router: RustCoreDrainRouter
   private readonly peerIdsByNativeId = new Map<string, PeerId<string>>()
   private readonly nativeIdsByPeerId = new Map<string, string>()
@@ -667,6 +684,12 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private destroyResult: Promise<CleanupRecord> | null = null
   private sessionDisposed = false
   private nextOrdinal = 1
+  // Legacy per-backend resource counters (origin/main corebluetooth-backend.ts:352-357).
+  private nextPeer = 1
+  private nextScan = 1
+  private nextConnection = 1
+  private nextDatabase = 1
+  private nextSubscription = 1
   private nextIngressOrdinal = 1
 
   constructor(
@@ -678,40 +701,20 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     private readonly trace: CoreTraceSink | null = null,
     private readonly releaseModuleBackground: ((leaseId: string) => Promise<CleanupRecord>) | null = null
   ) {
-    const attachmentId = opaqueId(`rust-core-attachment-${platform}-${session.sessionId}`, 'attachment', SCOPE)
-    const backendInstanceId = opaqueId(
-      `react-native-rust-core-${platform}-session-${session.sessionId}`,
+    // Legacy React Native attachment names (origin/main
+    // corebluetooth-attachment-lifecycle.ts): the instance is this backend's,
+    // the generations are the owner's, the attachment joins the three.
+    this.backendInstanceId = opaqueId(
+      `react-native-${platform}-backend-${allocateBackendInstance()}`,
       'backend-instance',
       SCOPE
     )
-    const backendGeneration = opaqueId(initialState.backendGeneration, 'backend-generation', SCOPE)
-    const adapterId = opaqueId(adapterNativeIdFor(platform), 'adapter', SCOPE)
-    const adapterGeneration = opaqueId(initialState.adapterGeneration, 'adapter-generation', SCOPE)
-    this.attachmentRecord = Object.freeze({
-      attachmentId,
-      backendInstanceId,
-      backendGeneration,
-      adapter: Object.freeze({
-        adapterId,
-        displayName: platform === 'android' ? 'Android default BLE adapter' : 'Apple default BLE adapter',
-        state: this.snapshotFrom(initialState, backendGeneration),
-        adapterGeneration,
-        limitations: Object.freeze([
-          'The process-owned Rust mobile owner schedules every radio operation; this backend holds no TypeScript radio policy'
-        ])
-      })
-    })
-    this.identifiers = createAttachmentBoundIdFactory<string>({
-      attachmentId,
-      backendInstanceId,
-      backendGeneration,
-      adapterId,
-      adapterGeneration
-    })
+    ;[this.attachmentRecord, this.identifiers] = this.attachmentFor(initialState)
     this.features = createReactNativeRustCoreFeatureRegistry(
       platform,
       REACT_NATIVE_RUST_CORE_IMPLEMENTATION_VERSION,
-      runtime
+      runtime,
+      Object.freeze({ invoke: (input: MaximumWriteLengthFeatureInput) => this.observeMaximumWriteLength(input) })
     )
     this.security =
       platform === 'android'
@@ -729,7 +732,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
           })
         : undefined
     this.router = new RustCoreDrainRouter(session, {
-      deliver: records => this.deliver(records),
+      deliver: record => this.deliver(record),
       failed: error => this.drainFailed(error)
     })
     const plan = platform === 'android' ? diagnosticReactNativeAndroidScanPlan : diagnosticReactNativeAppleScanPlan
@@ -1154,10 +1157,28 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
 
   // -- operation plumbing ------------------------------------------------------------
 
+  /**
+   * The owner's operation id for one wire invoke. Internal to the wire:
+   * public results carry the caller's correlation (`publicCorrelation`).
+   */
   private mintOperationId(kind: string): string {
     const ordinal = this.nextOrdinal
     this.nextOrdinal += 1
     return `${kind}-${ordinal}`
+  }
+
+  private nextPublicOperation = 1
+
+  /**
+   * The correlation of one public operation, as the legacy core minted it
+   * (origin/main `src/core/unified-ble-core.ts:179`, `operation-{n}` from one
+   * per-manager counter): reads, writes, descriptor reads and writes,
+   * subscribes, connection controls and one per long write.
+   */
+  publicCorrelation(): OperationCorrelation<string, string> {
+    const ordinal = this.nextPublicOperation
+    this.nextPublicOperation += 1
+    return this.identifiers.operationCorrelation(`operation-${ordinal}`)
   }
 
   /**
@@ -1197,7 +1218,8 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         kind: 'diagnostic-warning',
         code: 'cancel-failed',
         message: `op.cancel for ${operation} was not accepted`,
-        detail: Object.freeze({ operationId, code: normalizedFrom(error, `${SCOPE}.op.cancel`).code })
+        // The owner's operation id is wire-internal; `operation` names it.
+        detail: Object.freeze({ code: normalizedFrom(error, `${SCOPE}.op.cancel`).code })
       })
     })
   }
@@ -1274,6 +1296,46 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     })
   }
 
+  /**
+   * The attachment under the owner's generations in `state`, with the
+   * adapter's latest state (legacy `buildAttachment`, rebuilt on every
+   * adapter state and generation advance).
+   */
+  private attachmentFor(state: WireAdapterState): [AttachmentRecord<string>, AttachmentBoundIdFactory<string>] {
+    const backendInstanceId = this.backendInstanceId
+    const attachmentId = opaqueId(
+      `${String(backendInstanceId)}:${state.backendGeneration}:${state.adapterGeneration}`,
+      'attachment',
+      SCOPE
+    )
+    const backendGeneration = opaqueId(state.backendGeneration, 'backend-generation', SCOPE)
+    const adapterId = opaqueId(adapterNativeIdFor(this.platform), 'adapter', SCOPE)
+    const adapterGeneration = opaqueId(state.adapterGeneration, 'adapter-generation', SCOPE)
+    const record: AttachmentRecord<string> = Object.freeze({
+      attachmentId,
+      backendInstanceId,
+      backendGeneration,
+      adapter: Object.freeze({
+        adapterId,
+        displayName:
+          this.platform === 'android' ? 'Android default BLE adapter' : 'Apple CoreBluetooth central adapter',
+        state: this.snapshotFrom(state, backendGeneration),
+        adapterGeneration,
+        limitations: Object.freeze([
+          'The process-owned Rust mobile owner schedules every radio operation; this backend holds no TypeScript radio policy'
+        ])
+      })
+    })
+    const identifiers = createAttachmentBoundIdFactory<string>({
+      attachmentId,
+      backendInstanceId,
+      backendGeneration,
+      adapterId,
+      adapterGeneration
+    })
+    return [record, identifiers]
+  }
+
   private sameGenerations(state: WireAdapterState): boolean {
     return (
       state.backendGeneration === String(this.attachmentRecord.backendGeneration) &&
@@ -1301,19 +1363,34 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     return Object.freeze({ initial, transitions })
   }
 
-  /** A generation the owner retired invalidates everything issued under it. */
-  private observeGenerations(state: WireAdapterState): void {
-    if (this.sameGenerations(state)) return
-    this.emitEvent({ kind: 'backend-restarted' })
+  /**
+   * Adopts the owner's state. A generation the owner retired invalidates
+   * the links issued under it, as legacy `advanceGeneration` did: the
+   * attachment is rebuilt under the new generations and the backend reports
+   * `backend-restarted`. Answers whether it did.
+   */
+  private observeGenerations(state: WireAdapterState): boolean {
+    const restarted = !this.sameGenerations(state)
+    ;[this.attachmentRecord, this.identifiers] = this.attachmentFor(state)
+    if (!restarted) return false
+    // 5.0 keeps peer handles across the advance (legacy cleared them with
+    // the generation and destroyed the manager): the peer is the same device,
+    // so a supervisor reconnects with the handle it holds.
     for (const entry of this.connectionsByKey.values()) this.markLost(entry)
+    return true
   }
 
+  /**
+   * Legacy `handleAdapterState` / `advanceGeneration`: watchers see every
+   * state; a state change is an `adapter-state` event, a generation advance
+   * a `backend-restarted` one.
+   */
   private onAdapterRecord(state: WireAdapterState): void {
-    this.observeGenerations(state)
+    const restarted = this.observeGenerations(state)
     const snapshot = this.snapshotFrom(state, opaqueId(state.backendGeneration, 'backend-generation', SCOPE))
     for (const watch of [...this.adapterWatches])
       watch.emit(snapshot, RECORD_BYTES + utf8Length(state.safeReason ?? ''))
-    this.emitEvent({ kind: 'adapter-state' })
+    this.emitEvent({ kind: restarted ? 'backend-restarted' : 'adapter-state' })
   }
 
   // -- peers ---------------------------------------------------------------------------------
@@ -1322,10 +1399,11 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const existing = this.peerIdsByNativeId.get(nativePeerId)
     if (existing !== undefined) return existing
     const peerId = opaqueId(
-      `rust-core-peer-${this.session.sessionId}-${this.peerIdsByNativeId.size + 1}`,
+      `corebluetooth-peer-${String(this.attachmentRecord.backendGeneration)}-${this.nextPeer}`,
       'peer',
       SCOPE
     )
+    this.nextPeer += 1
     this.peerIdsByNativeId.set(nativePeerId, peerId)
     this.nativeIdsByPeerId.set(String(peerId), nativePeerId)
     return peerId
@@ -1532,14 +1610,14 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     } finally {
       removeAbort()
     }
-    const ordinal = this.nextOrdinal
-    this.nextOrdinal += 1
+    const ordinal = this.nextScan
+    this.nextScan += 1
     const group: ScanGroup = {
       membership,
-      scanSessionId: this.identifiers.scanSessionId(`rust-core-scan-session-${ordinal}`),
-      ownerLeaseId: this.identifiers.leaseId(`rust-core-scan-lease-${ordinal}`),
+      scanSessionId: this.identifiers.scanSessionId(`corebluetooth-scan-session-${ordinal}`),
+      ownerLeaseId: this.identifiers.leaseId(`corebluetooth-scan-lease-${ordinal}`),
       shareToken: options.sharing.allowSharing
-        ? this.identifiers.scanShareToken(`rust-core-scan-share-${ordinal}`)
+        ? this.identifiers.scanShareToken(`corebluetooth-scan-share-${ordinal}`)
         : null,
       consumers: new Map(),
       state: 'active',
@@ -1584,7 +1662,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       code: 'scan-cleanup-requires-retry',
       message: 'The scan ended by its signal or deadline could not be released; stop() retries it',
       detail: Object.freeze({
-        membership: group.membership,
+        scanSessionId: String(group.scanSessionId),
         failures: Object.freeze(cleanup.failures.map(failure => failure.error.code))
       })
     })
@@ -1633,11 +1711,11 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     if (group === undefined || owner === undefined) {
       throw contractError('ownership.denied', 'scan', `${SCOPE}.scan.join`)
     }
-    const ordinal = this.nextOrdinal
-    this.nextOrdinal += 1
+    const ordinal = this.nextScan
+    this.nextScan += 1
     const joined = this.addScanConsumer(
       group,
-      this.identifiers.leaseId(`rust-core-scan-lease-${ordinal}`),
+      this.identifiers.leaseId(`corebluetooth-scan-lease-${ordinal}`),
       owner.options
     )
     return this.scanLease(group, joined)
@@ -1802,7 +1880,8 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         kind: 'diagnostic-warning',
         code: 'unmatched-scan-end',
         message: 'The owner ended a scan membership this backend does not hold',
-        detail: Object.freeze({ membership: record.operationId, reason: record.reason })
+        // The membership id is the owner's wire vocabulary; the reason is the fact.
+        detail: Object.freeze({ reason: record.reason })
       })
       return
     }
@@ -1830,6 +1909,10 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const ordinal = this.nextOrdinal
     this.nextOrdinal += 1
     const lease = `lease-${ordinal}`
+    // Legacy numbered the connection before the native connect, so a failed
+    // connect consumes its number too.
+    const connectionOrdinal = this.nextConnection
+    this.nextConnection += 1
     const args: WireJsonObject = {
       peerId: nativePeerId,
       lease,
@@ -1846,8 +1929,8 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     } finally {
       removeAbort()
     }
-    const connectionId = this.identifiers.connectionId(`rust-core-connection-${ordinal}`)
-    const leaseId = this.identifiers.leaseId(`rust-core-connection-lease-${ordinal}`)
+    const connectionId = this.identifiers.connectionId(`corebluetooth-connection-${connectionOrdinal}`)
+    const leaseId = this.identifiers.leaseId(`corebluetooth-connection-lease-${connectionOrdinal}`)
     const key = String(connectionId)
     const entry: ConnectionEntry = {
       key,
@@ -1863,7 +1946,13 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         attachmentId: this.attachmentRecord.attachmentId,
         peerId,
         connectionId,
-        connectionGeneration: opaqueId(connected.connectionGeneration, 'connection-generation', SCOPE),
+        // The public generation is this backend's legacy name for the
+        // owner's `coreGeneration` above, which alone crosses the wire.
+        connectionGeneration: opaqueId(
+          `corebluetooth-connection-generation-${connectionOrdinal}`,
+          'connection-generation',
+          SCOPE
+        ),
         get state() {
           return entry.released ? 'disconnected' : entry.linkState === 'lost' ? 'lost' : 'connected'
         },
@@ -1981,7 +2070,10 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
    */
   private endLink(entry: ConnectionEntry, reason: 'local' | 'peer' | 'adapter' | null): void {
     this.connectionsByLink.delete(linkKey(entry.nativePeerId, entry.coreGeneration))
-    this.invalidations.set(entry.nativePeerId, 'connection-lost')
+    // An adapter loss failed the link's streams at their source, as the
+    // legacy adapter-loss cleanup (and every desktop host and Tauri) said it.
+    const invalidation: InvalidationReason = reason === 'adapter' ? 'source-failed' : 'connection-lost'
+    this.invalidations.set(entry.nativePeerId, invalidation)
     this.markLost(entry)
     const path = this.connectionPath(entry, this.leaseIdFor(entry))
     if (reason === null) {
@@ -1989,11 +2081,20 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         if (stored.connectionKey !== entry.key || stored.state === 'ended') continue
         this.subscriptions.delete(consumer)
         stored.state = 'ended'
-        stored.stream.finishWithReason('connection-lost')
+        stored.stream.finishWithReason(invalidation)
       }
     }
     if (reason === 'peer' || reason === null) {
       this.emitEvent({ kind: 'connection-lost', connection: path })
+    } else if (reason === 'adapter') {
+      // Legacy `terminalizeAdapterLossConnection`: connected -> lost, reason adapter.
+      this.emitEvent({
+        kind: 'connection-state-changed',
+        connection: path,
+        previous: 'connected',
+        current: 'lost',
+        reason: 'adapter'
+      })
     } else {
       this.emitEvent({ kind: 'disconnected', connection: path, reason })
     }
@@ -2063,7 +2164,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   ): BackendOperationDispatch<string, Result> {
     const operation = `${SCOPE}.connection.${name}`
     const entry = this.requireConnection(connection, operation)
-    const operationId = String(request.operation.correlation)
+    const operationId = this.mintOperationId(name)
     const budget = this.budget(request.operation, operation)
     return this.dispatch(operationId, request.operation.signal, operation, () => run(entry, operationId, budget))
   }
@@ -2200,12 +2301,60 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     })
   }
 
+  /**
+   * The platform's own largest single write in `mode` on this link
+   * (`connection.maximum-write-length`): CoreBluetooth
+   * `maximumWriteValueLength(for:)`; Android 512 with response (the stack's
+   * long write) and one ATT payload of the negotiated MTU, or of the ATT
+   * default 23 before any exchange, without.
+   */
   private maximumWriteLength<Operation extends string>(
     connection: BackendConnection<string, string>,
-    _request: ConnectionMaximumWriteLengthRequest<string, Operation>
+    request: ConnectionMaximumWriteLengthRequest<string, Operation>
   ): BackendOperationDispatch<string, ConnectionMaximumWriteLengthMeasurement<string, Operation>> {
-    this.requireConnection(connection, `${SCOPE}.connection.maximum-write-length`)
-    throw contractError('capability.unavailable', 'gatt', `${SCOPE}.gatt.maximum-write-length`)
+    return this.control(connection, request, 'maximum-write-length', async (entry, operationId, budget) => {
+      const answer = await this.invoke('connection.maximum-write-length', {
+        peerId: entry.nativePeerId,
+        lease: entry.lease,
+        mode: request.mode,
+        operationId,
+        ...budget
+      })
+      return Object.freeze({
+        connectionId: entry.resource.connectionId,
+        connectionGeneration: entry.resource.connectionGeneration,
+        mode: request.mode,
+        maximumWriteLength: answer.maximumWriteLength,
+        observedAtMonotonicMs: this.now(),
+        terminal: this.terminal(request.operation.correlation)
+      })
+    })
+  }
+
+  /** The `gatt:maximum-write-length` registration's answer for one current connection. */
+  private async observeMaximumWriteLength(
+    input: MaximumWriteLengthFeatureInput
+  ): Promise<MaximumWriteLengthFeatureOutput> {
+    const operation = `${SCOPE}.gatt.maximum-write-length`
+    if (input.mode !== 'with-response' && input.mode !== 'without-response') {
+      throw contractError('argument.invalid', 'gatt', operation)
+    }
+    const entry = this.connectionsByKey.get(input.connectionId)
+    if (entry === undefined) throw contractError('connection.not-found', 'connection', operation)
+    if (String(entry.resource.connectionGeneration) !== input.connectionGeneration) {
+      throw contractError('connection.stale', 'connection', operation)
+    }
+    const measured = await this.maximumWriteLength(entry.resource, {
+      operation: this.operationFor({ signal: null, deadline: null }),
+      mode: input.mode
+    }).completion
+    return Object.freeze({
+      connectionId: input.connectionId,
+      connectionGeneration: input.connectionGeneration,
+      mode: input.mode,
+      maximumWriteLength: measured.maximumWriteLength,
+      observedAtMonotonicMs: Math.floor(measured.observedAtMonotonicMs)
+    })
   }
 
   // -- GATT ------------------------------------------------------------------------------------------
@@ -2234,14 +2383,15 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       throw contractError('protocol.violation', 'gatt', `${operation}.connection-generation`)
     }
     this.requireConnection(connection, operation)
-    const ordinal = this.nextOrdinal
-    this.nextOrdinal += 1
-    const databaseId = this.identifiers.databaseId(`rust-core-database-${ordinal}`)
+    const ordinal = this.nextDatabase
+    this.nextDatabase += 1
+    const databaseId = this.identifiers.databaseId(`corebluetooth-database-${ordinal}`)
     const leaseId = this.leaseIdFor(entry)
     const path: DatabasePath<string, string, string> = Object.freeze({
       ...this.connectionPath(entry, leaseId),
       databaseId,
-      databaseGeneration: opaqueId(discovery.databaseGeneration, 'database-generation', SCOPE)
+      // Legacy name for the owner's `coreGeneration` below.
+      databaseGeneration: opaqueId(`corebluetooth-database-generation-${ordinal}`, 'database-generation', SCOPE)
     })
     const key = String(databaseId)
     const stored: DatabaseEntry = {
@@ -2265,33 +2415,33 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       read: async (
         characteristic: CharacteristicPath<string, string, string, string, string, 'current'>,
         readOptions: PublicOperationOptions
-      ) =>
-        (await this.read(characteristic, { operation: this.operationFor(readOptions, 'gdb-read') }).completion).value,
+      ): Promise<CharacteristicRead> => {
+        const { value, provenance } = await this.read(characteristic, {
+          operation: this.operationFor(readOptions)
+        }).completion
+        return Object.freeze({ value, provenance })
+      },
       write: async (
         characteristic: CharacteristicPath<string, string, string, string, string, 'current'>,
         value: BorrowedBytes,
         writeOptions: WritePolicy
       ): Promise<WriteReceipt<string, string>> =>
         this.write(characteristic, {
-          operation: this.operationFor(writeOptions, 'gdb-write'),
+          operation: this.operationFor(writeOptions),
           bytes: value,
           mode: writeOptions.mode
         }).completion,
       readDescriptor: async (
         descriptor: DescriptorPath<string, string, string, string, string, string, 'current'>,
         readOptions: PublicOperationOptions
-      ) =>
-        (
-          await this.readDescriptor(descriptor, { operation: this.operationFor(readOptions, 'gdb-read-desc') })
-            .completion
-        ).value,
+      ) => (await this.readDescriptor(descriptor, { operation: this.operationFor(readOptions) }).completion).value,
       writeDescriptor: async (
         descriptor: DescriptorPath<string, string, string, string, string, string, 'current'>,
         value: BorrowedBytes,
         writeOptions: WritePolicy
       ): Promise<WriteReceipt<string, string>> =>
         this.writeDescriptor(descriptor, {
-          operation: this.operationFor(writeOptions, 'gdb-write-desc'),
+          operation: this.operationFor(writeOptions),
           bytes: value,
           mode: writeOptions.mode
         }).completion,
@@ -2300,7 +2450,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         subscribeOptions: SubscriptionOptions
       ): Promise<Subscription<string, string, string, string, string, string>> => {
         const subscription = await this.subscribe(characteristic, {
-          operation: this.operationFor(subscribeOptions, 'gdb-subscribe'),
+          operation: this.operationFor(subscribeOptions),
           options: subscribeOptions
         }).completion
         return Object.freeze({
@@ -2309,10 +2459,13 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
           values: subscription.notifications,
           remove: async (): Promise<CleanupRecord> => {
             try {
-              await this.unsubscribe(
-                subscription,
-                this.operationFor({ signal: null, deadline: null }, 'gdb-unsubscribe')
-              ).completion
+              await this.unsubscribe(subscription, {
+                signal: null,
+                deadline: null,
+                // Legacy ran no unsubscribe through the core's counter; its
+                // terminal is never public.
+                correlation: this.identifiers.operationCorrelation(this.mintOperationId('unsubscribe'))
+              }).completion
               return RELEASED
             } catch (error) {
               return {
@@ -2326,11 +2479,11 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     })
   }
 
-  private operationFor(options: PublicOperationOptions, kind: string): OperationOptions<string, string> {
+  private operationFor(options: PublicOperationOptions): OperationOptions<string, string> {
     return Object.freeze({
       signal: options.signal,
       deadline: options.deadline,
-      correlation: this.identifiers.operationCorrelation(this.mintOperationId(kind))
+      correlation: this.publicCorrelation()
     })
   }
 
@@ -2475,14 +2628,18 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private read<Operation extends string>(
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     request: ReadRequest<string, Operation>
-  ): BackendOperationDispatch<string, ReadResult<string, Operation>> {
+  ): BackendOperationDispatch<string, CharacteristicReadResult<string, Operation>> {
     const operation = `${SCOPE}.gatt.read`
     const { entry, selector } = this.resolveCharacteristic(path, operation)
-    const operationId = String(request.operation.correlation)
+    const operationId = this.mintOperationId('read')
     const budget = this.budget(request.operation, operation)
     return this.dispatch(operationId, request.operation.signal, operation, async () => {
       const answer = await this.invoke('gatt.read', { peerId: entry.nativePeerId, selector, operationId, ...budget })
-      return Object.freeze({ value: ownedCopy(answer.value), terminal: this.terminal(request.operation.correlation) })
+      return Object.freeze({
+        value: ownedCopy(answer.value),
+        provenance: answer.provenance,
+        terminal: this.terminal(request.operation.correlation)
+      })
     })
   }
 
@@ -2492,7 +2649,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   ): BackendOperationDispatch<string, ReadResult<string, Operation>> {
     const operation = `${SCOPE}.gatt.read-descriptor`
     const { entry, selector } = this.resolveDescriptor(path, operation)
-    const operationId = String(request.operation.correlation)
+    const operationId = this.mintOperationId('read-descriptor')
     const budget = this.budget(request.operation, operation)
     return this.dispatch(operationId, request.operation.signal, operation, async () => {
       const answer = await this.invoke('gatt.read-descriptor', {
@@ -2515,7 +2672,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   ): BackendOperationDispatch<string, WriteResult<string, Operation>> {
     if (!(request.bytes instanceof Uint8Array)) throw contractError('argument.invalid', 'gatt', operation)
     const valueB64 = unwrap(encodeBase64(request.bytes))
-    const operationId = String(request.operation.correlation)
+    const operationId = this.mintOperationId('write')
     const budget = this.budget(request.operation, operation)
     return this.dispatch(operationId, request.operation.signal, operation, async () => {
       const receipt = unwrap(
@@ -2559,10 +2716,11 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   ): BackendOperationDispatch<string, BackendSubscription<string, string, string, string, string>> {
     const operation = `${SCOPE}.gatt.subscribe`
     const { entry, selector } = this.resolveCharacteristic(path, operation)
-    const operationId = String(request.operation.correlation)
+    const operationId = this.mintOperationId('subscribe')
     const budget = this.budget(request.operation, operation)
     const consumer = this.mintOperationId('consumer')
-    const subscriptionId = this.identifiers.subscriptionId(`rust-core-subscription-${consumer}`)
+    const subscriptionId = this.identifiers.subscriptionId(`corebluetooth-subscription-${this.nextSubscription}`)
+    this.nextSubscription += 1
     // Registered before the owner can deliver: a value that arrives in the
     // drain before `gatt.subscribe` resolves is routed, not lost.
     const stream: OwnedCoreBoundedStream<NotificationValue> = new OwnedCoreBoundedStream<NotificationValue>(
@@ -2621,7 +2779,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const operation = `${SCOPE}.gatt.unsubscribe`
     this.assertOperational(operation)
     const stored = [...this.subscriptions.values()].find(entry => entry.subscriptionId === subscription.subscriptionId)
-    const operationId = String(operationOptions.correlation)
+    const operationId = this.mintOperationId('unsubscribe')
     if (stored === undefined || stored.state === 'ended') {
       if (stored !== undefined) this.subscriptions.delete(stored.consumer)
       return this.dispatch(operationId, null, operation, async () => this.terminal(operationOptions.correlation))
@@ -2695,40 +2853,38 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
 
   // -- drain ------------------------------------------------------------------------------------------
 
-  private deliver(records: readonly WireDrainRecord[]): void {
-    for (const record of records) {
-      switch (record.t) {
-        case 'adv':
-          this.onAdvertisement(record)
-          break
-        case 'scan-end':
-          this.onScanEnd(record)
-          break
-        case 'value':
-          this.onValue(record)
-          break
-        case 'stream-end':
-          this.onStreamEnd(record)
-          break
-        case 'adapter':
-          this.onAdapterRecord(record.state)
-          break
-        case 'link':
-          this.onLink(record)
-          break
-        case 'db-changed':
-          this.onDatabaseChanged(record)
-          break
-        case 'ingress-drop':
-          this.onIngressDrop(record)
-          break
-        case 'security':
-          this.onSecurity(record.peerId, record.state)
-          break
-        case 'restored':
-          this.onRestored(record.peers)
-          break
-      }
+  private deliver(record: WireDrainRecord): void {
+    switch (record.t) {
+      case 'adv':
+        this.onAdvertisement(record)
+        break
+      case 'scan-end':
+        this.onScanEnd(record)
+        break
+      case 'value':
+        this.onValue(record)
+        break
+      case 'stream-end':
+        this.onStreamEnd(record)
+        break
+      case 'adapter':
+        this.onAdapterRecord(record.state)
+        break
+      case 'link':
+        this.onLink(record)
+        break
+      case 'db-changed':
+        this.onDatabaseChanged(record)
+        break
+      case 'ingress-drop':
+        this.onIngressDrop(record)
+        break
+      case 'security':
+        this.onSecurity(record.peerId, record.state)
+        break
+      case 'restored':
+        this.onRestored(record.peers)
+        break
     }
   }
 

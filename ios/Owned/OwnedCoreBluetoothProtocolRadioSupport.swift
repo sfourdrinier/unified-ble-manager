@@ -157,73 +157,98 @@ enum OwnedCoreBluetoothProtocolRadioSupport {
   }
 }
 
-/// CoreBluetooth fuses ATT reads and notifications into `didUpdateValueFor`.
-/// An independent `read()` while that characteristic is notifying cannot be
-/// attributed, so the radio rejects it rather than guessing callback order.
-/// A read admitted while idle still owns its ATT response if CCCD enable races
-/// it before `isNotifying` flips; fused values that cannot be attributed are
-/// dropped instead of being re-emitted as notifications.
-enum OwnedCoreBluetoothReadNotifyProvenance {
-  static let independentReadWhileNotifyingCode = 1031
-  static let independentReadWhileNotifyingMessage =
-    "Independent read is ambiguous while this characteristic is notifying"
-  static let subscribeWhileReadPendingCode = 1032
-  static let subscribeWhileReadPendingMessage =
-    "A notification state change cannot start while a read is pending for this characteristic"
+/// What CoreBluetooth can say a characteristic read value is. It reports a
+/// read response and a notification through the same `didUpdateValueFor`
+/// callback, so while the characteristic can notify (it notifies, a
+/// subscription is installed, a notification state change is in flight, or a
+/// cancelled one is being undone) the value that completes a read is
+/// `readOrNotification`; otherwise it is the `readResponse`.
+@objc public enum OwnedCoreBluetoothReadProvenance: Int {
+  case readResponse
+  case readOrNotification
 
-  static func independentReadIsAmbiguous(
+  /// The shared vocabulary's wire word.
+  public var wire: String {
+    switch self {
+    case .readResponse: return "read-response"
+    case .readOrNotification: return "read-or-notification"
+    }
+  }
+}
+
+enum OwnedCoreBluetoothReadNotifyProvenance {
+  static func readProvenance(
     isNotifying: Bool,
     hasInstalledSubscription: Bool,
-    pendingNotifyEnable: Bool,
+    pendingNotifyChange: Bool,
     pendingCancellationCleanup: Bool
-  ) -> Bool {
-    isNotifying || hasInstalledSubscription || pendingNotifyEnable || pendingCancellationCleanup
+  ) -> OwnedCoreBluetoothReadProvenance {
+    isNotifying || hasInstalledSubscription || pendingNotifyChange || pendingCancellationCleanup
+      ? .readOrNotification
+      : .readResponse
   }
 
-  enum ValueUpdateRoute: Equatable {
-    case completePendingRead
-    case rejectPendingRead
-    case deliverNotification
-    case ignore
-  }
-
-  enum SubscribeAdmission: Equatable {
-    case admit
-    case rejectPendingRead
-    case rejectPendingNotify
-  }
-
-  static func admitSubscribe(hasPendingRead: Bool, hasPendingNotify: Bool) -> SubscribeAdmission {
-    if hasPendingRead { return .rejectPendingRead }
-    if hasPendingNotify { return .rejectPendingNotify }
-    return .admit
-  }
-
-  static func routeValueUpdate(
-    hasPendingRead: Bool,
-    isNotifying: Bool,
+  /// A successful value update reaches the subscription that owns the
+  /// characteristic, whether or not it also completes a read: a value that may
+  /// be a notification is never withheld from the stream.
+  static func deliversNotification(
     hasInstalledSubscription: Bool,
     pendingNotifyEnable: Bool,
     pendingCancellationCleanup: Bool,
     hasError: Bool,
     hasValue: Bool
-  ) -> ValueUpdateRoute {
-    if hasPendingRead && !isNotifying && !hasInstalledSubscription && !pendingCancellationCleanup {
-      return .completePendingRead
+  ) -> Bool {
+    !hasError && hasValue && (hasInstalledSubscription || pendingNotifyEnable) && !pendingCancellationCleanup
+  }
+}
+
+/// Reads of one characteristic, in request order. CoreBluetooth answers each
+/// `readValue(for:)` with exactly one `didUpdateValueFor` (value or error) but
+/// cannot say which update answers which read, so at most one `readValue` is
+/// outstanding per characteristic and the next is issued only after the
+/// previous one's update arrived. A read cancelled or timed out after its
+/// `readValue` was issued leaves its update owed: that update is consumed
+/// without completing a later read, so a later read never receives an answer
+/// CoreBluetooth issued for an abandoned one.
+struct OwnedCoreBluetoothReadLane<Waiter> {
+  private(set) var inFlight: Waiter?
+  private(set) var updateOwed = false
+  private(set) var queued: [Waiter] = []
+
+  var isIdle: Bool { !updateOwed && queued.isEmpty }
+
+  /// Admits one read; `true` when the caller must issue `readValue(for:)` now.
+  mutating func admit(_ waiter: Waiter) -> Bool {
+    guard !updateOwed else {
+      queued.append(waiter)
+      return false
     }
-    if hasPendingRead {
-      return .rejectPendingRead
-    }
-    if !hasError && hasValue && (hasInstalledSubscription || pendingNotifyEnable) && !pendingCancellationCleanup {
-      return .deliverNotification
-    }
-    return .ignore
+    inFlight = waiter
+    updateOwed = true
+    return true
   }
 
-  static func occurrenceValueUpdateShouldReturn(
-    occurrenceAmbiguous: Bool,
-    occurrenceStatePresent: Bool
-  ) -> Bool {
-    occurrenceAmbiguous || occurrenceStatePresent
+  /// Consumes one value update: the read it completes (nil when the update
+  /// answers an abandoned read or none is owed) and whether the caller must
+  /// issue `readValue(for:)` for the next queued read.
+  mutating func answer() -> (completed: Waiter?, issueNext: Bool) {
+    guard updateOwed else { return (nil, false) }
+    let completed = inFlight
+    inFlight = nil
+    updateOwed = false
+    guard !queued.isEmpty else { return (completed, false) }
+    inFlight = queued.removeFirst()
+    updateOwed = true
+    return (completed, true)
   }
+
+  /// Abandons every read `matches` selects; the in-flight one keeps its
+  /// update owed.
+  mutating func cancel(where matches: (Waiter) -> Bool) {
+    queued.removeAll(where: matches)
+    if let current = inFlight, matches(current) { inFlight = nil }
+  }
+
+  /// Every read still waiting, in request order (disconnect, teardown).
+  var waiting: [Waiter] { (inFlight.map { [$0] } ?? []) + queued }
 }

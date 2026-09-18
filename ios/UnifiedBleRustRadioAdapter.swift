@@ -39,14 +39,14 @@ protocol UnifiedBleRustRadioDriver: AnyObject {
     operationIdentifier: String,
     completion: @escaping (NSDictionary?, NSError?) -> Void
   )
-  func read(
+  func readCharacteristic(
     peerIdentifier: String,
     serviceUUID: String,
     serviceOccurrence: Int,
     characteristicUUID: String,
     characteristicOccurrence: Int,
     operationIdentifier: String,
-    completion: @escaping (NSData?, NSError?) -> Void
+    completion: @escaping (NSData?, OwnedCoreBluetoothReadProvenance, NSError?) -> Void
   )
   func readRssi(
     peerIdentifier: String,
@@ -305,12 +305,14 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
       }
     case let .read(_, instance):
       guard let path = Self.path(instance) else { return finish(id, Self.stalePath) }
-      driver.read(
+      driver.readCharacteristic(
         peerIdentifier: instance.peerId, serviceUUID: instance.serviceUuid, serviceOccurrence: path.service,
         characteristicUUID: instance.characteristicUuid, characteristicOccurrence: path.characteristic,
         operationIdentifier: operationIdentifier
-      ) { value, error in
-        self.finishBytes(id, value, error, verb: .read)
+      ) { value, provenance, error in
+        if let error { return self.finish(id, Self.failure(error, verb: .read)) }
+        guard let value else { return self.finish(id, Self.platformFailure("CoreBluetooth answered the read without a value")) }
+        self.finish(id, .read(value: value as Data, provenance: provenance.wire))
       }
     case let .write(_, instance, value, withResponse):
       write(id, operationIdentifier, instance, value, withResponse)
@@ -665,8 +667,8 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
   /// operation already pending on the same attribute, unowned subscription.
   static func ownedRefusedBeforeSending(_ code: Int, verb: Verb) -> Bool {
     switch code {
-    case 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014, 1017, 1018, 1019,
-      1022, 1023, 1024, 1028, 1029, 1031, 1032, 1033:
+    case 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010, 1012, 1013, 1014, 1017, 1018, 1019,
+      1022, 1023, 1024, 1028, 1029, 1033:
       return true
     case 1025: return true
     case 1026: return verb == .readDescriptor
@@ -711,7 +713,7 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
     case 1005, 1007: return "peer-unknown"
     case 1008, 1016, 1020, 1022, 1033: return "not-connected"
     case 1010, 1013, 1017, 1019, 1028: return "path-stale"
-    case 1001, 1006, 1009, 1011, 1014, 1018, 1023, 1024, 1029, 1031, 1032: return "busy"
+    case 1001, 1006, 1009, 1014, 1018, 1023, 1024, 1029: return "busy"
     case 1003: return "adapter-off"
     case 1025: return verb == .readDescriptor ? "path-stale" : "busy"
     case 1026: return verb == .readDescriptor ? "busy" : (verb == .discover ? "path-stale" : "platform")

@@ -205,6 +205,8 @@ export type {
   BackendOperationDispatch,
   BackendOperationPhysicalSettlement,
   CancellationAcknowledgement,
+  CharacteristicRead,
+  CharacteristicReadResult,
   LongWriteChunkProgress,
   LongWriteNotPlannedReceipt,
   LongWritePlannedReceipt,
@@ -215,6 +217,7 @@ export type {
   OperationTerminalOutcome,
   OperationTerminalRecord,
   PublicOperationOptions,
+  ReadProvenance,
   ReadRequest,
   ReadResult,
   SubscribeRequest,
@@ -225,7 +228,12 @@ export type {
   WriteRequest,
   WriteResult
 } from './operations'
-export { createBackendOperationDispatch, createOperationSettlementCoordinator } from './operations'
+export {
+  READ_PROVENANCES,
+  createBackendOperationDispatch,
+  createOperationSettlementCoordinator,
+  isReadProvenance
+} from './operations'
 export type {
   AdapterId,
   ApplicableCompatibilityOffer,

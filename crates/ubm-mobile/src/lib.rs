@@ -15,12 +15,14 @@ pub mod compat;
 pub mod drain;
 pub mod foreign;
 pub mod host;
+pub mod identity;
 pub mod radio;
 pub mod session;
 pub mod wire;
 
 pub use foreign::{CompletionStatus, ForeignRadio, RadioCounters};
 pub use host::{HostOptions, MobileHost};
+pub use identity::MobileIdentity;
 pub use radio::*;
 pub use session::{Completion, MobileSession, OPS};
 pub use wire::WIRE_REVISION;

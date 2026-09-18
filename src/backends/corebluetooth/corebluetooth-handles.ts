@@ -27,6 +27,7 @@ import {
 } from '../../backend-contract/gatt'
 import { attachmentRecordsEqual, type AttachmentRecord } from '../../backend-contract/identity'
 import type {
+  CharacteristicRead,
   OperationOptions,
   OperationTerminalRecord,
   PublicOperationOptions
@@ -240,7 +241,7 @@ export class CoreBluetoothGattDatabase implements GattDatabase<string, string, s
   async read<ServiceOccurrence extends string, CharacteristicOccurrence extends string>(
     path: CharacteristicPath<string, string, string, ServiceOccurrence, CharacteristicOccurrence, 'current'>,
     options: PublicOperationOptions
-  ): Promise<OwnedBytes> {
+  ): Promise<CharacteristicRead> {
     this.assertCurrent('direct-gatt.gatt.database-read')
     const address = this.addressFor(path, 'direct-gatt.gatt.database-read')
     return this.backend.gattOperations.readFromDatabase(address, options, String(this.path.connectionId))

@@ -76,6 +76,57 @@ describe('ubm-mobile-wire/1 golden vectors (Rust-generated)', () => {
     expect(refused).toMatchObject({ kind: 'failure', commit: 'not-dispatched' })
   })
 
+  // Owner decision (5.0): every failure envelope carries the owner's own
+  // retryability, and the contract error reports it instead of re-deriving
+  // it from the code. A connect whose link the platform could not establish
+  // (Android GATT 133) is `caller-decides` with the platform's answer kept.
+  it('reports the owner retryability of every failure envelope', () => {
+    const byName = Object.fromEntries(golden.invokes.map(vector => [vector.name, vector]))
+    for (const vector of known.filter(entry => entry.expect !== 'value')) {
+      const envelope = ok(wire.parseInvokeEnvelope(vector.envelope, vector.op), vector.name)
+      expect(envelope.retryability).toBe(JSON.parse(vector.envelope).retryability)
+    }
+    const transient = byName['connect link not established (android gatt 133)']
+    const envelope = ok(wire.parseInvokeEnvelope(transient.envelope, 'connection.connect'), 'transient connect')
+    const error = wire.failureEnvelopeError(envelope)
+    expect(error.normalized).toMatchObject({
+      code: 'platform.failure',
+      operation: 'connection.connect',
+      retryability: 'caller-decides',
+      platform: { domain: 'android', code: 'connectionFailed', metadata: { androidGattStatus: 133 } }
+    })
+    const refusedWrite = ok(
+      wire.parseInvokeEnvelope(byName['write refused by the peer (android gatt status)'].envelope, 'gatt.write'),
+      'refused write'
+    )
+    expect(wire.failureEnvelopeError(refusedWrite).normalized).toMatchObject({
+      retryability: 'never',
+      commit: 'uncertain'
+    })
+    const missing = JSON.parse(transient.envelope)
+    delete missing.retryability
+    expect(wire.parseInvokeEnvelope(JSON.stringify(missing), 'connection.connect').ok).toBe(false)
+  })
+
+  it('names no desktop host anywhere on the mobile wire', () => {
+    const texts = [...golden.invokes.map(vector => vector.envelope), ...golden.drains.map(batch => batch.text)]
+    expect(texts.filter(text => text.toLowerCase().includes('desktop'))).toEqual([])
+  })
+
+  it('reports the legacy React Native generations ("1", corebluetooth-attachment-lifecycle.ts on origin/main)', () => {
+    const byName = Object.fromEntries(golden.invokes.map(vector => [vector.name, vector]))
+    const envelope = ok(wire.parseInvokeEnvelope(byName['adapter state'].envelope, 'adapter.state'), 'adapter state')
+    const state = ok(wire.parseOpValue('adapter.state', envelope.value), 'adapter state value')
+    expect(state).toMatchObject({ backendGeneration: '1', adapterGeneration: '1' })
+    const adapters = golden.drains
+      .flatMap(batch => ok(wire.parseDrainText(batch.text, batch.lastOrdinal), batch.name).records)
+      .filter(record => record.t === 'adapter')
+    expect(adapters.length).toBeGreaterThan(0)
+    for (const record of adapters) {
+      expect(record.state).toMatchObject({ backendGeneration: '1', adapterGeneration: '1' })
+    }
+  })
+
   it('parses every drain batch in order, byte-exactly', () => {
     const batches = golden.drains.map(batch =>
       ok(wire.parseDrainText(batch.text, batch.lastOrdinal), `drain ${batch.name}`)

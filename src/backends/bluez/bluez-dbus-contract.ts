@@ -1,5 +1,6 @@
 // src/backends/bluez/bluez-dbus-contract.ts
 
+import type { ReadProvenance } from '../../backend-contract/operations'
 import type { BluezBusKind } from '../desktop/platform-identity'
 
 export const BLUEZ_SERVICE = 'org.bluez'
@@ -10,6 +11,8 @@ export const BLUEZ_DEVICE_INTERFACE = 'org.bluez.Device1'
 export const BLUEZ_GATT_SERVICE_INTERFACE = 'org.bluez.GattService1'
 export const BLUEZ_GATT_CHARACTERISTIC_INTERFACE = 'org.bluez.GattCharacteristic1'
 export const BLUEZ_GATT_DESCRIPTOR_INTERFACE = 'org.bluez.GattDescriptor1'
+/** `ReadValue` answers with this read's own response; notifications arrive as `PropertiesChanged`. */
+export const BLUEZ_READ_PROVENANCE: ReadProvenance = 'read-response'
 
 export { BLUEZ_NO_AUTHORIZATION_CONCEPT_REASON } from '../desktop/platform-identity'
 

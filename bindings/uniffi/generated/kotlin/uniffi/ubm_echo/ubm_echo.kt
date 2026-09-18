@@ -3512,6 +3512,16 @@ sealed class MobileRadioCompletion {
         companion object
     }
     
+    data class Read(
+        val `value`: kotlin.ByteArray, 
+        val `provenance`: kotlin.String) : MobileRadioCompletion()
+        
+    {
+        
+
+        companion object
+    }
+    
     data class Adapter(
         val `snapshot`: uniffi.ubm_echo.MobileAdapterSnapshot) : MobileRadioCompletion()
         
@@ -3678,55 +3688,59 @@ public object FfiConverterTypeMobileRadioCompletion : FfiConverterRustBuffer<Mob
             2 -> MobileRadioCompletion.Bytes(
                 FfiConverterByteArray.read(buf),
                 )
-            3 -> MobileRadioCompletion.Adapter(
+            3 -> MobileRadioCompletion.Read(
+                FfiConverterByteArray.read(buf),
+                FfiConverterString.read(buf),
+                )
+            4 -> MobileRadioCompletion.Adapter(
                 FfiConverterTypeMobileAdapterSnapshot.read(buf),
                 )
-            4 -> MobileRadioCompletion.Discovered(
+            5 -> MobileRadioCompletion.Discovered(
                 FfiConverterSequenceTypeMobileGattService.read(buf),
                 )
-            5 -> MobileRadioCompletion.NotifyEnabled(
+            6 -> MobileRadioCompletion.NotifyEnabled(
                 FfiConverterString.read(buf),
                 )
-            6 -> MobileRadioCompletion.Mtu(
+            7 -> MobileRadioCompletion.Mtu(
                 FfiConverterOptionalUShort.read(buf),
                 )
-            7 -> MobileRadioCompletion.WriteLimits(
+            8 -> MobileRadioCompletion.WriteLimits(
                 FfiConverterUShort.read(buf),
                 FfiConverterUShort.read(buf),
                 )
-            8 -> MobileRadioCompletion.Rssi(
+            9 -> MobileRadioCompletion.Rssi(
                 FfiConverterShort.read(buf),
                 )
-            9 -> MobileRadioCompletion.Accepted(
+            10 -> MobileRadioCompletion.Accepted(
                 FfiConverterBoolean.read(buf),
                 )
-            10 -> MobileRadioCompletion.Phy(
+            11 -> MobileRadioCompletion.Phy(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            11 -> MobileRadioCompletion.PhyRequest(
+            12 -> MobileRadioCompletion.PhyRequest(
                 FfiConverterBoolean.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 )
-            12 -> MobileRadioCompletion.Security(
+            13 -> MobileRadioCompletion.Security(
                 FfiConverterTypeMobileSecurityState.read(buf),
                 )
-            13 -> MobileRadioCompletion.BondedPeers(
+            14 -> MobileRadioCompletion.BondedPeers(
                 FfiConverterSequenceTypeMobilePeerName.read(buf),
                 )
-            14 -> MobileRadioCompletion.Lease(
+            15 -> MobileRadioCompletion.Lease(
                 FfiConverterString.read(buf),
                 )
-            15 -> MobileRadioCompletion.Companion(
+            16 -> MobileRadioCompletion.Companion(
                 FfiConverterLong.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 )
-            16 -> MobileRadioCompletion.Closed(
+            17 -> MobileRadioCompletion.Closed(
                 FfiConverterSequenceTypeMobileCloseFailure.read(buf),
                 )
-            17 -> MobileRadioCompletion.Failed(
+            18 -> MobileRadioCompletion.Failed(
                 FfiConverterString.read(buf),
                 FfiConverterOptionalInt.read(buf),
                 FfiConverterOptionalString.read(buf),
@@ -3750,6 +3764,14 @@ public object FfiConverterTypeMobileRadioCompletion : FfiConverterRustBuffer<Mob
             (
                 4UL
                 + FfiConverterByteArray.allocationSize(value.`value`)
+            )
+        }
+        is MobileRadioCompletion.Read -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterByteArray.allocationSize(value.`value`)
+                + FfiConverterString.allocationSize(value.`provenance`)
             )
         }
         is MobileRadioCompletion.Adapter -> {
@@ -3881,84 +3903,90 @@ public object FfiConverterTypeMobileRadioCompletion : FfiConverterRustBuffer<Mob
                 FfiConverterByteArray.write(value.`value`, buf)
                 Unit
             }
-            is MobileRadioCompletion.Adapter -> {
+            is MobileRadioCompletion.Read -> {
                 buf.putInt(3)
+                FfiConverterByteArray.write(value.`value`, buf)
+                FfiConverterString.write(value.`provenance`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.Adapter -> {
+                buf.putInt(4)
                 FfiConverterTypeMobileAdapterSnapshot.write(value.`snapshot`, buf)
                 Unit
             }
             is MobileRadioCompletion.Discovered -> {
-                buf.putInt(4)
+                buf.putInt(5)
                 FfiConverterSequenceTypeMobileGattService.write(value.`services`, buf)
                 Unit
             }
             is MobileRadioCompletion.NotifyEnabled -> {
-                buf.putInt(5)
+                buf.putInt(6)
                 FfiConverterString.write(value.`delivery`, buf)
                 Unit
             }
             is MobileRadioCompletion.Mtu -> {
-                buf.putInt(6)
+                buf.putInt(7)
                 FfiConverterOptionalUShort.write(value.`mtu`, buf)
                 Unit
             }
             is MobileRadioCompletion.WriteLimits -> {
-                buf.putInt(7)
+                buf.putInt(8)
                 FfiConverterUShort.write(value.`withResponse`, buf)
                 FfiConverterUShort.write(value.`withoutResponse`, buf)
                 Unit
             }
             is MobileRadioCompletion.Rssi -> {
-                buf.putInt(8)
+                buf.putInt(9)
                 FfiConverterShort.write(value.`rssi`, buf)
                 Unit
             }
             is MobileRadioCompletion.Accepted -> {
-                buf.putInt(9)
+                buf.putInt(10)
                 FfiConverterBoolean.write(value.`accepted`, buf)
                 Unit
             }
             is MobileRadioCompletion.Phy -> {
-                buf.putInt(10)
+                buf.putInt(11)
                 FfiConverterString.write(value.`tx`, buf)
                 FfiConverterString.write(value.`rx`, buf)
                 Unit
             }
             is MobileRadioCompletion.PhyRequest -> {
-                buf.putInt(11)
+                buf.putInt(12)
                 FfiConverterBoolean.write(value.`accepted`, buf)
                 FfiConverterOptionalString.write(value.`tx`, buf)
                 FfiConverterOptionalString.write(value.`rx`, buf)
                 Unit
             }
             is MobileRadioCompletion.Security -> {
-                buf.putInt(12)
+                buf.putInt(13)
                 FfiConverterTypeMobileSecurityState.write(value.`state`, buf)
                 Unit
             }
             is MobileRadioCompletion.BondedPeers -> {
-                buf.putInt(13)
+                buf.putInt(14)
                 FfiConverterSequenceTypeMobilePeerName.write(value.`peers`, buf)
                 Unit
             }
             is MobileRadioCompletion.Lease -> {
-                buf.putInt(14)
+                buf.putInt(15)
                 FfiConverterString.write(value.`leaseId`, buf)
                 Unit
             }
             is MobileRadioCompletion.Companion -> {
-                buf.putInt(15)
+                buf.putInt(16)
                 FfiConverterLong.write(value.`associationId`, buf)
                 FfiConverterOptionalString.write(value.`peerId`, buf)
                 FfiConverterOptionalString.write(value.`displayName`, buf)
                 Unit
             }
             is MobileRadioCompletion.Closed -> {
-                buf.putInt(16)
+                buf.putInt(17)
                 FfiConverterSequenceTypeMobileCloseFailure.write(value.`failures`, buf)
                 Unit
             }
             is MobileRadioCompletion.Failed -> {
-                buf.putInt(17)
+                buf.putInt(18)
                 FfiConverterString.write(value.`kind`, buf)
                 FfiConverterOptionalInt.write(value.`gattStatus`, buf)
                 FfiConverterOptionalString.write(value.`nativeDomain`, buf)

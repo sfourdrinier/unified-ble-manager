@@ -31,7 +31,7 @@ use ubm_core::contracts::{BleErrorCode, BleErrorDomain};
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 
 use super::bluez_model::{
-    self, BluezCharacteristic, PairFailure, access_for_instances, bond_state,
+    self, BluezCharacteristic, PAIRING_POSSIBLE, PairFailure, access_for_instances, bond_state,
     cancel_error_proves_terminal, classify_pair_error, device_path, device_path_for_address,
     is_unknown_method, link_mtu,
 };
@@ -257,9 +257,9 @@ impl Bluez {
                 bool_of(&properties, "Paired"),
                 bool_of(&properties, "Bonded"),
             ),
-            // BlueZ has no "can pair" fact; the legacy backend's constant
-            // `true` is not repeated here.
-            pairing_possible: None,
+            // B-R1: BlueZ has no "can pair" fact; the legacy backend's
+            // constant `true` is the contract.
+            pairing_possible: Some(PAIRING_POSSIBLE),
         })
     }
 

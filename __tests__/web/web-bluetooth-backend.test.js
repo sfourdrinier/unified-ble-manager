@@ -300,7 +300,10 @@ describe('WebBluetoothBackend', () => {
     const database = await backend.gatt.discover(lease.connection, noDeadline())
     const characteristic = (await database.snapshot()).characteristics[0]
     if (characteristic === undefined) throw new Error('expected deterministic Web characteristic')
-    await expect(database.read(characteristic.path, noDeadline())).resolves.toEqual(new Uint8Array([0, 72]))
+    await expect(database.read(characteristic.path, noDeadline())).resolves.toEqual({
+      value: new Uint8Array([0, 72]),
+      provenance: 'read-response'
+    })
 
     await lease.release()
     await backend.destroy()
@@ -361,9 +364,14 @@ describe('WebBluetoothBackend', () => {
     expect(String(snapshot.services[0].path.serviceOccurrence)).toBe('0')
     expect(String(snapshot.characteristics[0].path.characteristicOccurrence)).toBe('0')
 
-    const value = await database.read(snapshot.characteristics[0].path, { signal: null, deadline: null })
+    const { value, provenance } = await database.read(snapshot.characteristics[0].path, {
+      signal: null,
+      deadline: null
+    })
     mock.readBuffer[1] = 99
     expect([...value]).toEqual([0, 72])
+    // Web Bluetooth `readValue()` answers with the read's own response.
+    expect(provenance).toBe('read-response')
 
     await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
     await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
@@ -429,6 +437,51 @@ describe('WebBluetoothBackend', () => {
       notificationDeliveries: 1
     })
     await backend.destroy()
+  })
+
+  // Owner decision (5.0): Web Bluetooth's `gatt.connect()` rejects with a
+  // NetworkError when the browser could not establish the link — the same
+  // fact as Android GATT 133 or CBError.connectionFailed — so the connect is
+  // `caller-decides` with the browser's answer kept. The backend never
+  // retries it; any other rejection stays `never`.
+  test.each([
+    ['NetworkError', 'connection.failed', 'caller-decides'],
+    ['SecurityError', 'platform.security', 'never']
+  ])('a connect rejected with %s is %s / %s', async (name, code, retryability) => {
+    const mock = createBoundary()
+    let connectCalls = 0
+    mock.device.gatt.connect = async () => {
+      connectCalls += 1
+      const error = new Error('Connection attempt failed.')
+      error.name = name
+      throw error
+    }
+    const provider = createWebBluetoothProvider(mock.boundary)
+    const [adapter] = await provider.listAdapters()
+    const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
+    await backend.attach({ coreCompatibility: provider.descriptor.compatibility })
+    const selection = await backend.choose(
+      {
+        filters: [{ serviceUuids: [HEART_RATE_SERVICE], manufacturerData: [], localNamePrefix: null }],
+        acceptAllDevices: false,
+        optionalServices: [HEART_RATE_SERVICE]
+      },
+      noDeadline()
+    )
+    await expect(
+      backend.connections.connect(selection.peerId, 'test-client', { signal: null, deadline: null })
+    ).rejects.toMatchObject({
+      normalized: {
+        code,
+        retryability,
+        platform: { domain: 'web-bluetooth', code: name }
+      }
+    })
+    expect(connectCalls).toBe(1)
+    expectConsoleErrorMatching(
+      '[WebBluetoothBackend.connect] Browser connect rejected:',
+      expect.objectContaining({ name })
+    )
   })
 
   test('invalidates the old database generation after rediscovery', async () => {

@@ -339,7 +339,7 @@ impl RadioBoundary for DispatchRadio {
         service_occurrence: u64,
         characteristic_uuid: &str,
         characteristic_occurrence: u64,
-    ) -> std::result::Result<Vec<u8>, DesktopError> {
+    ) -> std::result::Result<ubm_desktop::CharacteristicRead, DesktopError> {
         match self {
             Self::Radio(radio) => {
                 radio
@@ -1103,6 +1103,14 @@ pub struct ManufacturerDataInfo {
     #[napi(js_name = "companyId")]
     pub company_id: u32,
     pub payload: Buffer,
+}
+
+/// One characteristic read: the value and what the radio says it is
+/// (`read-response` | `read-or-notification`).
+#[napi(object)]
+pub struct ReadInfo {
+    pub value: Buffer,
+    pub provenance: String,
 }
 
 /// One service-data section, payload bytes verbatim.
@@ -2531,7 +2539,7 @@ impl UbmCentral {
         let mut profile = CentralProfile::desktop(&owner);
         let waker = Arc::new(EventWaker::default());
         profile.observer = Some(EventWaker::observer(&waker));
-        profile.backend_label = "synthetic".to_owned();
+        profile.identity = Arc::new(ubm_desktop::DesktopIdentity::new("synthetic", &owner));
         let (platform, pairing_generation) = options.map_or((None, false), |options| {
             (
                 options.platform,
@@ -3470,9 +3478,9 @@ impl UbmCentral {
             .map_err(to_napi)
     }
 
-    /// GATT read through a validated path.
+    /// GATT read through a validated path, with the radio's provenance.
     #[napi(catch_unwind)]
-    pub async fn read(&self, options: ReadOptions) -> Result<Buffer> {
+    pub async fn read(&self, options: ReadOptions) -> Result<ReadInfo> {
         let selector = selector_of(&options.selector).map_err(to_napi)?;
         let ctl = self
             .control(
@@ -3482,12 +3490,15 @@ impl UbmCentral {
             )
             .map_err(to_napi)?;
         bump(&self.counters.read);
-        let value = self
+        let read = self
             .central
             .read(&options.peer_id, &selector, ctl)
             .await
             .map_err(fail)?;
-        Ok(Buffer::from(value))
+        Ok(ReadInfo {
+            value: Buffer::from(read.value),
+            provenance: read.provenance.as_str().to_owned(),
+        })
     }
 
     /// GATT write through a validated path.
@@ -3973,6 +3984,29 @@ impl UbmCentral {
             ))
         })?;
         radio.set_rssi(&peer_id, rssi);
+        Ok(())
+    }
+
+    /// Stage what the synthetic radio says characteristic reads are
+    /// (`read-response` | `read-or-notification`, synthetic only): models a
+    /// radio that reports read responses and notifications through one
+    /// callback (CoreBluetooth reading a notifying characteristic).
+    #[napi(catch_unwind)]
+    pub async fn stage_read_provenance(&self, provenance: String) -> Result<()> {
+        let radio = self
+            .central
+            .boundary()
+            .synthetic("dispatch.stage-read-provenance")
+            .map_err(to_napi)?;
+        let provenance = ubm_desktop::ReadProvenance::from_wire(&provenance).ok_or_else(|| {
+            to_napi(DispatchError::new(
+                BleErrorCode::ArgumentInvalid.as_str(),
+                BleErrorDomain::Core.as_str(),
+                "dispatch.stage-read-provenance",
+                "provenance must be read-response or read-or-notification",
+            ))
+        })?;
+        radio.script_read_provenance(provenance);
         Ok(())
     }
 
@@ -4839,7 +4873,33 @@ mod tests {
             })
             .await
             .expect("read");
-        assert_eq!(value.as_ref(), &[0x42u8][..]);
+        assert_eq!(value.value.as_ref(), &[0x42u8][..]);
+        assert_eq!(value.provenance, "read-response");
+        central
+            .stage_read_provenance("read-or-notification".to_owned())
+            .await
+            .expect("stage provenance");
+        let fused = central
+            .read(ReadOptions {
+                peer_id: "peer-1".to_owned(),
+                selector: selector_input(),
+                timeout_ms: Some(5000),
+                ticket: None,
+            })
+            .await
+            .expect("read while notifying");
+        assert_eq!(fused.provenance, "read-or-notification");
+        assert!(
+            central
+                .stage_read_provenance("notification".to_owned())
+                .await
+                .is_err(),
+            "an unknown provenance word is refused"
+        );
+        central
+            .stage_read_provenance("read-response".to_owned())
+            .await
+            .expect("restore provenance");
         central
             .subscribe(SubscribeOptions {
                 peer_id: "peer-1".to_owned(),

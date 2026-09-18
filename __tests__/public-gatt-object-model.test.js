@@ -341,6 +341,37 @@ describe('stable public GATT object model (PR3 TDD)', () => {
     await expect(settle(fixture, manager.destroy())).resolves.toMatchObject({ state: 'released' })
   })
 
+  test('readReceipt reports the platform provenance; a read on a subscribed characteristic runs and the subscriber still receives values', async () => {
+    const { fixture, manager } = await createPublicFixture()
+    const { connection, database } = await connectAndDiscover(fixture, manager)
+    const characteristic = database.service('180f', { occurrence: 0 }).characteristic('2a19')
+    const idle = await settle(fixture, characteristic.readReceipt())
+    expect(idle.provenance).toBe('read-response')
+    expect(Object.isFrozen(idle)).toBe(true)
+    const subscription = await settle(fixture, characteristic.subscribe())
+    const next = subscription.values[Symbol.asyncIterator]().next()
+    fixture.controller.setReadProvenance('read-or-notification')
+    const fused = await settle(fixture, characteristic.readReceipt())
+    expect(fused.provenance).toBe('read-or-notification')
+    await expect(settle(fixture, characteristic.read())).resolves.toEqual(fused.value)
+    fixture.controller.emitNotification(
+      {
+        serviceUuid: '0000180f-0000-1000-8000-00805f9b34fb',
+        serviceOccurrence: 0,
+        characteristicUuid: '00002a19-0000-1000-8000-00805f9b34fb',
+        characteristicOccurrence: 0
+      },
+      new Uint8Array([0x0f])
+    )
+    await expect(next).resolves.toMatchObject({
+      value: { kind: 'value', value: { delivery: 'notification', value: new Uint8Array([0x0f]) } }
+    })
+    await settle(fixture, subscription.remove())
+    await expect(settle(fixture, connection.release())).resolves.toMatchObject({ state: 'released' })
+    await expect(characteristic.readReceipt()).rejects.toMatchObject({ code: 'gatt.stale-handle' })
+    await expect(settle(fixture, manager.destroy())).resolves.toMatchObject({ state: 'released' })
+  })
+
   test('routes descriptor operations through the captured object path and invalidates the whole graph', async () => {
     const publicFixture = await createPublicFixture()
     const { fixture, manager } = publicFixture

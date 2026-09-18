@@ -39,6 +39,21 @@ test('5.x podspec declares the loud-failure consumer contract (explicit modes, n
   expect(podspec).toContain('bindings/uniffi/generated/swift/ubm_echo.swift')
 })
 
+test('CI stages ios/RustCore before an example installs the package copy that CocoaPods compiles', () => {
+  // example-expo depends on `file:..`: pnpm copies the package's files into
+  // its store at install time and Expo autolinking points the pod at that
+  // copy, so a staging prepared after the install never reaches the pod.
+  // (The classic example autolinks the repository root directly.)
+  const apple = fs.readFileSync(path.join(root, '.github', 'workflows', 'apple-ci.yml'), 'utf8')
+  const expoJob = apple.slice(apple.indexOf('  ios-expo:'), apple.indexOf('  tvos-library:'))
+  const prepare = expoJob.indexOf('pnpm native:apple:prepare')
+  const install = expoJob.indexOf('pnpm --dir example-expo install')
+  expect(prepare).toBeGreaterThan(-1)
+  expect(install).toBeGreaterThan(prepare)
+  const prepareStep = expoJob.slice(expoJob.lastIndexOf('- name:', prepare), prepare)
+  expect(prepareStep).toContain('UBM_NATIVE_BUILD: source')
+})
+
 // R02 Apple cutover: a well-formed XCFramework (slice count + digests pass)
 // must still prove it carries the REAL UniFFI core session. These anchors
 // are the exact open/invoke/close + real-Central + scan-slice symbols the

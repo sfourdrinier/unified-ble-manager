@@ -240,3 +240,38 @@ describe('a lost control record is reconciled from the owner into typed transiti
     await manager.destroy()
   })
 })
+
+describe('owner wire ids never reach a public event (legacy had none)', () => {
+  const WIRE_ID =
+    /"(?:s\d+-scan-\d+|(?:read|read-descriptor|write|subscribe|unsubscribe|connect|discover|scan|consumer|lease)-\d+)"/
+
+  test('a refused cancel and an unmatched scan end name no owner operation or membership', async () => {
+    const { native, manager, backend } = await openManager()
+    const events = []
+    const iterator = backend.events()[Symbol.asyncIterator]()
+    const pump = (async () => {
+      for (;;) {
+        const item = await iterator.next()
+        if (item.done === true || item.value.kind !== 'value') return
+        events.push(item.value.value)
+      }
+    })()
+    const { database, path } = await connectAndSubscribe(manager, backend)
+    native.hold('gatt.read')
+    native.failNext('op.cancel', 'platform.failure')
+    const controller = new AbortController()
+    const read = database.read(path, { signal: controller.signal, deadline: null }).catch(error => error)
+    await settle()
+    controller.abort()
+    await settle(60)
+    native.release('gatt.read', { valueB64: 'AA==' })
+    await read
+    native.push(onlySession(native), { t: 'scan-end', operationId: 's9-scan-9', reason: 'source-failed' })
+    await settle(60)
+    const warnings = events.filter(event => event.kind === 'diagnostic-warning')
+    expect(warnings.map(event => event.code)).toEqual(expect.arrayContaining(['cancel-failed', 'unmatched-scan-end']))
+    for (const warning of warnings) expect(JSON.stringify(warning)).not.toMatch(WIRE_ID)
+    await manager.destroy()
+    await pump
+  })
+})

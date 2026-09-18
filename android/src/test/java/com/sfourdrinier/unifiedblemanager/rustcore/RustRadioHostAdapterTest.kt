@@ -265,7 +265,7 @@ class RustRadioHostAdapterTest {
     adapter.write(4, peer, HR_SERVICE, 0, HR_MEASUREMENT, 0, byteArrayOf(4), true)
     radio.answer("write:$HR_MEASUREMENT:[4]:true", Result.success(Unit))
     assertEquals(
-      listOf("bytes:1:[0, 72]", "failure:2:gatt-status:5", "failure:3:not-connected:19", "unit:4"),
+      listOf("read:1:[0, 72]:read-response", "failure:2:gatt-status:5", "failure:3:not-connected:19", "unit:4"),
       core.calls
     )
   }
@@ -503,6 +503,17 @@ class RustRadioHostAdapterTest {
   }
 
   @Test
+  fun phyVerbsBelowApi26AreUnsupportedBeforeAnyRadioCall() {
+    connect()
+    radio.connectPhySupported = false
+    adapter.readPhy(2, peer)
+    adapter.requestPhy(3, peer, "le-2m", null)
+    assertEquals(RadioFailureKind.UNSUPPORTED, core.failures.getValue(2).kind)
+    assertEquals(RadioFailureKind.UNSUPPORTED, core.failures.getValue(3).kind)
+    assertTrue(radio.calls.none { it.startsWith("readPhy") || it.startsWith("requestPhy") })
+  }
+
+  @Test
   fun backgroundFailuresCarryTheRegistryCodeLegacyExpoMapped() {
     background.failure = ForegroundServiceControlException("foregroundServiceNotConfigured", "Rebuild with metadata.")
     adapter.acquireBackground(1, "connected-device", "workout")
@@ -617,7 +628,7 @@ class RustRadioHostAdapterTest {
     val parked = radio.pending.getValue("read:$HR_MEASUREMENT")
     parked(Result.success(byteArrayOf(1)))
     parked(Result.success(byteArrayOf(2)))
-    assertEquals(listOf("bytes:1:[1]"), core.calls)
+    assertEquals(listOf("read:1:[1]:read-response"), core.calls)
     assertEquals(1L, adapter.statusCounts()["suppressed-second-answer"])
   }
 

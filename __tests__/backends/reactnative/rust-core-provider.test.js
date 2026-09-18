@@ -86,6 +86,49 @@ describe('Polar-style journey through the ordinary factory', () => {
   })
 })
 
+describe('5.0 read while notifying: the result reports what the radio said', () => {
+  test('Android and Apple-idle reads are read responses; the value is the same through read()', async () => {
+    const { manager, backend } = await openManager()
+    const connection = await connectDefault(manager, backend)
+    const { database, path } = await discover(connection)
+    const receipt = await database.readReceipt(path, NO_OPTIONS)
+    expect([...receipt.value]).toEqual([0x00, 0x48])
+    expect(receipt.provenance).toBe('read-response')
+    expect([...(await database.read(path, NO_OPTIONS))]).toEqual([0x00, 0x48])
+    await manager.destroy()
+  })
+
+  test('Polar PMD: subscribe, then read — the read runs, reports read-or-notification, and the subscriber still receives values', async () => {
+    const { native, manager, backend } = await openManager()
+    const connection = await connectDefault(manager, backend)
+    const { database, path } = await discover(connection)
+    const subscription = await database.subscribe(path, subscribeOptions())
+    // CoreBluetooth reading a notifying characteristic: the radio cannot tell
+    // a read response from a notification and says so.
+    native.readProvenance = 'read-or-notification'
+    const receipt = await database.readReceipt(path, NO_OPTIONS)
+    expect(receipt.provenance).toBe('read-or-notification')
+    expect([...receipt.value]).toEqual([0x00, 0x48])
+    native.emitNotification(new Uint8Array([0x0f, 0x01]))
+    const item = await take(subscription.values)
+    expect([...item.value.value.value]).toEqual([0x0f, 0x01])
+    expect((await subscription.remove()).state).toBe('released')
+    await manager.destroy()
+  })
+
+  test('an owner read reply without a provenance is protocol.malformed, never a guessed read-response', async () => {
+    const { native, manager, backend } = await openManager()
+    const connection = await connectDefault(manager, backend)
+    const { database, path } = await discover(connection)
+    native.hold('gatt.read')
+    const read = database.readReceipt(path, NO_OPTIONS)
+    await settle()
+    native.release('gatt.read', { valueB64: 'AQ==' })
+    expect((await failure(read)).code).toBe('protocol.malformed')
+    await manager.destroy()
+  })
+})
+
 describe('PR210-12 byte forms cross the production serializer byte-exactly without Buffer/atob', () => {
   const removed = {}
   beforeAll(() => {
@@ -399,19 +442,22 @@ describe('PR210-16 core generations and typed invalidation', () => {
 
   test('the attachment carries the owner’s generations; a changed generation restarts the backend', async () => {
     const { native, manager, backend } = await openManager()
-    expect(String(backend.identity.attachment.backendGeneration)).toBe('backend-gen-1')
-    expect(String(backend.identity.attachment.adapter.adapterGeneration)).toBe('adapter-gen-1')
+    expect(String(backend.identity.attachment.backendGeneration)).toBe('1')
+    expect(String(backend.identity.attachment.adapter.adapterGeneration)).toBe('1')
     const events = backend.events()
-    native.setAdapter({ backendGeneration: 'backend-gen-2' })
+    native.setAdapter({ backendGeneration: '2' })
     await settle(60)
     const kinds = []
     for (;;) {
       const item = await take(events)
       if (item.value.kind !== 'value') break
       kinds.push(item.value.value.kind)
-      if (kinds.includes('adapter-state')) break
+      if (kinds.includes('backend-restarted')) break
     }
-    expect(kinds).toEqual(['backend-restarted', 'adapter-state'])
+    // Legacy advanceGeneration reported the advance as `backend-restarted` alone.
+    expect(kinds).toEqual(['backend-restarted'])
+    expect(String(backend.identity.attachment.backendGeneration)).toBe('2')
+    expect(String(backend.identity.attachment.attachmentId)).toMatch(/:2:1$/)
     await manager.destroy()
   })
 
@@ -467,9 +513,14 @@ describe('PR210-17 wake-driven delivery, byte charges and watcher removal', () =
     const directory = path.join(__dirname, '../../../src/backends/reactnative')
     for (const file of fs.readdirSync(directory).filter(name => name.startsWith('react-native-rust-core'))) {
       const source = fs.readFileSync(path.join(directory, file), 'utf8')
-      expect(source).not.toMatch(/pumpDelay|setTimeout\(resolve/)
+      expect(source).not.toMatch(/pumpDelay|setTimeout\(resolve|setInterval/)
       expect(source).not.toMatch(/'(scan|notifications|events)\.take'/)
     }
+    // The boundary between delivered records is the native drain round trip,
+    // never a JS timer or frame (they stop with the host in the background).
+    const drain = fs.readFileSync(path.join(directory, 'react-native-rust-core-drain.ts'), 'utf8')
+    const code = drain.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')
+    expect(code).not.toMatch(/setTimeout|setImmediate|requestAnimationFrame|queueMicrotask/)
   })
 
   test('a notification is charged its actual payload bytes', async () => {

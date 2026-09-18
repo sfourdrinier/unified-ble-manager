@@ -15,6 +15,7 @@ import type { BoundedAsyncStream, BoundedAsyncStreamIterator, StreamItem } from 
 import type { ElectronConnectionEventsSubscribeResponseV2, ElectronConnectionLifecycleEventV2 } from './protocol'
 import { ELECTRON_CONNECTION_LIFECYCLE_EVENT_SCHEMA_VERSION, isElectronConnectionEventsStreamHandle } from './protocol'
 import type { ElectronBleIpcEvent } from './protocol'
+import { ipcAttachmentRecordV2 } from '../ipc/protocol'
 import type { ElectronEventDelivery } from './renderer-stream-registry'
 
 /**
@@ -409,26 +410,7 @@ function snapshotConnectionLifecycleEvent(event: ConnectionLifecycleEvent<string
   return Object.freeze({
     kind: 'connection-lifecycle',
     schemaVersion: ELECTRON_CONNECTION_LIFECYCLE_EVENT_SCHEMA_VERSION,
-    attachment: Object.freeze({
-      attachmentId: String(event.attachment.attachmentId),
-      backendInstanceId: String(event.attachment.backendInstanceId),
-      backendGeneration: String(event.attachment.backendGeneration),
-      adapter: Object.freeze({
-        adapterId: String(event.attachment.adapter.adapterId),
-        displayName: event.attachment.adapter.displayName,
-        state: Object.freeze({
-          availability: event.attachment.adapter.state.availability,
-          authorization: event.attachment.adapter.state.authorization,
-          power: event.attachment.adapter.state.power,
-          heard: null,
-          backendGeneration: String(event.attachment.adapter.state.backendGeneration),
-          updatedAt: Number(event.attachment.adapter.state.updatedAt),
-          safeReason: event.attachment.adapter.state.safeReason
-        }),
-        adapterGeneration: String(event.attachment.adapter.adapterGeneration),
-        limitations: Object.freeze([...event.attachment.adapter.limitations])
-      })
-    }),
+    attachment: ipcAttachmentRecordV2(event.attachment),
     attachmentId: String(event.attachmentId),
     peerId: String(event.peerId),
     connectionId: String(event.connectionId),

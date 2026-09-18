@@ -107,7 +107,7 @@ public final class MobileCoreBridge {
         /** Answer: {@link #nativeCompleteDiscovered}. */
         void discover(long requestId, String peerId);
 
-        /** Answer: {@link #nativeCompleteBytes}. */
+        /** Answer: {@link #nativeCompleteRead}. */
         void read(long requestId, String peerId, String serviceUuid, long serviceOccurrence, String characteristicUuid, long characteristicOccurrence);
 
         /** Answer: {@link #nativeCompleteUnit}. */
@@ -229,7 +229,14 @@ public final class MobileCoreBridge {
 
     public static native int nativeCompleteUnit(long requestId);
 
+    /** A descriptor read's value. */
     public static native int nativeCompleteBytes(long requestId, byte[] value);
+
+    /**
+     * A characteristic read's value and what the platform says it is:
+     * {@code read-response} | {@code read-or-notification}.
+     */
+    public static native int nativeCompleteRead(long requestId, byte[] value, String provenance);
 
     /** availability: available|unavailable|unsupported|unknown; authorization: granted|denied|restricted|not-determined|unavailable|unknown; power: on|off|resetting|unsupported|unknown. */
     public static native int nativeCompleteAdapter(long requestId, String availability, String authorization, String power, String safeReason);

@@ -1,0 +1,42 @@
+/* examples-shared/driver/browser/driver.css — the scenario panel of every browser-engine host. */
+:root {
+  color-scheme: light dark;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+body {
+  margin: 0 auto;
+  max-width: 72rem;
+  padding: 1rem;
+}
+.driver-title {
+  font-size: 1.2rem;
+}
+.driver-remote {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+}
+.driver-gestures button {
+  font-size: 1.1rem;
+  padding: 0.6rem 1rem;
+  margin: 0.25rem 0.5rem 0.25rem 0;
+  border: 2px solid #b7791f;
+}
+.driver-scenario {
+  border-top: 1px solid #8884;
+  padding: 0.5rem 0 1rem;
+}
+.driver-headline {
+  font-weight: 600;
+}
+.driver-buttons button {
+  margin: 0 0.5rem 0.5rem 0;
+}
+.driver-outcome,
+.driver-snapshot,
+.driver-events {
+  font-size: 0.75rem;
+  max-height: 16rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

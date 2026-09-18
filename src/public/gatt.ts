@@ -120,7 +120,14 @@ export interface GattCharacteristic {
   readonly properties: GattCharacteristicProperties
   readonly access: GattAccessRequirements
   readonly descriptors: readonly GattDescriptor[]
+  /** Reads the value. Use {@link GattCharacteristic.readReceipt} to learn what the platform says the value is. */
   read(options?: OperationOptions): Promise<Uint8Array>
+  /**
+   * Reads the value with its provenance. A read also runs while the
+   * characteristic notifies; on Apple CoreBluetooth the value is then
+   * `read-or-notification` and subscribers receive it too.
+   */
+  readReceipt(options?: OperationOptions): Promise<GattReadReceipt>
   write(value: Uint8Array, options?: GattWriteOptions): Promise<GattWriteReceipt>
   writeWhenReady(value: Uint8Array, options?: OperationOptions): Promise<GattWriteReceipt>
   writeLong(value: Uint8Array, options?: LongWriteOptions): Promise<GattLongWriteReceipt>
@@ -139,6 +146,8 @@ export interface GattDescriptor {
 }
 
 export type GattWriteReceipt = import('../manager/consumer-handles').PortableWriteReceipt
+export type GattReadReceipt = import('../manager/consumer-handles').PortableReadReceipt
+export type GattReadProvenance = GattReadReceipt['provenance']
 export type GattLongWriteReceipt = import('../manager/consumer-handles').PortableLongWriteReceipt
 
 export interface GattSubscription {
@@ -302,6 +311,18 @@ class PublicGattCharacteristic implements GattCharacteristic {
         normalizeOperationOptions(options, () => this.source.monotonicNow())
       )
     )
+  }
+
+  readReceipt(options: OperationOptions = {}): Promise<GattReadReceipt> {
+    return this.run(() => {
+      if (this.source.readReceipt === undefined) {
+        throw contractError('capability.unsupported', 'gatt', 'public-gatt.characteristic.read-receipt')
+      }
+      return this.source.readReceipt(
+        this.indexedRecord.record.path,
+        normalizeOperationOptions(options, () => this.source.monotonicNow())
+      )
+    })
   }
 
   write(value: Uint8Array, options: GattWriteOptions = {}): Promise<GattWriteReceipt> {

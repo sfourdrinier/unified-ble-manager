@@ -84,6 +84,52 @@ function deferred() {
 }
 
 describe('public connection supervisor', () => {
+  // Physical Samsung run (2026-09-18): Bluetooth stayed off longer than the
+  // 10 s readiness window; the supervisor parked in `waiting-for-gate` until a
+  // manual wake and never reconnected. A readiness wait that times out, or an
+  // adapter that is not ready yet, is waited for again (5.0; every host).
+  test.each([
+    ['a readiness timeout', new BleError('operation.timed-out', 'adapter', 'public-adapter.wait-until-ready')],
+    ['an adapter not ready yet', new BleError('adapter.powered-off', 'adapter', 'public-adapter.wait-until-ready')]
+  ])('%s keeps waiting for the adapter and reconnects when it returns', async (_name, readinessFailure) => {
+    const current = connection()
+    const ble = manager(current)
+    ble.connect
+      .mockRejectedValueOnce(new BleError('adapter.resetting', 'adapter', 'connection.connect'))
+      .mockResolvedValue(current)
+    ble.adapter.waitUntilReady
+      .mockRejectedValueOnce(readinessFailure)
+      .mockRejectedValueOnce(readinessFailure)
+      .mockImplementation(async () => ble.adapter.state())
+    const supervisor = createConnectionSupervisor(ble, 'peer-1', {
+      retry: { initialDelayMs: 1, maximumDelayMs: 1, multiplier: 1, jitter: 0 }
+    })
+    supervisor.start()
+    for (let turn = 0; turn < 100 && supervisor.snapshot.state !== 'connected'; turn += 1) await wait(5)
+    expect(supervisor.snapshot.state).toBe('connected')
+    expect(ble.adapter.waitUntilReady).toHaveBeenCalledTimes(3)
+    expect(ble.connect).toHaveBeenCalledTimes(2)
+    await supervisor.stop()
+  })
+
+  test('a readiness refusal that waiting cannot fix still waits for a wake', async () => {
+    const current = connection()
+    const ble = manager(current)
+    ble.connect.mockRejectedValueOnce(new BleError('adapter.resetting', 'adapter', 'connection.connect'))
+    ble.adapter.waitUntilReady.mockRejectedValue(
+      new BleError('permission.denied', 'adapter', 'public-adapter.wait-until-ready')
+    )
+    const supervisor = createConnectionSupervisor(ble, 'peer-1', {
+      retry: { initialDelayMs: 1, maximumDelayMs: 1, multiplier: 1, jitter: 0 }
+    })
+    supervisor.start()
+    await wait(50)
+    expect(ble.adapter.waitUntilReady).toHaveBeenCalledTimes(1)
+    expect(supervisor.snapshot.state).toBe('waiting-for-gate')
+    expect(supervisor.snapshot.lastError.code).toBe('permission.denied')
+    await supervisor.stop()
+  })
+
   test('is opt-in and runs one configure callback per connected generation', async () => {
     const current = connection()
     const ble = manager(current)

@@ -179,7 +179,7 @@ describe('lifecycle lag reconciles from the core (N5)', () => {
       await eventuallySwallowed(control, 'takeLifecycleEvent')
       const seen = (await drainFor(events, 300)).filter(item => item.kind === 'value').map(item => item.value.kind)
       expect(seen.filter(kind => kind === 'connection-lost' || kind === 'database-changed')).toEqual([])
-      expect((await database.read(measurement.path, { signal: null, deadline: null })).length).toBeGreaterThan(0)
+      expect((await database.read(measurement.path, { signal: null, deadline: null })).value.length).toBeGreaterThan(0)
     })
   })
 })

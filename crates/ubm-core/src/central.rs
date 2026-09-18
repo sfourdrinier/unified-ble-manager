@@ -2926,6 +2926,36 @@ impl Central {
             .unwrap_or(0)
     }
 
+    /// Every `(peer key, lease)` holding a link, as an adapter reset is
+    /// about to clear them.
+    #[must_use]
+    pub fn held_leases(&self) -> Vec<(String, String)> {
+        self.connections
+            .iter()
+            .flat_map(|record| {
+                record
+                    .leases
+                    .iter()
+                    .map(|lease| (record.peer_key.clone(), lease.clone()))
+            })
+            .collect()
+    }
+
+    /// Every `(peer key, consumer)` of a subscription hub, as an adapter
+    /// reset is about to clear them.
+    #[must_use]
+    pub fn held_consumers(&self) -> Vec<(String, String)> {
+        self.hubs
+            .iter()
+            .filter_map(|hub| self.paths.get(hub.path_index).map(|path| (path, hub)))
+            .flat_map(|(path, hub)| {
+                hub.consumers
+                    .iter()
+                    .map(|consumer| (path.peer_key.clone(), consumer.lease.clone()))
+            })
+            .collect()
+    }
+
     /// Whether `lease` is one of the leases holding the link to `peer_key`.
     /// A requested release keeps its lease until the platform confirms it,
     /// so a retried disconnect in `Disconnecting` stays authorized by the

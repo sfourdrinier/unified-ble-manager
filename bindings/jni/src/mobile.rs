@@ -25,7 +25,7 @@ use jni::sys::{jboolean, jint, jlong, jstring};
 use jni::{Env, EnvUnowned, JValue, JavaVM};
 use ubm_desktop::{
     CharacteristicSnapshot, DeliveryMode, DescriptorSnapshot, DesktopError, ObservedDelivery,
-    PropertyFlags, ServiceSnapshot,
+    PropertyFlags, ReadProvenance, ServiceSnapshot,
 };
 use ubm_mobile::{
     AdapterAuthorization, AdapterAvailability, AdapterPower, AdapterSnapshot, Advertisement,
@@ -1125,6 +1125,21 @@ completion_native!(
     "mobile.complete.bytes",
     (value: JByteArray<'caller>),
     |env| Ok(RadioCompletion::Bytes(read_bytes(env, &value, "mobile.complete.bytes")?))
+);
+
+completion_native!(
+    Java_com_ubm_core_MobileCoreBridge_nativeCompleteRead,
+    "mobile.complete.read",
+    (value: JByteArray<'caller>, provenance: JString<'caller>),
+    |env| {
+        const OP: &str = "mobile.complete.read";
+        let provenance = ReadProvenance::from_wire(read_text(env, &provenance, OP)?.as_str())
+            .ok_or_else(|| invalid(OP, "provenance must be read-response or read-or-notification"))?;
+        Ok(RadioCompletion::Read {
+            value: read_bytes(env, &value, OP)?,
+            provenance,
+        })
+    }
 );
 
 completion_native!(

@@ -83,6 +83,22 @@ impl CharacteristicInternal {
     }
 }
 
+/// UBM patch (UBM_PATCHES.md #14): answer the oldest pending read with one
+/// successful value update; whether the value must also reach the
+/// notification stream.
+fn answer_value_update(characteristic: &mut CharacteristicInternal, data: &[u8]) -> bool {
+    let route = characteristic.read_notify_state().route_value();
+    if let Some(provenance) = route.read {
+        if let Some(state) = characteristic.read_future_state.pop_back() {
+            state
+                .lock()
+                .unwrap()
+                .set_reply(CoreBluetoothReply::CharacteristicRead(data.to_vec(), provenance));
+        }
+    }
+    route.notification
+}
+
 fn fail(state: CoreBluetoothReplyStateShared, error: crate::PlatformError) {
     state
         .lock()
@@ -175,6 +191,9 @@ struct PendingWriteWithoutResponse {
 pub enum CoreBluetoothReply {
     AdapterState(CBManagerState),
     ReadResult(Vec<u8>),
+    // UBM patch (UBM_PATCHES.md #14): a characteristic read's value and what
+    // CoreBluetooth can say it is.
+    CharacteristicRead(Vec<u8>, crate::api::ReadProvenance),
     ReadRssi(i16),
     // UBM patch (UBM_PATCHES.md #4): `canSendWriteWithoutResponse`.
     WriteReadiness(bool),
@@ -851,10 +870,14 @@ impl CoreBluetoothInternal {
     fn on_peripheral_connection_failed(
         &mut self,
         peripheral_uuid: Uuid,
-        error_description: Option<String>,
+        error: Option<crate::PlatformError>,
     ) {
         trace!("Got connection fail event!");
-        let error = error_description.unwrap_or(String::from("Connection failed"));
+        // UBM patch (UBM_PATCHES.md #15): the platform's own answer.
+        let reply = match error {
+            Some(error) => CoreBluetoothReply::Failed(error),
+            None => CoreBluetoothReply::Err(String::from("Connection failed")),
+        };
         if self.peripherals.contains_key(&peripheral_uuid) {
             let peripheral = self
                 .peripherals
@@ -866,7 +889,7 @@ impl CoreBluetoothInternal {
                 .unwrap()
                 .lock()
                 .unwrap()
-                .set_reply(CoreBluetoothReply::Err(error));
+                .set_reply(reply);
         }
     }
 
@@ -1043,36 +1066,23 @@ impl CoreBluetoothInternal {
                 if let Some(characteristic) = service.characteristics.get_mut(&characteristic_uuid)
                 {
                     trace!("Got read event!");
-
-                    let mut data_clone = Vec::new();
-                    for byte in data.iter() {
-                        data_clone.push(*byte);
-                    }
                     // Reads and notifications both return the same callback.
-                    // UBM patch (UBM_PATCHES.md #14): a value completes a
-                    // pending read only when it cannot be a notification;
-                    // otherwise the read fails as ambiguous (legacy 413) and
-                    // the value is not delivered, as the legacy addon did.
-                    let route = characteristic.read_notify_state().route_value();
-                    if route == super::read_notify::ValueRoute::CompleteRead {
-                        let state = characteristic.read_future_state.pop_back().unwrap();
-                        state
-                            .lock()
-                            .unwrap()
-                            .set_reply(CoreBluetoothReply::ReadResult(data_clone));
-                    } else if route == super::read_notify::ValueRoute::RejectRead {
-                        let state = characteristic.read_future_state.pop_back().unwrap();
-                        fail(state, super::read_notify::independent_read_error());
-                    } else if let Err(e) = peripheral
-                        .event_sender
-                        .send(PeripheralEventInternal::Notification(
-                            characteristic_uuid,
-                            service_uuid,
-                            data,
-                        ))
-                        .await
-                    {
-                        error!("Error sending notification event: {}", e);
+                    // UBM patch (UBM_PATCHES.md #14): the oldest pending read
+                    // completes with the provenance CoreBluetooth can give
+                    // it, and a value that may be a notification still
+                    // reaches the notification stream.
+                    if answer_value_update(characteristic, &data) {
+                        if let Err(e) = peripheral
+                            .event_sender
+                            .send(PeripheralEventInternal::Notification(
+                                characteristic_uuid,
+                                service_uuid,
+                                data,
+                            ))
+                            .await
+                        {
+                            error!("Error sending notification event: {}", e);
+                        }
                     }
                 }
             }
@@ -1304,12 +1314,9 @@ impl CoreBluetoothInternal {
             if let Some(service) = peripheral.services.get_mut(&service_uuid) {
                 if let Some(characteristic) = service.characteristics.get_mut(&characteristic_uuid)
                 {
-                    // UBM patch (UBM_PATCHES.md #14): refuse a read the
-                    // callback could not attribute (legacy 413/414).
-                    if let Err(refusal) = characteristic.read_notify_state().admit_read() {
-                        fail(fut, refusal);
-                        return;
-                    }
+                    // UBM patch (UBM_PATCHES.md #14): every read runs, also
+                    // while the characteristic notifies; waiters complete in
+                    // request order with their provenance.
                     trace!("Reading value!");
                     unsafe {
                         peripheral
@@ -1333,12 +1340,6 @@ impl CoreBluetoothInternal {
             if let Some(service) = peripheral.services.get_mut(&service_uuid) {
                 if let Some(characteristic) = service.characteristics.get_mut(&characteristic_uuid)
                 {
-                    // UBM patch (UBM_PATCHES.md #14): no notification state
-                    // change while a read is pending (legacy 415).
-                    if let Err(refusal) = characteristic.read_notify_state().admit_notify_change() {
-                        fail(fut, refusal);
-                        return;
-                    }
                     trace!("Setting subscribe!");
                     unsafe {
                         peripheral
@@ -1632,8 +1633,8 @@ impl CoreBluetoothInternal {
                     CentralDelegateEvent::ConnectedDevice{peripheral_uuid} => {
                         self.on_peripheral_connect(peripheral_uuid)
                     },
-                    CentralDelegateEvent::ConnectionFailed{peripheral_uuid, error_description} => {
-                        self.on_peripheral_connection_failed(peripheral_uuid, error_description)
+                    CentralDelegateEvent::ConnectionFailed{peripheral_uuid, error} => {
+                        self.on_peripheral_connection_failed(peripheral_uuid, error)
                     },
                     CentralDelegateEvent::DisconnectedDevice{peripheral_uuid} => {
                         self.on_peripheral_disconnect(peripheral_uuid).await
@@ -1897,6 +1898,70 @@ mod ubm_instance_tests {
     const HRM_MEASUREMENT: &str = "2A37";
     const USER_DESCRIPTION: &str = "2901";
 
+    use crate::api::ReadProvenance;
+
+    /// A device identity CoreBluetooth never knows (fixed, so the run is
+    /// deterministic with or without hardware nearby).
+    const UNKNOWN_PEER: &str = "5e0b1c9a-6c0f-4f60-a1c1-3b5f2a0e7d11";
+
+    fn headless_internal() -> (
+        super::CoreBluetoothInternal,
+        futures::channel::mpsc::Receiver<super::CoreBluetoothEvent>,
+    ) {
+        let (message_sender, message_receiver) =
+            futures::channel::mpsc::channel::<super::CoreBluetoothMessage>(8);
+        let _ = message_sender;
+        let (event_sender, event_receiver) =
+            futures::channel::mpsc::channel::<super::CoreBluetoothEvent>(8);
+        let internal = super::CoreBluetoothInternal::new(message_receiver, event_sender);
+        (internal, event_receiver)
+    }
+
+    /// Finding 127 (CoreBluetooth): an identifier CoreBluetooth does not
+    /// know reports not-found through the resolve path
+    /// (`retrievePeripheralsWithIdentifiers`, as the legacy addon
+    /// reconnected without a scan) — never a scan, never a hang.
+    #[test]
+    fn an_unknown_identifier_resolves_without_a_scan() {
+        use super::{CoreBluetoothReply, CoreBluetoothReplyFuture};
+        let (mut internal, _events) = headless_internal();
+        let uuid = uuid::Uuid::parse_str(UNKNOWN_PEER).expect("fixture uuid");
+        let future = CoreBluetoothReplyFuture::default();
+        let state = future.get_state_clone();
+        futures::executor::block_on(internal.resolve_peripheral(uuid, state));
+        assert!(
+            matches!(
+                futures::executor::block_on(future),
+                CoreBluetoothReply::Err(detail) if detail == "Peripheral not found"
+            ),
+            "an unknown identifier is not-found, not a scan"
+        );
+        assert!(
+            internal.peripherals.is_empty(),
+            "nothing unknown is registered"
+        );
+    }
+
+    /// Finding 127 (CoreBluetooth): a disconnect for a peripheral the
+    /// adapter does not hold sends no event and registers nothing — and,
+    /// symmetrically, a plain disconnect never clears the table (patch
+    /// #19): `on_peripheral_disconnect` keeps the entry so a reconnect
+    /// needs no new scan.
+    #[test]
+    fn a_disconnect_of_an_unknown_peripheral_sends_no_event() {
+        let (mut internal, mut events) = headless_internal();
+        let uuid = uuid::Uuid::parse_str(UNKNOWN_PEER).expect("fixture uuid");
+        futures::executor::block_on(internal.on_peripheral_disconnect(uuid));
+        assert!(internal.peripherals.is_empty());
+        // Dropping the adapter closes its event sender: an empty, closed
+        // channel proves the unknown disconnect published nothing.
+        drop(internal);
+        assert!(
+            matches!(events.try_next(), Ok(None)),
+            "an unknown disconnect publishes nothing"
+        );
+    }
+
     fn cbuuid(short: &str) -> Retained<CBUUID> {
         unsafe { CBUUID::UUIDWithString(&NSString::from_str(short)) }
     }
@@ -2074,5 +2139,75 @@ mod ubm_instance_tests {
         service.merge_characteristics(again);
         assert_eq!(service.characteristics.len(), 2, "merged, not duplicated");
         assert!(key.instance < 2);
+    }
+
+    fn read_waiter(
+        characteristic: &mut super::CharacteristicInternal,
+    ) -> super::CoreBluetoothReplyFuture {
+        let future = super::CoreBluetoothReplyFuture::default();
+        characteristic
+            .read_future_state
+            .push_front(future.get_state_clone());
+        future
+    }
+
+    fn read_answer(future: super::CoreBluetoothReplyFuture) -> (Vec<u8>, ReadProvenance) {
+        match futures::executor::block_on(future) {
+            super::CoreBluetoothReply::CharacteristicRead(value, provenance) => (value, provenance),
+            reply => panic!("expected a characteristic read, got {reply:?}"),
+        }
+    }
+
+    /// UBM patch #14: reads on a characteristic that cannot notify complete
+    /// in request order as read responses, and no response leaks into the
+    /// notification stream.
+    #[test]
+    fn queued_reads_complete_in_order_as_read_responses() {
+        let mut table = discovered();
+        let service = table.values_mut().next().expect("service");
+        let characteristic = service
+            .characteristics
+            .values_mut()
+            .next()
+            .expect("characteristic");
+        let first = read_waiter(characteristic);
+        let second = read_waiter(characteristic);
+        assert!(!super::answer_value_update(characteristic, &[1]));
+        assert!(!super::answer_value_update(characteristic, &[2]));
+        assert_eq!(read_answer(first), (vec![1], ReadProvenance::ReadResponse));
+        assert_eq!(read_answer(second), (vec![2], ReadProvenance::ReadResponse));
+    }
+
+    /// UBM patch #14, the Polar PMD race: while a notification can arrive,
+    /// a notification that lands just before the read reply completes the
+    /// read as `ReadOrNotification` and still reaches subscribers; the reply
+    /// that follows is delivered to subscribers, never dropped.
+    #[test]
+    fn a_notification_before_the_read_reply_is_reported_ambiguous_and_still_notified() {
+        let mut table = discovered();
+        let service = table.values_mut().next().expect("service");
+        let characteristic = service
+            .characteristics
+            .values_mut()
+            .next()
+            .expect("characteristic");
+        let subscribe = super::CoreBluetoothReplyFuture::default();
+        characteristic
+            .subscribe_future_state
+            .push_front(subscribe.get_state_clone());
+        let read = read_waiter(characteristic);
+        assert!(
+            super::answer_value_update(characteristic, &[0xAA]),
+            "the value that may be a notification reaches subscribers"
+        );
+        assert_eq!(
+            read_answer(read),
+            (vec![0xAA], ReadProvenance::ReadOrNotification)
+        );
+        assert!(
+            super::answer_value_update(characteristic, &[0xBB]),
+            "the late read reply is delivered as a value, not dropped"
+        );
+        assert!(characteristic.read_future_state.is_empty());
     }
 }

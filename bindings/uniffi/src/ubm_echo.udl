@@ -145,7 +145,11 @@ dictionary MobileCloseFailure {
 [Enum]
 interface MobileRadioCompletion {
     Unit();
+    // A descriptor read's value.
     Bytes(bytes value);
+    // A characteristic read's value and what the platform says it is:
+    // "read-response" | "read-or-notification".
+    Read(bytes value, string provenance);
     Adapter(MobileAdapterSnapshot snapshot);
     Discovered(sequence<MobileGattService> services);
     NotifyEnabled(string delivery);

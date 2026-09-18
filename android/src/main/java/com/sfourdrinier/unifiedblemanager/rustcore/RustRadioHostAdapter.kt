@@ -182,7 +182,8 @@ class RustRadioHostAdapter(
     requirePath(instance)
     track(requestId, radio.read(instance) { result ->
       result.fold(
-        onSuccess = { value -> answer(requestId, "bytes") { core.completeBytes(requestId, value) } },
+        // `onCharacteristicRead` is Android's own answer to this read: never a notification.
+        onSuccess = { value -> answer(requestId, "read") { core.completeRead(requestId, value, READ_RESPONSE) } },
         onFailure = { error -> fail(requestId, error) }
       )
     })
@@ -365,6 +366,7 @@ class RustRadioHostAdapter(
   }
 
   override fun readPhy(requestId: Long, peerId: String) = perform(requestId) {
+    requirePhy()
     requireConnected(peerId)
     track(requestId, radio.readPhy(peerId) { result ->
       result.fold(
@@ -375,6 +377,7 @@ class RustRadioHostAdapter(
   }
 
   override fun requestPhy(requestId: Long, peerId: String, tx: String?, rx: String?) = perform(requestId) {
+    requirePhy()
     requireConnected(peerId)
     track(requestId, radio.requestPhy(peerId, tx, rx) { result ->
       result.fold(
@@ -606,6 +609,13 @@ class RustRadioHostAdapter(
     counts.computeIfAbsent(label) { AtomicLong() }.incrementAndGet()
   }
 
+  /** LE PHY control is API 26; legacy refused it below as capability.unsupported (139, AN-5). */
+  private fun requirePhy() {
+    if (!radio.supportsConnectPhy()) {
+      throw RadioPortFailure(RadioFailureKind.UNSUPPORTED, "Android PHY requires API 26")
+    }
+  }
+
   private fun requireConnected(peerId: String) {
     if (!connectedPeers.contains(peerKey(peerId))) {
       throw RadioPortFailure(RadioFailureKind.NOT_CONNECTED, "$peerId is not connected")
@@ -748,6 +758,8 @@ class RustRadioHostAdapter(
     const val DELIVERY_NOTIFICATION = "notification"
     const val DELIVERY_INDICATION = "indication"
     const val DELIVERY_UNKNOWN = "unknown"
+    /** Read provenance: the platform attributed the value to the ATT read response. */
+    const val READ_RESPONSE = "read-response"
     const val INGRESS_NOTIFICATION = "notification"
 
     /** Core spec Vol 3 Part F §3.2.8: the LE ATT_MTU before any exchange. */

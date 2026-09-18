@@ -59,6 +59,33 @@ const DBUS_METHOD_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 // 0x7fffffff (the largest 32-bit signed integer) or INT32_MAX
 const DBUS_METHOD_CALL_MAX_TIMEOUT: Duration = Duration::from_secs(i32::MAX as u64);
 const SERVICE_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a `Disconnect` waits for `Connected` to read `false`
+/// (B-R6, legacy `DISCONNECT_CONFIRMATION_TIMEOUT_MS`).
+const DISCONNECT_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(1);
+/// Poll period while a `Disconnect` confirms.
+const DISCONNECT_CONFIRMATION_POLL: Duration = Duration::from_millis(50);
+
+/// B-R5: `org.bluez.Error.AlreadyConnected` is the connect's own answer
+/// that the link exists, not a failure. The D-Bus error *name* is the
+/// protocol constant, not rendered text.
+fn connect_already_connected_is_success(name: Option<&str>) -> bool {
+    name == Some("org.bluez.Error.AlreadyConnected")
+}
+
+/// B-R6: a `Connected` read that proves the device object is gone is the
+/// confirmation's own answer that the link ended (legacy Tauri
+/// `error_confirms_device_released`, same names).
+fn disconnection_read_confirms_released(error: &BluetoothError) -> bool {
+    match error {
+        BluetoothError::DbusError(dbus) => matches!(
+            dbus.name(),
+            Some(
+                "org.freedesktop.DBus.Error.UnknownObject" | "org.bluez.Error.DoesNotExist"
+            )
+        ),
+        _ => false,
+    }
+}
 
 /// An error carrying out a Bluetooth operation.
 #[derive(Debug, Error)]
@@ -95,6 +122,12 @@ pub enum BluetoothError {
     /// the discovery timeout and then reported a timeout.
     #[error("Device disconnected during service discovery")]
     DisconnectedDuringServiceDiscovery,
+    /// UBM patch (vendor/btleplug/UBM_PATCHES.md #19, B-R6): the
+    /// `Disconnect` method returned but `Connected` never read `false`
+    /// within the 1 s confirmation bound. The link may still exist, so the
+    /// release stays pending — never reported released.
+    #[error("Disconnect was not confirmed within 1 s")]
+    DisconnectConfirmationTimedOut,
     /// Error parsing a `MacAddress` from a string.
     #[error(transparent)]
     MacAddressParseError(#[from] ParseMacAddressError),
@@ -764,16 +797,42 @@ impl BluetoothSession {
         id: &DeviceId,
         timeout: Duration,
     ) -> Result<(), BluetoothError> {
-        self.device(id, timeout).connect().await?;
+        // B-R5 (legacy `connectBluezPhysicalLink`): `AlreadyConnected` is
+        // the connect's own answer that the link exists, not a failure.
+        match self.device(id, timeout).connect().await {
+            Ok(()) => {}
+            Err(error) if connect_already_connected_is_success(error.name()) => {}
+            Err(error) => return Err(error.into()),
+        }
         self.await_service_discovery(id).await
     }
 
-    /// Disconnect from the given Bluetooth device.
+    /// Disconnect from the given Bluetooth device, then confirm the link
+    /// ended: `Connected` reads `false` (or the device object is gone,
+    /// which is the same answer), within 1 s as legacy
+    /// (`DISCONNECT_CONFIRMATION_TIMEOUT_MS`) waited. An unconfirmed link
+    /// reports the timeout and stays pending — never released.
     pub async fn disconnect(&self, id: &DeviceId) -> Result<(), BluetoothError> {
-        Ok(self
-            .device(id, DBUS_METHOD_CALL_TIMEOUT)
+        self.device(id, DBUS_METHOD_CALL_TIMEOUT)
             .disconnect()
-            .await?)
+            .await?;
+        self.await_disconnection(id).await
+    }
+
+    async fn await_disconnection(&self, id: &DeviceId) -> Result<(), BluetoothError> {
+        let deadline = std::time::Instant::now() + DISCONNECT_CONFIRMATION_TIMEOUT;
+        loop {
+            match self.get_device_info(id).await {
+                Ok(info) if !info.connected => return Ok(()),
+                Ok(_) => {}
+                Err(error) if disconnection_read_confirms_released(&error) => return Ok(()),
+                Err(_) => {}
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(BluetoothError::DisconnectConfirmationTimedOut);
+            }
+            tokio::time::sleep(DISCONNECT_CONFIRMATION_POLL).await;
+        }
     }
 
     /// Read the value of the given GATT characteristic.
@@ -1014,5 +1073,62 @@ mod ubm_tests {
             ),
         ]);
         assert!(service_discovery_outcome(&device, events).await.is_ok());
+    }
+
+    /// B-R5: `org.bluez.Error.AlreadyConnected` on `Device1.Connect` is
+    /// the connect's own answer that the link exists (legacy
+    /// `connectBluezPhysicalLink`), not a failure.
+    #[test]
+    fn an_already_connected_device_is_connected() {
+        assert!(super::connect_already_connected_is_success(Some(
+            "org.bluez.Error.AlreadyConnected"
+        )));
+        for name in [
+            None,
+            Some("org.bluez.Error.Failed"),
+            Some("org.bluez.Error.DoesNotExist"),
+            Some("org.freedesktop.DBus.Error.Timeout"),
+        ] {
+            assert!(
+                !super::connect_already_connected_is_success(name),
+                "{name:?} is not a connected link"
+            );
+        }
+    }
+
+    /// B-R6: a `Connected` read that proves the device object is gone
+    /// confirms the disconnection (the object's own answer that the link
+    /// ended); any other read outcome keeps waiting for `Connected=false`.
+    /// An unconfirmed link reports the timeout, never released.
+    #[test]
+    fn a_gone_device_object_confirms_the_disconnection() {
+        for name in [
+            "org.freedesktop.DBus.Error.UnknownObject",
+            "org.bluez.Error.DoesNotExist",
+        ] {
+            let error = BluetoothError::DbusError(dbus::Error::new_custom(name, "gone"));
+            assert!(
+                super::disconnection_read_confirms_released(&error),
+                "{name} proves the link ended"
+            );
+        }
+        for name in [
+            "org.freedesktop.DBus.Error.Timeout",
+            "org.bluez.Error.Failed",
+            "org.bluez.Error.AlreadyConnected",
+        ] {
+            let error = BluetoothError::DbusError(dbus::Error::new_custom(name, "no answer"));
+            assert!(
+                !super::disconnection_read_confirms_released(&error),
+                "{name} does not prove the link ended"
+            );
+        }
+        assert!(!super::disconnection_read_confirms_released(
+            &BluetoothError::ServiceDiscoveryTimedOut
+        ));
+        assert_eq!(
+            BluetoothError::DisconnectConfirmationTimedOut.to_string(),
+            "Disconnect was not confirmed within 1 s"
+        );
     }
 }

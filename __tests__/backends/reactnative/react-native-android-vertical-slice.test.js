@@ -1826,6 +1826,7 @@ describe('React Native first-party standard TCK registrations', () => {
     expect(report.featureSuiteIds).toEqual([
       'connection-controls',
       'descriptor-operations',
+      'tck.feature.gatt.maximum-write-length',
       'tck.feature.security.android'
     ])
     expect(report.receipts).toEqual(

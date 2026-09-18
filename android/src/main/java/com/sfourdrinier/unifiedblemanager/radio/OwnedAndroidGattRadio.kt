@@ -1374,28 +1374,38 @@ class OwnedAndroidGattRadio private constructor(
     return failures
   }
 
-  fun discover(deviceId: String, onDone: (Boolean) -> Unit): Long {
+  /**
+   * Service discovery. [onDone] receives the failure itself, never just a
+   * flag: a link that dropped while discovery was pending or queued is an
+   * [AndroidGattLinkLost] (with the disconnect status), as for every other
+   * operation, so the caller reports a link loss and not a discovery fault.
+   */
+  fun discover(deviceId: String, onDone: (Result<Unit>) -> Unit): Long {
     return enqueue(
       deviceId,
-      onCancelled = { onDone(false) },
-      onStartFailure = { onDone(false) }
+      onCancelled = { onDone(Result.failure(IllegalStateException("Android GATT service discovery was cancelled"))) },
+      onStartFailure = { failure -> onDone(Result.failure(failure)) }
     ) { token, done ->
       val gatt = gatts[deviceId.uppercase()]
       if (gatt == null) {
-        if (!token.isPubliclySettled()) onDone(false)
+        if (!token.isPubliclySettled()) {
+          onDone(Result.failure(IllegalStateException("Android GATT service discovery has no GATT for $deviceId")))
+        }
         done()
         return@enqueue
       }
       val key = "discover:${deviceId.uppercase()}"
       pending[key] = { r ->
         if (!token.isPubliclySettled()) {
-          onDone(r.isSuccess)
+          onDone(r.map { })
         }
         done()
       }
       if (!gatt.discoverServices()) {
         pending.remove(key)
-        if (!token.isPubliclySettled()) onDone(false)
+        if (!token.isPubliclySettled()) {
+          onDone(Result.failure(IllegalStateException("BluetoothGatt.discoverServices() returned false")))
+        }
         done()
       }
     }

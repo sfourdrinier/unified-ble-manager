@@ -12,6 +12,7 @@ import { admitBluezBusKind, createDesktopCoreProvider, type DesktopCoreProviderO
 
 export * from './node-corebluetooth'
 export * from './node-winrt'
+export * from './node-bluez'
 export * from './electron/main'
 
 /** Creates the Electron-main macOS provider over the shared Rust core. */

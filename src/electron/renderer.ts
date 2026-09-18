@@ -17,7 +17,12 @@ import type { IpcOperationCorrelation, OwnedBytes, SerializableRecord } from '..
 import { snapshotSerializableRecord } from '../backend-contract/serializable'
 import { validateCapabilitySnapshot } from '../backend-contract/capabilities'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
-import { createIpcBootstrapRequest, IPC_CLIENT_COMPATIBILITY_OFFER } from '../ipc/protocol'
+import {
+  createIpcBootstrapRequest,
+  isIpcAttachmentReboundItem,
+  IPC_ATTACHMENT_STREAM_ID,
+  IPC_CLIENT_COMPATIBILITY_OFFER
+} from '../ipc/protocol'
 import { relativeBudgetPayload } from '../ipc/relative-budget'
 import {
   decodeConnectionEventCleanupReceipt,
@@ -479,6 +484,7 @@ export class ElectronRendererBleClient<Attachment extends string, Renderer exten
     ) {
       return
     }
+    if (event.streamId === IPC_ATTACHMENT_STREAM_ID) this.adoptAttachment(bootstrap, event)
     const payload = Object.freeze({ streamId: event.streamId, item: event.item })
     this.eventsStream.emit(payload, serializedByteLength(payload))
     this.routeConnectionEvent(event)
@@ -487,6 +493,37 @@ export class ElectronRendererBleClient<Attachment extends string, Renderer exten
       return
     }
     this.enqueueAcknowledgement(event.eventId)
+  }
+
+  /**
+   * Protocol 4: the host rebound this lease to the backend's new attachment
+   * after an adapter loss. The renderer adopts only the host's announcement
+   * for its own lease that names the attachment it holds, on the same
+   * backend instance; it never chooses an attachment. Anything else is
+   * refused and reported, and the lease keeps its attachment (the host then
+   * keeps refusing it `backend.reset`).
+   */
+  private adoptAttachment(
+    bootstrap: ElectronRendererBootstrap<Attachment, Renderer>,
+    event: ElectronBleIpcEvent
+  ): void {
+    const item = event.item
+    if (
+      !isIpcAttachmentReboundItem<Attachment>(item) ||
+      item.value.previousAttachmentId !== String(bootstrap.attachmentId) ||
+      String(item.value.attachment.backendInstanceId) !== String(bootstrap.attachment.backendInstanceId)
+    ) {
+      console.error('[ElectronRendererBleClient] Attachment announcement refused:', {
+        eventId: event.eventId,
+        held: String(bootstrap.attachmentId)
+      })
+      return
+    }
+    this.bootstrapValue = Object.freeze({
+      ...bootstrap,
+      attachment: item.value.attachment,
+      attachmentId: item.value.attachmentId
+    })
   }
 
   private routeConnectionEvent(event: ElectronBleIpcEvent): void {

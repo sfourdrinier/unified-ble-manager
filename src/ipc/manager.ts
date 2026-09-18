@@ -39,9 +39,11 @@ import type {
   PortableDatabasePath,
   PortableGattDatabaseSnapshot,
   PortableOperationOptions,
+  PortableReadReceipt,
   PortableSubscriptionOptions,
   PortableWritePolicy
 } from '../manager/consumer-handles'
+import { isReadProvenance } from '../backend-contract/operations'
 import type { AdvertisementObservation } from '../backend-contract/advertisement'
 import type { AttachmentRecord } from '../backend-contract/identity'
 import type { PeerReference } from '../backend-contract/peer-reference'
@@ -51,7 +53,7 @@ import { normalizeScanQuery } from '../public/scan-query'
 import { BleCleanupError, collectCleanupPhases } from '../public/error-bridge'
 import type { CleanupRecord as PublicCleanupRecord } from '../public/cleanup'
 import { IpcBleClient } from './client'
-import { IPC_GATT_DATABASE_SCHEMA_VERSION } from './protocol'
+import { IPC_ATTACHMENT_STREAM_ID, IPC_GATT_DATABASE_SCHEMA_VERSION } from './protocol'
 import type { IpcCapabilitySnapshotV2, IpcClientTransport } from './protocol'
 import { decodeIpcScanQuery, encodeIpcScanQuery } from './scan-planning'
 import type { NormalizedScanQuery } from '../backend-contract/scan-query'
@@ -663,9 +665,24 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     return {
       events,
       unsubscribe: async () => {
-        const cleanup = cleanupRecord(
-          await this.route('connection.events.unsubscribe', Object.freeze({ connectionEventsHandle: handle }))
-        )
+        let cleanup: CleanupRecord
+        try {
+          cleanup = cleanupRecord(
+            await this.route('connection.events.unsubscribe', Object.freeze({ connectionEventsHandle: handle }))
+          )
+        } catch (error) {
+          // The host ended this stream with its terminal and forgot it: the
+          // host's own answer is that nothing is held, i.e. released (the
+          // renderer client's rule for the same refusal).
+          if (
+            error instanceof BackendContractError &&
+            error.normalized.code === 'ownership.denied' &&
+            !this.streams.has(handle)
+          ) {
+            return Object.freeze({ state: 'released' as const, failures: Object.freeze([]) })
+          }
+          throw error
+        }
         if (cleanup.state === 'released') this.closeStream(handle)
         return cleanup
       }
@@ -697,6 +714,8 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
           const eventValue = event.value
           const streamId = requiredString(eventValue, 'streamId', 'ipc-manager.event')
           const item = requiredRecord(eventValue, 'item', 'ipc-manager.event')
+          // The client adopted the host's attachment rebind itself (protocol 4).
+          if (streamId === IPC_ATTACHMENT_STREAM_ID) continue
           const sink = this.streams.get(streamId)
           if (sink === undefined) {
             this.bufferPendingStreamItem(streamId, item)
@@ -1746,6 +1765,13 @@ export class IpcGattDatabase {
     return this.characteristicForPath(path).read(toIpcOptions(options))
   }
 
+  async readReceipt(
+    path: PortableCurrentCharacteristicPath,
+    options: PortableOperationOptions = EMPTY_OPERATION_OPTIONS
+  ): Promise<PortableReadReceipt> {
+    return this.characteristicForPath(path).readReceipt(toIpcOptions(options))
+  }
+
   async write(
     path: PortableCurrentCharacteristicPath,
     bytes: Readonly<Uint8Array>,
@@ -1863,13 +1889,25 @@ export class IpcCharacteristic {
   }
 
   async read(options: IpcManagerOperationOptions = {}): Promise<Uint8Array> {
-    const payload = await this.database.route(
+    return requiredBytes(await this.routeRead(options), 'value', 'ipc-manager.gatt-read')
+  }
+
+  /** The value and the host's read provenance; a host answer without one is malformed. */
+  async readReceipt(options: IpcManagerOperationOptions = {}): Promise<PortableReadReceipt> {
+    const payload = await this.routeRead(options)
+    const provenance = payload.provenance
+    if (!isReadProvenance(provenance))
+      throw contractError('protocol.malformed', 'ipc', 'ipc-manager.gatt-read-provenance')
+    return Object.freeze({ value: requiredBytes(payload, 'value', 'ipc-manager.gatt-read'), provenance })
+  }
+
+  private routeRead(options: IpcManagerOperationOptions): Promise<SerializableRecord> {
+    return this.database.route(
       'gatt.read',
       Object.freeze({ characteristicHandle: this.handle, deadline: operationDeadline(options) }),
       null,
       options.signal
     )
-    return requiredBytes(payload, 'value', 'ipc-manager.gatt-read')
   }
 
   async write(bytes: Readonly<Uint8Array>, options: IpcWriteOptions = {}): Promise<SerializableRecord> {

@@ -13,7 +13,12 @@ import type {
   SerializableRecord
 } from '../backend-contract/primitives'
 import { version, versionRange } from '../backend-contract/primitives'
-import type { AttachmentRecord } from '../backend-contract/identity'
+import type {
+  AdapterAuthorization,
+  AdapterAvailability,
+  AdapterPower,
+  AttachmentRecord
+} from '../backend-contract/identity'
 import type { CapabilitySnapshot } from '../backend-contract/capabilities'
 
 /** The one versioned request channel exposed by a host application's narrow preload bridge. */
@@ -37,11 +42,137 @@ function singletonVersionRange<Axis extends ProtocolAxis>(axis: Axis, value: num
  * The desktop IPC protocol spoken by the Electron renderer/main pair and the
  * Tauri webview/plugin pair. Version 3 carries the caller deadline as a
  * relative `budgetMs`, an optional `commit` on normalized errors, `delivery` on
- * subscriptions and connection-lifecycle events. Both ends offer exactly this
- * version, so a peer speaking 2 is refused at bootstrap as
- * `protocol.incompatible` before any operation.
+ * subscriptions and connection-lifecycle events. Version 4 adds the host's
+ * attachment rebind after an adapter loss (`IPC_ATTACHMENT_STREAM_ID`). Both
+ * ends offer exactly this version, so a peer speaking 3 is refused at
+ * bootstrap as `protocol.incompatible` before any operation.
  */
-export const IPC_PROTOCOL_VERSION = 3
+export const IPC_PROTOCOL_VERSION = 4
+
+/**
+ * The reserved stream on which the host announces that it rebound a renderer
+ * lease to the backend's new attachment after an adapter loss (protocol 4).
+ * Only the host rebinds: it announces the rebind for one lease, naming the
+ * attachment that lease held; the renderer adopts nothing else and can never
+ * choose an attachment. Until the host has rebound a lease, work naming the
+ * replaced attachment is refused `backend.reset`; after it, work naming the
+ * replaced attachment is still refused (releases excepted).
+ */
+export const IPC_ATTACHMENT_STREAM_ID = 'attachment'
+
+/** The serializable projection of one attachment (bootstrap snapshots report `heard: null`). */
+export function ipcAttachmentRecordV2(attachment: AttachmentRecord<string>): IpcAttachmentRecordV2 {
+  return Object.freeze({
+    attachmentId: String(attachment.attachmentId),
+    backendInstanceId: String(attachment.backendInstanceId),
+    backendGeneration: String(attachment.backendGeneration),
+    adapter: Object.freeze({
+      adapterId: String(attachment.adapter.adapterId),
+      displayName: attachment.adapter.displayName,
+      state: Object.freeze({
+        availability: attachment.adapter.state.availability,
+        authorization: attachment.adapter.state.authorization,
+        power: attachment.adapter.state.power,
+        heard: null,
+        backendGeneration: String(attachment.adapter.state.backendGeneration),
+        updatedAt: Number(attachment.adapter.state.updatedAt),
+        safeReason: attachment.adapter.state.safeReason
+      }),
+      adapterGeneration: String(attachment.adapter.adapterGeneration),
+      limitations: Object.freeze([...attachment.adapter.limitations])
+    })
+  })
+}
+
+/** The item value announced on `IPC_ATTACHMENT_STREAM_ID`. */
+export interface IpcAttachmentReboundV1<Attachment extends string> {
+  readonly kind: 'backend-restarted'
+  readonly schemaVersion: 1
+  /** The attachment the lease held until the rebind. */
+  readonly previousAttachmentId: string
+  readonly attachmentId: AttachmentId<Attachment>
+  readonly attachment: AttachmentRecord<Attachment>
+}
+
+/** One attachment-stream item as the host sends it (`{ kind: 'value', value }`). */
+export interface IpcAttachmentReboundItemV1<Attachment extends string> {
+  readonly kind: 'value'
+  readonly value: IpcAttachmentReboundV1<Attachment>
+}
+
+/**
+ * Whether `item` is a well-formed attachment rebind. Anything else is
+ * refused by the caller.
+ */
+export function isIpcAttachmentReboundItem<Attachment extends string>(
+  item: unknown
+): item is IpcAttachmentReboundItemV1<Attachment> {
+  const wrapper = recordOf(item)
+  const value = recordOf(wrapper?.value)
+  if (wrapper?.kind !== 'value' || value === null) return false
+  if (value.kind !== 'backend-restarted' || value.schemaVersion !== 1) return false
+  const attachment = recordOf(value.attachment)
+  return (
+    nonEmpty(value.previousAttachmentId) &&
+    isAttachmentRecord(value.attachment) &&
+    attachment !== null &&
+    value.attachmentId === attachment.attachmentId
+  )
+}
+
+function isAttachmentRecord(value: unknown): boolean {
+  const record = recordOf(value)
+  const adapter = recordOf(record?.adapter)
+  const state = recordOf(adapter?.state)
+  if (record === null || adapter === null || state === null) return false
+  const limitations = adapter.limitations
+  return (
+    nonEmpty(record.attachmentId) &&
+    nonEmpty(record.backendInstanceId) &&
+    nonEmpty(record.backendGeneration) &&
+    nonEmpty(adapter.adapterId) &&
+    nonEmpty(adapter.adapterGeneration) &&
+    (adapter.displayName === null || typeof adapter.displayName === 'string') &&
+    Array.isArray(limitations) &&
+    limitations.every(entry => typeof entry === 'string') &&
+    state.backendGeneration === record.backendGeneration &&
+    isAvailability(state.availability) &&
+    isAuthorization(state.authorization) &&
+    isPower(state.power) &&
+    typeof state.updatedAt === 'number' &&
+    Number.isFinite(state.updatedAt) &&
+    (state.safeReason === null || typeof state.safeReason === 'string')
+  )
+}
+
+function recordOf(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Uint8Array)
+    ? Object.fromEntries(Object.entries(value))
+    : null
+}
+
+function nonEmpty(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0
+}
+
+function isAvailability(value: unknown): value is AdapterAvailability {
+  return value === 'available' || value === 'unavailable' || value === 'unsupported' || value === 'unknown'
+}
+
+function isAuthorization(value: unknown): value is AdapterAuthorization {
+  return (
+    value === 'granted' ||
+    value === 'denied' ||
+    value === 'restricted' ||
+    value === 'not-determined' ||
+    value === 'unavailable' ||
+    value === 'unknown'
+  )
+}
+
+function isPower(value: unknown): value is AdapterPower {
+  return value === 'on' || value === 'off' || value === 'resetting' || value === 'unsupported' || value === 'unknown'
+}
 
 /** The IPC versions implemented by this package's desktop webview client. */
 export const IPC_CLIENT_COMPATIBILITY_OFFER: IpcCompatibilityOffer = Object.freeze({

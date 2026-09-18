@@ -2333,6 +2333,8 @@ public enum MobileRadioCompletion: Equatable, Hashable {
     case unit
     case bytes(value: Data
     )
+    case read(value: Data, provenance: String
+    )
     case adapter(snapshot: MobileAdapterSnapshot
     )
     case discovered(services: [MobileGattService]
@@ -2389,49 +2391,52 @@ public struct FfiConverterTypeMobileRadioCompletion: FfiConverterRustBuffer {
         case 2: return .bytes(value: try FfiConverterData.read(from: &buf)
         )
         
-        case 3: return .adapter(snapshot: try FfiConverterTypeMobileAdapterSnapshot.read(from: &buf)
+        case 3: return .read(value: try FfiConverterData.read(from: &buf), provenance: try FfiConverterString.read(from: &buf)
         )
         
-        case 4: return .discovered(services: try FfiConverterSequenceTypeMobileGattService.read(from: &buf)
+        case 4: return .adapter(snapshot: try FfiConverterTypeMobileAdapterSnapshot.read(from: &buf)
         )
         
-        case 5: return .notifyEnabled(delivery: try FfiConverterString.read(from: &buf)
+        case 5: return .discovered(services: try FfiConverterSequenceTypeMobileGattService.read(from: &buf)
         )
         
-        case 6: return .mtu(mtu: try FfiConverterOptionUInt16.read(from: &buf)
+        case 6: return .notifyEnabled(delivery: try FfiConverterString.read(from: &buf)
         )
         
-        case 7: return .writeLimits(withResponse: try FfiConverterUInt16.read(from: &buf), withoutResponse: try FfiConverterUInt16.read(from: &buf)
+        case 7: return .mtu(mtu: try FfiConverterOptionUInt16.read(from: &buf)
         )
         
-        case 8: return .rssi(rssi: try FfiConverterInt16.read(from: &buf)
+        case 8: return .writeLimits(withResponse: try FfiConverterUInt16.read(from: &buf), withoutResponse: try FfiConverterUInt16.read(from: &buf)
         )
         
-        case 9: return .accepted(accepted: try FfiConverterBool.read(from: &buf)
+        case 9: return .rssi(rssi: try FfiConverterInt16.read(from: &buf)
         )
         
-        case 10: return .phy(tx: try FfiConverterString.read(from: &buf), rx: try FfiConverterString.read(from: &buf)
+        case 10: return .accepted(accepted: try FfiConverterBool.read(from: &buf)
         )
         
-        case 11: return .phyRequest(accepted: try FfiConverterBool.read(from: &buf), tx: try FfiConverterOptionString.read(from: &buf), rx: try FfiConverterOptionString.read(from: &buf)
+        case 11: return .phy(tx: try FfiConverterString.read(from: &buf), rx: try FfiConverterString.read(from: &buf)
         )
         
-        case 12: return .security(state: try FfiConverterTypeMobileSecurityState.read(from: &buf)
+        case 12: return .phyRequest(accepted: try FfiConverterBool.read(from: &buf), tx: try FfiConverterOptionString.read(from: &buf), rx: try FfiConverterOptionString.read(from: &buf)
         )
         
-        case 13: return .bondedPeers(peers: try FfiConverterSequenceTypeMobilePeerName.read(from: &buf)
+        case 13: return .security(state: try FfiConverterTypeMobileSecurityState.read(from: &buf)
         )
         
-        case 14: return .lease(leaseId: try FfiConverterString.read(from: &buf)
+        case 14: return .bondedPeers(peers: try FfiConverterSequenceTypeMobilePeerName.read(from: &buf)
         )
         
-        case 15: return .companion(associationId: try FfiConverterInt64.read(from: &buf), peerId: try FfiConverterOptionString.read(from: &buf), displayName: try FfiConverterOptionString.read(from: &buf)
+        case 15: return .lease(leaseId: try FfiConverterString.read(from: &buf)
         )
         
-        case 16: return .closed(failures: try FfiConverterSequenceTypeMobileCloseFailure.read(from: &buf)
+        case 16: return .companion(associationId: try FfiConverterInt64.read(from: &buf), peerId: try FfiConverterOptionString.read(from: &buf), displayName: try FfiConverterOptionString.read(from: &buf)
         )
         
-        case 17: return .failed(kind: try FfiConverterString.read(from: &buf), gattStatus: try FfiConverterOptionInt32.read(from: &buf), nativeDomain: try FfiConverterOptionString.read(from: &buf), nativeCode: try FfiConverterOptionInt64.read(from: &buf), detail: try FfiConverterString.read(from: &buf), dispatched: try FfiConverterBool.read(from: &buf)
+        case 17: return .closed(failures: try FfiConverterSequenceTypeMobileCloseFailure.read(from: &buf)
+        )
+        
+        case 18: return .failed(kind: try FfiConverterString.read(from: &buf), gattStatus: try FfiConverterOptionInt32.read(from: &buf), nativeDomain: try FfiConverterOptionString.read(from: &buf), nativeCode: try FfiConverterOptionInt64.read(from: &buf), detail: try FfiConverterString.read(from: &buf), dispatched: try FfiConverterBool.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -2451,84 +2456,90 @@ public struct FfiConverterTypeMobileRadioCompletion: FfiConverterRustBuffer {
             FfiConverterData.write(value, into: &buf)
             
         
-        case let .adapter(snapshot):
+        case let .read(value,provenance):
             writeInt(&buf, Int32(3))
+            FfiConverterData.write(value, into: &buf)
+            FfiConverterString.write(provenance, into: &buf)
+            
+        
+        case let .adapter(snapshot):
+            writeInt(&buf, Int32(4))
             FfiConverterTypeMobileAdapterSnapshot.write(snapshot, into: &buf)
             
         
         case let .discovered(services):
-            writeInt(&buf, Int32(4))
+            writeInt(&buf, Int32(5))
             FfiConverterSequenceTypeMobileGattService.write(services, into: &buf)
             
         
         case let .notifyEnabled(delivery):
-            writeInt(&buf, Int32(5))
+            writeInt(&buf, Int32(6))
             FfiConverterString.write(delivery, into: &buf)
             
         
         case let .mtu(mtu):
-            writeInt(&buf, Int32(6))
+            writeInt(&buf, Int32(7))
             FfiConverterOptionUInt16.write(mtu, into: &buf)
             
         
         case let .writeLimits(withResponse,withoutResponse):
-            writeInt(&buf, Int32(7))
+            writeInt(&buf, Int32(8))
             FfiConverterUInt16.write(withResponse, into: &buf)
             FfiConverterUInt16.write(withoutResponse, into: &buf)
             
         
         case let .rssi(rssi):
-            writeInt(&buf, Int32(8))
+            writeInt(&buf, Int32(9))
             FfiConverterInt16.write(rssi, into: &buf)
             
         
         case let .accepted(accepted):
-            writeInt(&buf, Int32(9))
+            writeInt(&buf, Int32(10))
             FfiConverterBool.write(accepted, into: &buf)
             
         
         case let .phy(tx,rx):
-            writeInt(&buf, Int32(10))
+            writeInt(&buf, Int32(11))
             FfiConverterString.write(tx, into: &buf)
             FfiConverterString.write(rx, into: &buf)
             
         
         case let .phyRequest(accepted,tx,rx):
-            writeInt(&buf, Int32(11))
+            writeInt(&buf, Int32(12))
             FfiConverterBool.write(accepted, into: &buf)
             FfiConverterOptionString.write(tx, into: &buf)
             FfiConverterOptionString.write(rx, into: &buf)
             
         
         case let .security(state):
-            writeInt(&buf, Int32(12))
+            writeInt(&buf, Int32(13))
             FfiConverterTypeMobileSecurityState.write(state, into: &buf)
             
         
         case let .bondedPeers(peers):
-            writeInt(&buf, Int32(13))
+            writeInt(&buf, Int32(14))
             FfiConverterSequenceTypeMobilePeerName.write(peers, into: &buf)
             
         
         case let .lease(leaseId):
-            writeInt(&buf, Int32(14))
+            writeInt(&buf, Int32(15))
             FfiConverterString.write(leaseId, into: &buf)
             
         
         case let .companion(associationId,peerId,displayName):
-            writeInt(&buf, Int32(15))
+            writeInt(&buf, Int32(16))
             FfiConverterInt64.write(associationId, into: &buf)
             FfiConverterOptionString.write(peerId, into: &buf)
             FfiConverterOptionString.write(displayName, into: &buf)
             
         
         case let .closed(failures):
-            writeInt(&buf, Int32(16))
+            writeInt(&buf, Int32(17))
             FfiConverterSequenceTypeMobileCloseFailure.write(failures, into: &buf)
             
         
         case let .failed(kind,gattStatus,nativeDomain,nativeCode,detail,dispatched):
-            writeInt(&buf, Int32(17))
+            writeInt(&buf, Int32(18))
             FfiConverterString.write(kind, into: &buf)
             FfiConverterOptionInt32.write(gattStatus, into: &buf)
             FfiConverterOptionString.write(nativeDomain, into: &buf)

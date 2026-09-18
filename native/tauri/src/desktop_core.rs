@@ -28,10 +28,11 @@ use std::pin::Pin;
 use tokio::sync::broadcast;
 use ubm_core::contracts::{AttachmentTuple, OperationId};
 use ubm_desktop::{
-    AdapterAuthorization, AdapterPowerState, AdapterStatus, CancelAck, ConnectionHandle,
-    DeliveryMode, DesktopCentral, DesktopError, DiscoveredPath, DiscoveryReport, LifecycleEvent,
-    LinkRelease, NotificationPoll, ObservedDelivery, OpControl, OpTicket, PathSelector,
-    PeerSnapshot, RadioBoundary, ScanStop, ScanTerminalEvent, ShutdownReport,
+    AdapterAuthorization, AdapterPowerState, AdapterResetEvent, AdapterStatus, CancelAck,
+    CharacteristicRead, ConnectionHandle, DeliveryMode, DesktopCentral, DesktopError,
+    DiscoveredPath, DiscoveryReport, LifecycleEvent, LinkRelease, NotificationPoll,
+    ObservedDelivery, OpControl, OpTicket, PathSelector, PeerSnapshot, RadioBoundary, ScanStop,
+    ScanTerminalEvent, ShutdownReport,
 };
 
 /// GATT path selector parts (UUIDs plus optional duplicate occurrences).
@@ -121,13 +122,13 @@ pub trait CoreAuthority: Send + Sync {
     ) -> CoreFuture<'a, DiscoveryReport>;
     /// Read the whole current discovery tree for one peer.
     fn discovered_paths<'a>(&'a self, peer_id: &'a str) -> CoreFuture<'a, Vec<DiscoveredPath>>;
-    /// Characteristic read.
+    /// Characteristic read: the value and the radio's own provenance.
     fn read<'a>(
         &'a self,
         peer_id: &'a str,
         selector: &'a CoreSelector,
         ctl: OpControl,
-    ) -> CoreFuture<'a, Vec<u8>>;
+    ) -> CoreFuture<'a, CharacteristicRead>;
     /// Characteristic write (`mode`: `with-response` / `without-response`).
     fn write<'a>(
         &'a self,
@@ -201,6 +202,9 @@ pub trait CoreAuthority: Send + Sync {
     /// Subscribe to scans the core ended without a stop request (the OS
     /// stopped it, or an adapter loss took it).
     fn scan_terminal_events(&self) -> broadcast::Receiver<ScanTerminalEvent>;
+    /// Subscribe to adapter resets: each one replaced the attachment the
+    /// dispatcher's callers are bound to (IPC protocol 4 rebind).
+    fn adapter_reset_events(&self) -> broadcast::Receiver<AdapterResetEvent>;
     /// Shut the central down (idempotent) and return its authoritative
     /// report.
     fn shutdown(&self) -> Pin<Box<dyn Future<Output = ShutdownReport> + Send + '_>>;
@@ -278,7 +282,7 @@ impl<B: RadioBoundary> CoreAuthority for DesktopCentral<B> {
         peer_id: &'a str,
         selector: &'a CoreSelector,
         ctl: OpControl,
-    ) -> CoreFuture<'a, Vec<u8>> {
+    ) -> CoreFuture<'a, CharacteristicRead> {
         Box::pin(async move {
             let path = selector.path::<B>()?;
             DesktopCentral::read(self, peer_id, &path, ctl).await
@@ -398,6 +402,10 @@ impl<B: RadioBoundary> CoreAuthority for DesktopCentral<B> {
 
     fn scan_terminal_events(&self) -> broadcast::Receiver<ScanTerminalEvent> {
         DesktopCentral::scan_terminal_events(self)
+    }
+
+    fn adapter_reset_events(&self) -> broadcast::Receiver<AdapterResetEvent> {
+        DesktopCentral::adapter_reset_events(self)
     }
 
     fn shutdown(&self) -> Pin<Box<dyn Future<Output = ShutdownReport> + Send + '_>> {

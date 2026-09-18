@@ -94,14 +94,21 @@ describe('adapter loss follows the legacy per-OS sequence (LEGACY-AUDIT-1 #57)',
         expect(restarted.attachment.backendGeneration).not.toBe(generation)
       }
       expect(await generationAdvanced(backend, generation)).toBe(true)
-      // Handles minted before the reset are stale: the database, and the
-      // peer handle (legacy cleared peer ids with the generation).
+      // Handles minted before the reset are stale: the database.
       await expect(database.read(measurement.path, { signal: null, deadline: null })).rejects.toMatchObject({
         normalized: { code: 'gatt.stale-handle' }
       })
-      await expect(
-        backend.connections.connect(peerId, 'client-1', { signal: null, deadline: null })
-      ).rejects.toMatchObject({ normalized: { code: 'peer.not-found' } })
+      // 5.0 keeps the peer handle across the loss so a supervisor can
+      // reconnect (legacy cleared it, W-R3, and a connect was
+      // `connection.not-found`): the adapter's own admission answers now.
+      const attempt = await backend.connections.connect(peerId, 'client-1', { signal: null, deadline: null }).then(
+        async lease => {
+          await lease.release()
+          return null
+        },
+        error => error.normalized.code
+      )
+      expect(attempt).not.toBe('connection.not-found')
       expect(backend.resourceCounters()).toMatchObject({ activeScanControllers: 0, subscriptionConsumers: 0 })
       if (!sequence.adapterReason) {
         // BlueZ legacy invalidated links silently (operation.reset).

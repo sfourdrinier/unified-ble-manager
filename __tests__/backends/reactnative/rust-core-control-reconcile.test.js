@@ -114,20 +114,26 @@ describe('a lost control record becomes the transition it would have caused (104
     await manager.destroy()
   })
 
+  // An adapter loss ends the link `connected -> lost` (reason adapter) and its
+  // streams `source-failed`, as the legacy adapter-loss cleanup reported it.
   test.each([
-    ['local', 'disconnected'],
-    ['adapter', 'disconnected'],
-    ['peer', 'connection-lost']
-  ])('a lost link record (%s) ends the link with its own reason', async (reason, kind) => {
+    ['local', 'disconnected', 'connection-lost'],
+    ['adapter', 'connection-state-changed', 'source-failed'],
+    ['peer', 'connection-lost', 'connection-lost']
+  ])('a lost link record (%s) ends the link with its own reason', async (reason, kind, terminal) => {
     const { native, manager, backend, events } = await openManager()
     const { subscription } = await connectAndSubscribe(manager, backend)
     native.loseControl(() => native.dropLink(DEFAULT_PEER, reason))
     await settle(120)
-    const ended = events.filter(event => event.kind === 'disconnected' || event.kind === 'connection-lost')
+    const ended = events.filter(
+      event =>
+        event.kind === 'disconnected' || event.kind === 'connection-lost' || event.kind === 'connection-state-changed'
+    )
     expect(ended).toHaveLength(1)
     expect(ended[0].kind).toBe(kind)
-    if (kind === 'disconnected') expect(ended[0].reason).toBe(reason)
-    expect((await take(subscription.values)).value).toMatchObject({ kind: 'terminal', reason: 'connection-lost' })
+    if (kind !== 'connection-lost') expect(ended[0].reason).toBe(reason)
+    if (kind === 'connection-state-changed') expect(ended[0]).toMatchObject({ previous: 'connected', current: 'lost' })
+    expect((await take(subscription.values)).value).toMatchObject({ kind: 'terminal', reason: terminal })
     await manager.destroy()
   })
 
