@@ -28,6 +28,7 @@ Pod::Spec.new do |s|
     "ios/UnifiedBleExpoRuntime.mm",
     "ios/UnifiedBleRustCore.mm",
     "ios/UnifiedBleRustCoreSessions.swift",
+    "ios/UnifiedBleRustCoreAdapterState.swift",
     "ios/Generated/**/*.swift",
     "ios/NativeProtocol/**/*.{h,m,mm}",
     "ios/Owned/OwnedCoreBluetoothCentralDelegate.swift",

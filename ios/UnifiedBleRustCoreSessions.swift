@@ -4,7 +4,11 @@
 // `EchoSession` map behind the `UnifiedBleRustCore` TurboModule. Mirrors
 // the Android `RustCoreSessionRouter` op for op (same table, same wire
 // identities, same fail-loud rules) — see the routing table in
-// docs/superpowers/plans/2026-09-17-r01-binding-producer.md.
+// docs/superpowers/plans/2026-09-17-r01-binding-producer.md. The creation
+// surface (`adapter.state`, `counters.describe`, `events.take`,
+// `op.cancel`, `session.dispose`) is router-served, never UniFFI —
+// `adapter.state` reads the live central via
+// `UnifiedBleRustCoreAdapterState`.
 //
 // Revision admission follows PKG-02 (the UniFFI constructor never fails):
 // every open is verified with a real `centralStatus()` call and a foreign
@@ -17,6 +21,23 @@ import Foundation
 public final class UnifiedBleRustCoreSessions: NSObject {
   public static let contractRevision = "C-UBM.0.1.2-DRAFT"
   public static let shared = UnifiedBleRustCoreSessions()
+
+  /// Zero resource counters: the facade tracks no live core resources
+  /// beyond open sessions, so every counter reads 0 honestly. Key set must
+  /// match the provider's `parseResourceCounters` exactly (and Android's
+  /// `ZERO_COUNTERS_JSON`).
+  static let zeroCountersJson =
+    "{\"activeScanControllers\":0,\"scanConsumers\":0,\"chooserSessions\":0,"
+    + "\"connectionLeases\":0,\"physicalLinks\":0,\"databaseSnapshots\":0,"
+    + "\"physicalCccdEnablements\":0,\"subscriptionConsumers\":0,\"queuedOperations\":0,"
+    + "\"dispatchedOperations\":0,\"retainedByteBuffers\":0,\"restorationRecords\":0,"
+    + "\"orphanedIpcOwners\":0}"
+
+  /// Seam for the `adapter.state` minter (production live-central reader by
+  /// default). A separate seam, not the UniFFI bridge, because the value is
+  /// live platform state — mirrors Android's injected `AdapterStateReader`.
+  /// `nonobjc`: closure types cannot cross the ObjC boundary.
+  nonobjc var adapterStateReader: () -> String = UnifiedBleRustCoreAdapterState.readAdapterStateJson
 
   private let lock = NSLock()
   private var sessions: [String: EchoSession] = [:]
@@ -111,6 +132,17 @@ public final class UnifiedBleRustCoreSessions: NSObject {
         return fail(code: "argument.invalid", operation: op)
       }
       return counterRecord(session.bleScanStop(opId: opId, nowMs: nowMs), operation: op)
+    case "adapter.state":
+      return okRecord(value: adapterStateReader(), operation: op)
+    case "counters.describe":
+      return okRecord(value: Self.zeroCountersJson, operation: op)
+    case "events.take":
+      return okRecord(value: "null", operation: op)
+    case "op.cancel":
+      return okRecord(value: "{\"state\":\"not-cancellable\"}", operation: op)
+    case "session.dispose":
+      _ = session.driveDestroy()
+      return okRecord(value: "{\"state\":\"released\"}", operation: op)
     default:
       return fail(code: "capability.unsupported", operation: op)
     }
@@ -131,6 +163,10 @@ public final class UnifiedBleRustCoreSessions: NSObject {
   }
 
   // MARK: - Private
+
+  private func okRecord(value: String, operation: String) -> [String: Any] {
+    return ["ok": true, "value": value, "code": "", "domain": "", "operation": operation]
+  }
 
   private func counterRecord(_ result: EchoCounterResult, operation: String) -> [String: Any] {
     return [

@@ -45,6 +45,8 @@
 | `scan.start` / `scan.take` / `scan.stop` | NEW `nativeBleScanStart/Take/Stop` | `ble_scan_start/take/stop` | Real kernel admission, synthetic radio |
 | `staged.step` / `staged.drain` / `staged.counters` | `nativeStaged*` | `staged_*` | Scripted surface |
 | `session.close` | `nativeClose` | `close` | Idempotent |
+| `adapter.state` | `AdapterStateReader` (live platform adapter) | `UnifiedBleRustCoreAdapterState` (live central) | Router-served creation surface (R02-Apple mirror, 2026-09-18) |
+| `counters.describe` / `events.take` / `op.cancel` / `session.dispose` | router-served | router-served | Zero counters, empty events, honest cancel, destroy+released |
 | anything else | `capability.unsupported` | `capability.unsupported` | Fail loud, never legacy |
 
 ---
