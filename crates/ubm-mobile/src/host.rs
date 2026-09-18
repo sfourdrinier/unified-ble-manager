@@ -1300,9 +1300,16 @@ impl MobileHost {
                 }
             }
             RadioIngress::Connection {
-                peer_id, connected, ..
+                peer_id,
+                connected,
+                status,
             } => inner.radio.push_event(if connected {
                 RadioEvent::Connected(peer_id)
+            } else if status.is_some_and(|status| status != 0) {
+                // Android reports a non-zero GATT status, CoreBluetooth an
+                // `NSError`, when the link ended for a reason other than
+                // this app's release: a loss even if a release was pending.
+                RadioEvent::Lost(peer_id)
             } else {
                 RadioEvent::Disconnected(peer_id)
             }),

@@ -278,6 +278,61 @@ describe('public connection supervisor', () => {
     expect(late.release).toHaveBeenCalled()
   })
 
+  // Physical run (Samsung, Polar H10): the link dropped while configure was
+  // discovering services, and the supervisor stopped. A link loss during
+  // setup is a link loss: release, back off and reconnect (owner decision,
+  // 5.0). Every host names it `connection.lost`; an adapter loss during
+  // setup (`operation.reset`) waits for the adapter, then reconnects. Any
+  // other configure failure — including `operation.disconnected`, the app's
+  // own release — still stops.
+  test.each([
+    ['connection.lost', 'connection', 'gatt.discover'],
+    ['operation.reset', 'connection', 'gatt.discover']
+  ])('a %s during configure reconnects', async (code, domain, operation) => {
+    const first = connection()
+    const second = connection()
+    const ble = manager(first)
+    ble.connect.mockResolvedValueOnce(first).mockResolvedValueOnce(second)
+    let configureCalls = 0
+    const supervisor = createConnectionSupervisor(ble, 'peer-1', {
+      retry: { initialDelayMs: 1, maximumDelayMs: 1, multiplier: 1, jitter: 0 },
+      configure: async () => {
+        configureCalls += 1
+        if (configureCalls === 1) throw new BleError(code, domain, operation)
+        return 'session-2'
+      }
+    })
+    supervisor.start()
+    for (let turn = 0; turn < 100 && supervisor.snapshot.state !== 'connected'; turn += 1) await wait(5)
+    expect(supervisor.snapshot.state).toBe('connected')
+    expect(ble.connect).toHaveBeenCalledTimes(2)
+    expect(configureCalls).toBe(2)
+    expect(first.release).toHaveBeenCalledTimes(1)
+    expect(first.release.mock.invocationCallOrder[0]).toBeLessThan(ble.connect.mock.invocationCallOrder[1])
+    await supervisor.stop()
+  })
+
+  test.each([
+    ['platform.failure', 'platform'],
+    ['operation.disconnected', 'connection'],
+    ['platform.security', 'platform']
+  ])('a %s configure failure still stops the supervisor', async (code, domain) => {
+    const current = connection()
+    const ble = manager(current)
+    const supervisor = createConnectionSupervisor(ble, 'peer-1', {
+      retry: { initialDelayMs: 1, maximumDelayMs: 1, multiplier: 1, jitter: 0 },
+      configure: async () => {
+        throw new BleError(code, domain, 'gatt.discover')
+      }
+    })
+    supervisor.start()
+    for (let turn = 0; turn < 100 && supervisor.snapshot.state !== 'stopped'; turn += 1) await wait(5)
+    expect(supervisor.snapshot.state).toBe('stopped')
+    expect(supervisor.snapshot.lastError.code).toBe(code)
+    expect(ble.connect).toHaveBeenCalledTimes(1)
+    expect(current.release).toHaveBeenCalledTimes(1)
+  })
+
   test('does not retry after configure cleanup fails', async () => {
     const current = connection()
     current.release.mockResolvedValue({

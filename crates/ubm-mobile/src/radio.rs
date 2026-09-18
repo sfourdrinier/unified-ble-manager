@@ -450,16 +450,20 @@ impl PlatformFailure {
     /// legacy React Native's error identity (finding 113,
     /// `rn-android-boundary.ts` `nativeOperationFailure` on 4.x): a radio
     /// failure is `platform.failure` carrying the platform's own domain,
-    /// code and status, except a link loss (Android: `connection.lost`), a
-    /// cancel, a permission or adapter state, and CoreBluetooth's
-    /// read/notify refusals, which keep their contract codes.
+    /// code and status, except a link loss (`connection.lost` on every
+    /// platform, with the platform's answer kept), a cancel, a permission or
+    /// adapter state, and CoreBluetooth's read/notify refusals, which keep
+    /// their contract codes.
+    ///
+    /// A link loss is one word on every platform (owner decision, 5.0,
+    /// superseding finding 132's Apple rule, which kept `platform.failure`):
+    /// `not-connected` on Android and Apple, and Android GATT status 19.
     #[must_use]
     pub fn to_error(&self, kind: RequestKind, platform: MobilePlatform) -> DesktopError {
         let operation = kind.operation();
         let android = platform == MobilePlatform::Android;
-        let link_lost = android
-            && (self.kind == FailureKind::NotConnected
-                || self.gatt_status == Some(ANDROID_GATT_CONN_TIMEOUT_STATUS));
+        let link_lost = self.kind == FailureKind::NotConnected
+            || (android && self.gatt_status == Some(ANDROID_GATT_CONN_TIMEOUT_STATUS));
         let (code, domain, detailed) = match self.kind {
             _ if link_lost => (
                 BleErrorCode::ConnectionLost,

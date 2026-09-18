@@ -109,6 +109,14 @@ Preserve these unless the user explicitly requests a versioned contract change:
   the same set of answers. A platform that cannot answer says so —
   `capability.unsupported` with a reason — and never substitutes something
   plausible;
+- **same behaviour on every platform.** Every host behaves identically unless
+  its platform capability genuinely differs, and then it says so rather than
+  diverging quietly. A library-side refusal of something the platform can do
+  is a defect. Android is the reference behaviour wherever a platform can
+  match it. The same physical event carries the same specific public name on
+  every backend — the platform's own detail rides underneath in `platform` —
+  and reconnect policy makes identical decisions everywhere. The event
+  vocabulary lives in `docs/UNIFIED_SEMANTICS.md`, pinned by tests;
 - the root is host-neutral and never silently picks or falls back to a backend;
 - managers, connections, GATT databases, subscriptions and backend resources
   have explicit ownership and asynchronous teardown; stale discoveries and

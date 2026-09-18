@@ -4,6 +4,7 @@ import { BackendContractError, contractError } from '../backend-contract/errors'
 import { assertScanFilter } from '../backend-contract/advertisement'
 import type { BleErrorCode, BleErrorDomain, CleanupRecord } from '../backend-contract/errors'
 import type { ChooserRequest } from '../backend-contract/host/web'
+import type { WebLinkEnd } from './web-bluetooth-handles'
 
 export interface WebErrorContext {
   readonly fallbackCode: BleErrorCode
@@ -16,7 +17,8 @@ export function normalizeWebBluetoothError(error: Error, context: WebErrorContex
     return error
   }
   const namedCode = normalizedNamedErrorCode(error.name, context)
-  const normalized = contractError(namedCode, context.domain, context.operation, {
+  const domain = namedCode === 'connection.lost' ? 'connection' : context.domain
+  const normalized = contractError(namedCode, domain, context.operation, {
     domain: 'web-bluetooth',
     code: error.name.length === 0 ? 'Error' : error.name,
     safeMessage: 'The Web Bluetooth operation failed.',
@@ -39,6 +41,18 @@ function isTransientEstablishmentFailure(name: string, context: WebErrorContext)
 
 export const WEB_CONNECT_OPERATION = 'web-connection.connect'
 
+/**
+ * The error an operation in flight reports when its link ends, one word per
+ * event on every host (5.0): the browser reported the link gone
+ * (`connection.lost`), the app released it (`operation.disconnected`), or
+ * Bluetooth became unavailable (`operation.reset`).
+ */
+export const WEB_LINK_END_CODES = Object.freeze({
+  'connection-lost': 'connection.lost',
+  'owner-released': 'operation.disconnected',
+  'adapter-loss': 'operation.reset'
+} as const satisfies Record<WebLinkEnd, BleErrorCode>)
+
 function normalizedNamedErrorCode(name: string, context: WebErrorContext): BleErrorCode {
   if (name === 'AbortError') {
     return context.domain === 'chooser' ? 'chooser.cancelled' : 'operation.aborted'
@@ -53,7 +67,10 @@ function normalizedNamedErrorCode(name: string, context: WebErrorContext): BleEr
     return context.domain === 'chooser' ? 'permission.denied' : 'platform.security'
   }
   if (name === 'NetworkError') {
-    return context.domain === 'connection' ? 'connection.failed' : 'operation.disconnected'
+    // A connect the browser could not establish; any other call the browser
+    // failed because the GATT server is disconnected is a link loss (5.0,
+    // the word every host uses).
+    return context.domain === 'connection' ? 'connection.failed' : 'connection.lost'
   }
   if (name === 'NotSupportedError') {
     return 'gatt.property-not-supported'

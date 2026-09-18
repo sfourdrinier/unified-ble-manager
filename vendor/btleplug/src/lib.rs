@@ -22,7 +22,6 @@
 //! ```rust,no_run
 //! use btleplug::api::{bleuuid::uuid_from_u16, Central, Manager as _, Peripheral as _, ScanFilter, WriteType};
 //! use btleplug::platform::{Adapter, Manager, Peripheral};
-//! use rand::{RngExt, rng};
 //! use std::error::Error;
 //! use std::thread;
 //! use std::time::Duration;
@@ -58,10 +57,11 @@
 //!     let chars = light.characteristics();
 //!     let cmd_char = chars.iter().find(|c| c.uuid == LIGHT_CHARACTERISTIC_UUID).unwrap();
 //!
-//!     // dance party
-//!     let mut rng = rng();
-//!     for _ in 0..20 {
-//!         let color_cmd = vec![0x56, rng.random(), rng.random(), rng.random(), 0x00, 0xF0, 0xAA];
+//!     // dance party (UBM: a fixed colour cycle; this copy dropped upstream's
+//!     // `rand` dev-dependency, see UBM_PATCHES.md "Manifest")
+//!     for step in 0u8..20 {
+//!         let (red, green, blue) = (step.wrapping_mul(37), step.wrapping_mul(71), step.wrapping_mul(113));
+//!         let color_cmd = vec![0x56, red, green, blue, 0x00, 0xF0, 0xAA];
 //!         light.write(&cmd_char, &color_cmd, WriteType::WithoutResponse).await?;
 //!         time::sleep(Duration::from_millis(200)).await;
 //!     }

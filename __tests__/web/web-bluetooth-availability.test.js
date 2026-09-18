@@ -429,7 +429,9 @@ describe('WebBluetoothBackend availability and attachment lifecycle', () => {
     available = false
 
     await backend.adapter.currentState()
-    await expect(inFlightRead).rejects.toMatchObject({ normalized: { code: 'operation.disconnected' } })
+    // Owner decision (5.0): an adapter loss ends in-flight work with
+    // `operation.reset` on every host.
+    await expect(inFlightRead).rejects.toMatchObject({ normalized: { code: 'operation.reset' } })
     expectConsoleErrorMatching(
       '[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:',
       expect.objectContaining({ message: 'The browser refused disconnect cleanup' })

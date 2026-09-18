@@ -23,8 +23,7 @@ const electronMain = require('unified-ble-manager/electron/main')
 const BACKENDS = Object.freeze({
   corebluetooth: () => ({ provider: electronMain.createElectronMainCoreBluetoothBackendProvider, compatibility: electronMain.coreBluetoothCompatibility }),
   winrt: () => ({ provider: electronMain.createElectronMainWinRtBackendProvider, compatibility: electronMain.winRtCompatibility }),
-  // electron/main exports the BlueZ provider but not its compatibility offer; that one lives in node/bluez.
-  bluez: () => ({ provider: electronMain.createElectronMainBluezBackendProvider, compatibility: require('unified-ble-manager/node/bluez').bluezCompatibility })
+  bluez: () => ({ provider: electronMain.createElectronMainBluezBackendProvider, compatibility: electronMain.bluezCompatibility })
 })
 const DEFAULT_BACKEND = Object.freeze({ darwin: 'corebluetooth', win32: 'winrt', linux: 'bluez' })
 

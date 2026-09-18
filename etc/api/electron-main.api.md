@@ -4,6 +4,10 @@
 <!-- entrypoint: ./electron/main; source: src/electron-main.ts -->
 
 - `ADAPTER_INITIALIZATION_TIMEOUT_MS :: 10000`
+- `BLUEZ_BACKEND_ID :: "unified-ble:bluez-dbus"`
+- `BLUEZ_IMPLEMENTATION_VERSION :: "5.0.0-rc.0"`
+- `BLUEZ_PLATFORM_ID :: "unified-ble:linux-bluez"`
+- `BluezBleManagerAppOptions :: { readonly busKind?: BluezBusKind | undefined; readonly pairingGeneration?: BluezPairingGenerationController | undefined; readonly owner?: string | undefined; readonly binding?: DesktopRustCoreBinding | undefined; readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly randomBytes?: ((length: number) => Uint8Array<ArrayBufferLike>) | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined }`
 - `BluezBusKind :: "system" | "session"`
 - `BluezPairingGeneration :: "required" | "legacy-only" | "enabled"`
 - `BluezPairingGenerationController :: { read(adapterId: string): Promise<BluezPairingGeneration>; set(adapterId: string, generation: BluezPairingGeneration): Promise<void> }`
@@ -14,6 +18,7 @@
 - `DESKTOP_RUST_CORE_IMPLEMENTATION_VERSION :: "5.0.0-rc.0"`
 - `DESKTOP_RUST_CORE_PARITY :: readonly DesktopRustCoreParityRow[]`
 - `DESKTOP_RUST_CORE_PROFILES :: Readonly<Record<DesktopRustCorePlatform, DesktopRustCoreProfile>>`
+- `DbusNextBluezProviderOptions :: { readonly busKind: BluezBusKind; readonly now: () => number; readonly pairingGeneration?: BluezPairingGenerationController | undefined; readonly owner?: string | undefined; readonly binding?: DesktopRustCoreBinding | undefined }`
 - `DesktopCoreManagerOptions :: { readonly owner?: string | undefined; readonly binding?: DesktopRustCoreBinding | undefined; readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly randomBytes?: ((length: number) => Uint8Array<ArrayBufferLike>) | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined }`
 - `DesktopCoreProviderOptions :: { readonly now: () => number; readonly owner?: string | undefined; readonly binding?: DesktopRustCoreBinding | undefined }`
 - `DesktopRustCoreAdapterEvent :: { readonly kind: "state" | "closed" | "lagged"; readonly sequence?: number | null | undefined; readonly state?: DesktopRustCoreAdapterPower | null | undefined; readonly missed?: number | null | undefined }`
@@ -63,8 +68,11 @@
 - `WINRT_PLATFORM_ID :: "unified-ble:windows-winrt"`
 - `WinRtBleManagerAppOptions :: { readonly owner?: string | undefined; readonly binding?: DesktopRustCoreBinding | undefined; readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly randomBytes?: ((length: number) => Uint8Array<ArrayBufferLike>) | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined }`
 - `assertDesktopRustCorePlatform :: (platform: DesktopRustCorePlatform, hostPlatform?: string) => void`
+- `bluezCompatibility :: BackendCompatibilityOffer`
 - `coreBluetoothCompatibility :: BackendCompatibilityOffer`
+- `createBluezBleManager :: (options?: BluezBleManagerAppOptions) => Promise<BleManager>`
 - `createCoreBluetoothBleManager :: (options?: DesktopCoreManagerOptions) => Promise<BleManager>`
+- `createDbusNextBluezBackendProvider :: (options: DbusNextBluezProviderOptions) => BackendProvider<string, HostNeutralBackendIdentity<string>>`
 - `createDesktopRustCoreBackendProvider :: (options: DesktopRustCoreProviderOptions) => BackendProvider<string, HostNeutralBackendIdentity<string>>`
 - `createDesktopRustCoreFeatureRegistry :: (profile: DesktopRustCoreProfile, wiring: DesktopRustCoreWiring, maximumWriteLength?: MaximumWriteLengthFeatureImplementation | null) => FeatureRegistry`
 - `createElectronIpcVersionAxes :: (core: CoreVersionAxes, remoteOffer: IpcCompatibilityOffer) => IpcVersionAxes`

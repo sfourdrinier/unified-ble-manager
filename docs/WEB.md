@@ -224,10 +224,15 @@ Catch `BleError` from the root package and retain its structured fields. Do not 
 Common boundaries:
 
 - `chooser.cancelled` + `NotFoundError`: the chooser ended without returning a compatible device;
-- `connection.failed` + `NetworkError`: Chrome selected the device but could not open GATT;
+- `connection.failed` + `NetworkError`: Chrome selected the device but could not open GATT; the link was not established, so it is `caller-decides` (5.0) and the backend never retries it;
 - `operation.timed-out` at `web-connection.connect`: the bounded native connection did not settle;
 - `gatt.not-found`: the connection opened, but a requested service or characteristic was unavailable or not granted;
-- `operation.disconnected`: the link ended during another operation.
+- `connection.lost`: the browser reported the link gone (or failed a GATT call with `NetworkError`) during another operation;
+- `operation.disconnected`: the app's own release cut another operation off;
+- `operation.reset`: Bluetooth became unavailable during another operation (the link ends `adapter-loss`, its streams `source-failed`);
+- `peer.not-found`: `connect()` named a peer the chooser never returned.
+
+These are the same names every host uses for the same event (5.0; see "One name per physical event" in [`UNIFIED_SEMANTICS.md`](UNIFIED_SEMANTICS.md)).
 
 ## Iframes and deployment
 

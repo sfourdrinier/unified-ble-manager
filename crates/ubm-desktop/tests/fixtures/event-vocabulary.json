@@ -1,0 +1,528 @@
+{
+  "link-lost": {
+    "react-native-android": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": {
+        "current": "lost",
+        "cause": "peer-link-loss"
+      },
+      "streamTerminal": "connection-lost"
+    },
+    "react-native-ios": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": {
+        "current": "lost",
+        "cause": "peer-link-loss"
+      },
+      "streamTerminal": "connection-lost"
+    },
+    "desktop-macos": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": {
+        "current": "lost",
+        "cause": "peer-link-loss"
+      },
+      "streamTerminal": "connection-lost"
+    },
+    "desktop-windows": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": {
+        "current": "lost",
+        "cause": "peer-link-loss"
+      },
+      "streamTerminal": "connection-lost"
+    },
+    "desktop-linux": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": {
+        "current": "lost",
+        "cause": "peer-link-loss"
+      },
+      "streamTerminal": "connection-lost"
+    },
+    "web": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": {
+        "current": "lost",
+        "cause": "peer-link-loss"
+      },
+      "streamTerminal": "connection-lost"
+    }
+  },
+  "link-lost-during-operation": {
+    "react-native-android": {
+      "error": "connection.lost",
+      "retryability": "never",
+      "lifecycle": {
+        "current": "lost",
+        "cause": "peer-link-loss"
+      },
+      "streamTerminal": "connection-lost"
+    },
+    "react-native-ios": {
+      "error": "connection.lost",
+      "retryability": "never",
+      "lifecycle": {
+        "current": "lost",
+        "cause": "peer-link-loss"
+      },
+      "streamTerminal": "connection-lost"
+    },
+    "desktop-macos": {
+      "error": "connection.lost",
+      "retryability": "never",
+      "lifecycle": {
+        "current": "lost",
+        "cause": "peer-link-loss"
+      },
+      "streamTerminal": "connection-lost"
+    },
+    "desktop-windows": {
+      "error": "connection.lost",
+      "retryability": "never",
+      "lifecycle": {
+        "current": "lost",
+        "cause": "peer-link-loss"
+      },
+      "streamTerminal": "connection-lost"
+    },
+    "desktop-linux": {
+      "error": "connection.lost",
+      "retryability": "never",
+      "lifecycle": {
+        "current": "lost",
+        "cause": "peer-link-loss"
+      },
+      "streamTerminal": "connection-lost"
+    },
+    "web": {
+      "error": "connection.lost",
+      "retryability": "never",
+      "lifecycle": {
+        "current": "lost",
+        "cause": "peer-link-loss"
+      },
+      "streamTerminal": "connection-lost"
+    }
+  },
+  "requested-disconnect": {
+    "react-native-android": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": {
+        "current": "disconnected",
+        "cause": "requested-disconnect"
+      },
+      "streamTerminal": "owner-released"
+    },
+    "react-native-ios": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": {
+        "current": "disconnected",
+        "cause": "requested-disconnect"
+      },
+      "streamTerminal": "owner-released"
+    },
+    "desktop-macos": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": {
+        "current": "disconnected",
+        "cause": "requested-disconnect"
+      },
+      "streamTerminal": "owner-released"
+    },
+    "desktop-windows": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": {
+        "current": "disconnected",
+        "cause": "requested-disconnect"
+      },
+      "streamTerminal": "owner-released"
+    },
+    "desktop-linux": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": {
+        "current": "disconnected",
+        "cause": "requested-disconnect"
+      },
+      "streamTerminal": "owner-released"
+    },
+    "web": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": {
+        "current": "disconnected",
+        "cause": "requested-disconnect"
+      },
+      "streamTerminal": "owner-released"
+    }
+  },
+  "requested-disconnect-during-operation": {
+    "react-native-android": {
+      "error": "operation.disconnected",
+      "retryability": "never",
+      "lifecycle": {
+        "current": "disconnected",
+        "cause": "requested-disconnect"
+      },
+      "streamTerminal": "owner-released"
+    },
+    "react-native-ios": {
+      "error": "operation.disconnected",
+      "retryability": "never",
+      "lifecycle": {
+        "current": "disconnected",
+        "cause": "requested-disconnect"
+      },
+      "streamTerminal": "owner-released"
+    },
+    "desktop-macos": {
+      "error": "operation.disconnected",
+      "retryability": "never",
+      "lifecycle": {
+        "current": "disconnected",
+        "cause": "requested-disconnect"
+      },
+      "streamTerminal": "owner-released"
+    },
+    "desktop-windows": {
+      "error": "operation.disconnected",
+      "retryability": "never",
+      "lifecycle": {
+        "current": "disconnected",
+        "cause": "requested-disconnect"
+      },
+      "streamTerminal": "owner-released"
+    },
+    "desktop-linux": {
+      "error": "operation.disconnected",
+      "retryability": "never",
+      "lifecycle": {
+        "current": "disconnected",
+        "cause": "requested-disconnect"
+      },
+      "streamTerminal": "owner-released"
+    },
+    "web": {
+      "error": "operation.disconnected",
+      "retryability": "never",
+      "lifecycle": {
+        "current": "disconnected",
+        "cause": "requested-disconnect"
+      },
+      "streamTerminal": "owner-released"
+    }
+  },
+  "adapter-loss": {
+    "react-native-android": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": {
+        "current": "lost",
+        "cause": "adapter-loss"
+      },
+      "streamTerminal": "source-failed"
+    },
+    "react-native-ios": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": {
+        "current": "lost",
+        "cause": "adapter-loss"
+      },
+      "streamTerminal": "source-failed"
+    },
+    "desktop-macos": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": {
+        "current": "lost",
+        "cause": "adapter-loss"
+      },
+      "streamTerminal": "source-failed"
+    },
+    "desktop-windows": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": {
+        "current": "lost",
+        "cause": "adapter-loss"
+      },
+      "streamTerminal": "source-failed"
+    },
+    "desktop-linux": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": {
+        "current": "lost",
+        "cause": "adapter-loss"
+      },
+      "streamTerminal": "source-failed"
+    },
+    "web": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": {
+        "current": "lost",
+        "cause": "adapter-loss"
+      },
+      "streamTerminal": "source-failed"
+    }
+  },
+  "adapter-loss-during-operation": {
+    "react-native-android": {
+      "error": "operation.reset",
+      "retryability": "never",
+      "lifecycle": {
+        "current": "lost",
+        "cause": "adapter-loss"
+      },
+      "streamTerminal": "source-failed"
+    },
+    "react-native-ios": {
+      "error": "operation.reset",
+      "retryability": "never",
+      "lifecycle": {
+        "current": "lost",
+        "cause": "adapter-loss"
+      },
+      "streamTerminal": "source-failed"
+    },
+    "desktop-macos": {
+      "error": "operation.reset",
+      "retryability": "never",
+      "lifecycle": {
+        "current": "lost",
+        "cause": "adapter-loss"
+      },
+      "streamTerminal": "source-failed"
+    },
+    "desktop-windows": {
+      "error": "operation.reset",
+      "retryability": "never",
+      "lifecycle": {
+        "current": "lost",
+        "cause": "adapter-loss"
+      },
+      "streamTerminal": "source-failed"
+    },
+    "desktop-linux": {
+      "error": "operation.reset",
+      "retryability": "never",
+      "lifecycle": {
+        "current": "lost",
+        "cause": "adapter-loss"
+      },
+      "streamTerminal": "source-failed"
+    },
+    "web": {
+      "error": "operation.reset",
+      "retryability": "never",
+      "lifecycle": {
+        "current": "lost",
+        "cause": "adapter-loss"
+      },
+      "streamTerminal": "source-failed"
+    }
+  },
+  "connect-not-established": {
+    "react-native-android": {
+      "error": "connection.failed",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "react-native-ios": {
+      "error": "connection.failed",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "desktop-macos": {
+      "error": "connection.failed",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "desktop-windows": {
+      "error": "connection.failed",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "desktop-linux": {
+      "error": "connection.failed",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "web": {
+      "error": "connection.failed",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    }
+  },
+  "peer-not-found": {
+    "react-native-android": {
+      "error": "peer.not-found",
+      "retryability": "never",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "react-native-ios": {
+      "error": "peer.not-found",
+      "retryability": "never",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "desktop-macos": {
+      "error": "peer.not-found",
+      "retryability": "never",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "desktop-windows": {
+      "error": "peer.not-found",
+      "retryability": "never",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "desktop-linux": {
+      "error": "peer.not-found",
+      "retryability": "never",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "web": {
+      "error": "peer.not-found",
+      "retryability": "never",
+      "lifecycle": null,
+      "streamTerminal": null
+    }
+  },
+  "security-refused": {
+    "react-native-android": {
+      "error": "platform.security",
+      "retryability": "never",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "react-native-ios": {
+      "error": "platform.security",
+      "retryability": "never",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "desktop-macos": {
+      "error": "platform.security",
+      "retryability": "never",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "desktop-windows": {
+      "error": "gatt.read-failed",
+      "retryability": "never",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "desktop-linux": {
+      "error": "platform.security",
+      "retryability": "never",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "web": {
+      "error": "platform.security",
+      "retryability": "never",
+      "lifecycle": null,
+      "streamTerminal": null
+    }
+  },
+  "operation-timed-out": {
+    "react-native-android": {
+      "error": "operation.timed-out",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "react-native-ios": {
+      "error": "operation.timed-out",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "desktop-macos": {
+      "error": "operation.timed-out",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "desktop-windows": {
+      "error": "operation.timed-out",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "desktop-linux": {
+      "error": "operation.timed-out",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "web": {
+      "error": "operation.timed-out",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    }
+  },
+  "operation-cancelled": {
+    "react-native-android": {
+      "error": "operation.aborted",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "react-native-ios": {
+      "error": "operation.aborted",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "desktop-macos": {
+      "error": "operation.aborted",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "desktop-windows": {
+      "error": "operation.aborted",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "desktop-linux": {
+      "error": "operation.aborted",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "web": {
+      "error": "operation.aborted",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    }
+  }
+}

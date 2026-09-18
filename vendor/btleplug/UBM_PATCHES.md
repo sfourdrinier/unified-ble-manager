@@ -39,6 +39,10 @@ read result, platform failures lose their identity, WinRT scans without the lega
 service filter, sightings are lost or carry another advertisement's
 data, and a BlueZ name-only change is invisible.
 
+The crate-level usage example in `src/lib.rs` (a `no_run` doctest) cycles
+fixed colours instead of using `rand`, so it compiles without upstream's
+dev-dependencies.
+
 The Android backend (`src/droidplug`) is not built by any host of this copy
 and has not been brought up to patches 6 and 10 (its literals lack the
 instance fields); it would need that work before an Android build could

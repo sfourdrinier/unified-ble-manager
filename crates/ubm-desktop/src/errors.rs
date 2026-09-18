@@ -111,6 +111,101 @@ pub fn is_transient_establishment_failure(platform: &PlatformDetail) -> bool {
     }
 }
 
+/// Whether the platform's answer to an operation on a link says the link is
+/// gone — one vocabulary for every desktop platform, the counterpart of
+/// Android's `not-connected`:
+///
+/// - CoreBluetooth: `CBErrorDomain` 3 (`notConnected`) or 7
+///   (`peripheralDisconnected`);
+/// - WinRT: `gatt-status` `unreachable`;
+/// - BlueZ: `org.bluez.Error.NotConnected`, or `org.bluez.Error.Failed`
+///   with the message `Not connected`;
+/// - btleplug's own `NotConnected` (`{domain:"btleplug", code:"not-connected"}`).
+#[must_use]
+pub fn is_link_loss_answer(platform: &PlatformDetail) -> bool {
+    let text = |key: &str| match platform.metadata.get(key) {
+        Some(PlatformValue::Text(value)) => Some(value.as_str()),
+        _ => None,
+    };
+    match platform.domain.as_str() {
+        "corebluetooth" => {
+            text("nsErrorDomain") == Some("CBErrorDomain")
+                && matches!(platform.code.as_str(), "3" | "7")
+        }
+        "winrt" => platform.code == "gatt-status" && text("gattStatus") == Some("unreachable"),
+        "bluez-dbus" => {
+            platform.code == "org.bluez.Error.NotConnected"
+                || (platform.code == "org.bluez.Error.Failed"
+                    && platform.message.as_deref() == Some("Not connected"))
+        }
+        "btleplug" => platform.code == "not-connected",
+        _ => false,
+    }
+}
+
+/// Android GATT statuses of a refusal for lack of security: 5
+/// `INSUFFICIENT_AUTHENTICATION`, 8 `INSUFFICIENT_AUTHORIZATION`, 12
+/// insufficient encryption key size, 15 `INSUFFICIENT_ENCRYPTION`, 137
+/// (`0x89`, the stack's authentication failure).
+const ANDROID_SECURITY_STATUSES: [i64; 5] = [5, 8, 12, 15, 137];
+
+/// The same ATT errors as CoreBluetooth's `CBATTErrorDomain` codes.
+const ATT_SECURITY_CODES: [&str; 4] = ["5", "8", "12", "15"];
+
+/// `CBError.peerRemovedPairingInformation` (14), `encryptionTimedOut` (15).
+const COREBLUETOOTH_SECURITY_CODES: [&str; 2] = ["14", "15"];
+
+/// Whether the platform's answer is a refusal for lack of authentication,
+/// authorization or encryption — one vocabulary for every host that can
+/// tell (`platform.security`, recovery pair / repair):
+///
+/// - Android: `androidGattStatus` 5, 8, 12, 15 or 137;
+/// - CoreBluetooth: `CBATTErrorDomain` 5, 8, 12 or 15, `CBErrorDomain` 14 or
+///   15 (mobile `{domain:<NSError domain>}`, desktop
+///   `{domain:"corebluetooth", metadata:{nsErrorDomain}}`);
+/// - BlueZ: `org.bluez.Error.NotAuthorized`, `AuthenticationFailed`, or
+///   `NotPermitted` with the message `Not paired`.
+///
+/// WinRT's `GattCommunicationStatus` `ProtocolError` does not carry the ATT
+/// error through the radio, so a Windows refusal cannot be told apart and
+/// keeps its GATT code.
+#[must_use]
+pub fn is_security_answer(platform: &PlatformDetail) -> bool {
+    let text = |key: &str| match platform.metadata.get(key) {
+        Some(PlatformValue::Text(value)) => Some(value.as_str()),
+        _ => None,
+    };
+    let apple = |domain: Option<&str>, code: &str| match domain {
+        Some("CBATTErrorDomain") => ATT_SECURITY_CODES.contains(&code),
+        Some("CBErrorDomain") => COREBLUETOOTH_SECURITY_CODES.contains(&code),
+        _ => false,
+    };
+    match platform.domain.as_str() {
+        "android" => matches!(
+            platform.metadata.get("androidGattStatus"),
+            Some(PlatformValue::Int(status)) if ANDROID_SECURITY_STATUSES.contains(status)
+        ),
+        "CBATTErrorDomain" | "CBErrorDomain" => {
+            apple(Some(platform.domain.as_str()), &platform.code)
+        }
+        "corebluetooth" => apple(text("nsErrorDomain"), &platform.code),
+        "bluez-dbus" => {
+            matches!(
+                platform.code.as_str(),
+                "org.bluez.Error.NotAuthorized" | "org.bluez.Error.AuthenticationFailed"
+            ) || (platform.code == "org.bluez.Error.NotPermitted"
+                && platform.message.as_deref() == Some("Not paired"))
+        }
+        _ => false,
+    }
+}
+
+/// Operations that run on an established link: GATT verbs and discovery.
+/// A connect, a disconnect, a scan or an adapter read is not one.
+fn is_link_operation(operation: &str) -> bool {
+    operation.starts_with("gatt.") || operation.starts_with("discovery.")
+}
+
 /// Whether the caller may safely repeat the operation (PR210-22). Set by
 /// the central from the core's settled outcome, never derived from the
 /// error code: a write that may have reached the peer is `Never`, whatever
@@ -204,6 +299,72 @@ impl DesktopError {
         } else {
             self
         }
+    }
+
+    /// Owner decision (5.0): an operation on a link the platform says is
+    /// gone ([`is_link_loss_answer`]) reports `connection.lost` on every
+    /// host, as Android does, with the platform's answer and the detail
+    /// kept. Any other error, or a non-link operation, is unchanged.
+    #[must_use]
+    pub fn classify_link_loss(mut self) -> Self {
+        let lost =
+            is_link_operation(&self.operation) && self.platform().is_some_and(is_link_loss_answer);
+        if lost {
+            self.code = BleErrorCode::ConnectionLost;
+            self.domain = BleErrorDomain::Connection;
+        }
+        self
+    }
+
+    /// Owner decision (5.0): a connect the platform failed is
+    /// `connection.failed` on every host, the platform's answer kept; a
+    /// more specific code (permission, adapter, peer, cancel, timeout) is
+    /// unchanged.
+    #[must_use]
+    pub fn classify_connect_failure(mut self) -> Self {
+        if self.operation == "connection.connect" && self.code == BleErrorCode::PlatformFailure {
+            self.code = BleErrorCode::ConnectionFailed;
+            self.domain = BleErrorDomain::Connection;
+        }
+        self
+    }
+
+    /// Owner decision (5.0): a link operation the peer refused for lack of
+    /// security ([`is_security_answer`]) is `platform.security` on every
+    /// host that can tell, the platform's answer and detail kept.
+    #[must_use]
+    pub fn classify_security(mut self) -> Self {
+        // Only a generic refusal is renamed: a link loss that carries the
+        // same number (Android status 8 is both HCI connection timeout and
+        // ATT insufficient authorization) keeps its identity.
+        let generic = matches!(
+            self.code,
+            BleErrorCode::PlatformFailure
+                | BleErrorCode::GattReadFailed
+                | BleErrorCode::GattWriteFailed
+                | BleErrorCode::GattSubscribeFailed
+        );
+        let refused = generic
+            && is_link_operation(&self.operation)
+            && self.platform().is_some_and(is_security_answer);
+        if refused {
+            self.code = BleErrorCode::PlatformSecurity;
+            self.domain = BleErrorDomain::Platform;
+        }
+        self
+    }
+
+    /// Owner decision (5.0): a link operation cut off by the app's own
+    /// release is `operation.disconnected`; the same failure while the link
+    /// was not being released stays `connection.lost`. The central calls
+    /// this with the connection state it observed when the operation
+    /// settled.
+    #[must_use]
+    pub fn named_for_requested_release(mut self, release_requested: bool) -> Self {
+        if release_requested && self.code == BleErrorCode::ConnectionLost {
+            self.code = BleErrorCode::OperationDisconnected;
+        }
+        self
     }
 
     /// Commit state of the operation, when the central knows it
@@ -502,8 +663,10 @@ mod tests {
                 .with_metadata("androidGattStatus", PlatformValue::Int(status))
         };
         let desktop_cb = |code: &str| {
-            PlatformDetail::new("corebluetooth", code)
-                .with_metadata("nsErrorDomain", PlatformValue::Text("CBErrorDomain".to_owned()))
+            PlatformDetail::new("corebluetooth", code).with_metadata(
+                "nsErrorDomain",
+                PlatformValue::Text("CBErrorDomain".to_owned()),
+            )
         };
         let winrt = |status: &str| {
             PlatformDetail::new("winrt", "gatt-status")
@@ -574,6 +737,225 @@ mod tests {
             Retryability::Never,
             "no platform answer, no second opinion"
         );
+    }
+
+    /// Owner decision (5.0): an operation on a link that the platform says
+    /// is gone reports `connection.lost` on every host, as Android does,
+    /// with the platform's answer kept. Only a link operation is converted;
+    /// a connect, a disconnect or a scan keeps its own identity.
+    #[test]
+    fn a_link_loss_answer_on_a_link_operation_is_connection_lost() {
+        use super::{PlatformDetail, PlatformValue};
+        let cb = |code: &str| {
+            PlatformDetail::new("corebluetooth", code).with_metadata(
+                "nsErrorDomain",
+                PlatformValue::Text("CBErrorDomain".to_owned()),
+            )
+        };
+        let lost = [
+            cb("3"),
+            cb("7"),
+            PlatformDetail::new("winrt", "gatt-status")
+                .with_metadata("gattStatus", PlatformValue::Text("unreachable".to_owned())),
+            PlatformDetail::new("bluez-dbus", "org.bluez.Error.NotConnected"),
+            PlatformDetail::new("bluez-dbus", "org.bluez.Error.Failed")
+                .with_message("Not connected"),
+            PlatformDetail::new("btleplug", "not-connected"),
+        ];
+        let other = [
+            cb("10"),
+            PlatformDetail::new("corebluetooth", "7"),
+            PlatformDetail::new("winrt", "gatt-status").with_metadata(
+                "gattStatus",
+                PlatformValue::Text("protocol-error".to_owned()),
+            ),
+            PlatformDetail::new("bluez-dbus", "org.bluez.Error.Failed")
+                .with_message("Operation failed"),
+            PlatformDetail::new("bluez-dbus", "org.bluez.Error.NotPermitted"),
+        ];
+        for platform in &lost {
+            for operation in [
+                "gatt.read",
+                "gatt.discover",
+                "discovery.complete",
+                "gatt.subscribe",
+            ] {
+                let error = DesktopError::new(
+                    BleErrorCode::GattReadFailed,
+                    BleErrorDomain::Gatt,
+                    operation,
+                )
+                .with_detail("radio said so")
+                .with_platform(platform.clone())
+                .classify_link_loss();
+                assert_eq!(
+                    error.code(),
+                    BleErrorCode::ConnectionLost,
+                    "{platform:?} {operation}"
+                );
+                assert_eq!(error.domain(), BleErrorDomain::Connection);
+                assert_eq!(error.operation(), operation);
+                assert_eq!(
+                    error.platform(),
+                    Some(platform),
+                    "the platform's answer is kept"
+                );
+                assert_eq!(error.detail(), Some("radio said so"));
+            }
+            for operation in [
+                "connection.connect",
+                "connection.disconnect",
+                "scan.start",
+                "peer.list",
+            ] {
+                let error = DesktopError::new(
+                    BleErrorCode::PlatformFailure,
+                    BleErrorDomain::Platform,
+                    operation,
+                )
+                .with_platform(platform.clone())
+                .classify_link_loss();
+                assert_eq!(
+                    error.code(),
+                    BleErrorCode::PlatformFailure,
+                    "{operation} keeps its identity"
+                );
+            }
+        }
+        for platform in &other {
+            let error = DesktopError::read_failed("x")
+                .with_platform(platform.clone())
+                .classify_link_loss();
+            assert_eq!(error.code(), BleErrorCode::GattReadFailed, "{platform:?}");
+        }
+        assert_eq!(
+            DesktopError::read_failed("no answer")
+                .classify_link_loss()
+                .code(),
+            BleErrorCode::GattReadFailed,
+            "no platform answer, no second opinion"
+        );
+    }
+
+    /// Owner decision (5.0): a peer that refuses an operation for lack of
+    /// authentication, authorization or encryption is `platform.security`
+    /// (recovery: pair or repair) on every host that can tell, the
+    /// platform's answer kept. Other refusals keep their code.
+    #[test]
+    fn an_authentication_or_encryption_refusal_is_platform_security() {
+        use super::{PlatformDetail, PlatformValue};
+        let android = |status: i64| {
+            PlatformDetail::new("android", "readFailed")
+                .with_metadata("androidGattStatus", PlatformValue::Int(status))
+        };
+        let desktop_att = |code: &str| {
+            PlatformDetail::new("corebluetooth", code).with_metadata(
+                "nsErrorDomain",
+                PlatformValue::Text("CBATTErrorDomain".to_owned()),
+            )
+        };
+        let security = [
+            android(5),
+            android(8),
+            android(12),
+            android(15),
+            android(137),
+            PlatformDetail::new("CBATTErrorDomain", "5"),
+            PlatformDetail::new("CBATTErrorDomain", "15"),
+            PlatformDetail::new("CBErrorDomain", "14"),
+            PlatformDetail::new("CBErrorDomain", "15"),
+            desktop_att("5"),
+            desktop_att("8"),
+            PlatformDetail::new("bluez-dbus", "org.bluez.Error.NotAuthorized"),
+            PlatformDetail::new("bluez-dbus", "org.bluez.Error.NotPermitted")
+                .with_message("Not paired"),
+            PlatformDetail::new("bluez-dbus", "org.bluez.Error.AuthenticationFailed"),
+        ];
+        let other = [
+            android(3),
+            android(133),
+            PlatformDetail::new("CBATTErrorDomain", "3"),
+            desktop_att("3"),
+            PlatformDetail::new("bluez-dbus", "org.bluez.Error.NotPermitted")
+                .with_message("Read not permitted"),
+            PlatformDetail::new("winrt", "gatt-status").with_metadata(
+                "gattStatus",
+                PlatformValue::Text("protocol-error".to_owned()),
+            ),
+        ];
+        for platform in &security {
+            let error = DesktopError::read_failed("refused")
+                .with_platform(platform.clone())
+                .classify_security();
+            assert_eq!(error.code(), BleErrorCode::PlatformSecurity, "{platform:?}");
+            assert_eq!(error.domain(), BleErrorDomain::Platform);
+            assert_eq!(error.platform(), Some(platform));
+        }
+        for platform in &other {
+            let error = DesktopError::read_failed("refused")
+                .with_platform(platform.clone())
+                .classify_security();
+            assert_eq!(error.code(), BleErrorCode::GattReadFailed, "{platform:?}");
+        }
+        let connect = DesktopError::connection_failed("x")
+            .with_platform(android(5))
+            .classify_security();
+        assert_eq!(
+            connect.code(),
+            BleErrorCode::ConnectionFailed,
+            "link operations only"
+        );
+        let lost = DesktopError::new(
+            BleErrorCode::ConnectionLost,
+            BleErrorDomain::Connection,
+            "gatt.read",
+        )
+        .with_platform(android(8))
+        .classify_security();
+        assert_eq!(
+            lost.code(),
+            BleErrorCode::ConnectionLost,
+            "Android status 8 at a disconnect is a link loss, not a refusal"
+        );
+    }
+
+    /// Owner decision (5.0): a connect the platform failed is
+    /// `connection.failed` on every host (Android and BlueZ reported
+    /// `platform.failure`, CoreBluetooth, WinRT and Web `connection.failed`),
+    /// the platform's answer kept. Codes that name something more specific
+    /// (permission, adapter, peer, cancel, timeout) are unchanged.
+    #[test]
+    fn a_platform_connect_failure_is_connection_failed() {
+        use super::{PlatformDetail, PlatformValue};
+        let android = PlatformDetail::new("android", "connectionFailed")
+            .with_metadata("androidGattStatus", PlatformValue::Int(133));
+        let error = DesktopError::new(
+            BleErrorCode::PlatformFailure,
+            BleErrorDomain::Platform,
+            "connection.connect",
+        )
+        .with_platform(android.clone())
+        .classify_connect_failure();
+        assert_eq!(error.code(), BleErrorCode::ConnectionFailed);
+        assert_eq!(error.domain(), BleErrorDomain::Connection);
+        assert_eq!(error.platform(), Some(&android));
+        for code in [
+            BleErrorCode::PermissionDenied,
+            BleErrorCode::AdapterPoweredOff,
+            BleErrorCode::PeerNotFound,
+            BleErrorCode::OperationTimedOut,
+        ] {
+            let kept = DesktopError::new(code, BleErrorDomain::Connection, "connection.connect")
+                .classify_connect_failure();
+            assert_eq!(kept.code(), code);
+        }
+        let read = DesktopError::new(
+            BleErrorCode::PlatformFailure,
+            BleErrorDomain::Platform,
+            "gatt.read",
+        )
+        .classify_connect_failure();
+        assert_eq!(read.code(), BleErrorCode::PlatformFailure, "connect only");
     }
 
     #[test]

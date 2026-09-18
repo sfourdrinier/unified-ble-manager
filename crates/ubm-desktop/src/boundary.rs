@@ -754,6 +754,11 @@ pub enum RadioEvent {
     Advertisement(PeerSnapshot),
     Connected(String),
     Disconnected(String),
+    /// The OS reported the link ended with an error (an Android non-zero
+    /// GATT status, a CoreBluetooth disconnect `NSError`): a loss, even when
+    /// a release was pending. [`RadioEvent::Disconnected`] is a disconnect
+    /// the OS reported without saying why.
+    Lost(String),
     /// The OS reported an adapter power-state change.
     AdapterState(AdapterPowerState),
     /// The OS reported a change of this process's adapter authorization.

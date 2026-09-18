@@ -1158,8 +1158,10 @@ async fn a_transient_connect_failure_is_caller_decides_through_the_central() {
     use ubm_desktop::{PlatformDetail, PlatformValue, Retryability};
     let central = open().await;
     let transient = [
-        PlatformDetail::new("corebluetooth", "10")
-            .with_metadata("nsErrorDomain", PlatformValue::Text("CBErrorDomain".to_owned())),
+        PlatformDetail::new("corebluetooth", "10").with_metadata(
+            "nsErrorDomain",
+            PlatformValue::Text("CBErrorDomain".to_owned()),
+        ),
         PlatformDetail::new("winrt", "gatt-status")
             .with_metadata("gattStatus", PlatformValue::Text("unreachable".to_owned())),
         PlatformDetail::new("bluez-dbus", "org.bluez.Error.Failed")
@@ -1168,15 +1170,21 @@ async fn a_transient_connect_failure_is_caller_decides_through_the_central() {
     for (index, platform) in transient.iter().enumerate() {
         let peer = format!("peer-t{index}");
         known_peer(&central, &peer).await;
-        central
-            .boundary()
-            .fail_next_with_platform(FaultOp::Connect, "link not established", platform.clone());
+        central.boundary().fail_next_with_platform(
+            FaultOp::Connect,
+            "link not established",
+            platform.clone(),
+        );
         let connects_before = connect_calls(&central);
         let error = central
             .connect(&peer, "lease-a", OpControl::budget_ms(1000))
             .await
             .expect_err("connect failed");
-        assert_eq!(error.retryability(), Retryability::CallerDecides, "{platform:?}");
+        assert_eq!(
+            error.retryability(),
+            Retryability::CallerDecides,
+            "{platform:?}"
+        );
         assert_eq!(error.platform(), Some(platform));
         assert_eq!(
             connect_calls(&central),
@@ -1204,4 +1212,45 @@ fn connect_calls(central: &DesktopCentral<FakeRadio>) -> usize {
         .iter()
         .filter(|call| call.as_str() == "connect")
         .count()
+}
+
+/// Owner decision (5.0): an operation the platform fails because the link
+/// is gone reports `connection.lost` through the central on every desktop
+/// OS, as Android does, with the platform's answer kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_link_loss_answer_is_connection_lost_through_the_central() {
+    use ubm_desktop::{PlatformDetail, PlatformValue};
+    let answers = [
+        PlatformDetail::new("corebluetooth", "7").with_metadata(
+            "nsErrorDomain",
+            PlatformValue::Text("CBErrorDomain".to_owned()),
+        ),
+        PlatformDetail::new("winrt", "gatt-status")
+            .with_metadata("gattStatus", PlatformValue::Text("unreachable".to_owned())),
+        PlatformDetail::new("bluez-dbus", "org.bluez.Error.Failed").with_message("Not connected"),
+        PlatformDetail::new("btleplug", "not-connected").with_message("Not connected"),
+    ];
+    for (index, platform) in answers.iter().enumerate() {
+        let central = open().await;
+        let peer = format!("peer-l{index}");
+        connected_peer(&central, &peer).await;
+        central
+            .boundary()
+            .fail_next_with_platform(FaultOp::Read, "gone", platform.clone());
+        let read = central
+            .read(&peer, &selector(), OpControl::budget_ms(1000))
+            .await
+            .expect_err("read on a lost link");
+        assert_eq!(read.code_str(), "connection.lost", "{platform:?}");
+        assert_eq!(read.platform(), Some(platform));
+        central
+            .boundary()
+            .fail_next_with_platform(FaultOp::Discover, "gone", platform.clone());
+        let discover = central
+            .discover(&peer, "lease-a", OpControl::budget_ms(1000))
+            .await
+            .expect_err("discovery on a lost link");
+        assert_eq!(discover.code_str(), "connection.lost", "{platform:?}");
+        assert_eq!(discover.platform(), Some(platform));
+    }
 }

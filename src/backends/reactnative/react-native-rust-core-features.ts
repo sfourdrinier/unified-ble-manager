@@ -193,12 +193,27 @@ export function createReactNativeRustCoreFeatureRegistry(
     ['scenario.scan-connect-discover-read-notify-destroy'],
     'connection:direct.invoke-without-connection'
   )
+  // The Rust owner runs `scan.start` on both platforms (legacy React Native
+  // never registered this, so managers reported a system chooser they do
+  // not have; fixed in 5.0). The chooser stays unregistered: unsupported.
+  const continuousScan = operationRegistration(
+    BUILT_IN_FEATURE_IDS.discoveryContinuousScan,
+    implementationVersion,
+    `react-native-rust-core-${platform}-continuous-scan-v1`,
+    'capability.catalog-v2',
+    ['scenario.scan-connect-discover-read-notify-destroy'],
+    'discovery:continuous-scan.invoke-without-scan'
+  )
   const common = [
     createReactNativeConnectionControlFeatureRegistry(platform, implementationVersion),
     createReactNativeDescriptorFeatureRegistry(platform, implementationVersion),
     createReactNativeRestorationFeatureRegistry(platform, implementationVersion),
     createFeatureRegistry(
-      Object.freeze([direct, maximumWriteLengthRegistration(platform, implementationVersion, maximumWriteLength)])
+      Object.freeze([
+        direct,
+        continuousScan,
+        maximumWriteLengthRegistration(platform, implementationVersion, maximumWriteLength)
+      ])
     )
   ]
   if (platform === 'apple') {

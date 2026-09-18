@@ -77,6 +77,12 @@ export interface WebGattDatabaseHost {
   ): Promise<import('../backend-contract/gatt').Subscription<string, string, string, string, string, string>>
 }
 
+/**
+ * Why a Web link ended, one word per event (5.0): the browser reported it
+ * gone, the app released it, or Bluetooth became unavailable.
+ */
+export type WebLinkEnd = 'connection-lost' | 'owner-released' | 'adapter-loss'
+
 export interface WebConnectionRecord {
   readonly peerId: PeerId<string>
   readonly device: WebBluetoothDeviceBoundary
@@ -84,9 +90,11 @@ export interface WebConnectionRecord {
   readonly connection: WebBackendConnection
   readonly leaseId: LeaseId<string, string>
   readonly disconnectListener: WebBluetoothDisconnectListener
-  readonly disconnectWaiters: Set<() => void>
+  readonly disconnectWaiters: Set<(end: WebLinkEnd) => void>
   database: WebGattDatabase | null
   valid: boolean
+  /** Why the link ended, once it has. */
+  end: WebLinkEnd | null
   subscriptionReleased: boolean
   physicalReleased: boolean
   disconnectPromise: Promise<CleanupRecord> | null

@@ -58,6 +58,19 @@ describe('first-party backend standard TCK registrations', () => {
         requiredScenarioIds: ['web.chooser-connect-discover-read-notify-destroy'],
         evidenceScenarioIds: ['web.chooser-connect-discover-read-notify-destroy']
       }),
+      // The shared discovery vocabulary (5.0), bound to the same chooser suite.
+      expect.objectContaining({
+        featureId: 'discovery:system-chooser',
+        suiteId: 'web-chooser-discovery',
+        requiredScenarioIds: [
+          'web.chooser-connect-discover-read-notify-destroy',
+          'web.unsupported-capabilities-reject-and-remain-honest'
+        ],
+        evidenceScenarioIds: [
+          'web.chooser-connect-discover-read-notify-destroy',
+          'web.unsupported-capabilities-reject-and-remain-honest'
+        ]
+      }),
       expect.objectContaining({
         featureId: 'web:chooser-discovery',
         suiteId: 'web-chooser-discovery',

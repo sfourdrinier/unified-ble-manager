@@ -45,7 +45,12 @@ import type {
 } from './web-bluetooth-boundary'
 import { webCleanupFailure } from './web-bluetooth-errors'
 import { characteristicKey, descriptorKey, WebBackendSubscription, WebGattDatabase } from './web-bluetooth-handles'
-import type { WebConnectionRecord, WebGattDatabaseHost, WebManagedSubscription } from './web-bluetooth-handles'
+import type {
+  WebConnectionRecord,
+  WebGattDatabaseHost,
+  WebLinkEnd,
+  WebManagedSubscription
+} from './web-bluetooth-handles'
 
 export interface WebGattHost extends WebGattDatabaseHost {
   readonly attachment: AttachmentRecord<string>
@@ -113,7 +118,9 @@ export class WebBluetoothGattRuntime {
     return failures
   }
 
-  invalidateConnection(record: WebConnectionRecord, reason: 'connection-lost' | 'owner-released'): void {
+  invalidateConnection(record: WebConnectionRecord, end: WebLinkEnd): void {
+    // An adapter loss failed the streams at their source, as on every host.
+    const reason = end === 'adapter-loss' ? 'source-failed' : end
     for (const subscription of [...this.subscriptions.values()]) {
       if (subscription.database.record === record) {
         this.beginLogicalSubscriptionStop(subscription, reason)
@@ -606,7 +613,7 @@ export class WebBluetoothGattRuntime {
 
   private beginLogicalSubscriptionStop(
     managed: WebManagedSubscription,
-    reason: 'connection-lost' | 'owner-released'
+    reason: 'connection-lost' | 'owner-released' | 'source-failed'
   ): void {
     if (managed.state === 'stopped' || managed.state === 'stopping' || managed.state === 'cleanup-failed') {
       return

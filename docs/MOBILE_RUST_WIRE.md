@@ -171,7 +171,7 @@ these:
 
 ```json
 {"ok":true,"value":…}
-{"ok":false,"error":{"code","domain","operation","detail","platform"},"commit":null|"not-dispatched"|"uncertain"}
+{"ok":false,"error":{"code","domain","operation","detail","platform"},"commit":null|"not-dispatched"|"uncertain","retryability":"never"|"caller-decides"}
 ```
 
 - **`platform`** is the radio's own error identity, or `null` when the
@@ -182,12 +182,17 @@ these:
   | Platform failure | `code` / `domain` | `platform` |
   |---|---|---|
   | Android GATT status, busy or other radio failure | `platform.failure` / `platform` | `{domain:"android", code:<legacy native code of the verb>, metadata:{androidGattStatus}}` (status only when the platform reported one) |
-  | Android link loss (`not-connected`, or GATT status 19) | `connection.lost` / `connection` | `{domain:"android", code:"connectionLost", …}` |
+  | Link loss: Android `not-connected` or GATT status 19; Apple `not-connected` | `connection.lost` / `connection` | Android `{domain:"android", code:"connectionLost", …}`; Apple the `NSError` domain and code (owned radio 1016/1020, `CBErrorDomain` 7) |
   | Apple radio failure | `platform.failure` / `platform` | the `NSError` domain and decimal code, else `{domain:"corebluetooth", code:<legacy native code of the verb>}`; `metadata:{}` |
+  | Refused for lack of security on a GATT operation: Android GATT 5/8/12/15/137, Apple `CBATTErrorDomain` 5/8/12/15 or `CBErrorDomain` 14/15 | `platform.security` / `platform` | as above |
+  | A failed `connection.connect` (any radio failure above) | `connection.failed` / `connection` | as above |
+  | A link operation cut off while the app's own release was underway | `operation.disconnected` / `connection` | as above, when the platform answered first |
   | Adapter state read failure | `adapter.unavailable` / `adapter` | as above |
   | cancel, permission, adapter state, stale path, unknown peer, unsupported | their contract codes | `null` |
 
-  The legacy native codes per verb are `RequestKind::android_native_code` and
+  The security, connect and release rows are the one-name-per-event rules
+  of 5.0 (`docs/UNIFIED_SEMANTICS.md`), applied by the core for mobile and
+  desktop alike. The legacy native codes per verb are `RequestKind::android_native_code` and
   `apple_native_code` in `crates/ubm-mobile/src/radio.rs`, for example
   `readFailed`, `writeFailed`, `subscriptionFailed`, `connectionFailed`. The
   React Native provider hands `platform` on as the error's platform detail
@@ -199,6 +204,16 @@ these:
     write-without-response queue or an oversize value).
   - `uncertain`: the write was submitted. This applies to an abort or timeout
     after submission, and to a GATT failure after dispatch.
+- **`retryability`** is on every failure envelope: the owner's own answer
+  (`DesktopError::retryability`), which the provider reports unchanged and
+  never re-derives from the code. A write whose `commit` is `uncertain` is
+  always `never`; the TS parser refuses an envelope that says otherwise.
+  A `connection.connect` whose link the platform could not establish —
+  Android GATT status 133, 62 (HCI 0x3E) or 147, CoreBluetooth
+  `CBErrorDomain` 6 (`connectionTimeout`) or 10 (`connectionFailed`) — is
+  `caller-decides` with the platform's answer kept (owner decision, 5.0;
+  the same rule answers the desktop hosts, `is_transient_establishment_failure`
+  in `crates/ubm-desktop/src/errors.rs`). The owner never retries it.
 - **Bytes** travel as strict RFC 4648 §4 padded base64 in `…B64` fields.
   - Whitespace, the URL alphabet and non-zero pad bits are all rejected.
   - Length is checked before decoding: at most `4*ceil(524288/3)` characters,
@@ -538,13 +553,18 @@ legacy Expo's codes. An operation pending when the Android link goes down
 (peer or app disconnect, failed connect, close timeout, reconnect) is
 answered `not-connected` with the disconnect's GATT status and
 `dispatched:false` for work still queued (finding 132), so it reports
-`connection.lost` as legacy's dispatcher did. An adapter loss, a database
+`connection.lost` as legacy's dispatcher did. Service discovery is one of
+those operations: the Android driver hands its failure through
+(`OwnedAndroidGattRadio.discover` answers a `Result`), so a link that drops
+while discovery is pending is `connection.lost`, not
+`platform.failure: gatt.discover`. An adapter loss, a database
 change and destroy keep `platform`. `dispatched:false` means the
 platform refused before sending anything to the peer. `kind` is one of
 (contract code in parentheses where fixed):
 
-- `not-connected` (Android `connection.lost`; Apple `platform.failure`, as
-  legacy reported them)
+- `not-connected` (`connection.lost` on both platforms, with the platform's
+  answer kept; 5.0 — legacy Apple, and finding 132, reported
+  `platform.failure`)
 - `peer-unknown` (`peer.not-found`)
 - `path-stale` (`gatt.stale-handle`)
 - `busy`
@@ -564,12 +584,23 @@ platform's own identity (see [Envelope and codec](#envelope-and-codec)),
 except Android GATT status 19 (`connection.lost`) and the Apple owned
 radio's read/notify refusals.
 
+An Apple operation pending at a disconnect (the owned radio's 1016 or 1020,
+CoreBluetooth `peripheralDisconnected` 7) is `not-connected`, so it reports
+`connection.lost` like Android, with the `NSError` domain and code as
+`platform` (owner decision, 5.0: every platform reports one word for one
+fact; this supersedes finding 132's Apple identity rule).
+
 Rust maps the kind to the contract identity once, per request kind.
 
 **Ingress**
 
 - `Advertisement`
-- `Connection{peerId,connected,status}`
+- `Connection{peerId,connected,status}`: `status` is the platform's reason
+  for a disconnect (Android GATT status; the CoreBluetooth disconnect
+  `NSError` code, `null` when it gave none). A disconnect with a non-zero
+  status ended for a reason other than this app's release, so it is a link
+  loss (`link` reason `peer`) even while a release is pending; a clean
+  disconnect (status 0 or `null`) confirms a pending release (`local`).
 - `ServicesChanged`
 - `Notification{instance,epoch,value}`: stamp the value with the epoch from
   the enable.

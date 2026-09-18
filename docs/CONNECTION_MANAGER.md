@@ -89,6 +89,21 @@ already have committed at the peripheral; its `recovery` advises
 `caller-decides` failures are candidates for a policy retry, and never one
 whose `commit` is `uncertain`, whatever its code.
 
+A connect whose link the platform could not establish is `connection.failed`
+and `caller-decides` on every host, with the platform's own answer kept in
+`platform` (5.0; 4.x reported it `never`, and Android, iOS and BlueZ named it
+`platform.failure`). The library never retries it itself:
+
+| Host | Platform answer |
+| --- | --- |
+| Android | GATT status 133, 62 (HCI 0x3E, "connection failed to be established") or 147 (`metadata.androidGattStatus`) |
+| iOS, macOS | `CBErrorDomain` 6 (`connectionTimeout`) or 10 (`connectionFailed`) |
+| Windows | `GetGattServicesAsync` answered `Unreachable` (`{domain:"winrt", code:"gatt-status", metadata:{gattStatus:"unreachable"}}`) |
+| Linux (BlueZ) | `org.bluez.Error.Failed` (for example `le-connection-abort-by-local`) or `org.bluez.Error.ConnectionAttemptFailed` |
+| Web | `gatt.connect()` rejected with `NetworkError` |
+
+Every other connect failure stays `never`.
+
 ## Disconnects and lifecycle loss
 
 Consume the public connection lifecycle stream using bounded delivery. Adapter
@@ -143,6 +158,17 @@ is not ready and keeps waiting across readiness timeouts, however long the
 adapter stays off, then reconnects through the same manager when it returns.
 Before 5.0 an adapter loss destroyed the manager (its supervisor ended
 `lifecycle.destroyed`) and the application had to create a new one.
+
+A link lost while the supervisor's `configure` callback runs (it rejects with
+`connection.lost`, the name every host uses) is a link loss like any other:
+the supervisor releases the connection, backs off and reconnects, and
+`configure` runs again on the new generation. An adapter lost during
+`configure` (`operation.reset`) waits for the adapter, then reconnects. Any
+other `configure` failure stops the supervisor, as before, including
+`operation.disconnected` — the app's own release cut the setup off (5.0; 4.x
+stopped on every `configure` failure). The supervisor makes the same decision
+for the same event on every host; the decisions are the "Supervisor" column
+of the event table in [`UNIFIED_SEMANTICS.md`](UNIFIED_SEMANTICS.md).
 
 Do not create a second manager or reuse a connection/database from before the
 adapter loss. A backend may report a cleanup retry while native operations are

@@ -297,6 +297,10 @@ enum OpKind {
 /// unless the op is a write, whose commit is then `unknown`. Every other
 /// code keeps the default `never`.
 fn classify(error: DesktopError, kind: OpKind, dispatched: bool) -> DesktopError {
+    // One word per event on every host, the platform's answer kept (owner
+    // decision, 5.0): a link the platform says is gone is `connection.lost`,
+    // a refusal for lack of security is `platform.security`.
+    let error = error.classify_link_loss().classify_security();
     if !matches!(
         error.code(),
         BleErrorCode::OperationAborted | BleErrorCode::OperationTimedOut
@@ -374,6 +378,61 @@ async fn drive<T>(ticket: &OpTicket, window: Window, work: impl Future<Output = 
             Some(value) => Wait::Done(value),
             None => Wait::Expired,
         },
+    }
+}
+
+fn link_end_count<B>(inner: &Inner<B>, peer_id: &str) -> u64 {
+    lock_std(&inner.link_ends)
+        .get(peer_id)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// Record that the OS reported `peer_id`'s link ended and wake every link
+/// operation waiting on it. Called after the core state moved, so the
+/// woken operation names the end from that state (`name_link_end`).
+fn note_link_end<B>(inner: &Inner<B>, peer_id: &str) {
+    {
+        let mut ends = lock_std(&inner.link_ends);
+        let count = ends.entry(peer_id.to_owned()).or_insert(0);
+        *count = count.wrapping_add(1);
+    }
+    inner.link_end.notify_waiters();
+}
+
+/// [`drive`] for an operation on `peer_id`'s link: it also ends when the
+/// OS reports that link ended, as `connection.lost` (renamed
+/// `operation.disconnected` when the app's own release ended it). The radio
+/// answer wins a tie.
+async fn drive_link<B, T>(
+    inner: &Inner<B>,
+    peer_id: &str,
+    operation: &'static str,
+    ticket: &OpTicket,
+    window: Window,
+    work: impl Future<Output = Result<T, DesktopError>>,
+) -> Wait<Result<T, DesktopError>> {
+    let start = link_end_count(inner, peer_id);
+    let ended = async {
+        loop {
+            let notified = inner.link_end.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if link_end_count(inner, peer_id) != start {
+                return;
+            }
+            notified.await;
+        }
+    };
+    tokio::select! {
+        biased;
+        outcome = drive(ticket, window, work) => outcome,
+        () = ended => Wait::Done(Err(contract_error(
+            BleErrorCode::ConnectionLost,
+            BleErrorDomain::Connection,
+            operation,
+        )
+        .with_detail("the OS reported the link ended while the operation waited on the radio"))),
     }
 }
 
@@ -1256,6 +1315,14 @@ struct Inner<B> {
     /// peer's routing invalidates (disconnect, loss, service change), so
     /// forwarders installed before the bump stamp a dead generation.
     epochs: Mutex<HashMap<String, u64>>,
+    /// How many times the OS reported each peer's link ended. A link
+    /// operation still waiting on the radio when this moves ends at once
+    /// (owner decision, 5.0), as Android's stack fails pending work at a
+    /// disconnect: a radio that never answers (CoreBluetooth) no longer
+    /// holds it until its deadline.
+    link_ends: StdMutex<HashMap<String, u64>>,
+    /// Woken on every [`Inner::link_ends`] change.
+    link_end: tokio::sync::Notify,
     /// Per-instance keys whose physical disable failed and is pending
     /// retry through `unsubscribe`. A pending key fails new subscribes
     /// closed until the disable completes.
@@ -1520,6 +1587,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             peers: Mutex::new(HashMap::new()),
             subscriptions: Mutex::new(HashMap::new()),
             epochs: Mutex::new(HashMap::new()),
+            link_ends: StdMutex::new(HashMap::new()),
+            link_end: tokio::sync::Notify::new(),
             failed_disables: Mutex::new(HashSet::new()),
             deliveries: StdMutex::new(HashMap::new()),
             access: StdMutex::new(HashMap::new()),
@@ -2701,7 +2770,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         drop_guard.defuse();
         // A link the platform could not establish is the caller's to retry
         // (owner decision, 5.0); the central never retries it.
-        result.map_err(|error| classify(error, OpKind::Connect, true).classify_establishment())
+        result.map_err(|error| {
+            classify(error, OpKind::Connect, true)
+                .classify_connect_failure()
+                .classify_establishment()
+        })
     }
 
     /// Explicit disconnect (PR210-09/24): request the release in the core,
@@ -2746,6 +2819,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 }
             }
         }
+        // The release is underway: operations still waiting on this link end
+        // now, `operation.disconnected`, as Android's stack ends them at an
+        // app disconnect (owner decision, 5.0).
+        note_link_end(&self.inner, peer_id);
         let outcome = drive(&ctl.ticket, window, self.inner.boundary.disconnect(peer_id)).await;
         // Late radio completions must not resurrect the link: drop local
         // subscription routing for this peer now; the core already
@@ -2828,6 +2905,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             self.inner
                 .stage_lifecycle(peer_id, &peer_key, generation, kind)
         };
+        note_link_end(&self.inner, peer_id);
         self.inner.signal(CentralSignal::Lifecycle(event));
         Ok(())
     }
@@ -2854,13 +2932,24 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             core.begin_discovery(&peer_key)
                 .map_err(DesktopError::from)?;
         }
-        let services = match drive(&ctl.ticket, window, self.inner.boundary.discover(peer_id)).await
+        let services = match drive_link(
+            &self.inner,
+            peer_id,
+            "discovery.complete",
+            &ctl.ticket,
+            window,
+            self.inner.boundary.discover(peer_id),
+        )
+        .await
         {
             Wait::Done(Ok(services)) => services,
             Wait::Done(Err(error)) => {
-                let mut core = self.inner.core.lock().await;
-                let _ = core.fail_discovery(&peer_key);
-                return Err(error);
+                {
+                    let mut core = self.inner.core.lock().await;
+                    let _ = core.fail_discovery(&peer_key);
+                }
+                let failed = Err(classify(error, OpKind::Discover, true));
+                return self.name_link_end(&peer_key, failed).await;
             }
             Wait::Expired => {
                 let mut core = self.inner.core.lock().await;
@@ -3207,7 +3296,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         // `expire_sweep` only covers queued ops, so dispatched reads race the
         // radio against their own deadline; the winning core outcome is the
         // only caller result.
-        let result = match drive(
+        let result = match drive_link(
+            &self.inner,
+            peer_id,
+            "gatt.read",
             &ctl.ticket,
             window,
             self.inner
@@ -3228,6 +3320,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 if link_live {
                     Self::settle_gatt_success(&mut core, &operation, read, "gatt.read")
                 } else {
+                    // The OS reported the link lost: the same word every
+                    // host reports (owner decision, 5.0). A release the app
+                    // requested is `operation.disconnected`.
+                    let lost = core.connection_state(&peer_key) == Some(ConnectionState::Lost);
                     let mut out = batch();
                     let _ = settle_and_release(
                         &mut core,
@@ -3238,7 +3334,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                         &mut out,
                     );
                     Err(contract_error(
-                        BleErrorCode::OperationDisconnected,
+                        if lost {
+                            BleErrorCode::ConnectionLost
+                        } else {
+                            BleErrorCode::OperationDisconnected
+                        },
                         BleErrorDomain::Connection,
                         "gatt.read",
                     ))
@@ -3257,7 +3357,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             Wait::Cancelled => Err(self.settle_abort(&operation, "gatt.read").await),
         };
         drop_guard.defuse();
-        result.map_err(|error| classify(error, OpKind::Read, true))
+        let result = result.map_err(|error| classify(error, OpKind::Read, true));
+        self.name_link_end(&peer_key, result).await
     }
 
     /// Measure the OS single-write limit for one mode inside the operation
@@ -3334,7 +3435,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             (id, key)
         };
         let mut drop_guard = CancelOnDrop::armed(self, operation.clone(), DropCleanup::Op);
-        let result = match drive(
+        let result = match drive_link(
+            &self.inner,
+            peer_id,
+            "gatt.write",
             &ctl.ticket,
             window,
             self.inner.boundary.write_characteristic(
@@ -3366,7 +3470,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             Wait::Cancelled => Err(self.settle_abort(&operation, "gatt.write").await),
         };
         drop_guard.defuse();
-        result.map_err(classify_dispatched_write)
+        let result = result.map_err(classify_dispatched_write);
+        self.name_link_end(&peer_key, result).await
     }
 
     /// Descriptor read through a validated descriptor path.
@@ -3407,7 +3512,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             (id, key, descriptor, descriptor_occurrence)
         };
         let mut drop_guard = CancelOnDrop::armed(self, operation.clone(), DropCleanup::Op);
-        let result = match drive(
+        let result = match drive_link(
+            &self.inner,
+            peer_id,
+            "gatt.read-descriptor",
             &ctl.ticket,
             window,
             self.inner.boundary.read_descriptor(
@@ -3441,7 +3549,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             Wait::Cancelled => Err(self.settle_abort(&operation, "gatt.read-descriptor").await),
         };
         drop_guard.defuse();
-        result.map_err(|error| classify(error, OpKind::Read, true))
+        let result = result.map_err(|error| classify(error, OpKind::Read, true));
+        self.name_link_end(&peer_key, result).await
     }
 
     /// Descriptor write through a validated descriptor path. Direct CCCD
@@ -3499,7 +3608,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             (id, key, descriptor, descriptor_occurrence)
         };
         let mut drop_guard = CancelOnDrop::armed(self, operation.clone(), DropCleanup::Op);
-        let result = match drive(
+        let result = match drive_link(
+            &self.inner,
+            peer_id,
+            "gatt.write-descriptor",
             &ctl.ticket,
             window,
             self.inner.boundary.write_descriptor(
@@ -3534,7 +3646,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             Wait::Cancelled => Err(self.settle_abort(&operation, "gatt.write-descriptor").await),
         };
         drop_guard.defuse();
-        result.map_err(classify_dispatched_write)
+        let result = result.map_err(classify_dispatched_write);
+        self.name_link_end(&peer_key, result).await
     }
 
     /// `capability.limited` for a delivery requirement this subscription
@@ -3806,7 +3919,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 .copied()
                 .unwrap_or(ObservedDelivery::Unknown));
         }
-        let result = match drive(
+        let result = match drive_link(
+            &self.inner,
+            peer_id,
+            "gatt.subscribe",
             &ctl.ticket,
             window,
             self.inner
@@ -3864,7 +3980,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             }
         };
         drop_guard.defuse();
-        result.map_err(|error| classify(error, OpKind::Subscribe, true))
+        let result = result.map_err(|error| classify(error, OpKind::Subscribe, true));
+        self.name_link_end(&peer_key, result).await
     }
 
     /// The physical enable succeeded: settle the hub and our op. A late
@@ -4576,6 +4693,26 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             .map_err(DesktopError::from)
     }
 
+    /// One word per event (owner decision, 5.0): a link operation that
+    /// failed because the link is gone is `connection.lost`, unless the
+    /// app's own release was underway, which is `operation.disconnected`.
+    async fn name_link_end<T>(
+        &self,
+        peer_key: &str,
+        result: Result<T, DesktopError>,
+    ) -> Result<T, DesktopError> {
+        match result {
+            Err(error) if error.code() == BleErrorCode::ConnectionLost => {
+                let requested = matches!(
+                    self.inner.core.lock().await.connection_state(peer_key),
+                    Some(ConnectionState::Disconnecting | ConnectionState::Disconnected)
+                );
+                Err(error.named_for_requested_release(requested))
+            }
+            other => other,
+        }
+    }
+
     async fn known_peer_key(&self, peer_id: &str) -> Result<String, DesktopError> {
         self.inner
             .peers
@@ -4771,7 +4908,10 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                         reconcile_connected(&inner, &peer_id).await;
                     }
                     Some(RadioEvent::Disconnected(peer_id)) => {
-                        reconcile_disconnected(&inner, &peer_id).await;
+                        reconcile_disconnected(&inner, &peer_id, false).await;
+                    }
+                    Some(RadioEvent::Lost(peer_id)) => {
+                        reconcile_disconnected(&inner, &peer_id, true).await;
                     }
                     Some(RadioEvent::ServicesChanged(peer_id)) => {
                         services_changed_invalidated(&inner, &peer_id).await;
@@ -5315,10 +5455,15 @@ async fn reconcile_connected<B: RadioBoundary>(inner: &Arc<Inner<B>>, peer_id: &
 }
 
 /// The OS reported the link down (PR210-11). A pending release completes
-/// (`Released { requested: true }`, `Disconnected`); a live link is lost
-/// (`LinkLost`, `Lost`). A link already terminal is a stale event for an
-/// older generation and publishes nothing.
-async fn reconcile_disconnected<B: RadioBoundary>(inner: &Arc<Inner<B>>, peer_id: &str) {
+/// (`Released { requested: true }`, `Disconnected`) unless the OS reported
+/// the disconnect with an error (`errored`, [`RadioEvent::Lost`]); a live
+/// link, or an errored one, is lost (`LinkLost`, `Lost`). A link already
+/// terminal is a stale event for an older generation and publishes nothing.
+async fn reconcile_disconnected<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    peer_id: &str,
+    errored: bool,
+) {
     let peer_key = inner.peers.lock().await.get(peer_id).cloned();
     let Some(peer_key) = peer_key else {
         return;
@@ -5328,11 +5473,14 @@ async fn reconcile_disconnected<B: RadioBoundary>(inner: &Arc<Inner<B>>, peer_id
         let mut core = inner.core.lock().await;
         let generation = Generations::of(&core, &peer_key);
         let kind = match core.connection_state(&peer_key) {
-            Some(ConnectionState::Disconnecting) => core
+            Some(ConnectionState::Disconnecting) if !errored => core
                 .note_link_released(&peer_key)
                 .ok()
                 .map(|()| LifecycleKind::Released { requested: true }),
-            Some(ConnectionState::Connected | ConnectionState::Connecting) => {
+            // The OS said the link ended with an error: it was lost, not
+            // released, whether or not a release was pending.
+            Some(ConnectionState::Disconnecting)
+            | Some(ConnectionState::Connected | ConnectionState::Connecting) => {
                 let mut out = batch();
                 core.note_peer_loss(&peer_key, now_ms(), &mut out)
                     .ok()
@@ -5343,6 +5491,9 @@ async fn reconcile_disconnected<B: RadioBoundary>(inner: &Arc<Inner<B>>, peer_id
         kind.map(|kind| inner.stage_lifecycle(peer_id, &peer_key, generation, kind))
     };
     if let Some(event) = event {
+        // Only a transition of a live link ends its operations; a stale
+        // event for an older generation publishes nothing and ends nothing.
+        note_link_end(inner, peer_id);
         inner.signal(CentralSignal::Lifecycle(event));
     }
 }
@@ -8023,9 +8174,122 @@ mod adapter_tests {
         central.boundary().unblock_op(FaultOp::Read);
         let outcome = pending.await.expect("read task");
         let error = outcome.expect_err("disconnect wins over late radio success");
+        // Owner decision (5.0): the link was lost, so the read reports the
+        // same word as every other host.
+        assert!(
+            error.code_str() == "connection.lost" || error.code_str() == "gatt.stale-handle",
+            "lost or stale, got {}",
+            error.code_str()
+        );
+    }
+
+    /// Owner decision (5.0): the OS reports the link gone while an
+    /// operation waits on a radio that never answers (CoreBluetooth does not
+    /// call back a pending read at a disconnect). The central ends it at
+    /// once with `connection.lost`, as Android's stack does, instead of
+    /// leaving it to its deadline.
+    #[tokio::test]
+    async fn a_link_loss_ends_a_pending_operation_the_radio_never_answers() {
+        for (op, fault) in [("read", FaultOp::Read), ("discover", FaultOp::Discover)] {
+            let central = open().await;
+            let peer = format!("peer-hang-{op}");
+            ready_peer(&central, &peer, vec![hrm_service()]).await;
+            central.boundary().block_op(fault);
+            let worker = central.clone();
+            let target = peer.clone();
+            let pending = tokio::spawn(async move {
+                match op {
+                    "read" => worker
+                        .read(&target, &hrm_selector(0), OpControl::budget_ms(60_000))
+                        .await
+                        .map(|_| ()),
+                    _ => worker
+                        .discover(&target, "lease-a", OpControl::budget_ms(60_000))
+                        .await
+                        .map(|_| ()),
+                }
+            });
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            central
+                .boundary()
+                .push_event(RadioEvent::Lost(peer.clone()));
+            let error = tokio::time::timeout(Duration::from_secs(5), pending)
+                .await
+                .expect("ended by the loss, not the deadline")
+                .expect("task")
+                .expect_err("the link is gone");
+            assert_eq!(error.code_str(), "connection.lost", "{op}");
+            central.boundary().unblock_op(fault);
+        }
+    }
+
+    /// The app's own release ends a read waiting on a radio that never
+    /// answers: `operation.disconnected`, at once.
+    #[tokio::test]
+    async fn the_apps_release_ends_a_pending_operation_the_radio_never_answers() {
+        let central = open().await;
+        ready_peer(&central, "peer-hang-release", vec![hrm_service()]).await;
+        central.boundary().block_op(FaultOp::Read);
+        let worker = central.clone();
+        let pending = tokio::spawn(async move {
+            worker
+                .read(
+                    "peer-hang-release",
+                    &hrm_selector(0),
+                    OpControl::budget_ms(60_000),
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        central
+            .disconnect("peer-hang-release", "lease-a", OpControl::budget_ms(5000))
+            .await
+            .expect("release");
+        let error = tokio::time::timeout(Duration::from_secs(5), pending)
+            .await
+            .expect("ended by the release, not the deadline")
+            .expect("task")
+            .expect_err("released");
+        assert_eq!(error.code_str(), "operation.disconnected");
+        central.boundary().unblock_op(FaultOp::Read);
+    }
+
+    /// The app's own release cut the read off: the link did not drop, so
+    /// the read reports `operation.disconnected`, not a loss.
+    #[tokio::test]
+    async fn f03_requested_disconnect_during_read_is_operation_disconnected() {
+        let central = open().await;
+        ready_peer(&central, "peer-f03r", vec![hrm_service()]).await;
+        let selector = hrm_selector(0);
+        central.boundary().block_op(FaultOp::Read);
+        let reader = central.clone();
+        let pending = tokio::spawn(async move {
+            reader
+                .read("peer-f03r", &selector, OpControl::budget_ms(5000))
+                .await
+        });
+        for _ in 0..200 {
+            if !central
+                .with_core(|core| core.live_operation_ids())
+                .await
+                .is_empty()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        central
+            .disconnect("peer-f03r", "lease-a", OpControl::budget_ms(5000))
+            .await
+            .expect("release");
+        central.boundary().unblock_op(FaultOp::Read);
+        let error = pending
+            .await
+            .expect("read task")
+            .expect_err("the release wins over late radio success");
         assert!(
             error.code_str() == "operation.disconnected" || error.code_str() == "gatt.stale-handle",
-            "disconnect or stale, got {}",
+            "released or stale, got {}",
             error.code_str()
         );
     }

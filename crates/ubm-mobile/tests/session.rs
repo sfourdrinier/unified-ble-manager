@@ -2182,23 +2182,59 @@ fn gatt_failure(status: i32) -> PlatformFailure {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_android_gatt_failure_is_platform_failure_with_the_android_status() {
-    let envelope = failed_op(MobilePlatform::Android, gatt_failure(5), "gatt.write").await;
+    let refused = PlatformFailure {
+        gatt_status: Some(3),
+        ..PlatformFailure::new(FailureKind::GattStatus, "GATT_WRITE_NOT_PERMITTED")
+    };
+    let envelope = failed_op(MobilePlatform::Android, refused, "gatt.write").await;
     assert_eq!(envelope["error"]["code"], "platform.failure");
     assert_eq!(envelope["error"]["domain"], "platform");
     assert_eq!(
         envelope["error"]["platform"],
         json!({"domain": "android", "code": "writeFailed",
-               "message": "GATT_INSUFFICIENT_AUTHENTICATION",
-               "metadata": {"androidGattStatus": 5}})
+               "message": "GATT_WRITE_NOT_PERMITTED",
+               "metadata": {"androidGattStatus": 3}})
     );
     assert_eq!(envelope["commit"], "uncertain");
-    let read = failed_op(MobilePlatform::Android, gatt_failure(137), "gatt.read").await;
-    assert_eq!(read["error"]["code"], "platform.failure");
-    assert_eq!(read["error"]["platform"]["code"], "readFailed");
+}
+
+/// Owner decision (5.0): a refusal for lack of authentication, authorization
+/// or encryption is `platform.security` (recovery: pair) on every host that
+/// can tell, the platform's answer kept — Android GATT 5/8/12/15/137 and
+/// Apple `CBATTErrorDomain` 5/8/12/15 alike.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_security_refusal_is_platform_security_on_both_platforms() {
+    for status in [5, 8, 12, 15, 137] {
+        let read = failed_op(MobilePlatform::Android, gatt_failure(status), "gatt.read").await;
+        assert_eq!(
+            read["error"]["code"], "platform.security",
+            "android {status}"
+        );
+        assert_eq!(read["error"]["platform"]["code"], "readFailed");
+        assert_eq!(
+            read["error"]["platform"]["metadata"]["androidGattStatus"],
+            status
+        );
+    }
+    let write = failed_op(MobilePlatform::Android, gatt_failure(5), "gatt.write").await;
+    assert_eq!(write["error"]["code"], "platform.security");
     assert_eq!(
-        read["error"]["platform"]["metadata"]["androidGattStatus"],
-        137
+        write["commit"], "uncertain",
+        "a dispatched write stays uncertain"
     );
+    assert_eq!(write["retryability"], "never");
+    for code in [5, 15] {
+        let att = PlatformFailure {
+            gatt_status: Some(code),
+            native_domain: Some("CBATTErrorDomain".to_owned()),
+            native_code: Some(i64::from(code)),
+            ..PlatformFailure::new(FailureKind::GattStatus, "Authentication is insufficient.")
+        };
+        let read = failed_op(MobilePlatform::Apple, att, "gatt.read").await;
+        assert_eq!(read["error"]["code"], "platform.security", "apple {code}");
+        assert_eq!(read["error"]["platform"]["domain"], "CBATTErrorDomain");
+        assert_eq!(read["error"]["platform"]["code"], code.to_string());
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2351,24 +2387,60 @@ async fn a_user_or_os_wait_with_a_budget_ends_at_that_budget() {
     }
 }
 
-/// Finding 132 on Apple: an operation pending at a disconnect fails with the
-/// owned radio's NSError (1020, or CoreBluetooth's own), which legacy
-/// reported as `platform.failure` with that domain and code — never
-/// re-labelled as a link loss.
+/// Every platform reports one word for one fact (owner decision, 5.0,
+/// superseding finding 132's Apple identity rule): an operation pending at a
+/// disconnect on Apple fails `connection.lost`, as on Android, with the
+/// NSError the platform failed it with (owned radio 1016/1020, CoreBluetooth
+/// `peripheralDisconnected` 7) kept as the platform detail.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_apple_operation_pending_at_a_disconnect_keeps_its_nserror_identity() {
-    let disconnected = PlatformFailure {
-        native_domain: Some("com.sfourdrinier.unifiedblemanager.corebluetooth".to_owned()),
-        native_code: Some(1020),
-        ..PlatformFailure::new(FailureKind::NotConnected, "CoreBluetooth disconnected")
-    };
-    let envelope = failed_op(MobilePlatform::Apple, disconnected, "gatt.read").await;
-    assert_eq!(envelope["error"]["code"], "platform.failure");
-    assert_eq!(
-        envelope["error"]["platform"]["domain"],
-        "com.sfourdrinier.unifiedblemanager.corebluetooth"
-    );
-    assert_eq!(envelope["error"]["platform"]["code"], "1020");
+async fn an_apple_operation_pending_at_a_disconnect_is_connection_lost_with_its_nserror() {
+    for (domain, code, op) in [
+        (
+            "com.sfourdrinier.unifiedblemanager.corebluetooth",
+            1020,
+            "gatt.read",
+        ),
+        (
+            "com.sfourdrinier.unifiedblemanager.corebluetooth",
+            1016,
+            "gatt.discover",
+        ),
+        ("CBErrorDomain", 7, "gatt.discover"),
+    ] {
+        let disconnected = PlatformFailure {
+            native_domain: Some(domain.to_owned()),
+            native_code: Some(code),
+            ..PlatformFailure::new(FailureKind::NotConnected, "CoreBluetooth disconnected")
+        };
+        let envelope = if op == "gatt.discover" {
+            let radio = Scripted::new(Box::new(move |request| match request {
+                ubm_mobile::RadioRequest::Discover { .. } => {
+                    Reply::Now(RadioCompletion::Failed(disconnected.clone()))
+                }
+                other => polar_responder(other),
+            }));
+            let (host, _) = open(&radio, MobilePlatform::Apple).await;
+            let session = host.open_session("rn").unwrap();
+            connect(&session, "c").await;
+            parse(
+                &call(
+                    &session,
+                    "gatt.discover",
+                    &json!({"peerId": POLAR, "lease": "lease-1", "operationId": "d"}).to_string(),
+                )
+                .await,
+            )
+        } else {
+            failed_op(MobilePlatform::Apple, disconnected, op).await
+        };
+        assert_eq!(
+            envelope["error"]["code"], "connection.lost",
+            "{domain}#{code} {op}"
+        );
+        assert_eq!(envelope["error"]["domain"], "connection");
+        assert_eq!(envelope["error"]["platform"]["domain"], domain);
+        assert_eq!(envelope["error"]["platform"]["code"], code.to_string());
+    }
 }
 
 // -- 133: a named Android native code travels to the Expo layer -------------
@@ -2508,7 +2580,10 @@ async fn a_transient_connect_failure_is_caller_decides_on_the_wire() {
             MobilePlatform::Android,
             PlatformFailure {
                 gatt_status: Some(133),
-                ..PlatformFailure::new(FailureKind::GattStatus, "Android GATT connection failed with status 133")
+                ..PlatformFailure::new(
+                    FailureKind::GattStatus,
+                    "Android GATT connection failed with status 133",
+                )
             },
             "caller-decides",
         ),
@@ -2516,7 +2591,10 @@ async fn a_transient_connect_failure_is_caller_decides_on_the_wire() {
             MobilePlatform::Android,
             PlatformFailure {
                 gatt_status: Some(62),
-                ..PlatformFailure::new(FailureKind::GattStatus, "Android GATT connection failed with status 62")
+                ..PlatformFailure::new(
+                    FailureKind::GattStatus,
+                    "Android GATT connection failed with status 62",
+                )
             },
             "caller-decides",
         ),
@@ -2542,7 +2620,10 @@ async fn a_transient_connect_failure_is_caller_decides_on_the_wire() {
             PlatformFailure {
                 native_domain: Some("CBErrorDomain".to_owned()),
                 native_code: Some(6),
-                ..PlatformFailure::new(FailureKind::Platform, "CBErrorDomain#6: The connection has timed out")
+                ..PlatformFailure::new(
+                    FailureKind::Platform,
+                    "CBErrorDomain#6: The connection has timed out",
+                )
             },
             "caller-decides",
         ),
@@ -2551,7 +2632,10 @@ async fn a_transient_connect_failure_is_caller_decides_on_the_wire() {
             PlatformFailure {
                 native_domain: Some("CBErrorDomain".to_owned()),
                 native_code: Some(14),
-                ..PlatformFailure::new(FailureKind::Platform, "CBErrorDomain#14: Peer removed pairing information")
+                ..PlatformFailure::new(
+                    FailureKind::Platform,
+                    "CBErrorDomain#14: Peer removed pairing information",
+                )
             },
             "never",
         ),
@@ -2576,8 +2660,143 @@ async fn a_transient_connect_failure_is_caller_decides_on_the_wire() {
         let envelope = parse(&text);
         assert_eq!(envelope["ok"], false, "{text}");
         assert_eq!(envelope["retryability"], retryability, "{answer:?}: {text}");
-        assert_eq!(envelope["error"]["code"], "platform.failure");
-        assert!(envelope["error"]["platform"].is_object(), "the platform's answer is kept");
-        assert_eq!(radio.count(RequestKind::Connect), 1, "the owner never retries");
+        assert_eq!(
+            envelope["error"]["code"], "connection.failed",
+            "one word for a failed connect on every host"
+        );
+        assert!(
+            envelope["error"]["platform"].is_object(),
+            "the platform's answer is kept"
+        );
+        assert_eq!(
+            radio.count(RequestKind::Connect),
+            1,
+            "the owner never retries"
+        );
+    }
+}
+
+/// Physical run (Samsung, Polar H10): the link dropped with GATT status 22
+/// while a release was pending, and the lifecycle said the app released
+/// it. A disconnect the platform reports with an error status (Android
+/// non-zero GATT status, a CoreBluetooth disconnect `NSError`) is a loss
+/// even when a release was requested; a clean disconnect (status 0, or no
+/// error) confirms the release.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_errored_disconnect_during_a_release_is_a_loss() {
+    for (platform, status, reason) in [
+        (MobilePlatform::Android, Some(22), "peer"),
+        (MobilePlatform::Apple, Some(7), "peer"),
+        (MobilePlatform::Android, Some(0), "local"),
+        (MobilePlatform::Apple, None, "local"),
+    ] {
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, platform).await;
+        let session = host.open_session("rn").unwrap();
+        connect(&session, "c").await;
+        radio.set_responder(Box::new(|request| match request {
+            ubm_mobile::RadioRequest::Disconnect { .. } => Reply::Hold,
+            other => polar_responder(other),
+        }));
+        let releasing = session.clone();
+        let release = tokio::spawn(async move {
+            call(
+                &releasing,
+                "connection.disconnect",
+                &json!({"peerId": POLAR, "lease": "lease-1", "operationId": "d"}).to_string(),
+            )
+            .await
+        });
+        for _ in 0..3000 {
+            if !radio.held_of(RequestKind::Disconnect).is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let held = radio.held_of(RequestKind::Disconnect);
+        assert_eq!(held.len(), 1, "the release is pending");
+        host.ingest(RadioIngress::Connection {
+            peer_id: POLAR.to_owned(),
+            connected: false,
+            status,
+        });
+        let records = drain_until(&session, |r| !of_type(r, "link").is_empty()).await;
+        assert_eq!(
+            of_type(&records, "link")[0]["reason"],
+            reason,
+            "{platform:?} status {status:?}"
+        );
+        radio.answer(held[0], RadioCompletion::Unit);
+        ok(&release.await.unwrap());
+    }
+}
+
+/// Owner decision (5.0): one word per event. An operation the platform
+/// fails because the link is gone is `connection.lost`; the same failure
+/// while the app's own release is underway (Android fails every pending
+/// operation when the app disconnects) is `operation.disconnected`, the
+/// word for "your release cut this off", on every host.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_operation_cut_off_by_the_apps_release_is_operation_disconnected() {
+    for platform in [MobilePlatform::Android, MobilePlatform::Apple] {
+        let radio = Scripted::new(failing(PlatformFailure::new(
+            FailureKind::NotConnected,
+            "link down",
+        )));
+        let (_host, session) = discovered_session(&radio, platform).await;
+        radio.set_responder(Box::new(|request| match request {
+            ubm_mobile::RadioRequest::Read { .. } | ubm_mobile::RadioRequest::Disconnect { .. } => {
+                Reply::Hold
+            }
+            other => polar_responder(other),
+        }));
+        let reader = session.clone();
+        let read = tokio::spawn(async move {
+            call(
+                &reader,
+                "gatt.read",
+                &json!({"peerId": POLAR, "selector": selector(), "operationId": "r"}).to_string(),
+            )
+            .await
+        });
+        for _ in 0..3000 {
+            if !radio.held_of(RequestKind::Read).is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let releasing = session.clone();
+        let release = tokio::spawn(async move {
+            call(
+                &releasing,
+                "connection.disconnect",
+                &json!({"peerId": POLAR, "lease": "lease-1", "operationId": "x"}).to_string(),
+            )
+            .await
+        });
+        for _ in 0..3000 {
+            if !radio.held_of(RequestKind::Disconnect).is_empty()
+                && !radio.held_of(RequestKind::Read).is_empty()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let read_id = radio.held_of(RequestKind::Read)[0];
+        radio.answer(
+            read_id,
+            RadioCompletion::Failed(PlatformFailure::new(
+                FailureKind::NotConnected,
+                "app disconnect",
+            )),
+        );
+        let (error, _) = failure(&read.await.unwrap());
+        // The owner ends the read when the release starts (as Android's
+        // stack does), so the platform's late answer finds it settled.
+        assert_eq!(error["code"], "operation.disconnected", "{platform:?}");
+        assert_eq!(error["domain"], "connection");
+        let disconnect_id = radio.held_of(RequestKind::Disconnect)[0];
+        radio.answer(disconnect_id, RadioCompletion::Unit);
+        ok(&release.await.unwrap());
     }
 }

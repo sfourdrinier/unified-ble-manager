@@ -16,12 +16,12 @@ retained, checksum-bound records described in [`evidence/v1/`](../../evidence/).
 | Path | What it is |
 | --- | --- |
 | `protocol.ts` | Wire contract `ubm-test-driver/1`, loaded by every host and by the server |
-| `scenario-core.ts` | `ScenarioController`, `ScenarioRegistry`, typed command arguments, console runtime |
+| `scenario-core.ts` | `ScenarioController`, `ScenarioRegistry` (including `stopAll`), typed command arguments, console runtime |
 | `scenarios/*.ts` | `h10-stream`, `link-loss`, `device-info`, `mtu`, `scan-details`, `ecg`, `background` |
 | `polar-pmd.ts` | Polar PMD (ECG) framing, from Polar's BLE SDK |
 | `host.ts` | The host-adapter seam (`DriverHost`), peer acquisition, adapter readiness, capability lease |
 | `user-gesture.ts` | The explicit pending-user-gesture gate (Web Bluetooth chooser) |
-| `remote-channel.ts`, `create-driver.ts`, `driver-url.ts` | Host → server channel, registry factory, URL rules |
+| `remote-channel.ts`, `create-driver.ts`, `driver-url.ts` | Host → server channel, registry factory, `disposeDriver` (hot-reload teardown), URL rules |
 | `browser/` | Shared by the Web, Tauri and Electron renderer hosts: WebSocket, visibility app state, the scenario panel |
 | `server/` | Control server and CLI (`cli.mjs`), hub, sequences |
 
@@ -42,7 +42,9 @@ JSON text frames only. A host connects to `ws://<server>:8795/host` and sends
 `hello`: `protocol`, `host` (`expo` | `web` | `tauri` | `electron` | `node`),
 `platform` (`android` | `ios` | `macos` | `windows` | `linux` | `unknown`),
 `backend` (the stack the adapter built, for example `node/corebluetooth`),
-`model`, `osVersion`, `appBuild` and `scenarios`. The server answers with a
+`model`, `osVersion`, `appBuild` and `scenarios`. Every command in `scenarios`
+says whether it acquires a peer and takes the `device` argument
+(`acceptsDevice: boolean`); a hello whose commands omit it is refused. The server answers with a
 `welcome` carrying the `hostId` (`<host>-<platform>-<model>`). Events and
 snapshots carry `host: "<host>/<platform>"`.
 
@@ -70,10 +72,61 @@ Where the host has a gesture gate (Web), a chooser run first enters the phase
 (`user-gesture-received`). A `stop`, or 120 s without a click
 (`host.user-gesture-timeout`), aborts the run. Nothing synthesizes the gesture.
 
-Each run emits `peer-acquisition {via}`. When a host cannot do something, the
+Each run emits `peer-acquisition {via, device}`. When a host cannot do something, the
 failure is the library's own answer: a typed error such as
 `capability.unsupported` from the call itself, or the capability descriptor for
 the background lease. It is never a skip.
+
+### Choosing the strap: the `device` argument
+
+Every peer-acquiring command (`h10-stream start`, `link-loss start`,
+`device-info read`, `mtu probe`, `ecg start`, `background start`) takes an
+optional `device` argument, so two hosts can each run against their own strap
+at the same time:
+
+| `device` | `find()` query (`names`) | Web chooser filter |
+| --- | --- | --- |
+| absent | `prefixes: ["Polar H10"]` (the first H10 found, as before) | `localNamePrefix: "Polar H10"` |
+| `"Polar H10 E997042F"` (exact advertised name) | `exact: ["Polar H10 E997042F"]` | `localNamePrefix: "Polar H10 E997042F"`, then the pick must be exactly that name or the run fails with `scenario.device-mismatch` |
+| `"Polar H10 E99*"` (prefix, trailing `*`) | `prefixes: ["Polar H10 E99"]` | `localNamePrefix: "Polar H10 E99"` |
+
+Web Bluetooth filters names by prefix only, which is why an exact name is
+checked after the pick. The acquired peer is reported everywhere as
+`peer: {id, name, query: {match, name}}`: in the scenario snapshot (next to
+`device`, the name or id), in the `found` event, and in every command result:
+`h10-stream`/`link-loss`/`background` `start` add `peer`; `device-info read`
+returns `{peer, reads}`, `mtu probe` `{peer, probes}` and `ecg start`
+`{peer, mtu, features, settings}`. `stop` takes no arguments.
+
+### Connect: one explicit retry for a transient failure
+
+A single-shot connect (`device-info`, `mtu`, `ecg`, and `h10-stream` or
+`background` without `autoReconnect`) that fails with a `BleError` whose
+`retryability` is `caller-decides`, such as an Android GATT 133 while the link
+is being established, is retried exactly once. Before the retry the run emits
+`connect-retry {attempt: 2, maxAttempts: 2, failedAfterMs, error}` with the
+first error; `connected` then carries the `attempt` that succeeded. The
+decision reads `retryability` from the library's `BleError`, never from the
+error code or platform detail. A `never` error, a second failure, or a run
+stopped meanwhile ends the run with that error. The library itself does not
+retry. Supervised runs (`link-loss`, `autoReconnect: true`) keep the
+connection supervisor's own retry policy.
+
+### Hot reload never orphans a run
+
+`ScenarioRegistry.stopAll()` stops every scenario at once and waits for each
+release. It stops all of them even when one fails, then rejects with
+`scenario.stop-all-failed` carrying the whole report (every release that did
+not report `released`, and every stop that threw), so a cleanup failure is
+never swallowed. `disposeDriver()` stops the remote channel first (no new
+command can start a run), then calls `stopAll()` and logs the report. Each
+host calls it before its driver module is replaced:
+
+- Expo: `module.hot?.dispose(...)` in `app-driver.ts` (Fast Refresh). Metro
+  does not await the callback, so a failure is also written with
+  `console.error`.
+- Web, Tauri and the Electron renderer: `import.meta.hot?.dispose(...)` in the
+  Vite entry; Vite awaits the returned promise.
 
 ## Launching the control server
 
@@ -84,17 +137,41 @@ node examples-shared/driver/server/cli.mjs serve            # listens on 0.0.0.0
 node examples-shared/driver/server/cli.mjs hosts
 node examples-shared/driver/server/cli.mjs describe all
 node examples-shared/driver/server/cli.mjs run all h10-stream start '{"autoReconnect":true}'
+node examples-shared/driver/server/cli.mjs run android h10-stream start '{"device":"Polar H10 E997042F"}'
 node examples-shared/driver/server/cli.mjs run macos mtu probe
 node examples-shared/driver/server/cli.mjs run expo-android-google-pixel-9 ecg stop
 node examples-shared/driver/server/cli.mjs sequence examples-shared/driver/server/sequences/h10-stream.json --out /tmp/h10.json
+node examples-shared/driver/server/cli.mjs sequence examples-shared/driver/server/sequences/parallel-two-straps.json
 ```
 
 `<target>` is `all`, a host id from `hosts`, a host kind
 (`expo` | `web` | `tauri` | `electron` | `node`) or a platform
 (`android` | `ios` | `macos` | `windows` | `linux`). A sequence runs on every
-targeted host in parallel. It ends with a per-step comparison table that marks
-the steps whose outcome differs between hosts. `npm run driver -- <command>` in
-`example-expo` runs the same CLI.
+targeted host in parallel. It ends with a side-by-side table: a `device` row
+with each host's strap binding, then per step each host's outcome and the
+device that step reported; `*` marks the steps whose outcome differs between
+hosts. `npm run driver -- <command>` in `example-expo` runs the same CLI.
+
+### One strap per host in a sequence
+
+A sequence may set `target` to a list (`["android", "ios"]`; on the command
+line `--target android,ios`) and a `devices` map from a host id, host kind or
+platform to a device name (exact, or a prefix ending in `*`):
+
+```json
+{ "target": ["android", "ios"], "devices": { "android": "Polar H10 E997042F", "ios": "Polar H10 E9B93D29" } }
+```
+
+For each host the most specific key wins: host id, then host kind, then
+platform. The server adds that `device` to every `run` step whose command the
+host describes as `acceptsDevice`, unless the step sets `args.device` itself
+(the step wins). Commands without a device (`stop`, `force-disconnect`) are
+left alone. When a sequence has `devices`, every selected host must resolve to
+one: an unbound host fails the sequence with `sequence.device-unbound` before
+anything runs, rather than letting it take whichever strap it finds first.
+`sequences/parallel-two-straps.json` runs `h10-stream`, `device-info`, `mtu`,
+`ecg` and `link-loss` on an Android and an iOS host at once, one strap each;
+edit its `devices` keys for other hosts.
 
 ## Launching each host
 
@@ -203,9 +280,11 @@ pnpm --dir example-expo exec tsc --noEmit
 The shared tests cover the protocol, the registry and scenario core, the remote
 channel, Polar PMD parsing, the scenarios against a recording manager double,
 the user-gesture gate, the browser host facts and the server. The server tests
-cover the hub, the CLI client, sequences and the WebSocket. The scenario tests
-pin which call each scenario makes: scan versus chooser, the gesture gate, the
-ECG order, and the background lease and app state. Each host also has an
+cover the hub, the CLI client, sequences (including the per-target `devices`
+binding) and the WebSocket. The scenario tests pin which call each scenario
+makes: scan versus chooser, the gesture gate, the ECG order, the background
+lease and app state, the `device` query and chooser filter, the single
+`connect-retry`, and `stopAll`/`disposeDriver`. Each host also has an
 adapter test:
 
 - Expo: Metro resolution;

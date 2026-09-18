@@ -342,7 +342,17 @@ impl WithOs for DesktopError {
         // BlueZ identity (`normalizeBluezFailure`): `platform.failure` with
         // a `bluez-dbus` answer, `org.bluez.Error.Failed` when D-Bus gave
         // no name.
-        let platform = platform_detail(cause).or_else(|| {
+        // btleplug's own `NotConnected` is its answer where the OS gave none
+        // (on BlueZ it keeps the legacy `org.bluez.Error.Failed`, message
+        // `Not connected`): the link is gone (owner decision, 5.0; see
+        // `classify_link_loss`).
+        let not_connected = (!cfg!(target_os = "linux")
+            && matches!(cause, btleplug::Error::NotConnected))
+        .then(|| {
+            crate::errors::PlatformDetail::new("btleplug", "not-connected")
+                .with_message(cause.to_string())
+        });
+        let platform = platform_detail(cause).or(not_connected).or_else(|| {
             cfg!(target_os = "linux").then(|| {
                 crate::errors::PlatformDetail::new("bluez-dbus", "org.bluez.Error.Failed")
                     .with_message(cause.to_string())
@@ -3653,7 +3663,7 @@ mod tests {
             assert_eq!(error.operation(), "gatt.read");
             assert_eq!(error.platform(), Some(&expected));
         }
-        let local = btleplug::Error::NotConnected;
+        let local = btleplug::Error::RuntimeError("local".to_owned());
         let error = crate::errors::DesktopError::read_failed(local.to_string()).with_os(&local);
         if cfg!(target_os = "linux") {
             // Finding 124: every BlueZ failure takes the legacy identity.
@@ -3672,6 +3682,64 @@ mod tests {
                 "a local failure has no platform answer"
             );
         }
+    }
+
+    /// Owner decision (5.0): every desktop radio's link-loss answer is one
+    /// the central recognizes (`classify_link_loss`), so an operation on a
+    /// lost link is `connection.lost` on every host, as on Android, with the
+    /// platform's answer kept (btleplug's own `NotConnected` included). A
+    /// connect keeps its identity.
+    #[test]
+    fn a_link_operation_on_a_lost_link_is_connection_lost() {
+        use super::WithOs;
+        use crate::errors::PlatformDetail;
+        let causes = [
+            btleplug::Error::NotConnected,
+            btleplug::Error::Platform(
+                btleplug::PlatformError::new(
+                    "corebluetooth",
+                    "7",
+                    "The specified device has disconnected from us.",
+                )
+                .with("nsErrorDomain", "CBErrorDomain"),
+            ),
+            btleplug::Error::Platform(
+                btleplug::PlatformError::new("winrt", "gatt-status", "read failed")
+                    .with("gattStatus", "unreachable"),
+            ),
+            btleplug::Error::Platform(btleplug::PlatformError::bluez_dbus(
+                Some("org.bluez.Error.Failed"),
+                Some("Not connected"),
+            )),
+        ];
+        for cause in &causes {
+            let read = crate::errors::DesktopError::read_failed(cause.to_string())
+                .with_os(cause)
+                .classify_link_loss();
+            assert_eq!(read.code_str(), "connection.lost", "{cause:?}");
+            assert_eq!(read.domain().as_str(), "connection");
+            assert_eq!(read.operation(), "gatt.read");
+            assert!(read.platform().is_some(), "the platform's answer is kept");
+        }
+        let local = crate::errors::DesktopError::read_failed("x")
+            .with_os(&btleplug::Error::NotConnected)
+            .classify_link_loss();
+        let expected = if cfg!(target_os = "linux") {
+            PlatformDetail::new("bluez-dbus", "org.bluez.Error.Failed")
+                .with_message("Not connected")
+        } else {
+            PlatformDetail::new("btleplug", "not-connected").with_message("Not connected")
+        };
+        assert_eq!(local.platform(), Some(&expected));
+        assert_eq!(local.code_str(), "connection.lost");
+        let connect = crate::errors::DesktopError::connection_failed("x")
+            .with_os(&btleplug::Error::NotConnected)
+            .classify_link_loss();
+        assert_ne!(
+            connect.code_str(),
+            "connection.lost",
+            "a connect keeps its identity"
+        );
     }
 
     /// Finding 97: an MTU BlueZ reports bounds commands; an MTU it

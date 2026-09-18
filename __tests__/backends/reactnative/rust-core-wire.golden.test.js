@@ -90,7 +90,7 @@ describe('ubm-mobile-wire/1 golden vectors (Rust-generated)', () => {
     const envelope = ok(wire.parseInvokeEnvelope(transient.envelope, 'connection.connect'), 'transient connect')
     const error = wire.failureEnvelopeError(envelope)
     expect(error.normalized).toMatchObject({
-      code: 'platform.failure',
+      code: 'connection.failed',
       operation: 'connection.connect',
       retryability: 'caller-decides',
       platform: { domain: 'android', code: 'connectionFailed', metadata: { androidGattStatus: 133 } }

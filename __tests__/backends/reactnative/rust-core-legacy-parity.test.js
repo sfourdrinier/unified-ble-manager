@@ -90,8 +90,8 @@ afterEach(() => {
 const FIVE_ZERO_STATES = Object.freeze({ 'gatt:maximum-write-length': 'limited' })
 
 describe.each([
-  ['android', ['security:cancel-pairing']],
-  ['apple', []]
+  ['android', ['discovery:continuous-scan', 'security:cancel-pairing']],
+  ['apple', ['discovery:continuous-scan']]
 ])('%s: the Rust route registers every legacy capability in the same state', (platform, extras) => {
   test('feature registry parity', async () => {
     const legacy = await legacyBackend(platform)
@@ -123,6 +123,24 @@ describe.each([
     }
     for (const method of legacyPeers) expect(typeof backend.peers[method]).toBe('function')
     expect(backend.security !== undefined).toBe(legacySecurity)
+    await manager.destroy()
+  })
+})
+
+// Physical run (Samsung, Expo Android): the manager reported
+// `discovery:continuous-scan` unsupported, so `discovery.kind` was
+// `system-chooser` and a driver that read the capability called choose(),
+// while find() scanned fine. The Rust owner runs `scan.start` on both mobile
+// platforms: the capability is reported where it is true (legacy React
+// Native never registered it — a 4.x under-report, fixed in 5.0), and the
+// chooser the RN route does not implement stays unsupported.
+describe.each(['android', 'apple'])('%s: discovery capabilities are reported truthfully', platform => {
+  test('continuous scan is supported, the system chooser is not', async () => {
+    const { manager, backend } = await rustManager(platform)
+    const states = registrationStates(backend.features)
+    expect(states['discovery:continuous-scan']).toBe('limited')
+    expect(manager.supports('discovery:continuous-scan')).toBe(true)
+    expect(manager.supports('discovery:system-chooser')).toBe(false)
     await manager.destroy()
   })
 })

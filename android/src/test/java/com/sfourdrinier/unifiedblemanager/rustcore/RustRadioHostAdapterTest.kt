@@ -130,6 +130,23 @@ class RustRadioHostAdapterTest {
     assertEquals(listOf("failure:1:gatt-status:133"), core.calls)
   }
 
+  /**
+   * Owner decision (5.0): a connect whose link Android could not establish
+   * (GATT 133, HCI 0x3E = 62) crosses to Rust with its exact status, which
+   * Rust reports as `caller-decides`; the adapter never retries it.
+   */
+  @Test
+  fun aTransientConnectFailureCrossesWithItsStatusAndIsNeverRetried() {
+    for ((requestId, status) in listOf(1L to 133, 2L to 62)) {
+      adapter.connect(requestId, peer, false, NO_PHY)
+      events().onConnection(peer, false, status)
+      assertEquals(listOf("failure:$requestId:gatt-status:$status"), core.calls)
+      assertEquals(1, radio.calls.count { it.startsWith("connect:") })
+      core.calls.clear()
+      radio.calls.clear()
+    }
+  }
+
   @Test
   fun connectToALiveLinkAnswersWithoutASecondConnectGatt() {
     connect()

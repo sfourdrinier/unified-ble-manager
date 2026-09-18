@@ -555,7 +555,12 @@ backend generation and an unrepeatable dispatch epoch.
 A failure reports whether the operation may be repeated as `retryability`, and
 that is the operation's own answer, not something derived from the error code.
 `caller-decides` means nothing was committed: the operation never reached the
-radio, or it commits nothing (a read). An aborted or timed-out operation that
+radio, or it commits nothing (a read). A connect whose link the platform could
+not establish (Android GATT 133/62/147, CoreBluetooth `connectionTimeout`/
+`connectionFailed`, WinRT `Unreachable`, BlueZ `Failed`/
+`ConnectionAttemptFailed`, Web `NetworkError`) is `caller-decides` on every
+backend with the platform's answer kept; no backend retries it itself (see
+[`CONNECTION_MANAGER.md`](CONNECTION_MANAGER.md)). An aborted or timed-out operation that
 was dispatched and may already have committed at the peripheral (a write, a
 descriptor write) is `never`, with commit state `unknown`. The public
 `BleError` carries the same `retryability`, and its `recovery` follows it: an
@@ -631,6 +636,37 @@ add namespaced subcodes without changing a base meaning.
 | capability | `capability.unsupported`, `capability.unavailable`, `capability.limited` |
 | background | `background.terminated` |
 | platform | `platform.failure`, `platform.security`, `platform.transport` |
+
+### One name per physical event (5.0)
+
+The same physical event carries the same public name on every backend (React
+Native Android and iOS; Node, Electron and Tauri on macOS, Windows and Linux;
+Web), and the connection supervisor makes the same decision for it. Android
+is the reference wherever a platform can do the same; a backend listed under
+"Differs" genuinely cannot tell, and says why. The platform's own answer
+(GATT status, `NSError`, HRESULT, D-Bus error) stays in the error's
+`platform` detail. `connection.lost` and `operation.disconnected` name
+different events: the link went away, versus the app's own release cut the
+operation off. The table is generated from
+`src/backend-contract/event-vocabulary.ts` and pinned by
+`__tests__/event-vocabulary.test.js`; the Rust mapping tests read the same
+table (`crates/ubm-desktop/tests/fixtures/event-vocabulary.json`).
+
+<!-- EVENT-VOCABULARY:BEGIN (generated from src/backend-contract/event-vocabulary.ts) -->
+| Physical event | Error code | Retryability | Lifecycle `current` / `cause` | Stream terminal | Supervisor (context → decision) | Differs |
+| --- | --- | --- | --- | --- | --- | --- |
+| `link-lost`: The link dropped while idle: the peer went away or out of range, the remote side terminated, or the supervision timeout expired. | — | — | `lost` / `peer-link-loss` | `connection-lost` | lifecycle → reconnect | none |
+| `link-lost-during-operation`: The link dropped while an operation (discovery, read, write, subscribe) was pending. The operation ends at once, even when the radio never answers it. | `connection.lost` | `never` | `lost` / `peer-link-loss` | `connection-lost` | configure → reconnect | none |
+| `requested-disconnect`: The app released or disconnected the link. A supervisor whose link the app released reconnects. | — | — | `disconnected` / `requested-disconnect` | `owner-released` | lifecycle → reconnect | none |
+| `requested-disconnect-during-operation`: The app's own release cut off a pending operation. | `operation.disconnected` | `never` | `disconnected` / `requested-disconnect` | `owner-released` | configure → stop | none |
+| `adapter-loss`: Bluetooth was turned off, reset, removed or revoked while a link was up. | — | — | `lost` / `adapter-loss` | `source-failed` | lifecycle → wait-for-adapter | none |
+| `adapter-loss-during-operation`: The adapter went away while an operation was pending. | `operation.reset` | `never` | `lost` / `adapter-loss` | `source-failed` | configure → wait-for-adapter | none |
+| `connect-not-established`: The platform could not establish the link (Android GATT 133/62/147, CoreBluetooth connectionFailed/connectionTimeout, WinRT Unreachable, BlueZ Failed/ConnectionAttemptFailed, Web NetworkError). Nothing was committed; the library never retries it itself. | `connection.failed` | `caller-decides` | — | — | connect → reconnect | none |
+| `peer-not-found`: The peer was never observed (or chosen, on Web), so there is nothing to connect to. | `peer.not-found` | `never` | — | — | connect → stop | none |
+| `security-refused`: The peer refused an operation for lack of authentication, authorization or encryption (ATT 0x05/0x08/0x0C/0x0F, Android 137, CoreBluetooth peerRemovedPairingInformation/encryptionTimedOut, BlueZ NotAuthorized/"Not paired", Web SecurityError). Recovery: pair or repair. | `platform.security` | `never` | — | — | configure → stop | desktop-windows: error `gatt.read-failed` — WinRT reports GattCommunicationStatus ProtocolError without the ATT error through the radio, so an authentication refusal cannot be told from any other protocol error; the platform detail says protocol-error (writes report gatt.write-failed). |
+| `operation-timed-out`: The operation's deadline expired before the platform answered. | `operation.timed-out` | `caller-decides` | — | — | configure → stop | none |
+| `operation-cancelled`: The caller aborted the operation before the platform answered. | `operation.aborted` | `caller-decides` | — | — | configure → stop | none |
+<!-- EVENT-VOCABULARY:END -->
 
 Platform detail includes only a platform domain, numeric/string code when
 available, operation phase, and a redacted message. It MUST NOT leak addresses,

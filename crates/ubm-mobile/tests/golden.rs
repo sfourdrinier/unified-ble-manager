@@ -257,8 +257,13 @@ async fn generate() -> String {
     .await;
     r.invoke(&session, "connect", "connection.connect",
         json!({"peerId": peer, "lease": "lease-1", "operationId": "connect-1", "budgetMs": 10000, "intent": "direct", "transport": "auto", "preferredPhy": ["le-2m", "le-1m"]})).await;
-    r.invoke(&session, "connect link not established (android gatt 133)", "connection.connect",
-        json!({"peerId": UNREACHABLE_PEER, "lease": "lease-9", "operationId": "connect-9"})).await;
+    r.invoke(
+        &session,
+        "connect link not established (android gatt 133)",
+        "connection.connect",
+        json!({"peerId": UNREACHABLE_PEER, "lease": "lease-9", "operationId": "connect-9"}),
+    )
+    .await;
     r.invoke(&session, "connect phy with when-available", "connection.connect",
         json!({"peerId": peer, "lease": "lease-2", "operationId": "connect-2", "intent": "when-available", "preferredPhy": ["le-coded"]})).await;
     r.invoke(&session, "connected peers", "peers.connected", json!({}))

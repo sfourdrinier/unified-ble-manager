@@ -73,7 +73,7 @@
     },
     {
       "args": "{\"admission\":3,\"lease\":\"lease-9\",\"operationId\":\"connect-9\",\"peerId\":\"C0:FF:EE:00:01:33\"}",
-      "envelope": "{\"commit\":null,\"error\":{\"code\":\"platform.failure\",\"detail\":\"gatt-status: Android GATT connection failed with status 133 (gatt-status=133)\",\"domain\":\"platform\",\"operation\":\"connection.connect\",\"platform\":{\"code\":\"connectionFailed\",\"domain\":\"android\",\"message\":\"Android GATT connection failed with status 133\",\"metadata\":{\"androidGattStatus\":133}}},\"ok\":false,\"retryability\":\"caller-decides\"}",
+      "envelope": "{\"commit\":null,\"error\":{\"code\":\"connection.failed\",\"detail\":\"gatt-status: Android GATT connection failed with status 133 (gatt-status=133)\",\"domain\":\"connection\",\"operation\":\"connection.connect\",\"platform\":{\"code\":\"connectionFailed\",\"domain\":\"android\",\"message\":\"Android GATT connection failed with status 133\",\"metadata\":{\"androidGattStatus\":133}}},\"ok\":false,\"retryability\":\"caller-decides\"}",
       "expect": "failure",
       "name": "connect link not established (android gatt 133)",
       "op": "connection.connect"
@@ -129,7 +129,7 @@
     },
     {
       "args": "{\"admission\":10,\"mode\":\"with-response\",\"operationId\":\"w-5\",\"peerId\":\"A0:9E:1A:00:00:01\",\"selector\":{\"characteristicOccurrence\":0,\"characteristicUuid\":\"2A37\",\"serviceOccurrence\":0,\"serviceUuid\":\"180D\"},\"valueB64\":\"3Q==\"}",
-      "envelope": "{\"commit\":\"uncertain\",\"error\":{\"code\":\"platform.failure\",\"detail\":\"gatt-status: GATT_INSUFFICIENT_AUTHENTICATION (gatt-status=5)\",\"domain\":\"platform\",\"operation\":\"gatt.write\",\"platform\":{\"code\":\"writeFailed\",\"domain\":\"android\",\"message\":\"GATT_INSUFFICIENT_AUTHENTICATION\",\"metadata\":{\"androidGattStatus\":5}}},\"ok\":false,\"retryability\":\"never\"}",
+      "envelope": "{\"commit\":\"uncertain\",\"error\":{\"code\":\"platform.security\",\"detail\":\"gatt-status: GATT_INSUFFICIENT_AUTHENTICATION (gatt-status=5)\",\"domain\":\"platform\",\"operation\":\"gatt.write\",\"platform\":{\"code\":\"writeFailed\",\"domain\":\"android\",\"message\":\"GATT_INSUFFICIENT_AUTHENTICATION\",\"metadata\":{\"androidGattStatus\":5}}},\"ok\":false,\"retryability\":\"never\"}",
       "expect": "failure",
       "name": "write refused by the peer (android gatt status)",
       "op": "gatt.write"
