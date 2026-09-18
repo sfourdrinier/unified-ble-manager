@@ -23,6 +23,7 @@ import {
 } from '../../backend-contract/gatt'
 import { attachmentRecordsEqual, type AttachmentRecord } from '../../backend-contract/identity'
 import type {
+  CharacteristicRead,
   OperationOptions,
   OperationTerminalRecord,
   PublicOperationOptions,
@@ -273,7 +274,7 @@ export class WinRtGattDatabase implements GattDatabase<string, string, string> {
   async read<ServiceOccurrence extends string, CharacteristicOccurrence extends string>(
     path: CharacteristicPath<string, string, string, ServiceOccurrence, CharacteristicOccurrence, 'current'>,
     options: PublicOperationOptions
-  ): Promise<OwnedBytes> {
+  ): Promise<CharacteristicRead> {
     this.backend.assertGattUsable('winrt.gatt.database-read')
     this.assertCurrent('winrt.gatt.database-read')
     return this.backend.gattOperations.readFromDatabase(

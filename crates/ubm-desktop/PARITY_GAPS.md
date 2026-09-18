@@ -126,7 +126,7 @@ available here (provenance per row).
 | `gatt:service-changed` | macos | btleplug-provides | deterministic-only | btleplug reports `didModifyServices`. |
 | `gatt:service-changed` | linux | os-adapter-provides | os-adapter-compile-verified | `Device1.ServicesResolved` dropping under a live link. |
 | `gatt:service-changed` | windows | os-adapter-provides | os-adapter-compile-verified | `BluetoothLEDevice.GattServicesChanged` on the maintained connection. |
-| `gatt:write-without-response-readiness` | macos | os-adapter-provides | deterministic-only | Vendored btleplug patch 4: `write_readiness` (`canSendWriteWithoutResponse`) and `write_readiness_events` (`peripheralIsReadyToSendWriteWithoutResponse`), the legacy readiness watch; btleplug-flow-controlled only in a workspace linking crates.io btleplug. |
+| `gatt:write-without-response-readiness` | macos | os-adapter-provides | deterministic-only | Vendored btleplug patch 4: `write_readiness` (`canSendWriteWithoutResponse`) and `write_readiness_events` (`peripheralIsReadyToSendWriteWithoutResponse`), the legacy readiness watch. Unsupported in a workspace linking crates.io btleplug: without the patch no readiness signal exists. |
 | `background:desktop-maintain-connection` | windows | os-adapter-provides | process-lifetime-only | `GattSession.MaintainConnection(true)` held per connection, released with it. |
 
 Not capability rows, also closed here: adapter power read as a fact on
@@ -175,9 +175,12 @@ Error identity (finding 113): a platform failure carries its answer as
 typed fields (`DesktopError::platform()`): CoreBluetooth `NSError` code,
 WinRT `gatt-status`/`hresult`, BlueZ D-Bus error name (vendored patch 15),
 and a BlueZ D-Bus failure keeps the legacy `platform.failure` identity.
-CoreBluetooth read/notify provenance (finding 110) follows the legacy addon:
-a read on a notifying characteristic fails 413, an overlapping read 414, a
-subscribe during a read 415 (vendored patch 14). Values a consumer holds when
+CoreBluetooth read/notify provenance (finding 110, 5.0 departure from the
+legacy addon): a read on a notifying characteristic runs, reads of one
+characteristic complete in request order, and each read reports the radio's
+provenance (`read-response`, or `read-or-notification` while the
+characteristic can notify); the value still reaches subscribers (vendored
+patch 14). WinRT and BlueZ always report `read-response`. Values a consumer holds when
 its subscription is invalidated drain before the invalidation (finding 111).
 
 Scan observations (findings 120–122): every OS sighting is an observation

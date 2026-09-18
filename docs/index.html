@@ -212,10 +212,12 @@
                 the session ends.
               </li>
               <li>
-                On Apple / Electron CoreBluetooth, do not <code>read()</code> a characteristic while it is notifying.
-                <code>didUpdateValueFor</code> cannot tell a read response from a notification, so the read is
-                <code>gatt.read-failed</code>. Use the subscription stream, or unsubscribe, wait until notify is off,
-                then read. Android and WinRT still allow read-while-notifying.
+                Reading a characteristic while it notifies works on every platform, but on Apple CoreBluetooth (iOS,
+                macOS Node/Electron) the value cannot be told apart from a notification:
+                <code>didUpdateValueFor</code> reports both. Use <code>characteristic.readReceipt()</code> when it
+                matters: <code>provenance</code> is <code>read-response</code> when the platform attributed the value to
+                your read, and <code>read-or-notification</code> when it may be a notification. Subscribers receive that
+                value too. Android, WinRT, BlueZ and Web always answer <code>read-response</code>.
               </li>
               <li>
                 <code>requiredHardware: true</code> only marks the Android BLE hardware feature. It does not start a
@@ -916,16 +918,35 @@ await manager.background.updateNotification({
               must not duplicate those policies.
             </p>
             <p>
-              The renderer and main negotiate the IPC protocol at bootstrap; both offer exactly version 3. Version 3
-              sends the caller's deadline as a relative <code>budgetMs</code> that main admits against its own monotonic
-              clock at receipt (the renderer's <code>performance.now()</code> instant has a different time origin), and
-              main rejects an absolute renderer <code>deadline</code> as <code>protocol.malformed</code>. Normalized
-              errors may carry <code>commit</code> (<code>not-dispatched</code>, <code>uncertain</code>, or
-              <code>null</code>). A renderer and main built from different package versions where one side speaks
-              protocol 2 fail at bootstrap with <code>protocol.incompatible</code>, in either direction, before a lease
-              is registered or any operation runs, so preload, renderer bundle and main must ship from the same package
-              version. The IPC channel name (<code>unified-ble-manager:v2</code>) is unchanged so the refusal arrives as
-              a typed error rather than a missing handler.
+              The renderer and main negotiate the IPC protocol at bootstrap; both offer exactly version 4. The caller's
+              deadline crosses as a relative <code>budgetMs</code> that main admits against its own monotonic clock at
+              receipt (the renderer's <code>performance.now()</code> instant has a different time origin), and main
+              rejects an absolute renderer <code>deadline</code> as <code>protocol.malformed</code>. Normalized errors
+              may carry <code>commit</code> (<code>not-dispatched</code>, <code>uncertain</code>, or <code>null</code>).
+              Version 4 adds the attachment rebind described below. A renderer and main built from different package
+              versions where one side speaks protocol 3 or older fail at bootstrap with
+              <code>protocol.incompatible</code>, in either direction, before a lease is registered or any operation
+              runs, so preload, renderer bundle and main must ship from the same package version. The IPC channel name
+              (<code>unified-ble-manager:v2</code>) is unchanged so the refusal arrives as a typed error rather than a
+              missing handler.
+            </p>
+            <p>
+              <strong>Adapter loss and the attachment rebind (protocol 4).</strong> An adapter loss moves the
+              main-process manager to the backend's new attachment (new backend and adapter generations); the manager
+              itself stays alive. Main, never a renderer, then rebinds every active renderer lease to that attachment
+              and announces it on the reserved <code>attachment</code> stream as one event whose item is
+              <code
+                >{ kind: 'value', value: { kind: 'backend-restarted', schemaVersion: 1, previousAttachmentId,
+                attachmentId, attachment } }</code
+              >. The renderer adopts only an announcement for its own lease that names the attachment it holds, on the
+              same backend instance; anything else is refused and reported, and a renderer can never choose an
+              attachment. Until the announcement arrives, and for the replaced attachment afterwards, main refuses work
+              with <code>backend.reset</code> before any radio effect, except the releases a renderer still owes
+              (<code>operation.cancel</code>, <code>scan.stop</code>, <code>gatt.unsubscribe</code>,
+              <code>gatt.database.release</code>, <code>connection.disconnect</code>,
+              <code>connection.events.unsubscribe</code>). Links, scans and subscriptions from before the loss have
+              ended; a connection supervisor waits for the adapter and reconnects through the same renderer manager.
+              Before 5.0 the loss destroyed the main-process manager and every renderer had to be recreated.
             </p>
             <p>
               For a connected opaque handle, <code>subscribeConnectionEvents(connectionHandle)</code> returns a
@@ -1132,6 +1153,59 @@ await manager.background.updateNotification({
               Deterministic and mock boundaries are test-only. They prove contract/fault behavior, not live radio.
               Package, compile, ABI, and export checks prove only the level they actually exercise. Native compilation
               and package installation do not promote a backend to a higher support label.
+            </p>
+            <h2>Reading a characteristic while it notifies</h2>
+            <p>
+              Every backend admits a read on a characteristic that notifies or indicates, and
+              <code>characteristic.readReceipt()</code> reports what the platform knows about the value. This is a
+              per-read answer, not a static capability:
+            </p>
+            <table>
+              <thead>
+                <tr>
+                  <th>Host</th>
+                  <th><code>provenance</code></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Android (React Native)</td>
+                  <td><code>read-response</code> (<code>onCharacteristicRead</code>)</td>
+                </tr>
+                <tr>
+                  <td>Apple (React Native iOS, Node/Electron macOS)</td>
+                  <td>
+                    <code>read-response</code> while the characteristic cannot notify;
+                    <code>read-or-notification</code> while it notifies, has a subscription, or has a notification state
+                    change in flight
+                  </td>
+                </tr>
+                <tr>
+                  <td>WinRT</td>
+                  <td><code>read-response</code> (<code>ReadValueAsync</code>, uncached)</td>
+                </tr>
+                <tr>
+                  <td>BlueZ</td>
+                  <td><code>read-response</code> (<code>ReadValue</code>)</td>
+                </tr>
+                <tr>
+                  <td>Web Bluetooth</td>
+                  <td>
+                    <code>read-response</code> (<code>readValue()</code>); the browser's own attribution on its host OS
+                    is not observable from the page
+                  </td>
+                </tr>
+                <tr>
+                  <td>Electron renderer, Tauri</td>
+                  <td>the host's answer, verbatim</td>
+                </tr>
+              </tbody>
+            </table>
+            <p>
+              CoreBluetooth reports a read response and a notification through one
+              <code>didUpdateValueFor</code> callback. A read on a notifying Apple characteristic completes with the
+              first value that arrives after it was issued, which may be a notification; that value is also delivered to
+              the subscribers, and reads of one characteristic complete in request order.
             </p>
             <h2>Evidence records</h2>
             <p>

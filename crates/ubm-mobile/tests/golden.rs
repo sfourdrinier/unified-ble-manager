@@ -99,9 +99,21 @@ fn writable_services() -> Vec<ubm_desktop::ServiceSnapshot> {
     services
 }
 
+/// A peer whose link the platform cannot establish (Android GATT 133).
+const UNREACHABLE_PEER: &str = "C0:FF:EE:00:01:33";
+
 fn responder(request: &RadioRequest) -> Reply {
     Reply::Now(match request {
         RadioRequest::Discover { .. } => RadioCompletion::Discovered(writable_services()),
+        RadioRequest::Connect { peer_id, .. } if peer_id == UNREACHABLE_PEER => {
+            RadioCompletion::Failed(ubm_mobile::PlatformFailure {
+                gatt_status: Some(133),
+                ..ubm_mobile::PlatformFailure::new(
+                    ubm_mobile::FailureKind::GattStatus,
+                    "Android GATT connection failed with status 133",
+                )
+            })
+        }
         RadioRequest::Write { value, .. } if value == &[0xdd] => {
             RadioCompletion::Failed(ubm_mobile::PlatformFailure {
                 gatt_status: Some(5),
@@ -245,6 +257,8 @@ async fn generate() -> String {
     .await;
     r.invoke(&session, "connect", "connection.connect",
         json!({"peerId": peer, "lease": "lease-1", "operationId": "connect-1", "budgetMs": 10000, "intent": "direct", "transport": "auto", "preferredPhy": ["le-2m", "le-1m"]})).await;
+    r.invoke(&session, "connect link not established (android gatt 133)", "connection.connect",
+        json!({"peerId": UNREACHABLE_PEER, "lease": "lease-9", "operationId": "connect-9"})).await;
     r.invoke(&session, "connect phy with when-available", "connection.connect",
         json!({"peerId": peer, "lease": "lease-2", "operationId": "connect-2", "intent": "when-available", "preferredPhy": ["le-coded"]})).await;
     r.invoke(&session, "connected peers", "peers.connected", json!({}))
@@ -319,6 +333,13 @@ async fn generate() -> String {
         "effective mtu",
         "connection.effective-mtu",
         json!({"peerId": peer, "lease": "lease-1"}),
+    )
+    .await;
+    r.invoke(
+        &session,
+        "maximum write length",
+        "connection.maximum-write-length",
+        json!({"peerId": peer, "lease": "lease-1", "mode": "without-response", "operationId": "mwl-1"}),
     )
     .await;
     r.invoke(
@@ -553,5 +574,20 @@ async fn golden_wire_vectors_are_current() {
     assert!(
         committed == fresh,
         "golden wire vectors drifted; regenerate with UBM_MOBILE_GOLDEN_WRITE=1 cargo test -p ubm-mobile --test golden"
+    );
+}
+
+/// No desktop host name reaches a phone: the whole golden run — every
+/// invoke envelope and every drained record — is free of one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_desktop_identity_reaches_the_mobile_wire() {
+    let fresh = generate().await.to_ascii_lowercase();
+    let leaks: Vec<&str> = fresh
+        .lines()
+        .filter(|line| line.contains("desktop"))
+        .collect();
+    assert!(
+        leaks.is_empty(),
+        "desktop names on the mobile wire: {leaks:#?}"
     );
 }

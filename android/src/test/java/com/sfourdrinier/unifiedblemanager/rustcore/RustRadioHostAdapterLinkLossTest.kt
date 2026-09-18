@@ -90,6 +90,43 @@ class RustRadioHostAdapterLinkLossTest {
     assertEquals(false, core.failures.getValue(9).dispatched)
   }
 
+  /**
+   * Physical run (Samsung, Polar H10): the link dropped (status 22) while
+   * service discovery was pending. The discovery failed as a plain platform
+   * failure, so the public layer reported `platform.failure: gatt.discover`
+   * and the supervisor stopped. It is a link loss, as every other operation
+   * in flight at a disconnect is.
+   */
+  @Test
+  fun aLinkLossDuringDiscoveryFailsTheDiscoveryAsALinkLossWithTheAndroidStatus() {
+    doReturn(true).`when`(gatt).discoverServices()
+    adapter.discover(11, DEVICE_ID)
+    assertEquals("the discovery is in flight", null, core.failures[11])
+    radio.nativeGattCallback().onConnectionStateChange(gatt, 22, BluetoothProfile.STATE_DISCONNECTED)
+    val failure = core.failures.getValue(11)
+    assertEquals(RadioFailureKind.NOT_CONNECTED, failure.kind)
+    assertEquals(22, failure.gattStatus)
+    assertEquals(true, failure.dispatched)
+  }
+
+  @Test
+  fun aDiscoveryQueuedBehindAReadWhenTheLinkDropsWasNeverSent() {
+    readInFlight(7)
+    adapter.discover(12, DEVICE_ID)
+    radio.nativeGattCallback().onConnectionStateChange(gatt, 8, BluetoothProfile.STATE_DISCONNECTED)
+    val failure = core.failures.getValue(12)
+    assertEquals(RadioFailureKind.NOT_CONNECTED, failure.kind)
+    assertEquals(false, failure.dispatched)
+  }
+
+  @Test
+  fun aDiscoveryTheStackFailsWithoutALinkLossStaysAPlatformFailure() {
+    doReturn(true).`when`(gatt).discoverServices()
+    adapter.discover(13, DEVICE_ID)
+    radio.nativeGattCallback().onServicesDiscovered(gatt, 129)
+    assertEquals(RadioFailureKind.PLATFORM, core.failures.getValue(13).kind)
+  }
+
   companion object {
     private const val DEVICE_ID = "AA:BB:CC:DD:EE:FF"
     private val SERVICE_UUID: UUID = UUID.fromString("0000180d-0000-1000-8000-00805f9b34fb")

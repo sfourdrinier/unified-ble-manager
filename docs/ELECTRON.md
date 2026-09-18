@@ -173,17 +173,37 @@ acknowledgement, bounded backpressure, cancellation routing, and retryable
 cleanup; applications must not duplicate those policies.
 
 The renderer and main negotiate the IPC protocol at bootstrap; both offer
-exactly version 3. Version 3 sends the caller's deadline as a relative
-`budgetMs` that main admits against its own monotonic clock at receipt (the
-renderer's `performance.now()` instant has a different time origin), and main
-rejects an absolute renderer `deadline` as `protocol.malformed`. Normalized
-errors may carry `commit` (`not-dispatched`, `uncertain`, or `null`). A
-renderer and main built from different package versions where one side speaks
-protocol 2 fail at bootstrap with `protocol.incompatible`, in either
-direction, before a lease is registered or any operation runs, so preload,
-renderer bundle and main must ship from the same package version. The IPC
-channel name (`unified-ble-manager:v2`) is unchanged so the refusal arrives as a
-typed error rather than a missing handler.
+exactly version 4. The caller's deadline crosses as a relative `budgetMs` that
+main admits against its own monotonic clock at receipt (the renderer's
+`performance.now()` instant has a different time origin), and main rejects an
+absolute renderer `deadline` as `protocol.malformed`. Normalized errors may
+carry `commit` (`not-dispatched`, `uncertain`, or `null`). Version 4 adds the
+attachment rebind described below. A renderer and main built from different
+package versions where one side speaks protocol 3 or older fail at bootstrap
+with `protocol.incompatible`, in either direction, before a lease is
+registered or any operation runs, so preload, renderer bundle and main must
+ship from the same package version. The IPC channel name
+(`unified-ble-manager:v2`) is unchanged so the refusal arrives as a typed error
+rather than a missing handler.
+
+**Adapter loss and the attachment rebind (protocol 4).** An adapter loss
+moves the main-process manager to the backend's new attachment (new backend
+and adapter generations); the manager itself stays alive. Main, never a
+renderer, then rebinds every active renderer lease to that attachment and
+announces it on the reserved `attachment` stream as one event whose item is
+`{ kind: 'value', value: { kind: 'backend-restarted', schemaVersion: 1,
+previousAttachmentId, attachmentId, attachment } }`. The renderer adopts only
+an announcement for its own lease that names the attachment it holds, on the
+same backend instance; anything else is refused and reported, and a renderer
+can never choose an attachment. Until the announcement arrives, and for the
+replaced attachment afterwards, main refuses work with `backend.reset` before
+any radio effect, except the releases a renderer still owes (`operation.cancel`,
+`scan.stop`, `gatt.unsubscribe`, `gatt.database.release`,
+`connection.disconnect`, `connection.events.unsubscribe`). Links, scans and
+subscriptions from before the loss have ended; a connection supervisor waits
+for the adapter and reconnects through the same renderer manager. Before 5.0
+the loss destroyed the main-process manager and every renderer had to be
+recreated.
 
 For a connected opaque handle, `subscribeConnectionEvents(connectionHandle)`
 returns a versioned lifecycle subscription. Its `events` stream contains

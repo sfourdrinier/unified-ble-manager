@@ -222,9 +222,11 @@ pub enum CentralDelegateEvent {
     ConnectedDevice {
         peripheral_uuid: Uuid,
     },
+    // UBM patch (UBM_PATCHES.md #15): the `NSError` CoreBluetooth failed
+    // the connect with, as the platform's answer (`None` when it gave none).
     ConnectionFailed {
         peripheral_uuid: Uuid,
-        error_description: Option<String>,
+        error: Option<crate::PlatformError>,
     },
     DisconnectedDevice {
         peripheral_uuid: Uuid,
@@ -369,11 +371,11 @@ impl Debug for CentralDelegateEvent {
                 .finish(),
             CentralDelegateEvent::ConnectionFailed {
                 peripheral_uuid,
-                error_description,
+                error,
             } => f
                 .debug_struct("ConnectionFailed")
                 .field("peripheral_uuid", peripheral_uuid)
-                .field("error_description", error_description)
+                .field("error", error)
                 .finish(),
             CentralDelegateEvent::DisconnectedDevice { peripheral_uuid } => f
                 .debug_struct("DisconnectedDevice")
@@ -611,10 +613,10 @@ declare_class!(
             trace!("delegate_centralmanager_didfailtoconnectperipheral_error");
             let id = unsafe { peripheral.identifier() };
             let peripheral_uuid = nsuuid_to_uuid(&id);
-            let error_description = error.map(|error| error.localizedDescription().to_string());
+            let error = error.map(nserror_platform);
             self.send_event(CentralDelegateEvent::ConnectionFailed {
                 peripheral_uuid,
-                error_description,
+                error,
             });
         }
 

@@ -940,22 +940,76 @@ async fn pr210_06_a_budget_longer_than_the_old_backstop_is_honoured() {
     assert_eq!(field(&value, "value"), &IpcValue::Bytes(vec![0x42]));
 }
 
+// A read answer carries the radio's own provenance verbatim: CoreBluetooth
+// answering a read on a notifying characteristic says the value may be a
+// notification, and the host never rewrites it into a read response.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_carries_the_radio_provenance() {
+    let harness = Harness::new().await;
+    let link = harness.connect("peer-a").await;
+    let database = harness.discover(&link).await;
+    for (provenance, wire) in [
+        (ubm_desktop::ReadProvenance::ReadResponse, "read-response"),
+        (
+            ubm_desktop::ReadProvenance::ReadOrNotification,
+            "read-or-notification",
+        ),
+    ] {
+        harness.radio().script_read_provenance(provenance);
+        let value = harness
+            .execute(
+                "gatt.read",
+                Harness::gatt_entries(&link, &database, CONTROL_POINT),
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .expect("read");
+        assert_eq!(field(&value, "value"), &IpcValue::Bytes(vec![0x42]));
+        assert_eq!(field(&value, "provenance"), &string(wire));
+    }
+}
+
 // PR210-07 — forwarders spawn only after their entry is published, so the
 // first observation and the first notification are delivered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pr210_07_scan_and_notification_forwarders_deliver_from_the_first_item() {
     let harness = Harness::new().await;
-    // Queued before the scan starts: the forwarder's very first poll finds
-    // it, which is when a forwarder that raced its publication lost data.
+    // A sighting the OS reports while its scan start is still in flight
+    // belongs to that scan (finding 121: before any scan it is no
+    // observation at all). It is queued before the scan is published, so
+    // the forwarder's very first poll finds it — which is when a forwarder
+    // that raced its publication lost data.
+    harness.radio().block_op(FaultOp::StartScan);
+    let dispatcher = harness.dispatcher.clone();
+    let caller = harness.caller.clone();
+    let payload = Harness::lease_payload(vec![("query", empty_scan_query())]);
+    let start = tokio::spawn(async move {
+        dispatcher
+            .start_scan(&caller, payload, OpControl::unbounded())
+            .await
+    });
+    harness.wait_calls("start_scan", 1).await;
     harness.radio().push_event(advertisement("peer-early"));
-    let scan = harness
-        .execute(
-            "scan.start",
-            vec![("query", empty_scan_query())],
-            None,
-            OpControl::unbounded(),
-        )
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while harness
+        .central
+        .resource_counters()
         .await
+        .queued_advertisements
+        < 1
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the in-flight scan never queued its sighting"
+        );
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    harness.radio().unblock_op(FaultOp::StartScan);
+    let scan = tokio::time::timeout(WAIT, start)
+        .await
+        .expect("start settles")
+        .expect("joins")
         .expect("scan starts");
     let scan_stream = text(&scan, "handle");
     assert!(
@@ -1902,7 +1956,7 @@ fn version_offer() -> BTreeMap<String, IpcValue> {
         ("capabilitySchema", range("capability-schema", 1)),
         ("eventSchema", range("event-schema", 1)),
         ("traceFormat", range("trace-format", 1)),
-        ("ipcProtocol", range("ipc-protocol", 3)),
+        ("ipcProtocol", range("ipc-protocol", 4)),
     ]) else {
         panic!("the version offer is an object");
     };

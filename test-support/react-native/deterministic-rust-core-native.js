@@ -63,6 +63,7 @@ const ARG_SCHEMAS = Object.freeze({
   ],
   'connection.rssi': [['peerId', 'lease', 'operationId'], ['budgetMs']],
   'connection.read-phy': [['peerId', 'lease', 'operationId'], ['budgetMs']],
+  'connection.maximum-write-length': [['peerId', 'lease', 'mode', 'operationId'], ['budgetMs']],
   'security.state': [['peerId'], ['budgetMs', 'operationId']],
   'security.cancel-pairing': [['peerId'], ['budgetMs', 'operationId']],
   'security.pair': [['peerId', 'transport', 'operationId'], ['budgetMs']],
@@ -102,11 +103,12 @@ const APPLE_UNSUPPORTED = new Set([
 ])
 
 class WireFault extends Error {
-  constructor(code, domain, operation, detail = null, commit = null, platform = null) {
+  constructor(code, domain, operation, detail = null, commit = null, platform = null, retryability = null) {
     super(`${code}: ${operation}`)
     // As the owner: `platform` is the radio's own identity (finding 113), null otherwise.
     this.failure = { code, domain, operation, detail, platform }
     this.commit = commit
+    this.retryability = retryability
   }
 }
 
@@ -208,8 +210,15 @@ class DeterministicRustCoreNative {
     platform = 'android',
     peripherals = [defaultPeripheral()],
     identity = null,
-    expectedIdentity = null
+    expectedIdentity = null,
+    drainResolution = 'microtask'
   } = {}) {
+    /**
+     * `'native-task'` resolves each drain in a host task of its own (Node
+     * `setImmediate`), as a TurboModule promise resolves through the JS
+     * call invoker: a task boundary that owes nothing to JS timers.
+     */
+    this.drainResolution = drainResolution
     const EXPECTED_NATIVE_BUILD_IDENTITY = expectedIdentity ?? sourceExpectedIdentity()
     this.expectedIdentity = EXPECTED_NATIVE_BUILD_IDENTITY
     this.platform = platform
@@ -231,14 +240,17 @@ class DeterministicRustCoreNative {
     this.restorationClaims = new Map()
     /** Every `connection.connect` the owner admitted: `{ sessionId, peerId, preferredPhy }`. */
     this.connects = []
+    /** Peer id → the ATT MTU the last `connection.request-mtu` negotiated on the current link. */
+    this.negotiatedMtu = new Map()
     this.adapter = {
       availability: 'available',
       authorization: 'granted',
       power: 'on',
       safeReason: null,
       updatedAt: 0,
-      backendGeneration: 'backend-gen-1',
-      adapterGeneration: 'adapter-gen-1'
+      // The owner's own legacy React Native generations (crates/ubm-mobile/src/identity.rs).
+      backendGeneration: '1',
+      adapterGeneration: '1'
     }
     this.binding = platform === 'android' ? 'jni' : 'uniffi'
     const sealed = EXPECTED_NATIVE_BUILD_IDENTITY.bindings[this.binding]
@@ -270,6 +282,8 @@ class DeterministicRustCoreNative {
     this.disposeRecords = []
     /** Rewrites the `gatt.discover` value (malformed-discovery injection). */
     this.discoveryOverride = null
+    /** What the scripted radio says characteristic reads are (Apple while notifying: `read-or-notification`). */
+    this.readProvenance = 'read-response'
     this.randomSource = length => Uint8Array.from({ length }, (_, index) => (index * 37 + 11) & 0xff)
     this.onSessionWake = listener => {
       this.wakeListeners.add(listener)
@@ -436,7 +450,9 @@ class DeterministicRustCoreNative {
     const session = this.session(sessionId)
     const records = session.outbox.splice(0, maxItems)
     if (session.outbox.length === 0) session.armed = true
-    return JSON.stringify({ more: session.outbox.length > 0, records })
+    const text = JSON.stringify({ more: session.outbox.length > 0, records })
+    if (this.drainResolution === 'native-task') await new Promise(resolve => setImmediate(resolve))
+    return text
   }
 
   async closeSession(sessionId) {
@@ -676,11 +692,17 @@ class DeterministicRustCoreNative {
 
   failure(op, fault) {
     const write = op === 'gatt.write' || op === 'gatt.write-descriptor'
-    return JSON.stringify({
-      ok: false,
-      error: fault.failure,
-      commit: write ? (fault.commit ?? 'not-dispatched') : null
-    })
+    const commit = write ? (fault.commit ?? 'not-dispatched') : null
+    // As the owner: its own retryability on every failure envelope; a write
+    // that may have committed is never retryable.
+    const retryability =
+      commit === 'uncertain'
+        ? 'never'
+        : (fault.retryability ??
+          (fault.failure.code === 'operation.aborted' || fault.failure.code === 'operation.timed-out'
+            ? 'caller-decides'
+            : 'never'))
+    return JSON.stringify({ ok: false, error: fault.failure, commit, retryability })
   }
 
   commitFor(op, dispatched) {
@@ -1007,6 +1029,7 @@ class DeterministicRustCoreNative {
           if (linked) throw refused('the link is already established')
         }
         this.connects.push({ sessionId: session.id, peerId: peripheral.peerId, preferredPhy })
+        this.negotiatedMtu.delete(peripheral.peerId)
         const generation = `cg-${this.nextGeneration++}`
         session.leases.set(args.lease, { peerId: peripheral.peerId, generation, connected: true })
         return { peerKey: `peer-${peripheral.peerId}`, connectionGeneration: generation }
@@ -1027,10 +1050,25 @@ class DeterministicRustCoreNative {
         return { rssi: -47 }
       case 'connection.effective-mtu':
         this.lease(session, args)
-        return { mtu: 247 }
-      case 'connection.request-mtu':
+        // Android reports no MTU until `onMtuChanged` (native `readEffectiveMtu`).
+        return { mtu: this.negotiatedMtu.get(args.peerId) ?? null }
+      case 'connection.request-mtu': {
         this.lease(session, args)
-        return { mtu: Math.min(args.mtu, 247) }
+        const mtu = Math.min(args.mtu, 247)
+        this.negotiatedMtu.set(args.peerId, mtu)
+        return { mtu }
+      }
+      case 'connection.maximum-write-length': {
+        this.lease(session, args)
+        if (args.mode !== 'with-response' && args.mode !== 'without-response') throw invalid('args.mode')
+        // As the native adapters answer `ReadWriteLimits`: CoreBluetooth's
+        // `maximumWriteValueLength(for:)`; Android 512 with response (the
+        // stack's long write) and one ATT payload of the negotiated MTU, or
+        // of the ATT default 23 before any exchange, without.
+        if (apple) return { maximumWriteLength: args.mode === 'with-response' ? 512 : 182 }
+        const mtu = this.negotiatedMtu.get(args.peerId) ?? 23
+        return { maximumWriteLength: args.mode === 'with-response' ? 512 : mtu - 3 }
+      }
       case 'connection.request-priority':
         this.lease(session, args)
         return { accepted: true }
@@ -1091,10 +1129,14 @@ class DeterministicRustCoreNative {
         }
         return this.discoveryOverride === null ? discovery : this.discoveryOverride(discovery)
       }
-      case 'gatt.read':
+      case 'gatt.read': {
+        this.connectedLease(session, args.peerId)
+        const attribute = this.characteristic(args.peerId, args.selector, false)
+        return { valueB64: b64(attribute.value), provenance: this.readProvenance }
+      }
       case 'gatt.read-descriptor': {
         this.connectedLease(session, args.peerId)
-        const attribute = this.characteristic(args.peerId, args.selector, op === 'gatt.read-descriptor')
+        const attribute = this.characteristic(args.peerId, args.selector, true)
         return { valueB64: b64(attribute.value) }
       }
       case 'gatt.write':

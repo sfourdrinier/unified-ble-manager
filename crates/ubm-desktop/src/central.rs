@@ -51,22 +51,22 @@ use ubm_core::central::{
     DatabaseState, PathSelector, StoredPath, canonical_uuid, validate_scan_request,
 };
 use ubm_core::contracts::{
-    AdapterGeneration, AdapterId, AttachmentId, AttachmentTuple, BackendGeneration,
-    BackendInstanceId, BleErrorCode, BleErrorDomain, CommitState, ContenderKind, CoreError,
+    AttachmentTuple, BleErrorCode, BleErrorDomain, CommitState, ContenderKind, CoreError,
     Generation, OperationId, OperationTerminalKind,
 };
 use ubm_core::ownership::{CleanupRecord, EffectBatch};
 
 use crate::boundary::{
     AdapterAuthorization, AdapterAvailability, AdapterLossCause, AdapterPowerState,
-    AdmissionPolicy, CharacteristicAccess, DeliveryMode, InstanceKey, ObservedDelivery,
-    PeerSnapshot, RadioBoundary, RadioCloseFailure, RadioEvent, ScanFilterSpec,
+    AdmissionPolicy, CharacteristicAccess, CharacteristicRead, DeliveryMode, InstanceKey,
+    ObservedDelivery, PeerSnapshot, RadioBoundary, RadioCloseFailure, RadioEvent, ScanFilterSpec,
 };
 use ubm_core::central::ScanDuplicatePolicy;
 
 #[path = "central_parity.rs"]
 mod parity;
 use crate::errors::{DesktopError, Retryability};
+use crate::identity::{AttachmentEpoch, DesktopIdentity, HostIdentity};
 use crate::op_control::{
     Budget, COMPENSATION_TIMEOUT, CancelAck, CancelRequest, LIVENESS_BACKSTOP_DETAIL,
     LIVENESS_CLEANUP, LIVENESS_OP, LIVENESS_SCAN_START, OpControl, OpTicket, SettleOnDrop, Window,
@@ -1048,11 +1048,9 @@ pub type CentralObserver = Arc<dyn Fn(CentralSignal) + Send + Sync>;
 /// Identity and wiring for one central ([`DesktopCentral::open_with`]).
 #[derive(Clone)]
 pub struct CentralProfile {
-    /// Attachment owner label (host identity, e.g. `"node"`). Non-empty.
-    pub owner: String,
-    /// Backend label in the attachment's backend instance id
-    /// (`ubm-desktop-{backend_label}-{owner}`). Non-empty.
-    pub backend_label: String,
+    /// The owning host's names for every scope the central opens
+    /// ([`HostIdentity`]): the central mints no identity of its own.
+    pub identity: Arc<dyn HostIdentity>,
     /// Projects the backend's capability truth into the core at open.
     pub register_capabilities: fn(&mut Central) -> Result<(), CoreError>,
     /// Optional synchronous observer of advertisements, values,
@@ -1070,13 +1068,13 @@ pub struct CentralProfile {
 }
 
 impl CentralProfile {
-    /// The desktop btleplug profile: backend label `btleplug`, desktop
+    /// The desktop btleplug profile: the desktop identity with backend
+    /// label `btleplug` for `owner` (host identity, e.g. `"node"`), desktop
     /// capability registration, no observer.
     #[must_use]
     pub fn desktop(owner: &str) -> Self {
         Self {
-            owner: owner.to_owned(),
-            backend_label: "btleplug".to_owned(),
+            identity: Arc::new(DesktopIdentity::new("btleplug", owner)),
             register_capabilities: crate::capabilities::register_desktop_capabilities,
             observer: None,
             adapter_id: None,
@@ -1088,8 +1086,7 @@ impl CentralProfile {
 impl std::fmt::Debug for CentralProfile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CentralProfile")
-            .field("owner", &self.owner)
-            .field("backend_label", &self.backend_label)
+            .field("identity", &self.identity)
             .field("observer", &self.observer.is_some())
             .field("adapter_id", &self.adapter_id)
             .field("bluez_bus", &self.bluez_bus)
@@ -1208,6 +1205,8 @@ struct Inner<B> {
     boundary: B,
     /// The current attachment; a reset replaces it (finding 57).
     attachment: StdMutex<AttachmentTuple>,
+    /// The owning host's names for each new scope.
+    identity: Arc<dyn HostIdentity>,
     /// Open ordinal, fixed for the central's lifetime.
     ordinal: u64,
     /// Resets so far; names each new generation.
@@ -1225,6 +1224,12 @@ struct Inner<B> {
     /// Peer keys whose streams a reset invalidated; cleared by the peer's
     /// next connect.
     reset_peers: StdMutex<HashSet<String>>,
+    /// `(peer key, lease)` and `(peer key, consumer)` pairs the last adapter
+    /// resets ended: the core cleared them, and their release answers
+    /// already-released once (legacy adapter-loss cleanup left
+    /// terminalized handles).
+    reset_leases: StdMutex<HashSet<(String, String)>>,
+    reset_consumers: StdMutex<HashSet<(String, String)>>,
     reset_events: broadcast::Sender<AdapterResetEvent>,
     reset_sequence: AtomicU64,
     /// The one owned scan. A plain mutex: held for short synchronous
@@ -1447,23 +1452,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             return Err(contract_error(
                 BleErrorCode::AdapterUnavailable,
                 BleErrorDomain::Adapter,
-                "desktop.open",
+                &format!("{}.open", profile.identity.namespace()),
             ));
         }
-        if profile.owner.is_empty() {
-            return Err(contract_error(
-                BleErrorCode::ArgumentInvalid,
-                BleErrorDomain::Core,
-                "desktop.owner",
-            ));
-        }
-        if profile.backend_label.is_empty() {
-            return Err(contract_error(
-                BleErrorCode::ArgumentInvalid,
-                BleErrorDomain::Core,
-                "desktop.backend-label",
-            ));
-        }
+        profile.identity.validate()?;
         // L6: never synthesize an adapter identity — a withheld readout
         // fails the open instead of labelling the adapter "unknown".
         let adapter_label = boundary.adapter_name().await?;
@@ -1477,22 +1469,19 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             );
         }
         let ordinal = OPEN_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let attachment = AttachmentTuple::new(
-            AttachmentId::new(format!("desktop-attachment-{ordinal}"))
-                .map_err(DesktopError::from)?,
-            BackendInstanceId::new(format!(
-                "ubm-desktop-{}-{}",
-                profile.backend_label, profile.owner
-            ))
-            .map_err(DesktopError::from)?,
-            BackendGeneration::new(format!("desktop-backend-gen-{ordinal}"))
-                .map_err(DesktopError::from)?,
-            AdapterId::new(adapter_label).map_err(DesktopError::from)?,
-            AdapterGeneration::new(format!("desktop-adapter-gen-{ordinal}"))
-                .map_err(DesktopError::from)?,
-        );
-        let generation =
-            Generation::new(format!("desktop-kernel-gen-{ordinal}")).map_err(DesktopError::from)?;
+        let epoch = AttachmentEpoch {
+            ordinal,
+            resets: 0,
+            adapter: &adapter_label,
+        };
+        let attachment = profile
+            .identity
+            .attachment(epoch)
+            .map_err(DesktopError::from)?;
+        let generation = profile
+            .identity
+            .kernel_generation(epoch)
+            .map_err(DesktopError::from)?;
         let mut core = Central::new(
             attachment.clone(),
             generation,
@@ -1508,11 +1497,12 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let (adapter, _) = broadcast::channel(LIFECYCLE_EVENT_CAPACITY);
         let admission = boundary.admission_policy();
         let teardown_on_loss = boundary.tears_down_on_adapter_loss();
-        let facts = seed_adapter_facts(&boundary, admission).await;
+        let facts = seed_adapter_facts(&boundary, admission, profile.identity.log_tag()).await;
         let inner = Arc::new(Inner {
             core: Mutex::new(core),
             boundary,
             attachment: StdMutex::new(attachment),
+            identity: profile.identity,
             ordinal,
             resets: AtomicU64::new(0),
             adapter_facts: StdMutex::new(facts),
@@ -1521,6 +1511,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             tickets: StdMutex::new(Vec::new()),
             reset_ops: StdMutex::new(HashSet::new()),
             reset_peers: StdMutex::new(HashSet::new()),
+            reset_leases: StdMutex::new(HashSet::new()),
+            reset_consumers: StdMutex::new(HashSet::new()),
             reset_events: broadcast::channel(LIFECYCLE_EVENT_CAPACITY).0,
             reset_sequence: AtomicU64::new(0),
             scan: StdMutex::new(None),
@@ -2707,7 +2699,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             }
         };
         drop_guard.defuse();
-        result.map_err(|error| classify(error, OpKind::Connect, true))
+        // A link the platform could not establish is the caller's to retry
+        // (owner decision, 5.0); the central never retries it.
+        result.map_err(|error| classify(error, OpKind::Connect, true).classify_establishment())
     }
 
     /// Explicit disconnect (PR210-09/24): request the release in the core,
@@ -2731,6 +2725,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let peer_key = self.known_peer_key(peer_id).await?;
         {
             let mut core = self.inner.core.lock().await;
+            if core.connection_state(&peer_key).is_none()
+                && lock_std(&self.inner.reset_leases).remove(&(peer_key.clone(), lease.to_owned()))
+            {
+                return Ok(LinkRelease::AlreadyReleased);
+            }
             let held = core.holds_lease(&peer_key, lease);
             match core.connection_state(&peer_key) {
                 Some(
@@ -3178,13 +3177,14 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     /// GATT read through a validated path: freshness, discovery, lease, and
     /// property checks run before kernel admission, so a stale path never
     /// dispatches to the radio. Bounded by the budget ([`LIVENESS_OP`]
-    /// without one); a cancel settles `aborted` in the core.
+    /// without one); a cancel settles `aborted` in the core. The answer
+    /// carries the radio's own [`crate::boundary::ReadProvenance`].
     pub async fn read(
         &self,
         peer_id: &str,
         selector: &PathSelector,
         ctl: OpControl,
-    ) -> Result<Vec<u8>, DesktopError> {
+    ) -> Result<CharacteristicRead, DesktopError> {
         let _settle = SettleOnDrop(&ctl.ticket);
         self.precheck(&ctl, "gatt.read")?;
         let window = ctl.budget.window(LIVENESS_OP);
@@ -3216,7 +3216,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         )
         .await
         {
-            Wait::Done(Ok(bytes)) => {
+            Wait::Done(Ok(read)) => {
                 let mut core = self.inner.core.lock().await;
                 // F03: a link that died mid-read wins over the late radio
                 // bytes. Generations alone cannot catch this (disconnect keeps
@@ -3226,7 +3226,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     Some(ConnectionState::Connected)
                 );
                 if link_live {
-                    Self::settle_gatt_success(&mut core, &operation, bytes, "gatt.read")
+                    Self::settle_gatt_success(&mut core, &operation, read, "gatt.read")
                 } else {
                     let mut out = batch();
                     let _ = settle_and_release(
@@ -3995,6 +3995,12 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let (index, key, _) = match resolved {
                 Ok(resolved) => resolved,
                 Err(error) => {
+                    // An adapter reset ended this consumer with its link.
+                    if lock_std(&self.inner.reset_consumers)
+                        .remove(&(peer_key.clone(), consumer.to_owned()))
+                    {
+                        return Ok(false);
+                    }
                     // Finding 40: the path died with a service change, but
                     // the enablement it addressed may still be live.
                     drop(core);
@@ -4853,8 +4859,9 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                             .radio_events_lost
                             .fetch_add(skipped, Ordering::Relaxed);
                         eprintln!(
-                            "ubm-desktop: {skipped} adapter events were lost: the OS event \
-                             broadcast outran the radio"
+                            "{}: {skipped} adapter events were lost: the OS event \
+                             broadcast outran the radio",
+                            inner.identity.log_tag()
                         );
                     }
                     Some(RadioEvent::Notification {
@@ -4922,6 +4929,7 @@ fn wake_state_waiters<B>(inner: &Inner<B>) {
 /// stays unreported; a failed read is logged and stays unreported, so
 /// admission never refuses on it.
 fn reported_fact<T>(
+    log_tag: &str,
     what: &str,
     outcome: Result<Result<T, DesktopError>, tokio::time::error::Elapsed>,
 ) -> Option<T> {
@@ -4930,14 +4938,14 @@ fn reported_fact<T>(
         Ok(Err(error)) => {
             if error.code() != BleErrorCode::CapabilityUnsupported {
                 eprintln!(
-                    "ubm-desktop: adapter {what} unread at open: {}",
+                    "{log_tag}: adapter {what} unread at open: {}",
                     error.detail().unwrap_or(error.code_str())
                 );
             }
             None
         }
         Err(_) => {
-            eprintln!("ubm-desktop: adapter {what} read at open timed out");
+            eprintln!("{log_tag}: adapter {what} read at open timed out");
             None
         }
     }
@@ -4946,6 +4954,7 @@ fn reported_fact<T>(
 async fn seed_adapter_facts<B: RadioBoundary>(
     boundary: &B,
     admission: AdmissionPolicy,
+    log_tag: &str,
 ) -> AdapterFacts {
     let mut facts = AdapterFacts {
         power: None,
@@ -4957,10 +4966,12 @@ async fn seed_adapter_facts<B: RadioBoundary>(
         return facts;
     }
     facts.power = reported_fact(
+        log_tag,
         "state",
         tokio::time::timeout(LIVENESS_CLEANUP, boundary.adapter_state()).await,
     );
     facts.authorization = reported_fact(
+        log_tag,
         "authorization",
         tokio::time::timeout(LIVENESS_CLEANUP, boundary.adapter_authorization()).await,
     );
@@ -4968,24 +4979,36 @@ async fn seed_adapter_facts<B: RadioBoundary>(
     facts
 }
 
-/// The attachment after reset `index` of the central opened as `ordinal`:
-/// same backend instance and adapter, new attachment, backend and adapter
-/// generations.
-fn next_attachment(
+/// The attachment and kernel generation after reset `index` of the central
+/// opened as `ordinal`, as the owning host names them. The backend instance
+/// and the adapter must stay those of `previous`: a host whose names move
+/// them fails the reset (reported), never re-attaches the central elsewhere.
+fn next_scope(
+    identity: &dyn HostIdentity,
     previous: &AttachmentTuple,
     ordinal: u64,
     index: u64,
-) -> Result<AttachmentTuple, DesktopError> {
-    Ok(AttachmentTuple::new(
-        AttachmentId::new(format!("desktop-attachment-{ordinal}-r{index}"))
-            .map_err(DesktopError::from)?,
-        previous.backend_instance_id().clone(),
-        BackendGeneration::new(format!("desktop-backend-gen-{ordinal}-r{index}"))
-            .map_err(DesktopError::from)?,
-        previous.adapter_id().clone(),
-        AdapterGeneration::new(format!("desktop-adapter-gen-{ordinal}-r{index}"))
-            .map_err(DesktopError::from)?,
-    ))
+) -> Result<(AttachmentTuple, Generation), DesktopError> {
+    let epoch = AttachmentEpoch {
+        ordinal,
+        resets: index,
+        adapter: previous.adapter_id().as_str(),
+    };
+    let current = identity.attachment(epoch).map_err(DesktopError::from)?;
+    if current.backend_instance_id() != previous.backend_instance_id()
+        || current.adapter_id() != previous.adapter_id()
+    {
+        return Err(contract_error(
+            BleErrorCode::LifecycleInvariantViolation,
+            BleErrorDomain::Core,
+            &format!("{}.reset.identity", identity.namespace()),
+        )
+        .with_detail("the host renamed the backend instance or adapter across a reset"));
+    }
+    let generation = identity
+        .kernel_generation(epoch)
+        .map_err(DesktopError::from)?;
+    Ok((current, generation))
 }
 
 /// Tear down everything live on a lost adapter (finding 57), in the legacy
@@ -5031,6 +5054,8 @@ async fn adapter_reset<B: RadioBoundary>(inner: &Arc<Inner<B>>, cause: AdapterLo
             })
             .collect();
         lock_std(&inner.reset_ops).extend(core.live_operation_ids());
+        lock_std(&inner.reset_leases).extend(core.held_leases());
+        lock_std(&inner.reset_consumers).extend(core.held_consumers());
         if let Some(active) = &scan {
             retain_completed_scan(
                 &inner.completed_scans,
@@ -5038,17 +5063,16 @@ async fn adapter_reset<B: RadioBoundary>(inner: &Arc<Inner<B>>, cause: AdapterLo
                 OperationTerminalKind::Reset,
             );
         }
-        let reset = next_attachment(&previous, inner.ordinal, index).and_then(|current| {
-            let generation =
-                Generation::new(format!("desktop-kernel-gen-{}-r{index}", inner.ordinal))
+        let reset = next_scope(inner.identity.as_ref(), &previous, inner.ordinal, index).and_then(
+            |(current, generation)| {
+                let mut out = batch();
+                let settled = core
+                    .handle_adapter_reset(current.clone(), generation, now_ms(), &mut out)
                     .map_err(DesktopError::from)?;
-            let mut out = batch();
-            let settled = core
-                .handle_adapter_reset(current.clone(), generation, now_ms(), &mut out)
-                .map_err(DesktopError::from)?;
-            let _ = out.drain();
-            Ok((current, settled))
-        });
+                let _ = out.drain();
+                Ok((current, settled))
+            },
+        );
         recycle_observations(&mut core);
         let (current, settled) = match reset {
             Ok(done) => done,
@@ -5266,7 +5290,8 @@ async fn refresh_known_peers<B: RadioBoundary>(inner: &Arc<Inner<B>>) {
                 .known_peer_refresh_failures
                 .fetch_add(1, Ordering::Relaxed);
             eprintln!(
-                "ubm-desktop: known peripherals could not be re-read during a scan: {}",
+                "{}: known peripherals could not be re-read during a scan: {}",
+                inner.identity.log_tag(),
                 error.detail().unwrap_or(error.code_str())
             );
         }
@@ -5374,7 +5399,8 @@ async fn account_lost_notifications<B: RadioBoundary>(
         drop(core);
         inner.note_compensation_failure();
         eprintln!(
-            "ubm-desktop: {lost} lost notifications could not be accounted on {scope:?}: {error}"
+            "{}: {lost} lost notifications could not be accounted on {scope:?}: {error}",
+            inner.identity.log_tag()
         );
     }
 }
@@ -5961,7 +5987,25 @@ mod adapter_tests {
             .read("peer-3", &hrm_selector(1), OpControl::budget_ms(5000))
             .await
             .expect("read");
-        assert_eq!(value, vec![0x42]);
+        assert_eq!(value.value, vec![0x42]);
+        assert_eq!(
+            value.provenance,
+            crate::boundary::ReadProvenance::ReadResponse,
+            "a radio that attributes the value reports the read response"
+        );
+        // A radio that fuses read responses and notifications (CoreBluetooth
+        // while notifying) says so; the central carries its answer verbatim.
+        central
+            .boundary()
+            .script_read_provenance(crate::boundary::ReadProvenance::ReadOrNotification);
+        let fused = central
+            .read("peer-3", &hrm_selector(1), OpControl::budget_ms(5000))
+            .await
+            .expect("read while notifying");
+        assert_eq!(
+            fused.provenance,
+            crate::boundary::ReadProvenance::ReadOrNotification
+        );
     }
 
     #[tokio::test]
@@ -6392,7 +6436,7 @@ mod adapter_tests {
             )
             .await
             .expect("read wrist");
-        assert_eq!(wrist, vec![0x77], "occurrence 0 reads instance 0");
+        assert_eq!(wrist.value, vec![0x77], "occurrence 0 reads instance 0");
         let chest = central
             .read(
                 "peer-h1",
@@ -6402,7 +6446,7 @@ mod adapter_tests {
             .await
             .expect("read chest");
         assert_eq!(
-            chest,
+            chest.value,
             vec![0xc4, 0x35],
             "occurrence 1 reads instance 1, not instance 0"
         );
@@ -6618,12 +6662,28 @@ mod adapter_tests {
             ),
             "resolve-reference projects as provided-with-limitation"
         );
-        // ...while open adapter work stays closed.
+        // ...while open adapter work stays closed on every OS...
         let error = central
-            .with_core(|core| core.check_capability("peer:address-targeting", "desktop.probe"))
+            .with_core(|core| core.check_capability("peer:system-connected", "desktop.probe"))
             .await
             .expect_err("adapter work gates closed");
         assert_eq!(error.code(), BleErrorCode::CapabilityUnsupported);
+        // ...and a row a narrow OS adapter fills opens only on that OS
+        // (BlueZ address targeting, `os::linux`).
+        let targeting = central
+            .with_core(|core| core.check_capability("peer:address-targeting", "desktop.probe"))
+            .await;
+        if cfg!(target_os = "linux") {
+            assert!(
+                targeting.is_ok(),
+                "BlueZ provides address targeting: {targeting:?}"
+            );
+        } else {
+            assert_eq!(
+                targeting.expect_err("no OS adapter here").code(),
+                BleErrorCode::CapabilityUnsupported
+            );
+        }
     }
 
     #[tokio::test]
@@ -7208,7 +7268,7 @@ mod adapter_tests {
             .await
             .expect("read");
         assert_eq!(
-            value,
+            value.value,
             vec![0xc4, 0x35],
             "read addresses service occurrence 1, never the guessed 0"
         );
@@ -7676,7 +7736,7 @@ mod adapter_tests {
             .read("peer-f25", &selector, OpControl::budget_ms(5000))
             .await
             .expect("admission remains after failures");
-        assert_eq!(value, vec![0x42]);
+        assert_eq!(value.value, vec![0x42]);
         assert_eq!(
             central.with_core(|core| core.live_operation_count()).await,
             baseline,
@@ -7795,7 +7855,7 @@ mod adapter_tests {
             .read("peer-f03t", &selector, OpControl::budget_ms(5000))
             .await
             .expect("admission remains after timeout");
-        assert_eq!(value, vec![0x42]);
+        assert_eq!(value.value, vec![0x42]);
     }
 
     #[tokio::test]
@@ -8278,7 +8338,7 @@ mod adapter_tests {
             .read("peer-f07b", &hrm_selector(0), OpControl::budget_ms(5000))
             .await
             .expect("B reads under flood");
-        assert_eq!(value, vec![0x42]);
+        assert_eq!(value.value, vec![0x42]);
         // A's lossless stream that cannot keep up shows a visible terminal,
         // not radio silence.
         let peer_a = central.peer_key_for("peer-f07a").await.expect("peer A");
@@ -8342,7 +8402,7 @@ mod adapter_tests {
             "B's operation never waits on A's radio cleanup"
         );
         let value = pending_b.await.expect("B task").expect("B reads");
-        assert_eq!(value, vec![0x42]);
+        assert_eq!(value.value, vec![0x42]);
         // B's notifications also flow while A cleans up.
         central
             .subscribe(
@@ -8459,7 +8519,7 @@ mod adapter_tests {
             .read("peer-f03q", &selector, OpControl::budget_ms(5000))
             .await
             .expect("admission remains after drop");
-        assert_eq!(value, vec![0x42]);
+        assert_eq!(value.value, vec![0x42]);
     }
 
     #[tokio::test]
@@ -8725,7 +8785,7 @@ mod adapter_tests {
                 .read("peer-f02", &selector, OpControl::budget_ms(5000))
                 .await
                 .unwrap_or_else(|error| panic!("read {i} admitted: {error:?}"));
-            assert_eq!(value, vec![0x42]);
+            assert_eq!(value.value, vec![0x42]);
             if i % 250 == 0 {
                 assert_eq!(
                     central.with_core(|core| core.live_operation_count()).await,
@@ -8759,7 +8819,7 @@ mod adapter_tests {
             .read("peer-f02", &selector, OpControl::budget_ms(5000))
             .await
             .expect("admission remains");
-        assert_eq!(value, vec![0x42]);
+        assert_eq!(value.value, vec![0x42]);
     }
 
     #[tokio::test]

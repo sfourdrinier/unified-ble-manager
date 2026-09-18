@@ -115,16 +115,14 @@ pub fn select_listed(
             .with_detail("Windows lists no Bluetooth adapter"));
     }
     match wanted {
+        // W-R2: a name Windows never enumerated is `adapter.unavailable`,
+        // as the legacy provider reported it — never `selection-required`.
         Some(wanted) => adapters
             .iter()
             .position(|adapter| adapter.id == wanted)
             .ok_or_else(|| {
-                DesktopError::new(
-                    BleErrorCode::AdapterSelectionRequired,
-                    BleErrorDomain::Adapter,
-                    "adapter.select",
-                )
-                .with_detail(format!("no Windows Bluetooth adapter has id {wanted:?}"))
+                DesktopError::adapter_unavailable("adapter.select")
+                    .with_detail(format!("no Windows Bluetooth adapter has id {wanted:?}"))
             }),
         None => {
             if let Some(index) = adapters.iter().position(|adapter| adapter.default) {
@@ -276,6 +274,26 @@ mod tests {
         assert_eq!(address_of_peer("hci0/dev_AA_BB"), None);
     }
 
+    /// Finding 127: WinRT reopens by address (`BluetoothLEDevice::
+    /// FromBluetoothAddressAsync`), so the identity a peer id names is the
+    /// address btleplug lists it under — exactly what btleplug's `BDAddr`
+    /// display produces (uppercase colon-hex), in either case, and nothing
+    /// else reopens. No scan is needed first.
+    #[test]
+    fn a_listed_address_reopens_without_a_scan() {
+        // btleplug's own `BDAddr` display vector (`display_addr`): the
+        // reopen identity is that string, verbatim.
+        assert_eq!(address_of_peer("1F:2A:00:CC:22:F1"), Some(0x1F2A_00CC_22F1));
+        assert_eq!(address_of_peer("1f:2a:00:cc:22:f1"), Some(0x1F2A_00CC_22F1));
+        // A CoreBluetooth identifier or BlueZ path names no WinRT address.
+        assert_eq!(
+            address_of_peer("5e0b1c9a-6c0f-4f60-a1c1-3b5f2a0e7d11"),
+            None
+        );
+        assert_eq!(address_of_peer("hci0/dev_1F_2A_00_CC_22_F1"), None);
+        assert_eq!(address_of_peer(""), None);
+    }
+
     #[test]
     fn pairing_statuses_follow_the_legacy_addon() {
         assert_eq!(pairing_status(0, "Paired"), PairingStatus::Paired);
@@ -341,8 +359,10 @@ mod tests {
         let adapters = listed(&[("usb-dongle", false), ("built-in", true)]);
         assert_eq!(select_listed(&adapters, Some("usb-dongle")).ok(), Some(0));
         assert_eq!(select_listed(&adapters, Some("built-in")).ok(), Some(1));
+        // W-R2: a name Windows never enumerated is `adapter.unavailable`,
+        // as the legacy provider reported it — never `selection-required`.
         let unknown = select_listed(&adapters, Some("gone")).unwrap_err();
-        assert_eq!(unknown.code(), BleErrorCode::AdapterSelectionRequired);
+        assert_eq!(unknown.code(), BleErrorCode::AdapterUnavailable);
     }
 
     #[test]

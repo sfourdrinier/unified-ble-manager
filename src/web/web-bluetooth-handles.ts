@@ -16,6 +16,7 @@ import type {
 } from '../backend-contract/gatt'
 import { attachmentRecordsEqual, type AttachmentRecord } from '../backend-contract/identity'
 import type {
+  CharacteristicRead,
   OperationTerminalRecord,
   PublicOperationOptions,
   SubscriptionOptions,
@@ -51,7 +52,7 @@ export interface WebGattDatabaseHost {
     database: WebGattDatabase,
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     options: PublicOperationOptions
-  ): Promise<OwnedBytes>
+  ): Promise<CharacteristicRead>
   writeDirect(
     database: WebGattDatabase,
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
@@ -212,7 +213,7 @@ export class WebGattDatabase implements GattDatabase<string, string, string> {
   read(
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     options: PublicOperationOptions
-  ): Promise<OwnedBytes> {
+  ): Promise<CharacteristicRead> {
     return this.backend.readDirect(this, path, options)
   }
 

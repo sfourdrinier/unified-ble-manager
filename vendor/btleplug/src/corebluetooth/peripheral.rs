@@ -134,6 +134,45 @@ impl Peripheral {
         }
     }
 
+    /// UBM patch (UBM_PATCHES.md #14): read a characteristic and report
+    /// what CoreBluetooth can say the value is. CoreBluetooth reports read
+    /// responses and notifications through one callback, so while the
+    /// characteristic can notify the value is
+    /// [`ReadProvenance::ReadOrNotification`](crate::api::ReadProvenance);
+    /// otherwise it is the read response. Pending reads complete in request
+    /// order.
+    pub async fn read_with_provenance(
+        &self,
+        characteristic: &Characteristic,
+    ) -> Result<(Vec<u8>, crate::api::ReadProvenance)> {
+        let fut = CoreBluetoothReplyFuture::default();
+        self.shared
+            .message_sender
+            .to_owned()
+            .send(CoreBluetoothMessage::ReadValue {
+                peripheral_uuid: self.shared.uuid,
+                service_uuid: AttrKey {
+                    uuid: characteristic.service_uuid,
+                    instance: characteristic.service_instance,
+                },
+                characteristic_uuid: AttrKey {
+                    uuid: characteristic.uuid,
+                    instance: characteristic.instance,
+                },
+                future: fut.get_state_clone(),
+            })
+            .await?;
+        match fut.await {
+            CoreBluetoothReply::CharacteristicRead(value, provenance) => Ok((value, provenance)),
+            CoreBluetoothReply::Err(msg) => Err(Error::RuntimeError(msg)),
+            // UBM patch (UBM_PATCHES.md #15): the platform's own answer.
+            CoreBluetoothReply::Failed(error) => Err(Error::Platform(error)),
+            reply => Err(Error::RuntimeError(format!(
+                "Unexpected reply for a characteristic read: {reply:?}"
+            ))),
+        }
+    }
+
     /// UBM patch (UBM_PATCHES.md #4): readiness reported each time
     /// CoreBluetooth calls `peripheralIsReadyToSendWriteWithoutResponse:`,
     /// read after the queued writes drained (a lagging receiver sees
@@ -502,32 +541,9 @@ impl api::Peripheral for Peripheral {
     }
 
     async fn read(&self, characteristic: &Characteristic) -> Result<Vec<u8>> {
-        let fut = CoreBluetoothReplyFuture::default();
-        self.shared
-            .message_sender
-            .to_owned()
-            .send(CoreBluetoothMessage::ReadValue {
-                peripheral_uuid: self.shared.uuid,
-                service_uuid: AttrKey {
-                    uuid: characteristic.service_uuid,
-                    instance: characteristic.service_instance,
-                },
-                characteristic_uuid: AttrKey {
-                    uuid: characteristic.uuid,
-                    instance: characteristic.instance,
-                },
-                future: fut.get_state_clone(),
-            })
-            .await?;
-        match fut.await {
-            CoreBluetoothReply::ReadResult(chars) => Ok(chars),
-            CoreBluetoothReply::Err(msg) => return Err(Error::RuntimeError(msg)),
-            // UBM patch (UBM_PATCHES.md #15): the platform's own answer.
-            CoreBluetoothReply::Failed(error) => return Err(Error::Platform(error)),
-            _ => {
-                panic!("Shouldn't get anything but read result!");
-            }
-        }
+        self.read_with_provenance(characteristic)
+            .await
+            .map(|(value, _)| value)
     }
 
     async fn subscribe(&self, characteristic: &Characteristic) -> Result<()> {

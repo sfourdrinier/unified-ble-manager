@@ -625,6 +625,8 @@ function createIpcGattSource(
     scheduleDeadline: (deadline, action) => database.scheduleDeadline(deadline, action),
     snapshot: () => database.snapshot(),
     read: (path: PortableCurrentCharacteristicPath, options: PortableOperationOptions) => database.read(path, options),
+    readReceipt: (path: PortableCurrentCharacteristicPath, options: PortableOperationOptions) =>
+      database.readReceipt(path, options),
     write: async (path: PortableCurrentCharacteristicPath, value: Readonly<Uint8Array>, options: PortableWritePolicy) =>
       toPortableWriteReceipt(await database.write(path, value, options)),
     maximumWriteLength: async () => {

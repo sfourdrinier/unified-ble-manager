@@ -165,6 +165,15 @@ jobs:
         # failures diagnosable apart from jest.)
         run: node scripts/ci/build-napi-addon.js
 
+      - name: Build UniFFI mobile host for the Apple harness
+        # AppleNativeProtocolV2.test.js executes the Apple harness, which links
+        # the real Rust mobile host. Building it here, once, keeps the cold
+        # Rust compile out of the jest run (where it shares the runner with
+        # the whole suite); the harness's own `cargo build --locked` then only
+        # confirms it is fresh.
+        if: runner.os == 'macOS'
+        run: cargo build --locked -p ubm5_uniffi_echo
+
       - name: Run package tests
         run: pnpm test:package
 

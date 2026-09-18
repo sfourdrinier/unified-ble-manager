@@ -1,7 +1,7 @@
 // src/testing/deterministic/virtual-peripheral.ts
 
 import type { BleErrorCode } from '../../backend-contract/errors'
-import type { WriteMode } from '../../backend-contract/operations'
+import type { ReadProvenance, WriteMode } from '../../backend-contract/operations'
 import { opaqueId, type Uuid } from '../../backend-contract/primitives'
 
 export type VirtualPeripheralOperation =
@@ -83,6 +83,7 @@ export class VirtualPeripheral {
   private readonly descriptors = new Map<string, MutableDescriptor>()
   private readonly recordedWriteEntries: VirtualWriteRecord[] = []
   private readonly injectedFailures = new Map<VirtualPeripheralOperation, BleErrorCode>()
+  private scriptedReadProvenance: ReadProvenance = 'read-response'
 
   constructor(readonly definition: VirtualPeripheralDefinition) {
     if (definition.key.length === 0) {
@@ -96,6 +97,7 @@ export class VirtualPeripheral {
     this.descriptors.clear()
     this.recordedWriteEntries.length = 0
     this.injectedFailures.clear()
+    this.scriptedReadProvenance = 'read-response'
     this.loadDefinition(this.definition)
   }
 
@@ -135,6 +137,19 @@ export class VirtualPeripheral {
         }))
       }))
     }))
+  }
+
+  /**
+   * Scripts what the platform says characteristic reads are: `read-or-notification`
+   * models a radio that reports read responses and notifications through one
+   * callback (CoreBluetooth reading a notifying characteristic).
+   */
+  setReadProvenance(provenance: ReadProvenance): void {
+    this.scriptedReadProvenance = provenance
+  }
+
+  readProvenance(): ReadProvenance {
+    return this.scriptedReadProvenance
   }
 
   readCharacteristic(address: VirtualCharacteristicAddress): Uint8Array {

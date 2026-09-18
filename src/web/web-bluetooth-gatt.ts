@@ -19,9 +19,12 @@ import { createBackendOperationDispatch, createOperationSettlementCoordinator } 
 import type {
   BackendOperationDispatch,
   CancellationAcknowledgement,
+  CharacteristicRead,
+  CharacteristicReadResult,
   OperationOptions,
   OperationTerminalRecord,
   PublicOperationOptions,
+  ReadProvenance,
   ReadRequest,
   ReadResult,
   SubscribeRequest,
@@ -68,6 +71,13 @@ export interface WebGattHost extends WebGattDatabaseHost {
 
 const RELEASED: CleanupRecord = { state: 'released', failures: [] }
 const MAXIMUM_VALUE_BYTES: ByteLimit = byteLimit(512 * 1024)
+/**
+ * Web Bluetooth's `readValue()` resolves with the value of this read's own
+ * Read Characteristic Value procedure; notifications arrive separately as
+ * `characteristicvaluechanged`. That is the platform's answer. The browser's
+ * own attribution on its host OS is not observable from the page.
+ */
+const WEB_BLUETOOTH_READ_PROVENANCE: ReadProvenance = 'read-response'
 
 export class WebBluetoothGattRuntime {
   readonly gatt: GattBackend<string>
@@ -127,7 +137,7 @@ export class WebBluetoothGattRuntime {
     database: WebGattDatabase,
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     options: PublicOperationOptions
-  ): Promise<OwnedBytes> {
+  ): Promise<CharacteristicRead> {
     return this.readCharacteristic(database, path, options)
   }
 
@@ -363,7 +373,7 @@ export class WebBluetoothGattRuntime {
     database: WebGattDatabase,
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     options: PublicOperationOptions
-  ): Promise<OwnedBytes> {
+  ): Promise<CharacteristicRead> {
     const characteristic = this.requireCharacteristic(database, path, 'web-gatt.read')
     if (!characteristic.properties.read) {
       throw contractError('gatt.property-not-supported', 'gatt', 'web-gatt.read')
@@ -376,7 +386,7 @@ export class WebBluetoothGattRuntime {
       'gatt',
       'web-gatt.read'
     )
-    return ownBytes(value, MAXIMUM_VALUE_BYTES)
+    return Object.freeze({ value: ownBytes(value, MAXIMUM_VALUE_BYTES), provenance: WEB_BLUETOOTH_READ_PROVENANCE })
   }
 
   private async writeCharacteristic(
@@ -625,10 +635,10 @@ export class WebBluetoothGattRuntime {
   private async readResult(
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     request: ReadRequest<string, string>
-  ): Promise<ReadResult<string, string>> {
+  ): Promise<CharacteristicReadResult<string, string>> {
     const database = this.host.requireDatabase(path, 'web-gatt.read')
     return {
-      value: await this.readCharacteristic(database, path, request.operation),
+      ...(await this.readCharacteristic(database, path, request.operation)),
       terminal: terminalRecord(request.operation.correlation)
     }
   }

@@ -1,0 +1,15 @@
+{
+  "name": "link loss: supervised stream, force a disconnect, measure recovery (then walk out of range for a radio loss)",
+  "defaultTimeoutMs": 90000,
+  "steps": [
+    { "run": "link-loss", "command": "start", "capture": ["reconnectTarget"] },
+    { "waitForEvent": "link-loss", "kind": "value", "count": 5 },
+    { "run": "link-loss", "command": "force-disconnect" },
+    { "waitForEvent": "link-loss", "kind": "outage-detected", "since": "previous-step" },
+    { "waitForEvent": "link-loss", "kind": "outage-recovered", "since": "previous-step", "timeoutMs": 60000 },
+    { "expectSnapshot": "link-loss", "match": { "scansAfterInitialFind": 0, "outages": { "$length": { "$gte": 1 } } }, "capture": ["outages"] },
+    { "note": "for a radio loss: walk the strap out of range now; the next wait allows 3 minutes" },
+    { "waitForEvent": "link-loss", "kind": "outage-recovered", "count": 1, "since": "step", "timeoutMs": 180000, "capture": ["outages"] },
+    { "run": "link-loss", "command": "stop", "always": true }
+  ]
+}

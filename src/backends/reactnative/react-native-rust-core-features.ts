@@ -13,9 +13,7 @@ import {
   createFeatureRegistry,
   type BuiltInFeatureId,
   type FeatureRegistry,
-  type MaximumWriteLengthFeatureImplementation,
-  type MaximumWriteLengthFeatureInput,
-  type MaximumWriteLengthFeatureOutput
+  type MaximumWriteLengthFeatureImplementation
 } from '../../backend-contract/capabilities'
 import { contractError } from '../../backend-contract/errors'
 import { version, versionRange } from '../../backend-contract/primitives'
@@ -107,28 +105,56 @@ function phyRegistration(implementationVersion: string, available: boolean) {
   })
 }
 
+/** The ATT maximum attribute value (Core Spec v5.x Vol 3 Part F §3.2.9). */
+const ATT_MAXIMUM_ATTRIBUTE_VALUE = 512
+
 /**
- * Neither mobile OS answers the maximum write length on this route: Android
- * has no `maximumWriteValueLength`, and the Apple owner answers
- * `connection.effective-mtu` as unsupported. The capability is reported
- * `unavailable`, exactly as the legacy routes reported it.
+ * `gatt:maximum-write-length` (new in 5.0): the platform's own per-mode
+ * answer through the Rust owner (`connection.maximum-write-length` →
+ * `ReadWriteLimits`), bounded by the ATT maximum attribute value.
+ * - Apple answers `CBPeripheral.maximumWriteValueLength(for:)` per type.
+ * - Android answers 512 with response: the stack performs a prepared (long)
+ *   write when a value exceeds one ATT payload (AOSP `gatt_cl.cc`
+ *   `gatt_act_write`), and `BluetoothGatt.writeCharacteristic` refuses a
+ *   value over 512 bytes from API 33 (`GATT_MAX_ATTR_LEN`). Without response
+ *   it answers one ATT payload (MTU − 3) of the MTU `onMtuChanged` reported,
+ *   or of the ATT default MTU 23 before any exchange: Android has no MTU
+ *   readout of its own.
  */
-function maximumWriteLengthRegistration(implementationVersion: string) {
-  const limitations = Object.freeze([
-    Object.freeze({
-      code: 'mobile-maximum-write-length-unavailable',
-      explanation: 'The mobile Rust owner exposes no native maximum write length for a connected peripheral.',
-      affectedGuarantee: 'current maximum write length observation'
-    })
-  ])
-  const implementation: MaximumWriteLengthFeatureImplementation = Object.freeze({
-    async invoke(_input: MaximumWriteLengthFeatureInput): Promise<MaximumWriteLengthFeatureOutput> {
-      throw contractError('capability.unavailable', 'gatt', 'react-native-rust-core.gatt.maximum-write-length')
-    }
+function maximumWriteLengthRegistration(
+  platform: ReactNativeRustCoreFeaturePlatform,
+  implementationVersion: string,
+  implementation: MaximumWriteLengthFeatureImplementation
+) {
+  const live = Object.freeze({
+    code: 'live-radio-qualification-pending',
+    explanation:
+      'The maximum write length has deterministic Rust-owner coverage but no reliability-qualified live-radio receipt.',
+    affectedGuarantee: 'reliability-qualified physical-radio interoperability'
   })
+  const limitations = Object.freeze(
+    platform === 'android'
+      ? [
+          Object.freeze({
+            code: 'android-att-default-mtu-before-exchange',
+            explanation:
+              'Android exposes no ATT MTU readout: until onMtuChanged reports an exchange, a write without response is bounded by one payload of the ATT default MTU 23 (20 bytes), even when the stack negotiated a larger MTU itself.',
+            affectedGuarantee: 'write-without-response length before an observed MTU exchange'
+          }),
+          Object.freeze({
+            code: 'android-prepared-write-with-response',
+            explanation:
+              'A write with response longer than one ATT payload is a prepared (long) write performed by the Android stack; a peripheral that refuses Prepare Write fails it.',
+            affectedGuarantee: 'write-with-response values longer than one ATT payload'
+          }),
+          live
+        ]
+      : [live]
+  )
+  const sourceDigest = `react-native-rust-core-${platform}-maximum-write-length-v2`
   return Object.freeze({
     id: BUILT_IN_FEATURE_IDS.maximumWriteLength,
-    state: 'unavailable' as const,
+    state: 'limited' as const,
     selectedSchemaRange: capabilitySchemaRange,
     implementationOrigin: 'backend-native' as const,
     implementation,
@@ -138,16 +164,16 @@ function maximumWriteLengthRegistration(implementationVersion: string) {
       contractRange: capabilitySchemaRange
     }),
     evidence: Object.freeze({
-      receiptId: 'react-native-rust-core-maximum-write-length-v1:blocked',
-      evidenceLevel: 'blocked' as const,
+      receiptId: `${sourceDigest}:deterministic`,
+      evidenceLevel: 'deterministic' as const,
       implementationVersion,
-      sourceDigest: 'react-native-rust-core-maximum-write-length-v1',
+      sourceDigest,
       scenarioIds: Object.freeze(['gatt.maximum-write-length-boundaries']),
       limitations
     }),
     limitations,
     limits: Object.freeze({
-      maximumWriteLength: Object.freeze({ minimum: null, maximum: Number.MAX_SAFE_INTEGER, unit: 'bytes' })
+      maximumWriteLength: Object.freeze({ minimum: 1, maximum: ATT_MAXIMUM_ATTRIBUTE_VALUE, unit: 'bytes' })
     })
   })
 }
@@ -156,7 +182,8 @@ function maximumWriteLengthRegistration(implementationVersion: string) {
 export function createReactNativeRustCoreFeatureRegistry(
   platform: ReactNativeRustCoreFeaturePlatform,
   implementationVersion: string,
-  facts: ReactNativeRustCoreRuntimeFacts
+  facts: ReactNativeRustCoreRuntimeFacts,
+  maximumWriteLength: MaximumWriteLengthFeatureImplementation
 ): FeatureRegistry {
   const direct = operationRegistration(
     BUILT_IN_FEATURE_IDS.connectionDirect,
@@ -170,7 +197,9 @@ export function createReactNativeRustCoreFeatureRegistry(
     createReactNativeConnectionControlFeatureRegistry(platform, implementationVersion),
     createReactNativeDescriptorFeatureRegistry(platform, implementationVersion),
     createReactNativeRestorationFeatureRegistry(platform, implementationVersion),
-    createFeatureRegistry(Object.freeze([direct, maximumWriteLengthRegistration(implementationVersion)]))
+    createFeatureRegistry(
+      Object.freeze([direct, maximumWriteLengthRegistration(platform, implementationVersion, maximumWriteLength)])
+    )
   ]
   if (platform === 'apple') {
     return combineReactNativeFeatureRegistries(...common)

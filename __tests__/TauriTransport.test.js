@@ -644,6 +644,32 @@ describe('Tauri wire codec budgets', () => {
       ).rejects.toMatchObject({ normalized: { code: 'protocol.malformed' } })
     })
 
+    // Owner decision (5.0): a connect whose link the platform could not
+    // establish is the caller's to retry; the core says so and the transport
+    // passes that answer through with the platform's detail.
+    test.each([['platform.failure'], ['connection.failed']])(
+      'a %s connect answered caller-decides reaches the caller unchanged',
+      async code => {
+        const error = {
+          code,
+          domain: code === 'platform.failure' ? 'platform' : 'connection',
+          operation: 'connection.connect',
+          platform: {
+            domain: 'bluez-dbus',
+            code: 'org.bluez.Error.Failed',
+            safeMessage: 'le-connection-abort-by-local',
+            metadata: {}
+          },
+          retryability: 'caller-decides'
+        }
+        const response = await failingTransport(error).invoke({
+          kind: 'route',
+          envelope: { command: 'connection.connect', payload: {} }
+        })
+        expect(response).toEqual({ kind: 'failure', error })
+      }
+    )
+
     test('an unknown retryability word is rejected for aborted and timed-out too', async () => {
       await expect(
         failingTransport({

@@ -11,7 +11,7 @@ const { normalizeScanQuery } = require('../src/public/scan-query')
 const { snapshotScanPlan } = require('../src/backend-contract/scan-planning')
 
 function negotiated(axis) {
-  const selected = version(axis, axis === 'ipc-protocol' ? 3 : 1)
+  const selected = version(axis, axis === 'ipc-protocol' ? 4 : 1)
   const range = versionRange(selected, selected)
   return { axis, selected, localRange: range, remoteRange: range }
 }
@@ -201,9 +201,8 @@ function createSender(client, windowScope, sessionScope) {
     },
     failNavigation(event, url = 'app://bundle/replacement') {
       const args = [{}, -3, 'ERR_ABORTED', url, true, 10, 20]
-      const listeners = event === 'did-fail-provisional-load'
-        ? provisionalNavigationFailureListeners
-        : navigationFailureListeners
+      const listeners =
+        event === 'did-fail-provisional-load' ? provisionalNavigationFailureListeners : navigationFailureListeners
       for (const listener of [...listeners]) listener(...args)
     },
     commitNavigation(mainFrame) {
@@ -427,7 +426,8 @@ function connectionLifecycleEvent(fixture, connection, cause, previous = 'connec
     sequence: 1,
     backendIngressOrdinal: cause === 'adapter-loss' || cause === 'backend-restart' ? 8 : null,
     previous,
-    current: cause === 'peer-link-loss' || cause === 'adapter-loss' || cause === 'backend-restart' ? 'lost' : 'connected',
+    current:
+      cause === 'peer-link-loss' || cause === 'adapter-loss' || cause === 'backend-restart' ? 'lost' : 'connected',
     cause
   }
 }
@@ -439,6 +439,7 @@ function createMainFixture(managerOverrides = {}) {
     identity: { versions: versions() },
     capabilities: () => [],
     planScan: jest.fn(query => diagnosticPlan(query)),
+    onAttachmentAdvanced: () => () => undefined,
     destroy: jest.fn(async () => ({ state: 'released', failures: [] })),
     ...managerOverrides
   }
@@ -585,10 +586,13 @@ describe('Electron v4 IPC boundary', () => {
     const validateRequest = jest.spyOn(current.router, 'validateRequest')
     const dispatch = jest.spyOn(current.router, 'dispatch')
 
-    await expectIpcFailure(current.port.rawHandler({ sender }, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER }), {
-      code: 'protocol.malformed',
-      operation: 'electron-main-binding.frame-identity'
-    })
+    await expectIpcFailure(
+      current.port.rawHandler({ sender }, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER }),
+      {
+        code: 'protocol.malformed',
+        operation: 'electron-main-binding.frame-identity'
+      }
+    )
 
     expect(current.authenticate).not.toHaveBeenCalled()
     expect(validateRequest).not.toHaveBeenCalled()
@@ -604,10 +608,16 @@ describe('Electron v4 IPC boundary', () => {
     const validateRequest = jest.spyOn(current.router, 'validateRequest')
     const dispatch = jest.spyOn(current.router, 'dispatch')
 
-    await expectIpcFailure(current.port.rawHandler({ sender, frameId: 20, processId: 10 }, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER }), {
-      code: 'protocol.malformed',
-      operation: 'electron-main-binding.frame-identity'
-    })
+    await expectIpcFailure(
+      current.port.rawHandler(
+        { sender, frameId: 20, processId: 10 },
+        { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER }
+      ),
+      {
+        code: 'protocol.malformed',
+        operation: 'electron-main-binding.frame-identity'
+      }
+    )
 
     expect(current.authenticate).not.toHaveBeenCalled()
     expect(validateRequest).not.toHaveBeenCalled()
@@ -624,16 +634,13 @@ describe('Electron v4 IPC boundary', () => {
     const sender = createSender('client-malformed-request', 'window-malformed-request', 'session-malformed-request')
     const validateRequest = jest.spyOn(current.router, 'validateRequest')
 
-    await expectIpcFailure(
-      current.port.rawHandler({ sender, frameId: 20, processId: 10 }, request),
-      {
-        code: 'protocol.malformed',
-        domain: 'ipc',
-        operation: 'electron-main-binding.request',
-        platform: null,
-        retryability: 'never'
-      }
-    )
+    await expectIpcFailure(current.port.rawHandler({ sender, frameId: 20, processId: 10 }, request), {
+      code: 'protocol.malformed',
+      domain: 'ipc',
+      operation: 'electron-main-binding.request',
+      platform: null,
+      retryability: 'never'
+    })
 
     expect(validateRequest).not.toHaveBeenCalled()
     await current.binding.destroy()
@@ -645,10 +652,13 @@ describe('Electron v4 IPC boundary', () => {
     const dispatch = jest.spyOn(current.router, 'dispatch')
     const childEvent = { sender, frameId: sender.mainFrame.routingId + 1, processId: sender.mainFrame.processId }
 
-    await expectIpcFailure(current.port.handler(childEvent, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER }), {
-      code: 'ownership.denied',
-      operation: 'electron-main-binding.main-frame'
-    })
+    await expectIpcFailure(
+      current.port.handler(childEvent, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER }),
+      {
+        code: 'ownership.denied',
+        operation: 'electron-main-binding.main-frame'
+      }
+    )
     expect(dispatch).not.toHaveBeenCalled()
 
     const renderer = await bootstrap(current, sender)
@@ -672,8 +682,14 @@ describe('Electron v4 IPC boundary', () => {
     const current = createMainFixture()
     const senderA = createSender('client-a', 'window-a', 'session-a')
     const senderB = createSender('client-b', 'window-b', 'session-b')
-    const bootstrapA = await current.port.handler({ sender: senderA }, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
-    const bootstrapB = await current.port.handler({ sender: senderB }, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
+    const bootstrapA = await current.port.handler(
+      { sender: senderA },
+      { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER }
+    )
+    const bootstrapB = await current.port.handler(
+      { sender: senderB },
+      { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER }
+    )
 
     expect(bootstrapA.kind).toBe('bootstrap')
     expect(bootstrapB.kind).toBe('bootstrap')
@@ -825,7 +841,11 @@ describe('Electron v4 IPC boundary', () => {
 
   test('preserves a replacement-document lease bootstrapped before its navigation commit', async () => {
     const current = createMainFixture()
-    const sender = createSender('client-replacement-document', 'window-replacement-document', 'session-replacement-document')
+    const sender = createSender(
+      'client-replacement-document',
+      'window-replacement-document',
+      'session-replacement-document'
+    )
     const outgoing = await bootstrap(current, sender)
 
     sender.startNavigation()
@@ -895,7 +915,11 @@ describe('Electron v4 IPC boundary', () => {
 
   test('keeps a usable conservative retirement latch for ambiguous same-target failure pairs', async () => {
     const current = createMainFixture()
-    const sender = createSender('client-superseded-navigation', 'window-superseded-navigation', 'session-superseded-navigation')
+    const sender = createSender(
+      'client-superseded-navigation',
+      'window-superseded-navigation',
+      'session-superseded-navigation'
+    )
     const firstRenderer = await bootstrap(current, sender)
     await bootstrap(current, sender)
 
@@ -978,7 +1002,11 @@ describe('Electron v4 IPC boundary', () => {
 
   test('releases a bootstrap lease when WebContents is destroyed while router dispatch is pending', async () => {
     const current = createMainFixture()
-    const sender = createSender('client-bootstrap-destroyed', 'window-bootstrap-destroyed', 'session-bootstrap-destroyed')
+    const sender = createSender(
+      'client-bootstrap-destroyed',
+      'window-bootstrap-destroyed',
+      'session-bootstrap-destroyed'
+    )
     const dispatchReached = deferred()
     const dispatchResult = deferred()
     const originalDispatch = current.router.dispatch.bind(current.router)
@@ -990,7 +1018,10 @@ describe('Electron v4 IPC boundary', () => {
       return response
     })
 
-    const pendingBootstrap = current.port.handler({ sender }, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
+    const pendingBootstrap = current.port.handler(
+      { sender },
+      { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER }
+    )
     await dispatchReached.promise
     sender.destroy()
     dispatchResult.resolve()
@@ -1006,7 +1037,11 @@ describe('Electron v4 IPC boundary', () => {
 
   test('drains an admitted bootstrap before binding destruction can report complete', async () => {
     const current = createMainFixture()
-    const sender = createSender('client-bootstrap-binding-destroy', 'window-bootstrap-binding-destroy', 'session-bootstrap-binding-destroy')
+    const sender = createSender(
+      'client-bootstrap-binding-destroy',
+      'window-bootstrap-binding-destroy',
+      'session-bootstrap-binding-destroy'
+    )
     const dispatchReached = deferred()
     const dispatchResult = deferred()
     const originalDispatch = current.router.dispatch.bind(current.router)
@@ -1018,7 +1053,10 @@ describe('Electron v4 IPC boundary', () => {
       return response
     })
 
-    const pendingBootstrap = current.port.handler({ sender }, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
+    const pendingBootstrap = current.port.handler(
+      { sender },
+      { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER }
+    )
     await dispatchReached.promise
     let destructionSettled = false
     const destruction = current.binding.destroy().finally(() => {
@@ -1179,11 +1217,7 @@ describe('Electron v4 IPC boundary', () => {
     const current = createMainFixture()
     const sender = createSender('client-mutated-old', 'window-mutated', 'session-mutated-old')
     const renderer = await bootstrap(current, sender)
-    sender.trusted.authenticatedClientId = opaqueId(
-      'client-mutated-new',
-      'client',
-      'electron:client-mutated-new'
-    )
+    sender.trusted.authenticatedClientId = opaqueId('client-mutated-new', 'client', 'electron:client-mutated-new')
     sender.trusted.authenticatedSessionScope = 'session-mutated-new'
 
     await expectIpcFailure(current.port.handler({ sender }, routeRequest(current, renderer, 1)), {
@@ -1452,7 +1486,9 @@ describe('Electron v4 IPC boundary', () => {
         capturedEnvelope = request.envelope
         return { kind: 'route', payload: { accepted: true } }
       },
-      async acknowledge() { return { kind: 'event.ack' } },
+      async acknowledge() {
+        return { kind: 'event.ack' }
+      },
       subscribe(listener) {
         listeners.push(listener)
         return () => listeners.splice(listeners.indexOf(listener), 1)
@@ -1776,7 +1812,11 @@ describe('Electron v4 IPC boundary', () => {
       lifecycleStream
     )
     const current = createMainFixture({ connect: jest.fn(async () => connection) })
-    const sender = createSender('client-lifecycle-admission', 'window-lifecycle-admission', 'session-lifecycle-admission')
+    const sender = createSender(
+      'client-lifecycle-admission',
+      'window-lifecycle-admission',
+      'session-lifecycle-admission'
+    )
     const renderer = await bootstrap(current, sender)
     const connected = await current.port.handler(
       { sender },
@@ -1862,7 +1902,11 @@ describe('Electron v4 IPC boundary', () => {
         return sourceFailureConnection
       })
     })
-    const sender = createSender('client-lifecycle-terminal-map', 'window-lifecycle-terminal-map', 'session-lifecycle-terminal-map')
+    const sender = createSender(
+      'client-lifecycle-terminal-map',
+      'window-lifecycle-terminal-map',
+      'session-lifecycle-terminal-map'
+    )
     const renderer = await bootstrap(current, sender)
     const oversizedConnected = await current.port.handler(
       { sender },
@@ -1889,12 +1933,16 @@ describe('Electron v4 IPC boundary', () => {
       }
     })
     await flushAsyncWork()
-    expectConsoleError('[ElectronConnectionEventStreamRegistry] Lifecycle event exceeded the configured IPC message limit:', {
-      handle: oversizedSubscribed.payload.handle
-    })
+    expectConsoleError(
+      '[ElectronConnectionEventStreamRegistry] Lifecycle event exceeded the configured IPC message limit:',
+      {
+        handle: oversizedSubscribed.payload.handle
+      }
+    )
     expect(
-      sender.sent.find(({ event }) => event.streamId === oversizedSubscribed.payload.handle && event.item.kind === 'terminal')
-        .event.item
+      sender.sent.find(
+        ({ event }) => event.streamId === oversizedSubscribed.payload.handle && event.item.kind === 'terminal'
+      ).event.item
     ).toEqual({
       kind: 'terminal',
       reason: 'overflow',
@@ -1922,8 +1970,9 @@ describe('Electron v4 IPC boundary', () => {
       'renderer-backpressure'
     )
     expect(
-      sender.sent.find(({ event }) => event.streamId === backpressureSubscribed.payload.handle && event.item.kind === 'terminal')
-        .event.item
+      sender.sent.find(
+        ({ event }) => event.streamId === backpressureSubscribed.payload.handle && event.item.kind === 'terminal'
+      ).event.item
     ).toEqual({
       kind: 'terminal',
       reason: 'source-failed',
@@ -1951,8 +2000,9 @@ describe('Electron v4 IPC boundary', () => {
       handle: sourceFailureSubscribed.payload.handle
     })
     expect(
-      sender.sent.find(({ event }) => event.streamId === sourceFailureSubscribed.payload.handle && event.item.kind === 'terminal')
-        .event.item
+      sender.sent.find(
+        ({ event }) => event.streamId === sourceFailureSubscribed.payload.handle && event.item.kind === 'terminal'
+      ).event.item
     ).toEqual({
       kind: 'terminal',
       reason: 'source-failed',
@@ -2065,7 +2115,11 @@ describe('Electron v4 IPC boundary', () => {
       connect: jest.fn(async () => connection),
       scan: jest.fn(async () => ({ observations: createControlledStream(), stop: jest.fn(async () => released()) }))
     })
-    const sender = createSender('client-lifecycle-stream-id-collision', 'window-lifecycle-stream-id-collision', 'session-lifecycle-stream-id-collision')
+    const sender = createSender(
+      'client-lifecycle-stream-id-collision',
+      'window-lifecycle-stream-id-collision',
+      'session-lifecycle-stream-id-collision'
+    )
     const renderer = await bootstrap(current, sender)
     const connected = await current.port.handler(
       { sender },
@@ -2112,7 +2166,11 @@ describe('Electron v4 IPC boundary', () => {
       lifecycleSource
     )
     const current = createMainFixture({ connect: jest.fn(async () => connection) })
-    const sender = createSender('client-lifecycle-exclusive', 'window-lifecycle-exclusive', 'session-lifecycle-exclusive')
+    const sender = createSender(
+      'client-lifecycle-exclusive',
+      'window-lifecycle-exclusive',
+      'session-lifecycle-exclusive'
+    )
     const renderer = await bootstrap(current, sender)
     const connected = await current.port.handler(
       { sender },
@@ -2659,6 +2717,7 @@ describe('Electron v4 IPC boundary', () => {
         descriptors: [descriptor]
       })),
       read: jest.fn(async () => new Uint8Array([1, 2, 3])),
+      readReceipt: jest.fn(async () => ({ value: new Uint8Array([1, 2, 3]), provenance: 'read-or-notification' })),
       write: jest.fn(async (_path, bytes) => ({
         terminal: { correlation: 'write-correlation', outcome: 'succeeded', cause: null },
         commitState: 'confirmed',
@@ -2770,7 +2829,10 @@ describe('Electron v4 IPC boundary', () => {
         scanResponseRecord: unavailable('scan-response-not-observed')
       }
     })
-    await expect(observation).resolves.toMatchObject({ done: false, value: { kind: 'value', value: { peer: { id: 'peer-public' } } } })
+    await expect(observation).resolves.toMatchObject({
+      done: false,
+      value: { kind: 'value', value: { peer: { id: 'peer-public' } } }
+    })
     await expect(scan.stop()).resolves.toMatchObject({ state: 'released', failures: [] })
     await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
 
@@ -2779,6 +2841,11 @@ describe('Electron v4 IPC boundary', () => {
     const publicDatabase = await publicConnection.discover()
     const publicCharacteristic = publicDatabase.characteristic('180d', '2a37')
     await expect(publicCharacteristic.read()).resolves.toEqual(new Uint8Array([1, 2, 3]))
+    // The main process forwards the radio's provenance verbatim to the renderer.
+    await expect(publicCharacteristic.readReceipt()).resolves.toEqual({
+      value: new Uint8Array([1, 2, 3]),
+      provenance: 'read-or-notification'
+    })
     await expect(publicCharacteristic.write(new Uint8Array([7]))).resolves.toMatchObject({
       terminal: { outcome: 'succeeded' },
       commitState: 'confirmed'
@@ -2788,7 +2855,10 @@ describe('Electron v4 IPC boundary', () => {
     const subscription = await publicCharacteristic.subscribe()
     const notification = subscription.values[Symbol.asyncIterator]().next()
     notificationStream.push({ kind: 'value', value: { value: new Uint8Array([9]), delivery: 'notification' } })
-    await expect(notification).resolves.toMatchObject({ done: false, value: { kind: 'value', value: { value: new Uint8Array([9]), delivery: 'notification' } } })
+    await expect(notification).resolves.toMatchObject({
+      done: false,
+      value: { kind: 'value', value: { value: new Uint8Array([9]), delivery: 'notification' } }
+    })
     await expect(subscription.remove()).resolves.toMatchObject({ state: 'released', failures: [] })
     await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
     const disconnectSubscription = await publicCharacteristic.subscribe()
@@ -2883,7 +2953,11 @@ describe('Electron v4 IPC boundary', () => {
         lifecycleSource
       )
       const current = createMainFixture({ connect: jest.fn(async () => connection) })
-      const sender = createSender('client-lifecycle-natural-retry', 'window-lifecycle-natural-retry', 'session-lifecycle-natural-retry')
+      const sender = createSender(
+        'client-lifecycle-natural-retry',
+        'window-lifecycle-natural-retry',
+        'session-lifecycle-natural-retry'
+      )
       const renderer = await bootstrap(current, sender)
       const connected = await current.port.handler(
         { sender },
@@ -2927,8 +3001,11 @@ describe('Electron v4 IPC boundary', () => {
           .get(String(renderer.rendererLease.leaseId))
           .connectionEventSubscriptions.has(subscribed.payload.handle)
       ).toBe(false)
-      expect(sender.sent.filter(({ event }) => event.streamId === subscribed.payload.handle && event.item.kind === 'terminal'))
-        .toHaveLength(1)
+      expect(
+        sender.sent.filter(
+          ({ event }) => event.streamId === subscribed.payload.handle && event.item.kind === 'terminal'
+        )
+      ).toHaveLength(1)
       await current.binding.destroy()
     } finally {
       jest.useRealTimers()
@@ -3290,7 +3367,9 @@ describe('Electron v4 IPC boundary', () => {
         .mockResolvedValueOnce({ kind: 'bootstrap', bootstrap: bootstrapValue })
         .mockRejectedValueOnce(releaseTransportFailure)
         .mockResolvedValueOnce({ kind: 'release', cleanup: released() }),
-      async acknowledge() { return { kind: 'event.ack' } },
+      async acknowledge() {
+        return { kind: 'event.ack' }
+      },
       subscribe(listener) {
         listeners.push(listener)
         return () => listeners.splice(listeners.indexOf(listener), 1)
@@ -3328,7 +3407,9 @@ describe('Electron v4 IPC boundary', () => {
         expect(request).toEqual({ kind: 'release', rendererLease: bootstrapValue.rendererLease })
         return { kind: 'release', cleanup: released() }
       }),
-      async acknowledge() { return { kind: 'event.ack' } },
+      async acknowledge() {
+        return { kind: 'event.ack' }
+      },
       subscribe(listener) {
         listeners.push(listener)
         return () => listeners.splice(listeners.indexOf(listener), 1)
@@ -3404,10 +3485,7 @@ describe('Electron v4 IPC boundary', () => {
     const firstLifecycleStream = createConnectionLifecycleStream()
     const secondLifecycleStream = createConnectionLifecycleStream()
     const scanStream = createControlledStream()
-    const scanStop = jest
-      .fn()
-      .mockResolvedValueOnce(failed('scan'))
-      .mockResolvedValueOnce(released())
+    const scanStop = jest.fn().mockResolvedValueOnce(failed('scan')).mockResolvedValueOnce(released())
     const firstConnection = createConnection(
       'peer-partial-release-first',
       createDatabase({ values: createControlledStream(), remove: jest.fn(async () => released()) }),
@@ -3471,7 +3549,13 @@ describe('Electron v4 IPC boundary', () => {
     })
     await client.request({
       command: 'scan.start',
-      payload: { query: normalizeScanQuery(), serviceUuids: [], manufacturerData: [], localNamePrefix: null, deadline: null },
+      payload: {
+        query: normalizeScanQuery(),
+        serviceUuids: [],
+        manufacturerData: [],
+        localNamePrefix: null,
+        deadline: null
+      },
       binaryPayload: null,
       signal: null
     })
@@ -3561,7 +3645,11 @@ describe('Electron v4 IPC boundary', () => {
 
   test('returns a stale renderer ownership denial as a normalized IPC response', async () => {
     const current = createMainFixture()
-    const sender = createSender('client-typed-stale-failure', 'window-typed-stale-failure', 'session-typed-stale-failure')
+    const sender = createSender(
+      'client-typed-stale-failure',
+      'window-typed-stale-failure',
+      'session-typed-stale-failure'
+    )
     const renderer = await bootstrap(current, sender)
 
     await expect(
@@ -3583,13 +3671,19 @@ describe('Electron v4 IPC boundary', () => {
 
   test('normalizes unexpected IPC handler exceptions without exposing the thrown object', async () => {
     const current = createMainFixture()
-    const sender = createSender('client-unexpected-ipc-failure', 'window-unexpected-ipc-failure', 'session-unexpected-ipc-failure')
+    const sender = createSender(
+      'client-unexpected-ipc-failure',
+      'window-unexpected-ipc-failure',
+      'session-unexpected-ipc-failure'
+    )
     const unexpected = new Error('native IPC details must not cross the preload boundary')
     jest.spyOn(current.router, 'validateRequest').mockImplementation(() => {
       throw unexpected
     })
 
-    await expect(current.port.handler({ sender }, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })).resolves.toEqual({
+    await expect(
+      current.port.handler({ sender }, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
+    ).resolves.toEqual({
       kind: 'failure',
       error: {
         code: 'platform.failure',
@@ -3631,7 +3725,10 @@ describe('Electron v4 IPC boundary', () => {
     const bootstrapFailure = await bootstrapFailureClient.initialize().catch(error => error)
     expect(bootstrapFailure).toBeInstanceOf(BackendContractError)
     expect(bootstrapFailure).toMatchObject({ normalized: normalizedOwnershipFailure })
-    expect(bootstrapFailureTransport.invoke).toHaveBeenCalledWith({ kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
+    expect(bootstrapFailureTransport.invoke).toHaveBeenCalledWith({
+      kind: 'bootstrap',
+      offer: IPC_CLIENT_COMPATIBILITY_OFFER
+    })
 
     const routeBootstrap = rendererBootstrap('typed-route-failure')
     const routeFailureTransport = {

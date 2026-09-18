@@ -22,7 +22,7 @@ import type {
   GattDatabaseChangedEvent,
   GattDescriptorProperties
 } from '../backend-contract/gatt'
-import type { HostNeutralBackendIdentity } from '../backend-contract/identity'
+import type { AttachmentRecord, HostNeutralBackendIdentity } from '../backend-contract/identity'
 import {
   byteLimit,
   capacity,
@@ -45,7 +45,7 @@ import { snapshotSerializableRecord } from '../backend-contract/serializable'
 import { snapshotScanPlan } from '../backend-contract/scan-planning'
 import type { ScanPlan } from '../backend-contract/scan-planning'
 import { decodeIpcScanQuery, encodeIpcScanPlan } from '../ipc/scan-planning'
-import { IPC_CLIENT_COMPATIBILITY_OFFER } from '../ipc/protocol'
+import { IPC_ATTACHMENT_STREAM_ID, IPC_CLIENT_COMPATIBILITY_OFFER, ipcAttachmentRecordV2 } from '../ipc/protocol'
 import { BleManager, Connection, DiscoveredGattDatabase } from '../manager/ble-manager'
 import type {
   ElectronBleIpcEvent,
@@ -145,6 +145,9 @@ interface RendererResourceSnapshot {
  */
 export class ElectronMainBleRouter {
   private readonly manager: MainManager
+  private readonly detachAttachmentListener: () => void
+  /** The attachment renderers route under; main rebinds it after an adapter loss. */
+  private attachment: AttachmentRecord<string>
   private publish: ElectronMainBleRouterOptions['publish']
   private readonly maximumMessageBytes: number
   private readonly maximumOutstandingOperations: number
@@ -177,6 +180,7 @@ export class ElectronMainBleRouter {
       createEvent: (rendererLease, streamId, item) => this.event(rendererLease, streamId, item)
     })
     const attachment = this.manager.attachedBackend.attachment.attachment
+    this.attachment = attachment
     const versions = createElectronHostIpcVersionAxes(this.manager.identity.versions)
     this.arbiter = new ElectronMainArbiterContext(
       {
@@ -193,6 +197,48 @@ export class ElectronMainBleRouter {
         release: (_identity, lease) => this.releaseResources(lease.leaseId)
       }
     )
+    this.detachAttachmentListener = this.manager.onAttachmentAdvanced((previous, current) =>
+      this.rebindRenderers(previous, current)
+    )
+  }
+
+  /**
+   * IPC protocol 4: the manager followed its backend to a new attachment after
+   * an adapter loss. Main (never a renderer) rebinds: later routes must name
+   * the new attachment, the replaced one is refused `backend.reset` (releases
+   * excepted), and every active renderer lease is told on the attachment
+   * stream.
+   */
+  private rebindRenderers(previous: AttachmentRecord<string>, current: AttachmentRecord<string>): void {
+    this.arbiter.rebindAttachment(current)
+    this.attachment = current
+    const item = Object.freeze({
+      kind: 'value',
+      value: Object.freeze({
+        kind: 'backend-restarted',
+        schemaVersion: 1,
+        previousAttachmentId: String(previous.attachmentId),
+        attachmentId: String(current.attachmentId),
+        attachment: ipcAttachmentRecordV2(current)
+      })
+    })
+    for (const resources of this.resources.values()) {
+      if (resources.lifecycle !== 'active') continue
+      const event = this.event(resources.rendererLease, IPC_ATTACHMENT_STREAM_ID, item)
+      this.publish(String(resources.rendererLease.leaseId), event).then(
+        delivery => {
+          if (delivery !== 'delivered') {
+            console.error('[ElectronMainBleRouter] Attachment rebind was not delivered:', {
+              rendererLease: String(resources.rendererLease.leaseId),
+              delivery
+            })
+          }
+        },
+        error => {
+          console.error('[ElectronMainBleRouter] Attachment rebind delivery failed:', error)
+        }
+      )
+    }
   }
 
   async dispatch<Renderer extends string, Operation extends string>(
@@ -267,6 +313,7 @@ export class ElectronMainBleRouter {
   }
 
   async destroy(): Promise<CleanupRecord> {
+    this.detachAttachmentListener()
     const rendererFailures: CleanupFailure[] = []
     for (const clientId of [...this.resources.keys()]) {
       try {
@@ -304,7 +351,7 @@ export class ElectronMainBleRouter {
     rendererLease: RendererLeaseIdentity,
     versions: IpcVersionAxes
   ): ElectronRendererBootstrap<string, Renderer> {
-    const attachment = this.manager.attachedBackend.attachment.attachment
+    const attachment = this.attachment
     const capabilities = this.manager.capabilities()
     return Object.freeze({
       attachment,
@@ -465,7 +512,7 @@ export class ElectronMainBleRouter {
     this.streams.registerScan(resources, envelope.rendererLease, handle, scan)
     return Object.freeze({
       handle,
-      backendGeneration: String(this.manager.attachedBackend.attachment.attachment.backendGeneration),
+      backendGeneration: String(this.attachment.backendGeneration),
       plan: encodeIpcScanPlan(plan)
     })
   }
@@ -656,8 +703,8 @@ export class ElectronMainBleRouter {
   ): Promise<SerializableRecord> {
     const database = this.database(resources, payload)
     const path = this.characteristic(database, payload)
-    const value = await database.database.read(path, operationOptions(payload, controller))
-    return Object.freeze({ value: ownBytes(value, byteLimit(value.byteLength)) })
+    const { value, provenance } = await database.database.readReceipt(path, operationOptions(payload, controller))
+    return Object.freeze({ value: ownBytes(value, byteLimit(value.byteLength)), provenance })
   }
 
   private async write(
@@ -767,13 +814,7 @@ export class ElectronMainBleRouter {
     if (!isElectronConnectionEventsStreamHandle(handle)) {
       throw contractError('argument.invalid', 'ipc', 'electron-main-router.connection-events-handle')
     }
-    return this.connectionEvents.register(
-      resources,
-      handle,
-      connectionHandle,
-      connection,
-      this.manager.attachedBackend.attachment.attachment
-    )
+    return this.connectionEvents.register(resources, handle, connectionHandle, connection, this.attachment)
   }
 
   private readyConnectionEvents(resources: RendererResources, payload: SerializableRecord): SerializableRecord {

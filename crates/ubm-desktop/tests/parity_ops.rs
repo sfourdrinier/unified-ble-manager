@@ -1148,3 +1148,60 @@ async fn the_platform_answer_survives_the_central() {
         .expect_err("connect refused");
     assert_eq!(connect.platform(), Some(&bluez));
 }
+
+/// Owner decision (5.0): a connect the platform could not establish
+/// transiently answers `caller-decides` through the central with the
+/// platform's answer kept; a connect refused for any other reason stays
+/// `never`. The central never retries it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_transient_connect_failure_is_caller_decides_through_the_central() {
+    use ubm_desktop::{PlatformDetail, PlatformValue, Retryability};
+    let central = open().await;
+    let transient = [
+        PlatformDetail::new("corebluetooth", "10")
+            .with_metadata("nsErrorDomain", PlatformValue::Text("CBErrorDomain".to_owned())),
+        PlatformDetail::new("winrt", "gatt-status")
+            .with_metadata("gattStatus", PlatformValue::Text("unreachable".to_owned())),
+        PlatformDetail::new("bluez-dbus", "org.bluez.Error.Failed")
+            .with_message("le-connection-abort-by-local"),
+    ];
+    for (index, platform) in transient.iter().enumerate() {
+        let peer = format!("peer-t{index}");
+        known_peer(&central, &peer).await;
+        central
+            .boundary()
+            .fail_next_with_platform(FaultOp::Connect, "link not established", platform.clone());
+        let connects_before = connect_calls(&central);
+        let error = central
+            .connect(&peer, "lease-a", OpControl::budget_ms(1000))
+            .await
+            .expect_err("connect failed");
+        assert_eq!(error.retryability(), Retryability::CallerDecides, "{platform:?}");
+        assert_eq!(error.platform(), Some(platform));
+        assert_eq!(
+            connect_calls(&central),
+            connects_before + 1,
+            "no internal retry"
+        );
+    }
+    known_peer(&central, "peer-n").await;
+    central.boundary().fail_next_with_platform(
+        FaultOp::Connect,
+        "not ready",
+        PlatformDetail::new("bluez-dbus", "org.bluez.Error.NotReady"),
+    );
+    let refused = central
+        .connect("peer-n", "lease-a", OpControl::budget_ms(1000))
+        .await
+        .expect_err("connect refused");
+    assert_eq!(refused.retryability(), Retryability::Never);
+}
+
+fn connect_calls(central: &DesktopCentral<FakeRadio>) -> usize {
+    central
+        .boundary()
+        .calls()
+        .iter()
+        .filter(|call| call.as_str() == "connect")
+        .count()
+}

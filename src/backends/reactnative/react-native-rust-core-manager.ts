@@ -19,6 +19,7 @@ import {
   assertBackendEvent,
   attachBackend,
   type AttachedBackend,
+  type BackendAttachment,
   type BackendConnection,
   type BackendEvent,
   type BleCentralBackend,
@@ -73,7 +74,7 @@ import type {
 } from '../../backend-contract/gatt'
 import { connectionPathsEqual, databasePathsEqual } from '../../core/gatt-path-equality'
 import type { NativeBackendIdentity } from '../../backend-contract/identity'
-import type { AdapterStateSnapshot } from '../../backend-contract/identity'
+import type { AdapterStateSnapshot, AttachmentRecord } from '../../backend-contract/identity'
 import type {
   AttachmentId,
   BackendCompatibilityOffer,
@@ -87,17 +88,11 @@ import type {
   OwnedBytes,
   PeerId
 } from '../../backend-contract/primitives'
-import {
-  capacity,
-  createAttachmentBoundIdFactory,
-  deadline,
-  opaqueId,
-  ownBytes,
-  type AttachmentBoundIdFactory
-} from '../../backend-contract/primitives'
+import { capacity, deadline, ownBytes } from '../../backend-contract/primitives'
 import { utf8ByteLength } from '../../backend-contract/serializable'
 import type {
   BackendOperationDispatch,
+  CharacteristicRead,
   OperationOptions,
   LongWriteChunkProgress,
   LongWritePolicy,
@@ -211,12 +206,17 @@ class ReactNativeRustCoreManager {
   private resourceReleaseResult: Promise<CleanupRecord> | null = null
   private destroyResult: Promise<CleanupRecord> | null = null
   private eventsPumpStarted = false
+  private attachment: BackendAttachment<string, NativeBackendIdentity<string>>
+  private readonly attachmentListeners = new Set<
+    (previous: AttachmentRecord<string>, current: AttachmentRecord<string>) => void
+  >()
 
   constructor(
     private readonly options: ReactNativeRustCoreManagerOptions,
     private readonly attached: AttachedBackend<string, NativeBackendIdentity<string>>
   ) {
     this.featuresRegistry = createCoreFeatureRegistry(options.backend.features)
+    this.attachment = attached.attachment
   }
 
   private get backend(): ReactNativeRustCoreBackend {
@@ -228,11 +228,21 @@ class ReactNativeRustCoreManager {
   }
 
   get identity(): NativeBackendIdentity<string> {
-    return this.attached.attachment.identity
+    return this.attachment.identity
   }
 
   get attachmentId(): AttachmentId<string> {
-    return this.attached.attachment.attachment.attachmentId
+    return this.attachment.attachment.attachmentId
+  }
+
+  /** The manager followed its backend to a new attachment after an adapter loss. */
+  onAttachmentAdvanced(
+    listener: (previous: AttachmentRecord<string>, current: AttachmentRecord<string>) => void
+  ): () => void {
+    this.attachmentListeners.add(listener)
+    return () => {
+      this.attachmentListeners.delete(listener)
+    }
   }
 
   get managerId(): ManagerId<string, string> {
@@ -287,32 +297,22 @@ class ReactNativeRustCoreManager {
     return this.backend.connections
   }
 
-  /** Operation options with a fresh correlation bound to this attachment. */
-  operationOptions(options: PublicOperationOptions, kind: string): OperationOptions<string, string> {
-    const ordinal = this.nextCorrelation
-    this.nextCorrelation += 1
+  get backendGatt(): ReactNativeRustCoreBackend['gatt'] {
+    return this.backend.gatt
+  }
+
+  /** The next public correlation (legacy `operation-{n}`). */
+  publicCorrelation(): OperationCorrelation<string, string> {
+    return this.backend.publicCorrelation()
+  }
+
+  /** Operation options with the next public correlation (legacy `operation-{n}`). */
+  operationOptions(options: PublicOperationOptions): OperationOptions<string, string> {
     return Object.freeze({
       signal: options.signal,
       deadline: options.deadline,
-      correlation: this.correlations.operationCorrelation(`rust-core-manager-${kind}-${ordinal}`)
+      correlation: this.backend.publicCorrelation()
     })
-  }
-
-  private nextCorrelation = 1
-  private correlationIds: AttachmentBoundIdFactory<string> | null = null
-
-  private get correlations(): AttachmentBoundIdFactory<string> {
-    if (this.correlationIds === null) {
-      const attachment = this.backend.identity.attachment
-      this.correlationIds = createAttachmentBoundIdFactory<string>({
-        attachmentId: attachment.attachmentId,
-        backendInstanceId: attachment.backendInstanceId,
-        backendGeneration: attachment.backendGeneration,
-        adapterId: attachment.adapter.adapterId,
-        adapterGeneration: attachment.adapter.adapterGeneration
-      })
-    }
-    return this.correlationIds
   }
 
   adoptRestoration(request: RestorationAdoptionRequest<string>): Promise<RestorationAdoptionResult<string>> {
@@ -585,6 +585,50 @@ class ReactNativeRustCoreManager {
   }
 
   /** Releases scans, connections, and watches; the backend + session close at destroy. */
+  /**
+   * The owner advanced its generations after an adapter loss. 5.0 keeps the
+   * manager (legacy destroyed it, `unified-ble-core.ts` `releaseResources('backend-restart')`):
+   * every connection of the old generation ends `adapter-loss` and is
+   * released; scans and streams already ended with the owner's records, and
+   * a new connection can follow the adapter's return. A release that fails
+   * stays in `connections`, so `destroy()` retries and reports it.
+   */
+  /**
+   * Binds the backend's current attachment when the same backend instance on
+   * the same adapter advanced its generation, so later events of the new
+   * generation reach the manager; answers whether the manager is bound to the
+   * backend's current attachment.
+   */
+  private followBackendGeneration(): boolean {
+    const held = this.attachment.attachment
+    const current = this.backend.identity.attachment
+    if (current.attachmentId === held.attachmentId) {
+      return true
+    }
+    if (current.backendInstanceId !== held.backendInstanceId || current.adapter.adapterId !== held.adapter.adapterId) {
+      return false
+    }
+    this.attachment = Object.freeze({ ...this.attachment, attachment: current, identity: this.backend.identity })
+    for (const listener of [...this.attachmentListeners]) {
+      try {
+        listener(held, current)
+      } catch (error) {
+        console.error('[ReactNativeRustCoreManager.followBackendGeneration] An attachment listener failed:', error)
+      }
+    }
+    return true
+  }
+
+  private releaseAfterAdapterLoss(): void {
+    for (const connection of [...this.connections.values()]) {
+      connection.finishLifecycle('adapter-loss', null)
+      this.releaseConnection(connection, 'adapter-loss').catch(error => {
+        // The connection stays owned; destroy() retries and reports it.
+        console.error('[ReactNativeRustCoreManager] Adapter-loss connection release failed:', error)
+      })
+    }
+  }
+
   private releaseOwnedResources(cause: ConnectionLifecycleTerminalCause = 'manager-destroyed'): Promise<CleanupRecord> {
     if (this.resourceReleaseResult === null) {
       this.managerState = 'destroying'
@@ -708,13 +752,24 @@ class ReactNativeRustCoreManager {
       return
     }
     if (event.kind === 'backend-restarted' || event.kind === 'backend-restarting') {
-      if (event.attachment.adapter.adapterId === this.attached.attachment.attachment.adapter.adapterId) {
-        this.releaseOwnedResources('backend-restart').catch(() => undefined)
+      if (event.attachment.adapter.adapterId === this.attachment.attachment.adapter.adapterId) {
+        if (this.followBackendGeneration()) {
+          this.releaseAfterAdapterLoss()
+        } else {
+          // A different backend instance replaced this one: nothing the
+          // manager holds survives it, so it ends as legacy did.
+          this.releaseOwnedResources('backend-restart').catch(error => {
+            console.error('[ReactNativeRustCoreManager] Backend-restart release failed:', error)
+          })
+        }
       }
       return
     }
     if (event.attachmentId !== this.attachmentId) {
-      return
+      this.followBackendGeneration()
+      if (event.attachmentId !== this.attachmentId) {
+        return
+      }
     }
     if (event.kind === 'database-changed') {
       for (const connection of this.connections.values()) {
@@ -915,17 +970,26 @@ class NativeConnection {
   }
 
   async maximumWriteLength(
-    _mode: WriteMode,
-    _options: PortableOperationOptions
+    mode: WriteMode,
+    options: PortableOperationOptions
   ): Promise<MaximumWriteLengthObservation<string>> {
-    this.assertCurrent()
-    throw contractError(
-      this.manager.featureState(BUILT_IN_FEATURE_IDS.maximumWriteLength) === 'unavailable'
-        ? 'capability.unavailable'
-        : 'capability.unsupported',
-      'gatt',
-      'rust-core-manager.connection.maximum-write-length'
+    if (mode !== 'with-response' && mode !== 'without-response') {
+      throw contractError('argument.invalid', 'gatt', 'rust-core-manager.connection.maximum-write-length')
+    }
+    const measured = await this.control(
+      BUILT_IN_FEATURE_IDS.maximumWriteLength,
+      options,
+      'maximum-write-length',
+      (connections, operation) =>
+        requireControl(connections.maximumWriteLength, 'maximum-write-length')(this.resource, { operation, mode })
     )
+    return Object.freeze({
+      connectionId: measured.connectionId,
+      connectionGeneration: measured.connectionGeneration,
+      mode: measured.mode,
+      maximumWriteLength: measured.maximumWriteLength,
+      observedAtMonotonicMs: measured.observedAtMonotonicMs
+    })
   }
 
   async writeWithoutResponseReadiness(
@@ -960,7 +1024,7 @@ class NativeConnection {
     this.assertCurrent()
     const publicOptions = toPublicOperationOptions(options)
     if (publicOptions.signal?.aborted === true) throw contractError('operation.aborted', 'connection', operationName)
-    const operation = this.manager.operationOptions(publicOptions, name)
+    const operation = this.manager.operationOptions(publicOptions)
     return dispatch(this.manager.backendConnections, operation).completion
   }
 
@@ -1155,7 +1219,6 @@ class NativeGattDatabase {
     'drop-oldest'
   )
   private readonly subscriptions = new Set<NativeSubscription>()
-  private nextWriteLongOrdinal = 1
 
   constructor(
     private readonly manager: ReactNativeRustCoreManager,
@@ -1195,7 +1258,7 @@ class NativeGattDatabase {
     return snapshot
   }
 
-  async read(path: CurrentCharacteristicPath, options: PublicOperationOptions): Promise<OwnedBytes> {
+  async readReceipt(path: CurrentCharacteristicPath, options: PublicOperationOptions): Promise<CharacteristicRead> {
     this.assertPath(path)
     this.assertOperationAdmission(options, 'read')
     return this.backendDatabase.read(path, options)
@@ -1275,11 +1338,11 @@ class NativeGattDatabase {
       }
       progress.activeChunkIndex = index
       try {
-        await this.backendDatabase.write(path, owned.subarray(chunk.byteOffset, chunk.byteOffset + chunk.byteLength), {
-          signal: options.signal ?? null,
-          deadline: options.deadline ?? null,
+        await this.manager.backendGatt.write(path, {
+          operation: { signal: options.signal ?? null, deadline: options.deadline ?? null, correlation },
+          bytes: owned.subarray(chunk.byteOffset, chunk.byteOffset + chunk.byteLength),
           mode: options.mode
-        })
+        }).completion
       } catch (error) {
         progress.markDispatchedChunkUncertain(index)
         failed = asBackendError(error, 'rust-core-manager.write-long.chunk')
@@ -1434,10 +1497,9 @@ class NativeGattDatabase {
     return plan
   }
 
+  /** One legacy core correlation for the whole long write; its chunks carry it. */
   private mintWriteLongCorrelation(): OperationCorrelation<string, string> {
-    const ordinal = this.nextWriteLongOrdinal
-    this.nextWriteLongOrdinal += 1
-    return opaqueId(`rust-core-manager-write-long-${ordinal}`, 'core-operation', 'string:write-long')
+    return this.manager.publicCorrelation()
   }
 }
 
@@ -1472,7 +1534,14 @@ class NativeDiscoveredGattDatabase {
   }
 
   async read(path: PortableCurrentCharacteristicPath, options: PortableOperationOptions): Promise<OwnedBytes> {
-    return this.database.read(this.resolveCharacteristicPath(path), toPublicOperationOptions(options))
+    return (await this.readReceipt(path, options)).value
+  }
+
+  async readReceipt(
+    path: PortableCurrentCharacteristicPath,
+    options: PortableOperationOptions
+  ): Promise<CharacteristicRead> {
+    return this.database.readReceipt(this.resolveCharacteristicPath(path), toPublicOperationOptions(options))
   }
 
   async write(

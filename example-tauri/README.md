@@ -17,3 +17,14 @@ content while Cargo is writing that directory.
 
 The first discovered peer is used only after the user presses **Run BLE proof**.
 No device or vendor UUID is built into the library or example.
+
+## Shared test driver
+
+`driver.html` and `src/driver.ts` host the cross-host test scenarios over the
+Tauri IPC client (`createTauriBleManager`). The Rust plugin owns the radio. For
+development, run the webview frontend with
+`pnpm exec vite --config example-tauri/vite.config.mts` and the app with
+`cargo run --manifest-path example-tauri/src-tauri/Cargo.toml` (debug builds load
+`build.devUrl`), then open the driver from the window. Launch commands and the
+protocol are in [`../examples-shared/driver/README.md`](../examples-shared/driver/README.md).
+

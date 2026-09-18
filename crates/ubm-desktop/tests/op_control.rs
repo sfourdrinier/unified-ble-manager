@@ -349,7 +349,7 @@ async fn long_budget_above_thirty_seconds_is_honoured() {
     );
     central.boundary().unblock_op(FaultOp::Read);
     let value = pending.await.expect("join").expect("read succeeds at 40 s");
-    assert_eq!(value, vec![0x42]);
+    assert_eq!(value.value, vec![0x42]);
 }
 
 // PR210-06: without a caller budget the liveness backstop decides, and says

@@ -32,6 +32,24 @@ JS manager ─┘                          └─ WakeSink (JS wakeup)
   - Several managers sharing the platform radio (one GATT owner, one
     CoreBluetooth delegate).
   - Background operation.
+- **Identity.** <a id="identity"></a>The shared central names no host: the
+  owner that opens it supplies its identity (`ubm_desktop::HostIdentity`,
+  `crates/ubm-desktop/src/identity.rs`). `MobileHost` passes
+  `MobileIdentity` (`crates/ubm-mobile/src/identity.rs`), which names every
+  scope in the formats the legacy React Native backends published (origin/main
+  `corebluetooth-attachment-lifecycle.ts` with the React Native identity
+  options): backend and adapter generations `"1"` (then `"2"`… per adapter
+  reset), backend instance `react-native-{android|apple}-backend-{n}`,
+  attachment `{instance}:{backend gen}:{adapter gen}`, adapter
+  `android-default-adapter` / `apple-corebluetooth-default-adapter`. Its own
+  failures and log lines use `ubm-mobile.host` / `ubm-mobile`. No desktop
+  name reaches the wire; `crates/ubm-mobile/tests/golden.rs` and
+  `rust-core-wire.golden.test.js` fail on one. Only the generations cross the
+  wire; the TypeScript backend names its own instance and attachment in the
+  same legacy formats, and its public resource names (peer, scan, connection,
+  lease, connection and database generations, database, subscription) in the
+  legacy `corebluetooth-*` formats, mapping each public generation to the
+  owner's generation that the wire carries (`cg-{n}`, `db-{n}`).
 - **`MobileSession`** is one RN manager's lease on the host.
   - Everything it acquires on the shared central is namespaced by session id
     (`s{id}:` for leases and consumers): scan membership, connection leases
@@ -109,11 +127,41 @@ tests guard this:
 - **Wake arming.**
   - While a session's outbox is empty and armed, the first record disarms it
     and calls `WakeSink.wake(sessionId)` once.
-  - JS then drains with `while (more) drain(256, 65536)`.
+  - JS then drains with `drain(256, 65536)` until `more` is false and its
+    backlog is empty (see Delivery).
   - A drain that empties the outbox re-arms it, then re-checks. A record that
     raced in makes the drain answer `more: true` and wakes no one, so no
     wakeup is lost.
   - An idle session costs zero calls and zero wakes (tested).
+- **Delivery.** Data records (`adv`, `value`) reach JS one per native→JS
+  task, as the legacy boundary delivered one native callback per record. A
+  stream reader re-arms through several promise hops, so data records emitted
+  in one synchronous loop overflow a `latest` (one-item) stream before its
+  reader runs.
+  - Taken records wait in a FIFO backlog. Each pass delivers the backlog up
+    to, not including, its second data record. Control records keep their
+    drained order and their neighbours: a `link` and the `stream-end`s behind
+    it are delivered in one pass.
+  - The boundary before the next pass is the next drain call, which takes one
+    record (`drain(1, 65536)`) while a backlog remains, so the backlog never
+    grows. A TurboModule promise resolves through the JS call invoker as a
+    task of its own (bridgeless `RuntimeScheduler`), and it runs while the app
+    is in the background.
+  - No JS timer is a boundary. React Native 0.86 timers stop with the host:
+    Android `JavaTimerManager` fires only on Choreographer frames and skips
+    them while the host is paused; iOS `RCTTiming` runs on `CADisplayLink`,
+    which it stops in the background. A `setTimeout(0)` boundary held
+    notifications ~26 s with the screen off. Bridgeless `setImmediate` is a
+    `queueMicrotask` shim, which is not a task boundary.
+  - Cost: one extra drain call per data record after the first in a burst,
+    the same count as legacy's one native event per record (an ECG stream at
+    130 Hz is 130 calls/s).
+  - Stopping the drain (destroy) runs after `session.dispose`; the owner keeps
+    its outbox, and the router drains and delivers every record it still
+    holds before it resolves. A value whose consumer was released meanwhile
+    surfaces as the `unmatched-notification` diagnostic warning, never
+    silently. A drain failure delivers the backlog before every stream ends
+    with the failure.
 
 ## Envelope and codec
 
@@ -136,7 +184,6 @@ these:
   | Android GATT status, busy or other radio failure | `platform.failure` / `platform` | `{domain:"android", code:<legacy native code of the verb>, metadata:{androidGattStatus}}` (status only when the platform reported one) |
   | Android link loss (`not-connected`, or GATT status 19) | `connection.lost` / `connection` | `{domain:"android", code:"connectionLost", …}` |
   | Apple radio failure | `platform.failure` / `platform` | the `NSError` domain and decimal code, else `{domain:"corebluetooth", code:<legacy native code of the verb>}`; `metadata:{}` |
-  | Apple owned-radio read/notify refusal (1011, 1031 / 1032) | `gatt.read-failed` / `gatt.subscribe-failed` | the owned radio's domain and code |
   | Adapter state read failure | `adapter.unavailable` / `adapter` | as above |
   | cancel, permission, adapter state, stale path, unknown peer, unsupported | their contract codes | `null` |
 
@@ -172,7 +219,7 @@ these:
   - Every other op keeps its backstop, because it is either an immediate
     platform readout or a link exchange that a link loss ends:
     `adapter.state`, `peers.bonded`, `security.state`, `background.*`,
-    `connection.rssi`/`effective-mtu`/`request-mtu`/`request-priority`/`read-phy`/`request-phy`,
+    `connection.rssi`/`effective-mtu`/`request-mtu`/`request-priority`/`read-phy`/`request-phy`/`maximum-write-length`,
     `session.reconcile`, and the core's discover and GATT verbs.
 
 ## Op table
@@ -199,9 +246,9 @@ spec.
 
 | op | args (`?` optional) | ok `value` | Δ vs spec §2 |
 |---|---|---|---|
-| `adapter.state` | `{}` | `{availability,authorization,power,safeReason,updatedAt,backendGeneration,adapterGeneration}`, read from the platform (`AdapterState` request). Generations are the core attachment's. | — |
+| `adapter.state` | `{}` | `{availability,authorization,power,safeReason,updatedAt,backendGeneration,adapterGeneration}`, read from the platform (`AdapterState` request). Generations are the core attachment's, named by the owner's [identity](#identity): `"1"` at open, as legacy React Native reported them. | — |
 | `counters.describe` | `{}` | `{counters:{13 keys},native:{pendingRadioRequests,liveOps},process:{counters:{13 keys},native:{pendingRadioRequests,lateRadioCompletions,ingressDrops:{advertisement,notification,control},liveOps}}}`. `counters`/`native` describe this session; `process` describes the whole owner. Answered after `session.dispose` too. | see [Counters](#counters) |
-| `scan.start` | `{serviceUuids[],duplicatePolicy:"all",operationId,deviceAddresses?[],platform?{mode?,callbackType?,legacy?},budgetMs?}` | `{operationId}`, the session's **membership** id (`s{n}-scan-{k}`) | `timeoutMs` → `budgetMs` (start budget). Adds `deviceAddresses` and Android `platform`: on Apple either one is `capability.unsupported`. `callbackType:"match-lost"` is `capability.unsupported`. `duplicatePolicy` other than `all` is `capability.unsupported` (first/merged are applied above the radio). |
+| `scan.start` | `{serviceUuids[],duplicatePolicy:"all",operationId,deviceAddresses?[],platform?{mode?,callbackType?,legacy?,phy?,reportDelayMs?},budgetMs?}` (`phy`/`reportDelayMs` → `capability.unsupported` `scan.start.platform-options` before any effect, as legacy) | `{operationId}`, the session's **membership** id (`s{n}-scan-{k}`) | `timeoutMs` → `budgetMs` (start budget). Adds `deviceAddresses` and Android `platform`: on Apple either one is `capability.unsupported`. `callbackType:"match-lost"` is `capability.unsupported`. `duplicatePolicy` other than `all` is `capability.unsupported` (first/merged are applied above the radio). |
 | `scan.stop` | `{operationId,budgetMs?}` | cleanup record. A stop failure keeps the membership (retry). | unknown id → `lifecycle.invalid-state` (detail `scan-not-active`; the contract has no `scan.not-active` code) |
 | `peers.resolve` | `{reference:{opaqueId,version?,backendId?,scope?}}` | peer record \| `null` | — |
 | `peers.known` / `peers.connected` | `{}` | `[peer record]` | — |
@@ -209,21 +256,23 @@ spec.
 | `peers.restored` | `{}` | `[peer record]` (`source:"restored"`) | **new** |
 | `peers.claim-restored` | `{maxPeers}` | `{peers:[peer record]}`: the restored peers no session claimed before, now claimed by this one (once per process). More unclaimed peers than `maxPeers` → `bytes.too-large` with nothing claimed. Android → `capability.unsupported` | **new** (PR210-52) |
 | `connection.connect` | `{peerId,lease,operationId,budgetMs?,intent?:"direct"\|"when-available",transport?:"auto"\|"le",preferredPhy?:["le-1m"\|"le-2m"\|"le-coded"]}` | `{peerKey,connectionGeneration}` | `when-available` = Android `autoConnect`; Apple → unsupported. `preferredPhy` (PR210-54): on Android the link is established on those PHYs (`connectGatt(…, TRANSPORT_LE, phyMask)`, API 26+); it is refused with `capability.unsupported` (`connection.connect.preferred-phy`) before any effect on Apple, with `when-available` (Android ignores the connect PHY with `autoConnect`), and when the link is already up. The radio refuses API < 26 the same way. |
-| `connection.disconnect` | `{peerId,lease,budgetMs?,operationId?}` | cleanup record. A failure answers `release-failed` and keeps the lease for retry. | — |
+| `connection.disconnect` | `{peerId,lease,budgetMs?,operationId?}` | cleanup record. A failure answers `release-failed` and keeps the lease for retry. A lease an adapter loss ended answers `released` once, as legacy's adapter-loss cleanup left it. | — |
 | `connection.rssi` | `{peerId,lease,operationId,budgetMs?}` | `{rssi}` (core-admitted: foreign lease → `ownership.denied`) | **new** |
 | `connection.effective-mtu` | `{peerId,lease}` | `{mtu\|null}` (Android) | **new**, Apple → unsupported |
-| `connection.request-mtu` | `{peerId,lease,mtu:23..517,operationId,budgetMs?}` | `{mtu}` | **new**, Apple → unsupported |
+| `connection.request-mtu` | `{peerId,lease,mtu:0..517,operationId,budgetMs?}` (below 23 goes to the platform, which refuses it: `platform.failure` `requestMtuFailed`, as legacy) | `{mtu}` | **new**, Apple → unsupported |
 | `connection.request-priority` | `{peerId,lease,priority:"low-power"\|"balanced"\|"high-throughput",operationId,budgetMs?}` | `{accepted}` (dispatch acceptance only) | **new**, Apple → unsupported |
 | `connection.read-phy` | `{peerId,lease,operationId,budgetMs?}` | `{tx,rx}` | **new**, Apple → unsupported |
-| `connection.request-phy` | `{peerId,lease,operationId,tx?,rx?,budgetMs?}` (at least one) | `{accepted,observation:{tx,rx}\|null}` | **new**, Apple → unsupported |
+| `connection.request-phy` | `{peerId,lease,operationId,tx?,rx?,budgetMs?}` (at least one, else `argument.invalid` in the `connection` domain, as legacy) | `{accepted,observation:{tx,rx}\|null}` | **new**, Apple → unsupported |
+| `connection.maximum-write-length` | `{peerId,lease,mode:"with-response"\|"without-response",operationId,budgetMs?}` | `{maximumWriteLength}` (1..512): the platform's `ReadWriteLimits` answer for `mode`, bounded by the ATT maximum attribute value through the core's `connection_maximum_write_length`, the limit every `gatt.write` of that mode is admitted against. Core-admitted: foreign lease → `ownership.denied`; a withheld platform answer → `capability.unavailable`. No discovered database is needed. | **new** (5.0 `gatt:maximum-write-length`), both platforms |
 | `security.state` | `{peerId,operationId?,budgetMs?}` | `{bond,encryption,authentication,secureConnections,pairingPossible}` | **new** |
 | `security.pair` | `{peerId,transport:"auto"\|"le",operationId,budgetMs?}` | `{outcome:"paired"\|"already-paired"\|"rejected",state}`. `auto` on an already-bonded peer runs no ceremony (legacy rule). | **new** |
 | `security.cancel-pairing` | `{peerId,operationId?,budgetMs?}` | `{state:"requested"}` | **new** |
 | `gatt.discover` | `{peerId,lease,operationId,budgetMs?}` | `{connectionGeneration,databaseGeneration,services:[…]}` from the core's `discovered_paths` | The database registers whole or the discovery fails; nothing is skipped. A malformed platform UUID fails `protocol.malformed` (`discovery.snapshot.uuid`), a database past the ATT handle space `capability.limited` (`discovery.database-bound`), as the legacy backends failed |
-| `gatt.read` / `gatt.read-descriptor` | `{peerId,selector,operationId,budgetMs?}` | `{valueB64}` | no `lease` (core reads are not lease-scoped) |
+| `gatt.read` | `{peerId,selector,operationId,budgetMs?}` | `{valueB64,provenance}` | no `lease` (core reads are not lease-scoped); `provenance` is the radio's own answer: `read-response` (Android `onCharacteristicRead`; CoreBluetooth while the characteristic cannot notify) or `read-or-notification` (CoreBluetooth while it can notify: the value may be a notification). A reply without it is `protocol.malformed` |
+| `gatt.read-descriptor` | `{peerId,selector,operationId,budgetMs?}` | `{valueB64}` | no `lease` |
 | `gatt.write` / `gatt.write-descriptor` | `+{valueB64,mode}` | `{commitState:"confirmed"}` with-response / `"unknown"` without | descriptor `without-response` → unsupported |
 | `gatt.subscribe` | `{peerId,selector,consumer,operationId,deliveryMode?,budgetMs?}` | `{consumer,delivery:"notification"\|"indication"\|"unknown"}` | see [Delivery modes](#delivery-modes) |
-| `gatt.unsubscribe` | `{peerId,selector,consumer,operationId,budgetMs?}` | `{state:"released",physicalDisabled}`. A failure keeps the consumer (L7). | — |
+| `gatt.unsubscribe` | `{peerId,selector,consumer,operationId,budgetMs?}` | `{state:"released",physicalDisabled}`. A failure keeps the consumer (L7). A consumer an adapter loss ended answers released once. | — |
 | `background.acquire` | `{kind:"connected-device",reason,operationId?,budgetMs?}` | `{leaseId}` | **new** (replaces the legacy protocol-control `acquireBackground`) |
 | `background.release` | `{leaseId,budgetMs?}` | cleanup record | **new** |
 | `background.update-notification` | `{leaseId,title,body?,budgetMs?}` | `{state:"updated"}` | **new** |
@@ -455,7 +504,13 @@ The full shapes are in `crates/ubm-mobile/src/radio.rs`,
   512 (the ATT maximum attribute value; the stack performs the long write)
   and without-response one ATT payload of the MTU `onMtuChanged` reported,
   or of the ATT default MTU 23 before any exchange. Apple answers
-  `maximumWriteValueLength(for:)` per type.
+  `maximumWriteValueLength(for:)` per type. `connection.maximum-write-length`
+  reports the same answer. Android's with-response 512 rests on AOSP: the
+  stack sends a prepared write when a value exceeds one ATT payload
+  (`system/stack/gatt/gatt_cl.cc` `gatt_act_write`), and
+  `BluetoothGatt.writeCharacteristic` throws for a value over
+  `GATT_MAX_ATTR_LEN` (512) from API 33; the ATT specification caps any
+  attribute value at 512 octets (Core Spec Vol 3 Part F §3.2.9).
 - `RequestMtu` → `Mtu(n)`
 - `ReadRssi` → `Rssi`
 - `RequestConnectionPriority` → `Accepted`

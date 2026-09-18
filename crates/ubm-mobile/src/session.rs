@@ -66,6 +66,7 @@ pub const OPS: &[&str] = &[
     "connection.request-priority",
     "connection.read-phy",
     "connection.request-phy",
+    "connection.maximum-write-length",
     "security.state",
     "security.pair",
     "security.cancel-pairing",
@@ -133,6 +134,11 @@ pub(crate) struct SessionState {
     op_sequence: AtomicU64,
     leases: Mutex<HashMap<String, String>>,
     subscriptions: Mutex<HashMap<String, Subscription>>,
+    /// Leases and subscriptions an adapter reset ended: the core forgot
+    /// them, and their release answers `released`, as the legacy backends'
+    /// adapter-loss cleanup left terminalized handles.
+    reset_leases: Mutex<HashMap<String, String>>,
+    reset_subscriptions: Mutex<HashMap<String, Subscription>>,
     scan: Mutex<Option<String>>,
     scan_ordinal: AtomicU64,
     pub background_scope: BackgroundScope,
@@ -155,6 +161,8 @@ impl SessionState {
             op_sequence: AtomicU64::new(0),
             leases: Mutex::new(HashMap::new()),
             subscriptions: Mutex::new(HashMap::new()),
+            reset_leases: Mutex::new(HashMap::new()),
+            reset_subscriptions: Mutex::new(HashMap::new()),
             scan: Mutex::new(None),
             scan_ordinal: AtomicU64::new(0),
             background_scope,
@@ -168,6 +176,23 @@ impl SessionState {
         if scan.as_deref() == Some(membership) {
             *scan = None;
         }
+    }
+
+    /// An adapter reset ended every link: the core cleared its connection
+    /// records, including links already lost before the reset. Move all of
+    /// this session's leases and subscriptions to the reset tables. Answers
+    /// the routes (scope, consumer) the host drops.
+    pub(crate) fn end_by_reset(&self) -> Vec<(InstanceKey, String)> {
+        lock(&self.reset_leases).extend(lock(&self.leases).drain());
+        let mut ended = lock(&self.reset_subscriptions);
+        lock(&self.subscriptions)
+            .drain()
+            .map(|(consumer, subscription)| {
+                let route = (subscription.scope.clone(), consumer.clone());
+                ended.insert(consumer, subscription);
+                route
+            })
+            .collect()
     }
 
     fn core_name(&self, name: &str) -> String {
@@ -720,7 +745,21 @@ impl MobileSession {
                                 "CoreBluetooth has no scan settings",
                             ));
                         }
-                        options.exact(&[], &["mode", "callbackType", "legacy"])?;
+                        options.exact(
+                            &[],
+                            &["mode", "callbackType", "legacy", "phy", "reportDelayMs"],
+                        )?;
+                        // Legacy refused an Android scan PHY or batched
+                        // report delay as unsupported (139, AN-1).
+                        if options.get_raw("phy").is_some()
+                            || options.get_raw("reportDelayMs").is_some()
+                        {
+                            return Err(error(
+                                BleErrorCode::CapabilityUnsupported,
+                                BleErrorDomain::Scan,
+                                "scan.start.platform-options",
+                            ));
+                        }
                         Some(AndroidScanOptions {
                             mode: options
                                 .opt_one_of(
@@ -841,7 +880,8 @@ impl MobileSession {
             | "connection.request-mtu"
             | "connection.request-priority"
             | "connection.read-phy"
-            | "connection.request-phy" => {
+            | "connection.request-phy"
+            | "connection.maximum-write-length" => {
                 let (required, optional): (&[&str], &[&str]) = match op {
                     "connection.effective-mtu" => (&["peerId", "lease"], &[]),
                     "connection.request-mtu" => {
@@ -855,6 +895,9 @@ impl MobileSession {
                         &["peerId", "lease", "operationId"],
                         &["tx", "rx", "budgetMs"],
                     ),
+                    "connection.maximum-write-length" => {
+                        (&["peerId", "lease", "mode", "operationId"], &["budgetMs"])
+                    }
                     _ => (&["peerId", "lease", "operationId"], &["budgetMs"]),
                 };
                 args.exact(required, optional)?;
@@ -876,10 +919,9 @@ impl MobileSession {
                     "connection.rssi" => Control::Rssi,
                     "connection.effective-mtu" => Control::EffectiveMtu,
                     "connection.request-mtu" => {
+                        // Legacy handed any requested MTU to the platform,
+                        // which refuses one below 23 (139, AN-3).
                         let mtu = args.integer("mtu", 517)?;
-                        if mtu < 23 {
-                            return Err(wire::invalid("args.mtu"));
-                        }
                         Control::RequestMtu(
                             u16::try_from(mtu).map_err(|_| wire::invalid("args.mtu"))?,
                         )
@@ -894,11 +936,19 @@ impl MobileSession {
                         },
                     ),
                     "connection.read-phy" => Control::ReadPhy,
+                    "connection.maximum-write-length" => Control::MaximumWriteLength(
+                        args.one_of("mode", &["with-response", "without-response"])?
+                            == "with-response",
+                    ),
                     _ => {
                         let tx = args.opt_one_of("tx", PHYS)?.and_then(phy);
                         let rx = args.opt_one_of("rx", PHYS)?.and_then(phy);
                         if tx.is_none() && rx.is_none() {
-                            return Err(wire::invalid("args.request-phy.preference"));
+                            return Err(error(
+                                BleErrorCode::ArgumentInvalid,
+                                BleErrorDomain::Connection,
+                                "connection.request-phy.preference",
+                            ));
                         }
                         Control::RequestPhy(tx, rx)
                     }
@@ -1172,7 +1222,7 @@ impl MobileSession {
                     bounded(&ctl, "adapter.state", host.radio.adapter_snapshot()).await?;
                 let updated_at = host.now_ms();
                 *lock(&host.adapter) = Some((snapshot.clone(), updated_at));
-                Ok(adapter_value(&snapshot, updated_at, central))
+                Ok(adapter_value(&snapshot, updated_at, &central.attachment()))
             }
             Body::Counters => self.counters().await,
             Body::ScanStart {
@@ -1345,6 +1395,7 @@ impl MobileSession {
                     )
                     .with_detail("connected without a connection generation")
                 })?;
+                lock(&self.state.reset_leases).remove(&peer_id);
                 lock(&self.state.leases).insert(peer_id.clone(), core_lease);
                 host.note_peer(&peer_id, None, "app-reference");
                 Ok(object(vec![
@@ -1354,6 +1405,13 @@ impl MobileSession {
             }
             Body::Disconnect { peer_id, lease } => {
                 let core_lease = self.state.core_name(&lease);
+                {
+                    let mut ended = lock(&self.state.reset_leases);
+                    if ended.get(&peer_id) == Some(&core_lease) {
+                        ended.remove(&peer_id);
+                        return Ok(cleanup_record(Vec::new()));
+                    }
+                }
                 match central.disconnect(&peer_id, &core_lease, ctl).await {
                     Ok(LinkRelease::Released | LinkRelease::AlreadyReleased) => {
                         lock(&self.state.leases).remove(&peer_id);
@@ -1458,15 +1516,18 @@ impl MobileSession {
                 selector,
                 descriptor,
             } => {
-                let bytes = if descriptor {
-                    central.read_descriptor(&peer_id, &selector, ctl).await?
-                } else {
-                    central.read(&peer_id, &selector, ctl).await?
-                };
-                Ok(object(vec![(
-                    "valueB64",
-                    Value::from(wire::encode_base64(&bytes)),
-                )]))
+                if descriptor {
+                    let bytes = central.read_descriptor(&peer_id, &selector, ctl).await?;
+                    return Ok(object(vec![(
+                        "valueB64",
+                        Value::from(wire::encode_base64(&bytes)),
+                    )]));
+                }
+                let read = central.read(&peer_id, &selector, ctl).await?;
+                Ok(object(vec![
+                    ("valueB64", Value::from(wire::encode_base64(&read.value))),
+                    ("provenance", Value::from(read.provenance.as_str())),
+                ]))
             }
             Body::Write {
                 peer_id,
@@ -1507,6 +1568,19 @@ impl MobileSession {
                 selector,
                 consumer,
             } => {
+                let reset = lock(&self.state.reset_subscriptions)
+                    .get(&consumer)
+                    .is_some_and(|s| {
+                        s.peer_id == peer_id && s.scope == scope_of(&peer_id, &selector)
+                    });
+                if reset {
+                    lock(&self.state.reset_subscriptions).remove(&consumer);
+                    return Ok(object(vec![
+                        ("state", Value::from("released")),
+                        // The reset's cleanup disabled it, not this call.
+                        ("physicalDisabled", Value::Bool(false)),
+                    ]));
+                }
                 let subscription = lock(&self.state.subscriptions).get(&consumer).cloned();
                 let Some(subscription) = subscription
                     .filter(|s| s.peer_id == peer_id && s.scope == scope_of(&peer_id, &selector))
@@ -1695,6 +1769,16 @@ impl MobileSession {
         let host = &*self.host;
         let operation = control.operation();
         let core_lease = self.state.core_name(lease);
+        if let Control::MaximumWriteLength(with_response) = control {
+            // The platform's own per-mode answer (`ReadWriteLimits`), bounded
+            // by the ATT maximum attribute value, through the same core path
+            // every write is admitted by.
+            let maximum = host
+                .central
+                .connection_maximum_write_length(peer_id, &core_lease, with_response, ctl)
+                .await?;
+            return Ok(object(vec![("maximumWriteLength", Value::from(maximum))]));
+        }
         if let Control::Rssi = control {
             let rssi = host.central.read_rssi(peer_id, &core_lease, ctl).await?;
             return Ok(object(vec![("rssi", Value::from(rssi))]));
@@ -1706,7 +1790,8 @@ impl MobileSession {
             &ctl,
             operation,
             host.radio.call(move |id| match control {
-                Control::EffectiveMtu | Control::Rssi => {
+                // Rssi and MaximumWriteLength returned above through the core.
+                Control::EffectiveMtu | Control::Rssi | Control::MaximumWriteLength(_) => {
                     RadioRequest::ReadMtu { id, peer_id: peer }
                 }
                 Control::RequestMtu(mtu) => RadioRequest::RequestMtu {
@@ -2054,7 +2139,7 @@ impl MobileSession {
         let snapshot = bounded(ctl, "session.reconcile", host.radio.adapter_snapshot()).await?;
         let updated_at = host.now_ms();
         *lock(&host.adapter) = Some((snapshot.clone(), updated_at));
-        let adapter = adapter_value(&snapshot, updated_at, central);
+        let adapter = adapter_value(&snapshot, updated_at, &central.attachment());
         let mut links: Vec<Value> = central
             .peer_records()
             .await
@@ -2305,6 +2390,8 @@ enum Control {
     Priority(ConnectionPriority),
     ReadPhy,
     RequestPhy(Option<Phy>, Option<Phy>),
+    /// `true` = with response.
+    MaximumWriteLength(bool),
 }
 
 impl Control {
@@ -2316,6 +2403,7 @@ impl Control {
             Self::Priority(_) => "connection.request-priority",
             Self::ReadPhy => "connection.read-phy",
             Self::RequestPhy(..) => "connection.request-phy",
+            Self::MaximumWriteLength(_) => "connection.maximum-write-length",
         }
     }
 }

@@ -38,6 +38,7 @@ import type {
 import {
   checkRandomByteLength,
   checkWriteReceipt,
+  failureEnvelopeError,
   parseAdmissionText,
   parseDrainText,
   parseInvokeEnvelope,
@@ -49,12 +50,10 @@ import {
   remoteFailureError,
   serializeInvokeArgs,
   WIRE_REVISION,
-  type WireCommit,
   type WireDrainBatch,
   type WireJsonObject,
   type WireOp,
   type WireOpResults,
-  type WireRemoteFailure,
   type WireRestorationIdentity,
   type WireResult
 } from './rust-core-wire'
@@ -117,17 +116,6 @@ function nativeRejection(error: unknown, operation: string): BackendContractErro
     code: 'unstructured-native-rejection',
     safeMessage: (message ?? String(error)).slice(0, 1024),
     metadata: Object.freeze({})
-  })
-}
-
-/** The failure an envelope reports, with the owner's commit state on writes. */
-function failureWithCommit(failure: WireRemoteFailure, commit: WireCommit | null): BackendContractError {
-  const error = remoteFailureError(failure)
-  if (commit === null) return error
-  return new BackendContractError({
-    ...error.normalized,
-    retryability: commit === 'uncertain' ? 'never' : error.normalized.retryability,
-    commit
   })
 }
 
@@ -277,7 +265,7 @@ export function createReactNativeRustCoreBinding(
         const argsText = unwrap(serializeInvokeArgs(args))
         const text = await call(op, () => native.invoke(sessionId, op, argsText))
         const envelope = unwrap(parseInvokeEnvelope(text, op))
-        if (envelope.kind === 'failure') throw failureWithCommit(envelope.failure, envelope.commit)
+        if (envelope.kind === 'failure') throw failureEnvelopeError(envelope)
         return unwrap(parseOpValue(op, envelope.value))
       },
       drain: async (maxItems: number, maxBytes: number): Promise<WireDrainBatch> => {

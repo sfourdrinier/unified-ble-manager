@@ -10,7 +10,7 @@ class FakeChannel {
 }
 
 function negotiated(axis) {
-  const selected = { axis, value: axis === 'ipc-protocol' ? 3 : 1 }
+  const selected = { axis, value: axis === 'ipc-protocol' ? 4 : 1 }
   const range = { axis, minimum: selected, maximum: selected }
   return { axis, selected, localRange: range, remoteRange: range }
 }

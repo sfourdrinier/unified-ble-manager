@@ -701,8 +701,8 @@ constructor(
     } ?: return
     val events = CoreCommandAuthority.coreEventsFor("discover")
     val radioOperationId = try {
-      radio.discover(peerId) { successful ->
-        if (!successful) {
+      radio.discover(peerId) { result ->
+        if (result.isFailure) {
           coreShadow?.postDiscoveryFail(peerId)
           emitFailure(command, "discoverFailed", "Android GATT service discovery failed")
           return@discover

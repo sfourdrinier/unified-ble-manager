@@ -15,7 +15,14 @@ import type {
   SubscriptionId,
   Uuid
 } from './primitives'
-import type { PublicOperationOptions, SubscriptionOptions, WriteMode, WritePolicy, WriteReceipt } from './operations'
+import type {
+  CharacteristicRead,
+  PublicOperationOptions,
+  SubscriptionOptions,
+  WriteMode,
+  WritePolicy,
+  WriteReceipt
+} from './operations'
 import type { BoundedAsyncStream } from './streams'
 
 export type PathValidity = 'current' | 'stale'
@@ -223,10 +230,11 @@ export interface GattDatabaseSnapshot<Attachment extends string, Connection exte
 export interface GattDatabase<Attachment extends string, Connection extends string, Database extends string> {
   readonly path: DatabasePath<Attachment, Connection, Database>
   snapshot(): Promise<GattDatabaseSnapshot<Attachment, Connection, Database>>
+  /** Reads one characteristic; the answer carries the platform's own provenance. */
   read<ServiceOccurrence extends string, CharacteristicOccurrence extends string>(
     path: CharacteristicPath<Attachment, Connection, Database, ServiceOccurrence, CharacteristicOccurrence, 'current'>,
     options: PublicOperationOptions
-  ): Promise<OwnedBytes>
+  ): Promise<CharacteristicRead>
   write<ServiceOccurrence extends string, CharacteristicOccurrence extends string>(
     path: CharacteristicPath<Attachment, Connection, Database, ServiceOccurrence, CharacteristicOccurrence, 'current'>,
     value: BorrowedBytes,

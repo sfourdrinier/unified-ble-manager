@@ -144,9 +144,11 @@ pub fn polar_responder(request: &RadioRequest) -> Reply {
     Reply::Now(match request {
         RadioRequest::AdapterState { .. } => RadioCompletion::Adapter(adapter_on()),
         RadioRequest::Discover { .. } => RadioCompletion::Discovered(polar_services()),
-        RadioRequest::Read { .. } | RadioRequest::ReadDescriptor { .. } => {
-            RadioCompletion::Bytes(vec![0x42])
-        }
+        RadioRequest::Read { .. } => RadioCompletion::Read {
+            value: vec![0x42],
+            provenance: ubm_mobile::ReadProvenance::ReadResponse,
+        },
+        RadioRequest::ReadDescriptor { .. } => RadioCompletion::Bytes(vec![0x42]),
         RadioRequest::EnableNotifications { requested, .. } => {
             RadioCompletion::NotifyEnabled(match requested {
                 Some(ubm_desktop::DeliveryMode::Indication) => ObservedDelivery::Indication,

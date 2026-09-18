@@ -363,6 +363,11 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
         } catch (error) {
           this.lastError = toBleError(error)
           if (this.stopRequested) return 'stop'
+          // The adapter is still coming back: a readiness window that ran
+          // out, or an adapter not ready yet, is waited for again. Only a
+          // refusal waiting cannot change (permission, unsupported) waits
+          // for the application (resume, reconnectNow, stop).
+          if (isAdapterReadinessPending(this.lastError)) continue
           await this.waitForWake()
           continue
         }
@@ -891,6 +896,11 @@ function isAdapterWaitError(error: BleError): boolean {
   return (
     error.code === 'adapter.unavailable' || error.code === 'adapter.powered-off' || error.code === 'adapter.resetting'
   )
+}
+
+/** A readiness wait that ended before the adapter returned, but may still see it return. */
+function isAdapterReadinessPending(error: BleError): boolean {
+  return error.code === 'operation.timed-out' || isAdapterWaitError(error)
 }
 
 function isRetryableConnectionError(error: BleError): boolean {

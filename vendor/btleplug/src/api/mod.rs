@@ -309,6 +309,18 @@ pub enum WriteType {
     WithoutResponse,
 }
 
+/// UBM patch (UBM_PATCHES.md #14): what the platform says a characteristic
+/// read value is.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReadProvenance {
+    /// The platform attributed the value to the ATT read response.
+    ReadResponse,
+    /// The platform reports read responses and notifications through one
+    /// callback, and the characteristic could notify when the value arrived:
+    /// the value is the read response or a notification/indication.
+    ReadOrNotification,
+}
+
 /// Peripheral is the device that you would like to communicate with (the "server" of BLE). This
 /// struct contains both the current state of the device (its properties, characteristics, etc.)
 /// as well as functions for communication.

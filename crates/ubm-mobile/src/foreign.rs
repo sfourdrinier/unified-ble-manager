@@ -27,9 +27,9 @@ use ubm_desktop::{
 };
 
 use crate::radio::{
-    AdapterPower, AdapterSnapshot, DescriptorAddress, IngressClass, Instance, MobilePlatform, Phy,
-    PlatformFailure, PlatformRadio, RadioCompletion, RadioRequest, RequestId, RequestKind,
-    ScanRequest,
+    AdapterAuthorization, AdapterAvailability, AdapterPower, AdapterSnapshot, DescriptorAddress,
+    IngressClass, Instance, MobilePlatform, Phy, PlatformFailure, PlatformRadio, RadioCompletion,
+    RadioRequest, RequestId, RequestKind, ScanRequest,
 };
 
 // Legacy React Native queued 512 records and 1 MiB per binding across every
@@ -480,7 +480,7 @@ impl ForeignRadio {
     ) -> Result<Vec<u8>, DesktopError> {
         match self.call(make).await? {
             RadioCompletion::Bytes(bytes) => Ok(bytes),
-            _ => Err(Self::unexpected(RequestKind::Read)),
+            _ => Err(Self::unexpected(RequestKind::ReadDescriptor)),
         }
     }
 
@@ -491,6 +491,48 @@ impl ForeignRadio {
             _ => Err(Self::unexpected(RequestKind::AdapterState)),
         }
     }
+}
+
+/// Whether the legacy React Native backends counted this snapshot as a lost
+/// adapter (origin/main `corebluetooth-backend.ts` `handleAdapterState`):
+/// not available, a blocking authorization (`isAuthorizationBlocking`:
+/// denied, restricted, unavailable), or power other than on. Answered as the
+/// central's loss state, so the core's once-per-episode reset runs on
+/// exactly those snapshots; `None` is a usable adapter, which ends the
+/// episode. The state is the loss's cause only: the `adapter` records carry
+/// the platform's own snapshot.
+#[must_use]
+pub fn legacy_loss(snapshot: &AdapterSnapshot) -> Option<AdapterPowerState> {
+    match snapshot.power {
+        AdapterPower::Off => return Some(AdapterPowerState::PoweredOff),
+        AdapterPower::Resetting | AdapterPower::Unknown => {
+            return Some(AdapterPowerState::Resetting);
+        }
+        AdapterPower::Unsupported => return Some(AdapterPowerState::Unsupported),
+        AdapterPower::On => {}
+    }
+    match snapshot.availability {
+        AdapterAvailability::Available => {}
+        AdapterAvailability::Unknown => return Some(AdapterPowerState::Resetting),
+        AdapterAvailability::Unavailable | AdapterAvailability::Unsupported => {
+            return Some(AdapterPowerState::Unsupported);
+        }
+    }
+    match snapshot.authorization {
+        AdapterAuthorization::Denied
+        | AdapterAuthorization::Restricted
+        | AdapterAuthorization::Unavailable => Some(AdapterPowerState::Unauthorized),
+        AdapterAuthorization::Granted
+        | AdapterAuthorization::NotDetermined
+        | AdapterAuthorization::Unknown => None,
+    }
+}
+
+/// The adapter state the central is told for one platform snapshot: powered
+/// on for a usable adapter, the legacy loss otherwise ([`legacy_loss`]).
+#[must_use]
+pub fn central_adapter_state(snapshot: &AdapterSnapshot) -> AdapterPowerState {
+    legacy_loss(snapshot).unwrap_or(AdapterPowerState::PoweredOn)
 }
 
 /// Desktop power projection of the platform adapter facts.
@@ -580,7 +622,7 @@ impl RadioBoundary for ForeignRadio {
         service_occurrence: u64,
         characteristic_uuid: &str,
         characteristic_occurrence: u64,
-    ) -> Result<Vec<u8>, DesktopError> {
+    ) -> Result<ubm_desktop::CharacteristicRead, DesktopError> {
         let instance = instance_of(
             peer_id,
             service_uuid,
@@ -588,7 +630,12 @@ impl RadioBoundary for ForeignRadio {
             characteristic_uuid,
             characteristic_occurrence,
         );
-        self.bytes(|id| RadioRequest::Read { id, instance }).await
+        match self.call(|id| RadioRequest::Read { id, instance }).await? {
+            RadioCompletion::Read { value, provenance } => {
+                Ok(ubm_desktop::CharacteristicRead { value, provenance })
+            }
+            _ => Err(Self::unexpected(RequestKind::Read)),
+        }
     }
 
     async fn write_characteristic(
@@ -837,5 +884,12 @@ impl RadioBoundary for ForeignRadio {
         self.adapter_snapshot()
             .await
             .map(|snapshot| power_state(&snapshot))
+    }
+
+    /// An adapter loss ends live work and advances the generations, as the
+    /// legacy React Native backends did (`startAdapterLossCleanup`,
+    /// `advanceGeneration`).
+    fn tears_down_on_adapter_loss(&self) -> bool {
+        true
     }
 }

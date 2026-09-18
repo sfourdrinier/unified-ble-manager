@@ -47,6 +47,11 @@ function exportEntrySources() {
   return [...entries]
 }
 
+/** Repository-relative path with `/` separators on every OS. */
+function repoRelative(file) {
+  return path.relative(root, file).split(path.sep).join('/')
+}
+
 function missing(from, specifier) {
   throw new Error(`${from}: cannot resolve ${specifier}`)
 }
@@ -69,7 +74,7 @@ function shippedGraph() {
     for (const specifier of relativeSpecifiers(file)) {
       const resolved = resolveFile(path.resolve(path.dirname(file), specifier))
       if (resolved === null) {
-        missing(path.relative(root, file), specifier)
+        missing(repoRelative(file), specifier)
       }
       if (!importerOf.has(resolved)) {
         importerOf.set(resolved, file)
@@ -83,7 +88,7 @@ function shippedGraph() {
 function importChain(importerOf, file) {
   const chain = []
   for (let current = file; current !== null; current = importerOf.get(current)) {
-    chain.unshift(path.relative(root, current))
+    chain.unshift(repoRelative(current))
   }
   return chain.join(' -> ')
 }
@@ -92,7 +97,7 @@ describe('shipped module graph', () => {
   const importerOf = shippedGraph()
 
   test('reaches the entrypoints of every host', () => {
-    const reached = new Set([...importerOf.keys()].map(file => path.relative(root, file)))
+    const reached = new Set([...importerOf.keys()].map(file => repoRelative(file)))
     for (const expected of [
       'src/index.ts',
       'src/node-corebluetooth.ts',
@@ -111,7 +116,7 @@ describe('shipped module graph', () => {
 
   test('imports nothing from the legacy backends, the Native Protocol route or legacy providers', () => {
     const violations = [...importerOf.keys()]
-      .filter(file => LEGACY_PATTERNS.some(pattern => pattern.test(path.relative(root, file))))
+      .filter(file => LEGACY_PATTERNS.some(pattern => pattern.test(repoRelative(file))))
       .map(file => importChain(importerOf, file))
     expect(violations).toEqual([])
   })

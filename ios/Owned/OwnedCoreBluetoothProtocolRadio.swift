@@ -39,7 +39,8 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
   /// A disconnect resolves only from CoreBluetooth's terminal delegate callback.
   var pendingDisconnect = [String: PendingVoid]()
   var pendingDiscovery = [String: PendingDiscovery]()
-  var pendingRead = [CharacteristicAddress: PendingData]()
+  /// Characteristic reads per characteristic, in request order.
+  var pendingRead = [CharacteristicAddress: OwnedCoreBluetoothReadLane<PendingCharacteristicRead>]()
   var pendingRssi = [String: PendingRssi]()
   var pendingWrite = [CharacteristicAddress: PendingVoid]()
   let descriptorOperations = OwnedCoreBluetoothDescriptorOperations()
@@ -78,9 +79,9 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
     let completion: (NSError?) -> Void
   }
 
-  struct PendingData {
+  struct PendingCharacteristicRead {
     let operationIdentifier: String
-    let completion: (NSData?, NSError?) -> Void
+    let completion: (NSData?, OwnedCoreBluetoothReadProvenance, NSError?) -> Void
   }
 
   struct PendingRssi {
@@ -301,6 +302,44 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
     }
   }
 
+  /// Reads one characteristic, also while it notifies. Reads of one
+  /// characteristic complete in request order; each completion carries what
+  /// CoreBluetooth can say the value is ([OwnedCoreBluetoothReadProvenance]).
+  /// A value that completes a read while the characteristic can notify still
+  /// reaches its subscription.
+  @objc public func readCharacteristic(
+    peerIdentifier: String,
+    serviceUUID: String,
+    serviceOccurrence: Int,
+    characteristicUUID: String,
+    characteristicOccurrence: Int,
+    operationIdentifier: String,
+    completion: @escaping (NSData?, OwnedCoreBluetoothReadProvenance, NSError?) -> Void
+  ) {
+    queue.async {
+      guard self.requireUsable({ error in completion(nil, .readResponse, error) }) else { return }
+      let address = CharacteristicAddress(
+        peerIdentifier: peerIdentifier,
+        serviceUUID: OwnedCoreBluetoothProtocolRadioSupport.normalizedUUID(serviceUUID),
+        serviceOccurrence: serviceOccurrence,
+        characteristicUUID: OwnedCoreBluetoothProtocolRadioSupport.normalizedUUID(characteristicUUID),
+        characteristicOccurrence: characteristicOccurrence
+      )
+      guard let resolved = self.resolve(address) else {
+        completion(nil, .readResponse, self.error(code: 1010, message: "The generation-bound characteristic path is stale"))
+        return
+      }
+      let waiter = PendingCharacteristicRead(operationIdentifier: operationIdentifier, completion: completion)
+      if self.pendingRead[address, default: OwnedCoreBluetoothReadLane()].admit(waiter) {
+        resolved.peripheral.readValue(for: resolved.characteristic)
+      }
+    }
+  }
+
+  /// Native Protocol v2 read (`UnifiedBleProtocolAppleExecution.mm`). That wire
+  /// cannot carry a read's provenance, so a value CoreBluetooth cannot
+  /// attribute to the read response fails with 1031 there instead of being
+  /// reported as one.
   @objc public func read(
     peerIdentifier: String,
     serviceUUID: String,
@@ -310,32 +349,19 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
     operationIdentifier: String,
     completion: @escaping (NSData?, NSError?) -> Void
   ) {
-    queue.async {
-      guard self.requireUsable({ error in completion(nil, error) }) else { return }
-      let address = CharacteristicAddress(
-        peerIdentifier: peerIdentifier,
-        serviceUUID: OwnedCoreBluetoothProtocolRadioSupport.normalizedUUID(serviceUUID),
-        serviceOccurrence: serviceOccurrence,
-        characteristicUUID: OwnedCoreBluetoothProtocolRadioSupport.normalizedUUID(characteristicUUID),
-        characteristicOccurrence: characteristicOccurrence
-      )
-      guard let resolved = self.resolve(address) else {
-        completion(nil, self.error(code: 1010, message: "The generation-bound characteristic path is stale"))
+    readCharacteristic(
+      peerIdentifier: peerIdentifier,
+      serviceUUID: serviceUUID,
+      serviceOccurrence: serviceOccurrence,
+      characteristicUUID: characteristicUUID,
+      characteristicOccurrence: characteristicOccurrence,
+      operationIdentifier: operationIdentifier
+    ) { value, provenance, error in
+      guard error != nil || provenance == .readResponse else {
+        completion(nil, self.error(code: 1031, message: "The read value may be a notification; this protocol cannot report that"))
         return
       }
-      // CoreBluetooth fuses ATT reads and notifications into didUpdateValueFor.
-      // Independent read is ambiguous while this characteristic is notifying, so
-      // reject rather than guessing which callback is the read response.
-      guard !self.isIndependentReadAmbiguous(address: address, characteristic: resolved.characteristic) else {
-        completion(nil, self.independentReadWhileNotifyingError())
-        return
-      }
-      guard self.pendingRead[address] == nil else {
-        completion(nil, self.error(code: 1011, message: "A read is already pending for this characteristic"))
-        return
-      }
-      self.pendingRead[address] = PendingData(operationIdentifier: operationIdentifier, completion: completion)
-      resolved.peripheral.readValue(for: resolved.characteristic)
+      completion(value, error)
     }
   }
 
@@ -639,9 +665,6 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
 
   public func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
     guard let address = address(for: characteristic, peerIdentifier: peripheral.identifier.uuidString) else { return }
-    if characteristic.isNotifying {
-      failPendingIndependentRead(for: address)
-    }
     let pending = pendingNotify.removeValue(forKey: address)
     let desiredCancellationState = cancellationDesiredState(forNotificationAddress: address)
     guard pending != nil || desiredCancellationState != nil else { return }
@@ -693,10 +716,6 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
       )
       guard let resolved = self.resolve(address) else {
         completion(self.error(code: 1017, message: "The generation-bound characteristic path is stale"))
-        return
-      }
-      guard self.pendingRead[address] == nil else {
-        completion(self.error(code: 1032, message: OwnedCoreBluetoothReadNotifyProvenance.subscribeWhileReadPendingMessage))
         return
       }
       guard self.pendingNotify[address] == nil else {
@@ -783,9 +802,10 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
 
   private func failPendingGATT(for peerIdentifier: String, error: NSError?) {
     let failure = error ?? self.error(code: 1020, message: "CoreBluetooth disconnected")
-    for (address, pending) in pendingRead where address.peerIdentifier == peerIdentifier {
-      pendingRead.removeValue(forKey: address)
-      pending.completion(nil, failure)
+    for address in pendingRead.keys where address.peerIdentifier == peerIdentifier {
+      for pending in pendingRead.removeValue(forKey: address)?.waiting ?? [] {
+        pending.completion(nil, .readResponse, failure)
+      }
     }
     if let pending = pendingRssi.removeValue(forKey: peerIdentifier) {
       pending.completion(nil, failure)
@@ -830,8 +850,10 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
     for pending in discoveries.values {
       pending.completion(nil, failure)
     }
-    for pending in reads.values {
-      pending.completion(nil, failure)
+    for lane in reads.values {
+      for pending in lane.waiting {
+        pending.completion(nil, .readResponse, failure)
+      }
     }
     for pending in rssiReads.values {
       pending.completion(nil, failure)

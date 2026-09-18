@@ -23,6 +23,8 @@ import type {
   OperationTerminalRecord,
   PublicOperationOptions,
   ReadRequest,
+  CharacteristicReadResult,
+  ReadProvenance,
   ReadResult,
   SubscribeRequest,
   SubscriptionOptions,
@@ -160,6 +162,16 @@ export class DeterministicTestBackend
         }
       }
     }
+  }
+
+  /**
+   * Scripts what characteristic reads report: `read-or-notification` models a
+   * radio that fuses read responses and notifications (CoreBluetooth reading a
+   * notifying characteristic).
+   */
+  setReadProvenance(provenance: ReadProvenance): void {
+    this.assertUsable('set-read-provenance')
+    this.peripheral.setReadProvenance(provenance)
   }
 
   injectAttError(operation: VirtualPeripheralOperation, code: BleErrorCode): void {
@@ -368,7 +380,7 @@ export class DeterministicTestBackend
   >(
     path: CharacteristicPath<string, Connection, Database, Service, Characteristic, 'current'>,
     request: ReadRequest<string, Operation>
-  ): Promise<ReadResult<string, Operation>> {
+  ): Promise<CharacteristicReadResult<string, Operation>> {
     this.requireDatabase(path, 'gatt.read')
     const result = await this.operations.run(
       'read',
@@ -378,13 +390,16 @@ export class DeterministicTestBackend
       () => {
         this.requireDatabase(path, 'gatt.read')
         takePeripheralFailure(this.peripheral, 'read', 'gatt.read-failed')
-        return ownBytes(this.peripheral.readCharacteristic(characteristicAddress(path)), this.maximumOperationBytes)
+        return Object.freeze({
+          value: ownBytes(this.peripheral.readCharacteristic(characteristicAddress(path)), this.maximumOperationBytes),
+          provenance: this.peripheral.readProvenance()
+        })
       },
       null,
       null,
       String(path.connectionId)
     )
-    return { value: result.value, terminal: result.terminal }
+    return { ...result.value, terminal: result.terminal }
   }
 
   async write<

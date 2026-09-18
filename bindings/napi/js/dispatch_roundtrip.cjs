@@ -171,19 +171,29 @@ async function main() {
   assert.equal(paths[1].properties, 0x09, 'read+notify property bits survive');
 
   // Read (unstaged synthetic default), descriptor read, write.
-  const value = await central.read({ peerId: 'peer-1', selector: selector(), timeoutMs: 5000 });
-  assert.ok(Buffer.isBuffer(value), 'read returns a Buffer');
-  assert.deepEqual([...value], [0x42]);
+  const read = await central.read({ peerId: 'peer-1', selector: selector(), timeoutMs: 5000 });
+  assert.ok(Buffer.isBuffer(read.value), 'read returns its value as a Buffer');
+  assert.deepEqual([...read.value], [0x42]);
+  assert.equal(read.provenance, 'read-response', 'the synthetic radio attributes its reads');
   const descValue = await central.readDescriptor({
     peerId: 'peer-1',
     selector: { ...selector(), descriptorUuid: CHAR_USER_DESCRIPTION, descriptorOccurrence: 0 },
     timeoutMs: 5000
   });
   assert.deepEqual([...descValue], [0x01]);
-  // Writes need a measured MTU and a writable property, both enforced in
-  // Rust: the notify-only measurement rejects, the writable char succeeds.
+  // Writes need a measured MTU. The backend does not pre-check the write
+  // property (finding 83): as the legacy backends did, the OS answers —
+  // the public GATT layer (`src/public/gatt.ts` resolveWriteMode) is where
+  // a missing write property is refused before any backend call. So a
+  // write to the notify-only measurement reaches the radio, and the
+  // radio's refusal is the result, carried verbatim.
   await central.stageMtu('peer-1', 128);
-  await rejectsWith(
+  const writesBefore = (await central.stagedRadioCalls()).filter(call => call === 'write_characteristic').length;
+  await central.failNextRadioOpWithPlatform('write', 'write not permitted', {
+    domain: 'synthetic-os',
+    code: 'write-not-permitted'
+  });
+  await assert.rejects(
     central.write({
       peerId: 'peer-1',
       selector: selector(),
@@ -191,10 +201,18 @@ async function main() {
       mode: 'without-response',
       timeoutMs: 5000
     }),
-    'gatt.property-not-supported',
-    'gatt',
-    'write to notify-only char'
+    err => {
+      const got = codeOf(err);
+      return (
+        got.code === 'gatt.write-failed' &&
+        got.domain === 'gatt' &&
+        String(err.message).includes('write not permitted')
+      );
+    },
+    'write to notify-only char: the radio refusal is the result'
   );
+  const writesAfter = (await central.stagedRadioCalls()).filter(call => call === 'write_characteristic').length;
+  assert.equal(writesAfter, writesBefore + 1, 'write to notify-only char reached the radio (no core pre-check)');
   await central.write({
     peerId: 'peer-1',
     selector: { ...selector(), characteristicUuid: HRM_BODY_LOCATION },

@@ -304,7 +304,10 @@ async fn the_observer_sees_advertisements_values_and_the_same_lifecycle_events()
     let seen: Arc<Mutex<Vec<CentralSignal>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&seen);
     let mut profile = CentralProfile::desktop("observed-host");
-    profile.backend_label = "scripted".to_owned();
+    profile.identity = std::sync::Arc::new(ubm_desktop::DesktopIdentity::new(
+        "scripted",
+        "observed-host",
+    ));
     profile.observer = Some(Arc::new(move |signal| {
         sink.lock().expect("sink").push(signal);
     }));

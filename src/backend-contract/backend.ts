@@ -18,6 +18,7 @@ import type {
   OperationTerminalRecord,
   PublicOperationOptions,
   ReadRequest,
+  CharacteristicReadResult,
   ReadResult,
   SubscribeRequest,
   WriteRequest,
@@ -240,7 +241,7 @@ export interface GattBackend<Attachment extends string> {
   >(
     path: CharacteristicPath<Attachment, Connection, Database, Service, Characteristic, 'current'>,
     request: ReadRequest<Attachment, Operation>
-  ): BackendOperationDispatch<Attachment, ReadResult<Attachment, Operation>>
+  ): BackendOperationDispatch<Attachment, CharacteristicReadResult<Attachment, Operation>>
   write<
     Connection extends string,
     Database extends string,

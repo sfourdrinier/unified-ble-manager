@@ -2377,6 +2377,35 @@ class MobileRadioCompletion:
             return True
 
     @dataclass
+    class READ:
+        
+        def __init__(self, value:bytes, provenance:str):
+            self.value = value
+            
+            
+            self.provenance = provenance
+            
+            
+            pass
+
+    
+            
+            
+    
+        def __str__(self):
+            return "MobileRadioCompletion.READ(value={}, provenance={})".format(self.value, self.provenance)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioCompletion):
+                return NotImplemented
+            if not other.is_READ():
+                return False
+            if self.value != other.value:
+                return False
+            if self.provenance != other.provenance:
+                return False
+            return True
+
+    @dataclass
     class ADAPTER:
         
         def __init__(self, snapshot:MobileAdapterSnapshot):
@@ -2803,6 +2832,10 @@ class MobileRadioCompletion:
         return isinstance(self, MobileRadioCompletion.BYTES)
     def is_bytes(self) -> bool:
         return isinstance(self, MobileRadioCompletion.BYTES)
+    def is_READ(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.READ)
+    def is_read(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.READ)
     def is_ADAPTER(self) -> bool:
         return isinstance(self, MobileRadioCompletion.ADAPTER)
     def is_adapter(self) -> bool:
@@ -2870,6 +2903,7 @@ class MobileRadioCompletion:
 # We might be able to do this a little more neatly with a metaclass, but this'll do.
 MobileRadioCompletion.UNIT = type("MobileRadioCompletion.UNIT", (MobileRadioCompletion.UNIT, MobileRadioCompletion,), {})  # type: ignore
 MobileRadioCompletion.BYTES = type("MobileRadioCompletion.BYTES", (MobileRadioCompletion.BYTES, MobileRadioCompletion,), {})  # type: ignore
+MobileRadioCompletion.READ = type("MobileRadioCompletion.READ", (MobileRadioCompletion.READ, MobileRadioCompletion,), {})  # type: ignore
 MobileRadioCompletion.ADAPTER = type("MobileRadioCompletion.ADAPTER", (MobileRadioCompletion.ADAPTER, MobileRadioCompletion,), {})  # type: ignore
 MobileRadioCompletion.DISCOVERED = type("MobileRadioCompletion.DISCOVERED", (MobileRadioCompletion.DISCOVERED, MobileRadioCompletion,), {})  # type: ignore
 MobileRadioCompletion.NOTIFY_ENABLED = type("MobileRadioCompletion.NOTIFY_ENABLED", (MobileRadioCompletion.NOTIFY_ENABLED, MobileRadioCompletion,), {})  # type: ignore
@@ -2901,68 +2935,73 @@ class _UniffiFfiConverterTypeMobileRadioCompletion(_UniffiConverterRustBuffer):
                 _UniffiFfiConverterBytes.read(buf),
             )
         if variant == 3:
+            return MobileRadioCompletion.READ(
+                _UniffiFfiConverterBytes.read(buf),
+                _UniffiFfiConverterString.read(buf),
+            )
+        if variant == 4:
             return MobileRadioCompletion.ADAPTER(
                 _UniffiFfiConverterTypeMobileAdapterSnapshot.read(buf),
             )
-        if variant == 4:
+        if variant == 5:
             return MobileRadioCompletion.DISCOVERED(
                 _UniffiFfiConverterSequenceTypeMobileGattService.read(buf),
             )
-        if variant == 5:
+        if variant == 6:
             return MobileRadioCompletion.NOTIFY_ENABLED(
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 6:
+        if variant == 7:
             return MobileRadioCompletion.MTU(
                 _UniffiFfiConverterOptionalUInt16.read(buf),
             )
-        if variant == 7:
+        if variant == 8:
             return MobileRadioCompletion.WRITE_LIMITS(
                 _UniffiFfiConverterUInt16.read(buf),
                 _UniffiFfiConverterUInt16.read(buf),
             )
-        if variant == 8:
+        if variant == 9:
             return MobileRadioCompletion.RSSI(
                 _UniffiFfiConverterInt16.read(buf),
             )
-        if variant == 9:
+        if variant == 10:
             return MobileRadioCompletion.ACCEPTED(
                 _UniffiFfiConverterBoolean.read(buf),
             )
-        if variant == 10:
+        if variant == 11:
             return MobileRadioCompletion.PHY(
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 11:
+        if variant == 12:
             return MobileRadioCompletion.PHY_REQUEST(
                 _UniffiFfiConverterBoolean.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
             )
-        if variant == 12:
+        if variant == 13:
             return MobileRadioCompletion.SECURITY(
                 _UniffiFfiConverterTypeMobileSecurityState.read(buf),
             )
-        if variant == 13:
+        if variant == 14:
             return MobileRadioCompletion.BONDED_PEERS(
                 _UniffiFfiConverterSequenceTypeMobilePeerName.read(buf),
             )
-        if variant == 14:
+        if variant == 15:
             return MobileRadioCompletion.LEASE(
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 15:
+        if variant == 16:
             return MobileRadioCompletion.COMPANION(
                 _UniffiFfiConverterInt64.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
             )
-        if variant == 16:
+        if variant == 17:
             return MobileRadioCompletion.CLOSED(
                 _UniffiFfiConverterSequenceTypeMobileCloseFailure.read(buf),
             )
-        if variant == 17:
+        if variant == 18:
             return MobileRadioCompletion.FAILED(
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterOptionalInt32.read(buf),
@@ -2979,6 +3018,10 @@ class _UniffiFfiConverterTypeMobileRadioCompletion(_UniffiConverterRustBuffer):
             return
         if value.is_BYTES():
             _UniffiFfiConverterBytes.check_lower(value.value)
+            return
+        if value.is_READ():
+            _UniffiFfiConverterBytes.check_lower(value.value)
+            _UniffiFfiConverterString.check_lower(value.provenance)
             return
         if value.is_ADAPTER():
             _UniffiFfiConverterTypeMobileAdapterSnapshot.check_lower(value.snapshot)
@@ -3045,56 +3088,60 @@ class _UniffiFfiConverterTypeMobileRadioCompletion(_UniffiConverterRustBuffer):
         if value.is_BYTES():
             buf.write_i32(2)
             _UniffiFfiConverterBytes.write(value.value, buf)
-        if value.is_ADAPTER():
+        if value.is_READ():
             buf.write_i32(3)
+            _UniffiFfiConverterBytes.write(value.value, buf)
+            _UniffiFfiConverterString.write(value.provenance, buf)
+        if value.is_ADAPTER():
+            buf.write_i32(4)
             _UniffiFfiConverterTypeMobileAdapterSnapshot.write(value.snapshot, buf)
         if value.is_DISCOVERED():
-            buf.write_i32(4)
+            buf.write_i32(5)
             _UniffiFfiConverterSequenceTypeMobileGattService.write(value.services, buf)
         if value.is_NOTIFY_ENABLED():
-            buf.write_i32(5)
+            buf.write_i32(6)
             _UniffiFfiConverterString.write(value.delivery, buf)
         if value.is_MTU():
-            buf.write_i32(6)
+            buf.write_i32(7)
             _UniffiFfiConverterOptionalUInt16.write(value.mtu, buf)
         if value.is_WRITE_LIMITS():
-            buf.write_i32(7)
+            buf.write_i32(8)
             _UniffiFfiConverterUInt16.write(value.with_response, buf)
             _UniffiFfiConverterUInt16.write(value.without_response, buf)
         if value.is_RSSI():
-            buf.write_i32(8)
+            buf.write_i32(9)
             _UniffiFfiConverterInt16.write(value.rssi, buf)
         if value.is_ACCEPTED():
-            buf.write_i32(9)
+            buf.write_i32(10)
             _UniffiFfiConverterBoolean.write(value.accepted, buf)
         if value.is_PHY():
-            buf.write_i32(10)
+            buf.write_i32(11)
             _UniffiFfiConverterString.write(value.tx, buf)
             _UniffiFfiConverterString.write(value.rx, buf)
         if value.is_PHY_REQUEST():
-            buf.write_i32(11)
+            buf.write_i32(12)
             _UniffiFfiConverterBoolean.write(value.accepted, buf)
             _UniffiFfiConverterOptionalString.write(value.tx, buf)
             _UniffiFfiConverterOptionalString.write(value.rx, buf)
         if value.is_SECURITY():
-            buf.write_i32(12)
+            buf.write_i32(13)
             _UniffiFfiConverterTypeMobileSecurityState.write(value.state, buf)
         if value.is_BONDED_PEERS():
-            buf.write_i32(13)
+            buf.write_i32(14)
             _UniffiFfiConverterSequenceTypeMobilePeerName.write(value.peers, buf)
         if value.is_LEASE():
-            buf.write_i32(14)
+            buf.write_i32(15)
             _UniffiFfiConverterString.write(value.lease_id, buf)
         if value.is_COMPANION():
-            buf.write_i32(15)
+            buf.write_i32(16)
             _UniffiFfiConverterInt64.write(value.association_id, buf)
             _UniffiFfiConverterOptionalString.write(value.peer_id, buf)
             _UniffiFfiConverterOptionalString.write(value.display_name, buf)
         if value.is_CLOSED():
-            buf.write_i32(16)
+            buf.write_i32(17)
             _UniffiFfiConverterSequenceTypeMobileCloseFailure.write(value.failures, buf)
         if value.is_FAILED():
-            buf.write_i32(17)
+            buf.write_i32(18)
             _UniffiFfiConverterString.write(value.kind, buf)
             _UniffiFfiConverterOptionalInt32.write(value.gatt_status, buf)
             _UniffiFfiConverterOptionalString.write(value.native_domain, buf)

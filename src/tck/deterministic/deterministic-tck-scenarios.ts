@@ -337,12 +337,12 @@ async function gattReadWrite(fixture: DeterministicBackendFixture): Promise<read
   const controllerFaultOutcomeValid = controllerFault.matched
   const read = connected.database.read(characteristic.path, noOperationOptions())
   fixture.controller.clock.runUntilIdle()
-  const firstValue = await read
+  const firstValue = (await read).value
   const firstByte = firstValue[0]
   firstValue[0] = firstByte === undefined ? 1 : firstByte + 1
   const reread = connected.database.read(characteristic.path, noOperationOptions())
   fixture.controller.clock.runUntilIdle()
-  const secondValue = await reread
+  const secondValue = (await reread).value
   const descriptorRead = connected.database.readDescriptor(descriptor.path, noOperationOptions())
   fixture.controller.clock.runUntilIdle()
   const descriptorValue = await descriptorRead
@@ -485,7 +485,7 @@ async function verticalSlice(fixture: DeterministicBackendFixture): Promise<read
   }
   const read = connected.database.read(characteristic.path, noOperationOptions())
   fixture.controller.clock.runUntilIdle()
-  const value = await read
+  const { value } = await read
   // Post-R12 limits: byte budget above the 64-byte control reserve; the
   // single 1-byte notification fits either way, so the slice proof is unchanged.
   const subscriptionPromise = connected.database.subscribe(

@@ -95,6 +95,11 @@ const connectionControlsFeatureSuite = Object.freeze({
   scenarioIds: Object.freeze(['connection.rssi-and-att-mtu-capability-contract'] as const)
 })
 
+const maximumWriteLengthFeatureSuite = Object.freeze({
+  suiteId: 'tck.feature.gatt.maximum-write-length',
+  scenarioIds: Object.freeze<TckScenarioId[]>(['gatt.maximum-write-length-boundaries'])
+})
+
 const descriptorOperationsFeatureSuite = Object.freeze({
   suiteId: 'descriptor-operations',
   scenarioIds: Object.freeze<TckScenarioId[]>(['gatt.descriptor-discovery-read-write'])
@@ -165,6 +170,7 @@ export function createReactNativeAndroidFirstPartyTckRegistration(
     ]),
     featureSuites: Object.freeze([
       connectionControlsFeatureSuite,
+      maximumWriteLengthFeatureSuite,
       descriptorOperationsFeatureSuite,
       androidSecurityFeatureSuite
     ]),
@@ -257,6 +263,7 @@ export function createReactNativeAppleFirstPartyTckRegistration(
     ]),
     featureSuites: Object.freeze([
       connectionControlsFeatureSuite,
+      maximumWriteLengthFeatureSuite,
       descriptorOperationsFeatureSuite,
       restorationFeatureSuite
     ]),

@@ -342,9 +342,10 @@ export interface DesktopRustCoreCentral {
     pathsRegistered: number
   }>
   discoveredPaths(peerId: string): Promise<DesktopRustCorePath[]>
+  /** The value and the radio's provenance word (`read-response` | `read-or-notification`). */
   read(
     options: { readonly peerId: string; readonly selector: DesktopRustCoreSelector } & DesktopRustCoreControl
-  ): Promise<Uint8Array>
+  ): Promise<{ readonly value: Uint8Array; readonly provenance: string }>
   write(
     options: {
       readonly peerId: string
@@ -541,7 +542,10 @@ const BLUEZ_LEGACY_OPERATION_NAMES: Readonly<Record<string, string>> = Object.fr
   'gatt.database-write': 'gatt.write',
   'gatt.database-read-descriptor': 'gatt.read-descriptor',
   'gatt.database-write-descriptor': 'gatt.write-descriptor',
-  'gatt.database-subscribe': 'gatt.subscribe'
+  'gatt.database-subscribe': 'gatt.subscribe',
+  // B-R2: BlueZ kept the `.pair` segment WinRT never had
+  // (`bluez.security.pair.custom-ceremony` vs `winrt.security.custom-ceremony`).
+  'security.custom-ceremony': 'security.pair.custom-ceremony'
 })
 
 const LEGACY_OPERATION_PREFIXES: ReadonlyArray<readonly [string, string]> = Object.freeze([

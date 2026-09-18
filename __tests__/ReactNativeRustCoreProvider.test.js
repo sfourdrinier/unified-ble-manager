@@ -160,10 +160,12 @@ describe('React Native Rust core provider lifecycle (R07–R13)', () => {
     await settle()
     controller.abort()
     expect((await rejection(dispatch.completion)).normalized.code).toBe('operation.aborted')
-    expect(native.opsInvoked('gatt.read')[0].operationId).toBe(String(op.correlation))
-    expect(native.opsInvoked('op.cancel')).toEqual([
-      { operationId: String(op.correlation), admission: native.opsInvoked('gatt.read')[0].admission }
-    ])
+    // The wire operation id is the owner's internal name for this invoke; the
+    // caller's correlation stays public (legacy `operation-{n}`) and never
+    // crosses the wire. The cancel names exactly the invoked operation.
+    const invoked = native.opsInvoked('gatt.read')[0]
+    expect(invoked.operationId).not.toBe(String(op.correlation))
+    expect(native.opsInvoked('op.cancel')).toEqual([{ operationId: invoked.operationId, admission: invoked.admission }])
     await backend.destroy()
   })
 

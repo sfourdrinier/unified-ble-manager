@@ -17,7 +17,7 @@ class FakeChannel {
 }
 
 function negotiated(axis) {
-  const selected = { axis, value: axis === 'ipc-protocol' ? 3 : 1 }
+  const selected = { axis, value: axis === 'ipc-protocol' ? 4 : 1 }
   const range = { axis, minimum: selected, maximum: selected }
   return { axis, selected, localRange: range, remoteRange: range }
 }
@@ -315,7 +315,7 @@ describe('Tauri v2 public manager', () => {
             { handle: 'descriptor-1', characteristicHandle: 'characteristic-1', uuid: '2901', occurrence: '0' }
           ]
         },
-        'gatt.read': { value: { $__unifiedBleBytesV2: [1, 2, 3] } },
+        'gatt.read': { value: { $__unifiedBleBytesV2: [1, 2, 3] }, provenance: 'read-or-notification' },
         'gatt.write': {
           terminal: { correlation: 'write-operation-1', outcome: 'succeeded', cause: null },
           mode: 'with-response',
@@ -370,6 +370,10 @@ describe('Tauri v2 public manager', () => {
     expect(database.generation).toBe('database-generation-1')
     const characteristic = database.service('180d').characteristic('2a37')
     await expect(characteristic.read()).resolves.toEqual(new Uint8Array([1, 2, 3]))
+    await expect(characteristic.readReceipt()).resolves.toEqual({
+      value: new Uint8Array([1, 2, 3]),
+      provenance: 'read-or-notification'
+    })
     await expect(characteristic.write(new Uint8Array([4, 5]), { response: 'required' })).resolves.toMatchObject({
       terminal: { correlation: 'write-operation-1', outcome: 'succeeded', cause: null },
       commitState: 'confirmed'
@@ -421,6 +425,7 @@ describe('Tauri v2 public manager', () => {
       'connection.events.subscribe',
       'connection.events.ready',
       'gatt.discover',
+      'gatt.read',
       'gatt.read',
       'gatt.write',
       'gatt.descriptor.write',
@@ -1059,7 +1064,7 @@ describe('Tauri v2 public manager', () => {
     ).rejects.toMatchObject({ code: 'protocol.malformed' })
 
     const outOfRangeVersionBootstrap = bootstrap()
-    outOfRangeVersionBootstrap.versions.ipcProtocol.selected = { axis: 'ipc-protocol', value: 4 }
+    outOfRangeVersionBootstrap.versions.ipcProtocol.selected = { axis: 'ipc-protocol', value: 5 }
     const outOfRangeVersionInvoke = jest.fn(async () => ({ kind: 'bootstrap', bootstrap: outOfRangeVersionBootstrap }))
     await expect(
       createTauriBleManagerWithEnvironment({ invoke: outOfRangeVersionInvoke, Channel: FakeChannel })
@@ -1381,11 +1386,11 @@ describe('Tauri IPC protocol version 3', () => {
     return bootstrapValue
   }
 
-  test('the webview offers exactly IPC protocol 3', async () => {
+  test('the webview offers exactly IPC protocol 4', async () => {
     const { TAURI_PLUGIN_COMPATIBILITY } = require('../src/tauri/compatibility')
     const { IPC_PROTOCOL_VERSION } = require('../src/ipc/protocol')
-    expect(IPC_PROTOCOL_VERSION).toBe(3)
-    expect(TAURI_PLUGIN_COMPATIBILITY.ipcProtocol).toBe(3)
+    expect(IPC_PROTOCOL_VERSION).toBe(4)
+    expect(TAURI_PLUGIN_COMPATIBILITY.ipcProtocol).toBe(4)
 
     const invoke = jest.fn(async (_command, args) => {
       const request = args.request
@@ -1398,19 +1403,19 @@ describe('Tauri IPC protocol version 3', () => {
     const offer = invoke.mock.calls[0][1].request.offer
     expect(offer.ipcProtocol).toEqual({
       axis: 'ipc-protocol',
-      minimum: { axis: 'ipc-protocol', value: 3 },
-      maximum: { axis: 'ipc-protocol', value: 3 }
+      minimum: { axis: 'ipc-protocol', value: 4 },
+      maximum: { axis: 'ipc-protocol', value: 4 }
     })
     await manager.destroy()
   })
 
-  test('an old plugin that cannot serve protocol 3 fails as protocol.incompatible before any operation', async () => {
+  test('an old plugin that cannot serve protocol 4 fails as protocol.incompatible before any operation', async () => {
     const invoke = jest.fn(async (_command, args) => {
       const request = args.request
       if (request.kind !== 'bootstrap') throw new Error(`unexpected ${request.kind}`)
-      // The 4.x/rc plugin negotiates a local value of 2 against the offer.
+      // A protocol-3 plugin (5.0 pre-rebind) negotiates only 3 against the offer.
       const range = request.offer.ipcProtocol
-      if (range.minimum.value > 2 || range.maximum.value < 2) {
+      if (range.minimum.value > 3 || range.maximum.value < 3) {
         return {
           kind: 'failure',
           error: {
@@ -1422,7 +1427,7 @@ describe('Tauri IPC protocol version 3', () => {
           }
         }
       }
-      return { kind: 'bootstrap', bootstrap: versionAxes(2) }
+      return { kind: 'bootstrap', bootstrap: versionAxes(3) }
     })
     const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
 
@@ -1432,10 +1437,10 @@ describe('Tauri IPC protocol version 3', () => {
     expect(invoke.mock.calls.map(([, args]) => args.request.kind)).toEqual(['bootstrap'])
   })
 
-  test('a plugin that selects protocol 2 is refused as protocol.incompatible and released', async () => {
+  test('a plugin that selects protocol 3 is refused as protocol.incompatible and released', async () => {
     const invoke = jest.fn(async (_command, args) => {
       const request = args.request
-      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: versionAxes(2) }
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: versionAxes(3) }
       if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
       throw new Error(`unexpected ${request.kind}`)
     })

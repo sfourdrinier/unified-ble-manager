@@ -14,6 +14,7 @@
 //! a second copy of the schema.
 
 use ubm_core::contracts::{BleErrorCode, BleErrorDomain, CommitState};
+pub use ubm_desktop::ReadProvenance;
 use ubm_desktop::{
     DeliveryMode, DesktopError, ObservedDelivery, PlatformDetail, PlatformValue, ServiceSnapshot,
 };
@@ -511,25 +512,18 @@ impl PlatformFailure {
             | FailureKind::Busy
             | FailureKind::GattStatus
             | FailureKind::Platform => {
-                match self.native_code {
-                    Some(
-                        COREBLUETOOTH_OVERLAPPING_READ_CODE | COREBLUETOOTH_INDEPENDENT_READ_CODE,
-                    ) if !android => (BleErrorCode::GattReadFailed, BleErrorDomain::Gatt, true),
-                    Some(COREBLUETOOTH_SUBSCRIBE_WHILE_READ_CODE) if !android => (
-                        BleErrorCode::GattSubscribeFailed,
-                        BleErrorDomain::Gatt,
-                        true,
-                    ),
-                    _ if kind == RequestKind::AdapterState => (
+                if kind == RequestKind::AdapterState {
+                    (
                         BleErrorCode::AdapterUnavailable,
                         BleErrorDomain::Adapter,
                         true,
-                    ),
-                    _ => (
+                    )
+                } else {
+                    (
                         BleErrorCode::PlatformFailure,
                         BleErrorDomain::Platform,
                         true,
-                    ),
+                    )
                 }
             }
         };
@@ -588,12 +582,6 @@ impl PlatformFailure {
 
 /// Android `GATT_CONN_TIMEOUT` (0x13): legacy reported it as a link loss.
 const ANDROID_GATT_CONN_TIMEOUT_STATUS: i32 = 19;
-/// The owned CoreBluetooth radio's read/notify refusals (4.x
-/// `corebluetooth-read-notify-provenance.ts`): an overlapping or independent
-/// read while one is pending, and a subscribe while a read is pending.
-const COREBLUETOOTH_OVERLAPPING_READ_CODE: i64 = 1011;
-const COREBLUETOOTH_INDEPENDENT_READ_CODE: i64 = 1031;
-const COREBLUETOOTH_SUBSCRIBE_WHILE_READ_CODE: i64 = 1032;
 
 /// Which verb a request is; selects the expected completion shape and the
 /// failure identity.
@@ -802,7 +790,7 @@ pub enum RadioRequest {
     /// Full service discovery with occurrence indices.
     /// → [`RadioCompletion::Discovered`].
     Discover { id: RequestId, peer_id: String },
-    /// → [`RadioCompletion::Bytes`].
+    /// → [`RadioCompletion::Read`].
     Read { id: RequestId, instance: Instance },
     /// → [`RadioCompletion::Unit`] (with-response: after the ATT response;
     /// without-response: after the stack accepted the packet).
@@ -990,7 +978,16 @@ impl RadioRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RadioCompletion {
     Unit,
+    /// A descriptor read's value.
     Bytes(Vec<u8>),
+    /// A characteristic read's value and what the platform says it is
+    /// (Android `onCharacteristicRead` is always the read response;
+    /// CoreBluetooth's fused `didUpdateValueFor` is the read response only
+    /// while the characteristic cannot notify).
+    Read {
+        value: Vec<u8>,
+        provenance: ReadProvenance,
+    },
     Adapter(AdapterSnapshot),
     Discovered(Vec<ServiceSnapshot>),
     NotifyEnabled(ObservedDelivery),
@@ -1046,7 +1043,8 @@ impl RadioCompletion {
                 | (Self::Lease(_), K::AcquireBackground)
                 | (Self::Companion { .. }, K::AssociateCompanion)
                 | (Self::Discovered(_), K::Discover)
-                | (Self::Bytes(_), K::Read | K::ReadDescriptor)
+                | (Self::Read { .. }, K::Read)
+                | (Self::Bytes(_), K::ReadDescriptor)
                 | (Self::NotifyEnabled(_), K::EnableNotifications)
                 | (Self::Mtu(_), K::ReadMtu)
                 | (Self::WriteLimits(_), K::ReadWriteLimits)

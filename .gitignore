@@ -125,3 +125,5 @@ ios/RustCore/
 # committed. The package `files` list still ships them in the tarball.
 native/desktop-core/prebuilds/
 .native-prebuild-artifact/
+/example-tauri/dist/
+/example-electron/driver/dist/

@@ -113,6 +113,11 @@ pub fn device_path_for_address(adapter_path: &str, address: &str) -> String {
     )
 }
 
+/// Whether pairing is possible, as `security.state()` reports it (B-R1).
+/// BlueZ has no "can pair" fact; the legacy backend's constant `true` is
+/// the contract, so the Rust path reports it too — never `null`.
+pub const PAIRING_POSSIBLE: bool = true;
+
 /// Bond state from `Device1.Paired` / `Device1.Bonded`. `Bonded` (BlueZ
 /// 5.66+) is the bond fact itself; older daemons expose only `Paired`,
 /// which the legacy backend reported as the bond. Neither present is the
@@ -314,12 +319,21 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        BluezCharacteristic, PairFailure, access_for_instances, access_from_flags,
-        adapter_id_from_info, adapter_path_of_peer, bond_state, cancel_error_proves_terminal,
-        classify_pair_error, device_path, device_path_for_address, is_unknown_method, link_mtu,
-        peer_id_for_path,
+        BluezCharacteristic, PAIRING_POSSIBLE, PairFailure, access_for_instances,
+        access_from_flags, adapter_id_from_info, adapter_path_of_peer, bond_state,
+        cancel_error_proves_terminal, classify_pair_error, device_path, device_path_for_address,
+        is_unknown_method, link_mtu, peer_id_for_path,
     };
     use crate::boundary::BondState;
+
+    /// B-R1: `security.state().pairingPossible` is the legacy constant
+    /// `true` — BlueZ has no "can pair" fact to read. The assertion is on
+    /// a constant by design: it pins the legacy literal.
+    #[test]
+    #[allow(clippy::assertions_on_constants)]
+    fn pairing_is_possible_as_legacy_reported_it() {
+        assert!(PAIRING_POSSIBLE);
+    }
 
     #[test]
     fn adapter_signals_follow_the_legacy_reset_sources() {

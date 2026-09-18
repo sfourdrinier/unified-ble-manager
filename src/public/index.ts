@@ -46,6 +46,8 @@ export type {
   GattValueStream,
   GattDatabaseChangedEvent,
   GattWriteReceipt,
+  GattReadReceipt,
+  GattReadProvenance,
   GattLongWriteReceipt,
   GattWriteOptions,
   LongWriteOptions,

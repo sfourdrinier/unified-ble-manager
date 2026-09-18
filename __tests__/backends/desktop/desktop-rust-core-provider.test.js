@@ -141,6 +141,42 @@ describe('profiles and the pre-load platform guard (PR210-02, PR210-29)', () => 
   })
 })
 
+describe('5.0 read while notifying over the real addon: the result reports what the radio said', () => {
+  test.each(PLATFORMS)(
+    '%s: a read on a subscribed characteristic runs, carries the radio provenance, and the subscriber still receives values',
+    async platform => {
+      await withBackend(platform, async ({ backend, stage }) => {
+        const { lease, database, measurement } = await connectAndDiscover(backend, stage)
+        const subscription = await database.subscribe(measurement.path, subscribeOptions())
+        const values = subscription.values[Symbol.asyncIterator]()
+        await stage.stageReadProvenance('read-or-notification')
+        const fused = await database.read(measurement.path, { signal: null, deadline: null })
+        expect(fused.provenance).toBe('read-or-notification')
+        expect(fused.value.length).toBeGreaterThan(0)
+        const dispatched = await backend.gatt.read(measurement.path, {
+          operation: { signal: null, deadline: null, correlation: 'read-while-notifying' }
+        }).completion
+        expect(dispatched.provenance).toBe('read-or-notification')
+        await stage.stageNotification({
+          peerId: 'peer-1',
+          serviceUuid: HRM_SERVICE,
+          serviceOccurrence: 0,
+          characteristicUuid: HRM_MEASUREMENT,
+          characteristicOccurrence: 0,
+          value: Buffer.from([0x0f, 0x01])
+        })
+        expect([...(await nextValue(values, 5000)).value]).toEqual([0x0f, 0x01])
+        await stage.stageReadProvenance('read-response')
+        expect((await database.read(measurement.path, { signal: null, deadline: null })).provenance).toBe(
+          'read-response'
+        )
+        expect(await subscription.remove()).toEqual({ state: 'released', failures: [] })
+        expect(await lease.release()).toEqual({ state: 'released', failures: [] })
+      })
+    }
+  )
+})
+
 describe('real addon, synthetic radio: every verb executes Rust', () => {
   test.each(PLATFORMS)(
     '%s: scan/connect/discover/read/write/subscribe/notify/unsubscribe/disconnect',
@@ -154,8 +190,9 @@ describe('real addon, synthetic radio: every verb executes Rust', () => {
         })
         const { lease, database, measurement, control } = await connectAndDiscover(backend, stage)
         expect(measurement.properties.notify).toBe(true)
-        const value = await database.read(measurement.path, { signal: null, deadline: null })
+        const { value, provenance } = await database.read(measurement.path, { signal: null, deadline: null })
         expect(value.length).toBeGreaterThan(0)
+        expect(provenance).toBe('read-response')
         const confirmed = await database.write(control.path, new Uint8Array([0x01]), {
           signal: null,
           deadline: null,
@@ -224,6 +261,46 @@ describe('real addon, synthetic radio: every verb executes Rust', () => {
         mode: 'with-response'
       })
       expect(receipt.commitState).toBe('confirmed')
+    })
+  })
+
+  test('a without-response descriptor write fails with the legacy WinRT identity (W-R1)', async () => {
+    await withBackend('winrt', async ({ backend, stage }) => {
+      const { database, snapshot } = await connectAndDiscover(backend, stage)
+      const [descriptor] = snapshot.descriptors
+      // Fail-closed as now, but with the legacy code and operation id the
+      // native boundary's refusal carried: the mode never reaches the core.
+      await expect(
+        database.writeDescriptor(descriptor.path, new Uint8Array([0x41]), {
+          signal: null,
+          deadline: null,
+          mode: 'without-response'
+        })
+      ).rejects.toMatchObject({
+        normalized: { code: 'gatt.write-failed', domain: 'gatt', operation: 'winrt.gatt.write-descriptor' }
+      })
+    })
+  })
+
+  test('CoreBluetooth serializes GATT verbs per connection (F6: fail-fast lifecycle.invalid-state)', async () => {
+    await withBackend('corebluetooth', async ({ backend, stage }) => {
+      const { database, measurement } = await connectAndDiscover(backend, stage)
+      await stage.blockRadioOp('read')
+      const first = database.read(measurement.path, { signal: null, deadline: null })
+      const firstSettled = first.then(
+        () => null,
+        error => error
+      )
+      // A second verb on the same connection fails fast, before any dispatch —
+      // as the legacy dispatcher refused it — with the verb's own operation id.
+      await expect(database.read(measurement.path, { signal: null, deadline: null })).rejects.toMatchObject({
+        normalized: { code: 'lifecycle.invalid-state', operation: 'direct-gatt.gatt.read' }
+      })
+      await stage.unblockRadioOp('read')
+      expect(await firstSettled).toBeNull()
+      // Once the first verb settles the connection admits again.
+      const retry = await database.read(measurement.path, { signal: null, deadline: null })
+      expect(retry.value.length).toBeGreaterThan(0)
     })
   })
 
@@ -299,7 +376,11 @@ describe('in-flight cancellation by ticket (parity: operation.cancel-in-flight)'
       controller.abort()
       await expect(
         backend.connections.connect(peerId, 'client-1', { signal: controller.signal, deadline: null })
-      ).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
+      ).rejects.toMatchObject({
+        // F4: the pre-admission refusal carries the bare operation id, as
+        // the legacy dispatcher reported it — no `.aborted` suffix.
+        normalized: { code: 'operation.aborted', operation: 'bluez.connect' }
+      })
       expect(dispatchCalls(harness.calls)).toHaveLength(before)
     })
   })
@@ -461,6 +542,29 @@ describe('lifecycle and adapter events (parity rows connection.lost-event, datab
     } finally {
       await backend.destroy()
     }
+  })
+
+  test('backend and adapter streams keep their legacy quotas (F10)', async () => {
+    await withBackend('corebluetooth', async ({ backend }) => {
+      // Legacy CoreBluetooth stream quotas: backend events 64/64KiB/1,
+      // adapter transitions 16/16KiB/1.
+      const events = backend.events()
+      try {
+        expect(events.limits).toMatchObject({ itemCapacity: 64, byteCapacity: 64 * 1024, reservedControlCapacity: 1 })
+      } finally {
+        await events.close()
+      }
+      const watch = await backend.adapter.watchState()
+      try {
+        expect(watch.transitions.limits).toMatchObject({
+          itemCapacity: 16,
+          byteCapacity: 16 * 1024,
+          reservedControlCapacity: 1
+        })
+      } finally {
+        await watch.transitions.close()
+      }
+    })
   })
 
   test('an unreadable adapter power reports unknown with the reason, never a guess', async () => {
@@ -743,26 +847,45 @@ describe('error and cleanup mapping', () => {
     ],
     [
       'bluez',
-      { domain: 'bluez-dbus', code: 'org.bluez.Error.NotAuthorized', message: 'Operation Not Authorized', metadata: {} },
-      { domain: 'bluez-dbus', code: 'org.bluez.Error.NotAuthorized', safeMessage: 'Operation Not Authorized', metadata: {} }
+      {
+        domain: 'bluez-dbus',
+        code: 'org.bluez.Error.NotAuthorized',
+        message: 'Operation Not Authorized',
+        metadata: {}
+      },
+      {
+        domain: 'bluez-dbus',
+        code: 'org.bluez.Error.NotAuthorized',
+        safeMessage: 'Operation Not Authorized',
+        metadata: {}
+      }
     ]
-  ])('%s: an OS read failure reaches the caller with the legacy platform identity, end to end', async (platform, staged, expected) => {
-    await withBackend(platform, async ({ backend, stage }) => {
-      const { database, measurement, lease } = await connectAndDiscover(backend, stage)
-      await stage.failNextRadioOpWithPlatform('read', 'os read failed', staged)
-      const failure = await database.read(measurement.path, { signal: null, deadline: null }).then(
-        () => null,
-        error => error
-      )
-      expect(failure).not.toBeNull()
-      expect(failure.normalized.platform).toEqual(expected)
-      await lease.release()
-    })
-  })
+  ])(
+    '%s: an OS read failure reaches the caller with the legacy platform identity, end to end',
+    async (platform, staged, expected) => {
+      await withBackend(platform, async ({ backend, stage }) => {
+        const { database, measurement, lease } = await connectAndDiscover(backend, stage)
+        await stage.failNextRadioOpWithPlatform('read', 'os read failed', staged)
+        const failure = await database.read(measurement.path, { signal: null, deadline: null }).then(
+          () => null,
+          error => error
+        )
+        expect(failure).not.toBeNull()
+        expect(failure.normalized.platform).toEqual(expected)
+        await lease.release()
+      })
+    }
+  )
 
   test('a platform detail without a message keeps the core detail as its message', () => {
     const error = desktopRustCoreError(
-      wire('platform.failure', 'platform', 'security.pair', { domain: 'bluez-dbus', code: 'org.bluez.Error.Failed', message: null, metadata: {} }, 'Pair failed'),
+      wire(
+        'platform.failure',
+        'platform',
+        'security.pair',
+        { domain: 'bluez-dbus', code: 'org.bluez.Error.Failed', message: null, metadata: {} },
+        'Pair failed'
+      ),
       'fallback'
     )
     expect(error.normalized.platform).toEqual({
@@ -774,11 +897,16 @@ describe('error and cleanup mapping', () => {
   })
 
   test('a malformed platform field is a transport fault, never a guessed identity', () => {
-    for (const field of ['{', '[]', '{"domain":"winrt","code":7,"message":null,"metadata":{}}', '{"domain":"winrt","code":"x","message":null,"metadata":{"a":{}}}']) {
+    for (const field of [
+      '{',
+      '[]',
+      '{"domain":"winrt","code":7,"message":null,"metadata":{}}',
+      '{"domain":"winrt","code":"x","message":null,"metadata":{"a":{}}}'
+    ]) {
       expect(parseDesktopRustCoreWireError(`gatt.read-failed|gatt|gatt.read|never||${field}|x`)).toBeNull()
-      expect(desktopRustCoreError(new Error(`gatt.read-failed|gatt|gatt.read|never||${field}|x`), 'op').normalized.code).toBe(
-        'platform.transport'
-      )
+      expect(
+        desktopRustCoreError(new Error(`gatt.read-failed|gatt|gatt.read|never||${field}|x`), 'op').normalized.code
+      ).toBe('platform.transport')
     }
   })
 
@@ -996,7 +1124,7 @@ describe('parity rows closed by the core OS adapters (PARITY-INVENTORY §1–3)'
         const observation = await nextValue(iterator, 5000)
         expect(observation.connectable).toMatchObject({ state: 'present', value: true })
         expect(observation.solicitedServiceUuids).toMatchObject({ state: 'present', value: [HRM_SERVICE] })
-        expect(observation.overflowServiceUuids.state).toBe('absent')
+        expect(observation.overflowServiceUuids.state).toBe('unavailable')
       } finally {
         await iterator.return?.()
         await lease.stop()
@@ -1041,7 +1169,13 @@ describe('parity rows closed by the core OS adapters (PARITY-INVENTORY §1–3)'
           protection: 'system-default',
           ceremony: { kind: 'agent', agent: { onChallenge: async () => ({ kind: 'confirm', confirmed: true }) } }
         })
-      ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
+      ).rejects.toMatchObject({
+        normalized: {
+          code: 'capability.unsupported',
+          // B-R2: BlueZ keeps the legacy `.pair` segment; WinRT never had it.
+          operation: platform === 'bluez' ? 'bluez.security.pair.custom-ceremony' : 'winrt.security.custom-ceremony'
+        }
+      })
       await expect(
         backend.security.pair(peerId, {
           signal: null,
@@ -1131,6 +1265,96 @@ describe('parity rows closed by the core OS adapters (PARITY-INVENTORY §1–3)'
     })
   })
 
+  test('maximum-write-length rejects empty connection ids as invalid (F9), as legacy did', async () => {
+    await withBackend('corebluetooth', async ({ backend }) => {
+      const row = backend.features.registrations.find(entry => entry.id === 'gatt:maximum-write-length')
+      expect(row?.implementation).toBeDefined()
+      // An empty id is a malformed argument, not a missing connection.
+      await expect(
+        row.implementation.invoke({ connectionId: '', connectionGeneration: '1', mode: 'with-response' })
+      ).rejects.toMatchObject({
+        normalized: { code: 'argument.invalid', domain: 'gatt', operation: 'direct-gatt.gatt.maximum-write-length' }
+      })
+      await expect(
+        row.implementation.invoke({ connectionId: 'x', connectionGeneration: '', mode: 'with-response' })
+      ).rejects.toMatchObject({ normalized: { code: 'argument.invalid', domain: 'gatt' } })
+    })
+  })
+
+  test('CoreBluetooth RSSI keeps its legacy integer-precision limits (F7)', async () => {
+    await withBackend('corebluetooth', async ({ backend }) => {
+      const rssi = backend.features.registrations.find(entry => entry.id === 'connection:rssi')
+      expect(rssi).toBeDefined()
+      // The legacy registry reported integer dBm precision, not generic availability.
+      expect(rssi.limits).toMatchObject({
+        minimumRssiIntegerPrecision: { minimum: 1, maximum: 1, unit: 'dBm' }
+      })
+    })
+  })
+
+  test('readiness overflow keeps drop-oldest (F1), as the legacy watch did', async () => {
+    await withBackend('corebluetooth', async ({ backend, stage }) => {
+      const { lease } = await connectAndDiscover(backend, stage)
+      await stage.stageWriteReadiness('peer-1', false)
+      const watch = await backend.connections.writeWithoutResponseReadiness(lease.connection)
+      try {
+        // The legacy watch dropped the oldest observation on overflow,
+        // never the newest.
+        expect(watch.events.overflowPolicy).toBe('drop-oldest')
+      } finally {
+        await watch.close()
+      }
+    })
+  })
+
+  test('readiness reprobes every 100 ms while unready (F2 safety net)', async () => {
+    await withBackend('corebluetooth', async ({ backend, stage }) => {
+      const { lease } = await connectAndDiscover(backend, stage)
+      await stage.stageWriteReadiness('peer-1', false)
+      const watch = await backend.connections.writeWithoutResponseReadiness(lease.connection)
+      const events = watch.events[Symbol.asyncIterator]()
+      try {
+        // The probe answers first; with no OS edge the 100 ms reprobe
+        // re-reads and re-emits while the link stays unready.
+        expect(await nextValue(events, 3000)).toMatchObject({ ready: false, ordinal: 1 })
+        expect(await nextValue(events, 3000)).toMatchObject({ ready: false, ordinal: 2 })
+        expect(await nextValue(events, 3000)).toMatchObject({ ready: false, ordinal: 3 })
+      } finally {
+        await events.return?.()
+        await watch.close()
+      }
+    })
+  })
+
+  test('a readiness report arriving during the probe is replayed, never dropped (F3)', async () => {
+    await withBackend('corebluetooth', async ({ backend, stage }) => {
+      const { lease } = await connectAndDiscover(backend, stage)
+      await stage.stageWriteReadiness('peer-1', false)
+      const pending = backend.connections.writeWithoutResponseReadiness(lease.connection)
+      // Announced while the probe is still in flight: the watch buffers it
+      // and replays it after the probe, as the legacy watch did.
+      await stage.stageWriteReadiness('peer-1', true, true)
+      const watch = await pending
+      const events = watch.events[Symbol.asyncIterator]()
+      try {
+        // The during-probe report (true) arrives even though the probe was
+        // still in flight when the OS announced it: nothing the watch was
+        // live for is lost. (The probe value itself is covered by the
+        // probe-then-reports test above.)
+        const seen = []
+        for (let index = 0; index < 10; index += 1) {
+          const value = await nextValue(events, 3000)
+          seen.push(value.ready)
+          if (value.ready === true) break
+        }
+        expect(seen).toContain(true)
+      } finally {
+        await events.return?.()
+        await watch.close()
+      }
+    })
+  })
+
   test('WinRT scan terminated by the OS ends every consumer, and a new scan starts', async () => {
     await withBackend('winrt', async ({ backend, stage }) => {
       const lease = await backend.scanner.start(scanOptions(), 'client-1')
@@ -1182,6 +1406,65 @@ describe('parity rows closed by the core OS adapters (PARITY-INVENTORY §1–3)'
         await stage.stageAdvertisement({ peerId: 'peer-8', address: 'AA:BB:CC:DD:EE:08' })
         const observation = await nextValue(iterator, 5000)
         expect(observation.device.address).toEqual({ value: 'AA:BB:CC:DD:EE:08', type: 'random' })
+      } finally {
+        await iterator.return?.()
+        await lease.stop()
+      }
+    })
+  })
+
+  test('BlueZ address without a reported type is random, as legacy mapped it', async () => {
+    await withBackend('bluez', async ({ backend, stage }) => {
+      const lease = await backend.scanner.start(scanOptions(), 'client-1')
+      const iterator = lease.observations[Symbol.asyncIterator]()
+      try {
+        // No staged address type: BlueZ did not report one, and legacy
+        // mapped every non-public (including unknown) type to random.
+        await stage.stageAdvertisement({ peerId: 'peer-9', address: 'AA:BB:CC:DD:EE:09' })
+        const observation = await nextValue(iterator, 5000)
+        expect(observation.device.address).toEqual({ value: 'AA:BB:CC:DD:EE:09', type: 'random' })
+      } finally {
+        await iterator.return?.()
+        await lease.stop()
+      }
+    })
+  })
+
+  test.each([
+    ['corebluetooth', 'unavailable'],
+    ['winrt', 'absent'],
+    ['bluez', 'absent']
+  ])('%s reports unprovided fields %s with a backend-scoped device (F8)', async (platform, missing) => {
+    await withBackend(platform, async ({ backend, stage }) => {
+      const lease = await backend.scanner.start(scanOptions(), 'client-1')
+      const iterator = lease.observations[Symbol.asyncIterator]()
+      try {
+        // As each legacy backend mapped it: CoreBluetooth `unavailable`,
+        // WinRT and BlueZ `absent`; every device identity backend-scoped.
+        await stage.stageAdvertisement({ peerId: 'peer-f8', rssi: -59, localName: 'F8' })
+        const observation = await nextValue(iterator, 5000)
+        expect(observation.device.scope).toBe('backend')
+        expect(observation.localName).toMatchObject({ state: 'present', value: 'F8' })
+        expect(observation.sourceTimestamp.state).toBe(missing)
+        expect(observation.appearance.state).toBe(missing)
+        expect(observation.txPower.state).toBe(missing)
+      } finally {
+        await iterator.return?.()
+        await lease.stop()
+      }
+    })
+  })
+
+  test('BlueZ advertisement without UUIDs leaves serviceUuids absent, as legacy did', async () => {
+    await withBackend('bluez', async ({ backend, stage }) => {
+      const lease = await backend.scanner.start(scanOptions(), 'client-1')
+      const iterator = lease.observations[Symbol.asyncIterator]()
+      try {
+        // BlueZ cannot distinguish "none" from "not reported": no UUIDs
+        // property is absent, never present([]).
+        await stage.stageAdvertisement({ peerId: 'peer-10', rssi: -61, localName: 'NoUuids' })
+        const observation = await nextValue(iterator, 5000)
+        expect(observation.serviceUuids.state).toBe('absent')
       } finally {
         await iterator.return?.()
         await lease.stop()
@@ -1255,21 +1538,37 @@ describe('scan name prefix reaches the OS filter (LEGACY-AUDIT-2 N10)', () => {
 // (legacy corebluetooth-*, winrt-*, bluez-* backends), never the core's own.
 describe('public errors report the 4.x operation id of each host', () => {
   const PREFIX = { corebluetooth: 'direct-gatt', winrt: 'winrt', bluez: 'bluez' }
-  const handle = platform => (platform === 'bluez' ? name => `bluez.gatt.${name}` : name => `${PREFIX[platform]}.gatt.database-${name}`)
-  const failure = promise => promise.then(() => null, error => error.normalized)
+  const handle = platform =>
+    platform === 'bluez' ? name => `bluez.gatt.${name}` : name => `${PREFIX[platform]}.gatt.database-${name}`
+  const failure = promise =>
+    promise.then(
+      () => null,
+      error => error.normalized
+    )
 
   test.each(PLATFORMS)('%s: verbs failing in the OS', async platform => {
     await withBackend(platform, async ({ backend, stage }) => {
       const { database, measurement, lease } = await connectAndDiscover(backend, stage)
       await stage.failNextRadioOp('read', 'os')
-      expect((await failure(database.read(measurement.path, { signal: null, deadline: null }))).operation).toBe(handle(platform)('read'))
+      expect((await failure(database.read(measurement.path, { signal: null, deadline: null }))).operation).toBe(
+        handle(platform)('read')
+      )
       await stage.failNextRadioOp('read', 'os')
-      const direct = backend.gatt.read(measurement.path, { operation: { signal: null, deadline: null, correlation: 'legacy-read' } })
+      const direct = backend.gatt.read(measurement.path, {
+        operation: { signal: null, deadline: null, correlation: 'legacy-read' }
+      })
       expect((await failure(direct.completion)).operation).toBe(`${PREFIX[platform]}.gatt.read`)
       await stage.failNextRadioOp('write', 'os')
       expect(
-        (await failure(database.write(measurement.path, new Uint8Array([1]), { signal: null, deadline: null, mode: 'with-response' })))
-          .operation
+        (
+          await failure(
+            database.write(measurement.path, new Uint8Array([1]), {
+              signal: null,
+              deadline: null,
+              mode: 'with-response'
+            })
+          )
+        ).operation
       ).toBe(handle(platform)('write'))
       await stage.failNextRadioOp('subscribe', 'os')
       expect((await failure(database.subscribe(measurement.path, subscribeOptions()))).operation).toBe(
@@ -1288,7 +1587,38 @@ describe('public errors report the 4.x operation id of each host', () => {
       )
       await again.release()
       await stage.failNextRadioOp('start-scan', 'os')
-      expect((await failure(backend.scanner.start(scanOptions(), 'client-1'))).operation).toBe(`${PREFIX[platform]}.scan.start`)
+      expect((await failure(backend.scanner.start(scanOptions(), 'client-1'))).operation).toBe(
+        `${PREFIX[platform]}.scan.start`
+      )
+    })
+  })
+
+  test.each(PLATFORMS)('%s: connect on a never-observed peer is connection.not-found (W-R3)', async platform => {
+    await withBackend(platform, async ({ backend }) => {
+      // No scan, no staging: this peer was never observed.
+      const failure = await backend.connections
+        .connect('peer-never-observed', 'client-1', { signal: null, deadline: null })
+        .then(
+          () => null,
+          error => error.normalized
+        )
+      expect(failure).toMatchObject({
+        code: 'connection.not-found',
+        domain: 'connection',
+        // BlueZ reports the connect op; CoreBluetooth and WinRT the `.peer` segment.
+        operation: platform === 'bluez' ? 'bluez.connect' : `${PREFIX[platform]}.connect.peer`
+      })
+    })
+  })
+
+  test('CoreBluetooth when-available intent keeps its legacy operation id (F5)', async () => {
+    await withBackend('corebluetooth', async ({ backend, stage }) => {
+      const peerId = await observePeer(backend, stage)
+      await expect(
+        backend.connections.connect(peerId, 'client-1', { signal: null, deadline: null, intent: 'when-available' })
+      ).rejects.toMatchObject({
+        normalized: { code: 'capability.unsupported', operation: 'direct-gatt.connect.when-available' }
+      })
     })
   })
 
@@ -1307,7 +1637,13 @@ describe('public errors report the 4.x operation id of each host', () => {
     )
     let guard = null
     try {
-      createDesktopRustCoreBackendProvider({ platform, owner: 'x', now: () => 1, loadBinding: jest.fn(), hostPlatform: 'sunos' })
+      createDesktopRustCoreBackendProvider({
+        platform,
+        owner: 'x',
+        now: () => 1,
+        loadBinding: jest.fn(),
+        hostPlatform: 'sunos'
+      })
     } catch (error) {
       guard = error.normalized
     }

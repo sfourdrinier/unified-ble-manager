@@ -59,6 +59,7 @@ final class ScriptedDriver: UnifiedBleRustRadioDriver {
   var snapshot: NSDictionary = ["availability": "available", "authorization": "granted", "power": "on", "safeReason": NSNull()]
   var restored: [NSDictionary] = []
   var canSendWithoutResponse = true
+  var readProvenance = OwnedCoreBluetoothReadProvenance.readResponse
   var calls = [String]()
   var cancelled = [String]()
   var subscriptionIdentifiers = [String]()
@@ -143,13 +144,14 @@ final class ScriptedDriver: UnifiedBleRustRadioDriver {
     }
   }
 
-  func read(
+  func readCharacteristic(
     peerIdentifier: String, serviceUUID: String, serviceOccurrence: Int, characteristicUUID: String,
-    characteristicOccurrence: Int, operationIdentifier: String, completion: @escaping (NSData?, NSError?) -> Void
+    characteristicOccurrence: Int, operationIdentifier: String,
+    completion: @escaping (NSData?, OwnedCoreBluetoothReadProvenance, NSError?) -> Void
   ) {
     workQueue.async {
       self.record("read \(characteristicUUID)")
-      completion(Data([0x64]) as NSData, nil)
+      completion(Data([0x64]) as NSData, self.readProvenance, nil)
     }
   }
 
@@ -449,8 +451,24 @@ final class Harness {
     }
     let rssi = ok("connection.rssi", ["peerId": "P", "lease": "lease-p", "operationId": "op-rssi"]) as? [String: Any]
     check((rssi?["rssi"] as? NSNumber)?.intValue == -60, "rssi: \(String(describing: rssi))")
+    // gatt:maximum-write-length: CoreBluetooth's own maximumWriteValueLength(for:) per type.
+    for (mode, expected) in [("with-response", 512), ("without-response", 182)] {
+      let maximum = ok("connection.maximum-write-length", [
+        "peerId": "P", "lease": "lease-p", "mode": mode, "operationId": "op-mwl-\(mode)",
+      ]) as? [String: Any]
+      check((maximum?["maximumWriteLength"] as? NSNumber)?.intValue == expected,
+            "maximum write length \(mode): \(String(describing: maximum))")
+    }
     let read = ok("gatt.read", ["peerId": "P", "selector": selector, "operationId": "op-read"]) as? [String: Any]
     check(read?["valueB64"] as? String == "ZA==", "read: \(String(describing: read))")
+    check(read?["provenance"] as? String == "read-response", "read provenance: \(String(describing: read))")
+    // CoreBluetooth reading a notifying characteristic: the radio says the
+    // value may be a notification and the adapter carries that verbatim.
+    driver.onQueue { self.driver.readProvenance = .readOrNotification }
+    let fused = ok("gatt.read", ["peerId": "P", "selector": selector, "operationId": "op-read-fused"]) as? [String: Any]
+    check(fused?["valueB64"] as? String == "ZA==" && fused?["provenance"] as? String == "read-or-notification",
+          "read while notifying: \(String(describing: fused))")
+    driver.onQueue { self.driver.readProvenance = .readResponse }
     let writeArgs: (String, String) -> [String: Any] = { id, value in
       ["peerId": "P", "selector": selector, "operationId": id, "valueB64": value, "mode": "without-response"]
     }
@@ -474,6 +492,21 @@ final class Harness {
           "only the admissible writes reach CoreBluetooth")
     let mtu = invoke("connection.request-mtu", ["peerId": "P", "lease": "lease-p", "mtu": 185, "operationId": "op-mtu"])
     check(errorCode(mtu) == "capability.unsupported", "request-mtu on Apple: \(mtu)")
+
+    // Finding 140 (I-1): the Swift adapter itself refuses the Android-only
+    // foreground service and companion chooser, before CoreBluetooth, as
+    // the legacy module refused them.
+    let callsBeforeRefusals = driver.onQueue { self.driver.calls.count }
+    let background = invoke("background.acquire", ["kind": "connected-device", "reason": "workout", "operationId": "op-bg"])
+    check(errorCode(background) == "capability.unsupported", "background.acquire on Apple: \(background)")
+    check(((background["error"] as? [String: Any])?["detail"] as? String ?? "").contains("Android-only"),
+          "the adapter's own refusal: \(background)")
+    // The owner refuses the companion chooser on Apple before the adapter;
+    // the adapter's own refusal (below) stands behind it.
+    let companion = invoke("companion.associate", ["name": "Polar", "operationId": "op-companion"])
+    check(errorCode(companion) == "capability.unsupported", "companion.associate on Apple: \(companion)")
+    check(driver.onQueue { self.driver.calls.count } == callsBeforeRefusals, "no refusal reached CoreBluetooth")
+    androidOnlyRefusalsAtTheAdapter()
 
     // Cancellation of an in-flight connect: the OS work is withdrawn.
     let hanging = DispatchSemaphore(value: 0)
@@ -569,9 +602,9 @@ final class Harness {
       return check(false, "ATT error must travel as gatt-status with its code")
     }
     check(nativeDomain == CBATTErrorDomain && nativeCode == 5, "the NSError identity travels (113): \(String(describing: nativeDomain)) \(String(describing: nativeCode))")
-    let owned = NSError(domain: UnifiedBleRustRadioAdapter.ownedDomain, code: 1031)
+    let owned = NSError(domain: UnifiedBleRustRadioAdapter.ownedDomain, code: 1010)
     guard case let .failed(_, _, ownedDomain, ownedCode, _, _) = UnifiedBleRustRadioAdapter.failure(owned, verb: .read),
-          ownedDomain == UnifiedBleRustRadioAdapter.ownedDomain, ownedCode == 1031 else {
+          ownedDomain == UnifiedBleRustRadioAdapter.ownedDomain, ownedCode == 1010 else {
       return check(false, "the owned radio's code travels with its domain")
     }
     check(UnifiedBleRustRadioAdapter.ownedKind(1005, verb: .connect) == "peer-unknown", "1005")
@@ -579,6 +612,49 @@ final class Harness {
     check(UnifiedBleRustRadioAdapter.ownedKind(1026, verb: .readDescriptor) == "busy", "1026 descriptor")
     check(UnifiedBleRustRadioAdapter.coreBluetoothKind(7) == "not-connected", "CBError.peripheralDisconnected")
     check(UnifiedBleRustRadioAdapter.rssi(127) == nil && UnifiedBleRustRadioAdapter.rssi(-40) == -40, "rssi 127")
+  }
+
+  /// Finding 140 (I-1): every Android-only verb submitted straight to a
+  /// real Swift adapter is refused `unsupported`, never sent, and never
+  /// reaches CoreBluetooth.
+  func androidOnlyRefusalsAtTheAdapter() {
+    final class RecordingSink: UnifiedBleRustRadioSink {
+      let lock = NSLock()
+      let answered = DispatchSemaphore(value: 0)
+      var completions = [UInt64: MobileRadioCompletion]()
+      func complete(requestId: UInt64, completion: MobileRadioCompletion) -> String {
+        lock.lock()
+        completions[requestId] = completion
+        lock.unlock()
+        answered.signal()
+        return "delivered"
+      }
+      func ingest(ingress: MobileRadioIngress) -> String { "accepted" }
+    }
+    let isolatedDriver = ScriptedDriver()
+    let isolated = UnifiedBleRustRadioAdapter(driver: isolatedDriver)
+    let sink = RecordingSink()
+    isolated.bind(sink: sink)
+    let requests: [MobileRadioRequest] = [
+      .acquireBackground(id: 901, kind: "connected-device", reason: "workout"),
+      .releaseBackground(id: 902, leaseId: "lease"),
+      .updateBackgroundNotification(id: 903, leaseId: "lease", title: "Recording", body: nil),
+      .associateCompanion(id: 904, name: "Polar", serviceUuid: nil),
+    ]
+    for request in requests { isolated.submit(request: request) }
+    for _ in requests {
+      check(sink.answered.wait(timeout: .now() + timeout) == .success, "an Android-only verb was never answered")
+    }
+    for id in UInt64(901)...UInt64(904) {
+      sink.lock.lock()
+      let completion = sink.completions[id]
+      sink.lock.unlock()
+      guard case let .failed(kind, _, _, _, detail, dispatched)? = completion else {
+        return check(false, "request \(id) was not refused: \(String(describing: completion))")
+      }
+      check(kind == "unsupported" && !dispatched && detail.contains("Android-only"), "request \(id): \(kind) \(detail)")
+    }
+    check(isolatedDriver.onQueue { isolatedDriver.calls.isEmpty }, "no Android-only verb reached CoreBluetooth")
   }
 
   func restorationIdentityChecks() {
@@ -607,6 +683,13 @@ final class Harness {
     let bundle = Bundle(path: directory.path)!
     check(UnifiedBleRustRestorationIdentity.configuredRestoreIdentifier(bundle: bundle) == derived["restoreIdentifier"],
           "configured restore identifier")
+    // Finding 140 (I-2): the production host acquires the process central
+    // with exactly the bundle's restore identifier and power-alert choice,
+    // as the legacy module did. (Creating the real CBCentralManager needs a
+    // Bluetooth-entitled app; the owner and radio are byte-identical to 4.x.)
+    let production = UnifiedBleRustCoreSessions.productionRadioConfiguration(bundle: bundle)
+    check(production.restoreIdentifierKey == derived["restoreIdentifier"], "production restore identifier")
+    check(production.showPowerAlert == nil, "no power-alert key → the central's default")
     switch UnifiedBleRustRestorationIdentity.bootstrap(requestJson: "{\"restorationId\":\"polar-h10\",\"generation\":\"1\"}", bundle: bundle) {
     case let .success(text):
       let identity = json(text)
@@ -637,6 +720,16 @@ final class Harness {
     try! PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": "com.example.bare"], format: .xml, options: 0)
       .write(to: bare.appendingPathComponent("Contents/Info.plist"))
     defer { try? FileManager.default.removeItem(at: bare) }
+    let alert = FileManager.default.temporaryDirectory.appendingPathComponent("ubm-alert-\(UUID().uuidString).bundle")
+    try! FileManager.default.createDirectory(at: alert.appendingPathComponent("Contents"), withIntermediateDirectories: true)
+    try! PropertyListSerialization.data(
+      fromPropertyList: ["CFBundleIdentifier": "com.example.alert", "UnifiedBleProtocolShowPowerAlert": false],
+      format: .xml, options: 0
+    ).write(to: alert.appendingPathComponent("Contents/Info.plist"))
+    defer { try? FileManager.default.removeItem(at: alert) }
+    let alertConfiguration = UnifiedBleRustCoreSessions.productionRadioConfiguration(bundle: Bundle(path: alert.path)!)
+    check(alertConfiguration.restoreIdentifierKey == nil, "no restoration configured → no restore identifier")
+    check(alertConfiguration.showPowerAlert == false, "the Info.plist power-alert choice reaches the central")
     guard case .success("null") = UnifiedBleRustRestorationIdentity.bootstrap(
       requestJson: "{}", bundle: Bundle(path: bare.path)!
     ) else {

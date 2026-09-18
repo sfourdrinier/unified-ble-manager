@@ -71,6 +71,7 @@ pub struct BtleplugDispatcher {
     inner: Arc<Mutex<DispatcherState>>,
     bootstrap_admission: Arc<Mutex<()>>,
     next_id: Arc<AtomicU64>,
+    next_internal_id: Arc<AtomicU64>,
     next_revocation: Arc<AtomicU64>,
     started_at: Arc<Instant>,
     revoked_callers: Arc<SyncMutex<HashMap<String, u64>>>,
@@ -106,6 +107,10 @@ struct DispatcherState {
     /// caller key's next release and by authority shutdown; never dropped
     /// silently.
     orphan_debt: Vec<OrphanDebt>,
+    /// Attachments an adapter reset replaced (IPC protocol 4). Work naming
+    /// one is refused `backend.reset`, releases excepted; renderers route
+    /// under the attachment the dispatcher rebound them to and announced.
+    replaced_attachment_ids: HashSet<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -200,7 +205,10 @@ struct CoreConnection {
     lease: String,
     connection_id: String,
     owner_lease_id: String,
+    /// The 4.x public generation (`connection-generation-{n}`).
     connection_generation: String,
+    /// The core's generation of this link, which its lifecycle events carry.
+    core_generation: String,
     phase: ReleasePhase,
 }
 
@@ -298,6 +306,11 @@ struct ConnectionEventResource {
     peer_id: String,
     connection_id: String,
     connection_generation: String,
+    /// The core's generation of the link (lifecycle-event matching only).
+    core_generation: String,
+    /// The attachment the link lives on. A rebind (IPC protocol 4) moves
+    /// the caller, never a link the adapter reset already ended.
+    attachment: Attachment,
     active: bool,
     sequence: u64,
     end: StreamEnd,
@@ -662,17 +675,88 @@ fn cancel_state(ack: &CancelAck) -> &'static str {
 /// peripheral on that interval while scanning.
 const TAURI_KNOWN_PEER_REFRESH: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// The Tauri 4.x identity (origin/main `btleplug_dispatcher.rs:525-531`):
+/// the dispatcher's own id counter numbers, in order, the attachment, the
+/// backend instance and the backend and adapter generations; a reset takes
+/// the next three numbers for the attachment and its generations and keeps
+/// the instance.
+#[derive(Debug)]
+struct TauriIdentity {
+    next_id: Arc<AtomicU64>,
+    instance: std::sync::OnceLock<String>,
+}
+
+impl TauriIdentity {
+    fn id(&self, prefix: &str) -> String {
+        format!("{prefix}-{}", self.next_id.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+impl ubm_desktop::HostIdentity for TauriIdentity {
+    fn namespace(&self) -> &str {
+        "tauri"
+    }
+
+    fn log_tag(&self) -> &str {
+        "tauri-plugin-unified-ble-manager"
+    }
+
+    fn attachment(
+        &self,
+        epoch: ubm_desktop::AttachmentEpoch<'_>,
+    ) -> Result<AttachmentTuple, ubm_core::contracts::CoreError> {
+        use ubm_core::contracts::{
+            AdapterGeneration, AdapterId, AttachmentId, BackendGeneration, BackendInstanceId,
+        };
+        let attachment_id = self.id("tauri-attachment");
+        let instance = self
+            .instance
+            .get_or_init(|| self.id("tauri-btleplug"))
+            .clone();
+        let backend_generation = self.id("tauri-backend-generation");
+        let adapter_generation = self.id("tauri-adapter-generation");
+        Ok(AttachmentTuple::new(
+            AttachmentId::new(attachment_id)?,
+            BackendInstanceId::new(instance)?,
+            BackendGeneration::new(backend_generation)?,
+            AdapterId::new(epoch.adapter)?,
+            AdapterGeneration::new(adapter_generation)?,
+        ))
+    }
+
+    fn kernel_generation(
+        &self,
+        epoch: ubm_desktop::AttachmentEpoch<'_>,
+    ) -> Result<ubm_core::contracts::Generation, ubm_core::contracts::CoreError> {
+        ubm_core::contracts::Generation::new(format!(
+            "tauri-kernel-{}-{}",
+            epoch.ordinal, epoch.resets
+        ))
+    }
+}
+
+/// The Tauri central profile: the desktop profile under the Tauri 4.x
+/// identity, numbered by `next_id`.
+fn tauri_profile(next_id: Arc<AtomicU64>) -> CentralProfile {
+    let mut profile = CentralProfile::desktop("tauri");
+    profile.identity = Arc::new(TauriIdentity {
+        next_id,
+        instance: std::sync::OnceLock::new(),
+    });
+    profile
+}
+
+/// Opens the scheduling authority for one Tauri profile.
+type ProfiledOpener = Arc<dyn Fn(CentralProfile) -> AuthorityOpenFuture + Send + Sync>;
+
 /// The production opener: the btleplug radio and its central open on the
 /// shared desktop executor (never on Tauri's runtime), on the adapter the
-/// options name, with the core's selection rule (ambiguity refused).
-fn btleplug_opener(adapter_id: Option<String>) -> AuthorityOpener {
-    Arc::new(move || {
-        let adapter_id = adapter_id.clone();
+/// profile names, with the core's selection rule (ambiguity refused).
+fn btleplug_opener() -> ProfiledOpener {
+    Arc::new(move |profile| {
         Box::pin(async move {
             let central = btleplug_runtime()
                 .spawn(async move {
-                    let mut profile = CentralProfile::desktop("tauri");
-                    profile.adapter_id = adapter_id;
                     let central = DesktopCentral::open_btleplug(profile).await?;
                     // Finding 120: Tauri 4.x re-read every known peripheral
                     // every 2 s during a scan; its observation cadence stays.
@@ -710,18 +794,39 @@ impl Default for BtleplugDispatcher {
 
 impl BtleplugDispatcher {
     pub fn new(options: BtleplugDispatcherOptions) -> Self {
-        Self::with_slot(AuthoritySlot::Unopened(btleplug_opener(options.adapter_id)))
+        Self::with_profiled_opener(options.adapter_id, btleplug_opener())
+    }
+
+    /// Dispatcher whose authority opens through `open` on first use, with
+    /// the Tauri profile numbered by this dispatcher's own id counter.
+    fn with_profiled_opener(adapter_id: Option<String>, open: ProfiledOpener) -> Self {
+        let next_id = Arc::new(AtomicU64::new(1));
+        let opener: AuthorityOpener = {
+            let next_id = Arc::clone(&next_id);
+            Arc::new(move || {
+                let mut profile = tauri_profile(Arc::clone(&next_id));
+                profile.adapter_id = adapter_id.clone();
+                open(profile)
+            })
+        };
+        Self::with_slot_and_ids(AuthoritySlot::Unopened(opener), next_id)
     }
 
     fn with_slot(slot: AuthoritySlot) -> Self {
+        Self::with_slot_and_ids(slot, Arc::new(AtomicU64::new(1)))
+    }
+
+    fn with_slot_and_ids(slot: AuthoritySlot, next_id: Arc<AtomicU64>) -> Self {
         Self {
             inner: Arc::new(Mutex::new(DispatcherState {
                 adapter_name: None,
                 callers: HashMap::new(),
                 orphan_debt: Vec::new(),
+                replaced_attachment_ids: HashSet::new(),
             })),
             bootstrap_admission: Arc::new(Mutex::new(())),
-            next_id: Arc::new(AtomicU64::new(1)),
+            next_id,
+            next_internal_id: Arc::new(AtomicU64::new(1)),
             next_revocation: Arc::new(AtomicU64::new(1)),
             started_at: Arc::new(Instant::now()),
             revoked_callers: Arc::new(SyncMutex::new(HashMap::new())),
@@ -825,6 +930,15 @@ impl BtleplugDispatcher {
 
     fn id(&self, prefix: &str) -> String {
         format!("{prefix}-{}", self.next_id.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// A name only the plugin and the core see (never on the IPC surface);
+    /// numbered apart from the 4.x public counter.
+    fn internal_id(&self, prefix: &str) -> String {
+        format!(
+            "{prefix}-internal-{}",
+            self.next_internal_id.fetch_add(1, Ordering::Relaxed)
+        )
     }
 
     async fn dispatch_request(
@@ -1014,7 +1128,7 @@ impl BtleplugDispatcher {
                 ))
             }
         };
-        self.validate_envelope(&caller, &envelope).await?;
+        self.validate_envelope(&caller, &command, &envelope).await?;
 
         if command == "operation.cancel" {
             return self.cancel_operation(&caller, &payload).await;
@@ -1148,6 +1262,7 @@ impl BtleplugDispatcher {
     async fn validate_envelope(
         &self,
         caller: &AuthenticatedCaller,
+        command: &str,
         envelope: &BTreeMap<String, IpcValue>,
     ) -> Result<(), DispatchError> {
         let lease = into_object(
@@ -1178,7 +1293,25 @@ impl BtleplugDispatcher {
             // Identity only: comparing the attachment never samples platform
             // state (an adapter-state snapshot asks the OS, which must not
             // run on every route or under the dispatcher lock).
-            if caller_state.attachment.attachment_id != attachment_id
+            // Protocol 4: an attachment the dispatcher replaced admits only
+            // releases; the renderer routes new work under the attachment it
+            // was rebound to. A renderer can never name one it was not given.
+            if state.replaced_attachment_ids.contains(&attachment_id) {
+                if !is_release_command(command) {
+                    let mut error = DispatchError::new(
+                        BleErrorCode::BackendReset,
+                        "adapter",
+                        "tauri.route-attachment",
+                    )
+                    .platform(format!(
+                        "the adapter was reset: attachment {attachment_id} ended; the dispatcher \
+                         rebound this caller to attachment {}",
+                        caller_state.attachment.attachment_id
+                    ));
+                    error.commit = Some(CommitState::NotDispatched);
+                    return Err(error);
+                }
+            } else if caller_state.attachment.attachment_id != attachment_id
                 || !attachment_identity_matches(&envelope_attachment, &caller_state.attachment)
             {
                 return Err(DispatchError::new(
@@ -1799,7 +1932,8 @@ impl BtleplugDispatcher {
         // Core first: the link, its generation, and the connection lease are
         // all core-owned. The lease below is the exact string later ops must
         // echo back to the core.
-        let lease = self.id("lease");
+        // The core lease is internal: it takes no number from the 4.x counter.
+        let lease = self.internal_id("lease");
         let authority = self.ensure_authority().await?;
         let connection = authority
             .connect(&peer_id, &lease, ctl)
@@ -1807,6 +1941,8 @@ impl BtleplugDispatcher {
             .map_err(|error| DispatchError::from_core(&error))?;
         let handle = self.id("connection");
         let connection_id = self.id("connection-id");
+        // The 4.x public generation; the core's travels with it for matching.
+        let public_generation = self.id("connection-generation");
         // Publication: a link nobody can address is released through the
         // core by its own lease, and a failed release becomes orphan debt
         // (PR210-08) — never a `let _` discard.
@@ -1836,7 +1972,7 @@ impl BtleplugDispatcher {
                         "connection",
                         "tauri.connect-generation",
                     )),
-                    Some(connection_generation) => {
+                    Some(core_generation) => {
                         let owner_lease_id = caller_state.lease_id.clone();
                         caller_state.connections.insert(
                             handle.clone(),
@@ -1845,11 +1981,12 @@ impl BtleplugDispatcher {
                                 lease: lease.clone(),
                                 connection_id: connection_id.clone(),
                                 owner_lease_id: owner_lease_id.clone(),
-                                connection_generation: connection_generation.clone(),
+                                connection_generation: public_generation.clone(),
+                                core_generation,
                                 phase: ReleasePhase::Active,
                             },
                         );
-                        Ok((owner_lease_id, connection_generation))
+                        Ok((owner_lease_id, public_generation.clone()))
                     }
                 },
             }
@@ -2029,6 +2166,7 @@ impl BtleplugDispatcher {
                 "tauri.connection-events-duplicate",
             ));
         }
+        let attachment = caller_state.attachment.clone();
         caller_state.connection_events.insert(
             stream_handle.clone(),
             ConnectionEventResource {
@@ -2041,6 +2179,8 @@ impl BtleplugDispatcher {
                 peer_id: connection.peer_id,
                 connection_id: connection.connection_id.clone(),
                 connection_generation: connection.connection_generation.clone(),
+                core_generation: connection.core_generation.clone(),
+                attachment,
                 active: false,
                 sequence: 0,
                 end: StreamEnd::Open,
@@ -2077,9 +2217,6 @@ impl BtleplugDispatcher {
                     "tauri.connection-events-ready-owner",
                 )
             })?;
-            // Events report the attachment the link lives on: the one this
-            // caller bound.
-            let attachment = caller_state.attachment.clone();
             let resource = caller_state
                 .connection_events
                 .get_mut(&stream_handle)
@@ -2099,6 +2236,8 @@ impl BtleplugDispatcher {
             }
             resource.active = true;
             resource.sequence = 1;
+            // Events report the attachment the link lives on.
+            let attachment = resource.attachment.clone();
             // A link that ended before the stream was ready is reported
             // right after the initial event; the delivery claims the end.
             let pending_end = match resource.end {
@@ -2214,11 +2353,25 @@ impl BtleplugDispatcher {
     fn start_lifecycle_pump(&self, authority: &Arc<dyn CoreAuthority>) {
         let mut events = authority.lifecycle_events();
         let mut scan_ends = authority.scan_terminal_events();
+        let mut resets = authority.adapter_reset_events();
         let dispatcher = self.clone();
         let pump = tauri::async_runtime::spawn(async move {
-            let (mut lifecycle_open, mut scan_ends_open) = (true, true);
-            while lifecycle_open || scan_ends_open {
+            let (mut lifecycle_open, mut scan_ends_open, mut resets_open) = (true, true, true);
+            while lifecycle_open || scan_ends_open || resets_open {
                 tokio::select! {
+                    reset = resets.recv(), if resets_open => match reset {
+                        Ok(reset) => {
+                            dispatcher
+                                .rebind_callers(reset.previous.attachment_id().as_str(), &reset.current)
+                                .await;
+                        }
+                        // A missed reset still left the central on its current
+                        // attachment: rebind to that.
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            dispatcher.rebind_to_current().await;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => resets_open = false,
+                    },
                     event = events.recv(), if lifecycle_open => match event {
                         Ok(event) => dispatcher.apply_lifecycle_event(&event).await,
                         Err(broadcast::error::RecvError::Lagged(_)) => {
@@ -2243,6 +2396,76 @@ impl BtleplugDispatcher {
             .replace(pump);
         if let Some(previous) = previous {
             previous.abort();
+        }
+    }
+
+    /// IPC protocol 4: an adapter reset replaced `previous` with `current`.
+    /// The dispatcher (never a webview) rebinds every caller bound to
+    /// `previous` and announces it on the `attachment` stream; until then
+    /// work on `previous` is refused `backend.reset`, and afterwards too,
+    /// releases excepted.
+    async fn rebind_callers(&self, previous: &str, current: &AttachmentTuple) {
+        let rebound = {
+            let mut state = self.inner.lock().await;
+            state.replaced_attachment_ids.insert(previous.to_owned());
+            let adapter_name = state.adapter_name.clone();
+            let mut rebound = Vec::new();
+            for (key, caller_state) in &mut state.callers {
+                if caller_state.retired || caller_state.attachment.attachment_id != previous {
+                    continue;
+                }
+                let next = attachment_of(
+                    current,
+                    adapter_name
+                        .clone()
+                        .unwrap_or_else(|| caller_state.attachment.adapter_name.clone()),
+                );
+                let previous_id =
+                    std::mem::replace(&mut caller_state.attachment, next.clone()).attachment_id;
+                rebound.push((key.clone(), previous_id, next));
+            }
+            rebound
+        };
+        for (key, previous_id, next) in rebound {
+            let value = object([
+                ("kind", string("backend-restarted")),
+                ("schemaVersion", number(1)),
+                ("previousAttachmentId", string(previous_id)),
+                ("attachmentId", string(next.attachment_id.clone())),
+                ("attachment", attachment_record(&next)),
+            ]);
+            if let Err(error) = self.emit(&key, None, IPC_ATTACHMENT_STREAM_ID, value).await {
+                // The caller keeps being refused on the replaced attachment
+                // until it attaches again; the failure is reported.
+                eprintln!(
+                    "tauri-plugin-unified-ble-manager: attachment rebind for {key} was not delivered: {}",
+                    error.describe()
+                );
+            }
+        }
+    }
+
+    /// A reset event was missed: rebind every caller still bound to an
+    /// attachment the central no longer holds.
+    async fn rebind_to_current(&self) {
+        let Some(authority) = self.authority_if_open() else {
+            return;
+        };
+        let current = authority.attachment();
+        let stale: HashSet<String> = {
+            let state = self.inner.lock().await;
+            state
+                .callers
+                .values()
+                .filter(|caller_state| {
+                    !caller_state.retired
+                        && caller_state.attachment.attachment_id != current.attachment_id().as_str()
+                })
+                .map(|caller_state| caller_state.attachment.attachment_id.clone())
+                .collect()
+        };
+        for previous in stale {
+            self.rebind_callers(&previous, &current).await;
         }
     }
 
@@ -2378,7 +2601,7 @@ impl BtleplugDispatcher {
                     .iter()
                     .filter(|(_, connection)| {
                         connection.peer_id == event.peer_id
-                            && connection.connection_generation == generation
+                            && connection.core_generation == generation
                     })
                     .map(|(handle, _)| handle.clone())
                     .collect();
@@ -2397,7 +2620,7 @@ impl BtleplugDispatcher {
                 );
                 for resource in caller_state.connection_events.values_mut() {
                     if resource.peer_id != event.peer_id
-                        || resource.connection_generation != generation
+                        || resource.core_generation != generation
                         || resource.end != StreamEnd::Open
                     {
                         continue;
@@ -2677,11 +2900,14 @@ impl BtleplugDispatcher {
     ) -> Result<IpcValue, DispatchError> {
         let target = self.gatt_target(caller, &payload).await?;
         let authority = self.ensure_authority().await?;
-        let value = authority
+        let read = authority
             .read(&target.peer_id, &target.characteristic.selector, ctl)
             .await
             .map_err(|error| DispatchError::from_core(&error))?;
-        Ok(object([("value", IpcValue::Bytes(value))]))
+        Ok(object([
+            ("value", IpcValue::Bytes(read.value)),
+            ("provenance", string(read.provenance.as_str())),
+        ]))
     }
 
     async fn write(
@@ -2790,7 +3016,8 @@ impl BtleplugDispatcher {
         // Core first: enablement is core-arbitrated (concurrent subscribers
         // share one physical enable); the consumer below addresses it.
         let authority = self.ensure_authority().await?;
-        let consumer = self.id("consumer");
+        // The core consumer is internal: it takes no number from the 4.x counter.
+        let consumer = self.internal_id("consumer");
         let selector = target.characteristic.selector.clone();
         let delivery = authority
             .subscribe(&target.peer_id, &selector, &consumer, requirement, ctl)
@@ -3537,8 +3764,6 @@ impl BtleplugDispatcher {
             // The transition reports the attachment the link lived on (an
             // adapter loss ends it there, not on the attachment that
             // replaced it), and the record reads nothing from the OS.
-            let attachment = caller.attachment.clone();
-            let attachment_value = attachment_record(&attachment);
             if caller.lease_id != expected_lease.0 || caller.lease_generation != expected_lease.1 {
                 return Err(DispatchError::new(
                     BleErrorCode::OwnershipDenied,
@@ -3564,8 +3789,11 @@ impl BtleplugDispatcher {
             object([
                 ("kind", string("connection-lifecycle")),
                 ("schemaVersion", number(2)),
-                ("attachment", attachment_value),
-                ("attachmentId", string(attachment.attachment_id)),
+                ("attachment", attachment_record(&resource.attachment)),
+                (
+                    "attachmentId",
+                    string(resource.attachment.attachment_id.clone()),
+                ),
                 ("peerId", string(identity.peer_id)),
                 ("connectionId", string(identity.connection_id)),
                 (
@@ -4588,7 +4816,11 @@ fn adapter_state_payload_live(attachment: &Attachment, reading: &AdapterReading)
 /// deadline as a relative `budgetMs`, `commit` on every normalized error,
 /// `delivery` on subscriptions and connection-lifecycle events; a webview
 /// offering only 2 is refused at bootstrap as `protocol.incompatible`.
-pub(crate) const IPC_PROTOCOL_VERSION: i64 = 3;
+pub(crate) const IPC_PROTOCOL_VERSION: i64 = 4;
+
+/// The reserved stream of attachment rebinds (IPC protocol 4; TypeScript
+/// `IPC_ATTACHMENT_STREAM_ID`).
+const IPC_ATTACHMENT_STREAM_ID: &str = "attachment";
 
 fn negotiate_ipc_versions(
     remote_offer: &BTreeMap<String, IpcValue>,
@@ -5178,33 +5410,34 @@ mod tests {
             ("capabilitySchema", offer_range("capability-schema", 1)),
             ("eventSchema", offer_range("event-schema", 1)),
             ("traceFormat", offer_range("trace-format", 1)),
-            ("ipcProtocol", offer_range("ipc-protocol", 3)),
+            ("ipcProtocol", offer_range("ipc-protocol", 4)),
         ]) else {
             panic!("the version offer must be an object");
         };
         offer
     }
 
-    // PR210-73: the webview wire changed (relative `budgetMs`, `commit` on
-    // errors, subscribe `delivery`, lifecycle events), so the plugin speaks
-    // IPC protocol 3 only. An old webview offering 2 fails at bootstrap as
-    // protocol.incompatible, before any operation can be admitted.
+    // IPC protocol 4 adds the host-announced attachment rebind (the
+    // `attachment` stream, `backend-restarted`) after an adapter reset; a
+    // protocol-3 webview would keep routing on a replaced attachment, so the
+    // plugin speaks 4 only. An older or newer-only webview fails at bootstrap
+    // as protocol.incompatible, before any operation can be admitted.
     #[test]
-    fn version_offer_requires_ipc_protocol_3_and_refuses_an_old_webview() {
-        assert_eq!(super::IPC_PROTOCOL_VERSION, 3);
+    fn version_offer_requires_ipc_protocol_4_and_refuses_an_old_webview() {
+        assert_eq!(super::IPC_PROTOCOL_VERSION, 4);
         let mut old = current_offer();
-        old.insert("ipcProtocol".to_owned(), offer_range("ipc-protocol", 2));
+        old.insert("ipcProtocol".to_owned(), offer_range("ipc-protocol", 3));
         let error = negotiate_ipc_versions(&old).expect_err("an old webview must be refused");
         assert_eq!(error.code, BleErrorCode::ProtocolIncompatible);
 
         let mut newer = current_offer();
-        newer.insert("ipcProtocol".to_owned(), offer_range("ipc-protocol", 4));
+        newer.insert("ipcProtocol".to_owned(), offer_range("ipc-protocol", 5));
         let error =
             negotiate_ipc_versions(&newer).expect_err("a newer-only webview must be refused");
         assert_eq!(error.code, BleErrorCode::ProtocolIncompatible);
 
         let super::IpcValue::Object(versions) =
-            negotiate_ipc_versions(&current_offer()).expect("protocol 3 must negotiate")
+            negotiate_ipc_versions(&current_offer()).expect("protocol 4 must negotiate")
         else {
             panic!("the negotiated versions must be an object");
         };
@@ -5215,7 +5448,7 @@ mod tests {
             ipc.get("selected"),
             Some(&object([
                 ("axis", string("ipc-protocol")),
-                ("value", super::number(3))
+                ("value", super::number(4))
             ]))
         );
     }
@@ -5268,7 +5501,7 @@ mod tests {
                     "selected",
                     object([
                         ("axis", string("ipc-protocol")),
-                        ("value", super::number(3))
+                        ("value", super::number(4))
                     ])
                 ),
                 (
@@ -5279,14 +5512,14 @@ mod tests {
                             "minimum",
                             object([
                                 ("axis", string("ipc-protocol")),
-                                ("value", super::number(3))
+                                ("value", super::number(4))
                             ])
                         ),
                         (
                             "maximum",
                             object([
                                 ("axis", string("ipc-protocol")),
-                                ("value", super::number(3))
+                                ("value", super::number(4))
                             ])
                         )
                     ])
@@ -5299,14 +5532,14 @@ mod tests {
                             "minimum",
                             object([
                                 ("axis", string("ipc-protocol")),
-                                ("value", super::number(3))
+                                ("value", super::number(4))
                             ])
                         ),
                         (
                             "maximum",
                             object([
                                 ("axis", string("ipc-protocol")),
-                                ("value", super::number(3))
+                                ("value", super::number(4))
                             ])
                         )
                     ])
@@ -5789,3 +6022,6 @@ mod tests {
 #[cfg(test)]
 #[path = "dispatcher_packet_b_tests.rs"]
 mod dispatcher_packet_b_tests;
+#[cfg(test)]
+#[path = "tauri_identity_tests.rs"]
+mod tauri_identity_tests;

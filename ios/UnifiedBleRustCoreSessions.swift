@@ -19,7 +19,7 @@ import Security
 @objc(UnifiedBleRustCoreSessions)
 @objcMembers
 public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchecked Sendable {
-  public static let shared = UnifiedBleRustCoreSessions(installer: UnifiedBleRustCoreSessions.installProductionHost)
+  public static let shared = UnifiedBleRustCoreSessions(installer: { try installProductionHost(wake: $0) })
 
   typealias Installer = (MobileWakeSink) throws -> MobileCoreHost
 
@@ -68,10 +68,23 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
     return installed
   }
 
-  static func installProductionHost(wake: MobileWakeSink) throws -> MobileCoreHost {
+  /// The process central's configuration, read from the app bundle as the
+  /// legacy module read it: the derived restore identifier (restoration
+  /// needs it at central creation) and `UnifiedBleProtocolShowPowerAlert`.
+  static func productionRadioConfiguration(
+    bundle: Bundle
+  ) -> (restoreIdentifierKey: String?, showPowerAlert: NSNumber?) {
+    (
+      UnifiedBleRustRestorationIdentity.configuredRestoreIdentifier(bundle: bundle),
+      bundle.object(forInfoDictionaryKey: "UnifiedBleProtocolShowPowerAlert") as? NSNumber
+    )
+  }
+
+  static func installProductionHost(wake: MobileWakeSink, bundle: Bundle = .main) throws -> MobileCoreHost {
+    let configuration = productionRadioConfiguration(bundle: bundle)
     let radio = OwnedCoreBluetoothProtocolRadioOwner.acquire(
-      restoreIdentifierKey: UnifiedBleRustRestorationIdentity.configuredRestoreIdentifier(),
-      showPowerAlert: Bundle.main.object(forInfoDictionaryKey: "UnifiedBleProtocolShowPowerAlert") as? NSNumber
+      restoreIdentifierKey: configuration.restoreIdentifierKey,
+      showPowerAlert: configuration.showPowerAlert
     )
     let adapter = UnifiedBleRustRadioAdapter(driver: radio)
     guard radio.attachDelegateIfAvailable(adapter) else {

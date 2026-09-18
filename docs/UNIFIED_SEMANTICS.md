@@ -380,7 +380,7 @@ rules as a characteristic.
 
 | Operation | Required semantics |
 | --- | --- |
-| read | One terminal owned byte result or typed error. A cached value is returned only when the caller explicitly requested a declared cache policy and the result labels its source. |
+| read | One terminal owned byte result or typed error, with the platform's provenance: `read-response` when the platform attributed the value to this read's ATT response, `read-or-notification` when the platform reports read responses and notifications through one callback and the characteristic could notify when the value arrived (CoreBluetooth). A read on a notifying characteristic is admitted on every platform; reads of one characteristic complete in request order; a value that may be a notification is still delivered to subscribers. A platform never reports `read-response` for a value it cannot attribute. A cached value is returned only when the caller explicitly requested a declared cache policy and the result labels its source. |
 | write with response | Success requires the backend's protocol-defined completion acknowledgement. |
 | write without response | Success means the backend accepted the complete input into its bounded transport submission boundary, not that a peer application consumed it. |
 | long write | Validate support and negotiated maximum; segment deterministically; on failure report committed/unknown state and never claim atomicity without evidence. |
@@ -730,6 +730,20 @@ named limitation and MUST carry that limitation in its result. An
 `unsupported` capability MUST reject with `capability.unsupported`; an
 `unavailable` capability MUST reject with `capability.unavailable`. No control
 may silently no-op or report success because a façade method exists.
+
+The maximum write length is the platform's own answer for the requested
+mode, bounded by the ATT maximum attribute value (512 bytes), and is the same
+limit a write in that mode is admitted against:
+
+| Host | `with-response` | `without-response` |
+| --- | --- | --- |
+| iOS (React Native), macOS (Node/Electron/Tauri) | `CBPeripheral.maximumWriteValueLength(for: .withResponse)` | `maximumWriteValueLength(for: .withoutResponse)` |
+| Android (React Native) | 512: the stack performs a prepared (long) write past one ATT payload, and `BluetoothGatt.writeCharacteristic` refuses a longer value from API 33 | MTU − 3 of the MTU `onMtuChanged` reported, or of the ATT default MTU 23 (20 bytes) before any exchange; limitation `android-att-default-mtu-before-exchange` |
+| Windows (WinRT) | the long write `WriteValueAsync` performs | one ATT payload of `GattSession.MaxPduSize` |
+| Linux (BlueZ) | the long write BlueZ `WriteValue` performs | one ATT payload of `GattCharacteristic1.MTU` |
+
+A limit the platform does not report fails `capability.unavailable`; it is
+never guessed. Web Bluetooth answers `capability.unsupported`.
 
 Write-without-response readiness is `unsupported` until a backend advertises
 `gatt:write-without-response-readiness`. When advertised, the backend MUST

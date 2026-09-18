@@ -1,0 +1,10 @@
+{
+  "name": "connect intent when-available (Android supported, iOS capability.unsupported by design)",
+  "defaultTimeoutMs": 60000,
+  "steps": [
+    { "run": "h10-stream", "command": "start", "args": { "intent": "when-available" }, "hosts": ["android"], "capture": ["intent", "connectionGeneration"] },
+    { "waitForEvent": "h10-stream", "kind": "value", "count": 5, "hosts": ["android"] },
+    { "run": "h10-stream", "command": "start", "args": { "intent": "when-available" }, "hosts": ["ios"], "expect": { "ok": false, "error": { "code": "capability.unsupported" } } },
+    { "run": "h10-stream", "command": "stop", "always": true }
+  ]
+}
