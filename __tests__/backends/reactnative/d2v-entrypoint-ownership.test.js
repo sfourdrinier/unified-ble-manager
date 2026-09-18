@@ -51,7 +51,7 @@ const ZERO_COUNTERS = {
   orphanedIpcOwners: 0
 }
 
-function presentNative({ revision = RUST_CORE_CONTRACT_REVISION } = {}) {
+function presentNative({ revision = RUST_CORE_CONTRACT_REVISION, startKey = 'operationId' } = {}) {
   const calls = []
   let nextSession = 0
   mockNativeModule = {
@@ -81,7 +81,7 @@ function presentNative({ revision = RUST_CORE_CONTRACT_REVISION } = {}) {
         case 'events.take':
           return record({ operation: op, value: 'null' })
         case 'scan.start':
-          return record({ operation: op, value: JSON.stringify({ operationId: 'scan-op-1' }) })
+          return record({ operation: op, value: JSON.stringify({ [startKey]: 'scan-op-1' }) })
         case 'scan.take':
           return record({ operation: op, value: 'null' })
         case 'scan.stop':
@@ -211,6 +211,61 @@ describe('D2(v) entrypoints into one native implementation', () => {
       expect(expired).not.toBeNull()
       expect(expired.normalized.code).toBe('operation.timed-out')
       expect(calls.length).toBe(opsAfterCreate)
+    } finally {
+      await manager.destroy()
+    }
+  })
+
+  test('scan start/stop send the frozen core arg shapes (DATA-02 decimals)', async () => {
+    const calls = presentNative()
+    const manager = await createReactNativeBleManagerWithEnvironment(environment('client-a', 'manager-a'))
+    try {
+      const session = await manager.scan(scanOptions())
+      const starts = ops(calls, 'scan.start')
+      expect(starts).toHaveLength(1)
+      expect(starts[0].args.owner).toBe('client-a')
+      expect(starts[0].args.timeoutMs).toBe('2147483647')
+      expect(starts[0].args.nowMs).toBe('1000')
+      await session.stop()
+      const stops = ops(calls, 'scan.stop')
+      expect(stops).toHaveLength(1)
+      expect(stops[0].args.opId).toBe('scan-op-1')
+      expect(stops[0].args.nowMs).toBe('1000')
+      const bounded = await manager.scan({ ...scanOptions(), deadline: 1500 })
+      expect(ops(calls, 'scan.start')[1].args.timeoutMs).toBe('500')
+      await bounded.stop()
+    } finally {
+      await manager.destroy()
+    }
+  })
+
+  test('fractional clocks quantize to integer millis on the wire (DATA-02)', async () => {
+    const calls = presentNative()
+    const manager = await createReactNativeBleManagerWithEnvironment(
+      environment('client-a', 'manager-a', { now: () => 1000.75 })
+    )
+    try {
+      const session = await manager.scan(scanOptions())
+      const args = ops(calls, 'scan.start')[0].args
+      expect(args.nowMs).toBe('1000')
+      expect(args.timeoutMs).toBe('2147483647')
+      await session.stop()
+      expect(ops(calls, 'scan.stop')[0].args.nowMs).toBe('1000')
+      const bounded = await manager.scan({ ...scanOptions(), deadline: 1500.25 })
+      expect(ops(calls, 'scan.start')[1].args.timeoutMs).toBe('499')
+      await bounded.stop()
+    } finally {
+      await manager.destroy()
+    }
+  })
+
+  test('scan start accepts the staged-core op_id wire form', async () => {
+    const calls = presentNative({ startKey: 'op_id' })
+    const manager = await createReactNativeBleManagerWithEnvironment(environment('client-a', 'manager-a'))
+    try {
+      const session = await manager.scan(scanOptions())
+      await session.stop()
+      expect(ops(calls, 'scan.stop')[0].args.opId).toBe('scan-op-1')
     } finally {
       await manager.destroy()
     }

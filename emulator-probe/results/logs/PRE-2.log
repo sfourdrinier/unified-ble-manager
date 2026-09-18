@@ -5,7 +5,7 @@ Bluetooth Status
   state: ON
   address: <REDACTED-MAC>
   name: sdk_gphone64_x86_64
-  time since enabled: 00:09:15.064
+  time since enabled: 01:08:55.745
 
 Enable log:
   09-17 16:18:06.097  Enabled  due to SYSTEM_BOOT by android
@@ -86,10 +86,10 @@ GATT Scanner Map
 
   com.google.uid.shared:10128 (Registered)
   LE scans (started/stopped)                                  : 3 / 1
-  Scan time in ms (active/suspend/total)                      : 1084277 / 0 / 1084277
-  Scan time with mode in ms (Opp/LowPower/Balanced/LowLatency/AmbientDiscovery):540061 / 0 / 538167 / 6049 / 0
+  Scan time in ms (active/suspend/total)                      : 8245637 / 0 / 8245637
+  Scan time with mode in ms (Opp/LowPower/Balanced/LowLatency/AmbientDiscovery):4120741 / 0 / 4118847 / 6049 / 0
   Scan mode counter (Opp/LowPower/Balanced/LowLatency/AmbientDiscovery):1 / 0 / 1 / 1 / 0
-  Score                                                       : 140590
+  Score                                                       : 1035760
   Total number of results                                     : 0
   Last 1 scans                                                :
     09-17 16:18:16 - 6049ms Filter 0 results (1) CB Regular Scan
@@ -97,11 +97,11 @@ GATT Scanner Map
       └ BluetoothLeScanFilter [ ServiceDataUuid=0000fff6-0000-1000-8000-00805f9b34fb ServiceData=[0] ServiceDataMask=[0] ]
       └ BluetoothLeScanFilter [ ServiceDataUuid=0000fe2c-0000-1000-8000-00805f9b34fb ServiceData=[0] ServiceDataMask=[0] ]
   Ongoing scans                                               :
-    09-17 16:18:22 - 538167ms Forced Filter 0 results (1) CB Regular Scan
+    09-17 16:18:22 - 4118847ms Forced Filter 0 results (1) CB Regular Scan
       └ Scan Config: [ ScanMode=BALANCED, callbackType=ALL_MATCHES ]
       └ BluetoothLeScanFilter [ ServiceDataUuid=0000fff6-0000-1000-8000-00805f9b34fb ServiceData=[0] ServiceDataMask=[0] ]
       └ BluetoothLeScanFilter [ ServiceDataUuid=0000fe2c-0000-1000-8000-00805f9b34fb ServiceData=[0] ServiceDataMask=[0] ]
-    09-17 16:18:21 - 540061ms Opp Filter 0 results (2) CB Regular Scan
+    09-17 16:18:21 - 4120741ms Opp Filter 0 results (2) CB Regular Scan
       └ Scan Config: [ ScanMode=OPPORTUNISTIC, callbackType=ALL_MATCHES ]
       └ BluetoothLeScanFilter [ ServiceDataUuid=0000fe2c-0000-1000-8000-00805f9b34fb ServiceData=[-4, 18, -114] ]
       └ BluetoothLeScanFilter [ ServiceUuid=0000fe2c-0000-1000-8000-00805f9b34fb ]
@@ -173,7 +173,7 @@ Profile: AvrcpTargetService:
   AVRCP version: Invalid
   List of MediaControllers: size=1
   <Active>   Media Player 1: com.google.android.googlequicksearchbox
-    MediaController (com.google.android.googlequicksearchbox@e85b957) null, null, null
+    MediaController (com.google.android.googlequicksearchbox@e410fba) null, null, null
     Current Data:
       Song: { mediaId="currsong" title="Not Provided" artist="" album="" duration=0 trackPosition=1/1 image=null }
       PlayState: PlaybackState {state=NONE(0), position=0, buffered position=0, speed=0.0, updated=18687, actions=2409991, custom actions=[Action:mName='Rewind 10 seconds, mIcon=2131234345, mExtras=null, Action:mName='Fast forward 30 second, mIcon=2131234125, mExtras=null], active item id=-1, error=null}
@@ -343,7 +343,7 @@ Bluetooth Wakelock Statistics:
   Last acquired time (ms)        : 6
   Acquired time min/max/avg (ms) : 6 / 6 / 6
   Total acquired time (ms)       : 6
-  Total run time (ms)            : 554375
+  Total run time (ms)            : 4135045
 
 Bluetooth Memory Allocation Statistics:
   Total allocated/free/used counts : 0 / 0 / 0
@@ -406,7 +406,7 @@ shim::legacy::dumpsys Dumping shim legacy targets:1
  ----- shim::legacy::record -----
 shim::legacy::stack Stack information ᛒᚼ
 shim::legacy::stack Classic inquiry:disabled
-shim::legacy::stack Le scan:enabled duration_s:238.166 results:0
+shim::legacy::stack Le scan:enabled duration_s:3818.835 results:0
 shim::legacy::stack Last 0 inquiry scans:
  ----- shim::legacy::acl -----
 shim::acl Shadow le accept list              size:0   controller_max_size:16
@@ -639,7 +639,7 @@ shim::legacy::btm  2026-09-17 16:23:23.010 SCAN   Le scan started          : <RE
     min_interval_millis: 33,
     avg_interval_millis: 33,
     total_interval_millis: 33,
-    total_time_since_reset_millis: 554597
+    total_time_since_reset_millis: 4135267
   },
   shim_dumpsys_data: {
     title: "----- Shim Dumpsys -----",

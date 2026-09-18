@@ -236,7 +236,7 @@ describe('React Native Rust core provider (F01 factory routing)', () => {
       const lease = await backend.scanner.start(scanOptions({ deadline: 1500 }), 'client-a')
       expect(ops(fake.calls, 'scan.start')[0]).toMatchObject({
         serviceUuids: [HRM_SERVICE],
-        timeoutMs: 500,
+        timeoutMs: '500',
         duplicatePolicy: 'all'
       })
       const observation = await takeStreamValue(lease.observations)
@@ -244,7 +244,7 @@ describe('React Native Rust core provider (F01 factory routing)', () => {
       expect(observation.rssi).toMatchObject({ state: 'present', value: -60 })
       expect(observation.localName).toMatchObject({ state: 'present', value: 'Movesense' })
       await lease.stop()
-      expect(ops(fake.calls, 'scan.stop')).toEqual([{ operationId: 'scan-op-1' }])
+      expect(ops(fake.calls, 'scan.stop')).toEqual([{ opId: 'scan-op-1', nowMs: '1000' }])
     } finally {
       await backend.destroy()
     }
@@ -590,7 +590,7 @@ describe('React Native Rust core provider lifecycle (R07-R13 handoff)', () => {
       // The scan survives a single bad record: no core terminal release ran.
       expect(ops(fake.calls, 'scan.stop')).toEqual([])
       await lease.stop()
-      expect(ops(fake.calls, 'scan.stop')).toEqual([{ operationId: 'scan-op-1' }])
+      expect(ops(fake.calls, 'scan.stop')).toEqual([{ opId: 'scan-op-1', nowMs: '1000' }])
     } finally {
       await backend.destroy()
     }

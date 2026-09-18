@@ -842,7 +842,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
 
   private async startScan(
     options: OwnerScanOptions<string, string>,
-    _clientId: ClientId<string, string>
+    clientId: ClientId<string, string>
   ): Promise<ScanLease<string, string>> {
     this.assertOperational('react-native-rust-core.scan.start')
     const serviceUuids = options.filter.serviceUuids.map(service => String(service))
@@ -854,16 +854,35 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     }
     const ordinal = this.nextScan
     this.nextScan += 1
+    // Frozen mobile-core arg shape (DATA-02 decimal strings): the router
+    // and the shipped core require owner/timeoutMs/nowMs. A null deadline
+    // maps to i32::MAX (the core requires finite 1..=i32::MAX; sessions end
+    // via stop/destroy long before). Filter/policy keys ride along for
+    // desktop shims — the mobile core ignores them until R03 wires them
+    // (its staged step hardcodes services/duplicates).
+    const scanTimeout = this.timeoutMs(options)
     const started = await this.invokeRecord('scan.start', {
+      owner: String(clientId),
+      // DATA-02 decimals: performance.now() is fractional — quantize down
+      // (a fractional wire form is bytes.invalid on the core).
+      timeoutMs: String(Math.floor(scanTimeout ?? 2147483647)),
+      nowMs: String(Math.floor(this.now())),
       serviceUuids,
-      timeoutMs: this.timeoutMs(options),
       duplicatePolicy: options.duplicatePolicy,
       timestampPolicy: options.timestampPolicy
     })
-    if (typeof started.operationId !== 'string' || (started.operationId as string).length === 0) {
+    // Tolerant op-id read: the desktop central answers `opId`/`operationId`
+    // while the mobile staged core answers `op_id` (its frozen wire form).
+    // R03 unifies the response shape; until then accept the documented
+    // variants and reject anything else without coercion.
+    const operationId = [
+      started.operationId,
+      (started as { opId?: unknown }).opId,
+      (started as { op_id?: unknown }).op_id
+    ].find((candidate): candidate is string => typeof candidate === 'string' && candidate.length > 0)
+    if (operationId === undefined) {
       throw contractError('protocol.malformed', 'core', 'react-native-rust-core.scan.start.shape')
     }
-    const operationId = started.operationId as string
     const scanSessionId = this.identifiers.scanSessionId(`rust-core-scan-session-${ordinal}`)
     const leaseId = this.identifiers.leaseId(`rust-core-scan-lease-${ordinal}`)
     const shareToken =
@@ -880,7 +899,10 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       if (stopped) return { state: 'released', failures: [] }
       stopped = true
       try {
-        await dispatchReactNativeRustCoreOp(this.session, 'scan.stop', { operationId })
+        await dispatchReactNativeRustCoreOp(this.session, 'scan.stop', {
+          opId: operationId,
+          nowMs: String(Math.floor(this.now()))
+        })
       } finally {
         this.activeScanObservations.delete(observations)
         await observations.close()

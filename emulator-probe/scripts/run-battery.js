@@ -375,24 +375,30 @@ async function main() {
       // The grant state is asserted from the device-observed logcat below
       // ([UBM_PROBE] permission-ok=true), never from the tap outcome: a
       // missing dialog means already-granted, which the log confirms.
-      tap(args.serial, ...PROBE_TAP.init);
+      // Tap by exact text: the PROBE_TAP fixed coords predate this AVD
+      // boot's density and miss every button (R01FACTORY proved text taps).
+      const inited = tapText(args.serial, ctx, 'T8', 'INIT MANAGER');
+      ctx.note('Init button tapped', inited !== null, inited ? `tapped at ${inited}` : 'INIT MANAGER missing from UI dump');
       sleepMs(6000);
       const allowed = tapText(args.serial, ctx, 'T8', 'Allow');
       sleepMs(16000);
       log = logcatDump(args.serial, ctx, 'logcat after init');
       const permLine = grepLines(log, /permission-ok=|scan=granted/, 2).join(' ');
       ctx.note('runtime permissions granted (dialog answered or already granted)', /permission-ok=true/.test(log), `${allowed ? `Allow tapped at ${allowed}; ` : 'no dialog (already granted); '}${permLine || 'no permission line'}`);
-      ctx.note('manager created through the native bridge', /manager-created/.test(log), grepLines(log, /manager-created|init-error/, 1).join(' ').slice(0, 200));
-      ctx.note('adapter state round-trips (unknowns on virtual adapter, never blocking)', /adapter power=/.test(log), grepLines(log, /adapter power=/, 1).join(' ').slice(0, 200));
-      tap(args.serial, ...PROBE_TAP.bonded);
+      ctx.note('manager created through the production binding (post-flip native route)', /manager-created/.test(log), grepLines(log, /manager-created|init-error/, 1).join(' ').slice(0, 200));
+      ctx.note('adapter state round-trips through the production binding', /adapter power=/.test(log), grepLines(log, /adapter power=/, 1).join(' ').slice(0, 200));
+      const bondedTap = tapText(args.serial, ctx, 'T8', 'BONDED PEERS');
+      ctx.note('Bonded button tapped', bondedTap !== null, bondedTap ? `tapped at ${bondedTap}` : 'BONDED PEERS missing from UI dump');
       sleepMs(14000);
       log = logcatDump(args.serial, ctx, 'logcat after bonded');
-      ctx.note('bonded ping reads the native bond table (empty on emulator)', /bonded-count=0/.test(log), grepLines(log, /bonded-(count|error)/, 1).join(' ').slice(0, 220));
-      tap(args.serial, ...PROBE_TAP.aborted);
+      ctx.note('bonded reports the empty table without errors (no core bond surface yet; R03)', /bonded-count=0/.test(log), grepLines(log, /bonded-(count|error)/, 1).join(' ').slice(0, 220));
+      const abortedTap = tapText(args.serial, ctx, 'T8', 'ABORTED FIND');
+      ctx.note('Aborted-find button tapped', abortedTap !== null, abortedTap ? `tapped at ${abortedTap}` : 'ABORTED FIND missing from UI dump');
       sleepMs(14000);
       log = logcatDump(args.serial, ctx, 'logcat after aborted find');
       ctx.note('pre-aborted find settles as operation.aborted on-device', /aborted-find-settled[^]*operation\.aborted/.test(log), grepLines(log, /aborted-find-settled/, 1).join(' ').slice(0, 220));
-      tap(args.serial, ...PROBE_TAP.scan);
+      const scanTap = tapText(args.serial, ctx, 'T8', 'SCAN 8S THEN CANCEL');
+      ctx.note('Scan button tapped', scanTap !== null, scanTap ? `tapped at ${scanTap}` : 'SCAN 8S THEN CANCEL missing from UI dump');
       sleepMs(14000);
       log = logcatDump(args.serial, ctx, 'logcat after scan');
       const scanLine = grepLines(log, /\[UBM_PROBE\] find-settled/, 1).join(' ');
