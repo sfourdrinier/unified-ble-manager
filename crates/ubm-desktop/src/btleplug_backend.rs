@@ -227,6 +227,20 @@ impl BtleplugRadio {
         .with_detail(peer_id.to_owned()))
     }
 
+    /// Fetch a peripheral with a populated GATT cache. btleplug hands out
+    /// a fresh `Peripheral` (empty service cache) per `peripherals()`
+    /// query, so every verb that resolves service/characteristic instances
+    /// must discover first — the cache never survives across fetches.
+    async fn discovered_peripheral(&self, peer_id: &str) -> Result<Peripheral, DesktopError> {
+        let peripheral = self.peripheral_by_id(peer_id).await?;
+        peripheral.discover_services().await.map_err(map_radio(
+            "discovery.complete",
+            ubm_core::contracts::BleErrorCode::GattDiscoveryRequired,
+            ubm_core::contracts::BleErrorDomain::Gatt,
+        ))?;
+        Ok(peripheral)
+    }
+
     async fn snapshot(&self, peripheral: &Peripheral) -> PeerSnapshot {
         let properties = peripheral.properties().await.ok().flatten();
         let (service_uuids, rssi, local_name, manufacturer_data, service_data, tx_power_level) =
@@ -937,6 +951,22 @@ impl RadioBoundary for BtleplugRadio {
             .map_err(|error| DesktopError::connection_failed(error.to_string()))
     }
 
+    async fn is_connected(&self, peer_id: &str) -> Result<bool, DesktopError> {
+        let peripheral = match self.peripheral_by_id(peer_id).await {
+            Ok(peripheral) => peripheral,
+            // No device, no link.
+            Err(_) => return Ok(false),
+        };
+        peripheral.is_connected().await.map_err(|error| {
+            DesktopError::new(
+                ubm_core::contracts::BleErrorCode::ConnectionFailed,
+                ubm_core::contracts::BleErrorDomain::Connection,
+                "peer.link-state",
+            )
+            .with_detail(error.to_string())
+        })
+    }
+
     async fn disconnect(&self, peer_id: &str) -> Result<(), DesktopError> {
         let peripheral = self.peripheral_by_id(peer_id).await?;
         // btleplug maps an already-released peripheral to success-or-error
@@ -956,12 +986,7 @@ impl RadioBoundary for BtleplugRadio {
     }
 
     async fn discover(&self, peer_id: &str) -> Result<Vec<ServiceSnapshot>, DesktopError> {
-        let peripheral = self.peripheral_by_id(peer_id).await?;
-        peripheral.discover_services().await.map_err(map_radio(
-            "discovery.complete",
-            ubm_core::contracts::BleErrorCode::GattDiscoveryRequired,
-            ubm_core::contracts::BleErrorDomain::Gatt,
-        ))?;
+        let peripheral = self.discovered_peripheral(peer_id).await?;
         // The cached service set already iterates in canonical UUID-first
         // order; occurrences count per UUID in that order so instance
         // numbers agree with the occurrence-aware lookup path (H1).
@@ -1013,7 +1038,7 @@ impl RadioBoundary for BtleplugRadio {
         characteristic_uuid: &str,
         characteristic_occurrence: u64,
     ) -> Result<Vec<u8>, DesktopError> {
-        let peripheral = self.peripheral_by_id(peer_id).await?;
+        let peripheral = self.discovered_peripheral(peer_id).await?;
         let characteristic = Self::find_characteristic(
             &peripheral,
             service_uuid,
@@ -1045,7 +1070,7 @@ impl RadioBoundary for BtleplugRadio {
         value: Vec<u8>,
         with_response: bool,
     ) -> Result<(), DesktopError> {
-        let peripheral = self.peripheral_by_id(peer_id).await?;
+        let peripheral = self.discovered_peripheral(peer_id).await?;
         let characteristic = Self::find_characteristic(
             &peripheral,
             service_uuid,
@@ -1082,7 +1107,7 @@ impl RadioBoundary for BtleplugRadio {
         descriptor_uuid: &str,
         descriptor_occurrence: u64,
     ) -> Result<Vec<u8>, DesktopError> {
-        let peripheral = self.peripheral_by_id(peer_id).await?;
+        let peripheral = self.discovered_peripheral(peer_id).await?;
         let descriptor = Self::find_descriptor(
             &peripheral,
             service_uuid,
@@ -1117,7 +1142,7 @@ impl RadioBoundary for BtleplugRadio {
         descriptor_occurrence: u64,
         value: Vec<u8>,
     ) -> Result<(), DesktopError> {
-        let peripheral = self.peripheral_by_id(peer_id).await?;
+        let peripheral = self.discovered_peripheral(peer_id).await?;
         let descriptor = Self::find_descriptor(
             &peripheral,
             service_uuid,
@@ -1157,7 +1182,7 @@ impl RadioBoundary for BtleplugRadio {
         enable: bool,
         epoch: u64,
     ) -> Result<(), DesktopError> {
-        let peripheral = self.peripheral_by_id(peer_id).await?;
+        let peripheral = self.discovered_peripheral(peer_id).await?;
         let characteristic = Self::find_characteristic(
             &peripheral,
             service_uuid,
@@ -1324,7 +1349,7 @@ impl RadioBoundary for BtleplugRadio {
         scopes.sort();
         let mut failures = Vec::new();
         for scope in &scopes {
-            let peripheral = match self.peripheral_by_id(&scope.0).await {
+            let peripheral = match self.discovered_peripheral(&scope.0).await {
                 Ok(peripheral) => peripheral,
                 Err(_) => continue,
             };

@@ -170,6 +170,13 @@ impl RadioBoundary for DispatchRadio {
         }
     }
 
+    async fn is_connected(&self, peer_id: &str) -> std::result::Result<bool, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.is_connected(peer_id).await,
+            Self::Synthetic(radio) => radio.is_connected(peer_id).await,
+        }
+    }
+
     async fn discover(
         &self,
         peer_id: &str,

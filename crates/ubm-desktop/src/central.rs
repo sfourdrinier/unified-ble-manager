@@ -40,8 +40,19 @@ use crate::errors::DesktopError;
 const EFFECT_BATCH_CAP: usize = 64;
 /// Safety bound, not host policy: a btleplug disconnect that never resolves
 /// (peripheral already dropped from the OS map) becomes a bounded,
-/// classified outcome instead of hanging the caller.
+/// classified outcome instead of hanging the caller. Kept tight (1 s) for
+/// background compensation, where a stuck wait must never stall the
+/// already-settled op it cleans up for.
+/// Explicit disconnects use [`EXPLICIT_DISCONNECT_TIMEOUT`] instead: BlueZ
+/// `Device1.Disconnect` only returns after link teardown, which
+/// legitimately exceeds 1 s on real hardware (measured 2.16 s against a
+/// wrist band; supervision-timeout-paced teardowns set the floor).
 const DISCONNECT_COMPLETION_TIMEOUT: Duration = Duration::from_secs(1);
+/// Explicit-disconnect radio bound (5 s): covers supervision-timeout-paced
+/// OS teardowns with margin. The verify-on-timeout in
+/// [`DesktopCentral::disconnect`] still converts a past-bound OS release
+/// into success instead of a false timeout.
+const EXPLICIT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Default subscription stream bounds (items, bytes).
 const DEFAULT_SUB_ITEM_CAP: u64 = 64;
 const DEFAULT_SUB_BYTE_CAP: u64 = 8192;
@@ -1099,9 +1110,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     );
                 }
                 // Partial-failure cleanup: a half-opened OS link must not
-                // linger without an owner. Bounded by the same 1 s
-                // discipline as explicit disconnect (L5): a stuck radio
-                // wait never hangs the failing connect. The core lock is not
+                // linger without an owner. Bounded by the tight 1 s
+                // compensation discipline (L5) — unlike the explicit
+                // 5 s bound, a stuck radio wait here must never hang
+                // the already-failing connect. The core lock is not
                 // held across this await.
                 let cleanup = tokio::time::timeout(
                     DISCONNECT_COMPLETION_TIMEOUT,
@@ -1168,7 +1180,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 .map_err(DesktopError::from)?;
         }
         let outcome = tokio::time::timeout(
-            DISCONNECT_COMPLETION_TIMEOUT,
+            EXPLICIT_DISCONNECT_TIMEOUT,
             self.inner.boundary.disconnect(peer_id),
         )
         .await;
@@ -1188,13 +1200,26 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 Err(error)
             }
             Err(_) => {
-                let _ = core.report_disconnect_failure(&peer_key, BleErrorCode::OperationTimedOut);
-                Err(contract_error(
-                    BleErrorCode::OperationTimedOut,
-                    BleErrorDomain::Connection,
-                    "connection.disconnect",
-                )
-                .with_detail("disconnect completion deadline exceeded"))
+                // The radio wait outran the bound, but the OS may have
+                // completed the teardown anyway: verify the live link
+                // before reporting — a released link reports success,
+                // never a false timeout. A live (or unknowable) link
+                // keeps the timeout.
+                let released = matches!(self.inner.boundary.is_connected(peer_id).await, Ok(false));
+                if released {
+                    core.note_link_released(&peer_key)
+                        .map_err(DesktopError::from)?;
+                    Ok(())
+                } else {
+                    let _ =
+                        core.report_disconnect_failure(&peer_key, BleErrorCode::OperationTimedOut);
+                    Err(contract_error(
+                        BleErrorCode::OperationTimedOut,
+                        BleErrorDomain::Connection,
+                        "connection.disconnect",
+                    )
+                    .with_detail("disconnect completion deadline exceeded"))
+                }
             }
         }
     }
@@ -3379,6 +3404,63 @@ mod adapter_tests {
             state,
             Some(ConnectionState::Disconnecting),
             "failed cleanup retains ownership"
+        );
+    }
+
+    #[tokio::test]
+    async fn disconnect_timeout_with_released_link_reports_success() {
+        let central = open().await;
+        central.boundary().push_event(advertisement("peer-9"));
+        let handle = central
+            .connect("peer-9", "lease-a", 5000)
+            .await
+            .expect("connect");
+        central.boundary().block_op(FaultOp::Disconnect);
+        let worker = central.clone();
+        let pending = tokio::spawn(async move { worker.disconnect("peer-9", "lease-a").await });
+        // Let the disconnect reach the held radio call, then model the OS
+        // releasing the link behind the outstanding call (BlueZ completes
+        // server-side past the client bound).
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!pending.is_finished(), "disconnect pends on the held radio");
+        central.boundary().set_link_connected("peer-9", false);
+        let outcome = tokio::time::timeout(Duration::from_secs(10), pending)
+            .await
+            .expect("disconnect settles")
+            .expect("disconnect task");
+        outcome.expect("released link reports success, never a false timeout");
+        let state = central
+            .with_core(|core| core.connection_state(&handle.peer_key))
+            .await;
+        assert_eq!(state, Some(ConnectionState::Disconnected));
+    }
+
+    #[tokio::test]
+    async fn disconnect_timeout_with_live_link_reports_timeout() {
+        let central = open().await;
+        central.boundary().push_event(advertisement("peer-10"));
+        let handle = central
+            .connect("peer-10", "lease-a", 5000)
+            .await
+            .expect("connect");
+        central.boundary().block_op(FaultOp::Disconnect);
+        let worker = central.clone();
+        let pending = tokio::spawn(async move { worker.disconnect("peer-10", "lease-a").await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!pending.is_finished(), "disconnect pends on the held radio");
+        let outcome = tokio::time::timeout(Duration::from_secs(10), pending)
+            .await
+            .expect("disconnect settles")
+            .expect("disconnect task");
+        let error = outcome.expect_err("live link still times out");
+        assert_eq!(error.operation(), "connection.disconnect");
+        let state = central
+            .with_core(|core| core.connection_state(&handle.peer_key))
+            .await;
+        assert_eq!(
+            state,
+            Some(ConnectionState::Disconnecting),
+            "uncertain release retains ownership"
         );
     }
 

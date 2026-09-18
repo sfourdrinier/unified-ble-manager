@@ -191,6 +191,14 @@ pub trait RadioBoundary: Send + Sync + 'static {
         &'a self,
         peer_id: &'a str,
     ) -> impl Future<Output = Result<(), DesktopError>> + Send + 'a;
+    /// Live OS link state for one peer. Unknown peers report `Ok(false)`:
+    /// no device, no link. Used to disambiguate a timed-out disconnect —
+    /// a link the OS already released reports success, never a false
+    /// timeout.
+    fn is_connected<'a>(
+        &'a self,
+        peer_id: &'a str,
+    ) -> impl Future<Output = Result<bool, DesktopError>> + Send + 'a;
     fn discover<'a>(
         &'a self,
         peer_id: &'a str,
@@ -524,6 +532,17 @@ impl FakeRadio {
             .insert(peer_id.to_owned(), services);
     }
 
+    /// Script the OS-side link state directly: models a radio whose link
+    /// released (or stayed up) independent of the outstanding disconnect
+    /// call — the shape a timed-out disconnect must disambiguate.
+    pub fn set_link_connected(&self, peer_id: &str, connected: bool) {
+        let mut state = self.state.lock().expect("fake radio state");
+        state.connected.retain(|peer| peer != peer_id);
+        if connected {
+            state.connected.push(peer_id.to_owned());
+        }
+    }
+
     /// Script the read payload for one characteristic instance. Reads of
     /// unset instances return the canned default (`0x42`).
     pub fn set_characteristic_value(
@@ -728,7 +747,7 @@ impl RadioBoundary for FakeRadio {
         Ok(())
     }
 
-    async fn disconnect(&self, _peer_id: &str) -> Result<(), DesktopError> {
+    async fn disconnect(&self, peer_id: &str) -> Result<(), DesktopError> {
         self.record("disconnect");
         if let Some(detail) = self.take_fault(FaultOp::Disconnect) {
             return Err(DesktopError::new(
@@ -739,7 +758,22 @@ impl RadioBoundary for FakeRadio {
             .with_detail(detail));
         }
         self.gate(FaultOp::Disconnect).await;
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .connected
+            .retain(|peer| peer != peer_id);
         Ok(())
+    }
+
+    async fn is_connected(&self, peer_id: &str) -> Result<bool, DesktopError> {
+        Ok(self
+            .state
+            .lock()
+            .expect("fake radio state")
+            .connected
+            .iter()
+            .any(|peer| peer == peer_id))
     }
 
     async fn discover(&self, peer_id: &str) -> Result<Vec<ServiceSnapshot>, DesktopError> {
