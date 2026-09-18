@@ -17,15 +17,24 @@ test('5.x podspec selects the Rust core beside the Owned radio', () => {
   expect(output).toContain('podspec-rust-selection PASS')
 })
 
-test('5.x podspec stub declares the loud-failure consumer contract (no silent source build, no legacy fallback)', () => {
+test('5.x podspec declares the loud-failure consumer contract (explicit modes, no prepare_command, verified staging)', () => {
   const podspec = fs.readFileSync(path.join(root, 'unified-ble-manager.podspec'), 'utf8')
   // Prebuilt consumption: the exact framework the builder assembles.
   expect(podspec).toContain("s.vendored_frameworks = ['ios/RustCore/RustCore.xcframework']")
-  // D2 modes: prebuilt default, explicit source selection only, canonical
-  // builder in source mode, verified staging in both modes.
-  expect(podspec).toContain("ubm_native_source_build = ENV['UBM_NATIVE_BUILD'] == 'source'")
-  expect(podspec).toContain("s.prepare_command = 'sh ios/build-rust-core.sh'")
+  // PR210-19: the mode is parsed and validated (unset/empty -> prebuilt,
+  // prebuilt|source explicit, anything else raises). Previously any value
+  // other than exactly `source` silently meant prebuilt.
+  expect(podspec).toContain('raise Pod::Informative')
+  expect(podspec).not.toContain("ENV['UBM_NATIVE_BUILD'] == 'source'")
+  // PR210-19 (ADR D2.7): prepare_command never runs for :path pods, so it
+  // is gone; source preparation is the explicit native:apple:prepare step.
+  // Previously source mode set s.prepare_command = 'sh ios/build-rust-core.sh'.
+  expect(podspec).not.toContain('prepare_command =')
   expect(podspec).toContain("'Verify staged RustCore'")
+  // PR210-18: the phase parses and hash-verifies (ios/verify-rust-core.sh)
+  // instead of grep-counting LibraryIdentifier lines.
+  expect(podspec).toContain('ios/verify-rust-core.sh')
+  expect(podspec).not.toContain('grep -c')
   // The generated UniFFI Swift joins the pod module (never hand-edited outputs).
   expect(podspec).toContain('bindings/uniffi/generated/swift/ubm_echo.swift')
 })

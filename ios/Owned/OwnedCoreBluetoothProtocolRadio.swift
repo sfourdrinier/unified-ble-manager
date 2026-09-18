@@ -9,6 +9,8 @@ import Foundation
   func protocolRadioDidDisconnectPeer(_ peerIdentifier: String, error: NSError?)
   func protocolRadioDidModifyServices(_ peerIdentifier: String)
   func protocolRadioDidReceiveNotification(_ subscriptionIdentifier: String, value: NSData)
+  /// `willRestoreState` peers (Native Protocol v2 reads `restorationPeerIdentifiers` instead).
+  @objc optional func protocolRadioDidRestorePeers(_ peers: [NSDictionary])
 }
 
 /**
@@ -484,6 +486,9 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
       }
       peripheral.delegate = self
     }
+    delegate?.protocolRadioDidRestorePeers?(OwnedCoreBluetoothProtocolRadioSupport.restoredPeerSnapshots(
+      identifiers: restoredPeerIdentifiers, peripherals: peripheralByIdentifier
+    ))
   }
   #endif
 
@@ -717,48 +722,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
           pending.awaitingCharacteristics == 0,
           pending.awaitingDescriptors == 0 else { return }
     pendingDiscovery.removeValue(forKey: peerIdentifier)
-    pending.completion(snapshot(for: peerIdentifier), nil)
-  }
-
-  private func snapshot(for peerIdentifier: String) -> NSDictionary {
-    var services = [NSDictionary]()
-    var serviceOccurrences = [String: Int]()
-    for service in servicesByPeer[peerIdentifier] ?? [] {
-      let serviceUUID = OwnedCoreBluetoothProtocolRadioSupport.normalizedUUID(service.uuid.uuidString)
-      let serviceOccurrence = serviceOccurrences[serviceUUID, default: 0]
-      serviceOccurrences[serviceUUID] = serviceOccurrence + 1
-      var characteristics = [NSDictionary]()
-      var characteristicOccurrences = [String: Int]()
-      for characteristic in service.characteristics ?? [] {
-        let characteristicUUID = OwnedCoreBluetoothProtocolRadioSupport.normalizedUUID(characteristic.uuid.uuidString)
-        let characteristicOccurrence = characteristicOccurrences[characteristicUUID, default: 0]
-        characteristicOccurrences[characteristicUUID] = characteristicOccurrence + 1
-        var descriptors = [NSDictionary]()
-        var descriptorOccurrences = [String: Int]()
-        for descriptor in characteristic.descriptors ?? [] {
-          let descriptorUUID = OwnedCoreBluetoothProtocolRadioSupport.normalizedUUID(descriptor.uuid.uuidString)
-          let descriptorOccurrence = descriptorOccurrences[descriptorUUID, default: 0]
-          descriptorOccurrences[descriptorUUID] = descriptorOccurrence + 1
-          descriptors.append(["uuid": descriptorUUID, "occurrence": descriptorOccurrence] as NSDictionary)
-        }
-        characteristics.append([
-          "uuid": characteristicUUID,
-          "occurrence": characteristicOccurrence,
-          "readable": characteristic.properties.contains(.read),
-          "writableWithResponse": characteristic.properties.contains(.write),
-          "writableWithoutResponse": characteristic.properties.contains(.writeWithoutResponse),
-          "notifiable": characteristic.properties.contains(.notify),
-          "indicatable": characteristic.properties.contains(.indicate),
-          "descriptors": descriptors
-        ] as NSDictionary)
-      }
-      services.append([
-        "uuid": serviceUUID,
-        "occurrence": serviceOccurrence,
-        "characteristics": characteristics
-      ] as NSDictionary)
-    }
-    return ["services": services] as NSDictionary
+    pending.completion(OwnedCoreBluetoothProtocolRadioSupport.discoverySnapshot(servicesByPeer[peerIdentifier] ?? []), nil)
   }
 
   func resolve(_ address: CharacteristicAddress) -> (peripheral: CBPeripheral, characteristic: CBCharacteristic)? {

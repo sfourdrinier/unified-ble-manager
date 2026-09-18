@@ -16,6 +16,7 @@ import type { ScanSession, Subscription } from '../manager/ble-manager'
 import type { ElectronBleIpcEvent } from './protocol'
 import { assertAdvertisementObservation, snapshotAdvertisementObservation } from './advertisement-observation'
 import type { AdvertisementObservation } from '../backend-contract/advertisement'
+import { NOTIFICATION_DELIVERIES, type NotificationValue } from '../backend-contract/gatt'
 
 /**
  * `terminalized` means main has terminalized the exact stream or made the
@@ -459,8 +460,7 @@ function snapshotStreamValue(value: unknown, now: () => number, nextSequence: ()
   if (isNotificationValue(value)) {
     return Object.freeze({
       value: ownBytes(value.value, byteLimit(value.value.byteLength)),
-      indication: value.indication === true,
-      delivery: value.indication === true ? 'indication' : 'notification',
+      delivery: value.delivery,
       observedAtMonotonicMs: now(),
       sequence: nextSequence()
     })
@@ -471,13 +471,14 @@ function snapshotStreamValue(value: unknown, now: () => number, nextSequence: ()
   throw contractError('protocol.malformed', 'ipc', 'electron-renderer-stream-registry.stream-value')
 }
 
-function isNotificationValue(value: unknown): value is { readonly value: Uint8Array; readonly indication?: boolean } {
+function isNotificationValue(value: unknown): value is NotificationValue {
   return (
     typeof value === 'object' &&
     value !== null &&
     'value' in value &&
     value.value instanceof Uint8Array &&
-    (!('indication' in value) || typeof value.indication === 'boolean')
+    'delivery' in value &&
+    NOTIFICATION_DELIVERIES.some(delivery => delivery === value.delivery)
   )
 }
 

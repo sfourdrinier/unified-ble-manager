@@ -15,3 +15,7 @@ crate-type = ["cdylib", "rlib"]
 jni = "=0.22.4"
 ubm-core = { path = "../../crates/ubm-core" }
 ubm-fake-radio = { path = "../../crates/ubm-fake-radio" }
+# Production mobile owner (`com.ubm.core.MobileCoreBridge`): no fake radio,
+# no btleplug.
+ubm-mobile = { path = "../../crates/ubm-mobile" }
+ubm-desktop = { path = "../../crates/ubm-desktop", default-features = false }

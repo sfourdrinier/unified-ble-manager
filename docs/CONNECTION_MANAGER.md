@@ -82,6 +82,13 @@ async function connectWithProductPolicy(manager, peerId, signal) {
 application functions: retry budgets, user intent, session state, and medical
 workflow policy do not belong in the generic BLE package.
 
+Whatever the product policy, never repeat a failure whose `retryability` is
+`never`. An aborted or timed-out write reported that way was dispatched and may
+already have committed at the peripheral; its `recovery` advises
+`verify-state`, so read the value back before deciding anything. Only
+`caller-decides` failures are candidates for a policy retry, and never one
+whose `commit` is `uncertain`, whatever its code.
+
 ## Disconnects and lifecycle loss
 
 Consume the public connection lifecycle stream using bounded delivery. Adapter

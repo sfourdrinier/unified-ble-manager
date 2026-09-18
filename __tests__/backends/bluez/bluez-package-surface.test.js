@@ -18,7 +18,17 @@ describe('BlueZ package surface', () => {
     jest.resetModules()
   })
 
-  test('keeps the root import graph neutral and loads dbus-next only through the strict Node subpath', () => {
+  function onLinux(run) {
+    const original = Object.getOwnPropertyDescriptor(process, 'platform')
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'linux' })
+    try {
+      return run()
+    } finally {
+      Object.defineProperty(process, 'platform', original)
+    }
+  }
+
+  test('keeps the root import graph neutral; node/bluez runs the Rust core and never loads dbus-next', () => {
     jest.isolateModules(() => {
       const root = require('../../../src')
       // PR1: root is application-only, no generic BleManager class. Advanced holds the low-level one.
@@ -29,52 +39,38 @@ describe('BlueZ package surface', () => {
 
       const bluez = require('../../../src/node-bluez')
       expect(typeof bluez.createDbusNextBluezBackendProvider).toBe('function')
-      expect(mockDbusLoads).toBe(1)
+      // PR210-02: the D-Bus transport is legacy and unreachable from the
+      // public entrypoint; BLE work executes the shared Rust core.
+      expect(bluez.DbusNextBluezBoundaryFactory).toBeUndefined()
+      expect(mockDbusLoads).toBe(0)
     })
   })
 
-  // R03 cutover (surfaced contract change): the live provider executes the
-  // shared Rust core, not the TypeScript D-Bus transport. The factory keeps
-  // its name and bus selection for compatibility, but BLE work routes
-  // through `UbmCentral`; a missing core fails loudly instead of silently
-  // constructing TS execution. The `DbusNext` boundary stays exported for
-  // package-surface compatibility only.
-  test('creates the live provider over the shared core with an explicit bus kind', () => {
-    const { createDbusNextBluezBackendProvider, DbusNextBluezBoundaryFactory } = require('../../../src/node-bluez')
-    expect(typeof DbusNextBluezBoundaryFactory).toBe('function')
+  test('creates the live provider over the shared core on the system bus', () => {
+    const { createDbusNextBluezBackendProvider } = require('../../../src/node-bluez')
     const binding = {
       openProduction: async () => {
         throw new Error('no hardware in this surface probe')
       },
       openSynthetic: async () => {
         throw new Error('production surface probe must not open the synthetic radio')
-      }
+      },
+      listAdapters: async () => []
     }
-    const provider = createDbusNextBluezBackendProvider({ busKind: 'session', now: () => 10, binding })
-
+    const provider = onLinux(() => createDbusNextBluezBackendProvider({ busKind: 'system', now: () => 10, binding }))
     expect(provider.descriptor).toMatchObject({
       hostKind: 'node',
       loadability: 'loadable',
-      providerId: 'unified-ble:bluez-rust-core-provider'
+      providerId: 'unified-ble:bluez-dbus-provider'
     })
   })
 
-  test('live provider without a core fails loudly instead of building TS execution', () => {
-    const previous = process.env.UBM_NAPI_ADDON
-    process.env.UBM_NAPI_ADDON = require('node:path').join(__dirname, 'fixtures', 'missing-addon.node')
-    try {
-      const { createDbusNextBluezBackendProvider } = require('../../../src/node-bluez')
-      expect(() => createDbusNextBluezBackendProvider({ busKind: 'session', now: () => 10 })).toThrow(
-        expect.objectContaining({
-          normalized: expect.objectContaining({
-            code: 'capability.unsupported',
-            operation: 'bluez-manager.rust-core-missing'
-          })
-        })
-      )
-    } finally {
-      if (previous === undefined) delete process.env.UBM_NAPI_ADDON
-      else process.env.UBM_NAPI_ADDON = previous
-    }
+  test('a missing core fails loudly on first use instead of building TS execution', async () => {
+    const { createDbusNextBluezBackendProvider } = require('../../../src/node-bluez')
+    const provider = onLinux(() => createDbusNextBluezBackendProvider({ busKind: 'system', now: () => 10 }))
+    await expect(provider.listAdapters()).rejects.toMatchObject({
+      normalized: { code: 'capability.unavailable', operation: 'bluez.native-boundary.load' }
+    })
+    expect(mockDbusLoads).toBe(0)
   })
 })

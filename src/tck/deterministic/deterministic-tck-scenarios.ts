@@ -35,6 +35,8 @@ import { deterministicManagerOwnershipFacts } from './deterministic-tck-manager-
 import { deterministicLifecycleFacts, deterministicDiagnosticsFacts } from './deterministic-tck-lifecycle-diagnostics'
 import { deterministicSubscriptionOverflowFacts } from './deterministic-tck-subscription-overflow'
 import { subscriptionOptions, traceDispatchCount } from './deterministic-tck-scenario-helpers'
+import { deterministicDuplicateUuidOccurrenceFacts } from './deterministic-tck-occurrences'
+import { inspectOccurrenceIndexing, occurrenceIndexingDetail } from '../runner-public-occurrence-support'
 
 interface FactObservation {
   readonly id: TckFactId
@@ -143,6 +145,9 @@ async function executeScenario(
   }
   if (definition.id === 'gatt.discovery-complete-paths-and-services-changed') {
     return gattDiscovery(fixture)
+  }
+  if (definition.id === 'gatt.duplicate-uuid-occurrences-route-exactly') {
+    return deterministicDuplicateUuidOccurrenceFacts(fixture)
   }
   if (definition.id === 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation') {
     return gattReadWrite(fixture)
@@ -280,10 +285,14 @@ async function connectionArbitration(fixture: DeterministicBackendFixture): Prom
 
 async function gattDiscovery(fixture: DeterministicBackendFixture): Promise<readonly FactObservation[]> {
   const connected = await connectAndDiscover(fixture, 'gatt-discovery')
+  const indexing = inspectOccurrenceIndexing(connected.snapshot)
   const completePaths =
-    connected.snapshot.services.length === 2 &&
-    connected.snapshot.characteristics.length === 3 &&
-    connected.snapshot.descriptors.length === 1 &&
+    connected.snapshot.services.length === 3 &&
+    connected.snapshot.characteristics.length === 5 &&
+    connected.snapshot.descriptors.length === 3 &&
+    indexing.pathsUnique &&
+    indexing.parentsResolve &&
+    indexing.occurrencesExact &&
     pathsMatchDatabaseGeneration(connected.snapshot)
   const characteristic = connected.snapshot.characteristics[0]
   if (characteristic === undefined) {
@@ -303,7 +312,8 @@ async function gattDiscovery(fixture: DeterministicBackendFixture): Promise<read
     fact('gatt-discovery-returns-complete-occurrence-safe-paths', completePaths, {
       serviceCount: connected.snapshot.services.length,
       characteristicCount: connected.snapshot.characteristics.length,
-      descriptorCount: connected.snapshot.descriptors.length
+      descriptorCount: connected.snapshot.descriptors.length,
+      ...occurrenceIndexingDetail(indexing)
     }),
     fact('gatt-services-changed-invalidates-database-generation', snapshotInvalidated, { snapshotInvalidated }),
     fact('gatt-stale-path-rejects-before-dispatch', staleRejectedBeforeDispatch && staleReadDidNotDispatch, {

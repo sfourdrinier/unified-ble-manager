@@ -226,7 +226,11 @@ jobs:
           pnpm run build:electron:macos
           test -f native/electron/corebluetooth/build/Release/unified_ble_corebluetooth.node
           node -e "
-            const { createNativeCoreBluetoothBoundary } = require('./lib/commonjs/node-corebluetooth');
+            const publicEntry = require('./lib/commonjs/node-corebluetooth');
+            if (typeof publicEntry.createCoreBluetoothBleManager !== 'function' || 'createNativeCoreBluetoothBoundary' in publicEntry) {
+              throw new Error('node/corebluetooth must expose the Rust-core factory and no legacy boundary');
+            }
+            const { createNativeCoreBluetoothBoundary } = require('./lib/commonjs/backends/corebluetooth/corebluetooth-native-boundary');
             const boundary = createNativeCoreBluetoothBoundary();
             const required = [
               'adapterSnapshot', 'startScan', 'stopScan', 'connect', 'disconnect',

@@ -278,10 +278,18 @@ pub struct StreamAccounting {
     dropped_oldest: u64,
     dropped_bytes: u64,
     replaced: u64,
+    upstream_lost: u64,
     terminated: bool,
 }
 
 impl StreamAccounting {
+    /// Items the source lost before they reached this stream (a lagging
+    /// OS notification broadcast): never admitted, never queued.
+    #[must_use]
+    pub const fn upstream_lost(&self) -> u64 {
+        self.upstream_lost
+    }
+
     /// Items admitted (data plus control).
     #[must_use]
     pub const fn admitted(&self) -> u64 {
@@ -603,6 +611,30 @@ impl Stream {
                 evicted_items: 0,
             }),
         }
+    }
+
+    /// Record `items` values the source lost before they reached this
+    /// stream. Every policy counts them ([`StreamAccounting::upstream_lost`]);
+    /// `error` also closes ingress, as its own overflow would (the stream
+    /// can no longer be complete). A closed stream refuses.
+    pub fn note_upstream_loss(&mut self, items: u64) -> Result<AdmissionDecision, CoreError> {
+        if self.is_terminated() {
+            return Err(CoreError::new(
+                BleErrorCode::StreamClosed,
+                BleErrorDomain::Stream,
+                "stream.upstream-loss",
+            ));
+        }
+        self.accounting.upstream_lost = self.accounting.upstream_lost.saturating_add(items);
+        Ok(match self.policy {
+            OverflowPolicy::Error => {
+                self.accounting.terminated = true;
+                AdmissionDecision::Terminate
+            }
+            OverflowPolicy::Latest | OverflowPolicy::DropOldest | OverflowPolicy::DropNewest => {
+                AdmissionDecision::DropNewest
+            }
+        })
     }
 
     /// Push one control item into the reserved slots. Control bypasses a full

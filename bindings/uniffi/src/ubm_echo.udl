@@ -18,6 +18,213 @@
 // `protocol.incompatible` on every call: no effect without valid init.
 
 namespace ubm_echo {
+    // ---- Mobile Rust owner (crates/ubm-mobile, wire ubm-mobile-wire/1) ----
+    // One host per process; see docs/MOBILE_RUST_WIRE.md for the frozen
+    // shape. Nothing below reaches the staged/fake radio.
+    string mobile_build_identity_json();
+    string mobile_contract_revision();
+    string mobile_wire_revision();
+    [Throws=MobileCoreError]
+    MobileCoreHost mobile_host_install(MobilePlatformRadio radio, MobileWakeSink wake, string platform, string owner, string adapter_label);
+    MobileCoreHost? mobile_host_current();
+};
+
+[Error]
+interface MobileCoreError {
+    Failed(string code, string domain, string operation, string? detail);
+};
+
+callback interface MobilePlatformRadio {
+    // Must not block; answer every request exactly once with
+    // MobileCoreHost.complete(request id, completion).
+    void submit(MobileRadioRequest request);
+    void cancel(u64 request_id);
+};
+
+callback interface MobileWakeSink {
+    void wake(u64 session_id);
+};
+
+callback interface MobileInvokeCompletion {
+    void complete(string envelope);
+};
+
+dictionary MobileInstance {
+    string peer_id;
+    string service_uuid;
+    u64 service_occurrence;
+    string characteristic_uuid;
+    u64 characteristic_occurrence;
+};
+
+// Every enum-like string field carries the frozen wire string documented in
+// docs/MOBILE_RUST_WIRE.md; null means absent.
+[Enum]
+interface MobileRadioRequest {
+    AdapterState(u64 id);
+    StartScan(u64 id, sequence<string> service_uuids, sequence<string> device_addresses, string? scan_mode, string? callback_type, boolean? legacy);
+    StopScan(u64 id);
+    Connect(u64 id, string peer_id, boolean auto_connect, sequence<string> preferred_phy);
+    Disconnect(u64 id, string peer_id);
+    Discover(u64 id, string peer_id);
+    Read(u64 id, MobileInstance instance);
+    Write(u64 id, MobileInstance instance, bytes value, boolean with_response);
+    ReadDescriptor(u64 id, MobileInstance instance, string descriptor_uuid, u64 descriptor_occurrence);
+    WriteDescriptor(u64 id, MobileInstance instance, string descriptor_uuid, u64 descriptor_occurrence, bytes value);
+    EnableNotifications(u64 id, MobileInstance instance, u64 epoch, string? requested, string? preferred);
+    DisableNotifications(u64 id, MobileInstance instance);
+    ReadMtu(u64 id, string peer_id);
+    ReadWriteLimits(u64 id, string peer_id);
+    RequestMtu(u64 id, string peer_id, u16 mtu);
+    ReadRssi(u64 id, string peer_id);
+    RequestConnectionPriority(u64 id, string peer_id, string priority);
+    ReadPhy(u64 id, string peer_id);
+    RequestPhy(u64 id, string peer_id, string? tx, string? rx);
+    SecurityState(u64 id, string peer_id);
+    CreateBond(u64 id, string peer_id, string transport);
+    CancelBond(u64 id, string peer_id);
+    BondedPeers(u64 id);
+    AcquireBackground(u64 id, string kind, string reason);
+    ReleaseBackground(u64 id, string lease_id);
+    UpdateBackgroundNotification(u64 id, string lease_id, string title, string? body);
+    AssociateCompanion(u64 id, string? name, string? service_uuid);
+    Close(u64 id);
+};
+
+dictionary MobileAdapterSnapshot {
+    string availability;
+    string authorization;
+    string power;
+    string? safe_reason;
+};
+
+dictionary MobileGattProperties {
+    boolean read;
+    boolean write;
+    boolean write_without_response;
+    boolean notify;
+    boolean indicate;
+};
+
+dictionary MobileGattDescriptor {
+    string uuid;
+    u64 occurrence;
+};
+
+dictionary MobileGattCharacteristic {
+    string uuid;
+    u64 occurrence;
+    MobileGattProperties properties;
+    sequence<MobileGattDescriptor> descriptors;
+};
+
+dictionary MobileGattService {
+    string uuid;
+    u64 occurrence;
+    sequence<MobileGattCharacteristic> characteristics;
+};
+
+dictionary MobileSecurityState {
+    string bond;
+    string encryption;
+    string authentication;
+    string secure_connections;
+    boolean? pairing_possible;
+};
+
+dictionary MobilePeerName {
+    string peer_id;
+    string? name;
+};
+
+dictionary MobileCloseFailure {
+    MobileInstance instance;
+    string detail;
+};
+
+[Enum]
+interface MobileRadioCompletion {
+    Unit();
+    Bytes(bytes value);
+    Adapter(MobileAdapterSnapshot snapshot);
+    Discovered(sequence<MobileGattService> services);
+    NotifyEnabled(string delivery);
+    Mtu(u16? mtu);
+    WriteLimits(u16 with_response, u16 without_response);
+    Rssi(i16 rssi);
+    Accepted(boolean accepted);
+    Phy(string tx, string rx);
+    PhyRequest(boolean accepted, string? tx, string? rx);
+    Security(MobileSecurityState state);
+    BondedPeers(sequence<MobilePeerName> peers);
+    Lease(string lease_id);
+    Companion(i64 association_id, string? peer_id, string? display_name);
+    Closed(sequence<MobileCloseFailure> failures);
+    // dispatched = false: the platform refused before sending anything to
+    // the peer (a failed write then reports commit "not-dispatched").
+    Failed(string kind, i32? gatt_status, string? native_domain, i64? native_code, string detail, boolean dispatched);
+};
+
+dictionary MobileManufacturerData {
+    u16 company_id;
+    bytes payload;
+};
+
+dictionary MobileServiceData {
+    string uuid;
+    bytes payload;
+};
+
+dictionary MobileAdvertisement {
+    string peer_id;
+    string? address;
+    string? local_name;
+    i16? rssi;
+    i16? tx_power_level;
+    sequence<string> service_uuids;
+    sequence<MobileManufacturerData> manufacturer_data;
+    sequence<MobileServiceData> service_data;
+    boolean? connectable;
+    sequence<string>? solicited_service_uuids;
+    sequence<string>? overflow_service_uuids;
+};
+
+dictionary MobileRestoredPeer {
+    string peer_id;
+    string? name;
+    boolean connected;
+};
+
+[Enum]
+interface MobileRadioIngress {
+    Advertisement(MobileAdvertisement advertisement);
+    Connection(string peer_id, boolean connected, i32? status);
+    ServicesChanged(string peer_id);
+    Notification(MobileInstance instance, u64 epoch, bytes value);
+    AdapterState(MobileAdapterSnapshot snapshot);
+    ScanFailed(string detail);
+    SecurityChanged(string peer_id, MobileSecurityState state);
+    Restored(sequence<MobileRestoredPeer> peers);
+    Dropped(string ingress_class, string detail);
+};
+
+interface MobileCoreHost {
+    // "delivered" | "late" | "mismatched"
+    string complete(u64 request_id, MobileRadioCompletion completion);
+    // "accepted" | "dropped-advertisement" | "dropped-notification" | "dropped-control" | "closed"
+    string ingest(MobileRadioIngress ingress);
+    [Throws=MobileCoreError]
+    MobileCoreSession open_session(string owner, string expected_wire_revision);
+    // Cleanup record JSON; uninstalls the process host.
+    string shutdown();
+};
+
+interface MobileCoreSession {
+    u64 session_id();
+    // {"sessionId","contractRevision","wireRevision","buildIdentity"}
+    string admission_json();
+    void invoke(string op, string args_json, MobileInvokeCompletion completion);
+    string drain(u32 max_items, u32 max_bytes);
 };
 
 dictionary EchoBytesResult {

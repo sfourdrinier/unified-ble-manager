@@ -12,7 +12,6 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.ResultReceiver;
 
-import com.facebook.react.bridge.ReactApplicationContext;
 import com.sfourdrinier.unifiedblemanager.BlePlxForegroundService;
 
 import java.util.HashMap;
@@ -24,9 +23,9 @@ import java.util.concurrent.atomic.AtomicReference;
 
 public final class AndroidConnectedDeviceForegroundServiceDriver
     implements ConnectedDeviceForegroundServiceDriver {
-  private final ReactApplicationContext context;
+  private final Context context;
 
-  public AndroidConnectedDeviceForegroundServiceDriver(ReactApplicationContext context) {
+  public AndroidConnectedDeviceForegroundServiceDriver(Context context) {
     this.context = context;
   }
 

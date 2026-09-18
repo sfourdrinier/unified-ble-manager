@@ -278,9 +278,22 @@ export interface MaximumWriteLengthObservation<Attachment extends string> {
   readonly maximumWriteLength: number
   readonly observedAtMonotonicMs: number
 }
+/**
+ * How a characteristic value reached the central. `unknown` is the answer of
+ * a platform that does not report it (CoreBluetooth, BlueZ): a backend never
+ * infers a delivery the platform did not report.
+ */
+export type NotificationDelivery = 'notification' | 'indication' | 'unknown'
+
+export const NOTIFICATION_DELIVERIES: readonly NotificationDelivery[] = Object.freeze([
+  'notification',
+  'indication',
+  'unknown'
+])
+
 export interface NotificationValue {
   readonly value: OwnedBytes
-  readonly indication: boolean
+  readonly delivery: NotificationDelivery
 }
 export interface Subscription<
   Attachment extends string = string,

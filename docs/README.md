@@ -41,7 +41,7 @@ and coding agents should read [`../AGENTS.md`](../AGENTS.md) first.
 | Document | What it is | Status |
 | --- | --- | --- |
 | [`WEB.md`](WEB.md) | Web Bluetooth host: chooser, HTTPS, user activation, lifecycle | Current |
-| [`NODE.md`](NODE.md) | Node hosts: CoreBluetooth, WinRT, and BlueZ entrypoints, prebuilds, `dbus-next` peer | Current |
+| [`NODE.md`](NODE.md) | Node hosts: CoreBluetooth, WinRT, and BlueZ entrypoints over the shared Rust core, prebuilds, runtime requirements | Current |
 | [`ELECTRON.md`](ELECTRON.md) | Electron main/renderer split, IPC router, composition sequence | Current |
 | [`ELECTRON_SECURITY_MODEL.md`](ELECTRON_SECURITY_MODEL.md) | Electron ownership and threat boundary; renderer permission snapshot rules | Current |
 | [`TAURI.md`](TAURI.md) | Tauri v2 host: `createTauriBleManager()` and the Rust plugin install recipe | Current |
@@ -54,6 +54,7 @@ and coding agents should read [`../AGENTS.md`](../AGENTS.md) first.
 | --- | --- | --- |
 | [`UNIFIED_SEMANTICS.md`](UNIFIED_SEMANTICS.md) | Normative behavior contract (MUST/MUST NOT) for any conforming unified BLE implementation | Current |
 | [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md) | Clean-baseline architecture authority for the 4.0 package | Current |
+| [`MOBILE_RUST_WIRE.md`](MOBILE_RUST_WIRE.md) | React Native Rust owner: process host, session leases, `ubm-mobile-wire/1` op table, drain records, platform radio interface | Current |
 | [`BACKEND_AUTHORING.md`](BACKEND_AUTHORING.md) | Authoring a third-party backend against `unified-ble-manager/backend-sdk` | Current |
 | [`TCK.md`](TCK.md) | Backend TCK: required scenarios and running `runBackendAuthorTck` externally | Current |
 | [`DISCOVERY_AND_PROFILES.md`](DISCOVERY_AND_PROFILES.md) | Discovery helpers and the profile subpath import map (inherited helpers marked transitional) | Current |

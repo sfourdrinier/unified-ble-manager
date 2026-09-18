@@ -33,13 +33,23 @@ function singletonVersionRange<Axis extends ProtocolAxis>(axis: Axis, value: num
   return Object.freeze(versionRange(selected, selected))
 }
 
+/**
+ * The desktop IPC protocol spoken by the Electron renderer/main pair and the
+ * Tauri webview/plugin pair. Version 3 carries the caller deadline as a
+ * relative `budgetMs`, an optional `commit` on normalized errors, `delivery` on
+ * subscriptions and connection-lifecycle events. Both ends offer exactly this
+ * version, so a peer speaking 2 is refused at bootstrap as
+ * `protocol.incompatible` before any operation.
+ */
+export const IPC_PROTOCOL_VERSION = 3
+
 /** The IPC versions implemented by this package's desktop webview client. */
 export const IPC_CLIENT_COMPATIBILITY_OFFER: IpcCompatibilityOffer = Object.freeze({
   backendContract: singletonVersionRange('backend-contract', 1),
   capabilitySchema: singletonVersionRange('capability-schema', 1),
   eventSchema: singletonVersionRange('event-schema', 1),
   traceFormat: singletonVersionRange('trace-format', 1),
-  ipcProtocol: singletonVersionRange('ipc-protocol', 2)
+  ipcProtocol: singletonVersionRange('ipc-protocol', IPC_PROTOCOL_VERSION)
 })
 
 /** Validates the public client-originated lifecycle stream identifier format. */

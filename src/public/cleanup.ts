@@ -7,7 +7,14 @@ import type {
   BleErrorCode,
   BleErrorDomain
 } from '../backend-contract/errors'
-import { BackendContractError, BLE_ERROR_CODES, BLE_ERROR_DOMAINS, contractError } from '../backend-contract/errors'
+import {
+  BackendContractError,
+  BLE_COMMIT_UNCERTAINTIES,
+  BLE_ERROR_CODES,
+  BLE_ERROR_DOMAINS,
+  contractError
+} from '../backend-contract/errors'
+import type { BleCommitUncertainty } from '../backend-contract/errors'
 import type { SerializableRecord, SerializableValue } from '../backend-contract/primitives'
 import {
   assertAllowedSerializableKey,
@@ -43,6 +50,8 @@ export interface NormalizedBleError {
   readonly operation: string
   readonly platform: PublicPlatformErrorDetail | null
   readonly retryability: 'never' | 'caller-decides'
+  /** The commit state the operation's owner reported; absent when it stated none. */
+  readonly commit?: BleCommitUncertainty | null
 }
 
 export interface CleanupFailure {
@@ -126,6 +135,9 @@ export function toPublicNormalizedError(error: NormalizedErrorLike): NormalizedB
     typeof error.operation !== 'string' ||
     error.operation.length === 0 ||
     (error.retryability !== 'never' && error.retryability !== 'caller-decides') ||
+    (error.commit !== undefined &&
+      error.commit !== null &&
+      !BLE_COMMIT_UNCERTAINTIES.some(candidate => candidate === error.commit)) ||
     (error.platform !== null &&
       (typeof error.platform !== 'object' || error.platform === null || Array.isArray(error.platform)))
   ) {
@@ -139,7 +151,8 @@ export function toPublicNormalizedError(error: NormalizedErrorLike): NormalizedB
     domain: error.domain,
     operation: error.operation,
     platform: toPublicPlatformErrorDetail(error.platform),
-    retryability: error.retryability
+    retryability: error.retryability,
+    ...(error.commit === undefined ? {} : { commit: error.commit })
   })
 }
 

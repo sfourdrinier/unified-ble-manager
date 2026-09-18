@@ -8,7 +8,7 @@
 // - Genuine ref-vs-Rust (counter vectors, lifetime, corpus shape): the
 //   JS reference oracle (`referenceCounter`) and the Rust observation must
 //   agree EQUAL.
-// - Single-column frozen-rule pins (11 staged programs + 6 stay-open
+// - Single-column frozen-rule pins (12 staged programs + 6 stay-open
 //   probes): the scenario's BLE vocabulary runs through the session-owned
 //   staged transition core from deterministic SYNTHETIC host events only
 //   (no BLE hardware exists; there is no second staged executor). The
@@ -49,8 +49,7 @@ const {
 } = require('../../../src/tck/rust-driver')
 
 const ADDON_PATH =
-  process.env.UBM_NAPI_ADDON ||
-  path.join(__dirname, '..', '..', '..', 'bindings', 'napi', 'ubm_echo.linux-x64.node')
+  process.env.UBM_NAPI_ADDON || path.join(__dirname, '..', '..', '..', 'bindings', 'napi', 'ubm_echo.linux-x64.node')
 
 function loadRustAddon() {
   let addon
@@ -86,13 +85,13 @@ const BASE_DEFINITIONS = baseTckScenarios.filter(definition => definition.execut
 const PROVEN_IDS = RUST_PARITY_GAP_CANDIDATES.filter(candidate => candidate.status === 'transition-proven').map(
   candidate => candidate.scenarioId
 )
-const OPEN_IDS = RUST_PARITY_GAP_CANDIDATES.filter(
-  candidate => candidate.status === 'stays-open-real-radio'
-).map(candidate => candidate.scenarioId)
+const OPEN_IDS = RUST_PARITY_GAP_CANDIDATES.filter(candidate => candidate.status === 'stays-open-real-radio').map(
+  candidate => candidate.scenarioId
+)
 
 describe('U7 rust parity (frozen-rule pins plus ref-vs-Rust vectors per base TCK scenario)', () => {
   test('the rust driver runs the same frozen base corpus as the reference runner', () => {
-    expect(BASE_DEFINITIONS.length).toBe(17)
+    expect(BASE_DEFINITIONS.length).toBe(18)
     expect(rustParityBaseScenarios().map(definition => definition.id)).toEqual(
       BASE_DEFINITIONS.map(definition => definition.id)
     )
@@ -157,15 +156,11 @@ describe('U7 rust parity (frozen-rule pins plus ref-vs-Rust vectors per base TCK
       // including the staged drive surface.
       expect(row.postCloseCounter.ok).toBe(false)
       if (!row.postCloseCounter.ok) {
-        expect(wireOf(row.postCloseCounter.error)).toBe(
-          'lifecycle.destroyed|core|echo-counter|session-closed'
-        )
+        expect(wireOf(row.postCloseCounter.error)).toBe('lifecycle.destroyed|core|echo-counter|session-closed')
       }
       expect(row.postCloseStatus.ok).toBe(false)
       if (!row.postCloseStatus.ok) {
-        expect(wireOf(row.postCloseStatus.error)).toBe(
-          'lifecycle.destroyed|core|central-status|session-closed'
-        )
+        expect(wireOf(row.postCloseStatus.error)).toBe('lifecycle.destroyed|core|central-status|session-closed')
       }
       expect(row.postCloseTransition.ok).toBe(false)
       if (!row.postCloseTransition.ok) {
@@ -244,9 +239,7 @@ describe('U7 rust parity (frozen-rule pins plus ref-vs-Rust vectors per base TCK
   test('closed gaps resolve to transition proofs, open gaps stay loud', () => {
     const addon = loadRustAddon()
     const rows = runRustCorpus(addon)
-    expect(rows.map(row => row.scenarioId)).toEqual(
-      BASE_DEFINITIONS.map(definition => definition.id)
-    )
+    expect(rows.map(row => row.scenarioId)).toEqual(BASE_DEFINITIONS.map(definition => definition.id))
     expect(PROVEN_IDS.length).toBe(STAGED_PROGRAMS.length)
     expect(OPEN_IDS.length).toBe(STAY_OPEN_STAGED_PROBES.length)
     expect(PROVEN_IDS.length + OPEN_IDS.length).toBe(BASE_DEFINITIONS.length)
@@ -318,7 +311,7 @@ describe('U7 rust parity (frozen-rule pins plus ref-vs-Rust vectors per base TCK
   })
 
   test('every staged program records its pin provenance', () => {
-    expect(STAGED_PROGRAMS.length).toBe(11)
+    expect(STAGED_PROGRAMS.length).toBe(12)
     for (const program of STAGED_PROGRAMS) {
       expect(typeof program.provenance).toBe('string')
       expect(program.provenance.length).toBeGreaterThan(0)

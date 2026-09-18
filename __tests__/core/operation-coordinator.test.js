@@ -837,3 +837,156 @@ describe('CoreOperationCoordinator', () => {
     expect(coordinator.takeCleanupFailures('connection-b')).toEqual([])
   })
 })
+
+// PR210-27: retryability of an aborted or timed-out operation is decided by
+// what the coordinator knows about dispatch, not by the error code. Once an
+// operation that may commit (a write) has been dispatched, the peripheral may
+// already have applied it, so a second attempt could apply it twice.
+describe('CoreOperationCoordinator retryability', () => {
+  const { contractError } = require('../../src/backend-contract/errors')
+
+  test('a dispatched write that is aborted is commit-uncertain and never retryable', async () => {
+    const { coordinator } = createCoordinator()
+    const abortController = new AbortController()
+    const backend = deferred()
+    const result = coordinator.run(operation(() => backend.promise, abortController.signal, true))
+
+    await Promise.resolve()
+    abortController.abort()
+
+    await expect(result).resolves.toMatchObject({
+      outcome: 'aborted',
+      commitState: 'unknown',
+      error: { code: 'operation.aborted', retryability: 'never' }
+    })
+    backend.resolve('late')
+    await coordinator.waitForQuarantineDrain()
+  })
+
+  test('a dispatched write that reaches its deadline is commit-uncertain and never retryable', async () => {
+    jest.useFakeTimers()
+    try {
+      const { coordinator } = createCoordinator()
+      const backend = deferred()
+      const result = coordinator.run({
+        ...operation(() => backend.promise, null, true),
+        options: { signal: null, deadline: deadline(15) }
+      })
+
+      await Promise.resolve()
+      jest.advanceTimersByTime(10)
+
+      await expect(result).resolves.toMatchObject({
+        outcome: 'timed-out',
+        commitState: 'unknown',
+        error: { code: 'operation.timed-out', retryability: 'never' }
+      })
+      backend.resolve('late')
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test('a dispatched write whose backend reports its own abort is never retryable', async () => {
+    const { coordinator } = createCoordinator()
+    const result = coordinator.run(
+      operation(async () => {
+        throw contractError('operation.aborted', 'gatt', 'backend.write')
+      }, null, true)
+    )
+
+    await expect(result).resolves.toMatchObject({
+      outcome: 'failed',
+      commitState: 'unknown',
+      error: { code: 'operation.aborted', operation: 'backend.write', retryability: 'never' }
+    })
+  })
+
+  test('a dispatched read that is aborted stays caller-decides because it commits nothing', async () => {
+    const { coordinator } = createCoordinator()
+    const abortController = new AbortController()
+    const backend = deferred()
+    const result = coordinator.run(operation(() => backend.promise, abortController.signal, false))
+
+    await Promise.resolve()
+    abortController.abort()
+
+    await expect(result).resolves.toMatchObject({
+      outcome: 'aborted',
+      commitState: 'not-applicable',
+      error: { code: 'operation.aborted', retryability: 'caller-decides' }
+    })
+    backend.resolve('late')
+    await coordinator.waitForQuarantineDrain()
+  })
+
+  test.each([
+    ['pre-aborted', () => ({ signal: AbortSignal.abort(), deadline: null }), 'aborted'],
+    ['pre-expired', () => ({ signal: null, deadline: deadline(5) }), 'timed-out']
+  ])('a %s write never dispatches, so it is caller-decides with no commit', async (_label, options, outcome) => {
+    const { coordinator } = createCoordinator()
+    const dispatch = jest.fn(async () => 'must-not-dispatch')
+    const result = coordinator.run({ ...operation(dispatch, null, true), options: options() })
+
+    await expect(result).resolves.toMatchObject({
+      outcome,
+      commitState: 'not-applicable',
+      error: { retryability: 'caller-decides' }
+    })
+    expect(dispatch).not.toHaveBeenCalled()
+  })
+
+  test('a queued write cancelled before dispatch stays caller-decides', async () => {
+    const { coordinator } = createCoordinator()
+    const head = deferred()
+    const headResult = coordinator.run(operation(() => head.promise))
+    const abortController = new AbortController()
+    const dispatch = jest.fn(async () => 'must-not-dispatch')
+    const queued = coordinator.run(operation(dispatch, abortController.signal, true))
+
+    abortController.abort()
+
+    await expect(queued).resolves.toMatchObject({
+      outcome: 'aborted',
+      commitState: 'not-applicable',
+      error: { retryability: 'caller-decides' }
+    })
+    expect(dispatch).not.toHaveBeenCalled()
+    head.resolve('head')
+    await headResult
+  })
+})
+
+// PR210-42: the coordinator's commit state reaches the error it reports, so a
+// dispatched write that failed with any code is recognisable as uncertain.
+describe('CoreOperationCoordinator commit on errors', () => {
+  const { contractError } = require('../../src/backend-contract/errors')
+
+  test('a dispatched write rejected with any code reports commit uncertain', async () => {
+    const { coordinator } = createCoordinator()
+    const result = coordinator.run(
+      operation(async () => {
+        throw contractError('operation.disconnected', 'gatt', 'backend.write')
+      }, null, true)
+    )
+
+    await expect(result).resolves.toMatchObject({
+      outcome: 'failed',
+      commitState: 'unknown',
+      error: { code: 'operation.disconnected', retryability: 'never', commit: 'uncertain' }
+    })
+  })
+
+  test('a dispatched read rejected by the backend keeps the backend error unchanged', async () => {
+    const { coordinator } = createCoordinator()
+    const result = coordinator.run(
+      operation(async () => {
+        throw contractError('operation.disconnected', 'gatt', 'backend.read')
+      }, null, false)
+    )
+
+    const settled = await result
+    expect(settled).toMatchObject({ outcome: 'failed', commitState: 'not-applicable' })
+    expect(settled.error).not.toHaveProperty('commit')
+  })
+})

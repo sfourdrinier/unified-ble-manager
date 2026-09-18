@@ -50,4 +50,18 @@ describe('Native Protocol executable CI gates', () => {
     expect(script).toContain('AppleCoreBluetoothReadNotifyProvenanceHarness.swift')
     expect(script).toContain('No physical BLE radio or peripheral behavior was exercised.')
   })
+
+  it('keeps the Rust-route Apple harnesses outside the legacy native protocol tree', () => {
+    const script = read('scripts/native-protocol/test-apple-native-protocol.js')
+    for (const harness of [
+      'AppleCoreBluetoothScanParserHarness',
+      'AppleCoreBluetoothReadNotifyProvenanceHarness',
+      'AppleCoreBluetoothBorrowerOwnerHarness',
+      'AppleRustRadioAdapterHarness'
+    ]) {
+      expect(script).toContain(`'ios/__tests__/${harness}.swift'`)
+      expect(fs.existsSync(path.join(root, 'ios/__tests__', `${harness}.swift`))).toBe(true)
+      expect(fs.existsSync(path.join(root, 'native/protocol/tests', `${harness}.swift`))).toBe(false)
+    }
+  })
 })

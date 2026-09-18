@@ -8,6 +8,7 @@
 //! and undiscovered peers with `gatt.discovery-required`, never an empty
 //! list that a consumer could mistake for an empty database.
 
+use ubm_desktop::OpControl;
 use ubm_desktop::{
     CharacteristicSnapshot, DescriptorSnapshot, DesktopCentral, FakeRadio, PeerSnapshot,
     PropertyFlags, RadioEvent, ServiceSnapshot,
@@ -83,14 +84,15 @@ async fn discovered_central() -> DesktopCentral<FakeRadio> {
             manufacturer_data: Vec::new(),
             service_data: Vec::new(),
             tx_power_level: None,
+            extras: ubm_desktop::AdvertisementExtras::default(),
         }));
     central
-        .connect("peer-1", "lease-a", 5000)
+        .connect("peer-1", "lease-a", OpControl::budget_ms(5000))
         .await
         .expect("connect");
     central.boundary().set_services("peer-1", db_services());
     central
-        .discover("peer-1", "lease-a")
+        .discover("peer-1", "lease-a", OpControl::unbounded())
         .await
         .expect("discover");
     central
@@ -181,9 +183,10 @@ async fn discovered_paths_requires_discovery() {
             manufacturer_data: Vec::new(),
             service_data: Vec::new(),
             tx_power_level: None,
+            extras: ubm_desktop::AdvertisementExtras::default(),
         }));
     central
-        .connect("peer-1", "lease-a", 5000)
+        .connect("peer-1", "lease-a", OpControl::budget_ms(5000))
         .await
         .expect("connect");
     let error = central

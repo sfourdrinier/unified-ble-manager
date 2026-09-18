@@ -146,7 +146,7 @@ export type { BleManagerCreateOptions, DiagnosticsOptions } from './public/host-
 
 // --- Errors & recovery (public) ---
 export { BleError } from './public/errors'
-export type { BleRecovery, BleRecoveryDisposition } from './public/errors'
+export type { BleCommitUncertainty, BleRecovery, BleRecoveryDisposition, BleRetryability } from './public/errors'
 
 // Re-export cleanup evidence types that are safe for app code (read-only)
 export type {

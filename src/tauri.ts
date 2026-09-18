@@ -94,7 +94,12 @@ async function admitTauriCompatibility(ipc: IpcBleManager): Promise<void> {
   if (selected !== TAURI_PLUGIN_COMPATIBILITY.ipcProtocol) {
     return rejectTauriCompatibility(
       ipc,
-      `[unified-ble-manager/tauri] incompatible IPC protocol: host selected ${String(selected)}, npm package requires ${String(TAURI_PLUGIN_COMPATIBILITY.ipcProtocol)}`
+      contractError('protocol.incompatible', 'ipc', 'tauri-manager.ipc-protocol', {
+        domain: 'tauri-compatibility',
+        code: 'ipc-protocol',
+        safeMessage: `The Tauri plugin selected IPC protocol ${String(selected)}; this package requires ${String(TAURI_PLUGIN_COMPATIBILITY.ipcProtocol)}.`,
+        metadata: { selected, required: TAURI_PLUGIN_COMPATIBILITY.ipcProtocol }
+      })
     )
   }
   // F01: the factory serves traffic only from a host linked against the
@@ -106,14 +111,15 @@ async function admitTauriCompatibility(ipc: IpcBleManager): Promise<void> {
   }
   return rejectTauriCompatibility(
     ipc,
-    reported === undefined
-      ? '[unified-ble-manager/tauri] incompatible native host: bootstrap carries no shared-core contract revision'
-      : `[unified-ble-manager/tauri] incompatible contract revision: host linked ${String(reported)}, npm package requires ${String(TAURI_PLUGIN_COMPATIBILITY.contractRevision)}`
+    new Error(
+      reported === undefined
+        ? '[unified-ble-manager/tauri] incompatible native host: bootstrap carries no shared-core contract revision'
+        : `[unified-ble-manager/tauri] incompatible contract revision: host linked ${String(reported)}, npm package requires ${String(TAURI_PLUGIN_COMPATIBILITY.contractRevision)}`
+    )
   )
 }
 
-async function rejectTauriCompatibility(ipc: IpcBleManager, message: string): Promise<void> {
-  const error = new Error(message)
+async function rejectTauriCompatibility(ipc: IpcBleManager, error: Error): Promise<void> {
   try {
     const cleanup = await ipc.destroy()
     if (cleanup.state === 'release-failed') {

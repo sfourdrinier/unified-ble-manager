@@ -45,6 +45,59 @@ enum OwnedCoreBluetoothProtocolRadioSupport {
     return result as NSDictionary
   }
 
+  static func discoverySnapshot(_ discoveredServices: [CBService]) -> NSDictionary {
+    var services = [NSDictionary]()
+    var serviceOccurrences = [String: Int]()
+    for service in discoveredServices {
+      let serviceUUID = normalizedUUID(service.uuid.uuidString)
+      let serviceOccurrence = serviceOccurrences[serviceUUID, default: 0]
+      serviceOccurrences[serviceUUID] = serviceOccurrence + 1
+      var characteristics = [NSDictionary]()
+      var characteristicOccurrences = [String: Int]()
+      for characteristic in service.characteristics ?? [] {
+        let characteristicUUID = normalizedUUID(characteristic.uuid.uuidString)
+        let characteristicOccurrence = characteristicOccurrences[characteristicUUID, default: 0]
+        characteristicOccurrences[characteristicUUID] = characteristicOccurrence + 1
+        var descriptors = [NSDictionary]()
+        var descriptorOccurrences = [String: Int]()
+        for descriptor in characteristic.descriptors ?? [] {
+          let descriptorUUID = normalizedUUID(descriptor.uuid.uuidString)
+          let descriptorOccurrence = descriptorOccurrences[descriptorUUID, default: 0]
+          descriptorOccurrences[descriptorUUID] = descriptorOccurrence + 1
+          descriptors.append(["uuid": descriptorUUID, "occurrence": descriptorOccurrence] as NSDictionary)
+        }
+        characteristics.append([
+          "uuid": characteristicUUID,
+          "occurrence": characteristicOccurrence,
+          "readable": characteristic.properties.contains(.read),
+          "writableWithResponse": characteristic.properties.contains(.write),
+          "writableWithoutResponse": characteristic.properties.contains(.writeWithoutResponse),
+          "notifiable": characteristic.properties.contains(.notify),
+          "indicatable": characteristic.properties.contains(.indicate),
+          "descriptors": descriptors
+        ] as NSDictionary)
+      }
+      services.append([
+        "uuid": serviceUUID,
+        "occurrence": serviceOccurrence,
+        "characteristics": characteristics
+      ] as NSDictionary)
+    }
+    return ["services": services] as NSDictionary
+  }
+
+  /// `{peerIdentifier, name, connected}` for each restored peripheral still held.
+  static func restoredPeerSnapshots(identifiers: [String], peripherals: [String: CBPeripheral]) -> [NSDictionary] {
+    identifiers.compactMap { identifier in
+      guard let peripheral = peripherals[identifier] else { return nil }
+      return [
+        "peerIdentifier": identifier,
+        "name": peripheral.name as Any,
+        "connected": peripheral.state == .connected
+      ] as NSDictionary
+    }
+  }
+
   static func adapterSnapshotDictionary(central: CBCentralManager) -> NSDictionary {
     let authorization: String
     if #available(iOS 13.1, tvOS 13.1, *) {

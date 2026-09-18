@@ -865,10 +865,8 @@ function cleanupFailure(resourceKind: string, error: unknown, operation: string)
           domain: publicError.domain,
           operation: publicError.operation,
           platform: publicError.platform,
-          retryability:
-            publicError.code === 'operation.aborted' || publicError.code === 'operation.timed-out'
-              ? 'caller-decides'
-              : 'never'
+          retryability: publicError.retryability,
+          ...(publicError.commit === null ? {} : { commit: publicError.commit })
         }
       : error instanceof BackendContractError
         ? (toPublicCleanupRecord({ state: 'release-failed', failures: [{ resourceKind, error: error.normalized }] })

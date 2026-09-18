@@ -1,6 +1,7 @@
 // src/backend-contract/recovery.ts — canonical error recovery authority
 
-import type { BleErrorCode } from './errors'
+import { retryabilityForCode } from './errors'
+import type { BleCommitUncertainty, BleErrorCode, BleRetryability } from './errors'
 
 export type BleRecoveryDisposition =
   | 'none'
@@ -25,13 +26,63 @@ export type RecoveryAction =
   | { readonly kind: 'wait-for-write-ready' }
   | { readonly kind: 'recreate-manager' }
   | { readonly kind: 'retry'; readonly afterMs: number | null }
+  /**
+   * Read the peer's state (for a write, read the value back) before deciding
+   * anything: the operation was dispatched and may already have committed, so
+   * repeating it could apply its effect twice.
+   */
+  | { readonly kind: 'verify-state' }
 
 export interface BleRecovery {
   readonly disposition: BleRecoveryDisposition
   readonly actions: readonly RecoveryAction[]
 }
 
+/** The facts about a failure that its recovery advice depends on. */
+export interface BleRecoveryInput {
+  readonly code: BleErrorCode
+  readonly operation: string
+  readonly retryability: BleRetryability
+  /** The commit state the operation's owner reported, when it reported one. */
+  readonly commit?: BleCommitUncertainty | null
+}
+
+/**
+ * Recovery advice for a failure, following the operation's own answers.
+ *
+ * - `commit: 'uncertain'` (any code): the operation was dispatched and may have
+ *   committed, so it is never replayed. The advice keeps the catalog's
+ *   prerequisite actions (reconnect, rediscover, ...), drops `retry`, and ends
+ *   with `verify-state` under `caller-policy`.
+ * - `commit: 'not-dispatched'`: nothing reached the radio; catalog advice.
+ * - no commit state: an aborted or timed-out failure reported `never`
+ *   retryable is treated as uncertain; everything else gets catalog advice.
+ */
+export function recoveryForError(error: BleRecoveryInput): BleRecovery {
+  const catalog = catalogRecovery(error.code, error.operation)
+  if (error.commit === 'not-dispatched') return catalog
+  const uncertain = error.commit === 'uncertain' || (isInterruption(error.code) && error.retryability === 'never')
+  if (!uncertain) return catalog
+  return {
+    disposition: 'caller-policy',
+    actions: [...catalog.actions.filter(action => action.kind !== 'retry'), { kind: 'verify-state' }]
+  }
+}
+
+/**
+ * Catalog advice for a code alone, assuming the default retryability for that
+ * code (see `retryabilityForCode`). Use {@link recoveryForError} when the
+ * failure reports its own retryability.
+ */
 export function recoveryForCode(code: BleErrorCode, operation: string): BleRecovery {
+  return recoveryForError({ code, operation, retryability: retryabilityForCode(code) })
+}
+
+function isInterruption(code: BleErrorCode): boolean {
+  return code === 'operation.aborted' || code === 'operation.timed-out'
+}
+
+function catalogRecovery(code: BleErrorCode, operation: string): BleRecovery {
   switch (code) {
     case 'protocol.incompatible':
     case 'protocol.malformed':

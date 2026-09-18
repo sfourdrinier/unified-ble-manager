@@ -1,6 +1,10 @@
 // src/core/unified-ble-core-helpers.ts
 
-import { BackendContractError, contractError } from '../backend-contract/errors'
+import { BLE_ERROR_CODES, BackendContractError, contractError } from '../backend-contract/errors'
+import type { BleErrorCode } from '../backend-contract/errors'
+import type { BackendDiagnosticEvent } from '../backend-contract/backend'
+import { UNIFIED_BLE_TRACE_MAXIMUM_EVENT_LENGTH } from '../diagnostics/trace-format'
+import type { CoreTraceSink } from './trace-recorder'
 import { byteLimit, ownBytes } from '../backend-contract/primitives'
 import type { AdvertisementObservation } from '../backend-contract/advertisement'
 import type { OperationTerminalRecord, PublicOperationOptions } from '../backend-contract/operations'
@@ -9,6 +13,36 @@ import type { ScanOptions } from '../backend-contract/advertisement'
 import type { ByteLimit, OwnedBytes, OperationCorrelation } from '../backend-contract/primitives'
 import type { BackendOperationDispatch, BackendOperationPhysicalSettlement } from '../backend-contract/operations'
 import type { CoreOperationDispatch, CoreOperationResult } from './operation-coordinator'
+
+/** The trace event a backend `diagnostic-warning` is recorded under. */
+export const BACKEND_DIAGNOSTIC_TRACE_PREFIX = 'diagnostic-warning:'
+
+/**
+ * Records a backend `diagnostic-warning` in the manager's public diagnostic
+ * trace (`manager.diagnostics`), so a warning is never silent. The trace is
+ * payload-free: only the warning code and, when the backend named one, the
+ * normalized error code it reported cross into it.
+ */
+export function recordBackendDiagnostic<Attachment extends string>(
+  trace: CoreTraceSink,
+  now: () => number,
+  event: BackendDiagnosticEvent<Attachment>
+): void {
+  trace.record({
+    timestamp: now(),
+    resource: 'manager',
+    transition: `${BACKEND_DIAGNOSTIC_TRACE_PREFIX}${event.code}`.slice(0, UNIFIED_BLE_TRACE_MAXIMUM_EVENT_LENGTH),
+    operation: null,
+    cause: reportedErrorCode(event.detail.code),
+    queuedOperations: 0,
+    dispatchedOperations: 0,
+    quarantinedOperations: 0
+  })
+}
+
+function reportedErrorCode(value: unknown): BleErrorCode | null {
+  return BLE_ERROR_CODES.find(code => code === value) ?? null
+}
 
 export interface CoreDeadlineHandle {
   cancel(): void

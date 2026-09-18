@@ -129,8 +129,27 @@ describe('Android RN 0.86 unified protocol boundary', () => {
       // R01 Phase 3 contract update (justified): `RustCoreAdapterStateReader`
       // is the production platform read behind `adapter.state`. Current
       // protocol graph member by design, not legacy residue.
+      // PR210-01/14/17 contract update (justified): the process-owned Rust
+      // mobile host on Android. The module shell (UnifiedBleRustCoreModule)
+      // delegates to JVM-tested RustCoreSessions; RustCoreProcessHost installs
+      // the one host; RustRadioHostAdapter serves MobileCoreBridge.RadioHost
+      // over OwnedRadioPort -> OwnedAndroidGattRadio. Covered by
+      // RustRadioHostAdapterTest, RustCoreSessionsTest, RustCoreJsonTest and
+      // OwnedRadioPortMappingTest. RustCoreAdapterStateReader and
+      // RustCoreSessionRouter are legacy, kept until Phase 4 deletion.
+      'rustcore/AndroidRadioPort.kt',
+      'rustcore/MobileCorePort.kt',
+      'rustcore/OwnedRadioPort.kt',
+      'rustcore/PlatformServicePorts.kt',
+      'rustcore/ReactCompanionChooser.kt',
       'rustcore/RustCoreAdapterStateReader.java',
+      'rustcore/RustCoreJson.kt',
+      'rustcore/RustCorePlatformValues.kt',
+      'rustcore/RustCoreProcessHost.kt',
+      'rustcore/RustCoreRejection.kt',
       'rustcore/RustCoreSessionRouter.java',
+      'rustcore/RustCoreSessions.kt',
+      'rustcore/RustRadioHostAdapter.kt',
       'rustcore/UnifiedBleRustCoreModule.java'
     ].sort())
     const protocolDispatcher = read(

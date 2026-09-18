@@ -15,7 +15,7 @@ Facts an agent must know before writing code against this package:
 
 ## Entrypoints
 
-Install with `npm add unified-ble-manager` (Linux BlueZ hosts also need `dbus-next@^0.10.2` in the application).
+Install with `npm add unified-ble-manager`. Node and Electron desktop hosts load the shared Rust core prebuilt in the package (darwin, win32, linux on arm64/x64); no toolchain and no `dbus-next` are needed (Linux needs glibc 2.35+ and libdbus-1).
 
 - `unified-ble-manager` — host-neutral manager, handles, helpers, and shared types (no radio)
 - `unified-ble-manager/react-native` — React Native Android / Apple manager
@@ -27,7 +27,7 @@ Install with `npm add unified-ble-manager` (Linux BlueZ hosts also need `dbus-ne
 - `unified-ble-manager/tauri` — Tauri v2 `BleManager` factory (pairs with the Rust plugin)
 - `unified-ble-manager/node/corebluetooth` — macOS CoreBluetooth Node provider
 - `unified-ble-manager/node/winrt` — Windows WinRT Node provider
-- `unified-ble-manager/node/bluez` — Linux BlueZ D-Bus provider
+- `unified-ble-manager/node/bluez` — Linux Node provider (shared Rust core over BlueZ)
 - `unified-ble-manager/backend-sdk` — backend authoring contract
 - `unified-ble-manager/testing` — deterministic backend and TCK utilities (test infrastructure, never a production radio)
 - `unified-ble-manager/codecs` — byte/`DataView` helpers and IEEE-11073 numbers

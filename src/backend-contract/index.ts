@@ -134,7 +134,9 @@ export type {
 } from './connection-lifecycle'
 export type {
   BleErrorCode,
+  BleCommitUncertainty,
   BleErrorDomain,
+  BleRetryability,
   CleanupFailure,
   CleanupRecord,
   NormalizedBleError,
@@ -318,8 +320,8 @@ export type {
   StreamTerminalNotice,
   StreamValue
 } from './streams'
-export type { BleRecovery, BleRecoveryDisposition, RecoveryAction } from './recovery'
-export { recoveryForCode } from './recovery'
+export type { BleRecovery, BleRecoveryDisposition, BleRecoveryInput, RecoveryAction } from './recovery'
+export { recoveryForCode, recoveryForError } from './recovery'
 export type {
   BackendScanExecutionPlan,
   BackendScanPlanner,

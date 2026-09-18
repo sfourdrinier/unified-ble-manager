@@ -147,7 +147,7 @@ export class DeterministicTestBackend
         const owned = ownBytes(value, this.maximumOperationBytes)
         const outcome = this.pushWithinAggregateQuota(
           subscription.stream,
-          { value: owned, indication },
+          { value: owned, delivery: indication ? ('indication' as const) : ('notification' as const) },
           owned.byteLength
         )
         if (outcome.terminated) {

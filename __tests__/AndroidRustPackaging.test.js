@@ -10,6 +10,8 @@ describe('Android Rust cdylib packaging (UBM 5.0 HOST-ANDROID)', () => {
   // the bridge natives LOAD — never skip, never silently. Staged local
   // outputs (android/build) stay excluded.
   test('packed artifact ships the committed jniLibs prebuilts, not staged outputs', () => {
+    // PR210-18: the committed identity is JSON (build-identity.json, with
+    // sourceDigest) — it replaced build-identity.txt.
     const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
     expect(pkg.files).toContain('android')
     expect(pkg.files).not.toContain('!android/src/main/jniLibs')
@@ -19,28 +21,33 @@ describe('Android Rust cdylib packaging (UBM 5.0 HOST-ANDROID)', () => {
         fs.existsSync(path.join(root, 'android', 'src', 'main', 'jniLibs', abi, 'libubm5_jni_echo.so'))
       ).toBe(true)
     }
-    expect(fs.existsSync(path.join(root, 'android', 'src', 'main', 'jniLibs', 'build-identity.txt'))).toBe(
+    expect(fs.existsSync(path.join(root, 'android', 'src', 'main', 'jniLibs', 'build-identity.json'))).toBe(
       true
+    )
+    expect(fs.existsSync(path.join(root, 'android', 'src', 'main', 'jniLibs', 'build-identity.txt'))).toBe(
+      false
     )
   })
 
   test('Gradle verifies prebuilts in packed consumers and fails loud without them', () => {
     const buildGradle = fs.readFileSync(path.join(root, 'android/build.gradle'), 'utf8')
-    // D2(iii): mode selection is explicit-first (UBM_NATIVE_BUILD), never
-    // bare `.git` inference; unset backstops inference on BOTH Rust sources
-    // AND .git. The npm artifact ships sources AND prebuilts, and packed
-    // consumers need no NDK/Rust.
-    expect(buildGradle).toContain('def ubmNativeBuildEnv =')
-    expect(buildGradle).toContain('UBM_NATIVE_BUILD=source')
-    expect(buildGradle).toContain('UBM_NATIVE_BUILD=prebuilt')
-    expect(buildGradle).toContain('def ubmRustDevCheckout')
-    expect(buildGradle).toContain('ubmRustSourcesPresent && projectDir.toPath().resolve("../.git")')
+    // PR210-19 (ADR D2.6): the mode is explicit configuration, identical to
+    // the podspec: unset/empty -> prebuilt, `prebuilt`/`source` explicit,
+    // anything else a GradleException. Previously an unset variable fell
+    // back to source mode when Rust sources AND ../.git existed; that
+    // inference is gone (these expectations replace the old
+    // `ubmRustSourcesPresent && ...("../.git")` / `ubmRustDevCheckout` ones).
+    expect(buildGradle).toContain('def ubmNativeBuildMode')
+    expect(buildGradle).toContain("UBM_NATIVE_BUILD must be unset, 'prebuilt' or 'source'")
+    expect(buildGradle).not.toMatch(/resolve\("\.\.\/\.git"\)/)
+    expect(buildGradle).not.toContain('ubmRustDevCheckout')
+    expect(buildGradle).not.toContain('toLowerCase')
+    expect(buildGradle).toContain('def ubmRustSourceBuild = ubmNativeBuildMode == "source"')
     expect(buildGradle).toContain('def ubmRustPrebuiltDir = file("src/main/jniLibs")')
-    expect(buildGradle).toContain('def ubmRustPrebuiltIdentity =')
+    expect(buildGradle).toContain('def ubmRustPrebuiltIdentity = new File(ubmRustPrebuiltDir, "build-identity.json")')
     // Packed variants package the committed tree; a packed tree without
     // prebuilts fails LOUD (broken artifact), never silently.
     expect(buildGradle).toContain('android.sourceSets.main.jniLibs.srcDirs = [file("src/main/jniLibs")]')
-    expect(buildGradle).toContain('prebuilt context')
     expect(buildGradle).toContain('no committed prebuilts')
     // D2(iii): the 16 KB page-size gate is wired into both paths (hard in
     // source builds, opportunistic --offline-ok over packed prebuilts).
@@ -49,96 +56,49 @@ describe('Android Rust cdylib packaging (UBM 5.0 HOST-ANDROID)', () => {
     expect(buildGradle).toContain('16 KB page check')
   })
 
-  // F20: the Gradle input graph must cover the cdylib crate plus its
-  // TRANSITIVE path dependencies (from the manifests, not from memory), the
-  // workspace manifest + lockfile + toolchain pin, and the build script
-  // itself — so a core-only edit invalidates the staged .so. A full
-  // Gradle rebuild-identity run needs SDK+NDK (host-gated); this pins the
-  // graph structurally: removing `ubm-core/src` from the inputs, or adding
-  // a path-dep without declaring it, fails here.
-  test('Gradle inputs cover the transitive Rust path-dependency graph', () => {
-    const jniDir = path.join(root, 'bindings', 'jni')
-    // Repo-relative keys always use forward slashes: path.relative emits
-    // backslashes on Windows, which would never match the Gradle-declared
-    // (forward-slash) refs or the expected literals below.
-    const repoKey = absolute => path.relative(root, absolute).split(path.sep).join('/')
-    // Transitive path-deps from the manifests (single-line `{ path = ... }`
-    // form, as written in this repo).
-    const transitive = new Map() // crate dir (repo-relative) -> manifest path
-    const visit = manifestPath => {
-      const manifest = fs.readFileSync(manifestPath, 'utf8')
-      const dir = path.dirname(manifestPath)
-      const depPattern = /^\s*[A-Za-z0-9_-]+\s*=\s*\{[^}\n]*path\s*=\s*"([^"]+)"/gm
-      for (const match of manifest.matchAll(depPattern)) {
-        const depDir = path.normalize(path.join(dir, match[1]))
-        const key = repoKey(depDir)
-        if (!transitive.has(key)) {
-          transitive.set(key, path.join(depDir, 'Cargo.toml'))
-          visit(path.join(depDir, 'Cargo.toml'))
-        }
-      }
-    }
-    visit(path.join(jniDir, 'Cargo.toml'))
-    expect([...transitive.keys()].sort()).toEqual(['crates/ubm-core', 'crates/ubm-fake-radio'])
-
-    // Declared Gradle inputs: resolve `projectDir`-relative `../...` refs
-    // plus the two hoisted variables.
+  // F20 + PR210-19: the Gradle input graph is the identity library's input
+  // list (the crate, its TRANSITIVE path dependencies parsed from the
+  // manifests, the workspace manifest, lockfile, toolchain pin and the JNI
+  // binding schema) — no hand-maintained list that can drift from
+  // Cargo.toml. Previously build.gradle declared ubmRustInputDirs /
+  // ubmRustInputFiles by hand; that list is deleted.
+  test('Gradle takes its Rust input graph from the identity library', () => {
     const buildGradle = fs.readFileSync(path.join(root, 'android/build.gradle'), 'utf8')
-    const listBlock = name => {
-      const match = buildGradle.match(new RegExp(`def ${name} = \\[([\\s\\S]*?)\\]`))
-      expect(match).not.toBeNull()
-      return match[1]
-    }
-    const resolveRef = ref => {
-      if (ref === 'ubmRustSrcDir') return 'bindings/jni/src'
-      if (ref === 'ubmRustManifest') return 'bindings/jni/Cargo.toml'
-      const inline = ref.match(/resolve\("([^"]+)"\)/)
-      expect(inline).not.toBeNull()
-      return path.normalize(path.join('android', inline[1])).split(path.sep).join('/')
-    }
-    const declaredDirs = new Set(
-      listBlock('ubmRustInputDirs')
-        .split('\n')
-        .map(line => line.trim().replace(/,$/, ''))
-        .filter(line => line.length > 0 && !line.startsWith('//'))
-        .map(resolveRef)
-    )
-    const declaredFiles = new Set(
-      listBlock('ubmRustInputFiles')
-        .split('\n')
-        .map(line => line.trim().replace(/,$/, ''))
-        .filter(line => line.length > 0 && !line.startsWith('//'))
-        .map(resolveRef)
-    )
-    // The crate itself plus every transitive path-dep contributes its `src`
-    // tree and its manifest.
-    const expectedDirs = ['bindings/jni/src', ...[...transitive.keys()].map(key => `${key}/src`)]
-    const expectedFiles = [
+    expect(buildGradle).not.toContain('def ubmRustInputDirs')
+    expect(buildGradle).toContain('scripts/release/native-build-identity.js')
+    expect(buildGradle).toContain('"--inputs", "jni"')
+    expect(buildGradle).toContain('ubmRustInputFiles.each { input -> inputs.file(input) }')
+    const identity = require('../scripts/release/native-build-identity')
+    const inputs = identity.bindingSourceInputs(root, 'jni')
+    for (const expected of [
       'bindings/jni/Cargo.toml',
-      ...[...transitive.keys()].map(key => `${key}/Cargo.toml`),
+      'bindings/jni/src/lib.rs',
+      'crates/ubm-core/Cargo.toml',
+      'crates/ubm-core/src/lib.rs',
+      'crates/ubm-fake-radio/Cargo.toml',
       'Cargo.toml',
       'Cargo.lock',
-      'rust-toolchain.toml',
-    ]
-    for (const dir of expectedDirs) {
-      expect([...declaredDirs]).toContain(dir)
-    }
-    for (const file of expectedFiles) {
-      expect([...declaredFiles]).toContain(file)
-    }
-    // Every declared input must exist on disk: the Gradle guards
-    // (`isDirectory`/`isFile`) silently skip missing paths, so a typo
-    // would drop graph coverage without failing the build.
-    for (const dir of declaredDirs) {
-      expect(fs.statSync(path.join(root, dir)).isDirectory()).toBe(true)
-    }
-    for (const file of declaredFiles) {
-      expect(fs.statSync(path.join(root, file)).isFile()).toBe(true)
+      'rust-toolchain.toml'
+    ]) {
+      expect(inputs).toContain(expected)
     }
     // The build script itself is an input (a script fix rebuilds).
     expect(buildGradle).toContain('inputs.file(ubmRustScript)')
     const scriptDef = buildGradle.match(/def ubmRustScript = file\("([^"]+)"\)/)
     expect(scriptDef).not.toBeNull()
     expect(fs.existsSync(path.join(root, 'android', scriptDef[1]))).toBe(true)
+  })
+
+  test('the canonical builder seals the identity and exposes a direct prepare step', () => {
+    const builder = fs.readFileSync(path.join(root, 'android/build-rust-cdylib.sh'), 'utf8')
+    expect(builder).toContain('--write --print-env jni')
+    expect(builder).toContain('export UBM_BUILD_SOURCE_DIGEST UBM_BUILD_BINDING_SCHEMA')
+    expect(builder).toContain('--prepare')
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
+    expect(pkg.scripts['native:android:prepare']).toBe('sh android/build-rust-cdylib.sh --prepare')
+    const refresh = fs.readFileSync(path.join(root, 'android/refresh-prebuilt-jniLibs.sh'), 'utf8')
+    expect(refresh).toContain('--write-android-identity')
+    expect(refresh).toContain('--check-android-prebuilts')
+    expect(refresh).not.toContain('build-identity.txt')
   })
 })

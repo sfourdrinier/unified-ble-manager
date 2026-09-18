@@ -99,7 +99,7 @@ describe('Tauri v2 Rust plugin boundary', () => {
     expect(dispatcher).toContain('take_advertisement')
     expect(dispatcher).toContain('CoreAuthority')
     expect(dispatcher).toContain('core_scan_observation')
-    expect(dispatcher).toContain('drop_if_full')
+    expect(dispatcher).toContain('Err(error) if error.code == BleErrorCode::StreamQuota')
     expect(dispatcher).toContain('("schemaVersion", number(2))')
     expect(dispatcher).not.toContain('scan_adapter.events()')
     expect(dispatcher).not.toContain('DeviceDiscovered')
@@ -118,15 +118,21 @@ describe('Tauri v2 Rust plugin boundary', () => {
     expect(executor).toContain('ubm-btleplug')
     expect(executor).toContain('ubm-btleplug-worker')
     expect(dispatcher).toContain('fn btleplug_runtime()')
-    expect(dispatcher).toContain('open_btleplug_adapter(requested).await')
+    // Finding 43: attachment identity and adapter.state come from the one
+    // shared central (its own adapter selection, ambiguity refused); the
+    // plugin opens no second btleplug Manager (a second CBCentralManager).
+    expect(dispatcher).toContain('DesktopCentral::open_btleplug(profile)')
+    expect(dispatcher).toContain('authority.attachment()')
     expect(dispatcher).toContain('heard')
-    expect(dispatcher).toContain('adapter.adapter_state().await')
+    expect(dispatcher).toContain('authority.adapter_state(ctl)')
+    expect(dispatcher).not.toContain('Manager::new()')
+    expect(dispatcher).not.toContain('open_btleplug_adapter')
   })
 
   test('preserves native scan emission diagnostics on the shared terminal contract', () => {
     const dispatcher = read('native/tauri/src/btleplug_dispatcher.rs')
 
-    expect(dispatcher).toContain('if let Err(error) = dispatcher')
+    expect(dispatcher).toContain('Err(error) => ("source-failed", Some(error))')
     expect(dispatcher).toMatch(/"source-failed",\s+Some\(&error\)/)
     expect(dispatcher).toContain('fn normalized_error(&self) -> IpcValue')
     expect(dispatcher).toContain('item.insert("error".to_owned(), error.normalized_error())')

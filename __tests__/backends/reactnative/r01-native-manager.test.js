@@ -10,167 +10,28 @@
 const fs = require('fs')
 const path = require('path')
 
-let mockNativeModule = null
-
-jest.mock('react-native', () => ({
-  Platform: { OS: 'android', Version: 35 },
-  TurboModuleRegistry: {
-    get: () => mockNativeModule
-  },
-  NativeModules: {}
-}))
-
-const {
-  createReactNativeBleManagerWithEnvironment
-} = require('../../../src/react-native-manager')
-const {
-  RUST_CORE_CONTRACT_REVISION
-} = require('../../../src/backends/reactnative/react-native-rust-core')
+const { createReactNativeBleManagerWithEnvironment } = require('../../../src/react-native-manager')
 const InternalShapes = require('../../../src/manager/ble-manager')
+const {
+  rustCoreHarness,
+  environment: harnessEnvironment
+} = require('../../../test-support/react-native/rust-core-harness')
 
-const MANAGER_SOURCE = path.join(
-  __dirname,
-  '../../../src/backends/reactnative/react-native-rust-core-manager.ts'
-)
+const MANAGER_SOURCE = path.join(__dirname, '../../../src/backends/reactnative/react-native-rust-core-manager.ts')
 
-function record(overrides = {}) {
-  return {
-    ok: true,
-    value: '{}',
-    code: '',
-    domain: '',
-    operation: 'test.op',
-    ...overrides
-  }
+let harness = null
+
+function presentNative() {
+  harness = rustCoreHarness({ platform: 'android' })
+  return harness.native
 }
 
-function throwingControl() {
-  return new Proxy(
-    {},
-    {
-      get: (_target, property) => {
-        throw new Error(`TypeScript control surface must not execute BLE work (touched ${String(property)})`)
-      }
-    }
-  )
-}
-
-const ZERO_COUNTERS = {
-  activeScanControllers: 0,
-  scanConsumers: 0,
-  chooserSessions: 0,
-  connectionLeases: 0,
-  physicalLinks: 0,
-  databaseSnapshots: 0,
-  physicalCccdEnablements: 0,
-  subscriptionConsumers: 0,
-  queuedOperations: 0,
-  dispatchedOperations: 0,
-  retainedByteBuffers: 0,
-  restorationRecords: 0,
-  orphanedIpcOwners: 0
-}
-
-function presentNative({ revision = RUST_CORE_CONTRACT_REVISION } = {}) {
-  const calls = []
-  mockNativeModule = {
-    openSession: async owner => {
-      calls.push(['native.openSession', owner])
-      return { sessionId: 'sess-1' }
-    },
-    invoke: async (sessionId, op, argsJson) => {
-      const args = JSON.parse(argsJson)
-      calls.push([op, args])
-      switch (op) {
-        case 'adapter.state':
-          return record({
-            operation: op,
-            value: JSON.stringify({
-              availability: 'available',
-              authorization: 'unknown',
-              power: 'on',
-              backendGeneration: 'gen-1',
-              updatedAt: 123,
-              safeReason: null
-            })
-          })
-        case 'counters.describe':
-          return record({ operation: op, value: JSON.stringify(ZERO_COUNTERS) })
-        case 'events.take':
-          return record({ operation: op, value: 'null' })
-        case 'scan.start':
-          return record({ operation: op, value: JSON.stringify({ operationId: 'scan-op-1' }) })
-        case 'scan.take':
-          return record({ operation: op, value: 'null' })
-        case 'scan.stop':
-        case 'connection.disconnect':
-          return record({ operation: op, value: JSON.stringify({ state: 'released' }) })
-        case 'connection.connect':
-          return record({
-            operation: op,
-            value: JSON.stringify({ peerKey: 'peerkey-1', connectionGeneration: 'conngen-1' })
-          })
-        case 'gatt.discover':
-          return record({
-            operation: op,
-            value: JSON.stringify({
-              services: [
-                {
-                  uuid: '0000180d-0000-1000-8000-00805f9b34fb',
-                  occurrence: 0,
-                  characteristics: [
-                    {
-                      uuid: '00002a37-0000-1000-8000-00805f9b34fb',
-                      occurrence: 0,
-                      properties: 9,
-                      descriptors: [{ uuid: '00002901-0000-1000-8000-00805f9b34fb', occurrence: 0 }]
-                    }
-                  ]
-                }
-              ]
-            })
-          })
-        case 'gatt.read':
-        case 'gatt.read-descriptor':
-          return record({ operation: op, value: JSON.stringify({ value: [0x42] }) })
-        case 'gatt.write':
-        case 'gatt.write-descriptor':
-        case 'gatt.subscribe':
-          return record({ operation: op, value: JSON.stringify({}) })
-        case 'notifications.take':
-          return record({ operation: op, value: 'null' })
-        case 'gatt.unsubscribe':
-          return record({ operation: op, value: JSON.stringify({ disabled: true }) })
-        case 'op.cancel':
-          return record({ operation: op, value: JSON.stringify({ state: 'not-cancellable' }) })
-        case 'session.dispose':
-          return record({ operation: op, value: JSON.stringify({ state: 'released' }) })
-        default:
-          throw new Error(`unexpected native op ${op}`)
-      }
-    },
-    close: async sessionId => {
-      calls.push(['native.close', sessionId])
-    },
-    contractRevision: async () => revision
-  }
-  return calls
-}
-
-function ops(calls, name) {
-  return calls.filter(([op]) => op === name).map(([, args]) => args)
+function ops(native, name) {
+  return native.opsInvoked(name)
 }
 
 function environment(overrides = {}) {
-  return {
-    platform: 'android',
-    control: throwingControl(),
-    now: () => 1000,
-    clientId: 'client-a',
-    managerId: 'manager-a',
-    hostSessionScope: 'scope-a',
-    ...overrides
-  }
+  return harnessEnvironment(harness, overrides)
 }
 
 function prototypeMembers(klass) {
@@ -218,7 +79,7 @@ function scanOptions() {
 }
 
 beforeEach(() => {
-  mockNativeModule = null
+  harness = null
 })
 
 describe('R01 native-owned manager', () => {
@@ -231,6 +92,7 @@ describe('R01 native-owned manager', () => {
       [
         '../../backend-contract/backend',
         '../../backend-contract/capabilities',
+        '../../backend-contract/connection-controls',
         '../../backend-contract/errors',
         '../../backend-contract/primitives',
         '../../backend-contract/serializable',
@@ -238,8 +100,7 @@ describe('R01 native-owned manager', () => {
         '../../core/connection-lifecycle-rules',
         '../../core/core-capabilities',
         '../../core/gatt-path-equality',
-        '../../core/unified-ble-core-helpers',
-        '../../diagnostics/trace-format'
+        '../../core/unified-ble-core-helpers'
       ].sort()
     )
     for (const spec of runtimeImports) {
@@ -273,7 +134,7 @@ describe('R01 native-owned manager', () => {
       await manager.destroy()
     }
     expect(ops(calls, 'session.dispose')).toHaveLength(1)
-    expect(ops(calls, 'native.close')).toHaveLength(1)
+    expect(calls.calls.filter(call => call[0] === 'closeSession')).toHaveLength(1)
   })
 
   test('connection + GATT routing with handle parity', async () => {
@@ -281,7 +142,7 @@ describe('R01 native-owned manager', () => {
     const manager = await createReactNativeBleManagerWithEnvironment(environment())
     try {
       const peerId = manager.attachedBackend.backend.connections.peerFromAddress({
-        address: 'AA:BB:CC:DD:EE:FF',
+        address: 'A0:9E:1A:00:00:01',
         addressType: 'public'
       })
       const connection = await manager.connect(peerId, { signal: null, deadline: null })
@@ -292,10 +153,13 @@ describe('R01 native-owned manager', () => {
       expectParity(database, InternalShapes.DiscoveredGattDatabase, 'database')
       expect(ops(calls, 'gatt.discover')).toHaveLength(1)
       const snapshot = await database.snapshot()
-      expect(snapshot.characteristics).toHaveLength(1)
+      // The default owner world: the heart-rate measurement first, then the
+      // duplicate-UUID battery characteristics (the TCK occurrence world).
+      expect(snapshot.characteristics).toHaveLength(4)
+      expect(String(snapshot.characteristics[0].path.characteristicUuid)).toBe('00002a37-0000-1000-8000-00805f9b34fb')
       const portable = snapshot.characteristics[0].path
       const value = await database.read(portable, { signal: null, deadline: null })
-      expect([...value]).toEqual([0x42])
+      expect([...value]).toEqual([0x00, 0x48])
       expect(ops(calls, 'gatt.read')).toHaveLength(1)
       await database.write(portable, new Uint8Array([0x01]), { signal: null, deadline: null, mode: 'with-response' })
       expect(ops(calls, 'gatt.write')).toHaveLength(1)
@@ -322,7 +186,7 @@ describe('R01 native-owned manager', () => {
     const manager = await createReactNativeBleManagerWithEnvironment(environment())
     try {
       const peerId = manager.attachedBackend.backend.connections.peerFromAddress({
-        address: 'AA:BB:CC:DD:EE:FF',
+        address: 'A0:9E:1A:00:00:01',
         addressType: 'random'
       })
       const connection = await manager.connect(peerId, { signal: null, deadline: null })
@@ -338,11 +202,14 @@ describe('R01 native-owned manager', () => {
       await reader
       expect(seen.map(event => event.cause)).toEqual(['connected', 'requested-disconnect'])
       expect(seen[0].sequence).toBe(1)
+      // A released connection is no longer current: its controls fail closed
+      // before any native call.
       const rssiError = await connection.readRssi({ signal: null, deadline: null }).then(
         () => null,
         failure => failure
       )
-      expect(rssiError.normalized.code).toBe('capability.unsupported')
+      expect(rssiError.normalized.code).toBe('connection.stale')
+      expect(ops(calls, 'connection.rssi')).toHaveLength(0)
       const transferError = await manager.transferOwnership({}).then(
         () => null,
         failure => failure

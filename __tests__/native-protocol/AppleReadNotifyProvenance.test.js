@@ -290,7 +290,7 @@ describe('CoreBluetooth read vs notify provenance (BLE-13)', () => {
   const cancellation = read('ios/Owned/OwnedCoreBluetoothProtocolRadioCancellation.swift')
   const support = read('ios/Owned/OwnedCoreBluetoothProtocolRadioSupport.swift')
   const addon = read('native/electron/corebluetooth/src/addon.mm')
-  const harness = read('native/protocol/tests/AppleCoreBluetoothReadNotifyProvenanceHarness.swift')
+  const harness = read('ios/__tests__/AppleCoreBluetoothReadNotifyProvenanceHarness.swift')
   const appleScript = read('scripts/native-protocol/test-apple-native-protocol.js')
   const boundary = read('src/native-protocol/rn-android-boundary.ts')
 

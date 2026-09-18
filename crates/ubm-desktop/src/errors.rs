@@ -6,16 +6,99 @@
 //! verbatim through `From`, and dedicated constructors attribute btleplug
 //! boundary failures to their contract operations.
 
-use ubm_core::contracts::{BleErrorCode, BleErrorDomain, CoreError};
+use std::collections::BTreeMap;
+
+use ubm_core::contracts::{BleErrorCode, BleErrorDomain, CommitState, CoreError};
+
+/// One typed platform metadata value (finding 113).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlatformValue {
+    Int(i64),
+    Text(String),
+    Bool(bool),
+}
+
+/// The platform's own answer behind an error, as typed fields rather than
+/// free text (finding 113), so a host restores the legacy error identity:
+///
+/// - CoreBluetooth: `{domain:"corebluetooth", code:<NSError code>}`;
+/// - WinRT: `{domain:"winrt", code, metadata:{hresult, gattStatus}}`;
+/// - BlueZ: `{domain:"bluez-dbus", code:<D-Bus error name>}`;
+/// - Android: `{domain:"android", code, metadata:{androidGattStatus}}`.
+///
+/// Never part of the contract identity triple.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlatformDetail {
+    pub domain: String,
+    pub code: String,
+    pub message: Option<String>,
+    pub metadata: BTreeMap<String, PlatformValue>,
+}
+
+impl PlatformDetail {
+    /// A detail with no message or metadata.
+    #[must_use]
+    pub fn new(domain: impl Into<String>, code: impl Into<String>) -> Self {
+        Self {
+            domain: domain.into(),
+            code: code.into(),
+            message: None,
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    /// This detail with the platform's message.
+    #[must_use]
+    pub fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.message = Some(message.into());
+        self
+    }
+
+    /// This detail with one metadata entry.
+    #[must_use]
+    pub fn with_metadata(mut self, key: impl Into<String>, value: PlatformValue) -> Self {
+        self.metadata.insert(key.into(), value);
+        self
+    }
+}
+
+/// Whether the caller may safely repeat the operation (PR210-22). Set by
+/// the central from the core's settled outcome, never derived from the
+/// error code: a write that may have reached the peer is `Never`, whatever
+/// its code says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Retryability {
+    /// Repeating may duplicate an effect, or the failure is not transient.
+    Never,
+    /// The operation left no uncertain effect; the caller may repeat it.
+    CallerDecides,
+}
+
+impl Retryability {
+    /// Frozen wire string (`never` / `caller-decides`).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Never => "never",
+            Self::CallerDecides => "caller-decides",
+        }
+    }
+}
 
 /// Host-side error carrying a frozen contract identity plus an optional
-/// transport detail (kept out of the identity triple).
+/// transport detail (kept out of the identity triple), and the outcome
+/// facts the central observed: the commit state of the operation, when
+/// known, and whether the caller may retry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopError {
     code: BleErrorCode,
     domain: BleErrorDomain,
     operation: String,
     detail: Option<String>,
+    /// Boxed so the error stays small on every `Result` path.
+    platform: Option<Box<PlatformDetail>>,
+    commit: Option<CommitState>,
+    retryability: Retryability,
 }
 
 impl DesktopError {
@@ -29,6 +112,9 @@ impl DesktopError {
                 domain: BleErrorDomain::Core,
                 operation: String::from("contract-error.operation"),
                 detail: None,
+                platform: None,
+                commit: None,
+                retryability: Retryability::Never,
             };
         }
         Self {
@@ -36,7 +122,34 @@ impl DesktopError {
             domain,
             operation,
             detail: None,
+            platform: None,
+            commit: None,
+            retryability: Retryability::Never,
         }
+    }
+
+    /// Record the settled outcome facts without changing the identity
+    /// triple: the commit state (when known) and the retryability the
+    /// central derived from it.
+    #[must_use]
+    pub fn with_outcome(mut self, commit: Option<CommitState>, retryability: Retryability) -> Self {
+        self.commit = commit;
+        self.retryability = retryability;
+        self
+    }
+
+    /// Commit state of the operation, when the central knows it
+    /// (`not-dispatched` before any radio call, `unknown` for a write that
+    /// may have reached the peer).
+    #[must_use]
+    pub const fn commit(&self) -> Option<CommitState> {
+        self.commit
+    }
+
+    /// Whether the caller may repeat the operation. Defaults to `Never`.
+    #[must_use]
+    pub const fn retryability(&self) -> Retryability {
+        self.retryability
     }
 
     /// Attach a transport detail without changing the identity triple.
@@ -44,6 +157,20 @@ impl DesktopError {
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
         self
+    }
+
+    /// Attach the platform's structured answer (finding 113) without
+    /// changing the identity triple.
+    #[must_use]
+    pub fn with_platform(mut self, platform: PlatformDetail) -> Self {
+        self.platform = Some(Box::new(platform));
+        self
+    }
+
+    /// The platform's structured answer, if the platform gave one.
+    #[must_use]
+    pub fn platform(&self) -> Option<&PlatformDetail> {
+        self.platform.as_deref()
     }
 
     /// Frozen error code.
@@ -169,6 +296,9 @@ impl From<CoreError> for DesktopError {
             domain: error.domain(),
             operation: error.operation().to_owned(),
             detail: None,
+            platform: None,
+            commit: None,
+            retryability: Retryability::Never,
         }
     }
 }
@@ -183,9 +313,28 @@ impl std::error::Error for DesktopError {}
 
 #[cfg(test)]
 mod tests {
-    use ubm_core::contracts::{BleErrorCode, BleErrorDomain, CoreError};
 
-    use super::DesktopError;
+    /// Finding 113: the platform's structured answer rides the error
+    /// through outcome classification unchanged and never alters the
+    /// identity triple.
+    #[test]
+    fn the_platform_detail_survives_classification() {
+        use super::{PlatformDetail, PlatformValue, Retryability};
+        let platform = PlatformDetail::new("winrt", "0x80650005")
+            .with_message("protocol error")
+            .with_metadata("hresult", PlatformValue::Int(0x8065_0005))
+            .with_metadata("gattStatus", PlatformValue::Int(5));
+        let error = super::DesktopError::read_failed("detail")
+            .with_platform(platform.clone())
+            .with_outcome(None, Retryability::CallerDecides)
+            .with_detail("more");
+        assert_eq!(error.platform(), Some(&platform));
+        assert_eq!(error.code_str(), "gatt.read-failed");
+        assert_eq!(super::DesktopError::read_failed("x").platform(), None);
+    }
+    use ubm_core::contracts::{BleErrorCode, BleErrorDomain, CommitState, CoreError};
+
+    use super::{DesktopError, Retryability};
 
     #[test]
     fn core_identity_crosses_verbatim() {
@@ -241,6 +390,36 @@ mod tests {
             assert_eq!(error.operation(), operation);
             assert!(error.detail().is_some(), "detail kept for {operation}");
         }
+    }
+
+    #[test]
+    fn errors_default_to_never_retryable_without_a_commit_fact() {
+        let error = DesktopError::write_failed("att");
+        assert_eq!(error.retryability(), Retryability::Never);
+        assert_eq!(error.commit(), None);
+        let from_core = DesktopError::from(CoreError::new(
+            BleErrorCode::OperationTimedOut,
+            BleErrorDomain::Connection,
+            "gatt.read",
+        ));
+        assert_eq!(
+            from_core.retryability(),
+            Retryability::Never,
+            "a code alone never makes an error retryable"
+        );
+    }
+
+    #[test]
+    fn outcome_facts_travel_with_the_error_but_not_its_identity() {
+        let error = DesktopError::cancelled("gatt.write").with_outcome(
+            Some(CommitState::NotDispatched),
+            Retryability::CallerDecides,
+        );
+        assert_eq!(error.commit(), Some(CommitState::NotDispatched));
+        assert_eq!(error.retryability(), Retryability::CallerDecides);
+        assert_eq!(error.code_str(), "operation.aborted");
+        assert_eq!(Retryability::CallerDecides.as_str(), "caller-decides");
+        assert_eq!(Retryability::Never.as_str(), "never");
     }
 
     #[test]

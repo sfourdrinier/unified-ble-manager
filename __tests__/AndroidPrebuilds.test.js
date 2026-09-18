@@ -2,9 +2,13 @@
 //
 // F01: packed consumers load the committed release prebuilts — they never
 // skip the Rust library. This offline test (no NDK, no Rust) asserts the
-// committed tree's coherence: build-identity.txt exists, names exactly the
-// app ABI list, and every listed .so exists with matching bytes + sha256.
-// Refresh via android/refresh-prebuilt-jniLibs.sh (maintainer step).
+// committed tree's coherence: build-identity.json (PR210-18; it replaced
+// build-identity.txt) exists, names exactly the app ABI list, and every
+// listed .so exists with matching bytes + sha256. Whether the prebuilts were
+// built from the CURRENT Rust sources is the publish gate
+// (`native-build-identity.js --check-android-prebuilts`), not this suite:
+// every Rust edit legitimately stales them until a maintainer refreshes via
+// android/refresh-prebuilt-jniLibs.sh.
 
 const crypto = require('crypto')
 const fs = require('fs')
@@ -12,9 +16,15 @@ const path = require('path')
 
 const root = path.join(__dirname, '..')
 const prebuiltDir = path.join(root, 'android', 'src', 'main', 'jniLibs')
-const identityFile = path.join(prebuiltDir, 'build-identity.txt')
+const identityFile = path.join(prebuiltDir, 'build-identity.json')
 const EXPECTED_ABIS = ['arm64-v8a', 'x86_64']
 const EXPECTED_FILE = 'libubm5_jni_echo.so'
+
+function identityEntries() {
+  const record = JSON.parse(fs.readFileSync(identityFile, 'utf8'))
+  expect(record.schema).toBe('ubm-android-jnilibs-identity/1')
+  return record
+}
 
 function sha256(filePath) {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex')
@@ -46,43 +56,30 @@ function loadSegmentAlignments(filePath) {
 }
 
 describe('committed Android prebuilts (F01)', () => {
-  test('build-identity.txt names exactly the app ABI list', () => {
+  test('build-identity.json names exactly the app ABI list', () => {
     expect(fs.existsSync(identityFile)).toBe(true)
-    const lines = fs.readFileSync(identityFile, 'utf8').split('\n')
-    const entries = []
-    for (const line of lines) {
-      const match = /^abi=(\S+) sha256=([0-9a-f]{64}) bytes=(\d+) file=(\S+)$/.exec(line)
-      if (match !== null) entries.push({ abi: match[1], sha256: match[2], bytes: Number(match[3]), file: match[4] })
-    }
-    expect(entries.map(entry => entry.abi).sort()).toEqual([...EXPECTED_ABIS].sort())
-    for (const entry of entries) {
+    const record = identityEntries()
+    expect(record.abis.map(entry => entry.abi).sort()).toEqual([...EXPECTED_ABIS].sort())
+    for (const entry of record.abis) {
       expect(entry.file).toBe(EXPECTED_FILE)
       expect(entry.bytes).toBeGreaterThan(0)
     }
-    expect(lines.some(line => line === 'profile=release')).toBe(true)
+    expect(record.profile).toBe('release')
   })
 
   test('every listed prebuilt exists with matching bytes and sha256', () => {
-    const lines = fs.readFileSync(identityFile, 'utf8').split('\n')
-    for (const line of lines) {
-      const match = /^abi=(\S+) sha256=([0-9a-f]{64}) bytes=(\d+) file=(\S+)$/.exec(line)
-      if (match === null) continue
-      const [, abi, expectedSha, expectedBytes, file] = match
-      const absolute = path.join(prebuiltDir, abi, file)
+    for (const entry of identityEntries().abis) {
+      const absolute = path.join(prebuiltDir, entry.abi, entry.file)
       expect(fs.existsSync(absolute)).toBe(true)
-      expect(fs.statSync(absolute).size).toBe(Number(expectedBytes))
-      expect(sha256(absolute)).toBe(expectedSha)
+      expect(fs.statSync(absolute).size).toBe(entry.bytes)
+      expect(sha256(absolute)).toBe(entry.sha256)
     }
   })
 
   test('every shipped .so is 16 KB page-aligned (Android 15+)', () => {
-    const lines = fs.readFileSync(identityFile, 'utf8').split('\n')
     let checked = 0
-    for (const line of lines) {
-      const match = /^abi=(\S+) sha256=[0-9a-f]{64} bytes=\d+ file=(\S+)$/.exec(line)
-      if (match === null) continue
-      const [, abi, file] = match
-      const aligns = loadSegmentAlignments(path.join(prebuiltDir, abi, file))
+    for (const entry of identityEntries().abis) {
+      const aligns = loadSegmentAlignments(path.join(prebuiltDir, entry.abi, entry.file))
       expect(aligns.length).toBeGreaterThan(0)
       for (const align of aligns) {
         expect(align).toBeGreaterThanOrEqual(16384)
@@ -106,7 +103,7 @@ describe('committed Android prebuilts (F01)', () => {
     }
     visit(prebuiltDir)
     expect(actual.sort()).toEqual(
-      ['build-identity.txt', ...EXPECTED_ABIS.map(abi => `${abi}/${EXPECTED_FILE}`)].sort()
+      ['build-identity.json', ...EXPECTED_ABIS.map(abi => `${abi}/${EXPECTED_FILE}`)].sort()
     )
   })
 })

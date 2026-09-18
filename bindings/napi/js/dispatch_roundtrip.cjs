@@ -26,8 +26,11 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 
 const ADDON =
-  process.env.UBM_NAPI_ADDON || path.join(__dirname, '..', 'ubm_echo.linux-x64.node');
+  process.env.UBM_NAPI_ADDON || path.join(__dirname, '..', `ubm_echo.${process.platform}-${process.arch}.node`);
 const addon = require(ADDON);
+
+// The radio family this binary drives (UbmCentral.open refuses any other).
+const PLATFORM = { linux: 'bluez', darwin: 'corebluetooth', win32: 'winrt' }[process.platform];
 
 const HRM_SERVICE = '0000180d-0000-1000-8000-00805f9b34fb';
 const HRM_MEASUREMENT = '00002a37-0000-1000-8000-00805f9b34fb';
@@ -110,7 +113,7 @@ async function main() {
 
   // Owner admission fails closed, both backends.
   await rejectsWith(addon.UbmCentral.openSynthetic(''), 'argument.invalid', 'core', 'synthetic empty owner');
-  await rejectsWith(addon.UbmCentral.open(''), 'argument.invalid', 'core', 'production empty owner');
+  await rejectsWith(addon.UbmCentral.open({ owner: '', platform: PLATFORM }), 'argument.invalid', 'core', 'production empty owner');
 
   const central = await addon.UbmCentral.openSynthetic('dispatch-roundtrip');
 
@@ -139,15 +142,15 @@ async function main() {
   assert.equal(obs.serviceData[0].uuid, HRM_SERVICE);
   assert.deepEqual([...obs.serviceData[0].payload], [0x06, 0x40]);
   assert.equal(obs.txPower, -4);
-  await central.stopScan();
+  assert.equal(await central.stopScan(session.operationId), 'stopped', 'stop names its own scan');
+  assert.equal(await central.stopScan(session.operationId), 'not-active', 'a stopped scan id is no longer active');
 
   // Connect + full discovery tree.
   const handle = await central.connect({ peerId: 'peer-1', lease: 'lease-a', timeoutMs: 5000 });
   assert.ok(handle && typeof handle.peerKey === 'string' && handle.peerKey.length > 0, 'connect returns a peer key');
   await central.stageServices('peer-1', hrmServices());
   const report = await central.discover({ peerId: 'peer-1', lease: 'lease-a' });
-  assert.equal(report.pathsRegistered, 4);
-  assert.deepEqual(report.skipped, []);
+  assert.deepEqual(report, { pathsRegistered: 4 }, 'discovery registers whole; nothing is skipped');
   const paths = await central.discoveredPaths('peer-1');
   assert.equal(paths.length, 4);
   assert.deepEqual(
@@ -250,14 +253,14 @@ async function main() {
   // Bluetooth, opens and scans bounded through the real radio — never a
   // silent third outcome).
   try {
-    const prod = await addon.UbmCentral.open('dispatch-roundtrip-prod');
+    const prod = await addon.UbmCentral.open({ owner: 'dispatch-roundtrip-prod', platform: PLATFORM });
     try {
       const prodSession = await prod.startScan({ owner: 'dispatch-roundtrip-prod', serviceUuids: [], timeoutMs: 2000 });
       assert.ok(
         prodSession && typeof prodSession.operationId === 'string' && prodSession.operationId.length > 0,
         'production scan session carries an op id'
       );
-      await prod.stopScan();
+      await prod.stopScan(prodSession.operationId);
     } finally {
       await prod.close();
     }

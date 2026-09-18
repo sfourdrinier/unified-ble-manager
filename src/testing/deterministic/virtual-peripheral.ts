@@ -313,6 +313,8 @@ export function createDefaultVirtualPeripheral(): VirtualPeripheral {
   const batteryService = canonicalUuid('180f')
   const batteryLevel = canonicalUuid('2a19')
   const userDescription = canonicalUuid('2901')
+  const heartRateService = canonicalUuid('180d')
+  const heartRateMeasurement = canonicalUuid('2a37')
   return new VirtualPeripheral({
     key: 'default-virtual-peripheral',
     services: [
@@ -366,6 +368,53 @@ export function createDefaultVirtualPeripheral(): VirtualPeripheral {
             writableWithResponse: true,
             writableWithoutResponse: true,
             notifying: false,
+            indicating: false,
+            descriptors: []
+          }
+        ]
+      },
+      // A second service UUID after the battery services, with a repeated
+      // characteristic UUID and a repeated descriptor UUID
+      // (docs/UNIFIED_SEMANTICS.md §9 occurrences).
+      {
+        uuid: heartRateService,
+        occurrence: 0,
+        primary: true,
+        characteristics: [
+          {
+            uuid: heartRateMeasurement,
+            occurrence: 0,
+            initialValue: new Uint8Array([0, 60]),
+            readable: true,
+            writableWithResponse: false,
+            writableWithoutResponse: false,
+            notifying: true,
+            indicating: false,
+            descriptors: [
+              {
+                uuid: userDescription,
+                occurrence: 0,
+                initialValue: new Uint8Array([104, 114]),
+                readable: true,
+                writable: false
+              },
+              {
+                uuid: userDescription,
+                occurrence: 1,
+                initialValue: new Uint8Array([98, 112, 109]),
+                readable: true,
+                writable: false
+              }
+            ]
+          },
+          {
+            uuid: heartRateMeasurement,
+            occurrence: 1,
+            initialValue: new Uint8Array([0, 61]),
+            readable: true,
+            writableWithResponse: false,
+            writableWithoutResponse: false,
+            notifying: true,
             indicating: false,
             descriptors: []
           }

@@ -27,16 +27,69 @@ import type {
   RestorationJournalRecord
 } from '../../backend-contract/restoration'
 import { normalizeRestorationBootstrapRequest } from '../../backend-contract/restoration'
-import {
-  MAXIMUM_CONTROL_RECORD_BYTES,
-  type RestorationOutcomes
-} from '../../native-protocol/generated/native-protocol-v2-schema'
-import type {
-  NativeRestorationBootstrapRequest,
-  NativeRestorationAdoptionControlResult,
-  NativeRestorationReplayRecord,
-  Spec as NativeProtocolControl
-} from '../../NativeUnifiedBleProtocolControl'
+import { MAXIMUM_CONTROL_RECORD_BYTES, type RestorationOutcomes } from './react-native-protocol-limits'
+
+/** The restoration-identity request a native host answers (`restorationId`, `generation`). */
+export interface ReactNativeRestorationBootstrapRequest {
+  readonly restorationId: string
+  readonly generation: string
+}
+
+/** A native host that answers the app-declared restoration identity. */
+export interface ReactNativeRestorationIdentitySource {
+  bootstrapRestorationIdentity(
+    request: ReactNativeRestorationBootstrapRequest
+  ): Promise<NativeRestorationBootstrapIdentity>
+}
+
+/** One adoption request against the native restoration journal. */
+export interface ReactNativeRestorationAdoptionRequestRecord {
+  readonly namespaceValue: string
+  readonly attachmentId: string
+  readonly expectedBackendInstanceId: string
+  readonly expectedEpoch: string
+  readonly nativeProtocolMinimum: number
+  readonly nativeProtocolMaximum: number
+  readonly clientId: string
+  readonly hostSessionScope: string
+}
+
+/** One replayed journal record, in the native journal's structured transport. */
+export interface ReactNativeRestorationReplayRecord {
+  readonly recordVersion: number
+  readonly namespaceValue: string
+  readonly attachmentId: string
+  readonly backendInstanceId: string
+  readonly backendGeneration: string
+  readonly adapterId: string
+  readonly adapterGeneration: string
+  readonly ordinal: number
+  readonly adoptionEpoch: string
+  readonly kind: 'adapter' | 'connection'
+  readonly peerId: string | null
+  readonly connectionId: string | null
+  readonly ownerLeaseId: string | null
+  readonly connectionGeneration: string | null
+}
+
+/** The journal's answer to one adoption request. */
+export interface ReactNativeRestorationAdoptionRecord {
+  readonly receiptId: string
+  readonly outcome: RestorationOutcomes
+  readonly boundClientId: string
+  readonly adoptionEpoch: string
+  readonly replayRecordCount: number
+  readonly records: readonly ReactNativeRestorationReplayRecord[]
+}
+
+/**
+ * The native restoration journal the coordinator adopts from: the Rust-route
+ * journal over `peers.restored` (react-native-rust-core-restoration.ts), or a
+ * legacy protocol control used as a parity reference.
+ */
+export interface ReactNativeRestorationJournal {
+  adoptRestoration(request: ReactNativeRestorationAdoptionRequestRecord): Promise<ReactNativeRestorationAdoptionRecord>
+}
 
 /**
  * Safety bound on records adopted from a native restoration journal.
@@ -68,11 +121,11 @@ export interface ReactNativeRestorationBackendProvider extends BackendProvider<s
  * returned by the trusted native host and is validated before use.
  */
 export async function bootstrapReactNativeRestorationIdentity(
-  control: Pick<NativeProtocolControl, 'bootstrapRestorationIdentity'>,
+  control: ReactNativeRestorationIdentitySource,
   input: { readonly restorationId: string; readonly generation?: string }
 ): Promise<NativeRestorationBootstrapIdentity> {
   const normalized = normalizeRestorationBootstrapRequest(input)
-  const request: NativeRestorationBootstrapRequest = Object.freeze({
+  const request: ReactNativeRestorationBootstrapRequest = Object.freeze({
     restorationId: normalized.restorationId,
     generation: normalized.generation
   })
@@ -113,7 +166,7 @@ export class ReactNativeRestorationCoordinator implements RestorationCoordinator
   private terminalFailure: BackendContractError | null = null
 
   constructor(
-    private readonly control: Pick<NativeProtocolControl, 'adoptRestoration'>,
+    private readonly control: ReactNativeRestorationJournal,
     private readonly platform: ReactNativeRestorationPlatform
   ) {}
 
@@ -181,7 +234,7 @@ export class ReactNativeRestorationCoordinator implements RestorationCoordinator
       return alreadyConsumedResult(this.consumed)
     }
 
-    let nativeResult: NativeRestorationAdoptionControlResult
+    let nativeResult: ReactNativeRestorationAdoptionRecord
     try {
       nativeResult = await this.control.adoptRestoration({
         namespaceValue: request.namespace,
@@ -377,7 +430,7 @@ function mismatchResult(
 }
 
 function decodeAdoptionResult(
-  result: NativeRestorationAdoptionControlResult,
+  result: ReactNativeRestorationAdoptionRecord,
   client: AuthenticatedRestorationClient<string>,
   request: RestorationAdoptionRequest<string>,
   binding: ActiveRestorationBinding
@@ -443,7 +496,7 @@ function decodeAdoptionResult(
   })
 }
 
-function assertNativeResultShape(result: NativeRestorationAdoptionControlResult): void {
+function assertNativeResultShape(result: ReactNativeRestorationAdoptionRecord): void {
   if (
     !Number.isSafeInteger(result.replayRecordCount) ||
     result.replayRecordCount < 0 ||
@@ -477,7 +530,7 @@ function outcomeFor(outcome: RestorationOutcomes): RestorationAdoptionResult<str
 }
 
 function decodeReplayedRecords(
-  result: NativeRestorationAdoptionControlResult,
+  result: ReactNativeRestorationAdoptionRecord,
   request: RestorationAdoptionRequest<string>,
   binding: ActiveRestorationBinding
 ): readonly RestorationJournalRecord<string>[] {
@@ -495,7 +548,7 @@ function decodeReplayedRecords(
 }
 
 function replayedRecordFromStructuredTransport(
-  record: NativeRestorationReplayRecord,
+  record: ReactNativeRestorationReplayRecord,
   request: RestorationAdoptionRequest<string>,
   binding: ActiveRestorationBinding
 ): RestorationJournalRecord<string> {
@@ -544,7 +597,10 @@ function replayedRecordFromStructuredTransport(
   })
 }
 
-function assertStructuredAttachment(record: NativeRestorationReplayRecord, expected: AttachmentRecord<string>): void {
+function assertStructuredAttachment(
+  record: ReactNativeRestorationReplayRecord,
+  expected: AttachmentRecord<string>
+): void {
   if (
     requiredNativeString(record.attachmentId, 'attachment-id') !== String(expected.attachmentId) ||
     requiredNativeString(record.backendInstanceId, 'backend-instance-id') !== String(expected.backendInstanceId) ||
@@ -578,7 +634,7 @@ function requiredNativeNullableString(value: string | null, fieldName: string): 
 }
 
 function structuredProtocolRecord(
-  record: NativeRestorationReplayRecord,
+  record: ReactNativeRestorationReplayRecord,
   peerId: string | null,
   connectionId: string | null,
   ownerLeaseId: string | null,

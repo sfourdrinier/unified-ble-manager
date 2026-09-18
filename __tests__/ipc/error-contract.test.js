@@ -3,7 +3,7 @@ const path = require('path')
 const { IpcBleManager } = require('../../src/ipc/manager')
 const { BUILT_IN_FEATURE_IDS } = require('../../src/backend-contract/capabilities')
 
-function negotiated(axis, value = axis === 'ipc-protocol' ? 2 : 1) {
+function negotiated(axis, value = axis === 'ipc-protocol' ? 3 : 1) {
   const selected = { axis, value }
   const range = { axis, minimum: selected, maximum: selected }
   return { axis, selected, localRange: range, remoteRange: range }

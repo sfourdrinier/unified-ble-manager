@@ -43,10 +43,18 @@ export interface CoreTraceInput {
 }
 
 /**
+ * Where a provider reports its operation transitions: the manager's bounded
+ * diagnostic trace. Only redacted labels and counts cross it.
+ */
+export interface CoreTraceSink {
+  record(input: CoreTraceInput): void
+}
+
+/**
  * A bounded, payload-free trace. Callers supply only redacted operation labels;
  * peer IDs, paths, byte values, and platform messages cannot enter this model.
  */
-export class CoreTraceRecorder {
+export class CoreTraceRecorder implements CoreTraceSink {
   private readonly records: CoreTraceRecord[] = []
   private nextOrdinal = 1
   private retainedDocumentRecordBytes = 0

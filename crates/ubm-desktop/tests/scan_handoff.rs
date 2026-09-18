@@ -13,7 +13,18 @@
 
 use std::time::Duration;
 
+use ubm_desktop::OpControl;
 use ubm_desktop::{CompletionOutcome, DesktopCentral, FakeRadio, FaultOp};
+
+/// Stop whatever scan the central owns (`NotActive` when none is owned).
+async fn stop_owned_scan<B: ubm_desktop::RadioBoundary>(
+    central: &DesktopCentral<B>,
+) -> Result<ubm_desktop::ScanStop, ubm_desktop::DesktopError> {
+    match central.active_scan_id() {
+        Some(id) => central.stop_scan(&id, OpControl::unbounded()).await,
+        None => Ok(ubm_desktop::ScanStop::NotActive),
+    }
+}
 
 async fn open() -> DesktopCentral<FakeRadio> {
     DesktopCentral::open(FakeRadio::new(), "test-host")
@@ -45,21 +56,21 @@ async fn wait_for_call(central: &DesktopCentral<FakeRadio>, call: &str) {
 async fn r14a_stop_success_releases_core_scan() {
     let central = open().await;
     central
-        .start_scan("owner-a", &[], 5000)
+        .start_scan("owner-a", &[], OpControl::budget_ms(5000))
         .await
         .expect("start scan");
     assert!(central.has_active_scan().await);
-    central.stop_scan().await.expect("stop scan");
+    stop_owned_scan(&central).await.expect("stop scan");
     assert!(!central.has_active_scan().await, "no owned scan after stop");
     assert!(
         !central.boundary().scan_active(),
         "radio scan off after stop"
     );
     central
-        .start_scan("owner-a", &[], 5000)
+        .start_scan("owner-a", &[], OpControl::budget_ms(5000))
         .await
         .expect("core released the scan: restart admitted");
-    central.stop_scan().await.expect("final stop");
+    stop_owned_scan(&central).await.expect("final stop");
 }
 
 // R14b: stop issued while start is in flight wins deterministically.
@@ -69,11 +80,15 @@ async fn r14b_stop_wins_over_inflight_start() {
     central.boundary().block_op(FaultOp::StartScan);
     let racing = tokio::spawn({
         let central = central.clone();
-        async move { central.start_scan("owner-a", &[], 5000).await }
+        async move {
+            central
+                .start_scan("owner-a", &[], OpControl::budget_ms(5000))
+                .await
+        }
     });
     wait_for_call(&central, "start_scan").await;
 
-    central.stop_scan().await.expect("stop wins");
+    stop_owned_scan(&central).await.expect("stop wins");
     central.boundary().unblock_op(FaultOp::StartScan);
 
     let racing = tokio::time::timeout(Duration::from_secs(10), racing)
@@ -96,10 +111,10 @@ async fn r14b_stop_wins_over_inflight_start() {
         "no orphan radio scan after stop wins"
     );
     central
-        .start_scan("owner-a", &[], 5000)
+        .start_scan("owner-a", &[], OpControl::budget_ms(5000))
         .await
         .expect("scan owner free after stop wins");
-    central.stop_scan().await.expect("final stop");
+    stop_owned_scan(&central).await.expect("final stop");
 }
 
 // R14c: shutdown racing an in-flight start leaves no observable scan.
@@ -109,7 +124,11 @@ async fn r14c_shutdown_during_start_leaves_no_scan() {
     central.boundary().block_op(FaultOp::StartScan);
     let racing = tokio::spawn({
         let central = central.clone();
-        async move { central.start_scan("owner-a", &[], 5000).await }
+        async move {
+            central
+                .start_scan("owner-a", &[], OpControl::budget_ms(5000))
+                .await
+        }
     });
     wait_for_call(&central, "start_scan").await;
 
@@ -141,29 +160,61 @@ async fn r14c_shutdown_during_start_leaves_no_scan() {
 async fn r15_late_cancel_after_stop_maps_to_settled_terminal() {
     let central = open().await;
     let session = central
-        .start_scan("owner-a", &[], 5000)
+        .start_scan("owner-a", &[], OpControl::budget_ms(5000))
         .await
         .expect("start scan");
-    central.stop_scan().await.expect("stop scan");
+    stop_owned_scan(&central).await.expect("stop scan");
     match central.cancel_operation(session.operation_id()).await {
         Ok(CompletionOutcome::DuplicateSuppressed { .. }) => {}
         other => panic!("late duplicate must suppress onto the settled terminal, got {other:?}"),
     }
 }
 
-// R15 error path: the same retention holds when the stop itself failed.
+// PR210-09 + R15 error path: a failed OS stop keeps the scan (the kernel op
+// stays live and the marker stays), so the retry calls the OS again with the
+// same id; once it succeeds, a late duplicate maps to the settled terminal.
 #[tokio::test]
-async fn r15_late_cancel_after_failed_stop_maps_to_settled_terminal() {
+async fn r15_failed_stop_retains_scan_then_retry_settles_terminal() {
     let central = open().await;
     let session = central
-        .start_scan("owner-a", &[], 5000)
+        .start_scan("owner-a", &[], OpControl::budget_ms(5000))
         .await
         .expect("start scan");
     central
         .boundary()
         .fail_next(FaultOp::StopScan, "os refused");
-    let error = central.stop_scan().await.expect_err("stop fails");
+    let error = central
+        .stop_scan(session.operation_id(), OpControl::unbounded())
+        .await
+        .expect_err("stop fails");
     assert_eq!(error.code_str(), "scan.stop-failed");
+    assert!(
+        central.has_active_scan().await,
+        "failed stop retains the scan"
+    );
+    assert_eq!(
+        central.active_scan_id().as_ref(),
+        Some(session.operation_id()),
+        "same scan identity retained"
+    );
+    assert!(central.boundary().scan_active(), "the OS scan is still on");
+    let stopped = central
+        .stop_scan(session.operation_id(), OpControl::unbounded())
+        .await
+        .expect("retry reaches the OS again");
+    assert_eq!(stopped, ubm_desktop::ScanStop::Stopped);
+    assert_eq!(
+        central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "stop_scan")
+            .count(),
+        2,
+        "two native stops: the failure and the real retry"
+    );
+    assert!(!central.has_active_scan().await);
+    assert!(!central.boundary().scan_active());
     match central.cancel_operation(session.operation_id()).await {
         Ok(CompletionOutcome::DuplicateSuppressed { .. }) => {}
         other => panic!("late duplicate must suppress onto the settled terminal, got {other:?}"),
@@ -178,7 +229,7 @@ async fn r15_double_cancel_after_abort_maps_to_settled_terminal() {
 
     let central = open().await;
     let session = central
-        .start_scan("owner-a", &[], 5000)
+        .start_scan("owner-a", &[], OpControl::budget_ms(5000))
         .await
         .expect("start scan");
     match central.cancel_operation(session.operation_id()).await {
@@ -191,5 +242,7 @@ async fn r15_double_cancel_after_abort_maps_to_settled_terminal() {
         Ok(CompletionOutcome::DuplicateSuppressed { .. }) => {}
         other => panic!("second cancel must suppress onto aborted, got {other:?}"),
     }
-    central.stop_scan().await.expect("late stop stays safe");
+    stop_owned_scan(&central)
+        .await
+        .expect("late stop stays safe");
 }

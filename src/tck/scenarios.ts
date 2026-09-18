@@ -121,6 +121,15 @@ export const baseTckScenarios: readonly TckScenarioDefinition[] = [
     requiredControllerActions: ['trigger-services-changed']
   },
   {
+    id: 'gatt.duplicate-uuid-occurrences-route-exactly',
+    execution: 'base',
+    requiredFacts: [
+      'gatt-duplicate-uuid-occurrences-are-indexed-per-parent',
+      'gatt-duplicate-uuid-notifications-route-to-exact-instance'
+    ],
+    requiredControllerActions: ['emit-notification']
+  },
+  {
     id: 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation',
     execution: 'base',
     requiredFacts: [

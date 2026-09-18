@@ -11,7 +11,7 @@ const { normalizeScanQuery } = require('../src/public/scan-query')
 const { snapshotScanPlan } = require('../src/backend-contract/scan-planning')
 
 function negotiated(axis) {
-  const selected = version(axis, axis === 'ipc-protocol' ? 2 : 1)
+  const selected = version(axis, axis === 'ipc-protocol' ? 3 : 1)
   const range = versionRange(selected, selected)
   return { axis, selected, localRange: range, remoteRange: range }
 }
@@ -2592,7 +2592,7 @@ describe('Electron v4 IPC boundary', () => {
     const renderer = await bootstrap(current, sender)
     const pendingRoute = current.port.handler(
       { sender },
-      commandRequest(current, renderer, 1, 'connection.connect', { peerId: 'peer-deadline', deadline: 10 })
+      commandRequest(current, renderer, 1, 'connection.connect', { peerId: 'peer-deadline', budgetMs: 10 })
     )
     await connectStarted.promise
     connectResult.resolve(connection)
@@ -2787,7 +2787,7 @@ describe('Electron v4 IPC boundary', () => {
     await expect(publicDescriptor.read()).resolves.toEqual(new Uint8Array([4]))
     const subscription = await publicCharacteristic.subscribe()
     const notification = subscription.values[Symbol.asyncIterator]().next()
-    notificationStream.push({ kind: 'value', value: { value: new Uint8Array([9]), indication: false } })
+    notificationStream.push({ kind: 'value', value: { value: new Uint8Array([9]), delivery: 'notification' } })
     await expect(notification).resolves.toMatchObject({ done: false, value: { kind: 'value', value: { value: new Uint8Array([9]), delivery: 'notification' } } })
     await expect(subscription.remove()).resolves.toMatchObject({ state: 'released', failures: [] })
     await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
@@ -3060,7 +3060,7 @@ describe('Electron v4 IPC boundary', () => {
         characteristicHandle: databaseResponse.payload.characteristics[0].handle
       })
     )
-    subscriptionStream.push({ kind: 'value', value: { value: new Uint8Array(5000), indication: false } })
+    subscriptionStream.push({ kind: 'value', value: { value: new Uint8Array(5000), delivery: 'notification' } })
     await flushAsyncWork()
     expectConsoleError('[ElectronRendererStreamRegistry] Stream item exceeded the configured IPC message limit:', {
       streamId: 'subscription-5'
@@ -3110,7 +3110,7 @@ describe('Electron v4 IPC boundary', () => {
       })
     )
     for (let index = 0; index < 129; index += 1) {
-      stream.push({ kind: 'value', value: { value: new Uint8Array([index]), indication: false } })
+      stream.push({ kind: 'value', value: { value: new Uint8Array([index]), delivery: 'notification' } })
     }
     await removed.promise
     await flushAsyncWork()
@@ -3164,7 +3164,7 @@ describe('Electron v4 IPC boundary', () => {
         characteristicHandle: databaseResponse.payload.characteristics[0].handle
       })
     )
-    stream.push({ kind: 'value', value: { value: new Uint8Array([1]), indication: false } })
+    stream.push({ kind: 'value', value: { value: new Uint8Array([1]), delivery: 'notification' } })
     await flushAsyncWork()
     expectConsoleError('[ElectronMainBleBinding] Event delivery failed; releasing renderer resources:', {
       rendererLeaseId: 'renderer-lease-1',

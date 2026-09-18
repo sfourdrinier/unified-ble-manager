@@ -76,8 +76,27 @@ describe('Unified Android native protocol structure', () => {
       // BluetoothAdapter state, owned-radio mapping); the router stays
       // dependency-free behind the injected reader seam. Boundary member
       // by design.
+      // PR210-01/14/17 contract update (justified): the process-owned Rust
+      // mobile host on Android. The module shell (UnifiedBleRustCoreModule)
+      // delegates to JVM-tested RustCoreSessions; RustCoreProcessHost installs
+      // the one host; RustRadioHostAdapter serves MobileCoreBridge.RadioHost
+      // over OwnedRadioPort -> OwnedAndroidGattRadio. Covered by
+      // RustRadioHostAdapterTest, RustCoreSessionsTest, RustCoreJsonTest and
+      // OwnedRadioPortMappingTest. RustCoreAdapterStateReader and
+      // RustCoreSessionRouter are legacy, kept until Phase 4 deletion.
+      'rustcore/AndroidRadioPort.kt',
+      'rustcore/MobileCorePort.kt',
+      'rustcore/OwnedRadioPort.kt',
+      'rustcore/PlatformServicePorts.kt',
+      'rustcore/ReactCompanionChooser.kt',
       'rustcore/RustCoreAdapterStateReader.java',
+      'rustcore/RustCoreJson.kt',
+      'rustcore/RustCorePlatformValues.kt',
+      'rustcore/RustCoreProcessHost.kt',
+      'rustcore/RustCoreRejection.kt',
       'rustcore/RustCoreSessionRouter.java',
+      'rustcore/RustCoreSessions.kt',
+      'rustcore/RustRadioHostAdapter.kt',
       'rustcore/UnifiedBleRustCoreModule.java'
     ])
     expect(dispatcher).toContain('OwnedAndroidGattRadio')

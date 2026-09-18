@@ -650,6 +650,78 @@ internal open class UniffiForeignFutureResultVoid(
 internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
     fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultVoid.UniffiByValue,)
 }
+internal interface UniffiCallbackInterfaceMobileInvokeCompletionMethod0 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`envelope`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+}
+internal interface UniffiCallbackInterfaceMobilePlatformRadioMethod0 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`request`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+}
+internal interface UniffiCallbackInterfaceMobilePlatformRadioMethod1 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`requestId`: Long,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+}
+internal interface UniffiCallbackInterfaceMobileWakeSinkMethod0 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`sessionId`: Long,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+}
+@Structure.FieldOrder("uniffiFree", "uniffiClone", "complete")
+internal open class UniffiVTableCallbackInterfaceMobileInvokeCompletion(
+    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+    @JvmField internal var `complete`: UniffiCallbackInterfaceMobileInvokeCompletionMethod0? = null,
+) : Structure() {
+    class UniffiByValue(
+        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+        `complete`: UniffiCallbackInterfaceMobileInvokeCompletionMethod0? = null,
+    ): UniffiVTableCallbackInterfaceMobileInvokeCompletion(`uniffiFree`,`uniffiClone`,`complete`,), Structure.ByValue
+
+   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceMobileInvokeCompletion) {
+        `uniffiFree` = other.`uniffiFree`
+        `uniffiClone` = other.`uniffiClone`
+        `complete` = other.`complete`
+    }
+
+}
+@Structure.FieldOrder("uniffiFree", "uniffiClone", "submit", "cancel")
+internal open class UniffiVTableCallbackInterfaceMobilePlatformRadio(
+    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+    @JvmField internal var `submit`: UniffiCallbackInterfaceMobilePlatformRadioMethod0? = null,
+    @JvmField internal var `cancel`: UniffiCallbackInterfaceMobilePlatformRadioMethod1? = null,
+) : Structure() {
+    class UniffiByValue(
+        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+        `submit`: UniffiCallbackInterfaceMobilePlatformRadioMethod0? = null,
+        `cancel`: UniffiCallbackInterfaceMobilePlatformRadioMethod1? = null,
+    ): UniffiVTableCallbackInterfaceMobilePlatformRadio(`uniffiFree`,`uniffiClone`,`submit`,`cancel`,), Structure.ByValue
+
+   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceMobilePlatformRadio) {
+        `uniffiFree` = other.`uniffiFree`
+        `uniffiClone` = other.`uniffiClone`
+        `submit` = other.`submit`
+        `cancel` = other.`cancel`
+    }
+
+}
+@Structure.FieldOrder("uniffiFree", "uniffiClone", "wake")
+internal open class UniffiVTableCallbackInterfaceMobileWakeSink(
+    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+    @JvmField internal var `wake`: UniffiCallbackInterfaceMobileWakeSinkMethod0? = null,
+) : Structure() {
+    class UniffiByValue(
+        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+        `wake`: UniffiCallbackInterfaceMobileWakeSinkMethod0? = null,
+    ): UniffiVTableCallbackInterfaceMobileWakeSink(`uniffiFree`,`uniffiClone`,`wake`,), Structure.ByValue
+
+   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceMobileWakeSink) {
+        `uniffiFree` = other.`uniffiFree`
+        `uniffiClone` = other.`uniffiClone`
+        `wake` = other.`wake`
+    }
+
+}
 
 // A JNA Library to expose the extern-C FFI definitions.
 // This is an implementation detail which will be called internally by the public API.
@@ -673,6 +745,16 @@ internal object IntegrityCheckingUniffiLib {
         uniffiCheckContractApiVersion(this)
         uniffiCheckApiChecksums(this)
     }
+    external fun uniffi_ubm5_uniffi_echo_checksum_func_mobile_build_identity_json(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_func_mobile_contract_revision(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_current(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_install(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_func_mobile_wire_revision(
+    ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_ble_scan_start(
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_ble_scan_stop(
@@ -703,7 +785,31 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_step(
     ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_complete(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_ingest(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_open_session(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_shutdown(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_admission_json(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_drain(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_invoke(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_session_id(
+    ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobileinvokecompletion_complete(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobileplatformradio_submit(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobileplatformradio_cancel(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilewakesink_wake(
     ): Int
     external fun ffi_ubm5_uniffi_echo_uniffi_contract_version(
     ): Int
@@ -721,6 +827,9 @@ internal object UniffiLib {
 
     init {
         Native.register(UniffiLib::class.java, findLibraryName(componentName = "ubm_echo"))
+        uniffiCallbackInterfaceMobileInvokeCompletion.register(this)
+        uniffiCallbackInterfaceMobilePlatformRadio.register(this)
+        uniffiCallbackInterfaceMobileWakeSink.register(this)
         
     }
     external fun uniffi_ubm5_uniffi_echo_fn_clone_echosession(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
@@ -758,6 +867,46 @@ internal object UniffiLib {
     external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_drain_log(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_step(`ptr`: Long,`line`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_clone_mobilecorehost(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun uniffi_ubm5_uniffi_echo_fn_free_mobilecorehost(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_complete(`ptr`: Long,`requestId`: Long,`completion`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_ingest(`ptr`: Long,`ingress`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_open_session(`ptr`: Long,`owner`: RustBuffer.ByValue,`expectedWireRevision`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_shutdown(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_clone_mobilecoresession(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun uniffi_ubm5_uniffi_echo_fn_free_mobilecoresession(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_admission_json(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_drain(`ptr`: Long,`maxItems`: Int,`maxBytes`: Int,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_invoke(`ptr`: Long,`op`: RustBuffer.ByValue,`argsJson`: RustBuffer.ByValue,`completion`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_session_id(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobileinvokecompletion(`vtable`: UniffiVTableCallbackInterfaceMobileInvokeCompletion,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobileplatformradio(`vtable`: UniffiVTableCallbackInterfaceMobilePlatformRadio,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobilewakesink(`vtable`: UniffiVTableCallbackInterfaceMobileWakeSink,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_build_identity_json(uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_contract_revision(uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_host_current(uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_host_install(`radio`: Long,`wake`: Long,`platform`: RustBuffer.ByValue,`owner`: RustBuffer.ByValue,`adapterLabel`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_wire_revision(uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun ffi_ubm5_uniffi_echo_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -878,6 +1027,21 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_build_identity_json() and 0xFFFF) != 23485) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_contract_revision() and 0xFFFF) != 25256) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_current() and 0xFFFF) != 45739) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_install() and 0xFFFF) != 16863) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_wire_revision() and 0xFFFF) != 16069) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_ble_scan_start() and 0xFFFF) != 17628) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -923,7 +1087,43 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_step() and 0xFFFF) != 36705) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_complete() and 0xFFFF) != 1326) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_ingest() and 0xFFFF) != 56427) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_open_session() and 0xFFFF) != 1864) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_shutdown() and 0xFFFF) != 30988) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_admission_json() and 0xFFFF) != 37308) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_drain() and 0xFFFF) != 45874) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_invoke() and 0xFFFF) != 36422) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_session_id() and 0xFFFF) != 62933) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new() and 0xFFFF) != 28077) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobileinvokecompletion_complete() and 0xFFFF) != 48577) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobileplatformradio_submit() and 0xFFFF) != 31117) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobileplatformradio_cancel() and 0xFFFF) != 62733) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilewakesink_wake() and 0xFFFF) != 8417) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
 }
@@ -1017,7 +1217,38 @@ object UniffiWithHandle
  *
  * @suppress
  * */
-object NoHandle
+object NoHandle// Magic number for the Rust proxy to call using the same mechanism as every other method,
+// to free the callback once it's dropped by Rust.
+internal const val IDX_CALLBACK_FREE = 0
+// Callback return codes
+internal const val UNIFFI_CALLBACK_SUCCESS = 0
+internal const val UNIFFI_CALLBACK_ERROR = 1
+internal const val UNIFFI_CALLBACK_UNEXPECTED_ERROR = 2
+
+/**
+ * @suppress
+ */
+public abstract class FfiConverterCallbackInterface<CallbackInterface: Any>: FfiConverter<CallbackInterface, Long> {
+    internal val handleMap = UniffiHandleMap<CallbackInterface>()
+
+    internal fun drop(handle: Long) {
+        handleMap.remove(handle)
+    }
+
+    override fun lift(value: Long): CallbackInterface {
+        return handleMap.get(value)
+    }
+
+    override fun read(buf: ByteBuffer) = lift(buf.getLong())
+
+    override fun lower(value: CallbackInterface) = handleMap.insert(value)
+
+    override fun allocationSize(value: CallbackInterface) = 8UL
+
+    override fun write(value: CallbackInterface, buf: ByteBuffer) {
+        buf.putLong(lower(value))
+    }
+}
 /**
  * The cleaner interface for Object finalization code to run.
  * This is the entry point to any implementation that we're using.
@@ -1086,6 +1317,56 @@ private class JavaLangRefCleanable(
 /**
  * @suppress
  */
+public object FfiConverterUShort: FfiConverter<UShort, Short> {
+    override fun lift(value: Short): UShort {
+        return value.toUShort()
+    }
+
+    fun lift(value: Int): UShort {
+        return value.toUShort()
+    }
+
+    override fun read(buf: ByteBuffer): UShort {
+        return lift(buf.getShort())
+    }
+
+    override fun lower(value: UShort): Short {
+        return value.toShort()
+    }
+
+    override fun allocationSize(value: UShort) = 2UL
+
+    override fun write(value: UShort, buf: ByteBuffer) {
+        buf.putShort(value.toShort())
+    }
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterShort: FfiConverter<Short, Short> {
+    override fun lift(value: Short): Short {
+        return value
+    }
+
+    override fun read(buf: ByteBuffer): Short {
+        return buf.getShort()
+    }
+
+    override fun lower(value: Short): Short {
+        return value
+    }
+
+    override fun allocationSize(value: Short) = 2UL
+
+    override fun write(value: Short, buf: ByteBuffer) {
+        buf.putShort(value)
+    }
+}
+
+/**
+ * @suppress
+ */
 public object FfiConverterUInt: FfiConverter<UInt, Int> {
     override fun lift(value: Int): UInt {
         return value.toUInt()
@@ -1103,6 +1384,75 @@ public object FfiConverterUInt: FfiConverter<UInt, Int> {
 
     override fun write(value: UInt, buf: ByteBuffer) {
         buf.putInt(value.toInt())
+    }
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterInt: FfiConverter<Int, Int> {
+    override fun lift(value: Int): Int {
+        return value
+    }
+
+    override fun read(buf: ByteBuffer): Int {
+        return buf.getInt()
+    }
+
+    override fun lower(value: Int): Int {
+        return value
+    }
+
+    override fun allocationSize(value: Int) = 4UL
+
+    override fun write(value: Int, buf: ByteBuffer) {
+        buf.putInt(value)
+    }
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterULong: FfiConverter<ULong, Long> {
+    override fun lift(value: Long): ULong {
+        return value.toULong()
+    }
+
+    override fun read(buf: ByteBuffer): ULong {
+        return lift(buf.getLong())
+    }
+
+    override fun lower(value: ULong): Long {
+        return value.toLong()
+    }
+
+    override fun allocationSize(value: ULong) = 8UL
+
+    override fun write(value: ULong, buf: ByteBuffer) {
+        buf.putLong(value.toLong())
+    }
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterLong: FfiConverter<Long, Long> {
+    override fun lift(value: Long): Long {
+        return value
+    }
+
+    override fun read(buf: ByteBuffer): Long {
+        return buf.getLong()
+    }
+
+    override fun lower(value: Long): Long {
+        return value
+    }
+
+    override fun allocationSize(value: Long) = 8UL
+
+    override fun write(value: Long, buf: ByteBuffer) {
+        buf.putLong(value)
     }
 }
 
@@ -1692,6 +2042,616 @@ public object FfiConverterTypeEchoSession: FfiConverter<EchoSession, Long> {
 }
 
 
+// This template implements a class for working with a Rust struct via a handle
+// to the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its handle should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the handle, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+public interface MobileCoreHostInterface {
+    
+    fun `complete`(`requestId`: kotlin.ULong, `completion`: MobileRadioCompletion): kotlin.String
+    
+    fun `ingest`(`ingress`: MobileRadioIngress): kotlin.String
+    
+    fun `openSession`(`owner`: kotlin.String, `expectedWireRevision`: kotlin.String): MobileCoreSession
+    
+    fun `shutdown`(): kotlin.String
+    
+    companion object
+}
+
+open class MobileCoreHost: Disposable, AutoCloseable, MobileCoreHostInterface
+{
+
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+    }
+
+    /**
+     * @suppress
+     *
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = null
+    }
+
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable?
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    /**
+     * Whether the current object has been destroyed and its reference is gone in the Rust side.
+     */
+    val uniffiIsDestroyed: Boolean get() = wasDestroyed.get()
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the handle being freed concurrently.
+        try {
+            return block(this.uniffiCloneHandle())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
+        override fun run() {
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilecorehost(handle, status)
+            }
+        }
+    }
+
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
+        return uniffiRustCall() { status ->
+            UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilecorehost(handle, status)
+        }
+    }
+
+    override fun `complete`(`requestId`: kotlin.ULong, `completion`: MobileRadioCompletion): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_complete(
+        it,
+        
+        FfiConverterULong.lower(`requestId`),
+        FfiConverterTypeMobileRadioCompletion.lower(`completion`),_status)
+}
+    }
+    )
+    }
+    
+
+    override fun `ingest`(`ingress`: MobileRadioIngress): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_ingest(
+        it,
+        
+        FfiConverterTypeMobileRadioIngress.lower(`ingress`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(MobileCoreException::class)override fun `openSession`(`owner`: kotlin.String, `expectedWireRevision`: kotlin.String): MobileCoreSession {
+            return FfiConverterTypeMobileCoreSession.lift(
+    callWithHandle {
+    uniffiRustCallWithError(MobileCoreException) { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_open_session(
+        it,
+        
+        FfiConverterString.lower(`owner`),
+        FfiConverterString.lower(`expectedWireRevision`),_status)
+}
+    }
+    )
+    }
+    
+
+    override fun `shutdown`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_shutdown(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+
+    
+
+
+    
+    
+    /**
+     * @suppress
+     */
+    companion object
+    
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileCoreHost: FfiConverter<MobileCoreHost, Long> {
+    override fun lower(value: MobileCoreHost): Long {
+        return value.uniffiCloneHandle()
+    }
+
+    override fun lift(value: Long): MobileCoreHost {
+        return MobileCoreHost(UniffiWithHandle, value)
+    }
+
+    override fun read(buf: ByteBuffer): MobileCoreHost {
+        return lift(buf.getLong())
+    }
+
+    override fun allocationSize(value: MobileCoreHost) = 8UL
+
+    override fun write(value: MobileCoreHost, buf: ByteBuffer) {
+        buf.putLong(lower(value))
+    }
+}
+
+
+// This template implements a class for working with a Rust struct via a handle
+// to the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its handle should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the handle, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+public interface MobileCoreSessionInterface {
+    
+    fun `admissionJson`(): kotlin.String
+    
+    fun `drain`(`maxItems`: kotlin.UInt, `maxBytes`: kotlin.UInt): kotlin.String
+    
+    fun `invoke`(`op`: kotlin.String, `argsJson`: kotlin.String, `completion`: MobileInvokeCompletion)
+    
+    fun `sessionId`(): kotlin.ULong
+    
+    companion object
+}
+
+open class MobileCoreSession: Disposable, AutoCloseable, MobileCoreSessionInterface
+{
+
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+    }
+
+    /**
+     * @suppress
+     *
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = null
+    }
+
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable?
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    /**
+     * Whether the current object has been destroyed and its reference is gone in the Rust side.
+     */
+    val uniffiIsDestroyed: Boolean get() = wasDestroyed.get()
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the handle being freed concurrently.
+        try {
+            return block(this.uniffiCloneHandle())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
+        override fun run() {
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_ubm5_uniffi_echo_fn_free_mobilecoresession(handle, status)
+            }
+        }
+    }
+
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
+        return uniffiRustCall() { status ->
+            UniffiLib.uniffi_ubm5_uniffi_echo_fn_clone_mobilecoresession(handle, status)
+        }
+    }
+
+    override fun `admissionJson`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_admission_json(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    override fun `drain`(`maxItems`: kotlin.UInt, `maxBytes`: kotlin.UInt): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_drain(
+        it,
+        
+        FfiConverterUInt.lower(`maxItems`),
+        FfiConverterUInt.lower(`maxBytes`),_status)
+}
+    }
+    )
+    }
+    
+
+    override fun `invoke`(`op`: kotlin.String, `argsJson`: kotlin.String, `completion`: MobileInvokeCompletion)
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_invoke(
+        it,
+        
+        FfiConverterString.lower(`op`),
+        FfiConverterString.lower(`argsJson`),
+        FfiConverterTypeMobileInvokeCompletion.lower(`completion`),_status)
+}
+    }
+    
+    
+
+    override fun `sessionId`(): kotlin.ULong {
+            return FfiConverterULong.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_session_id(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+
+    
+
+
+    
+    
+    /**
+     * @suppress
+     */
+    companion object
+    
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileCoreSession: FfiConverter<MobileCoreSession, Long> {
+    override fun lower(value: MobileCoreSession): Long {
+        return value.uniffiCloneHandle()
+    }
+
+    override fun lift(value: Long): MobileCoreSession {
+        return MobileCoreSession(UniffiWithHandle, value)
+    }
+
+    override fun read(buf: ByteBuffer): MobileCoreSession {
+        return lift(buf.getLong())
+    }
+
+    override fun allocationSize(value: MobileCoreSession) = 8UL
+
+    override fun write(value: MobileCoreSession, buf: ByteBuffer) {
+        buf.putLong(lower(value))
+    }
+}
+
+
 
 data class EchoBytesResult (
     var `ok`: kotlin.Boolean
@@ -1844,4 +2804,3109 @@ public object FfiConverterTypeEchoStatus: FfiConverterRustBuffer<EchoStatus> {
             FfiConverterString.write(value.`operation`, buf)
     }
 }
+
+
+
+data class MobileAdapterSnapshot (
+    var `availability`: kotlin.String
+    , 
+    var `authorization`: kotlin.String
+    , 
+    var `power`: kotlin.String
+    , 
+    var `safeReason`: kotlin.String?
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileAdapterSnapshot: FfiConverterRustBuffer<MobileAdapterSnapshot> {
+    override fun read(buf: ByteBuffer): MobileAdapterSnapshot {
+        return MobileAdapterSnapshot(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileAdapterSnapshot) = (
+            FfiConverterString.allocationSize(value.`availability`) +
+            FfiConverterString.allocationSize(value.`authorization`) +
+            FfiConverterString.allocationSize(value.`power`) +
+            FfiConverterOptionalString.allocationSize(value.`safeReason`)
+    )
+
+    override fun write(value: MobileAdapterSnapshot, buf: ByteBuffer) {
+            FfiConverterString.write(value.`availability`, buf)
+            FfiConverterString.write(value.`authorization`, buf)
+            FfiConverterString.write(value.`power`, buf)
+            FfiConverterOptionalString.write(value.`safeReason`, buf)
+    }
+}
+
+
+
+data class MobileAdvertisement (
+    var `peerId`: kotlin.String
+    , 
+    var `address`: kotlin.String?
+    , 
+    var `localName`: kotlin.String?
+    , 
+    var `rssi`: kotlin.Short?
+    , 
+    var `txPowerLevel`: kotlin.Short?
+    , 
+    var `serviceUuids`: List<kotlin.String>
+    , 
+    var `manufacturerData`: List<MobileManufacturerData>
+    , 
+    var `serviceData`: List<MobileServiceData>
+    , 
+    var `connectable`: kotlin.Boolean?
+    , 
+    var `solicitedServiceUuids`: List<kotlin.String>?
+    , 
+    var `overflowServiceUuids`: List<kotlin.String>?
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileAdvertisement: FfiConverterRustBuffer<MobileAdvertisement> {
+    override fun read(buf: ByteBuffer): MobileAdvertisement {
+        return MobileAdvertisement(
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalShort.read(buf),
+            FfiConverterOptionalShort.read(buf),
+            FfiConverterSequenceString.read(buf),
+            FfiConverterSequenceTypeMobileManufacturerData.read(buf),
+            FfiConverterSequenceTypeMobileServiceData.read(buf),
+            FfiConverterOptionalBoolean.read(buf),
+            FfiConverterOptionalSequenceString.read(buf),
+            FfiConverterOptionalSequenceString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileAdvertisement) = (
+            FfiConverterString.allocationSize(value.`peerId`) +
+            FfiConverterOptionalString.allocationSize(value.`address`) +
+            FfiConverterOptionalString.allocationSize(value.`localName`) +
+            FfiConverterOptionalShort.allocationSize(value.`rssi`) +
+            FfiConverterOptionalShort.allocationSize(value.`txPowerLevel`) +
+            FfiConverterSequenceString.allocationSize(value.`serviceUuids`) +
+            FfiConverterSequenceTypeMobileManufacturerData.allocationSize(value.`manufacturerData`) +
+            FfiConverterSequenceTypeMobileServiceData.allocationSize(value.`serviceData`) +
+            FfiConverterOptionalBoolean.allocationSize(value.`connectable`) +
+            FfiConverterOptionalSequenceString.allocationSize(value.`solicitedServiceUuids`) +
+            FfiConverterOptionalSequenceString.allocationSize(value.`overflowServiceUuids`)
+    )
+
+    override fun write(value: MobileAdvertisement, buf: ByteBuffer) {
+            FfiConverterString.write(value.`peerId`, buf)
+            FfiConverterOptionalString.write(value.`address`, buf)
+            FfiConverterOptionalString.write(value.`localName`, buf)
+            FfiConverterOptionalShort.write(value.`rssi`, buf)
+            FfiConverterOptionalShort.write(value.`txPowerLevel`, buf)
+            FfiConverterSequenceString.write(value.`serviceUuids`, buf)
+            FfiConverterSequenceTypeMobileManufacturerData.write(value.`manufacturerData`, buf)
+            FfiConverterSequenceTypeMobileServiceData.write(value.`serviceData`, buf)
+            FfiConverterOptionalBoolean.write(value.`connectable`, buf)
+            FfiConverterOptionalSequenceString.write(value.`solicitedServiceUuids`, buf)
+            FfiConverterOptionalSequenceString.write(value.`overflowServiceUuids`, buf)
+    }
+}
+
+
+
+data class MobileCloseFailure (
+    var `instance`: MobileInstance
+    , 
+    var `detail`: kotlin.String
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileCloseFailure: FfiConverterRustBuffer<MobileCloseFailure> {
+    override fun read(buf: ByteBuffer): MobileCloseFailure {
+        return MobileCloseFailure(
+            FfiConverterTypeMobileInstance.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileCloseFailure) = (
+            FfiConverterTypeMobileInstance.allocationSize(value.`instance`) +
+            FfiConverterString.allocationSize(value.`detail`)
+    )
+
+    override fun write(value: MobileCloseFailure, buf: ByteBuffer) {
+            FfiConverterTypeMobileInstance.write(value.`instance`, buf)
+            FfiConverterString.write(value.`detail`, buf)
+    }
+}
+
+
+
+data class MobileGattCharacteristic (
+    var `uuid`: kotlin.String
+    , 
+    var `occurrence`: kotlin.ULong
+    , 
+    var `properties`: MobileGattProperties
+    , 
+    var `descriptors`: List<MobileGattDescriptor>
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileGattCharacteristic: FfiConverterRustBuffer<MobileGattCharacteristic> {
+    override fun read(buf: ByteBuffer): MobileGattCharacteristic {
+        return MobileGattCharacteristic(
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterTypeMobileGattProperties.read(buf),
+            FfiConverterSequenceTypeMobileGattDescriptor.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileGattCharacteristic) = (
+            FfiConverterString.allocationSize(value.`uuid`) +
+            FfiConverterULong.allocationSize(value.`occurrence`) +
+            FfiConverterTypeMobileGattProperties.allocationSize(value.`properties`) +
+            FfiConverterSequenceTypeMobileGattDescriptor.allocationSize(value.`descriptors`)
+    )
+
+    override fun write(value: MobileGattCharacteristic, buf: ByteBuffer) {
+            FfiConverterString.write(value.`uuid`, buf)
+            FfiConverterULong.write(value.`occurrence`, buf)
+            FfiConverterTypeMobileGattProperties.write(value.`properties`, buf)
+            FfiConverterSequenceTypeMobileGattDescriptor.write(value.`descriptors`, buf)
+    }
+}
+
+
+
+data class MobileGattDescriptor (
+    var `uuid`: kotlin.String
+    , 
+    var `occurrence`: kotlin.ULong
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileGattDescriptor: FfiConverterRustBuffer<MobileGattDescriptor> {
+    override fun read(buf: ByteBuffer): MobileGattDescriptor {
+        return MobileGattDescriptor(
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileGattDescriptor) = (
+            FfiConverterString.allocationSize(value.`uuid`) +
+            FfiConverterULong.allocationSize(value.`occurrence`)
+    )
+
+    override fun write(value: MobileGattDescriptor, buf: ByteBuffer) {
+            FfiConverterString.write(value.`uuid`, buf)
+            FfiConverterULong.write(value.`occurrence`, buf)
+    }
+}
+
+
+
+data class MobileGattProperties (
+    var `read`: kotlin.Boolean
+    , 
+    var `write`: kotlin.Boolean
+    , 
+    var `writeWithoutResponse`: kotlin.Boolean
+    , 
+    var `notify`: kotlin.Boolean
+    , 
+    var `indicate`: kotlin.Boolean
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileGattProperties: FfiConverterRustBuffer<MobileGattProperties> {
+    override fun read(buf: ByteBuffer): MobileGattProperties {
+        return MobileGattProperties(
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileGattProperties) = (
+            FfiConverterBoolean.allocationSize(value.`read`) +
+            FfiConverterBoolean.allocationSize(value.`write`) +
+            FfiConverterBoolean.allocationSize(value.`writeWithoutResponse`) +
+            FfiConverterBoolean.allocationSize(value.`notify`) +
+            FfiConverterBoolean.allocationSize(value.`indicate`)
+    )
+
+    override fun write(value: MobileGattProperties, buf: ByteBuffer) {
+            FfiConverterBoolean.write(value.`read`, buf)
+            FfiConverterBoolean.write(value.`write`, buf)
+            FfiConverterBoolean.write(value.`writeWithoutResponse`, buf)
+            FfiConverterBoolean.write(value.`notify`, buf)
+            FfiConverterBoolean.write(value.`indicate`, buf)
+    }
+}
+
+
+
+data class MobileGattService (
+    var `uuid`: kotlin.String
+    , 
+    var `occurrence`: kotlin.ULong
+    , 
+    var `characteristics`: List<MobileGattCharacteristic>
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileGattService: FfiConverterRustBuffer<MobileGattService> {
+    override fun read(buf: ByteBuffer): MobileGattService {
+        return MobileGattService(
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterSequenceTypeMobileGattCharacteristic.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileGattService) = (
+            FfiConverterString.allocationSize(value.`uuid`) +
+            FfiConverterULong.allocationSize(value.`occurrence`) +
+            FfiConverterSequenceTypeMobileGattCharacteristic.allocationSize(value.`characteristics`)
+    )
+
+    override fun write(value: MobileGattService, buf: ByteBuffer) {
+            FfiConverterString.write(value.`uuid`, buf)
+            FfiConverterULong.write(value.`occurrence`, buf)
+            FfiConverterSequenceTypeMobileGattCharacteristic.write(value.`characteristics`, buf)
+    }
+}
+
+
+
+data class MobileInstance (
+    var `peerId`: kotlin.String
+    , 
+    var `serviceUuid`: kotlin.String
+    , 
+    var `serviceOccurrence`: kotlin.ULong
+    , 
+    var `characteristicUuid`: kotlin.String
+    , 
+    var `characteristicOccurrence`: kotlin.ULong
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileInstance: FfiConverterRustBuffer<MobileInstance> {
+    override fun read(buf: ByteBuffer): MobileInstance {
+        return MobileInstance(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileInstance) = (
+            FfiConverterString.allocationSize(value.`peerId`) +
+            FfiConverterString.allocationSize(value.`serviceUuid`) +
+            FfiConverterULong.allocationSize(value.`serviceOccurrence`) +
+            FfiConverterString.allocationSize(value.`characteristicUuid`) +
+            FfiConverterULong.allocationSize(value.`characteristicOccurrence`)
+    )
+
+    override fun write(value: MobileInstance, buf: ByteBuffer) {
+            FfiConverterString.write(value.`peerId`, buf)
+            FfiConverterString.write(value.`serviceUuid`, buf)
+            FfiConverterULong.write(value.`serviceOccurrence`, buf)
+            FfiConverterString.write(value.`characteristicUuid`, buf)
+            FfiConverterULong.write(value.`characteristicOccurrence`, buf)
+    }
+}
+
+
+
+data class MobileManufacturerData (
+    var `companyId`: kotlin.UShort
+    , 
+    var `payload`: kotlin.ByteArray
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileManufacturerData: FfiConverterRustBuffer<MobileManufacturerData> {
+    override fun read(buf: ByteBuffer): MobileManufacturerData {
+        return MobileManufacturerData(
+            FfiConverterUShort.read(buf),
+            FfiConverterByteArray.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileManufacturerData) = (
+            FfiConverterUShort.allocationSize(value.`companyId`) +
+            FfiConverterByteArray.allocationSize(value.`payload`)
+    )
+
+    override fun write(value: MobileManufacturerData, buf: ByteBuffer) {
+            FfiConverterUShort.write(value.`companyId`, buf)
+            FfiConverterByteArray.write(value.`payload`, buf)
+    }
+}
+
+
+
+data class MobilePeerName (
+    var `peerId`: kotlin.String
+    , 
+    var `name`: kotlin.String?
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobilePeerName: FfiConverterRustBuffer<MobilePeerName> {
+    override fun read(buf: ByteBuffer): MobilePeerName {
+        return MobilePeerName(
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobilePeerName) = (
+            FfiConverterString.allocationSize(value.`peerId`) +
+            FfiConverterOptionalString.allocationSize(value.`name`)
+    )
+
+    override fun write(value: MobilePeerName, buf: ByteBuffer) {
+            FfiConverterString.write(value.`peerId`, buf)
+            FfiConverterOptionalString.write(value.`name`, buf)
+    }
+}
+
+
+
+data class MobileRestoredPeer (
+    var `peerId`: kotlin.String
+    , 
+    var `name`: kotlin.String?
+    , 
+    var `connected`: kotlin.Boolean
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileRestoredPeer: FfiConverterRustBuffer<MobileRestoredPeer> {
+    override fun read(buf: ByteBuffer): MobileRestoredPeer {
+        return MobileRestoredPeer(
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileRestoredPeer) = (
+            FfiConverterString.allocationSize(value.`peerId`) +
+            FfiConverterOptionalString.allocationSize(value.`name`) +
+            FfiConverterBoolean.allocationSize(value.`connected`)
+    )
+
+    override fun write(value: MobileRestoredPeer, buf: ByteBuffer) {
+            FfiConverterString.write(value.`peerId`, buf)
+            FfiConverterOptionalString.write(value.`name`, buf)
+            FfiConverterBoolean.write(value.`connected`, buf)
+    }
+}
+
+
+
+data class MobileSecurityState (
+    var `bond`: kotlin.String
+    , 
+    var `encryption`: kotlin.String
+    , 
+    var `authentication`: kotlin.String
+    , 
+    var `secureConnections`: kotlin.String
+    , 
+    var `pairingPossible`: kotlin.Boolean?
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileSecurityState: FfiConverterRustBuffer<MobileSecurityState> {
+    override fun read(buf: ByteBuffer): MobileSecurityState {
+        return MobileSecurityState(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterOptionalBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileSecurityState) = (
+            FfiConverterString.allocationSize(value.`bond`) +
+            FfiConverterString.allocationSize(value.`encryption`) +
+            FfiConverterString.allocationSize(value.`authentication`) +
+            FfiConverterString.allocationSize(value.`secureConnections`) +
+            FfiConverterOptionalBoolean.allocationSize(value.`pairingPossible`)
+    )
+
+    override fun write(value: MobileSecurityState, buf: ByteBuffer) {
+            FfiConverterString.write(value.`bond`, buf)
+            FfiConverterString.write(value.`encryption`, buf)
+            FfiConverterString.write(value.`authentication`, buf)
+            FfiConverterString.write(value.`secureConnections`, buf)
+            FfiConverterOptionalBoolean.write(value.`pairingPossible`, buf)
+    }
+}
+
+
+
+data class MobileServiceData (
+    var `uuid`: kotlin.String
+    , 
+    var `payload`: kotlin.ByteArray
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileServiceData: FfiConverterRustBuffer<MobileServiceData> {
+    override fun read(buf: ByteBuffer): MobileServiceData {
+        return MobileServiceData(
+            FfiConverterString.read(buf),
+            FfiConverterByteArray.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileServiceData) = (
+            FfiConverterString.allocationSize(value.`uuid`) +
+            FfiConverterByteArray.allocationSize(value.`payload`)
+    )
+
+    override fun write(value: MobileServiceData, buf: ByteBuffer) {
+            FfiConverterString.write(value.`uuid`, buf)
+            FfiConverterByteArray.write(value.`payload`, buf)
+    }
+}
+
+
+
+
+
+sealed class MobileCoreException: kotlin.Exception() {
+    
+    class Failed(
+        
+        val `code`: kotlin.String, 
+        
+        val `domain`: kotlin.String, 
+        
+        val `operation`: kotlin.String, 
+        
+        val `detail`: kotlin.String?
+        ) : MobileCoreException() {
+        override val message
+            get() = "code=${ `code` }, domain=${ `domain` }, operation=${ `operation` }, detail=${ `detail` }"
+    }
+    
+
+    
+
+
+    companion object ErrorHandler : UniffiRustCallStatusErrorHandler<MobileCoreException> {
+        override fun lift(error_buf: RustBuffer.ByValue): MobileCoreException = FfiConverterTypeMobileCoreError.lift(error_buf)
+    }
+
+    
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileCoreError : FfiConverterRustBuffer<MobileCoreException> {
+    override fun read(buf: ByteBuffer): MobileCoreException {
+        
+
+        return when(buf.getInt()) {
+            1 -> MobileCoreException.Failed(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterOptionalString.read(buf),
+                )
+            else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: MobileCoreException): ULong {
+        return when(value) {
+            is MobileCoreException.Failed -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterString.allocationSize(value.`code`)
+                + FfiConverterString.allocationSize(value.`domain`)
+                + FfiConverterString.allocationSize(value.`operation`)
+                + FfiConverterOptionalString.allocationSize(value.`detail`)
+            )
+        }
+    }
+
+    override fun write(value: MobileCoreException, buf: ByteBuffer) {
+        when(value) {
+            is MobileCoreException.Failed -> {
+                buf.putInt(1)
+                FfiConverterString.write(value.`code`, buf)
+                FfiConverterString.write(value.`domain`, buf)
+                FfiConverterString.write(value.`operation`, buf)
+                FfiConverterOptionalString.write(value.`detail`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+
+}
+
+
+
+sealed class MobileRadioCompletion {
+    
+    object Unit : MobileRadioCompletion()
+    
+    
+    data class Bytes(
+        val `value`: kotlin.ByteArray) : MobileRadioCompletion()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class Adapter(
+        val `snapshot`: uniffi.ubm_echo.MobileAdapterSnapshot) : MobileRadioCompletion()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class Discovered(
+        val `services`: List<uniffi.ubm_echo.MobileGattService>) : MobileRadioCompletion()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class NotifyEnabled(
+        val `delivery`: kotlin.String) : MobileRadioCompletion()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class Mtu(
+        val `mtu`: kotlin.UShort?) : MobileRadioCompletion()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class WriteLimits(
+        val `withResponse`: kotlin.UShort, 
+        val `withoutResponse`: kotlin.UShort) : MobileRadioCompletion()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class Rssi(
+        val `rssi`: kotlin.Short) : MobileRadioCompletion()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class Accepted(
+        val `accepted`: kotlin.Boolean) : MobileRadioCompletion()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class Phy(
+        val `tx`: kotlin.String, 
+        val `rx`: kotlin.String) : MobileRadioCompletion()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class PhyRequest(
+        val `accepted`: kotlin.Boolean, 
+        val `tx`: kotlin.String?, 
+        val `rx`: kotlin.String?) : MobileRadioCompletion()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class Security(
+        val `state`: uniffi.ubm_echo.MobileSecurityState) : MobileRadioCompletion()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class BondedPeers(
+        val `peers`: List<uniffi.ubm_echo.MobilePeerName>) : MobileRadioCompletion()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class Lease(
+        val `leaseId`: kotlin.String) : MobileRadioCompletion()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class Companion(
+        val `associationId`: kotlin.Long, 
+        val `peerId`: kotlin.String?, 
+        val `displayName`: kotlin.String?) : MobileRadioCompletion()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class Closed(
+        val `failures`: List<uniffi.ubm_echo.MobileCloseFailure>) : MobileRadioCompletion()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class Failed(
+        val `kind`: kotlin.String, 
+        val `gattStatus`: kotlin.Int?, 
+        val `nativeDomain`: kotlin.String?, 
+        val `nativeCode`: kotlin.Long?, 
+        val `detail`: kotlin.String, 
+        val `dispatched`: kotlin.Boolean) : MobileRadioCompletion()
+        
+    {
+        
+
+        companion object
+    }
+    
+
+    
+
+    
+    
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileRadioCompletion : FfiConverterRustBuffer<MobileRadioCompletion>{
+    override fun read(buf: ByteBuffer): MobileRadioCompletion {
+        return when(buf.getInt()) {
+            1 -> MobileRadioCompletion.Unit
+            2 -> MobileRadioCompletion.Bytes(
+                FfiConverterByteArray.read(buf),
+                )
+            3 -> MobileRadioCompletion.Adapter(
+                FfiConverterTypeMobileAdapterSnapshot.read(buf),
+                )
+            4 -> MobileRadioCompletion.Discovered(
+                FfiConverterSequenceTypeMobileGattService.read(buf),
+                )
+            5 -> MobileRadioCompletion.NotifyEnabled(
+                FfiConverterString.read(buf),
+                )
+            6 -> MobileRadioCompletion.Mtu(
+                FfiConverterOptionalUShort.read(buf),
+                )
+            7 -> MobileRadioCompletion.WriteLimits(
+                FfiConverterUShort.read(buf),
+                FfiConverterUShort.read(buf),
+                )
+            8 -> MobileRadioCompletion.Rssi(
+                FfiConverterShort.read(buf),
+                )
+            9 -> MobileRadioCompletion.Accepted(
+                FfiConverterBoolean.read(buf),
+                )
+            10 -> MobileRadioCompletion.Phy(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            11 -> MobileRadioCompletion.PhyRequest(
+                FfiConverterBoolean.read(buf),
+                FfiConverterOptionalString.read(buf),
+                FfiConverterOptionalString.read(buf),
+                )
+            12 -> MobileRadioCompletion.Security(
+                FfiConverterTypeMobileSecurityState.read(buf),
+                )
+            13 -> MobileRadioCompletion.BondedPeers(
+                FfiConverterSequenceTypeMobilePeerName.read(buf),
+                )
+            14 -> MobileRadioCompletion.Lease(
+                FfiConverterString.read(buf),
+                )
+            15 -> MobileRadioCompletion.Companion(
+                FfiConverterLong.read(buf),
+                FfiConverterOptionalString.read(buf),
+                FfiConverterOptionalString.read(buf),
+                )
+            16 -> MobileRadioCompletion.Closed(
+                FfiConverterSequenceTypeMobileCloseFailure.read(buf),
+                )
+            17 -> MobileRadioCompletion.Failed(
+                FfiConverterString.read(buf),
+                FfiConverterOptionalInt.read(buf),
+                FfiConverterOptionalString.read(buf),
+                FfiConverterOptionalLong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterBoolean.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: MobileRadioCompletion): ULong = when(value) {
+        is MobileRadioCompletion.Unit -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is MobileRadioCompletion.Bytes -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterByteArray.allocationSize(value.`value`)
+            )
+        }
+        is MobileRadioCompletion.Adapter -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileAdapterSnapshot.allocationSize(value.`snapshot`)
+            )
+        }
+        is MobileRadioCompletion.Discovered -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterSequenceTypeMobileGattService.allocationSize(value.`services`)
+            )
+        }
+        is MobileRadioCompletion.NotifyEnabled -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`delivery`)
+            )
+        }
+        is MobileRadioCompletion.Mtu -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterOptionalUShort.allocationSize(value.`mtu`)
+            )
+        }
+        is MobileRadioCompletion.WriteLimits -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterUShort.allocationSize(value.`withResponse`)
+                + FfiConverterUShort.allocationSize(value.`withoutResponse`)
+            )
+        }
+        is MobileRadioCompletion.Rssi -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterShort.allocationSize(value.`rssi`)
+            )
+        }
+        is MobileRadioCompletion.Accepted -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterBoolean.allocationSize(value.`accepted`)
+            )
+        }
+        is MobileRadioCompletion.Phy -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`tx`)
+                + FfiConverterString.allocationSize(value.`rx`)
+            )
+        }
+        is MobileRadioCompletion.PhyRequest -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterBoolean.allocationSize(value.`accepted`)
+                + FfiConverterOptionalString.allocationSize(value.`tx`)
+                + FfiConverterOptionalString.allocationSize(value.`rx`)
+            )
+        }
+        is MobileRadioCompletion.Security -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileSecurityState.allocationSize(value.`state`)
+            )
+        }
+        is MobileRadioCompletion.BondedPeers -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterSequenceTypeMobilePeerName.allocationSize(value.`peers`)
+            )
+        }
+        is MobileRadioCompletion.Lease -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`leaseId`)
+            )
+        }
+        is MobileRadioCompletion.Companion -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterLong.allocationSize(value.`associationId`)
+                + FfiConverterOptionalString.allocationSize(value.`peerId`)
+                + FfiConverterOptionalString.allocationSize(value.`displayName`)
+            )
+        }
+        is MobileRadioCompletion.Closed -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterSequenceTypeMobileCloseFailure.allocationSize(value.`failures`)
+            )
+        }
+        is MobileRadioCompletion.Failed -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`kind`)
+                + FfiConverterOptionalInt.allocationSize(value.`gattStatus`)
+                + FfiConverterOptionalString.allocationSize(value.`nativeDomain`)
+                + FfiConverterOptionalLong.allocationSize(value.`nativeCode`)
+                + FfiConverterString.allocationSize(value.`detail`)
+                + FfiConverterBoolean.allocationSize(value.`dispatched`)
+            )
+        }
+    }
+
+    override fun write(value: MobileRadioCompletion, buf: ByteBuffer) {
+        when(value) {
+            is MobileRadioCompletion.Unit -> {
+                buf.putInt(1)
+                Unit
+            }
+            is MobileRadioCompletion.Bytes -> {
+                buf.putInt(2)
+                FfiConverterByteArray.write(value.`value`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.Adapter -> {
+                buf.putInt(3)
+                FfiConverterTypeMobileAdapterSnapshot.write(value.`snapshot`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.Discovered -> {
+                buf.putInt(4)
+                FfiConverterSequenceTypeMobileGattService.write(value.`services`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.NotifyEnabled -> {
+                buf.putInt(5)
+                FfiConverterString.write(value.`delivery`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.Mtu -> {
+                buf.putInt(6)
+                FfiConverterOptionalUShort.write(value.`mtu`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.WriteLimits -> {
+                buf.putInt(7)
+                FfiConverterUShort.write(value.`withResponse`, buf)
+                FfiConverterUShort.write(value.`withoutResponse`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.Rssi -> {
+                buf.putInt(8)
+                FfiConverterShort.write(value.`rssi`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.Accepted -> {
+                buf.putInt(9)
+                FfiConverterBoolean.write(value.`accepted`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.Phy -> {
+                buf.putInt(10)
+                FfiConverterString.write(value.`tx`, buf)
+                FfiConverterString.write(value.`rx`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.PhyRequest -> {
+                buf.putInt(11)
+                FfiConverterBoolean.write(value.`accepted`, buf)
+                FfiConverterOptionalString.write(value.`tx`, buf)
+                FfiConverterOptionalString.write(value.`rx`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.Security -> {
+                buf.putInt(12)
+                FfiConverterTypeMobileSecurityState.write(value.`state`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.BondedPeers -> {
+                buf.putInt(13)
+                FfiConverterSequenceTypeMobilePeerName.write(value.`peers`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.Lease -> {
+                buf.putInt(14)
+                FfiConverterString.write(value.`leaseId`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.Companion -> {
+                buf.putInt(15)
+                FfiConverterLong.write(value.`associationId`, buf)
+                FfiConverterOptionalString.write(value.`peerId`, buf)
+                FfiConverterOptionalString.write(value.`displayName`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.Closed -> {
+                buf.putInt(16)
+                FfiConverterSequenceTypeMobileCloseFailure.write(value.`failures`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.Failed -> {
+                buf.putInt(17)
+                FfiConverterString.write(value.`kind`, buf)
+                FfiConverterOptionalInt.write(value.`gattStatus`, buf)
+                FfiConverterOptionalString.write(value.`nativeDomain`, buf)
+                FfiConverterOptionalLong.write(value.`nativeCode`, buf)
+                FfiConverterString.write(value.`detail`, buf)
+                FfiConverterBoolean.write(value.`dispatched`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+sealed class MobileRadioIngress {
+    
+    data class Advertisement(
+        val `advertisement`: uniffi.ubm_echo.MobileAdvertisement) : MobileRadioIngress()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class Connection(
+        val `peerId`: kotlin.String, 
+        val `connected`: kotlin.Boolean, 
+        val `status`: kotlin.Int?) : MobileRadioIngress()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class ServicesChanged(
+        val `peerId`: kotlin.String) : MobileRadioIngress()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class Notification(
+        val `instance`: uniffi.ubm_echo.MobileInstance, 
+        val `epoch`: kotlin.ULong, 
+        val `value`: kotlin.ByteArray) : MobileRadioIngress()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class AdapterState(
+        val `snapshot`: uniffi.ubm_echo.MobileAdapterSnapshot) : MobileRadioIngress()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class ScanFailed(
+        val `detail`: kotlin.String) : MobileRadioIngress()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class SecurityChanged(
+        val `peerId`: kotlin.String, 
+        val `state`: uniffi.ubm_echo.MobileSecurityState) : MobileRadioIngress()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class Restored(
+        val `peers`: List<uniffi.ubm_echo.MobileRestoredPeer>) : MobileRadioIngress()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class Dropped(
+        val `ingressClass`: kotlin.String, 
+        val `detail`: kotlin.String) : MobileRadioIngress()
+        
+    {
+        
+
+        companion object
+    }
+    
+
+    
+
+    
+    
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileRadioIngress : FfiConverterRustBuffer<MobileRadioIngress>{
+    override fun read(buf: ByteBuffer): MobileRadioIngress {
+        return when(buf.getInt()) {
+            1 -> MobileRadioIngress.Advertisement(
+                FfiConverterTypeMobileAdvertisement.read(buf),
+                )
+            2 -> MobileRadioIngress.Connection(
+                FfiConverterString.read(buf),
+                FfiConverterBoolean.read(buf),
+                FfiConverterOptionalInt.read(buf),
+                )
+            3 -> MobileRadioIngress.ServicesChanged(
+                FfiConverterString.read(buf),
+                )
+            4 -> MobileRadioIngress.Notification(
+                FfiConverterTypeMobileInstance.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterByteArray.read(buf),
+                )
+            5 -> MobileRadioIngress.AdapterState(
+                FfiConverterTypeMobileAdapterSnapshot.read(buf),
+                )
+            6 -> MobileRadioIngress.ScanFailed(
+                FfiConverterString.read(buf),
+                )
+            7 -> MobileRadioIngress.SecurityChanged(
+                FfiConverterString.read(buf),
+                FfiConverterTypeMobileSecurityState.read(buf),
+                )
+            8 -> MobileRadioIngress.Restored(
+                FfiConverterSequenceTypeMobileRestoredPeer.read(buf),
+                )
+            9 -> MobileRadioIngress.Dropped(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: MobileRadioIngress): ULong = when(value) {
+        is MobileRadioIngress.Advertisement -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileAdvertisement.allocationSize(value.`advertisement`)
+            )
+        }
+        is MobileRadioIngress.Connection -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`peerId`)
+                + FfiConverterBoolean.allocationSize(value.`connected`)
+                + FfiConverterOptionalInt.allocationSize(value.`status`)
+            )
+        }
+        is MobileRadioIngress.ServicesChanged -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`peerId`)
+            )
+        }
+        is MobileRadioIngress.Notification -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileInstance.allocationSize(value.`instance`)
+                + FfiConverterULong.allocationSize(value.`epoch`)
+                + FfiConverterByteArray.allocationSize(value.`value`)
+            )
+        }
+        is MobileRadioIngress.AdapterState -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeMobileAdapterSnapshot.allocationSize(value.`snapshot`)
+            )
+        }
+        is MobileRadioIngress.ScanFailed -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`detail`)
+            )
+        }
+        is MobileRadioIngress.SecurityChanged -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`peerId`)
+                + FfiConverterTypeMobileSecurityState.allocationSize(value.`state`)
+            )
+        }
+        is MobileRadioIngress.Restored -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterSequenceTypeMobileRestoredPeer.allocationSize(value.`peers`)
+            )
+        }
+        is MobileRadioIngress.Dropped -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`ingressClass`)
+                + FfiConverterString.allocationSize(value.`detail`)
+            )
+        }
+    }
+
+    override fun write(value: MobileRadioIngress, buf: ByteBuffer) {
+        when(value) {
+            is MobileRadioIngress.Advertisement -> {
+                buf.putInt(1)
+                FfiConverterTypeMobileAdvertisement.write(value.`advertisement`, buf)
+                Unit
+            }
+            is MobileRadioIngress.Connection -> {
+                buf.putInt(2)
+                FfiConverterString.write(value.`peerId`, buf)
+                FfiConverterBoolean.write(value.`connected`, buf)
+                FfiConverterOptionalInt.write(value.`status`, buf)
+                Unit
+            }
+            is MobileRadioIngress.ServicesChanged -> {
+                buf.putInt(3)
+                FfiConverterString.write(value.`peerId`, buf)
+                Unit
+            }
+            is MobileRadioIngress.Notification -> {
+                buf.putInt(4)
+                FfiConverterTypeMobileInstance.write(value.`instance`, buf)
+                FfiConverterULong.write(value.`epoch`, buf)
+                FfiConverterByteArray.write(value.`value`, buf)
+                Unit
+            }
+            is MobileRadioIngress.AdapterState -> {
+                buf.putInt(5)
+                FfiConverterTypeMobileAdapterSnapshot.write(value.`snapshot`, buf)
+                Unit
+            }
+            is MobileRadioIngress.ScanFailed -> {
+                buf.putInt(6)
+                FfiConverterString.write(value.`detail`, buf)
+                Unit
+            }
+            is MobileRadioIngress.SecurityChanged -> {
+                buf.putInt(7)
+                FfiConverterString.write(value.`peerId`, buf)
+                FfiConverterTypeMobileSecurityState.write(value.`state`, buf)
+                Unit
+            }
+            is MobileRadioIngress.Restored -> {
+                buf.putInt(8)
+                FfiConverterSequenceTypeMobileRestoredPeer.write(value.`peers`, buf)
+                Unit
+            }
+            is MobileRadioIngress.Dropped -> {
+                buf.putInt(9)
+                FfiConverterString.write(value.`ingressClass`, buf)
+                FfiConverterString.write(value.`detail`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+sealed class MobileRadioRequest {
+    
+    data class AdapterState(
+        val `id`: kotlin.ULong) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class StartScan(
+        val `id`: kotlin.ULong, 
+        val `serviceUuids`: List<kotlin.String>, 
+        val `deviceAddresses`: List<kotlin.String>, 
+        val `scanMode`: kotlin.String?, 
+        val `callbackType`: kotlin.String?, 
+        val `legacy`: kotlin.Boolean?) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class StopScan(
+        val `id`: kotlin.ULong) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class Connect(
+        val `id`: kotlin.ULong, 
+        val `peerId`: kotlin.String, 
+        val `autoConnect`: kotlin.Boolean, 
+        val `preferredPhy`: List<kotlin.String>) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class Disconnect(
+        val `id`: kotlin.ULong, 
+        val `peerId`: kotlin.String) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class Discover(
+        val `id`: kotlin.ULong, 
+        val `peerId`: kotlin.String) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class Read(
+        val `id`: kotlin.ULong, 
+        val `instance`: uniffi.ubm_echo.MobileInstance) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class Write(
+        val `id`: kotlin.ULong, 
+        val `instance`: uniffi.ubm_echo.MobileInstance, 
+        val `value`: kotlin.ByteArray, 
+        val `withResponse`: kotlin.Boolean) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class ReadDescriptor(
+        val `id`: kotlin.ULong, 
+        val `instance`: uniffi.ubm_echo.MobileInstance, 
+        val `descriptorUuid`: kotlin.String, 
+        val `descriptorOccurrence`: kotlin.ULong) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class WriteDescriptor(
+        val `id`: kotlin.ULong, 
+        val `instance`: uniffi.ubm_echo.MobileInstance, 
+        val `descriptorUuid`: kotlin.String, 
+        val `descriptorOccurrence`: kotlin.ULong, 
+        val `value`: kotlin.ByteArray) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class EnableNotifications(
+        val `id`: kotlin.ULong, 
+        val `instance`: uniffi.ubm_echo.MobileInstance, 
+        val `epoch`: kotlin.ULong, 
+        val `requested`: kotlin.String?, 
+        val `preferred`: kotlin.String?) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class DisableNotifications(
+        val `id`: kotlin.ULong, 
+        val `instance`: uniffi.ubm_echo.MobileInstance) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class ReadMtu(
+        val `id`: kotlin.ULong, 
+        val `peerId`: kotlin.String) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class ReadWriteLimits(
+        val `id`: kotlin.ULong, 
+        val `peerId`: kotlin.String) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class RequestMtu(
+        val `id`: kotlin.ULong, 
+        val `peerId`: kotlin.String, 
+        val `mtu`: kotlin.UShort) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class ReadRssi(
+        val `id`: kotlin.ULong, 
+        val `peerId`: kotlin.String) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class RequestConnectionPriority(
+        val `id`: kotlin.ULong, 
+        val `peerId`: kotlin.String, 
+        val `priority`: kotlin.String) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class ReadPhy(
+        val `id`: kotlin.ULong, 
+        val `peerId`: kotlin.String) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class RequestPhy(
+        val `id`: kotlin.ULong, 
+        val `peerId`: kotlin.String, 
+        val `tx`: kotlin.String?, 
+        val `rx`: kotlin.String?) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class SecurityState(
+        val `id`: kotlin.ULong, 
+        val `peerId`: kotlin.String) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class CreateBond(
+        val `id`: kotlin.ULong, 
+        val `peerId`: kotlin.String, 
+        val `transport`: kotlin.String) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class CancelBond(
+        val `id`: kotlin.ULong, 
+        val `peerId`: kotlin.String) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class BondedPeers(
+        val `id`: kotlin.ULong) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class AcquireBackground(
+        val `id`: kotlin.ULong, 
+        val `kind`: kotlin.String, 
+        val `reason`: kotlin.String) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class ReleaseBackground(
+        val `id`: kotlin.ULong, 
+        val `leaseId`: kotlin.String) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class UpdateBackgroundNotification(
+        val `id`: kotlin.ULong, 
+        val `leaseId`: kotlin.String, 
+        val `title`: kotlin.String, 
+        val `body`: kotlin.String?) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class AssociateCompanion(
+        val `id`: kotlin.ULong, 
+        val `name`: kotlin.String?, 
+        val `serviceUuid`: kotlin.String?) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class Close(
+        val `id`: kotlin.ULong) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+
+    
+
+    
+    
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<MobileRadioRequest>{
+    override fun read(buf: ByteBuffer): MobileRadioRequest {
+        return when(buf.getInt()) {
+            1 -> MobileRadioRequest.AdapterState(
+                FfiConverterULong.read(buf),
+                )
+            2 -> MobileRadioRequest.StartScan(
+                FfiConverterULong.read(buf),
+                FfiConverterSequenceString.read(buf),
+                FfiConverterSequenceString.read(buf),
+                FfiConverterOptionalString.read(buf),
+                FfiConverterOptionalString.read(buf),
+                FfiConverterOptionalBoolean.read(buf),
+                )
+            3 -> MobileRadioRequest.StopScan(
+                FfiConverterULong.read(buf),
+                )
+            4 -> MobileRadioRequest.Connect(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterBoolean.read(buf),
+                FfiConverterSequenceString.read(buf),
+                )
+            5 -> MobileRadioRequest.Disconnect(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                )
+            6 -> MobileRadioRequest.Discover(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                )
+            7 -> MobileRadioRequest.Read(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileInstance.read(buf),
+                )
+            8 -> MobileRadioRequest.Write(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileInstance.read(buf),
+                FfiConverterByteArray.read(buf),
+                FfiConverterBoolean.read(buf),
+                )
+            9 -> MobileRadioRequest.ReadDescriptor(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileInstance.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            10 -> MobileRadioRequest.WriteDescriptor(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileInstance.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterByteArray.read(buf),
+                )
+            11 -> MobileRadioRequest.EnableNotifications(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileInstance.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterOptionalString.read(buf),
+                FfiConverterOptionalString.read(buf),
+                )
+            12 -> MobileRadioRequest.DisableNotifications(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeMobileInstance.read(buf),
+                )
+            13 -> MobileRadioRequest.ReadMtu(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                )
+            14 -> MobileRadioRequest.ReadWriteLimits(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                )
+            15 -> MobileRadioRequest.RequestMtu(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterUShort.read(buf),
+                )
+            16 -> MobileRadioRequest.ReadRssi(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                )
+            17 -> MobileRadioRequest.RequestConnectionPriority(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            18 -> MobileRadioRequest.ReadPhy(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                )
+            19 -> MobileRadioRequest.RequestPhy(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterOptionalString.read(buf),
+                FfiConverterOptionalString.read(buf),
+                )
+            20 -> MobileRadioRequest.SecurityState(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                )
+            21 -> MobileRadioRequest.CreateBond(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            22 -> MobileRadioRequest.CancelBond(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                )
+            23 -> MobileRadioRequest.BondedPeers(
+                FfiConverterULong.read(buf),
+                )
+            24 -> MobileRadioRequest.AcquireBackground(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            25 -> MobileRadioRequest.ReleaseBackground(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                )
+            26 -> MobileRadioRequest.UpdateBackgroundNotification(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterOptionalString.read(buf),
+                )
+            27 -> MobileRadioRequest.AssociateCompanion(
+                FfiConverterULong.read(buf),
+                FfiConverterOptionalString.read(buf),
+                FfiConverterOptionalString.read(buf),
+                )
+            28 -> MobileRadioRequest.Close(
+                FfiConverterULong.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: MobileRadioRequest): ULong = when(value) {
+        is MobileRadioRequest.AdapterState -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+            )
+        }
+        is MobileRadioRequest.StartScan -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterSequenceString.allocationSize(value.`serviceUuids`)
+                + FfiConverterSequenceString.allocationSize(value.`deviceAddresses`)
+                + FfiConverterOptionalString.allocationSize(value.`scanMode`)
+                + FfiConverterOptionalString.allocationSize(value.`callbackType`)
+                + FfiConverterOptionalBoolean.allocationSize(value.`legacy`)
+            )
+        }
+        is MobileRadioRequest.StopScan -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+            )
+        }
+        is MobileRadioRequest.Connect -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+                + FfiConverterBoolean.allocationSize(value.`autoConnect`)
+                + FfiConverterSequenceString.allocationSize(value.`preferredPhy`)
+            )
+        }
+        is MobileRadioRequest.Disconnect -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+            )
+        }
+        is MobileRadioRequest.Discover -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+            )
+        }
+        is MobileRadioRequest.Read -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileInstance.allocationSize(value.`instance`)
+            )
+        }
+        is MobileRadioRequest.Write -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileInstance.allocationSize(value.`instance`)
+                + FfiConverterByteArray.allocationSize(value.`value`)
+                + FfiConverterBoolean.allocationSize(value.`withResponse`)
+            )
+        }
+        is MobileRadioRequest.ReadDescriptor -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileInstance.allocationSize(value.`instance`)
+                + FfiConverterString.allocationSize(value.`descriptorUuid`)
+                + FfiConverterULong.allocationSize(value.`descriptorOccurrence`)
+            )
+        }
+        is MobileRadioRequest.WriteDescriptor -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileInstance.allocationSize(value.`instance`)
+                + FfiConverterString.allocationSize(value.`descriptorUuid`)
+                + FfiConverterULong.allocationSize(value.`descriptorOccurrence`)
+                + FfiConverterByteArray.allocationSize(value.`value`)
+            )
+        }
+        is MobileRadioRequest.EnableNotifications -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileInstance.allocationSize(value.`instance`)
+                + FfiConverterULong.allocationSize(value.`epoch`)
+                + FfiConverterOptionalString.allocationSize(value.`requested`)
+                + FfiConverterOptionalString.allocationSize(value.`preferred`)
+            )
+        }
+        is MobileRadioRequest.DisableNotifications -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeMobileInstance.allocationSize(value.`instance`)
+            )
+        }
+        is MobileRadioRequest.ReadMtu -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+            )
+        }
+        is MobileRadioRequest.ReadWriteLimits -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+            )
+        }
+        is MobileRadioRequest.RequestMtu -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+                + FfiConverterUShort.allocationSize(value.`mtu`)
+            )
+        }
+        is MobileRadioRequest.ReadRssi -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+            )
+        }
+        is MobileRadioRequest.RequestConnectionPriority -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+                + FfiConverterString.allocationSize(value.`priority`)
+            )
+        }
+        is MobileRadioRequest.ReadPhy -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+            )
+        }
+        is MobileRadioRequest.RequestPhy -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+                + FfiConverterOptionalString.allocationSize(value.`tx`)
+                + FfiConverterOptionalString.allocationSize(value.`rx`)
+            )
+        }
+        is MobileRadioRequest.SecurityState -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+            )
+        }
+        is MobileRadioRequest.CreateBond -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+                + FfiConverterString.allocationSize(value.`transport`)
+            )
+        }
+        is MobileRadioRequest.CancelBond -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+            )
+        }
+        is MobileRadioRequest.BondedPeers -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+            )
+        }
+        is MobileRadioRequest.AcquireBackground -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`kind`)
+                + FfiConverterString.allocationSize(value.`reason`)
+            )
+        }
+        is MobileRadioRequest.ReleaseBackground -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`leaseId`)
+            )
+        }
+        is MobileRadioRequest.UpdateBackgroundNotification -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`leaseId`)
+                + FfiConverterString.allocationSize(value.`title`)
+                + FfiConverterOptionalString.allocationSize(value.`body`)
+            )
+        }
+        is MobileRadioRequest.AssociateCompanion -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterOptionalString.allocationSize(value.`name`)
+                + FfiConverterOptionalString.allocationSize(value.`serviceUuid`)
+            )
+        }
+        is MobileRadioRequest.Close -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+            )
+        }
+    }
+
+    override fun write(value: MobileRadioRequest, buf: ByteBuffer) {
+        when(value) {
+            is MobileRadioRequest.AdapterState -> {
+                buf.putInt(1)
+                FfiConverterULong.write(value.`id`, buf)
+                Unit
+            }
+            is MobileRadioRequest.StartScan -> {
+                buf.putInt(2)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterSequenceString.write(value.`serviceUuids`, buf)
+                FfiConverterSequenceString.write(value.`deviceAddresses`, buf)
+                FfiConverterOptionalString.write(value.`scanMode`, buf)
+                FfiConverterOptionalString.write(value.`callbackType`, buf)
+                FfiConverterOptionalBoolean.write(value.`legacy`, buf)
+                Unit
+            }
+            is MobileRadioRequest.StopScan -> {
+                buf.putInt(3)
+                FfiConverterULong.write(value.`id`, buf)
+                Unit
+            }
+            is MobileRadioRequest.Connect -> {
+                buf.putInt(4)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                FfiConverterBoolean.write(value.`autoConnect`, buf)
+                FfiConverterSequenceString.write(value.`preferredPhy`, buf)
+                Unit
+            }
+            is MobileRadioRequest.Disconnect -> {
+                buf.putInt(5)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.Discover -> {
+                buf.putInt(6)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.Read -> {
+                buf.putInt(7)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileInstance.write(value.`instance`, buf)
+                Unit
+            }
+            is MobileRadioRequest.Write -> {
+                buf.putInt(8)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileInstance.write(value.`instance`, buf)
+                FfiConverterByteArray.write(value.`value`, buf)
+                FfiConverterBoolean.write(value.`withResponse`, buf)
+                Unit
+            }
+            is MobileRadioRequest.ReadDescriptor -> {
+                buf.putInt(9)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileInstance.write(value.`instance`, buf)
+                FfiConverterString.write(value.`descriptorUuid`, buf)
+                FfiConverterULong.write(value.`descriptorOccurrence`, buf)
+                Unit
+            }
+            is MobileRadioRequest.WriteDescriptor -> {
+                buf.putInt(10)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileInstance.write(value.`instance`, buf)
+                FfiConverterString.write(value.`descriptorUuid`, buf)
+                FfiConverterULong.write(value.`descriptorOccurrence`, buf)
+                FfiConverterByteArray.write(value.`value`, buf)
+                Unit
+            }
+            is MobileRadioRequest.EnableNotifications -> {
+                buf.putInt(11)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileInstance.write(value.`instance`, buf)
+                FfiConverterULong.write(value.`epoch`, buf)
+                FfiConverterOptionalString.write(value.`requested`, buf)
+                FfiConverterOptionalString.write(value.`preferred`, buf)
+                Unit
+            }
+            is MobileRadioRequest.DisableNotifications -> {
+                buf.putInt(12)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeMobileInstance.write(value.`instance`, buf)
+                Unit
+            }
+            is MobileRadioRequest.ReadMtu -> {
+                buf.putInt(13)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.ReadWriteLimits -> {
+                buf.putInt(14)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.RequestMtu -> {
+                buf.putInt(15)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                FfiConverterUShort.write(value.`mtu`, buf)
+                Unit
+            }
+            is MobileRadioRequest.ReadRssi -> {
+                buf.putInt(16)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.RequestConnectionPriority -> {
+                buf.putInt(17)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                FfiConverterString.write(value.`priority`, buf)
+                Unit
+            }
+            is MobileRadioRequest.ReadPhy -> {
+                buf.putInt(18)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.RequestPhy -> {
+                buf.putInt(19)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                FfiConverterOptionalString.write(value.`tx`, buf)
+                FfiConverterOptionalString.write(value.`rx`, buf)
+                Unit
+            }
+            is MobileRadioRequest.SecurityState -> {
+                buf.putInt(20)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.CreateBond -> {
+                buf.putInt(21)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                FfiConverterString.write(value.`transport`, buf)
+                Unit
+            }
+            is MobileRadioRequest.CancelBond -> {
+                buf.putInt(22)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.BondedPeers -> {
+                buf.putInt(23)
+                FfiConverterULong.write(value.`id`, buf)
+                Unit
+            }
+            is MobileRadioRequest.AcquireBackground -> {
+                buf.putInt(24)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`kind`, buf)
+                FfiConverterString.write(value.`reason`, buf)
+                Unit
+            }
+            is MobileRadioRequest.ReleaseBackground -> {
+                buf.putInt(25)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`leaseId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.UpdateBackgroundNotification -> {
+                buf.putInt(26)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`leaseId`, buf)
+                FfiConverterString.write(value.`title`, buf)
+                FfiConverterOptionalString.write(value.`body`, buf)
+                Unit
+            }
+            is MobileRadioRequest.AssociateCompanion -> {
+                buf.putInt(27)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterOptionalString.write(value.`name`, buf)
+                FfiConverterOptionalString.write(value.`serviceUuid`, buf)
+                Unit
+            }
+            is MobileRadioRequest.Close -> {
+                buf.putInt(28)
+                FfiConverterULong.write(value.`id`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+
+
+public interface MobileInvokeCompletion {
+    
+    fun `complete`(`envelope`: kotlin.String)
+    
+    companion object
+}
+
+
+
+// Put the implementation in an object so we don't pollute the top-level namespace
+internal object uniffiCallbackInterfaceMobileInvokeCompletion {
+    internal object `complete`: UniffiCallbackInterfaceMobileInvokeCompletionMethod0 {
+        override fun callback(`uniffiHandle`: Long,`envelope`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypeMobileInvokeCompletion.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`complete`(
+                    FfiConverterString.lift(`envelope`),
+                )
+            }
+            val writeReturn = { _: Unit -> Unit }
+            uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
+        }
+    }
+
+    internal object uniffiFree: UniffiCallbackInterfaceFree {
+        override fun callback(handle: Long) {
+            FfiConverterTypeMobileInvokeCompletion.handleMap.remove(handle)
+        }
+    }
+
+    internal object uniffiClone: UniffiCallbackInterfaceClone {
+        override fun callback(handle: Long): Long {
+            return FfiConverterTypeMobileInvokeCompletion.handleMap.clone(handle)
+        }
+    }
+
+    internal var vtable = UniffiVTableCallbackInterfaceMobileInvokeCompletion.UniffiByValue(
+        uniffiFree,
+        uniffiClone,
+        `complete`,
+    )
+
+    // Registers the foreign callback with the Rust side.
+    // This method is generated for each callback interface.
+    internal fun register(lib: UniffiLib) {
+        lib.uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobileinvokecompletion(vtable)
+    }
+}
+
+/**
+ * The ffiConverter which transforms the Callbacks in to handles to pass to Rust.
+ *
+ * @suppress
+ */
+public object FfiConverterTypeMobileInvokeCompletion: FfiConverterCallbackInterface<MobileInvokeCompletion>()
+
+
+
+
+
+public interface MobilePlatformRadio {
+    
+    fun `submit`(`request`: MobileRadioRequest)
+    
+    fun `cancel`(`requestId`: kotlin.ULong)
+    
+    companion object
+}
+
+
+
+// Put the implementation in an object so we don't pollute the top-level namespace
+internal object uniffiCallbackInterfaceMobilePlatformRadio {
+    internal object `submit`: UniffiCallbackInterfaceMobilePlatformRadioMethod0 {
+        override fun callback(`uniffiHandle`: Long,`request`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypeMobilePlatformRadio.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`submit`(
+                    FfiConverterTypeMobileRadioRequest.lift(`request`),
+                )
+            }
+            val writeReturn = { _: Unit -> Unit }
+            uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
+        }
+    }
+    internal object `cancel`: UniffiCallbackInterfaceMobilePlatformRadioMethod1 {
+        override fun callback(`uniffiHandle`: Long,`requestId`: Long,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypeMobilePlatformRadio.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`cancel`(
+                    FfiConverterULong.lift(`requestId`),
+                )
+            }
+            val writeReturn = { _: Unit -> Unit }
+            uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
+        }
+    }
+
+    internal object uniffiFree: UniffiCallbackInterfaceFree {
+        override fun callback(handle: Long) {
+            FfiConverterTypeMobilePlatformRadio.handleMap.remove(handle)
+        }
+    }
+
+    internal object uniffiClone: UniffiCallbackInterfaceClone {
+        override fun callback(handle: Long): Long {
+            return FfiConverterTypeMobilePlatformRadio.handleMap.clone(handle)
+        }
+    }
+
+    internal var vtable = UniffiVTableCallbackInterfaceMobilePlatformRadio.UniffiByValue(
+        uniffiFree,
+        uniffiClone,
+        `submit`,
+        `cancel`,
+    )
+
+    // Registers the foreign callback with the Rust side.
+    // This method is generated for each callback interface.
+    internal fun register(lib: UniffiLib) {
+        lib.uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobileplatformradio(vtable)
+    }
+}
+
+/**
+ * The ffiConverter which transforms the Callbacks in to handles to pass to Rust.
+ *
+ * @suppress
+ */
+public object FfiConverterTypeMobilePlatformRadio: FfiConverterCallbackInterface<MobilePlatformRadio>()
+
+
+
+
+
+public interface MobileWakeSink {
+    
+    fun `wake`(`sessionId`: kotlin.ULong)
+    
+    companion object
+}
+
+
+
+// Put the implementation in an object so we don't pollute the top-level namespace
+internal object uniffiCallbackInterfaceMobileWakeSink {
+    internal object `wake`: UniffiCallbackInterfaceMobileWakeSinkMethod0 {
+        override fun callback(`uniffiHandle`: Long,`sessionId`: Long,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypeMobileWakeSink.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`wake`(
+                    FfiConverterULong.lift(`sessionId`),
+                )
+            }
+            val writeReturn = { _: Unit -> Unit }
+            uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
+        }
+    }
+
+    internal object uniffiFree: UniffiCallbackInterfaceFree {
+        override fun callback(handle: Long) {
+            FfiConverterTypeMobileWakeSink.handleMap.remove(handle)
+        }
+    }
+
+    internal object uniffiClone: UniffiCallbackInterfaceClone {
+        override fun callback(handle: Long): Long {
+            return FfiConverterTypeMobileWakeSink.handleMap.clone(handle)
+        }
+    }
+
+    internal var vtable = UniffiVTableCallbackInterfaceMobileWakeSink.UniffiByValue(
+        uniffiFree,
+        uniffiClone,
+        `wake`,
+    )
+
+    // Registers the foreign callback with the Rust side.
+    // This method is generated for each callback interface.
+    internal fun register(lib: UniffiLib) {
+        lib.uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobilewakesink(vtable)
+    }
+}
+
+/**
+ * The ffiConverter which transforms the Callbacks in to handles to pass to Rust.
+ *
+ * @suppress
+ */
+public object FfiConverterTypeMobileWakeSink: FfiConverterCallbackInterface<MobileWakeSink>()
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalUShort: FfiConverterRustBuffer<kotlin.UShort?> {
+    override fun read(buf: ByteBuffer): kotlin.UShort? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterUShort.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.UShort?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterUShort.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.UShort?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterUShort.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalShort: FfiConverterRustBuffer<kotlin.Short?> {
+    override fun read(buf: ByteBuffer): kotlin.Short? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterShort.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.Short?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterShort.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.Short?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterShort.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalInt: FfiConverterRustBuffer<kotlin.Int?> {
+    override fun read(buf: ByteBuffer): kotlin.Int? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterInt.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.Int?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterInt.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.Int?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterInt.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalLong: FfiConverterRustBuffer<kotlin.Long?> {
+    override fun read(buf: ByteBuffer): kotlin.Long? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterLong.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.Long?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterLong.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.Long?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterLong.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalBoolean: FfiConverterRustBuffer<kotlin.Boolean?> {
+    override fun read(buf: ByteBuffer): kotlin.Boolean? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterBoolean.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.Boolean?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterBoolean.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.Boolean?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterBoolean.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalString: FfiConverterRustBuffer<kotlin.String?> {
+    override fun read(buf: ByteBuffer): kotlin.String? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterString.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.String?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterString.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.String?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterString.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeMobileCoreHost: FfiConverterRustBuffer<MobileCoreHost?> {
+    override fun read(buf: ByteBuffer): MobileCoreHost? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeMobileCoreHost.read(buf)
+    }
+
+    override fun allocationSize(value: MobileCoreHost?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeMobileCoreHost.allocationSize(value)
+        }
+    }
+
+    override fun write(value: MobileCoreHost?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeMobileCoreHost.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalSequenceString: FfiConverterRustBuffer<List<kotlin.String>?> {
+    override fun read(buf: ByteBuffer): List<kotlin.String>? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterSequenceString.read(buf)
+    }
+
+    override fun allocationSize(value: List<kotlin.String>?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterSequenceString.allocationSize(value)
+        }
+    }
+
+    override fun write(value: List<kotlin.String>?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterSequenceString.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceString: FfiConverterRustBuffer<List<kotlin.String>> {
+    override fun read(buf: ByteBuffer): List<kotlin.String> {
+        val len = buf.getInt()
+        return List<kotlin.String>(len) {
+            FfiConverterString.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<kotlin.String>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterString.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<kotlin.String>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterString.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeMobileCloseFailure: FfiConverterRustBuffer<List<MobileCloseFailure>> {
+    override fun read(buf: ByteBuffer): List<MobileCloseFailure> {
+        val len = buf.getInt()
+        return List<MobileCloseFailure>(len) {
+            FfiConverterTypeMobileCloseFailure.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<MobileCloseFailure>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeMobileCloseFailure.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<MobileCloseFailure>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeMobileCloseFailure.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeMobileGattCharacteristic: FfiConverterRustBuffer<List<MobileGattCharacteristic>> {
+    override fun read(buf: ByteBuffer): List<MobileGattCharacteristic> {
+        val len = buf.getInt()
+        return List<MobileGattCharacteristic>(len) {
+            FfiConverterTypeMobileGattCharacteristic.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<MobileGattCharacteristic>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeMobileGattCharacteristic.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<MobileGattCharacteristic>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeMobileGattCharacteristic.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeMobileGattDescriptor: FfiConverterRustBuffer<List<MobileGattDescriptor>> {
+    override fun read(buf: ByteBuffer): List<MobileGattDescriptor> {
+        val len = buf.getInt()
+        return List<MobileGattDescriptor>(len) {
+            FfiConverterTypeMobileGattDescriptor.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<MobileGattDescriptor>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeMobileGattDescriptor.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<MobileGattDescriptor>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeMobileGattDescriptor.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeMobileGattService: FfiConverterRustBuffer<List<MobileGattService>> {
+    override fun read(buf: ByteBuffer): List<MobileGattService> {
+        val len = buf.getInt()
+        return List<MobileGattService>(len) {
+            FfiConverterTypeMobileGattService.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<MobileGattService>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeMobileGattService.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<MobileGattService>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeMobileGattService.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeMobileManufacturerData: FfiConverterRustBuffer<List<MobileManufacturerData>> {
+    override fun read(buf: ByteBuffer): List<MobileManufacturerData> {
+        val len = buf.getInt()
+        return List<MobileManufacturerData>(len) {
+            FfiConverterTypeMobileManufacturerData.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<MobileManufacturerData>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeMobileManufacturerData.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<MobileManufacturerData>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeMobileManufacturerData.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeMobilePeerName: FfiConverterRustBuffer<List<MobilePeerName>> {
+    override fun read(buf: ByteBuffer): List<MobilePeerName> {
+        val len = buf.getInt()
+        return List<MobilePeerName>(len) {
+            FfiConverterTypeMobilePeerName.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<MobilePeerName>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeMobilePeerName.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<MobilePeerName>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeMobilePeerName.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeMobileRestoredPeer: FfiConverterRustBuffer<List<MobileRestoredPeer>> {
+    override fun read(buf: ByteBuffer): List<MobileRestoredPeer> {
+        val len = buf.getInt()
+        return List<MobileRestoredPeer>(len) {
+            FfiConverterTypeMobileRestoredPeer.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<MobileRestoredPeer>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeMobileRestoredPeer.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<MobileRestoredPeer>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeMobileRestoredPeer.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeMobileServiceData: FfiConverterRustBuffer<List<MobileServiceData>> {
+    override fun read(buf: ByteBuffer): List<MobileServiceData> {
+        val len = buf.getInt()
+        return List<MobileServiceData>(len) {
+            FfiConverterTypeMobileServiceData.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<MobileServiceData>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeMobileServiceData.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<MobileServiceData>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeMobileServiceData.write(it, buf)
+        }
+    }
+} fun `mobileBuildIdentityJson`(): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_build_identity_json(
+    
+        _status)
+}
+    )
+    }
+    
+ fun `mobileContractRevision`(): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_contract_revision(
+    
+        _status)
+}
+    )
+    }
+    
+ fun `mobileHostCurrent`(): MobileCoreHost? {
+            return FfiConverterOptionalTypeMobileCoreHost.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_current(
+    
+        _status)
+}
+    )
+    }
+    
+
+    @Throws(MobileCoreException::class) fun `mobileHostInstall`(`radio`: MobilePlatformRadio, `wake`: MobileWakeSink, `platform`: kotlin.String, `owner`: kotlin.String, `adapterLabel`: kotlin.String): MobileCoreHost {
+            return FfiConverterTypeMobileCoreHost.lift(
+    uniffiRustCallWithError(MobileCoreException) { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_install(
+    
+        
+        FfiConverterTypeMobilePlatformRadio.lower(`radio`),
+        FfiConverterTypeMobileWakeSink.lower(`wake`),
+        FfiConverterString.lower(`platform`),
+        FfiConverterString.lower(`owner`),
+        FfiConverterString.lower(`adapterLabel`),_status)
+}
+    )
+    }
+    
+ fun `mobileWireRevision`(): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_wire_revision(
+    
+        _status)
+}
+    )
+    }
+    
+
 

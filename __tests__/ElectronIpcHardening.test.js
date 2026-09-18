@@ -10,7 +10,7 @@ const { normalizeScanQuery } = require('../src/public/scan-query')
 const { snapshotScanPlan } = require('../src/backend-contract/scan-planning')
 
 function negotiated(axis) {
-  const selected = version(axis, axis === 'ipc-protocol' ? 2 : 1)
+  const selected = version(axis, axis === 'ipc-protocol' ? 3 : 1)
   const range = versionRange(selected, selected)
   return { axis, selected, localRange: range, remoteRange: range }
 }
@@ -449,7 +449,7 @@ describe('Electron IPC hardening', () => {
         })
         const payload = installDestructiveCleanupResource(resources, command, handle, cleanup)
         if (terminalCondition === 'timed-out') {
-          payload.deadline = 10
+          payload.budgetMs = 10
         }
         const correlation = `${command}-${terminalCondition}-operation`
         const operation = current.router.dispatch(
@@ -475,6 +475,96 @@ describe('Electron IPC hardening', () => {
       await current.router.destroy()
     }
   )
+
+  // PR210-27: a write that finished has committed at the peripheral. Turning
+  // its receipt into aborted/timed-out `caller-decides` invites the caller to
+  // send the same write a second time, so the completed result is reported.
+  test.each(['gatt.write', 'gatt.descriptor.write'])(
+    '%s returns its completed receipt when cancellation or deadline arrives after dispatch',
+    async command => {
+      let now = 0
+      const current = createRouter({ monotonicNow: () => now })
+      const sender = trusted(`completed-write-${command}`)
+      const bootstrapValue = await bootstrap(current, sender)
+      const resources = current.router.resources.get(String(bootstrapValue.rendererLease.leaseId))
+
+      for (const terminalCondition of ['cancelled', 'timed-out']) {
+        const writeStarted = deferred()
+        const writeResult = deferred()
+        const write = jest.fn(async () => {
+          writeStarted.resolve()
+          return writeResult.promise
+        })
+        const databaseHandle = `database-${terminalCondition}`
+        resources.databases.set(databaseHandle, {
+          database: { write, writeDescriptor: write },
+          characteristics: new Map([['characteristic-1', { characteristicUuid: 'characteristic-1' }]]),
+          descriptors: new Map([['descriptor-1', { descriptorUuid: 'descriptor-1' }]])
+        })
+        const payload =
+          command === 'gatt.write'
+            ? { databaseHandle, characteristicHandle: 'characteristic-1', mode: 'with-response', deadline: null }
+            : { databaseHandle, descriptorHandle: 'descriptor-1', deadline: null }
+        if (terminalCondition === 'timed-out') {
+          payload.budgetMs = 10
+        }
+        const correlation = `${command}-${terminalCondition}-operation`
+        const request = route(current, bootstrapValue, 20, command, payload, correlation)
+        request.envelope.binaryPayload = new Uint8Array([7, 8, 9])
+        const operation = current.router.dispatch(sender, request)
+        await writeStarted.promise
+        if (terminalCondition === 'cancelled') {
+          await expect(
+            current.router.dispatch(
+              sender,
+              route(current, bootstrapValue, 21, 'operation.cancel', { targetCorrelation: correlation })
+            )
+          ).resolves.toMatchObject({ kind: 'route', payload: { state: 'cancellation-requested' } })
+        } else {
+          now = 20
+        }
+        writeResult.resolve({
+          terminal: { correlation, outcome: 'succeeded', cause: null },
+          commitState: 'confirmed'
+        })
+        await expect(operation).resolves.toMatchObject({
+          kind: 'route',
+          payload: { terminal: { outcome: 'succeeded' }, commitState: 'confirmed', bytesSubmitted: 3 }
+        })
+        expect(write).toHaveBeenCalledTimes(1)
+        now = 0
+      }
+      await current.router.destroy()
+    }
+  )
+
+  test('a write refused before dispatch stays caller-decides because nothing reached the radio', async () => {
+    let now = 20
+    const current = createRouter({ monotonicNow: () => now })
+    const sender = trusted('pre-dispatch-write')
+    const bootstrapValue = await bootstrap(current, sender)
+    const resources = current.router.resources.get(String(bootstrapValue.rendererLease.leaseId))
+    const write = jest.fn()
+    resources.databases.set('database-expired', {
+      database: { write },
+      characteristics: new Map([['characteristic-1', { characteristicUuid: 'characteristic-1' }]]),
+      descriptors: new Map()
+    })
+    const request = route(current, bootstrapValue, 30, 'gatt.write', {
+      databaseHandle: 'database-expired',
+      characteristicHandle: 'characteristic-1',
+      mode: 'with-response',
+      budgetMs: 0
+    })
+    request.envelope.binaryPayload = new Uint8Array([1])
+
+    await expect(current.router.dispatch(sender, request)).rejects.toMatchObject({
+      normalized: { code: 'operation.timed-out', retryability: 'caller-decides' }
+    })
+    expect(write).not.toHaveBeenCalled()
+    now = 0
+    await current.router.destroy()
+  })
 
   test('compensates a late deadline during lifecycle readiness by detaching its newly admitted iterator', async () => {
     let nextCalls = 0
@@ -513,7 +603,7 @@ describe('Electron IPC hardening', () => {
         bootstrapValue,
         1,
         'connection.events.ready',
-        { connectionEventsHandle: 'connection-events-ready-deadline', deadline: 10 },
+        { connectionEventsHandle: 'connection-events-ready-deadline', budgetMs: 10 },
         'ready-deadline'
       )
     )
@@ -617,12 +707,12 @@ describe('Electron IPC hardening', () => {
     const eventId = 'event-1'
     const emptyEventItem = {
       kind: 'value',
-      value: { value: new Uint8Array(), indication: false }
+      value: { value: new Uint8Array(), delivery: 'notification' }
     }
     const unscopedBaseBytes = snapshotSerializableRecord({ eventId, streamId, item: emptyEventItem }).byteLength
     const item = {
       kind: 'value',
-      value: { value: new Uint8Array(maximumMessageBytes - unscopedBaseBytes), indication: false }
+      value: { value: new Uint8Array(maximumMessageBytes - unscopedBaseBytes), delivery: 'notification' }
     }
     const unscopedBytes = snapshotSerializableRecord({ eventId, streamId, item }).byteLength
     const scopedBytes = snapshotSerializableRecord({
@@ -1411,5 +1501,324 @@ describe('Electron IPC hardening', () => {
 
     await current.router.destroy()
     await mismatchCurrent.router.destroy()
+  })
+})
+
+// PR210-36: the renderer's deadline is a `performance.now()` instant on the
+// renderer process clock; Electron main has its own clock with a different
+// time origin. What crosses the boundary is the remaining budget, measured just
+// before send, and main admits it against its own clock at receipt.
+describe('Electron deadline budget across process clocks', () => {
+  function connectionFor(peerId) {
+    return {
+      peerId,
+      connectionId: `${peerId}-connection`,
+      connectionGeneration: `${peerId}-generation`,
+      disconnect: jest.fn(async () => released())
+    }
+  }
+
+  function rendererBootstrap(clientId) {
+    const authority = createAuthority()
+    return {
+      attachment: authority.attachment,
+      attachmentId: authority.attachment.attachmentId,
+      versions: { ...authority.versions, ipcProtocol: negotiated('ipc-protocol') },
+      capabilities: emptyCapabilitySnapshot(authority.attachment.backendGeneration),
+      renderer: {
+        clientId: opaqueId(clientId, 'client', `hardening:${clientId}`),
+        windowScope: `${clientId}-window`,
+        sessionScope: `${clientId}-session`
+      },
+      rendererLease: rendererLease(clientId)
+    }
+  }
+
+  function recordingTransport(bootstrapValue) {
+    const routed = []
+    return {
+      routed,
+      invoke: jest.fn(async request => {
+        if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrapValue }
+        if (request.kind === 'route') {
+          routed.push(request.envelope.payload)
+          return { kind: 'route', payload: {} }
+        }
+        return { kind: 'release', cleanup: released() }
+      }),
+      acknowledge: jest.fn(async () => ({ kind: 'event.ack' })),
+      subscribe: () => () => {}
+    }
+  }
+
+  test('the renderer sends the remaining budget measured just before send, never its clock instant', async () => {
+    const now = jest.spyOn(globalThis.performance, 'now').mockReturnValue(1_000)
+    try {
+      const transport = recordingTransport(rendererBootstrap('budget-renderer'))
+      const client = new ElectronRendererBleClient(transport)
+      await client.initialize()
+
+      await client.request({ command: 'connection.connect', payload: { peerId: 'a', deadline: 1_500.7 }, binaryPayload: null })
+      await client.request({ command: 'connection.connect', payload: { peerId: 'b', deadline: 900 }, binaryPayload: null })
+      await client.request({ command: 'connection.connect', payload: { peerId: 'c', deadline: null }, binaryPayload: null })
+      await client.request({ command: 'connection.connect', payload: { peerId: 'd' }, binaryPayload: null })
+
+      expect(transport.routed).toEqual([
+        { peerId: 'a', budgetMs: 500 },
+        { peerId: 'b', budgetMs: 0 },
+        { peerId: 'c' },
+        { peerId: 'd' }
+      ])
+      await expect(
+        client.request({ command: 'connection.connect', payload: { peerId: 'e', deadline: 'soon' }, binaryPayload: null })
+      ).rejects.toMatchObject({ normalized: { code: 'protocol.malformed', operation: 'electron-renderer.deadline' } })
+      await client.destroy()
+    } finally {
+      now.mockRestore()
+    }
+  })
+
+  test.each([
+    ['main clock far ahead of the renderer, short budget', 5_000_000, 50],
+    ['main clock far behind the renderer, long budget', 3, 60_000]
+  ])('main admits the budget against its own clock at receipt: %s', async (_label, mainNow, budgetMs) => {
+    const connect = jest.fn(async peerId => connectionFor(String(peerId)))
+    const current = createRouter({ connect, monotonicNow: () => mainNow })
+    const sender = trusted(`budget-admission-${mainNow}`)
+    const bootstrapValue = await bootstrap(current, sender)
+
+    await expect(
+      current.router.dispatch(
+        sender,
+        route(current, bootstrapValue, 1, 'connection.connect', { peerId: 'peer-budget', budgetMs })
+      )
+    ).resolves.toMatchObject({ kind: 'route', payload: { peerId: 'peer-budget' } })
+    expect(connect).toHaveBeenCalledTimes(1)
+    expect(Number(connect.mock.calls[0][1].deadline)).toBe(mainNow + budgetMs)
+    await current.router.destroy()
+  })
+
+  test('an operation with no budget carries no deadline into main', async () => {
+    const connect = jest.fn(async peerId => connectionFor(String(peerId)))
+    const current = createRouter({ connect, monotonicNow: () => 42 })
+    const sender = trusted('budget-absent')
+    const bootstrapValue = await bootstrap(current, sender)
+
+    await current.router.dispatch(sender, route(current, bootstrapValue, 1, 'connection.connect', { peerId: 'p' }))
+    expect(connect.mock.calls[0][1].deadline).toBeNull()
+    await current.router.destroy()
+  })
+
+  test('an already-expired budget times out in main with zero effects', async () => {
+    const connect = jest.fn()
+    const write = jest.fn()
+    const current = createRouter({ connect, monotonicNow: () => 7_000 })
+    const sender = trusted('budget-expired')
+    const bootstrapValue = await bootstrap(current, sender)
+    const resources = current.router.resources.get(String(bootstrapValue.rendererLease.leaseId))
+    resources.databases.set('database-budget', {
+      database: { write },
+      characteristics: new Map([['characteristic-1', { characteristicUuid: 'characteristic-1' }]]),
+      descriptors: new Map()
+    })
+
+    await expect(
+      current.router.dispatch(
+        sender,
+        route(current, bootstrapValue, 1, 'connection.connect', { peerId: 'peer-expired', budgetMs: 0 })
+      )
+    ).rejects.toMatchObject({ normalized: { code: 'operation.timed-out', retryability: 'caller-decides' } })
+    const writeRequest = route(current, bootstrapValue, 2, 'gatt.write', {
+      databaseHandle: 'database-budget',
+      characteristicHandle: 'characteristic-1',
+      mode: 'with-response',
+      budgetMs: 0
+    })
+    writeRequest.envelope.binaryPayload = new Uint8Array([1])
+    await expect(current.router.dispatch(sender, writeRequest)).rejects.toMatchObject({
+      normalized: { code: 'operation.timed-out', retryability: 'caller-decides' }
+    })
+    expect(connect).not.toHaveBeenCalled()
+    expect(write).not.toHaveBeenCalled()
+    expect(resources.connections).toHaveProperty('size', 0)
+    await current.router.destroy()
+  })
+
+  test('main counts time spent after receipt against the admitted budget', async () => {
+    let mainNow = 1_000
+    const connectResult = deferred()
+    const connection = connectionFor('peer-queued')
+    const connect = jest.fn(() => connectResult.promise)
+    const current = createRouter({ connect, monotonicNow: () => mainNow })
+    const sender = trusted('budget-queued')
+    const bootstrapValue = await bootstrap(current, sender)
+
+    const pending = current.router.dispatch(
+      sender,
+      route(current, bootstrapValue, 1, 'connection.connect', { peerId: 'peer-queued', budgetMs: 10 })
+    )
+    await flushAsyncWork()
+    mainNow = 1_011
+    connectResult.resolve(connection)
+    await expect(pending).rejects.toMatchObject({ normalized: { code: 'operation.timed-out' } })
+    expect(connection.disconnect).toHaveBeenCalledTimes(1)
+    await current.router.destroy()
+  })
+
+  test.each([
+    ['an absolute renderer deadline', { deadline: 10 }],
+    ['a negative budget', { budgetMs: -1 }],
+    ['a fractional budget', { budgetMs: 1.5 }],
+    ['a non-numeric budget', { budgetMs: '10' }]
+  ])('main fails closed on %s with zero effects', async (_label, timing) => {
+    const connect = jest.fn()
+    const current = createRouter({ connect, monotonicNow: () => 0 })
+    const sender = trusted(`budget-malformed-${Object.keys(timing)[0]}-${String(Object.values(timing)[0])}`)
+    const bootstrapValue = await bootstrap(current, sender)
+
+    await expect(
+      current.router.dispatch(
+        sender,
+        route(current, bootstrapValue, 1, 'connection.connect', { peerId: 'peer-malformed', ...timing })
+      )
+    ).rejects.toMatchObject({ normalized: { code: 'protocol.malformed', operation: 'electron-main-router.budget' } })
+    expect(connect).not.toHaveBeenCalled()
+    await current.router.destroy()
+  })
+
+  test.each([
+    ['renderer clock near zero, main clock far ahead', 10, 1_000_000_000],
+    ['renderer clock far ahead, main clock near zero', 1_000_000_000, 10]
+  ])('renderer to main end to end with offset clocks: %s', async (_label, rendererNow, mainNow) => {
+    const now = jest.spyOn(globalThis.performance, 'now').mockReturnValue(rendererNow)
+    try {
+      const connect = jest.fn(async peerId => connectionFor(String(peerId)))
+      const current = createRouter({ connect, monotonicNow: () => mainNow })
+      const sender = trusted(`budget-e2e-${rendererNow}`)
+      const transport = {
+        invoke: jest.fn(async request => {
+          if (request.kind === 'route') return current.router.dispatch(sender, { kind: 'route', envelope: request.envelope })
+          return current.router.dispatch(sender, request)
+        }),
+        acknowledge: jest.fn(async () => ({ kind: 'event.ack' })),
+        subscribe: () => () => {}
+      }
+      const client = new ElectronRendererBleClient(transport)
+      await client.initialize()
+
+      await expect(
+        client.request({
+          command: 'connection.connect',
+          payload: { peerId: 'peer-e2e', deadline: rendererNow + 1_000 },
+          binaryPayload: null
+        })
+      ).resolves.toMatchObject({ payload: { peerId: 'peer-e2e' } })
+      expect(Number(connect.mock.calls[0][1].deadline)).toBe(mainNow + 1_000)
+
+      await expect(
+        client.request({
+          command: 'connection.connect',
+          payload: { peerId: 'peer-e2e-expired', deadline: rendererNow - 1 },
+          binaryPayload: null
+        })
+      ).rejects.toMatchObject({ normalized: { code: 'operation.timed-out' } })
+      expect(connect).toHaveBeenCalledTimes(1)
+      await current.router.destroy()
+    } finally {
+      now.mockRestore()
+    }
+  })
+})
+
+// PR210-73: the renderer/main wire changed (relative `budgetMs`, `commit` on
+// errors), so the IPC protocol is 3. A mixed pair fails at bootstrap as
+// protocol.incompatible, in both directions, before any operation.
+describe('Electron IPC protocol version 3', () => {
+  const { IPC_PROTOCOL_VERSION } = require('../src/ipc/protocol')
+  const { negotiateVersion } = require('../src/backend-contract/primitives')
+  const { BackendContractError } = require('../src/backend-contract/errors')
+
+  function protocolRange(value) {
+    return versionRange(version('ipc-protocol', value), version('ipc-protocol', value))
+  }
+
+  function negotiatedIpc(value) {
+    const range = protocolRange(value)
+    return { axis: 'ipc-protocol', selected: version('ipc-protocol', value), localRange: range, remoteRange: range }
+  }
+
+  function clientBootstrap(ipcProtocolValue) {
+    const authority = createAuthority()
+    return {
+      attachment: authority.attachment,
+      attachmentId: authority.attachment.attachmentId,
+      versions: { ...authority.versions, ipcProtocol: negotiatedIpc(ipcProtocolValue) },
+      capabilities: emptyCapabilitySnapshot(authority.attachment.backendGeneration),
+      renderer: {
+        clientId: opaqueId('protocol-client', 'client', 'hardening:protocol'),
+        windowScope: 'protocol-window',
+        sessionScope: 'protocol-session'
+      },
+      rendererLease: rendererLease('protocol-client')
+    }
+  }
+
+  test('the renderer offers exactly IPC protocol 3', () => {
+    expect(IPC_PROTOCOL_VERSION).toBe(3)
+    expect(IPC_CLIENT_COMPATIBILITY_OFFER.ipcProtocol).toEqual(protocolRange(3))
+  })
+
+  test('new main refuses an old renderer at bootstrap with no lease and no effects', async () => {
+    const connect = jest.fn()
+    const current = createRouter({ connect })
+    const sender = trusted('old-renderer')
+    const oldOffer = { ...IPC_CLIENT_COMPATIBILITY_OFFER, ipcProtocol: protocolRange(2) }
+
+    await expect(current.router.dispatch(sender, { kind: 'bootstrap', offer: oldOffer })).rejects.toMatchObject({
+      normalized: { code: 'protocol.incompatible' }
+    })
+    expect(current.router.resources).toHaveProperty('size', 0)
+    expect(connect).not.toHaveBeenCalled()
+
+    const response = await current.router.dispatch(sender, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
+    expect(response.bootstrap.versions.ipcProtocol.selected).toEqual(version('ipc-protocol', 3))
+    await current.router.destroy()
+  })
+
+  test('new renderer refuses an old main that cannot negotiate protocol 3', async () => {
+    const transport = {
+      invoke: jest.fn(async request => {
+        if (request.kind !== 'bootstrap') throw new Error(`unexpected ${request.kind}`)
+        try {
+          negotiateVersion(protocolRange(2), request.offer.ipcProtocol)
+        } catch (error) {
+          if (error instanceof BackendContractError) return { kind: 'failure', error: error.normalized }
+          throw error
+        }
+        return { kind: 'bootstrap', bootstrap: clientBootstrap(2) }
+      }),
+      acknowledge: jest.fn(),
+      subscribe: () => () => {}
+    }
+    const client = new ElectronRendererBleClient(transport)
+
+    await expect(client.initialize()).rejects.toMatchObject({ normalized: { code: 'protocol.incompatible' } })
+    expect(transport.invoke.mock.calls.map(([request]) => request.kind)).toEqual(['bootstrap'])
+  })
+
+  test('new renderer refuses a bootstrap that selected protocol 2 and releases its lease', async () => {
+    const transport = {
+      invoke: jest.fn(async request => {
+        if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: clientBootstrap(2) }
+        if (request.kind === 'release') return { kind: 'release', cleanup: released() }
+        throw new Error(`unexpected ${request.kind}`)
+      }),
+      acknowledge: jest.fn(),
+      subscribe: () => () => {}
+    }
+    const client = new ElectronRendererBleClient(transport)
+
+    await expect(client.initialize()).rejects.toMatchObject({ normalized: { code: 'protocol.incompatible' } })
+    expect(transport.invoke.mock.calls.map(([request]) => request.kind)).toEqual(['bootstrap', 'release'])
   })
 })

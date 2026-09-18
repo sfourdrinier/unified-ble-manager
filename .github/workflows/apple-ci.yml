@@ -30,9 +30,9 @@ jobs:
         uses: ./.github/actions/setup-js-package
 
       - name: Install pinned Rust + Apple targets
-        # The 5.x podspec builds ios/RustCore/RustCore.xcframework via
-        # prepare_command (ios/build-rust-core.sh) during pod install; it
-        # needs the pinned toolchain plus the Apple device/simulator matrix
+        # Source mode builds ios/RustCore/RustCore.xcframework with the
+        # explicit `native:apple:prepare` step (ios/build-rust-core.sh)
+        # before pod install; it needs the pinned toolchain plus the Apple device/simulator matrix
         # (aarch64-ios, aarch64-sim, x86_64-sim, aarch64-tvos,
         # aarch64-tvos-sim). Pin single-sourced from rust-toolchain.toml
         # (cargo --version resolves it via rustup).
@@ -56,10 +56,15 @@ jobs:
       - name: Install CocoaPods
         working-directory: example/ios
         # Source checkout without CI-staged prebuilts: explicit source mode
-        # (D2 distribution contract) builds ios/RustCore via prepare_command.
+        # (PR210-19). ios/RustCore is prepared BEFORE pod install by the
+        # canonical builder (CocoaPods never runs prepare_command for :path
+        # pods); the pod phase then rejects a stale staging.
         env:
           UBM_NATIVE_BUILD: source
-        run: BUNDLE_GEMFILE="$GITHUB_WORKSPACE/example/Gemfile" bundle exec pod install
+        run: |
+          set -euo pipefail
+          pnpm --dir "$GITHUB_WORKSPACE" native:apple:prepare
+          BUNDLE_GEMFILE="$GITHUB_WORKSPACE/example/Gemfile" bundle exec pod install
 
       # Executes host C++ protocol tests plus the Swift CoreBluetooth parser harness.
       # It does not boot a simulator or establish a physical BLE radio/peripheral session.
@@ -98,9 +103,9 @@ jobs:
         uses: ./.github/actions/setup-js-package
 
       - name: Install pinned Rust + Apple targets
-        # The 5.x podspec builds ios/RustCore/RustCore.xcframework via
-        # prepare_command (ios/build-rust-core.sh) during pod install; it
-        # needs the pinned toolchain plus the Apple device/simulator matrix
+        # Source mode builds ios/RustCore/RustCore.xcframework with the
+        # explicit `native:apple:prepare` step (ios/build-rust-core.sh)
+        # before pod install; it needs the pinned toolchain plus the Apple device/simulator matrix
         # (aarch64-ios, aarch64-sim, x86_64-sim, aarch64-tvos,
         # aarch64-tvos-sim). Pin single-sourced from rust-toolchain.toml
         # (cargo --version resolves it via rustup).
@@ -131,11 +136,14 @@ jobs:
       - name: Install CocoaPods
         working-directory: example-expo/ios
         # Source checkout without CI-staged prebuilts: explicit source mode
-        # (D2 distribution contract) builds ios/RustCore via prepare_command.
+        # (PR210-19). ios/RustCore is prepared BEFORE pod install by the
+        # canonical builder (CocoaPods never runs prepare_command for :path
+        # pods); the pod phase then rejects a stale staging.
         env:
           UBM_NATIVE_BUILD: source
         run: |
           set -euo pipefail
+          pnpm --dir "$GITHUB_WORKSPACE" native:apple:prepare
           BUNDLE_GEMFILE="$GITHUB_WORKSPACE/example/Gemfile" bundle exec pod install
 
       - name: Build Expo iOS app (iphonesimulator, New Arch)

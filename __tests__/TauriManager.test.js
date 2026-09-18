@@ -17,7 +17,7 @@ class FakeChannel {
 }
 
 function negotiated(axis) {
-  const selected = { axis, value: axis === 'ipc-protocol' ? 2 : 1 }
+  const selected = { axis, value: axis === 'ipc-protocol' ? 3 : 1 }
   const range = { axis, minimum: selected, maximum: selected }
   return { axis, selected, localRange: range, remoteRange: range }
 }
@@ -429,6 +429,188 @@ describe('Tauri v2 public manager', () => {
       'connection.events.unsubscribe',
       'connection.disconnect'
     ])
+  })
+
+  // PR210-37: a native terminal error states its commit state; the IPC
+  // manager carries a well-formed one and refuses an unknown word.
+  test.each([
+    ['uncertain', 'connection-lost'],
+    [null, 'connection-lost'],
+    ['committed', 'source-failed']
+  ])('a notification terminal with commit %p ends the stream %s', async (commit, expectedReason) => {
+    const invoke = jest.fn(async (_command, args) => {
+      const request = args.request
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'event.ack') return { kind: 'event.ack' }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      const { command } = request.envelope
+      if (command === 'connection.events.ready') return { kind: 'route', payload: { state: 'ready' } }
+      const responses = {
+        'connection.connect': {
+          handle: 'connection-1',
+          connectionId: 'connection-id-1',
+          ownerLeaseId: 'tauri-lease-1',
+          peerId: 'polar-h10',
+          connectionGeneration: 'generation-1'
+        },
+        'connection.events.subscribe': {
+          handle: 'connection-events-ipc-1',
+          connectionId: 'connection-id-1',
+          connectionGeneration: 'generation-1',
+          eventSchemaVersion: 2
+        },
+        'connection.events.unsubscribe': { state: 'released', failures: [] },
+        'gatt.discover': {
+          schemaVersion: 2,
+          handle: 'database-1',
+          databaseId: 'database-id-1',
+          databaseGeneration: 'database-generation-1',
+          services: [{ uuid: '180d', occurrence: '0', primary: true, includedServices: [] }],
+          characteristics: [
+            {
+              handle: 'characteristic-1',
+              serviceUuid: '180d',
+              serviceOccurrence: '0',
+              characteristicUuid: '2a37',
+              characteristicOccurrence: '0',
+              properties: ['notify']
+            }
+          ],
+          descriptors: []
+        },
+        'gatt.subscribe': { handle: 'subscription-1', delivery: 'unknown' },
+        'gatt.unsubscribe': { state: 'released', failures: [] },
+        'connection.disconnect': { state: 'released', failures: [] }
+      }
+      return { kind: 'route', payload: responses[command] }
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+    const connection = await manager.connect('polar-h10')
+    const database = await connection.discover()
+    const subscription = await database.service('180d').characteristic('2a37').subscribe()
+    const ended = subscription.values[Symbol.asyncIterator]().next()
+    FakeChannel.current.emit({
+      rendererLease: { leaseId: 'tauri-lease-1', generation: 'tauri-lease-generation-1' },
+      eventId: 'subscription-1-terminal',
+      streamId: 'subscription-1',
+      item: {
+        kind: 'terminal',
+        reason: 'connection-lost',
+        error: {
+          code: 'operation.disconnected',
+          domain: 'connection',
+          operation: 'gatt.notifications',
+          platform: null,
+          retryability: 'never',
+          commit
+        }
+      }
+    })
+    await expect(ended).resolves.toMatchObject({ value: { kind: 'terminal', reason: expectedReason } })
+    await manager.destroy()
+  })
+
+  test.each([
+    ['a malformed platform UUID', 'protocol.malformed', 'gatt', 'discovery.snapshot.uuid'],
+    ['a database past the ATT handle space', 'capability.limited', 'gatt', 'discovery.database-bound'],
+    ['a discovery without a core lease', 'argument.invalid', 'core', 'path.owner']
+  ])(
+    'surfaces the core refusing %s as the same typed discovery failure (finding 95)',
+    async (_case, code, domain, operation) => {
+      const commands = []
+      const invoke = jest.fn(async (_command, args) => {
+        const request = args.request
+        if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+        if (request.kind === 'event.ack') return { kind: 'event.ack' }
+        if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+        const { command } = request.envelope
+        commands.push(command)
+        if (command === 'connection.connect') {
+          return {
+            kind: 'route',
+            payload: {
+              handle: 'connection-discovery-failure',
+              connectionId: 'connection-id-discovery-failure',
+              ownerLeaseId: 'tauri-lease-1',
+              peerId: 'polar-h10',
+              connectionGeneration: 'generation-discovery-failure'
+            }
+          }
+        }
+        if (command === 'connection.events.subscribe') {
+          return {
+            kind: 'route',
+            payload: {
+              handle: 'connection-events-ipc-1',
+              connectionId: 'connection-id-discovery-failure',
+              connectionGeneration: 'generation-discovery-failure',
+              eventSchemaVersion: 2
+            }
+          }
+        }
+        if (command === 'connection.events.ready') return { kind: 'route', payload: { state: 'ready' } }
+        if (command === 'gatt.discover') {
+          return {
+            kind: 'failure',
+            error: { code, domain, operation, platform: null, retryability: 'never' }
+          }
+        }
+        return { kind: 'route', payload: { state: 'released', failures: [] } }
+      })
+      const { BleError } = require('../src')
+      const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+      const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+      const connection = await manager.connect('polar-h10')
+
+      const failure = await connection.discover().then(
+        () => null,
+        error => error
+      )
+      expect(failure).toBeInstanceOf(BleError)
+      expect(failure).toMatchObject({ code, domain, operation })
+      expect(commands.filter(command => command === 'gatt.discover')).toHaveLength(1)
+      await manager.destroy()
+    }
+  )
+
+  // Finding 116: the public error carries the OS's own identity exactly as
+  // the Node desktop path reports it (here WinRT with HRESULT and ATT status).
+  test('rehydrates the native platform identity onto the public BleError', async () => {
+    const platform = {
+      domain: 'winrt',
+      code: 'gatt-protocol-error',
+      safeMessage: 'The attribute requires authentication.',
+      metadata: { hresult: -2140864509, gattStatus: 5 }
+    }
+    const invoke = jest.fn(async (_command, args) => {
+      const request = args.request
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'event.ack') return { kind: 'event.ack' }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      return {
+        kind: 'failure',
+        error: {
+          code: 'connection.failed',
+          domain: 'connection',
+          operation: 'connection.connect',
+          platform,
+          retryability: 'never',
+          commit: null
+        }
+      }
+    })
+    const { BleError } = require('../src')
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+
+    const failure = await manager.connect('polar-h10').then(
+      () => null,
+      error => error
+    )
+    expect(failure).toBeInstanceOf(BleError)
+    expect(failure.platform).toEqual(platform)
+    await manager.destroy()
   })
 
   test('rehydrates host failures as public BleError values', async () => {
@@ -877,7 +1059,7 @@ describe('Tauri v2 public manager', () => {
     ).rejects.toMatchObject({ code: 'protocol.malformed' })
 
     const outOfRangeVersionBootstrap = bootstrap()
-    outOfRangeVersionBootstrap.versions.ipcProtocol.selected = { axis: 'ipc-protocol', value: 3 }
+    outOfRangeVersionBootstrap.versions.ipcProtocol.selected = { axis: 'ipc-protocol', value: 4 }
     const outOfRangeVersionInvoke = jest.fn(async () => ({ kind: 'bootstrap', bootstrap: outOfRangeVersionBootstrap }))
     await expect(
       createTauriBleManagerWithEnvironment({ invoke: outOfRangeVersionInvoke, Channel: FakeChannel })
@@ -977,9 +1159,7 @@ describe('Tauri v2 public manager', () => {
       code: 'lifecycle.destroyed',
       domain: 'ipc'
     })
-    await expect(manager.adapter.state()).rejects.toEqual(
-      expect.not.objectContaining({ name: 'TypeError' })
-    )
+    await expect(manager.adapter.state()).rejects.toEqual(expect.not.objectContaining({ name: 'TypeError' }))
     await manager.adapter.state().catch(error => {
       expect(String(error)).not.toMatch(/Tauri/i)
       expect(error).not.toBeInstanceOf(TypeError)
@@ -1042,9 +1222,228 @@ describe('Tauri shared-core admission (F01)', () => {
     const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
     const malformed = { ...bootstrap(), core: { contractRevision: 42 } }
     const invoke = invokeWithBootstrap(malformed)
-    await expect(
-      createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
-    ).rejects.toThrow()
+    await expect(createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })).rejects.toThrow()
     expect(invoke.mock.calls.map(([, args]) => args.request.kind)).toEqual(['bootstrap'])
+  })
+})
+
+// PR210-06 / PR210-22: the Tauri deadline path end to end through the shared
+// IPC manager. The webview sends a relative budget, the deadline still routes
+// an exact-operation cancel, and the native answer about retryability survives
+// the manager's aborted -> timed-out remap.
+describe('Tauri deadline and native retryability through the IPC manager', () => {
+  const nativePlatform = {
+    domain: 'btleplug',
+    code: 'write-dispatched',
+    safeMessage: 'The write reached the radio before the deadline.',
+    metadata: {}
+  }
+
+  async function writeHarness(nativeAnswer) {
+    const routed = []
+    let resolveWrite
+    let writeDispatched
+    const writeSeen = new Promise(resolve => {
+      writeDispatched = resolve
+    })
+    let cancelRouted
+    const cancelSeen = new Promise(resolve => {
+      cancelRouted = resolve
+    })
+    const invoke = jest.fn(async (_command, args) => {
+      const request = args.request
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'event.ack') return { kind: 'event.ack' }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      routed.push(request.envelope)
+      if (request.envelope.command === 'operation.cancel') {
+        cancelRouted(request.envelope)
+        resolveWrite({ kind: 'failure', error: nativeAnswer })
+        return { kind: 'route', payload: { state: 'cancellation-requested' } }
+      }
+      writeDispatched(request.envelope)
+      return new Promise(resolve => {
+        resolveWrite = resolve
+      })
+    })
+    const { IpcBleManager } = require('../src/ipc/manager')
+    const { TauriBleIpcTransport } = require('../src/tauri/transport')
+    const ipc = await IpcBleManager.create(new TauriBleIpcTransport({ invoke, Channel: FakeChannel }))
+    return { ipc, routed, writeSeen, cancelSeen }
+  }
+
+  async function expireWrite(harness, budgetMs) {
+    jest.useFakeTimers()
+    try {
+      const writing = harness.ipc.route(
+        'gatt.write',
+        { handle: 'characteristic-1', deadline: globalThis.performance.now() + budgetMs },
+        new Uint8Array([1, 2, 3])
+      )
+      writing.catch(() => undefined)
+      const writeEnvelope = await harness.writeSeen
+      jest.advanceTimersByTime(budgetMs + 1)
+      const failure = await writing.then(
+        () => null,
+        error => error
+      )
+      const cancelEnvelope = await harness.cancelSeen
+      return { writeEnvelope, cancelEnvelope, failure }
+    } finally {
+      jest.useRealTimers()
+    }
+  }
+
+  test('a deadline expiry cancels the exact dispatched operation that carried a relative budget', async () => {
+    const harness = await writeHarness({
+      code: 'operation.aborted',
+      domain: 'gatt',
+      operation: 'tauri.gatt.write',
+      platform: nativePlatform,
+      retryability: 'never'
+    })
+
+    const { writeEnvelope, cancelEnvelope } = await expireWrite(harness, 50)
+
+    expect(writeEnvelope.payload).not.toHaveProperty('deadline')
+    expect(Number.isSafeInteger(writeEnvelope.payload.budgetMs)).toBe(true)
+    expect(writeEnvelope.payload.budgetMs).toBeGreaterThanOrEqual(0)
+    expect(writeEnvelope.payload.budgetMs).toBeLessThanOrEqual(50)
+    expect(cancelEnvelope.payload).toEqual({ targetCorrelation: String(writeEnvelope.correlation) })
+    expect(harness.routed.filter(envelope => envelope.command === 'gatt.write')).toHaveLength(1)
+    await harness.ipc.destroy()
+  })
+
+  test('a dispatched write that expires keeps the native never and platform detail', async () => {
+    const harness = await writeHarness({
+      code: 'operation.aborted',
+      domain: 'gatt',
+      operation: 'tauri.gatt.write',
+      platform: nativePlatform,
+      retryability: 'never'
+    })
+
+    const { failure } = await expireWrite(harness, 50)
+
+    expect(failure?.normalized).toEqual({
+      code: 'operation.timed-out',
+      domain: 'gatt',
+      operation: 'tauri.gatt.write',
+      platform: nativePlatform,
+      retryability: 'never'
+    })
+    expect(harness.routed.filter(envelope => envelope.command === 'gatt.write')).toHaveLength(1)
+    await harness.ipc.destroy()
+  })
+
+  test('an expiry the core answers before dispatch keeps caller-decides', async () => {
+    const harness = await writeHarness({
+      code: 'operation.aborted',
+      domain: 'gatt',
+      operation: 'tauri.gatt.write',
+      platform: null,
+      retryability: 'caller-decides'
+    })
+
+    const { failure } = await expireWrite(harness, 50)
+
+    expect(failure?.normalized).toMatchObject({ code: 'operation.timed-out', retryability: 'caller-decides' })
+    await harness.ipc.destroy()
+  })
+
+  test('a native failure that is not an abort is rethrown unchanged after the deadline', async () => {
+    const nativeAnswer = {
+      code: 'gatt.write-failed',
+      domain: 'gatt',
+      operation: 'tauri.gatt.write',
+      platform: nativePlatform,
+      retryability: 'never'
+    }
+    const harness = await writeHarness(nativeAnswer)
+
+    const { failure } = await expireWrite(harness, 50)
+
+    expect(failure?.normalized).toEqual(nativeAnswer)
+    await harness.ipc.destroy()
+  })
+})
+
+// PR210-73: the webview/plugin wire changed (relative `budgetMs`, `commit` on
+// errors, subscribe `delivery`, lifecycle events), so the IPC protocol is 3.
+// A mixed pair fails at bootstrap as protocol.incompatible, never later as
+// protocol.malformed on its first operation.
+describe('Tauri IPC protocol version 3', () => {
+  function versionAxes(ipcProtocol) {
+    const bootstrapValue = bootstrap()
+    const selected = { axis: 'ipc-protocol', value: ipcProtocol }
+    const range = { axis: 'ipc-protocol', minimum: selected, maximum: selected }
+    bootstrapValue.versions.ipcProtocol = { axis: 'ipc-protocol', selected, localRange: range, remoteRange: range }
+    return bootstrapValue
+  }
+
+  test('the webview offers exactly IPC protocol 3', async () => {
+    const { TAURI_PLUGIN_COMPATIBILITY } = require('../src/tauri/compatibility')
+    const { IPC_PROTOCOL_VERSION } = require('../src/ipc/protocol')
+    expect(IPC_PROTOCOL_VERSION).toBe(3)
+    expect(TAURI_PLUGIN_COMPATIBILITY.ipcProtocol).toBe(3)
+
+    const invoke = jest.fn(async (_command, args) => {
+      const request = args.request
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      return { kind: 'event.ack' }
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+    const offer = invoke.mock.calls[0][1].request.offer
+    expect(offer.ipcProtocol).toEqual({
+      axis: 'ipc-protocol',
+      minimum: { axis: 'ipc-protocol', value: 3 },
+      maximum: { axis: 'ipc-protocol', value: 3 }
+    })
+    await manager.destroy()
+  })
+
+  test('an old plugin that cannot serve protocol 3 fails as protocol.incompatible before any operation', async () => {
+    const invoke = jest.fn(async (_command, args) => {
+      const request = args.request
+      if (request.kind !== 'bootstrap') throw new Error(`unexpected ${request.kind}`)
+      // The 4.x/rc plugin negotiates a local value of 2 against the offer.
+      const range = request.offer.ipcProtocol
+      if (range.minimum.value > 2 || range.maximum.value < 2) {
+        return {
+          kind: 'failure',
+          error: {
+            code: 'protocol.incompatible',
+            domain: 'ipc',
+            operation: 'tauri.bootstrap-version-ipc-protocol',
+            platform: null,
+            retryability: 'never'
+          }
+        }
+      }
+      return { kind: 'bootstrap', bootstrap: versionAxes(2) }
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+
+    await expect(createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })).rejects.toMatchObject({
+      code: 'protocol.incompatible'
+    })
+    expect(invoke.mock.calls.map(([, args]) => args.request.kind)).toEqual(['bootstrap'])
+  })
+
+  test('a plugin that selects protocol 2 is refused as protocol.incompatible and released', async () => {
+    const invoke = jest.fn(async (_command, args) => {
+      const request = args.request
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: versionAxes(2) }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      throw new Error(`unexpected ${request.kind}`)
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+
+    await expect(createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })).rejects.toMatchObject({
+      code: 'protocol.incompatible'
+    })
+    expect(invoke.mock.calls.map(([, args]) => args.request.kind)).not.toContain('route')
   })
 })

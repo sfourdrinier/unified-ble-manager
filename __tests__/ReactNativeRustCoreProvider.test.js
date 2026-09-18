@@ -1,764 +1,308 @@
 // __tests__/ReactNativeRustCoreProvider.test.js
 //
-// F01 RN factory routing: manager creation, scan, connect, subscribe,
-// timeout, and dispose execute the native Rust core through the
-// binding-backed provider — never the TypeScript 4.0 manager.
-//
-// The fake binding below implements the exact F01 op contract documented in
-// `src/backends/reactnative/react-native-rust-core-provider.ts` (the same
-// contract the F01 acceptance proof implements over the packed NAPI addon).
-// Every test asserts the core saw the op; the control surface is a throwing
-// proxy, so any TypeScript-fallback BLE work fails the test loudly.
+// F01 / R07–R13: the binding-backed provider on its own (no manager), over
+// the production binding and a deterministic `UnifiedBleRustCore` module that
+// speaks the frozen wire. Every radio effect is an owner op; no TypeScript
+// scheduling, fallback or synthesized record exists on this path.
 
-'use strict'
-
-const { capacity } = require('../src/backend-contract/primitives')
-const { RUST_CORE_CONTRACT_REVISION } = require('../src/backends/reactnative/react-native-rust-core')
 const {
   createReactNativeRustCoreBackendProvider
 } = require('../src/backends/reactnative/react-native-rust-core-provider')
-const { createReactNativeBleManagerWithEnvironment } = require('../src/react-native-manager')
-const { reactNativeAndroidDefaultAdapterId } = require('../src/backends/reactnative/react-native-android-provider')
+const { reactNativeAndroidDefaultAdapterId } = require('../src/backends/reactnative/react-native-platform-identity')
+const {
+  rustCoreHarness,
+  scanOptions,
+  subscribeOptions,
+  settle
+} = require('../test-support/react-native/rust-core-harness')
+const { DEFAULT_PEER } = require('../test-support/react-native/deterministic-rust-core-native')
+const { opaqueId, version, versionRange } = require('../src/backend-contract/primitives')
 
-const HRM_SERVICE = '0000180d-0000-1000-8000-00805f9b34fb'
-const HRM_MEASUREMENT = '00002a37-0000-1000-8000-00805f9b34fb'
-const CHAR_USER_DESCRIPTION = '00002901-0000-1000-8000-00805f9b34fb'
+const NO_OPTIONS = Object.freeze({ signal: null, deadline: null })
 
-function throwingControl() {
-  return new Proxy(
-    {},
-    {
-      get: (_target, property) => {
-        throw new Error(`TypeScript control surface must not execute BLE work (touched ${String(property)})`)
-      }
-    }
-  )
-}
-
-function createFakeCore(script = {}) {
-  const calls = []
-  const observations = Array.isArray(script.observations) ? [...script.observations] : []
-  const notifications = Array.isArray(script.notifications) ? [...script.notifications] : []
-  const session = {
-    contractRevision: () => script.revision || RUST_CORE_CONTRACT_REVISION,
-    invoke: async (op, args) => {
-      calls.push([op, args])
-      if (typeof script.onInvoke === 'function') {
-        const override = await script.onInvoke(op, args)
-        if (override !== undefined) return override
-      }
-      switch (op) {
-        case 'adapter.state':
-          return {
-            availability: 'available',
-            authorization: 'unknown',
-            power: 'on',
-            backendGeneration: 'gen-1',
-            updatedAt: 123,
-            safeReason: null
-          }
-        case 'counters.describe':
-          return {
-            activeScanControllers: 0,
-            scanConsumers: 0,
-            chooserSessions: 0,
-            connectionLeases: 0,
-            physicalLinks: 0,
-            databaseSnapshots: 0,
-            physicalCccdEnablements: 0,
-            subscriptionConsumers: 0,
-            queuedOperations: 0,
-            dispatchedOperations: 0,
-            retainedByteBuffers: 0,
-            restorationRecords: 0,
-            orphanedIpcOwners: 0
-          }
-        case 'scan.start':
-          return { operationId: 'scan-op-1' }
-        case 'scan.take':
-          return observations.length > 0 ? observations.shift() : null
-        case 'scan.stop':
-          return { state: 'released' }
-        case 'connection.connect':
-          return { peerKey: 'peerkey-1', connectionGeneration: 'conngen-1' }
-        case 'connection.disconnect':
-          return {}
-        case 'gatt.discover':
-          return {
-            services: [
-              {
-                uuid: HRM_SERVICE,
-                occurrence: 0,
-                characteristics: [
-                  {
-                    uuid: HRM_MEASUREMENT,
-                    occurrence: 0,
-                    properties: 0x09,
-                    descriptors: [{ uuid: CHAR_USER_DESCRIPTION, occurrence: 0 }]
-                  }
-                ]
-              }
-            ]
-          }
-        case 'gatt.read':
-        case 'gatt.read-descriptor':
-          return { value: new Uint8Array([0x42]) }
-        case 'gatt.write':
-        case 'gatt.write-descriptor':
-        case 'gatt.subscribe':
-          return {}
-        case 'notifications.take':
-          return notifications.length > 0 ? { value: notifications.shift() } : null
-        case 'gatt.unsubscribe':
-          return { disabled: true }
-        case 'peers.resolve':
-          return null
-        case 'peers.known':
-        case 'peers.connected':
-          return []
-        case 'events.take':
-          return null
-        case 'op.cancel':
-          return { state: 'not-cancellable' }
-        case 'session.dispose':
-          if (script.disposeError) throw script.disposeError
-          return { state: 'released' }
-        default:
-          throw new Error(`unexpected core op ${op}`)
-      }
-    },
-    close: async () => {
-      calls.push(['session.close', undefined])
-    }
-  }
+function coreCompatibility() {
   return {
-    calls,
-    observations,
-    notifications,
-    binding: {
-      openSession: async owner => {
-        if (typeof owner !== 'string' || owner.length === 0) throw new Error('owner must not be empty')
-        calls.push(['session.open', owner])
-        return session
-      }
-    }
+    backendContract: versionRange(version('backend-contract', 1), version('backend-contract', 1)),
+    capabilitySchema: versionRange(version('capability-schema', 1), version('capability-schema', 1)),
+    eventSchema: versionRange(version('event-schema', 1), version('event-schema', 1)),
+    traceFormat: versionRange(version('trace-format', 1), version('trace-format', 1))
   }
 }
 
-function ops(calls, name) {
-  return calls.filter(([op]) => op === name).map(([, args]) => args)
+function providerFor(harness, overrides = {}) {
+  return createReactNativeRustCoreBackendProvider({
+    platform: 'android',
+    binding: harness.binding,
+    owner: 'rn-provider-test',
+    now: () => 1000,
+    runtime: { androidApiLevel: 34 },
+    ...overrides
+  })
 }
 
-function scanOptions(overrides = {}) {
+async function openBackend(options = {}) {
+  const harness = rustCoreHarness({ platform: 'android', ...options })
+  const backend = await providerFor(harness).create({ selectedAdapterId: reactNativeAndroidDefaultAdapterId() })
+  return { harness, native: harness.native, backend }
+}
+
+let correlationOrdinal = 0
+
+function operation(backend, overrides = {}) {
+  correlationOrdinal += 1
   return {
-    filter: { serviceUuids: [HRM_SERVICE], manufacturerData: [], localNamePrefix: null },
-    duplicatePolicy: 'all',
-    timestampPolicy: 'receipt-monotonic',
-    delivery: {
-      itemCapacity: capacity(4),
-      byteCapacity: capacity(4096),
-      reservedControlCapacity: capacity(1),
-      overflowPolicy: 'drop-oldest'
-    },
-    deadline: null,
     signal: null,
-    sharing: { mode: 'owner', allowSharing: false },
+    deadline: null,
+    correlation: opaqueId(`corr-${correlationOrdinal}`, 'core-operation', 'test'),
     ...overrides
   }
 }
 
-function operationOptions(overrides = {}) {
-  return { signal: null, deadline: null, correlation: 'test-correlation-1', ...overrides }
+async function connected(backend) {
+  const peerId = backend.connections.peerFromAddress({ address: DEFAULT_PEER, addressType: 'public' })
+  const lease = await backend.connections.connect(peerId, opaqueId('client', 'client', 'test'), NO_OPTIONS)
+  const database = await backend.gatt.discover(lease.connection, NO_OPTIONS)
+  const snapshot = await database.snapshot()
+  return { lease, database, snapshot, path: snapshot.characteristics[0].path }
 }
 
-async function takeStreamValue(stream) {
-  for await (const item of stream) {
-    if (item.kind === 'value') return item.value
-  }
-  throw new Error('stream terminated without a value')
+async function rejection(promise) {
+  return promise.then(
+    () => null,
+    error => error
+  )
 }
 
 describe('React Native Rust core provider (F01 factory routing)', () => {
-  test('factory creation with a binding executes the core, never the TS control', async () => {
-    const fake = createFakeCore()
-    const manager = await createReactNativeBleManagerWithEnvironment({
-      platform: 'android',
-      control: throwingControl(),
-      now: () => 1000,
-      clientId: 'client-a',
-      managerId: 'manager-a',
-      hostSessionScope: 'scope-a',
-      rustCore: fake.binding
-    })
-    expect(manager).toBeDefined()
-    expect(ops(fake.calls, 'adapter.state').length).toBe(1)
-    expect(ops(fake.calls, 'counters.describe').length).toBe(1)
-    expect(ops(fake.calls, 'session.open').length).toBe(1)
-    await manager.destroy()
-    expect(ops(fake.calls, 'session.dispose').length).toBe(1)
-    expect(ops(fake.calls, 'session.close').length).toBe(1)
+  test('creation admits a session, reads adapter state and counters, and destroy disposes then closes', async () => {
+    const { native, backend } = await openBackend()
+    expect(native.opsInvoked('adapter.state')).toHaveLength(1)
+    expect(native.opsInvoked('counters.describe')).toHaveLength(1)
+    await backend.attach({ coreCompatibility: coreCompatibility() })
+    expect(await backend.destroy()).toEqual({ state: 'released', failures: [] })
+    const names = native.calls.map(call => (call[0] === 'invoke' ? call[2] : call[0]))
+    expect(names.indexOf('session.dispose')).toBeLessThan(names.indexOf('closeSession'))
   })
 
-  test('foreign core revision fails manager creation closed, never TS fallback', async () => {
-    const fake = createFakeCore({ revision: 'C-UBM.9.9.9-DRAFT' })
-    const error = await createReactNativeBleManagerWithEnvironment({
-      platform: 'android',
-      control: throwingControl(),
-      now: () => 1000,
-      clientId: 'client-a',
-      managerId: 'manager-a',
-      hostSessionScope: 'scope-a',
-      rustCore: fake.binding
-    }).then(
-      () => null,
-      failure => failure
+  test('a foreign build fails creation closed with zero sessions, never a TS fallback', async () => {
+    const harness = rustCoreHarness({ platform: 'android' })
+    harness.native.identity = { ...harness.native.identity, contractRevision: 'C-UBM.9.9.9-DRAFT' }
+    const error = await rejection(
+      providerFor(harness).create({ selectedAdapterId: reactNativeAndroidDefaultAdapterId() })
     )
-    expect(error).not.toBeNull()
-    // The public factory rehydrates the seam rejection as a BleError carrying
-    // the frozen wire identity — never a silent TS-manager substitution.
-    expect(String(error.message)).toContain('protocol.incompatible')
-    expect(String(error.message)).toContain('react-native-manager.rust-core-revision')
+    expect(error.normalized).toMatchObject({ code: 'protocol.incompatible' })
+    expect(harness.native.calls.filter(call => call[0] === 'openSession')).toHaveLength(0)
   })
 
-  test('scan routes through the core with the deadline passed as timeoutMs', async () => {
-    const fake = createFakeCore({
-      observations: [{ peerId: 'peer-1', rssi: -60, localName: 'Movesense', serviceUuids: [HRM_SERVICE] }]
+  test('scan routes through the owner; the observation carries the platform fields', async () => {
+    const { native, backend } = await openBackend()
+    const lease = await backend.scanner.start(scanOptions({ deadline: 1500 }), opaqueId('client', 'client', 'test'))
+    expect(native.opsInvoked('scan.start')[0]).toMatchObject({
+      serviceUuids: [],
+      duplicatePolicy: 'all',
+      budgetMs: 500
     })
-    const provider = createReactNativeRustCoreBackendProvider({
-      platform: 'android',
-      binding: fake.binding,
-      owner: 'owner-a',
-      now: () => 1000,
-      control: throwingControl()
-    })
-    const backend = await provider.create({ selectedAdapterId: reactNativeAndroidDefaultAdapterId() })
-    try {
-      const lease = await backend.scanner.start(scanOptions({ deadline: 1500 }), 'client-a')
-      expect(ops(fake.calls, 'scan.start')[0]).toMatchObject({
-        serviceUuids: [HRM_SERVICE],
-        timeoutMs: '500',
-        duplicatePolicy: 'all'
-      })
-      const observation = await takeStreamValue(lease.observations)
-      expect(observation.device.id).toBeDefined()
-      expect(observation.rssi).toMatchObject({ state: 'present', value: -60 })
-      expect(observation.localName).toMatchObject({ state: 'present', value: 'Movesense' })
-      await lease.stop()
-      expect(ops(fake.calls, 'scan.stop')).toEqual([{ opId: 'scan-op-1', nowMs: '1000' }])
-    } finally {
-      await backend.destroy()
-    }
-  })
-
-  test('connect/discover/read/write/subscribe/unsubscribe/dispose execute the core', async () => {
-    const fake = createFakeCore({
-      observations: [{ peerId: 'peer-1', rssi: -60, serviceUuids: [HRM_SERVICE] }],
-      notifications: [new Uint8Array([0x06, 0x40])]
-    })
-    const provider = createReactNativeRustCoreBackendProvider({
-      platform: 'android',
-      binding: fake.binding,
-      owner: 'owner-a',
-      now: () => 1000,
-      control: throwingControl()
-    })
-    const backend = await provider.create({ selectedAdapterId: reactNativeAndroidDefaultAdapterId() })
-    try {
-      const lease = await backend.scanner.start(scanOptions(), 'client-a')
-      const observation = await takeStreamValue(lease.observations)
-
-      const connectionLease = await backend.connections.connect(
-        observation.device.id,
-        'client-a',
-        { signal: null, deadline: null }
-      )
-      expect(ops(fake.calls, 'connection.connect')[0]).toMatchObject({ peerId: 'peer-1' })
-      expect(connectionLease.connection.state).toBe('connected')
-      // F01 regression: the core matches discover/disconnect against the
-      // exact lease string connect established. The provider must resend
-      // that raw core lease — never the branded public leaseId — or the
-      // core resolves GATT paths against a foreign lease.
-      const connectLease = ops(fake.calls, 'connection.connect')[0].lease
-      expect(typeof connectLease).toBe('string')
-      expect(connectLease.length).toBeGreaterThan(0)
-
-      const database = await backend.gatt.discover(connectionLease.connection, { signal: null, deadline: null })
-      expect(ops(fake.calls, 'gatt.discover')[0]).toMatchObject({ peerId: 'peer-1' })
-      expect(ops(fake.calls, 'gatt.discover')[0].lease).toBe(connectLease)
-      const snapshot = await database.snapshot()
-      expect(snapshot.services).toHaveLength(1)
-      expect(snapshot.characteristics).toHaveLength(1)
-      expect(snapshot.descriptors).toHaveLength(1)
-      const path = snapshot.characteristics[0].path
-      expect(path.serviceUuid).toBe(HRM_SERVICE)
-      // F01 regression: occurrence identities are decimal strings of the
-      // core numeral (the portable snapshot layer requires
-      // /^(0|[1-9][0-9]*)$/); branded labels fail public-gatt.occurrence.
-      expect(String(path.serviceOccurrence)).toMatch(/^(0|[1-9][0-9]*)$/)
-      expect(String(path.characteristicOccurrence)).toMatch(/^(0|[1-9][0-9]*)$/)
-
-      const read = await backend.gatt
-        .read(path, { operation: operationOptions() })
-        .completion.then(result => result)
-      expect([...read.value]).toEqual([0x42])
-      expect(ops(fake.calls, 'gatt.read')[0]).toMatchObject({
-        peerId: 'peer-1',
-        selector: {
-          serviceUuid: HRM_SERVICE,
-          serviceOccurrence: 0,
-          characteristicUuid: HRM_MEASUREMENT,
-          characteristicOccurrence: 0
-        }
-      })
-
-      await backend.gatt
-        .write(path, { operation: operationOptions(), bytes: new Uint8Array([0x01]), mode: 'without-response' })
-        .completion
-      expect(ops(fake.calls, 'gatt.write')[0]).toMatchObject({ peerId: 'peer-1', mode: 'without-response' })
-
-      const subscription = await backend.gatt
-        .subscribe(path, {
-          operation: operationOptions(),
-          options: {
-            signal: null,
-            deadline: null,
-            delivery: {
-              itemCapacity: capacity(4),
-              byteCapacity: capacity(4096),
-              reservedControlCapacity: capacity(1),
-              overflowPolicy: 'drop-oldest'
-            }
-          }
-        })
-        .completion
-      expect(ops(fake.calls, 'gatt.subscribe')[0]).toMatchObject({ peerId: 'peer-1' })
-      const notification = await takeStreamValue(subscription.notifications)
-      expect([...notification.value]).toEqual([0x06, 0x40])
-
-      const terminal = await backend.gatt
-        .unsubscribe(subscription, operationOptions({ correlation: 'test-correlation-2' }))
-        .completion
-      expect(terminal.outcome).toBe('succeeded')
-      expect(ops(fake.calls, 'gatt.unsubscribe')[0]).toMatchObject({ peerId: 'peer-1' })
-
-      await connectionLease.release()
-      expect(ops(fake.calls, 'connection.disconnect')[0]).toMatchObject({ peerId: 'peer-1' })
-      expect(ops(fake.calls, 'connection.disconnect')[0].lease).toBe(connectLease)
-      await lease.stop()
-    } finally {
-      await backend.destroy()
-    }
-    expect(ops(fake.calls, 'session.dispose').length).toBe(1)
-  })
-
-  test('destroyed backend refuses loudly without touching the core', async () => {
-    const fake = createFakeCore()
-    const provider = createReactNativeRustCoreBackendProvider({
-      platform: 'android',
-      binding: fake.binding,
-      owner: 'owner-a',
-      now: () => 1000,
-      control: throwingControl()
-    })
-    const backend = await provider.create({ selectedAdapterId: reactNativeAndroidDefaultAdapterId() })
+    native.emitAdvertisement(DEFAULT_PEER, { rssi: -60, localName: 'Movesense' })
+    const item = await lease.observations[Symbol.asyncIterator]().next()
+    expect(item.value.value.rssi).toMatchObject({ state: 'present', value: -60 })
+    expect(item.value.value.localName).toMatchObject({ state: 'present', value: 'Movesense' })
+    await lease.stop()
+    expect(native.opsInvoked('scan.stop')).toEqual([{ operationId: 's1-scan-1' }])
     await backend.destroy()
-    const callsAfterDestroy = fake.calls.length
-    const error = await backend.scanner.start(scanOptions(), 'client-a').then(
-      () => null,
-      failure => failure
-    )
-    expect(error).not.toBeNull()
+  })
+
+  test('connect/discover/read/write/subscribe/unsubscribe/dispose execute the owner with one lease', async () => {
+    const { native, backend } = await openBackend()
+    const { lease, snapshot, path } = await connected(backend)
+    const connectLease = native.opsInvoked('connection.connect')[0].lease
+    expect(native.opsInvoked('gatt.discover')[0].lease).toBe(connectLease)
+    expect(lease.connection.state).toBe('connected')
+    // The heart-rate service, then the owner double's duplicate-UUID battery services.
+    expect(snapshot.services).toHaveLength(3)
+    expect(snapshot.characteristics).toHaveLength(4)
+    expect(snapshot.descriptors).toHaveLength(3)
+    const read = await backend.gatt.read(path, { operation: operation(backend) }).completion
+    expect([...read.value]).toEqual([0x00, 0x48])
+    const write = await backend.gatt.write(path, {
+      operation: operation(backend),
+      bytes: new Uint8Array([1]),
+      mode: 'with-response'
+    }).completion
+    expect(write.commitState).toBe('confirmed')
+    const subscription = await backend.gatt.subscribe(path, {
+      operation: operation(backend),
+      options: subscribeOptions()
+    }).completion
+    await backend.gatt.unsubscribe(subscription, operation(backend)).completion
+    expect(subscription.notifications.isTerminal()).toBe(true)
+    await lease.release()
+    await backend.destroy()
+  })
+
+  test('a destroyed backend refuses loudly without touching the owner', async () => {
+    const { native, backend } = await openBackend()
+    await backend.destroy()
+    const after = native.calls.length
+    const error = await rejection(backend.scanner.start(scanOptions(), opaqueId('client', 'client', 'test')))
     expect(error.normalized.code).toBe('lifecycle.destroyed')
-    expect(fake.calls.length).toBe(callsAfterDestroy)
+    expect(native.calls.length).toBe(after)
   })
 })
 
-describe('React Native Rust core provider lifecycle (R07-R13 handoff)', () => {
-  const tick = () => new Promise(resolve => setTimeout(resolve, 0))
-  const settle = (ms = 50) => new Promise(resolve => setTimeout(resolve, ms))
-
-  async function makeBackend(script) {
-    const fake = createFakeCore(script)
-    const provider = createReactNativeRustCoreBackendProvider({
-      platform: 'android',
-      binding: fake.binding,
-      owner: 'owner-a',
-      now: () => 1000,
-      control: throwingControl()
-    })
-    const backend = await provider.create({ selectedAdapterId: reactNativeAndroidDefaultAdapterId() })
-    return { fake, provider, backend }
-  }
-
-  async function connectedPath(backend) {
-    const lease = await backend.scanner.start(scanOptions(), 'client-a')
-    const observation = await takeStreamValue(lease.observations)
-    const connectionLease = await backend.connections.connect(
-      observation.device.id,
-      'client-a',
-      { signal: null, deadline: null }
-    )
-    const database = await backend.gatt.discover(connectionLease.connection, { signal: null, deadline: null })
-    const snapshot = await database.snapshot()
-    return { lease, observation, connectionLease, database, path: snapshot.characteristics[0].path }
-  }
-
-  test('R07: mid-flight abort cancels by the same operationId the op was invoked with', async () => {
-    const script = {
-      observations: [{ peerId: 'peer-1', rssi: -60, serviceUuids: [HRM_SERVICE] }]
-    }
-    const { fake, backend } = await makeBackend(script)
-    try {
-      const { path } = await connectedPath(backend)
-      let releaseRead
-      script.onInvoke = op => {
-        if (op === 'gatt.read') {
-          return new Promise(resolve => {
-            releaseRead = () => resolve({ value: new Uint8Array([0x09]) })
-          })
-        }
-        return undefined
-      }
-      const controller = new AbortController()
-      const dispatch = backend.gatt.read(path, {
-        operation: { signal: controller.signal, deadline: null, correlation: 'corr-r07-read' }
-      })
-      await tick()
-      controller.abort()
-      releaseRead()
-      const result = await dispatch.completion
-      expect([...result.value]).toEqual([0x09])
-      // The core must be able to link the cancel to the op: the invocation
-      // carries the correlation as operationId and op.cancel references it.
-      expect(ops(fake.calls, 'gatt.read')[0].operationId).toBe('corr-r07-read')
-      expect(ops(fake.calls, 'op.cancel')).toEqual([{ operationId: 'corr-r07-read' }])
-    } finally {
-      await backend.destroy()
-    }
+describe('React Native Rust core provider lifecycle (R07–R13)', () => {
+  test('R07: a mid-flight abort cancels by the operationId the op was invoked with', async () => {
+    const { native, backend } = await openBackend()
+    const { path } = await connected(backend)
+    native.hold('gatt.read')
+    const controller = new AbortController()
+    const op = operation(backend, { signal: controller.signal })
+    const dispatch = backend.gatt.read(path, { operation: op })
+    await settle()
+    controller.abort()
+    expect((await rejection(dispatch.completion)).normalized.code).toBe('operation.aborted')
+    expect(native.opsInvoked('gatt.read')[0].operationId).toBe(String(op.correlation))
+    expect(native.opsInvoked('op.cancel')).toEqual([
+      { operationId: String(op.correlation), admission: native.opsInvoked('gatt.read')[0].admission }
+    ])
+    await backend.destroy()
   })
 
-  test('R07: connect forwards the abort signal with a linkable operationId', async () => {
-    const script = {
-      observations: [{ peerId: 'peer-1', rssi: -60, serviceUuids: [HRM_SERVICE] }]
-    }
-    const { fake, backend } = await makeBackend(script)
-    try {
-      const lease = await backend.scanner.start(scanOptions(), 'client-a')
-      const observation = await takeStreamValue(lease.observations)
-      let releaseConnect
-      script.onInvoke = op => {
-        if (op === 'connection.connect') {
-          return new Promise(resolve => {
-            releaseConnect = () => resolve({ peerKey: 'peerkey-1', connectionGeneration: 'conngen-1' })
-          })
-        }
-        return undefined
-      }
-      const controller = new AbortController()
-      const pending = backend.connections.connect(observation.device.id, 'client-a', {
-        signal: controller.signal,
-        deadline: null
-      })
-      await tick()
-      controller.abort()
-      releaseConnect()
-      const connectionLease = await pending
-      expect(connectionLease.connection.state).toBe('connected')
-      const connectArgs = ops(fake.calls, 'connection.connect')[0]
-      expect(typeof connectArgs.operationId).toBe('string')
-      expect(connectArgs.operationId.length).toBeGreaterThan(0)
-      expect(ops(fake.calls, 'op.cancel')).toEqual([{ operationId: connectArgs.operationId }])
-      await lease.stop()
-    } finally {
-      await backend.destroy()
-    }
+  test('R07: dispatch cancellation reports the owner’s acknowledgement', async () => {
+    const { native, backend } = await openBackend()
+    const { path } = await connected(backend)
+    native.hold('gatt.read')
+    const dispatch = backend.gatt.read(path, { operation: operation(backend) })
+    await settle()
+    expect((await dispatch.requestCancellation()).state).toBe('cancellation-requested')
+    await rejection(dispatch.completion)
+    expect((await dispatch.requestCancellation()).state).toBe('already-terminal')
+    await backend.destroy()
   })
 
   test('R07: aborting after settle sends no spurious op.cancel (no leaked listener)', async () => {
-    const script = {
-      observations: [{ peerId: 'peer-1', rssi: -60, serviceUuids: [HRM_SERVICE] }]
-    }
-    const { fake, backend } = await makeBackend(script)
-    try {
-      const { path } = await connectedPath(backend)
-      const controller = new AbortController()
-      const dispatch = backend.gatt.read(path, {
-        operation: { signal: controller.signal, deadline: null, correlation: 'corr-r07-settled' }
-      })
-      await dispatch.completion
-      const cancelsBefore = ops(fake.calls, 'op.cancel').length
-      controller.abort()
-      await settle()
-      expect(ops(fake.calls, 'op.cancel').length).toBe(cancelsBefore)
-    } finally {
-      await backend.destroy()
-    }
-  })
-
-  test('R08/R09: foreign revision rejects closed — the admitted session is closed, never leaked', async () => {
-    const script = { revision: 'C-UBM.9.9.9-DRAFT' }
-    const fake = createFakeCore(script)
-    const provider = createReactNativeRustCoreBackendProvider({
-      platform: 'android',
-      binding: fake.binding,
-      owner: 'owner-a',
-      now: () => 1000,
-      control: throwingControl()
-    })
-    const error = await provider
-      .create({ selectedAdapterId: reactNativeAndroidDefaultAdapterId() })
-      .then(
-        () => null,
-        failure => failure
-      )
-    expect(error).not.toBeNull()
-    expect(error.normalized.code).toBe('protocol.incompatible')
-    // Byte-exact session accounting: exactly one open and one close, no
-    // dispose (nothing was constructed), no adapter/counters traffic.
-    expect(fake.calls).toEqual([['session.open', expect.any(String)], ['session.close', undefined]])
-  })
-
-  test('R08: listAdapters failure still releases the session (no leak on the probe path)', async () => {
-    const script = { revision: 'C-UBM.9.9.9-DRAFT' }
-    const fake = createFakeCore(script)
-    const provider = createReactNativeRustCoreBackendProvider({
-      platform: 'android',
-      binding: fake.binding,
-      owner: 'owner-a',
-      now: () => 1000,
-      control: throwingControl()
-    })
-    const error = await provider.listAdapters().then(
-      () => null,
-      failure => failure
-    )
-    expect(error).not.toBeNull()
-    expect(error.normalized.code).toBe('protocol.incompatible')
-    expect(fake.calls).toEqual([['session.open', expect.any(String)], ['session.close', undefined]])
-  })
-
-  test('R08/R11: destroy retires every owned stream (scan, notifications, adapter watch)', async () => {
-    const script = {
-      observations: [{ peerId: 'peer-1', rssi: -60, serviceUuids: [HRM_SERVICE] }],
-      notifications: [new Uint8Array([0x06])]
-    }
-    const { backend } = await makeBackend(script)
-    const lease = await backend.scanner.start(scanOptions(), 'client-a')
-    const first = await takeStreamValue(lease.observations)
-    const watch = await backend.adapter.watchState()
-    const lease2 = await backend.scanner.start(scanOptions(), 'client-a')
-    const connectionLease = await backend.connections.connect(
-      first.device.id,
-      'client-a',
-      { signal: null, deadline: null }
-    )
-    const database = await backend.gatt.discover(connectionLease.connection, { signal: null, deadline: null })
-    const snapshot = await database.snapshot()
-    const subscription = await backend.gatt
-      .subscribe(snapshot.characteristics[0].path, {
-        operation: operationOptions({ correlation: 'corr-r08-sub' }),
-        options: {
-          signal: null,
-          deadline: null,
-          delivery: {
-            itemCapacity: capacity(4),
-            byteCapacity: capacity(4096),
-            reservedControlCapacity: capacity(1),
-            overflowPolicy: 'drop-oldest'
-          }
-        }
-      })
-      .completion
+    const { native, backend } = await openBackend()
+    const { path } = await connected(backend)
+    const controller = new AbortController()
+    await backend.gatt.read(path, { operation: operation(backend, { signal: controller.signal }) }).completion
+    controller.abort()
+    await settle()
+    expect(native.opsInvoked('op.cancel')).toHaveLength(0)
     await backend.destroy()
-    expect(lease.observations.isTerminal()).toBe(true)
-    expect(lease2.observations.isTerminal()).toBe(true)
+  })
+
+  test('R08: listAdapters probes and releases the probe session', async () => {
+    const harness = rustCoreHarness({ platform: 'android' })
+    const adapters = await providerFor(harness).listAdapters()
+    expect(adapters).toHaveLength(1)
+    expect(harness.native.opsInvoked('session.dispose')).toHaveLength(1)
+    expect(harness.native.calls.filter(call => call[0] === 'closeSession')).toHaveLength(1)
+  })
+
+  test('R08/R11: destroy retires every owned stream (scans, notifications, adapter watch, events)', async () => {
+    const { backend } = await openBackend()
+    const scan = await backend.scanner.start(scanOptions(), opaqueId('client', 'client', 'test'))
+    const { path } = await connected(backend)
+    const subscription = await backend.gatt.subscribe(path, {
+      operation: operation(backend),
+      options: subscribeOptions()
+    }).completion
+    const watch = await backend.adapter.watchState()
+    const events = backend.events()
+    await backend.destroy()
+    expect(scan.observations.isTerminal()).toBe(true)
     expect(subscription.notifications.isTerminal()).toBe(true)
     expect(watch.transitions.isTerminal()).toBe(true)
-    expect(backend.events().isTerminal()).toBe(true)
+    expect(events.isTerminal()).toBe(true)
   })
 
-  test('R12: one malformed observation does not kill the scan or its terminal accounting', async () => {
-    const script = {
-      observations: [{ rssi: -70 }, { peerId: 'peer-9', rssi: -55, serviceUuids: [HRM_SERVICE] }]
-    }
-    const { fake, backend } = await makeBackend(script)
-    try {
-      const lease = await backend.scanner.start(scanOptions(), 'client-a')
-      const observation = await takeStreamValue(lease.observations)
-      expect(observation.rssi).toMatchObject({ state: 'present', value: -55 })
-      await settle()
-      // The scan survives a single bad record: no core terminal release ran.
-      expect(ops(fake.calls, 'scan.stop')).toEqual([])
-      await lease.stop()
-      expect(ops(fake.calls, 'scan.stop')).toEqual([{ opId: 'scan-op-1', nowMs: '1000' }])
-    } finally {
-      await backend.destroy()
-    }
+  test('R12 (strict wire): a malformed drain record fails delivery loudly instead of being skipped', async () => {
+    const { native, backend } = await openBackend()
+    const scan = await backend.scanner.start(scanOptions(), opaqueId('client', 'client', 'test'))
+    native.emitAdvertisement(DEFAULT_PEER, { rssi: 1.5 })
+    await settle(60)
+    expect((await scan.observations[Symbol.asyncIterator]().next()).value).toMatchObject({
+      kind: 'terminal',
+      reason: 'source-failed'
+    })
+    await backend.destroy()
   })
 
-  test('R13: discover without a live connection lease fails stale-handle before touching the core', async () => {
-    const script = {
-      observations: [{ peerId: 'peer-1', rssi: -60, serviceUuids: [HRM_SERVICE] }]
-    }
-    const { fake, backend } = await makeBackend(script)
-    try {
-      const lease = await backend.scanner.start(scanOptions(), 'client-a')
-      const observation = await takeStreamValue(lease.observations)
-      const failure = await backend.gatt
-        .discover(
-          { peerId: observation.device.id, connectionId: 'stale-connection' },
-          { signal: null, deadline: null }
-        )
-        .then(
-          () => null,
-          error => error
-        )
-      expect(failure).not.toBeNull()
-      expect(failure.normalized.code).toBe('gatt.stale-handle')
-      expect(ops(fake.calls, 'gatt.discover')).toEqual([])
-      await lease.stop()
-    } finally {
-      await backend.destroy()
-    }
+  test('R13: discover on a released connection fails stale before touching the owner', async () => {
+    const { native, backend } = await openBackend()
+    const { lease } = await connected(backend)
+    await lease.release()
+    const before = native.opsInvoked('gatt.discover').length
+    const error = await rejection(backend.gatt.discover(lease.connection, NO_OPTIONS))
+    expect(error.normalized.code).toBe('connection.stale')
+    expect(native.opsInvoked('gatt.discover')).toHaveLength(before)
+    await backend.destroy()
   })
 
-  test('R13: out-of-range core bytes fail malformed instead of wrapping silently', async () => {
-    const script = {
-      observations: [{ peerId: 'peer-1', rssi: -60, serviceUuids: [HRM_SERVICE] }]
-    }
-    const { backend } = await makeBackend(script)
-    try {
-      const { path } = await connectedPath(backend)
-      script.onInvoke = op => {
-        if (op === 'gatt.read') return { value: [300, -1, 1.5] }
-        return undefined
-      }
-      const failure = await backend.gatt
-        .read(path, { operation: operationOptions({ correlation: 'corr-r13-bytes' }) })
-        .completion.then(
-          () => null,
-          error => error
-        )
-      expect(failure).not.toBeNull()
-      expect(failure.normalized.code).toBe('protocol.malformed')
-    } finally {
-      await backend.destroy()
-    }
+  test('R13: out-of-range bytes from the owner fail malformed instead of wrapping', async () => {
+    const { native, backend } = await openBackend()
+    const { path } = await connected(backend)
+    native.hold('gatt.read')
+    const dispatch = backend.gatt.read(path, { operation: operation(backend) })
+    await settle()
+    native.release('gatt.read', { valueB64: 'AQ==', extra: true })
+    expect((await rejection(dispatch.completion)).normalized.code).toBe('protocol.malformed')
+    await backend.destroy()
   })
 
   test('R13: peerFromAddress rejects malformed addresses and missing address types', async () => {
-    const { fake, backend } = await makeBackend({
-      observations: [{ peerId: 'peer-1', rssi: -60, serviceUuids: [HRM_SERVICE] }]
-    })
-    try {
-      expect(() =>
-        backend.connections.peerFromAddress({ address: 'not-an-address', addressType: 'public' })
-      ).toThrow(/argument\.invalid/)
-      expect(() => backend.connections.peerFromAddress({ address: 'aa:bb:cc:dd:ee:ff' })).toThrow(
-        /argument\.invalid/
-      )
-      const peerId = backend.connections.peerFromAddress({
-        address: 'aa:bb:cc:dd:ee:ff',
-        addressType: 'public'
-      })
-      expect(peerId).toBeDefined()
-      const connectionLease = await backend.connections.connect(peerId, 'client-a', {
-        signal: null,
-        deadline: null
-      })
-      expect(ops(fake.calls, 'connection.connect')[0]).toMatchObject({ peerId: 'AA:BB:CC:DD:EE:FF' })
-      await connectionLease.release()
-    } finally {
-      await backend.destroy()
-    }
-  })
-
-  test('R08: destroy resolves only after the native dispose and session close', async () => {
-    const { fake, backend } = await makeBackend({})
-    await backend.destroy()
-    const names = fake.calls.map(([op]) => op)
-    expect(names).toContain('session.dispose')
-    expect(names).toContain('session.close')
-    expect(names.indexOf('session.dispose')).toBeLessThan(names.indexOf('session.close'))
-  })
-
-  test('R10: database snapshots are isolated from later core-record mutation', async () => {
-    const report = {
-      services: [
-        {
-          uuid: HRM_SERVICE,
-          occurrence: 0,
-          characteristics: [
-            {
-              uuid: HRM_MEASUREMENT,
-              occurrence: 0,
-              properties: 0x09,
-              descriptors: [{ uuid: CHAR_USER_DESCRIPTION, occurrence: 0 }]
-            }
-          ]
-        }
-      ]
-    }
-    const script = {
-      observations: [{ peerId: 'peer-1', rssi: -60, serviceUuids: [HRM_SERVICE] }]
-    }
-    const { backend } = await makeBackend(script)
-    try {
-      script.onInvoke = op => {
-        if (op === 'gatt.discover') return report
-        return undefined
-      }
-      const lease = await backend.scanner.start(scanOptions(), 'client-a')
-      const observation = await takeStreamValue(lease.observations)
-      const connectionLease = await backend.connections.connect(
-        observation.device.id,
-        'client-a',
-        { signal: null, deadline: null }
-      )
-      const database = await backend.gatt.discover(connectionLease.connection, { signal: null, deadline: null })
-      report.services.push({ uuid: HRM_SERVICE, occurrence: 1, characteristics: [] })
-      const snapshot = await database.snapshot()
-      expect(snapshot.services).toHaveLength(1)
-      await lease.stop()
-    } finally {
-      await backend.destroy()
-    }
-  })
-
-  test('R10: native shutdown failure propagates verbatim instead of resolving released', async () => {
-    const { contractError } = require('../src/backend-contract/errors')
-    const frozen = contractError('transport.unavailable', 'core', 'fake.session.dispose')
-    const { backend } = await makeBackend({ disposeError: frozen })
-    const failure = await backend.destroy().then(
-      () => null,
-      error => error
+    const { native, backend } = await openBackend()
+    expect(() => backend.connections.peerFromAddress({ address: 'not-an-address', addressType: 'public' })).toThrow(
+      expect.objectContaining({ normalized: expect.objectContaining({ code: 'argument.invalid' }) })
     )
-    expect(failure).toBe(frozen)
+    expect(() => backend.connections.peerFromAddress({ address: 'aa:bb:cc:dd:ee:ff' })).toThrow(
+      expect.objectContaining({ normalized: expect.objectContaining({ code: 'argument.invalid' }) })
+    )
+    const peerId = backend.connections.peerFromAddress({ address: 'a0:9e:1a:00:00:01', addressType: 'random' })
+    const lease = await backend.connections.connect(peerId, opaqueId('client', 'client', 'test'), NO_OPTIONS)
+    expect(native.opsInvoked('connection.connect')[0]).toMatchObject({ peerId: DEFAULT_PEER })
+    await lease.release()
+    await backend.destroy()
   })
 
-  test('R08: in-flight operations still settle their caller after destroy starts', async () => {
-    const script = {
-      observations: [{ peerId: 'peer-1', rssi: -60, serviceUuids: [HRM_SERVICE] }]
-    }
-    const { backend } = await makeBackend(script)
-    const { path } = await connectedPath(backend)
-    let releaseRead
-    script.onInvoke = op => {
-      if (op === 'gatt.read') {
-        return new Promise(resolve => {
-          releaseRead = () => resolve({ value: new Uint8Array([0x0a]) })
-        })
-      }
-      return undefined
-    }
-    const dispatch = backend.gatt.read(path, {
-      operation: { signal: null, deadline: null, correlation: 'corr-r08-late' }
+  test('R10: database snapshots are isolated from later owner-record mutation', async () => {
+    const { native, backend } = await openBackend()
+    const { database, snapshot } = await connected(backend)
+    native.peripherals.get(DEFAULT_PEER).services[0].characteristics.push({
+      uuid: '00002a38-0000-1000-8000-00805f9b34fb',
+      occurrence: 0,
+      properties: 0x02,
+      value: new Uint8Array(0),
+      descriptors: []
     })
-    await tick()
-    const destroyed = backend.destroy()
-    releaseRead()
-    const result = await dispatch.completion
-    expect([...result.value]).toEqual([0x0a])
-    await destroyed
+    expect(await database.snapshot()).toEqual(snapshot)
+    await backend.destroy()
+  })
+
+  test('R10: a dispose failure is reported as release-failed, never as released; a retry disposes again', async () => {
+    const { native, backend } = await openBackend()
+    native.failNext(
+      'session.dispose',
+      'platform.failure',
+      'platform',
+      'ubm-mobile.session.dispose',
+      'radio close failed'
+    )
+    const first = await backend.destroy()
+    expect(first).toMatchObject({
+      state: 'release-failed',
+      failures: [{ resourceKind: 'session', error: { code: 'platform.failure' } }]
+    })
+    expect(await backend.destroy()).toEqual({ state: 'released', failures: [] })
+    expect(native.opsInvoked('session.dispose')).toHaveLength(2)
+  })
+
+  test('R08: in-flight operations settle their caller when destroy disposes the session', async () => {
+    const { native, backend } = await openBackend()
+    const { path } = await connected(backend)
+    native.hold('gatt.read')
+    const dispatch = backend.gatt.read(path, { operation: operation(backend) })
+    await settle()
+    await backend.destroy()
+    expect((await rejection(dispatch.completion)).normalized.code).toBe('operation.aborted')
   })
 })

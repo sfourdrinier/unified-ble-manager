@@ -6,27 +6,23 @@ const {
   createCoreBluetoothFirstPartyTckRegistration,
   createBluezFirstPartyTckRegistration,
   createWinRtFirstPartyTckRegistration,
-  createReactNativeAndroidFirstPartyTckRegistration
+  createReactNativeAndroidFirstPartyTckRegistration,
+  createReactNativeAppleFirstPartyTckRegistration
 } = require('../../src/testing')
-const { decodeNativeProtocolRecord, encodeNativeProtocolRecord } = require('../../src/native-protocol/v2-codec')
-const { InMemoryCoreBluetoothBoundary } = require('../../test-support/corebluetooth/in-memory-corebluetooth-boundary')
-const { InMemoryWebBluetoothTckBoundary } = require('../../test-support/web/in-memory-web-bluetooth-tck-boundary')
 const {
-  BLUEZ_ADAPTER_INTERFACE,
-  BLUEZ_DEVICE_INTERFACE,
-  BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
-  BLUEZ_GATT_SERVICE_INTERFACE,
-  InMemoryBluezBoundary
-} = require('../../test-support/bluez/in-memory-bluez-object-manager')
+  DeterministicRustCoreNative,
+  DEFAULT_PEER: RUST_CORE_PEER_ID
+} = require('../../test-support/react-native/deterministic-rust-core-native')
+const { deterministicRustCoreTckBoundary } = require('../../test-support/react-native/rust-core-harness')
+const { BUILT_IN_FEATURE_IDS } = require('../../src/backend-contract/capabilities')
+const {
+  InMemoryWebBluetoothTckBoundary,
+  WEB_BLUETOOTH_TCK_BATTERY_SERVICE_UUID: BATTERY_SERVICE_UUID
+} = require('../../test-support/web/in-memory-web-bluetooth-tck-boundary')
 
 const SERVICE_UUID = '0000180d-0000-1000-8000-00805f9b34fb'
-const CHARACTERISTIC_UUID = '00002a37-0000-1000-8000-00805f9b34fb'
-const DESCRIPTOR_UUID = '00002902-0000-1000-8000-00805f9b34fb'
-const BLUEZ_ADAPTER_PATH = '/org/bluez/hci0'
-const BLUEZ_DEVICE_PATH = `${BLUEZ_ADAPTER_PATH}/dev_AA_BB_CC_DD_EE_FF`
-const BLUEZ_SERVICE_PATH = `${BLUEZ_DEVICE_PATH}/service0001`
-const BLUEZ_CHARACTERISTIC_PATH = `${BLUEZ_SERVICE_PATH}/char0001`
-const REACT_NATIVE_PEER_ID = 'C0FFEE000001'
+
+jest.setTimeout(60000)
 
 describe('first-party deterministic backend TCK registry', () => {
   let previousRuntime
@@ -43,15 +39,12 @@ describe('first-party deterministic backend TCK registry', () => {
     global.__unifiedBleNativeProtocolV2 = previousRuntime
   })
 
-  // R02 Apple cutover: the Apple leg is deleted from this registry proof
-  // (see the tombstone below) — "every" here means every remaining
-  // core-gated-or-transport-honest registration, not the removed
-  // Swift-without-core Apple leg.
-  test('registers and executes the remaining first-party deterministic backends while retaining explicit exclusions', async () => {
-    const androidControl = new DeterministicNativeControl(true)
-    const androidRuntime = new DeterministicReactNativeProtocolRuntime(androidControl, false)
+  test('registers and executes every first-party deterministic backend while retaining explicit exclusions', async () => {
+    const androidNative = new DeterministicRustCoreNative({ platform: 'android' })
+    const appleNative = new DeterministicRustCoreNative({ platform: 'apple' })
     const webBoundaries = []
     let androidOwner = 0
+    let appleOwner = 0
     const registry = createFirstPartyBackendTckRegistry([
       createWebBluetoothFirstPartyTckRegistration({
         createBoundary: () => {
@@ -62,27 +55,16 @@ describe('first-party deterministic backend TCK registry', () => {
         chooserRequest: webChooserRequest()
       }),
       createCoreBluetoothFirstPartyTckRegistration({
-        now: () => 20,
-        nativePeerId: 'native-polar-h10',
-        createBoundary: () =>
-          new InMemoryCoreBluetoothBoundary({ serviceUuid: SERVICE_UUID, characteristicUuid: CHARACTERISTIC_UUID })
+        now: () => performance.now(),
+        binding: desktopCoreBinding('corebluetooth')
       }),
-      createBluezFirstPartyTckRegistration({
-        busKind: 'system',
-        now: () => 20,
-        selectedAdapterId: BLUEZ_ADAPTER_PATH,
-        createBoundary: createBluezTckBoundary
-      }),
-      createWinRtFirstPartyTckRegistration({
-        now: () => 20,
-        nativePeerId: REACT_NATIVE_PEER_ID,
-        createBoundary: () => new DeterministicWinRtBoundary()
-      }),
+      createBluezFirstPartyTckRegistration({ now: () => performance.now(), binding: desktopCoreBinding('bluez') }),
+      createWinRtFirstPartyTckRegistration({ now: () => performance.now(), binding: desktopCoreBinding('winrt') }),
       createReactNativeAndroidFirstPartyTckRegistration({
-        control: androidControl,
+        native: androidNative,
         now: () => 20,
-        nativePeerId: REACT_NATIVE_PEER_ID,
-        boundary: deterministicReactNativeTckBoundary(androidRuntime),
+        nativePeerId: RUST_CORE_PEER_ID,
+        boundary: deterministicRustCoreTckBoundary(androidNative),
         security: {
           customCeremonySupported: false,
           supportsAlreadyUnpaired: false,
@@ -94,14 +76,20 @@ describe('first-party deterministic backend TCK registry', () => {
           return `first-party-registry-android-${androidOwner}`
         }
       }),
-      // R02 Apple cutover: DELETED the Apple deterministic registration. It
-      // drives the Swift JSI boundary without the Rust core binding, so it
-      // bypasses the component it would need to prove (R16 proof
-      // substitution) and cannot pass the now core-gated provider.
-      // Re-admit it only against a production binding with the test radio
-      // below the native seam; until the owner of
-      // src/tck/first-party/react-native-tck-registration.ts forwards a
-      // rustCore binding, the Apple leg stays out of this registry proof.
+      createReactNativeAppleFirstPartyTckRegistration({
+        native: appleNative,
+        now: () => 20,
+        nativePeerId: RUST_CORE_PEER_ID,
+        boundary: {
+          ...deterministicRustCoreTckBoundary(appleNative),
+          seedRestorationJournal: () =>
+            appleNative.seedRestored([{ peerId: 'C0FFEE00-0000-4000-8000-000000000001', connected: true }])
+        },
+        createOwnerId: () => {
+          appleOwner += 1
+          return `first-party-registry-apple-${appleOwner}`
+        }
+      })
     ])
     const registrations = [
       {
@@ -124,10 +112,13 @@ describe('first-party deterministic backend TCK registry', () => {
       { backendId: 'unified-ble:winrt', prepare: () => undefined, exclusions: ['winrt:live-radio'] },
       {
         backendId: 'unified-ble:react-native-android',
-        prepare: () => {
-          global.__unifiedBleNativeProtocolV2 = androidRuntime
-        },
+        prepare: () => undefined,
         exclusions: ['state:restoration-adoption']
+      },
+      {
+        backendId: 'unified-ble:react-native-apple',
+        prepare: () => undefined,
+        exclusions: [BUILT_IN_FEATURE_IDS.connectionRequestMtu]
       }
     ]
 
@@ -149,6 +140,34 @@ describe('first-party deterministic backend TCK registry', () => {
             facts: expect.arrayContaining([expect.objectContaining({ holds: true })])
           })
         )
+      )
+      expect(report.standard.receipts).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            scenarioId: 'gatt.duplicate-uuid-occurrences-route-exactly',
+            error: null,
+            facts: [
+              expect.objectContaining({
+                id: 'gatt-duplicate-uuid-occurrences-are-indexed-per-parent',
+                holds: true,
+                detail: expect.objectContaining({
+                  pathsUnique: true,
+                  parentsResolve: true,
+                  occurrencesExact: true,
+                  distinctServiceUuids: 2,
+                  maximumServiceOccurrence: 1,
+                  maximumCharacteristicOccurrence: 1,
+                  maximumDescriptorOccurrence: 1
+                })
+              }),
+              expect.objectContaining({
+                id: 'gatt-duplicate-uuid-notifications-route-to-exact-instance',
+                holds: true,
+                detail: { routedTargets: 3, routedExactly: true }
+              })
+            ]
+          })
+        ])
       )
       for (const receipt of report.standard.receipts) {
         expect(receipt.error).toBeNull()
@@ -196,7 +215,7 @@ describe('first-party deterministic backend TCK registry', () => {
       lastChooserRequest: {
         filters: [{ services: [SERVICE_UUID], manufacturerData: [], namePrefix: null }],
         acceptAllDevices: false,
-        optionalServices: [SERVICE_UUID]
+        optionalServices: [SERVICE_UUID, BATTERY_SERVICE_UUID]
       },
       connected: false,
       disconnectListeners: 0,
@@ -208,14 +227,12 @@ describe('first-party deterministic backend TCK registry', () => {
   })
 
   test('does not fabricate skipped system-only security outcomes in receipt details', async () => {
-    const control = new DeterministicNativeControl(true)
-    const runtime = new DeterministicReactNativeProtocolRuntime(control, false)
-    global.__unifiedBleNativeProtocolV2 = runtime
+    const native = new DeterministicRustCoreNative({ platform: 'android' })
     const registration = createReactNativeAndroidFirstPartyTckRegistration({
-      control,
+      native,
       now: () => 20,
-      nativePeerId: REACT_NATIVE_PEER_ID,
-      boundary: deterministicReactNativeTckBoundary(runtime),
+      nativePeerId: RUST_CORE_PEER_ID,
+      boundary: deterministicRustCoreTckBoundary(native),
       security: {
         customCeremonySupported: false,
         supportsAlreadyUnpaired: false,
@@ -251,6 +268,51 @@ describe('first-party deterministic backend TCK registry', () => {
   })
 })
 
+describe('duplicate-UUID occurrence scenario', () => {
+  const OCCURRENCE_SCENARIO = 'gatt.duplicate-uuid-occurrences-route-exactly'
+
+  function androidRegistration(native, boundary) {
+    return createReactNativeAndroidFirstPartyTckRegistration({
+      native,
+      now: () => 20,
+      nativePeerId: RUST_CORE_PEER_ID,
+      boundary
+    })
+  }
+
+  async function runOccurrenceScenario(registration) {
+    const { runBackendTck } = require('../../src/tck/runner')
+    return runBackendTck(registration.factory, [], {
+      proofScope: 'deterministic',
+      baseScenarioIds: [OCCURRENCE_SCENARIO]
+    })
+  }
+
+  test('fails the routing fact when notifications are delivered by UUID instead of complete path', async () => {
+    const native = new DeterministicRustCoreNative({ platform: 'android' })
+    const byUuidOnly = {
+      ...deterministicRustCoreTckBoundary(native),
+      emitNotification: (address, bytes) =>
+        native.emitNotification(bytes, address.nativePeerId, address.characteristicUuid)
+    }
+    await expect(runOccurrenceScenario(androidRegistration(native, byUuidOnly))).rejects.toThrow(
+      'required fact gatt-duplicate-uuid-notifications-route-to-exact-instance did not hold'
+    )
+  })
+
+  test('refuses a world without a repeated UUID at every level instead of passing vacuously', async () => {
+    const { defaultPeripheral } = require('../../test-support/react-native/deterministic-rust-core-native')
+    const peripheral = defaultPeripheral()
+    const native = new DeterministicRustCoreNative({
+      platform: 'android',
+      peripherals: [{ ...peripheral, services: peripheral.services.slice(0, 1) }]
+    })
+    await expect(
+      runOccurrenceScenario(androidRegistration(native, deterministicRustCoreTckBoundary(native)))
+    ).rejects.toThrow('the fixture world lacks a second service UUID')
+  })
+})
+
 function createWebTckBoundary() {
   return new InMemoryWebBluetoothTckBoundary({
     implementationVersion: 'first-party-registry-web-boundary',
@@ -262,668 +324,20 @@ function webChooserRequest() {
   return {
     filters: [{ serviceUuids: [SERVICE_UUID], manufacturerData: [], localNamePrefix: null }],
     acceptAllDevices: false,
-    optionalServices: [SERVICE_UUID]
+    optionalServices: [SERVICE_UUID, BATTERY_SERVICE_UUID]
   }
 }
 
-function createBluezTckBoundary() {
-  const boundary = new InMemoryBluezBoundary({
-    busKind: 'system',
-    objects: [
-      {
-        path: BLUEZ_ADAPTER_PATH,
-        interfaces: [
-          {
-            name: BLUEZ_ADAPTER_INTERFACE,
-            properties: {
-              Address: { signature: 's', value: '00:11:22:33:44:55' },
-              Alias: { signature: 's', value: 'BlueZ first-party registry adapter' },
-              Powered: { signature: 'b', value: true }
-            }
-          }
-        ]
-      },
-      {
-        path: BLUEZ_DEVICE_PATH,
-        interfaces: [
-          {
-            name: BLUEZ_DEVICE_INTERFACE,
-            properties: {
-              Address: { signature: 's', value: 'AA:BB:CC:DD:EE:FF' },
-              AddressType: { signature: 's', value: 'random' },
-              Alias: { signature: 's', value: 'BlueZ TCK peer' },
-              RSSI: { signature: 'n', value: -40 },
-              UUIDs: { signature: 'as', value: [SERVICE_UUID] },
-              Connected: { signature: 'b', value: true },
-              ServicesResolved: { signature: 'b', value: true },
-              Paired: { signature: 'b', value: false }
-            }
-          }
-        ]
-      },
-      {
-        path: BLUEZ_SERVICE_PATH,
-        interfaces: [
-          {
-            name: BLUEZ_GATT_SERVICE_INTERFACE,
-            properties: {
-              Device: { signature: 'o', value: BLUEZ_DEVICE_PATH },
-              UUID: { signature: 's', value: SERVICE_UUID },
-              Primary: { signature: 'b', value: true }
-            }
-          }
-        ]
-      },
-      {
-        path: BLUEZ_CHARACTERISTIC_PATH,
-        interfaces: [
-          {
-            name: BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
-            properties: {
-              Service: { signature: 'o', value: BLUEZ_SERVICE_PATH },
-              UUID: { signature: 's', value: CHARACTERISTIC_UUID },
-              Flags: { signature: 'as', value: ['read', 'write', 'notify'] },
-              Value: { signature: 'ay', value: new Uint8Array([1]) },
-              Notifying: { signature: 'b', value: false }
-            }
-          }
-        ]
-      }
-    ]
-  })
-  boundary.onCall(
-    BLUEZ_CHARACTERISTIC_PATH,
-    BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
-    'ReadValue',
-    async () => new Uint8Array([1])
+/**
+ * The identity-verified binding over the checkout's REAL N-API addon: the
+ * desktop legs drive the production provider on its synthetic radio.
+ */
+function desktopCoreBinding(platform) {
+  const { bindDesktopCore } = require('../../src/desktop-core-addon')
+  const { DESKTOP_RUST_CORE_PROFILES } = require('../../src/backends/desktop/desktop-rust-core-provider')
+  const { addonPath, loadAddon } = require('../helpers/desktop-rust-core-harness')
+  return bindDesktopCore(
+    { platform, operationPrefix: DESKTOP_RUST_CORE_PROFILES[platform].operationPrefix },
+    { module: loadAddon(), path: addonPath, mode: 'source', sidecar: null }
   )
-  return boundary
-}
-
-function deterministicReactNativeTckBoundary(runtime) {
-  return {
-    emitAdvertisement: () => runtime.emitAdvertisement(),
-    emitNotification: (address, bytes) => runtime.emitNotification(address, bytes),
-    prepareSecurityCancellation: () => runtime.prepareSecurityCancellation()
-  }
-}
-
-class DeterministicNativeControl {
-  constructor(securityAvailable = false) {
-    this.handshakes = []
-    this.closedAttachments = []
-    this.securityAvailable = securityAvailable
-    this.priorityAccepted = true
-    this.restorationJournalSeeded = false
-    this.restorationConsumed = false
-  }
-
-  handshake(request) {
-    this.handshakes.push(request)
-    return Promise.resolve({
-      nativeProtocol: 2,
-      abi: 7,
-      controlSurface: 2,
-      backendContract: 1,
-      capabilitySchema: 1,
-      eventSchema: 1,
-      traceFormat: 1,
-      maximumControlRecordBytes: 65536,
-      maximumBinaryPayloadBytes: 524288,
-      securityAvailable: this.securityAvailable,
-      securityCancelPairingAvailable: this.securityAvailable
-    })
-  }
-
-  installExecutionRuntime() {
-    return Promise.resolve()
-  }
-
-  cancelOperation() {
-    return Promise.resolve({ state: 'alreadyTerminal' })
-  }
-
-  adoptRestoration(request) {
-    if (!this.restorationJournalSeeded || this.restorationConsumed) {
-      return Promise.resolve({
-        receiptId: '',
-        outcome: 'alreadyConsumed',
-        boundClientId: request.clientId,
-        adoptionEpoch: request.expectedEpoch,
-        replayRecordCount: 0,
-        records: []
-      })
-    }
-    if (request.namespaceValue.endsWith('.rejected')) {
-      return Promise.resolve({
-        receiptId: '',
-        outcome: 'namespaceMismatch',
-        boundClientId: '',
-        adoptionEpoch: request.expectedEpoch,
-        replayRecordCount: 0,
-        records: []
-      })
-    }
-    this.restorationConsumed = true
-    const handshake = this.handshakes[this.handshakes.length - 1]
-    if (handshake === undefined) throw new Error('Deterministic control has no active attachment')
-    return Promise.resolve({
-      receiptId: 'first-party-registry-restoration-receipt',
-      outcome: 'adopted',
-      boundClientId: request.clientId,
-      adoptionEpoch: request.expectedEpoch,
-      replayRecordCount: 1,
-      records: [
-        {
-          recordVersion: 1,
-          namespaceValue: request.namespaceValue,
-          attachmentId: handshake.attachmentId,
-          backendInstanceId: handshake.backendInstanceId,
-          backendGeneration: handshake.backendGeneration,
-          adapterId: handshake.adapterId,
-          adapterGeneration: handshake.adapterGeneration,
-          ordinal: 1,
-          adoptionEpoch: request.expectedEpoch,
-          kind: 'adapter',
-          peerId: null,
-          connectionId: null,
-          ownerLeaseId: null,
-          connectionGeneration: null
-        }
-      ]
-    })
-  }
-
-  seedRestorationJournal() {
-    this.restorationJournalSeeded = true
-    this.restorationConsumed = false
-  }
-
-  closeAttachment(attachment) {
-    this.closedAttachments.push(attachment)
-    return Promise.resolve()
-  }
-
-  activeAttachment() {
-    const handshake = this.handshakes[this.handshakes.length - 1]
-    if (handshake === undefined) throw new Error('Deterministic control has no active attachment')
-    return record('attachment', [
-      field(1, handshake.attachmentId),
-      field(2, handshake.backendInstanceId),
-      field(3, handshake.backendGeneration),
-      field(4, handshake.adapterId),
-      field(5, handshake.adapterGeneration)
-    ])
-  }
-}
-
-class DeterministicReactNativeProtocolRuntime {
-  constructor(control, emitInitialSubscriptionNotification) {
-    this.control = control
-    this.listener = null
-    this.buffers = new Map()
-    this.nextBuffer = 1
-    this.nextEvent = 1
-    this.subscriptionId = null
-    this.subscribeCorrelation = null
-    this.connection = null
-    this.descriptorValue = new Uint8Array([8, 7])
-    this.emitInitialSubscriptionNotification = emitInitialSubscriptionNotification
-    this.securityBondState = 'notBonded'
-    this.pendingSecurityPair = null
-    this.deferNextSecurityPair = false
-  }
-
-  retain(operationCorrelation, value) {
-    const ownerToken = `first-party-registry-buffer-${this.nextBuffer}`
-    this.nextBuffer += 1
-    this.buffers.set(ownerToken, new Uint8Array(value))
-    return {
-      ownerToken,
-      byteOffset: 0,
-      byteLength: value.byteLength,
-      ownership: 'nativeOwnedCopy',
-      operationCorrelation
-    }
-  }
-
-  copy(reference) {
-    const value = this.buffers.get(reference.ownerToken)
-    if (value === undefined) throw new Error(`Unknown deterministic buffer ${reference.ownerToken}`)
-    return new Uint8Array(value)
-  }
-
-  release(reference) {
-    return this.buffers.delete(reference.ownerToken)
-  }
-
-  setEventSink(listener) {
-    this.listener = listener
-    this.securityBondState = 'notBonded'
-    this.pendingSecurityPair = null
-    this.deferNextSecurityPair = false
-    this.emitEvent('adapterState', [
-      field(15, record('adapterStateSnapshot', [field(1, 'available'), field(2, 'granted'), field(3, 'on')]))
-    ])
-  }
-
-  setFatalSink(listener) {
-    this.fatalListener = listener
-  }
-
-  submit(bytes) {
-    const command = decodeNativeProtocolRecord(bytes)
-    const kind = requiredString(command, 3)
-    if (kind === 'scanStart') return this.emitResult(command, 'scanStarted')
-    if (kind === 'scanStop' || kind === 'disconnect') return this.emitResult(command, 'accepted')
-    if (kind === 'unsubscribe') return this.emitResult(command, 'unsubscribed')
-    if (kind === 'connect') {
-      this.connection = requiredRecord(command, 10)
-      return this.emitResult(command, 'connected', [field(11, this.connection)])
-    }
-    if (kind === 'discover') {
-      const database = requiredRecord(command, 11)
-      return this.emitResult(command, 'database', [field(4, database), field(12, databaseSnapshot(database))])
-    }
-    if (kind === 'read') {
-      return this.emitResult(command, 'read', [
-        field(6, binaryReferenceRecord(this.retain('first-party-registry-read', new Uint8Array([0, 1]))))
-      ])
-    }
-    if (kind === 'readDescriptor') {
-      const descriptorPath = requiredRecord(command, 5)
-      return this.emitResult(command, 'descriptorRead', [
-        field(15, descriptorPath),
-        field(6, binaryReferenceRecord(this.retain('first-party-registry-descriptor-read', this.descriptorValue)))
-      ])
-    }
-    if (kind === 'readRssi') return this.emitResult(command, 'rssi', [field(13, -47)])
-    if (kind === 'requestMtu') return this.emitResult(command, 'mtu', [field(14, requiredNumber(command, 14))])
-    if (kind === 'requestPriority')
-      return this.emitResult(command, 'priority', [field(18, this.control.priorityAccepted)])
-    if (kind === 'writeDescriptor') {
-      const descriptorPath = requiredRecord(command, 5)
-      const reference = binaryReferenceFromRecord(requiredRecord(command, 6))
-      this.descriptorValue = this.copy(reference)
-      if (!this.release(reference)) {
-        throw new Error('The deterministic descriptor write input was not retained')
-      }
-      return this.emitResult(command, 'descriptorWrite', [field(15, descriptorPath)])
-    }
-    if (kind === 'subscribe') {
-      this.subscriptionId = requiredString(command, 7)
-      this.subscribeCorrelation = requiredRecord(command, 2)
-      if (this.emitInitialSubscriptionNotification) {
-        this.emitNotificationRecord(new Uint8Array([3, 4]))
-      }
-      return this.emitResult(command, 'subscribed', [
-        field(5, requiredRecord(command, 4)),
-        field(7, this.subscriptionId)
-      ])
-    }
-    if (kind === 'securityState') {
-      return this.emitResult(command, 'securityState', [
-        field(16, requiredString(command, 15)),
-        field(17, this.securityBondState)
-      ])
-    }
-    if (kind === 'securityPair') {
-      if (this.deferNextSecurityPair) {
-        this.deferNextSecurityPair = false
-        this.pendingSecurityPair = command
-        return
-      }
-      this.securityBondState = 'bonded'
-      this.emitEvent('securityStateChanged', [
-        field(16, requiredString(command, 15)),
-        field(17, this.securityBondState)
-      ])
-      return this.emitResult(command, 'securityPair', [
-        field(16, requiredString(command, 15)),
-        field(17, this.securityBondState)
-      ])
-    }
-    if (kind === 'securityCancelPairing') {
-      if (this.pendingSecurityPair !== null) {
-        const pending = this.pendingSecurityPair
-        this.pendingSecurityPair = null
-        this.emitFailure(pending, 'cancelled', 'Android security pairing was cancelled')
-      }
-      return this.emitResult(command, 'accepted')
-    }
-    if (kind === 'destroy') return this.emitResult(command, 'destroyed')
-    throw new Error(`Unsupported deterministic native command ${kind}`)
-  }
-
-  emitAdvertisement() {
-    this.emitEvent('advertisement', [
-      field(
-        12,
-        record('advertisement', [
-          field(1, REACT_NATIVE_PEER_ID),
-          field(2, 20),
-          field(3, 1),
-          field(4, 'first-party-registry-scan'),
-          field(5, 'First-party registry peer'),
-          field(6, -47),
-          field(10, [SERVICE_UUID]),
-          field(17, ['native:android-scan-result'])
-        ])
-      )
-    ])
-  }
-
-  emitNotification(_address, bytes) {
-    this.emitNotificationRecord(bytes)
-  }
-
-  /**
-   * Emits a notification the way the native binding does: the subscribe's
-   * operationCorrelation on the event, and the payload retained under that
-   * correlation's nonce. Inventing a correlation here would model a record the
-   * native codec refuses to deliver (issue #168).
-   */
-  emitNotificationRecord(bytes) {
-    if (this.subscriptionId === null || this.subscribeCorrelation === null) {
-      throw new Error('Deterministic runtime has no active subscription')
-    }
-    this.emitEvent('notification', [
-      field(10, this.subscribeCorrelation),
-      field(11, this.subscriptionId),
-      field(13, binaryReferenceRecord(this.retain(requiredString(this.subscribeCorrelation, 3), bytes)))
-    ])
-  }
-
-  prepareSecurityCancellation() {
-    this.deferNextSecurityPair = true
-  }
-
-  emitResult(command, kind, additions = []) {
-    this.emit(
-      record('result', [
-        field(1, 1),
-        field(2, kind),
-        field(3, record('terminal', [field(1, requiredRecord(command, 2)), field(2, 'succeeded')])),
-        ...additions
-      ])
-    )
-  }
-
-  emitFailure(command, code, safeMessage) {
-    this.emit(
-      record('result', [
-        field(1, 1),
-        field(2, 'cancelled'),
-        field(3, record('terminal', [field(1, requiredRecord(command, 2)), field(2, 'failed'), field(3, code)])),
-        field(
-          10,
-          record('error', [
-            field(1, code),
-            field(2, 'android'),
-            field(3, requiredString(command, 3)),
-            field(4, 'notRetryable'),
-            field(7, safeMessage)
-          ])
-        )
-      ])
-    )
-  }
-
-  emitEvent(kind, additions) {
-    this.nextEvent += 1
-    this.emit(
-      record('event', [
-        field(1, 1),
-        field(2, `first-party-registry-event-${this.nextEvent}`),
-        field(3, kind),
-        field(4, this.control.activeAttachment()),
-        field(5, this.nextEvent),
-        field(6, 20),
-        ...additions
-      ])
-    )
-  }
-
-  emit(value) {
-    if (this.listener === null) throw new Error('Deterministic runtime event sink is not installed')
-    this.listener(encodeNativeProtocolRecord(value))
-  }
-}
-
-class DeterministicWinRtBoundary {
-  constructor() {
-    this.scanHandler = null
-    this.scanToken = null
-    this.scanHandlers = new Map()
-    this.notificationHandlers = new Map()
-    this.connectionListeners = new Set()
-    this.databaseListeners = new Set()
-    this.scanTerminalListeners = new Set()
-    this.adapterListeners = new Set()
-    this.connectionGenerations = new Map()
-  }
-
-  listAdapters() {
-    return winRtOperation([
-      {
-        nativeAdapterId: 'winrt-tck-adapter',
-        displayName: 'WinRT TCK adapter',
-        state: this.adapterSnapshot(),
-        deployment: 'unpackaged'
-      }
-    ])
-  }
-  selectAdapter() {
-    return winRtOperation(undefined)
-  }
-  adapterSnapshot() {
-    return { availability: 'available', authorization: 'granted', power: 'on', safeReason: null }
-  }
-  startScan(scanToken, _services, handler) {
-    this.scanToken = scanToken
-    this.scanHandler = handler
-    this.scanHandlers.set(scanToken, handler)
-    return winRtOperation(undefined)
-  }
-  stopScan(scanToken) {
-    if (this.scanToken !== scanToken) return winRtOperation(Promise.reject(new Error('scan token mismatch')))
-    this.scanHandler = null
-    this.scanToken = null
-    this.emitScanTerminal({ scanToken, status: 'stopped', error: 'success' })
-    return winRtOperation(undefined)
-  }
-  onScanTerminal(listener) {
-    this.scanTerminalListeners.add(listener)
-    return () => this.scanTerminalListeners.delete(listener)
-  }
-  connect(nativePeerId, connectionGeneration) {
-    this.connectionGenerations.set(nativePeerId, connectionGeneration)
-    return winRtOperation(undefined)
-  }
-  connectionGenerationFor(nativePeerId) {
-    return this.connectionGenerations.get(nativePeerId)
-  }
-  disconnect() {
-    return winRtOperation(undefined)
-  }
-  discover() {
-    return winRtOperation({
-      cacheMode: 'uncached',
-      services: [
-        {
-          uuid: SERVICE_UUID,
-          occurrence: 0,
-          characteristics: [
-            {
-              uuid: CHARACTERISTIC_UUID,
-              occurrence: 0,
-              readable: true,
-              writableWithResponse: true,
-              writableWithoutResponse: true,
-              notifiable: true,
-              indicatable: false,
-              descriptors: []
-            }
-          ]
-        }
-      ]
-    })
-  }
-  read(address) {
-    return winRtOperation(new Uint8Array([address.serviceOccurrence, address.characteristicOccurrence]))
-  }
-  write() {
-    return winRtOperation(undefined)
-  }
-  readDescriptor() {
-    return winRtOperation(new Uint8Array([0]))
-  }
-  writeDescriptor() {
-    return winRtOperation(undefined)
-  }
-  startNotify(address, _mode, handler) {
-    this.notificationHandlers.set(winRtAddressKey(address), handler)
-    return winRtOperation(undefined)
-  }
-  stopNotify(address) {
-    this.notificationHandlers.delete(winRtAddressKey(address))
-    return winRtOperation(undefined)
-  }
-  onConnectionLost(listener) {
-    this.connectionListeners.add(listener)
-    return () => this.connectionListeners.delete(listener)
-  }
-  onDatabaseChanged(listener) {
-    this.databaseListeners.add(listener)
-    return () => this.databaseListeners.delete(listener)
-  }
-  onAdapterState(listener) {
-    this.adapterListeners.add(listener)
-    return () => this.adapterListeners.delete(listener)
-  }
-  ingressTelemetry() {
-    return {
-      notificationQueueDrops: 0,
-      advertisementQueueDrops: 0,
-      notificationCloseDrops: 0,
-      advertisementCloseDrops: 0
-    }
-  }
-  destroy() {
-    this.scanHandler = null
-    this.scanToken = null
-    this.scanHandlers.clear()
-    this.notificationHandlers.clear()
-    return winRtOperation(undefined)
-  }
-  emitAdvertisement() {
-    if (this.scanToken === null) throw new Error('WinRT scan is not active')
-    const handler = this.scanHandlers.get(this.scanToken)
-    if (handler === undefined) throw new Error('WinRT scan handler is not registered')
-    handler({
-      scanToken: this.scanToken,
-      nativePeerId: REACT_NATIVE_PEER_ID,
-      localName: 'WinRT TCK peer',
-      rssi: -40,
-      serviceUuids: [SERVICE_UUID],
-      connectable: true
-    })
-  }
-  emitScanTerminal(record) {
-    for (const listener of this.scanTerminalListeners) listener(record)
-  }
-  emitNotification(address, bytes) {
-    const handler = this.notificationHandlers.get(winRtAddressKey(address))
-    if (handler === undefined) throw new Error('WinRT notification is not active')
-    handler(new Uint8Array(bytes))
-  }
-}
-
-function databaseSnapshot(database) {
-  const service = record('servicePath', [field(1, database), field(2, SERVICE_UUID), field(3, '0')])
-  const characteristic = record('characteristicPath', [field(1, service), field(2, CHARACTERISTIC_UUID), field(3, '0')])
-  const descriptor = record('descriptorPath', [field(1, characteristic), field(2, DESCRIPTOR_UUID), field(3, '0')])
-  return record('databaseSnapshot', [
-    field(1, database),
-    field(2, [service]),
-    field(3, [
-      record('characteristicSnapshot', [
-        field(1, characteristic),
-        field(2, true),
-        field(3, true),
-        field(4, true),
-        field(5, true)
-      ])
-    ]),
-    field(4, [descriptor])
-  ])
-}
-
-function binaryReferenceRecord(reference) {
-  return record('binaryReference', [
-    field(1, reference.ownerToken),
-    field(2, reference.byteOffset),
-    field(3, reference.byteLength),
-    field(4, reference.ownership),
-    field(5, reference.operationCorrelation)
-  ])
-}
-
-function binaryReferenceFromRecord(value) {
-  return {
-    ownerToken: requiredString(value, 1),
-    byteOffset: requiredNumber(value, 2),
-    byteLength: requiredNumber(value, 3),
-    ownership: requiredString(value, 4),
-    operationCorrelation: requiredString(value, 5)
-  }
-}
-
-function record(kind, fields) {
-  return { kind, fields }
-}
-
-function field(id, value) {
-  return { id, value }
-}
-
-function requiredRecord(value, id) {
-  const fieldValue = requiredField(value, id)
-  if (typeof fieldValue !== 'object' || fieldValue === null || Array.isArray(fieldValue)) {
-    throw new Error(`Deterministic native field ${id} is not a record`)
-  }
-  return fieldValue
-}
-
-function requiredString(value, id) {
-  const fieldValue = requiredField(value, id)
-  if (typeof fieldValue !== 'string') throw new Error(`Deterministic native field ${id} is not a string`)
-  return fieldValue
-}
-
-function requiredNumber(value, id) {
-  const fieldValue = requiredField(value, id)
-  if (typeof fieldValue !== 'number') throw new Error(`Deterministic native field ${id} is not a number`)
-  return fieldValue
-}
-
-function requiredField(value, id) {
-  const fieldValue = value.fields.find(candidate => candidate.id === id)
-  if (fieldValue === undefined) throw new Error(`Deterministic native field ${id} is missing`)
-  return fieldValue.value
-}
-
-function winRtOperation(value) {
-  return { completion: Promise.resolve(value), cancel: async () => 'already-terminal' }
-}
-
-function winRtAddressKey(address) {
-  return [
-    address.nativePeerId,
-    address.connectionGeneration,
-    address.serviceUuid,
-    address.serviceOccurrence,
-    address.characteristicUuid,
-    address.characteristicOccurrence
-  ].join('|')
 }

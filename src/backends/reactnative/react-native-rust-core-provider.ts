@@ -1,69 +1,29 @@
 // src/backends/reactnative/react-native-rust-core-provider.ts
 //
-// F01 React Native binding-backed provider: manager creation, scan, connect,
-// subscribe, timeout, and dispose execute the native Rust core — never the
-// TypeScript 4.0 runtime.
+// The React Native backend over the process-owned Rust mobile owner
+// (docs/MOBILE_RUST_WIRE.md). Every radio effect is a frozen wire op on one
+// admitted session; every platform fact arrives as a drain record through the
+// one wake-driven router (react-native-rust-core-drain.ts). This file keeps
+// only what the backend contract needs on the JavaScript side: opaque public
+// identities, the core-issued generations behind them, stream fan-out, and
+// the retained ownership that makes cleanup retryable.
 //
-// Every BLE data-path operation dispatches through an admitted
-// `ReactNativeRustCoreSession` (see `./react-native-rust-core`): the op name
-// and args cross verbatim via `session.invoke` and the raw core result
-// returns. This mirrors the Node NAPI dispatch pattern
-// (`bindings/napi/src/dispatch.rs`, where `UbmCentral` owns one
-// `DesktopCentral`): TypeScript schedules nothing, owns no subscription
-// state, no retry policy, and no timeout timers. Deadlines arrive as
-// `timeoutMs` op args so the core owns the caller outcome; abort signals map
-// to core `op.cancel` dispatches, never to a TS-side timer.
-//
-// Binding op contract (the exact F01 slice a JNI/UniFFI native module must
-// implement; the F01 acceptance proof implements it over the packed NAPI
-// addon and fails on any TypeScript fallback):
-//   adapter.state {} -> { availability, authorization, power,
-//     backendGeneration, updatedAt, safeReason }
-//   scan.start { serviceUuids: string[], timeoutMs: number | null }
-//     -> { operationId: string }
-//   scan.take {} -> core observation record | null (null = none queued now)
-//   scan.stop { operationId: string } -> { state: 'released' | ... }
-//   connection.connect { peerId: string, lease: string,
-//     timeoutMs: number | null, operationId: string } -> { peerKey: string,
-//     connectionGeneration: string }
-//   connection.disconnect { peerId: string, lease: string } -> {}
-//   gatt.discover { peerId: string, lease: string, operationId: string }
-//     -> { services: [{ uuid, occurrence, characteristics:
-//        [{ uuid, occurrence, properties, descriptors:
-//        [{ uuid, occurrence }] }] }] }
-//   gatt.read { peerId: string, selector, timeoutMs: number | null,
-//     operationId: string } -> { value: bytes }
-//   gatt.write { peerId: string, selector, value: bytes,
-//     mode: 'with-response' | 'without-response',
-//     timeoutMs: number | null, operationId: string } -> {}
-//   gatt.subscribe { peerId: string, selector, consumer: string,
-//     timeoutMs: number | null, operationId: string } -> {}
-//   notifications.take { peerId: string, selector, consumer: string }
-//     -> { value: bytes } | null
-//   gatt.unsubscribe { peerId: string, selector, consumer: string,
-//     operationId: string } -> { disabled: boolean }
-// (operationId links an invocation to a later op.cancel; bindings must
-// tolerate it as opaque routing data alongside the documented fields.)
-//   peers.resolve { reference: PeerReference }
-//     -> backend peer record | null
-//   peers.known { services?: string[] } -> backend peer records
-//   peers.connected {} -> backend peer records
-//   events.take {} -> BackendEvent record | null
-//   counters.describe {} -> ResourceCounters record
-//   op.cancel { operationId: string }
-//     -> { state: 'cancellation-requested' | 'already-terminal' | 'not-cancellable' }
-//   session.dispose {} -> { state: string } (real destroy transition,
-//     idempotent; the provider then closes the session)
-//
-// Bytes cross as Uint8Array in process; out-of-process bindings may use
-// `{ base64: string }` and the provider decodes both. Failures thrown by the
-// session (frozen `code|domain|operation` identities) propagate verbatim:
-// the provider never substitutes a TypeScript error identity for a core one.
+// Truth rules this file keeps:
+// - generations are the core's (`adapter.state`, `connection.connect`,
+//   `gatt.discover`, `link`, `db-changed`); a handle whose generation the core
+//   retired fails before any native I/O (PR210-16);
+// - a write reports the owner's receipt, a failed write the owner's commit
+//   state; a notification reports the delivery the owner reported (PR210-13);
+// - scan stop, unsubscribe, disconnect and dispose keep their native identity
+//   until the owner confirms release, so a failed cleanup can be retried
+//   (PR210-09, PR210-14);
+// - retained bytes are charged at their actual size (PR210-17).
 
 import type {
   AdapterBackend,
   BackendAttachment,
   BackendAttachmentRequest,
+  BackendConnection,
   BackendEvent,
   BackendPeerQuery,
   BackendPeerRecord,
@@ -79,123 +39,217 @@ import type {
   ScanLease,
   ScannerBackend
 } from '../../backend-contract/backend'
+import {
+  advertisementMatchesFilter,
+  assertScanFilter,
+  type AdvertisementField,
+  type AdvertisementObservation,
+  type OwnerScanOptions,
+  type ScanFilter,
+  type SourceTimestamp
+} from '../../backend-contract/advertisement'
+import type { FeatureRegistry } from '../../backend-contract/capabilities'
 import type {
+  ConnectionMaximumWriteLengthMeasurement,
+  ConnectionMaximumWriteLengthRequest,
+  ConnectionPhyObservation,
+  ConnectionPhyRequest,
+  ConnectionPriorityRequest,
+  EffectiveMtuMeasurement,
+  EffectiveMtuRequest,
+  MtuNegotiation,
+  ReadPhyRequest,
+  ReadRssiRequest,
+  RequestMtuRequest,
+  RequestPhyRequest,
+  RequestPriorityRequest,
+  RssiMeasurement
+} from '../../backend-contract/connection-controls'
+import {
+  BackendContractError,
+  contractError,
+  type CleanupFailure,
+  type CleanupRecord,
+  type NormalizedBleError
+} from '../../backend-contract/errors'
+import {
+  createGattCharacteristicProperties,
+  createGattDescriptorProperties,
+  type Characteristic,
+  type CharacteristicPath,
+  type CharacteristicProperties,
+  type DatabasePath,
+  type Descriptor,
+  type DescriptorPath,
+  type GattDatabase,
+  type GattDatabaseSnapshot,
+  type NotificationValue,
+  type Service,
+  type Subscription
+} from '../../backend-contract/gatt'
+import type {
+  AdapterSelection,
   AdapterStateSnapshot,
   AdapterStateWatch,
   AttachmentRecord,
   NativeBackendIdentity
 } from '../../backend-contract/identity'
-import type { AdvertisementObservation, OwnerScanOptions } from '../../backend-contract/advertisement'
-import {
-  createAttachmentBoundIdFactory,
-  canonicalBleAddress,
-  canonicalUuid,
-  capacity,
-  negotiateCoreVersions,
-  negotiateVersion,
-  opaqueId,
-  resourceCount,
-  type AttachmentBoundIdFactory,
-  type ClientId,
-  type LeaseId,
-  type MonotonicTimestamp,
-  type NativeVersionAxes,
-  type OwnedBytes,
-  type PeerId,
-  type ScanShareToken,
-  type Uuid
-} from '../../backend-contract/primitives'
-import { createGattCharacteristicProperties } from '../../backend-contract/gatt'
-import type { BackendConnection } from '../../backend-contract/backend'
 import {
   createBackendOperationDispatch,
   type BackendOperationDispatch,
   type CancellationAcknowledgement,
   type OperationOptions,
+  type OperationTerminalOutcome,
   type OperationTerminalRecord,
   type PublicOperationOptions,
   type ReadRequest,
   type ReadResult,
   type SubscribeRequest,
+  type SubscriptionOptions,
+  type WritePolicy,
+  type WriteReceipt,
   type WriteRequest,
   type WriteResult
 } from '../../backend-contract/operations'
-import type { CharacteristicPath, DescriptorPath, GattDatabase } from '../../backend-contract/gatt'
+import { assertPeerReference, encodePeerReference, type PeerReference } from '../../backend-contract/peer-reference'
+import type { CoreTraceSink } from '../../core/trace-recorder'
+import {
+  canonicalBleAddress,
+  canonicalUuid,
+  capacity,
+  createAttachmentBoundIdFactory,
+  monotonicTimestamp,
+  negotiateCoreVersions,
+  negotiateVersion,
+  opaqueId,
+  resourceCount,
+  type AttachmentBoundIdFactory,
+  type BorrowedBytes,
+  type ClientId,
+  type GenerationId,
+  type LeaseId,
+  type NativeVersionAxes,
+  type OwnedBytes,
+  type PeerId,
+  type ScanSessionId,
+  type ScanShareToken,
+  type SerializableRecord,
+  type Uuid
+} from '../../backend-contract/primitives'
+import type { ScanPlan } from '../../backend-contract/scan-planning'
+import type { NormalizedScanQuery } from '../../backend-contract/scan-query'
 import type { BoundedAsyncStream } from '../../backend-contract/streams'
-import { CoreBoundedStream } from '../../core/bounded-stream'
-import {
-  BUILT_IN_FEATURE_IDS,
-  createBackendOperationCapabilityRegistration,
-  createFeatureRegistry,
-  type BuiltInFeatureId
-} from '../../backend-contract/capabilities'
-import { contractError } from '../../backend-contract/errors'
-import type { AdapterSelection } from '../../backend-contract/identity'
-import type { PeerReference } from '../../backend-contract/peer-reference'
+import type { CoreStreamTerminalReason } from '../../core/bounded-stream'
+import { OwnedCoreBoundedStream } from '../../core/owned-bounded-stream'
 import { UNIFIED_BLE_IMPLEMENTATION_VERSION } from '../../implementation-version'
-import type { Spec as NativeProtocolControl } from '../../NativeUnifiedBleProtocolControl'
-import { createReactNativeConnectionControlFeatureRegistry } from './react-native-connection-control-features'
-import { createReactNativeDescriptorFeatureRegistry } from './react-native-descriptor-features'
+import { trustedServiceUuidFilter } from '../scan-planning/service-uuid-scan-planner'
 import {
-  combineReactNativeFeatureRegistries,
-  createReactNativeRestorationFeatureRegistry,
+  reactNativeAndroidCompatibility,
+  reactNativeAndroidDefaultAdapterId,
+  reactNativeAppleCompatibility,
+  reactNativeAppleDefaultAdapterId,
+  REACT_NATIVE_ANDROID_BACKEND_ID,
+  REACT_NATIVE_ANDROID_DEFAULT_ADAPTER_NATIVE_ID,
+  REACT_NATIVE_ANDROID_PLATFORM_ID,
+  REACT_NATIVE_APPLE_BACKEND_ID,
+  REACT_NATIVE_APPLE_DEFAULT_ADAPTER_NATIVE_ID,
+  REACT_NATIVE_APPLE_PLATFORM_ID
+} from './react-native-platform-identity'
+import {
+  resolveReactNativeRustCoreBinding,
+  type ReactNativeRustCoreBinding,
+  type ReactNativeRustCoreSession
+} from './react-native-rust-core'
+import { RustCoreDrainRouter } from './react-native-rust-core-drain'
+import {
+  createReactNativeRustCoreFeatureRegistry,
+  type ReactNativeRustCoreRuntimeFacts
+} from './react-native-rust-core-features'
+import { RustCoreRestorationJournal, type ReactNativeRestorationAuthority } from './react-native-rust-core-restoration'
+import { RustCoreSecurityBackend } from './react-native-rust-core-security'
+import {
   ReactNativeRestorationCoordinator,
   type ReactNativeRestorationActivation,
   type ReactNativeRestorationBackendProvider
 } from './react-native-restoration'
 import {
-  reactNativeAndroidCompatibility,
-  reactNativeAndroidDefaultAdapterId,
-  REACT_NATIVE_ANDROID_BACKEND_ID,
-  REACT_NATIVE_ANDROID_DEFAULT_ADAPTER_NATIVE_ID,
-  REACT_NATIVE_ANDROID_PLATFORM_ID
-} from './react-native-android-provider'
+  diagnosticReactNativeAndroidScanPlan,
+  diagnosticReactNativeAppleScanPlan,
+  planReactNativeAndroidScan,
+  planReactNativeAppleScan
+} from './react-native-scan-planner'
 import {
-  reactNativeAppleCompatibility,
-  reactNativeAppleDefaultAdapterId,
-  REACT_NATIVE_APPLE_BACKEND_ID,
-  REACT_NATIVE_APPLE_DEFAULT_ADAPTER_NATIVE_ID,
-  REACT_NATIVE_APPLE_PLATFORM_ID
-} from './react-native-apple-provider'
-import {
-  admitReactNativeRustCoreSession,
-  dispatchReactNativeRustCoreOp,
-  type ReactNativeRustCoreBinding,
-  type ReactNativeRustCoreSession
-} from './react-native-rust-core'
+  checkWriteReceipt,
+  encodeBase64,
+  remotePlatformDetail,
+  type WireAdapterState,
+  type WireCleanupRecord,
+  type WireCounters,
+  type WireDelivery,
+  type WireDiscovery,
+  type WireDrainRecord,
+  type WireJsonObject,
+  type WireOp,
+  type WireOpResults,
+  type WirePeerRecord,
+  type WireResult,
+  type WireRestoredPeer,
+  type WireSecurityState
+} from './rust-core-wire'
 
 export type ReactNativeRustCorePlatform = 'android' | 'apple'
 
 export const REACT_NATIVE_RUST_CORE_BACKEND_ID = 'unified-ble:react-native-rust-core'
 export const REACT_NATIVE_RUST_CORE_IMPLEMENTATION_VERSION = UNIFIED_BLE_IMPLEMENTATION_VERSION
 
+const SCOPE = 'react-native-rust-core'
+/** The last `budgetMs` the owner admits (`ubm_core::contracts::MAX_TIMEOUT_MS`). */
+const MAX_BUDGET_MS = 2147483647
+/** Bytes a UUID occupies in a retained record (canonical text form). */
+const UUID_BYTES = 36
+/** Fixed bytes of one retained record (timestamps, ordinals, flags). */
+const RECORD_BYTES = 64
+/** Links released locally whose `link` record may still be in flight. */
+const RETIRED_LINK_CAPACITY = 256
+
 export interface ReactNativeRustCoreProviderOptions {
-  /** Target mobile platform (selects the adapter identity and compatibility). */
+  /** Target mobile platform (selects the adapter identity and capabilities). */
   readonly platform: ReactNativeRustCorePlatform
   /**
-   * The injected native Rust core binding. There is no default and no
-   * TypeScript fallback: resolution/admission fail loudly through the seam.
+   * The native Rust core binding. There is no TypeScript fallback: a
+   * missing or foreign binding fails before any radio work.
    */
   readonly binding: ReactNativeRustCoreBinding
-  /** Owner label for the admitted core session (host identity). */
+  /** Owner label for admitted session leases (host identity). */
   readonly owner: string
   /** Monotonic clock supplied by the React Native host application. */
   readonly now: () => number
-  /** Native restoration control for the coordinator (identity only, never BLE work). */
-  readonly control: NativeProtocolControl
+  /** Runtime facts about the host OS (Android API level). */
+  readonly runtime: ReactNativeRustCoreRuntimeFacts
+  /**
+   * The app-declared restoration authority (from `restorationIdentity`), or
+   * `null` when the app configured none. Asked at adoption time.
+   */
+  readonly restorationAuthority?: () => ReactNativeRestorationAuthority | null
   /** Optional deterministic owner identity factory for controlled tests. */
   readonly createOwnerId?: () => string
+  /**
+   * The manager's bounded diagnostic trace (`diagnostics.traceMaximumRecords`
+   * / `traceMaximumBytes`). Every operation the backend sends to the owner
+   * records its dispatch and outcome here; absent, nothing is traced.
+   */
+  readonly trace?: CoreTraceSink
 }
 
 export interface ReactNativeRustCoreBackendProvider extends ReactNativeRestorationBackendProvider {
   create(selection: AdapterSelection<string>): Promise<ReactNativeRustCoreBackend>
 }
 
-let nextRustCoreOwner = 1
+let nextOwner = 1
 
-function allocateRustCoreOwnerId(): string {
-  const ordinal = nextRustCoreOwner
-  nextRustCoreOwner += 1
+function allocateOwnerId(): string {
+  const ordinal = nextOwner
+  nextOwner += 1
   return `react-native-rust-core-owner-${ordinal}`
 }
 
@@ -222,9 +276,8 @@ function defaultAdapterIdFor(platform: ReactNativeRustCorePlatform) {
 }
 
 /**
- * Creates the binding-backed provider. The native binding is injected by
- * the host application; without one the provider cannot be constructed and
- * the factory never silently substitutes the TypeScript manager.
+ * The React Native provider over the Rust mobile owner. `listAdapters`
+ * opens a probe session and disposes it; `create` opens the backend.
  */
 export function createReactNativeRustCoreBackendProvider(
   options: ReactNativeRustCoreProviderOptions
@@ -232,110 +285,354 @@ export function createReactNativeRustCoreBackendProvider(
   if (options.owner.length === 0) {
     throw contractError('argument.invalid', 'core', 'react-native-rust-core.provider.owner')
   }
-  const createOwnerId = options.createOwnerId ?? allocateRustCoreOwnerId
-  const restoration = new ReactNativeRestorationCoordinator(options.control, options.platform)
-  const compatibility = compatibilityFor(options.platform)
+  const binding = resolveReactNativeRustCoreBinding(options.binding)
+  const createOwnerId = options.createOwnerId ?? allocateOwnerId
+  const journalHost: { backend: ReactNativeRustCoreBackend | null } = { backend: null }
+  const journal = new RustCoreRestorationJournal({
+    authority: options.restorationAuthority ?? (() => null),
+    attachment: () => journalHost.backend?.identity.attachment ?? null,
+    claimRestoredPeers: (maxPeers: number) => {
+      const backend = journalHost.backend
+      if (backend === null) {
+        return Promise.reject(contractError('lifecycle.destroyed', 'restoration', 'react-native-rust-core.restoration'))
+      }
+      return backend.claimRestoredPeers(maxPeers)
+    }
+  })
+  const restoration = new ReactNativeRestorationCoordinator(journal, options.platform)
   return Object.freeze({
     descriptor: Object.freeze({
       providerId: 'unified-ble:react-native-rust-core-provider',
       hostKind: 'native-mobile',
       loadability: 'loadable',
-      compatibility
+      compatibility: compatibilityFor(options.platform)
     }),
     restoration,
     listAdapters: async () => {
-      const backend = await openRustCoreBackend(options, createOwnerId(), restoration, false)
-      try {
-        return Object.freeze([backend.identity.attachment.adapter])
-      } finally {
-        await backend.destroy()
+      const backend = await openBackend(options, binding, createOwnerId(), null)
+      const adapters = Object.freeze([backend.identity.attachment.adapter])
+      const cleanup = await backend.destroy()
+      if (cleanup.state !== 'released') {
+        throw cleanupError(cleanup, 'react-native-rust-core.provider.list-adapters.cleanup')
       }
+      return adapters
     },
     create: async (selection: AdapterSelection<string>) => {
       if (String(selection.selectedAdapterId) !== String(defaultAdapterIdFor(options.platform))) {
         throw contractError('adapter.unavailable', 'adapter', 'react-native-rust-core.provider.select-adapter')
       }
-      return openRustCoreBackend(options, createOwnerId(), restoration, true)
+      const backend = await openBackend(options, binding, createOwnerId(), { restoration, journalHost })
+      return backend
     }
   })
 }
 
-async function openRustCoreBackend(
+function cleanupError(cleanup: CleanupRecord, operation: string): BackendContractError {
+  const first = cleanup.failures[0]?.error
+  return first === undefined
+    ? contractError('lifecycle.invariant-violation', 'cleanup', operation)
+    : new BackendContractError({ ...first, retryability: 'never' })
+}
+
+async function openBackend(
   options: ReactNativeRustCoreProviderOptions,
-  sessionOwner: string,
-  restoration: ReactNativeRestorationCoordinator,
-  activateRestoration: boolean
+  binding: ReactNativeRustCoreBinding,
+  ownerId: string,
+  restoration: {
+    readonly restoration: ReactNativeRestorationCoordinator
+    readonly journalHost: { backend: ReactNativeRustCoreBackend | null }
+  } | null
 ): Promise<ReactNativeRustCoreBackend> {
-  if (sessionOwner.length === 0) {
+  if (ownerId.length === 0) {
     throw contractError('argument.invalid', 'core', 'react-native-rust-core.provider.owner-id')
   }
-  // Open-then-admit without leaking: a session whose revision fails
-  // admission must still be closed before the rejection propagates, or
-  // every foreign-revision probe (create and listAdapters) strands one
-  // native session.
-  const rawSession = await options.binding.openSession(`${options.owner}/${sessionOwner}`)
-  let session: ReactNativeRustCoreSession
+  const session = await binding.openSession(`${options.owner}/${ownerId}`)
+  let backend: ReactNativeRustCoreBackend
   try {
-    session = await admitReactNativeRustCoreSession(rawSession)
+    const state = await session.invoke('adapter.state', {})
+    backend = new ReactNativeRustCoreBackend(
+      options.platform,
+      session,
+      options.now,
+      options.runtime,
+      state,
+      options.trace ?? null,
+      leaseId => releaseBackgroundThroughModule(binding, `${options.owner}/${ownerId}/background`, leaseId)
+    )
   } catch (error) {
-    await rawSession.close().catch(() => undefined)
+    await disposeUnopenedSession(session, error)
     throw error
   }
-  const backend = new ReactNativeRustCoreBackend(options.platform, session, options.now, restoration)
   try {
     await backend.open()
-    if (activateRestoration) {
-      backend.activateRestoration(restoration)
+    if (restoration !== null) {
+      backend.activateRestoration(restoration.restoration)
+      restoration.journalHost.backend = backend
     }
     return backend
   } catch (error) {
-    await backend.destroy().catch(() => undefined)
+    const cleanup = await backend.destroy()
+    if (cleanup.state !== 'released') {
+      throw withCleanupDetail(error, cleanup)
+    }
     throw error
   }
 }
 
-/** Core observation record wire shape (JSON from out-of-process bindings). */
-interface RustCoreObservation {
-  readonly peerId: string
-  readonly rssi?: number | null
-  readonly localName?: string | null
-  readonly serviceUuids?: readonly string[]
-  readonly manufacturerData?: ReadonlyArray<{ companyId: number; payload: unknown }>
-  readonly serviceData?: ReadonlyArray<{ uuid: string; payload: unknown }>
-  readonly txPower?: number | null
-  readonly connectable?: boolean | null
-  readonly sourceTimestampMs?: number | null
-  readonly ingressOrdinal?: number | null
+/** Disposes a session no backend owns yet; a failed disposal travels with the error. */
+/**
+ * A foreground-service lease belongs to the native module, not to the
+ * manager that acquired it (87/N8): after that manager is destroyed its
+ * handle still releases the lease through a short-lived session of the same
+ * module, as the legacy module released it directly.
+ */
+async function releaseBackgroundThroughModule(
+  binding: ReactNativeRustCoreBinding,
+  owner: string,
+  leaseId: string
+): Promise<CleanupRecord> {
+  const session = await binding.openSession(owner)
+  let record: CleanupRecord
+  try {
+    record = cleanupRecordFrom(await session.invoke('background.release', { leaseId }))
+  } catch (error) {
+    await disposeUnopenedSession(session, error)
+    throw error
+  }
+  const disposed = cleanupRecordFrom(await session.invoke('session.dispose', {}))
+  if (disposed.state !== 'released') {
+    throw cleanupError(disposed, 'react-native-rust-core.background.release.session')
+  }
+  await session.close()
+  return record
 }
 
-interface RustCorePeerRecord {
-  readonly peerId: string
-  readonly name: string | null
-  readonly rssi: number | null
-  readonly source: string
-  readonly reachability: string
-  readonly connection: string
-  readonly bond: string
-  readonly lastSeenAtMonotonicMs: number | null
+function securityKey(state: WireSecurityState): string {
+  return JSON.stringify([
+    state.bond,
+    state.encryption,
+    state.authentication,
+    state.secureConnections,
+    state.pairingPossible
+  ])
 }
 
-interface RustCoreDatabase {
-  readonly services: ReadonlyArray<{
-    readonly uuid: string
-    readonly occurrence: number
-    readonly characteristics: ReadonlyArray<{
-      readonly uuid: string
-      readonly occurrence: number
-      readonly properties: number
-      readonly descriptors: ReadonlyArray<{ readonly uuid: string; readonly occurrence: number }>
-    }>
-  }>
+async function disposeUnopenedSession(session: ReactNativeRustCoreSession, cause: unknown): Promise<void> {
+  try {
+    const record = await session.invoke('session.dispose', {})
+    if (record.state === 'released') await session.close()
+    else throw withCleanupDetail(cause, cleanupRecordFrom(record))
+  } catch (error) {
+    if (error === cause) throw error
+    throw withCleanupDetail(cause, {
+      state: 'release-failed',
+      failures: [cleanupFailure('session', error, 'react-native-rust-core.provider.open.cleanup')]
+    })
+  }
 }
+
+function withCleanupDetail(error: unknown, cleanup: CleanupRecord): unknown {
+  if (!(error instanceof BackendContractError) || cleanup.state === 'released') return error
+  return new BackendContractError({
+    ...error.normalized,
+    platform: {
+      domain: 'react-native-rust-core',
+      code: 'cleanup-debt',
+      safeMessage: 'the session opened for this backend could not be released',
+      metadata: Object.freeze({
+        original: error.normalized.platform?.safeMessage ?? null,
+        failures: Object.freeze(cleanup.failures.map(failure => `${failure.resourceKind}:${failure.error.code}`))
+      })
+    }
+  })
+}
+
+// -- shared helpers -----------------------------------------------------------
+
+function unwrap<Value>(result: WireResult<Value>): Value {
+  if (!result.ok) throw result.error
+  return result.value
+}
+
+function normalizedFrom(error: unknown, operation: string): NormalizedBleError {
+  if (error instanceof BackendContractError) return error.normalized
+  return contractError('platform.failure', 'core', operation, {
+    domain: 'react-native-rust-core',
+    code: 'unexpected-failure',
+    safeMessage: error instanceof Error ? error.message.slice(0, 1024) : String(error).slice(0, 1024),
+    metadata: Object.freeze({})
+  }).normalized
+}
+
+function cleanupFailure(resourceKind: string, error: unknown, operation: string): CleanupFailure {
+  return Object.freeze({ resourceKind, error: normalizedFrom(error, operation) })
+}
+
+/** The owner's cleanup record as the contract's `CleanupRecord` (codes and details verbatim). */
+function cleanupRecordFrom(record: WireCleanupRecord): CleanupRecord {
+  if (record.state === 'released') return Object.freeze({ state: 'released', failures: Object.freeze([]) })
+  return Object.freeze({
+    state: 'release-failed',
+    failures: Object.freeze(
+      record.failures.map(failure =>
+        Object.freeze({
+          resourceKind: failure.resourceKind,
+          error: contractError(failure.code, failure.domain, failure.operation, remotePlatformDetail(failure))
+            .normalized
+        })
+      )
+    )
+  })
+}
+
+function mergeCleanup(records: readonly CleanupRecord[]): CleanupRecord {
+  const failures = records.flatMap(record => record.failures)
+  return failures.length === 0
+    ? Object.freeze({ state: 'released', failures: Object.freeze([]) })
+    : Object.freeze({ state: 'release-failed', failures: Object.freeze(failures) })
+}
+
+const RELEASED: CleanupRecord = Object.freeze({ state: 'released', failures: Object.freeze([]) })
+
+function utf8Length(text: string): number {
+  let bytes = 0
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index)
+    if (code < 0x80) bytes += 1
+    else if (code < 0x800) bytes += 2
+    else if (code >= 0xd800 && code <= 0xdbff) {
+      bytes += 4
+      index += 1
+    } else bytes += 3
+  }
+  return bytes
+}
+
+function present<Value>(value: Value | null, reason: string): AdvertisementField<Value> {
+  if (value === null) {
+    return Object.freeze({ state: 'absent', reason, provenance: 'not-provided' })
+  }
+  return Object.freeze({ state: 'present', value, provenance: 'observed' })
+}
+
+const ABSENT_EMPTY_OR_UNREPORTED = 'empty-or-absent-indistinguishable'
+
+/** Core property bits (`ubm_core` GATT_PROP_*): READ 0x01, WRITE 0x02, WRITE_NO_RSP 0x04, NOTIFY 0x08, INDICATE 0x10. */
+function characteristicPropertiesFromBits(bits: number): CharacteristicProperties {
+  return createGattCharacteristicProperties({
+    read: (bits & 0x01) !== 0,
+    writeWithResponse: (bits & 0x02) !== 0,
+    writeWithoutResponse: (bits & 0x04) !== 0,
+    notify: (bits & 0x08) !== 0,
+    indicate: (bits & 0x10) !== 0
+  })
+}
+
+/** Stable, non-reversible reference token for a bonded native id (legacy Android peer directory). */
+function stablePeerToken(nativePeerId: string): string {
+  let first = 0x811c9dc5
+  let second = 0x9e3779b9
+  for (let index = 0; index < nativePeerId.length; index += 1) {
+    const code = nativePeerId.charCodeAt(index)
+    first = Math.imul(first ^ code, 0x01000193)
+    second = Math.imul(second ^ (code + index), 0x01000193)
+  }
+  return `android-bonded-${(first >>> 0).toString(16).padStart(8, '0')}-${(second >>> 0).toString(16).padStart(8, '0')}`
+}
+
+function linkKey(nativePeerId: string, connectionGeneration: string): string {
+  return `${nativePeerId}\u0000${connectionGeneration}`
+}
+
+// -- retained state -------------------------------------------------------------
+
+type CharacteristicSelector = {
+  readonly serviceUuid: string
+  readonly serviceOccurrence: number
+  readonly characteristicUuid: string
+  readonly characteristicOccurrence: number
+}
+
+type DescriptorSelector = CharacteristicSelector & {
+  readonly descriptorUuid: string
+  readonly descriptorOccurrence: number
+}
+
+interface ScanConsumer {
+  readonly leaseId: LeaseId<string, string>
+  readonly options: OwnerScanOptions<string, string>
+  readonly filter: ScanFilter
+  readonly stream: OwnedCoreBoundedStream<AdvertisementObservation<string>>
+  readonly seenPeers: Set<string>
+  /** Advertisements the owner dropped at native ingress while this consumer was live (cumulative). */
+  ingressDropped: number
+}
+
+interface ScanGroup {
+  /** The owner's membership id (`s{n}-scan-{k}`), retained until release is confirmed. */
+  readonly membership: string
+  readonly scanSessionId: ScanSessionId<string, string>
+  readonly ownerLeaseId: LeaseId<string, string>
+  readonly shareToken: ScanShareToken<string, string> | null
+  readonly consumers: Map<string, ScanConsumer>
+  state: 'active' | 'stopping' | 'release-failed' | 'released'
+  stopping: Promise<CleanupRecord> | null
+  deadlineTimer: ReturnType<typeof setTimeout> | null
+  removeAbort: (() => void) | null
+}
+
+interface ConnectionEntry {
+  readonly key: string
+  readonly resource: BackendConnection<string, string>
+  readonly nativePeerId: string
+  /** The core lease name (`connection.connect` `lease`). */
+  readonly lease: string
+  /** The core-issued connection generation. */
+  readonly coreGeneration: string
+  linkState: 'connected' | 'lost'
+  release: Promise<CleanupRecord> | null
+  released: boolean
+  readonly databases: Set<string>
+}
+
+interface DatabaseEntry {
+  readonly key: string
+  readonly connectionKey: string
+  readonly coreGeneration: string
+  readonly path: DatabasePath<string, string, string>
+  readonly discovery: WireDiscovery
+  valid: boolean
+}
+
+interface SubscriptionEntry {
+  readonly consumer: string
+  readonly subscriptionId: ReturnType<AttachmentBoundIdFactory<string>['subscriptionId']>
+  readonly nativePeerId: string
+  readonly connectionKey: string
+  readonly selector: CharacteristicSelector
+  readonly stream: OwnedCoreBoundedStream<NotificationValue>
+  /** `ended`: the owner retired the consumer itself (`stream-end`); nothing remains to release. */
+  state: 'subscribing' | 'active' | 'ended'
+  removal: Promise<OperationTerminalRecord<string, string>> | null
+  /** Notifications the owner dropped at native ingress while this consumer was live (cumulative). */
+  ingressDropped: number
+}
+
+/** A stream that accounts for records its source lost before routing them. */
+interface IngressLossAccount {
+  readonly stream: Pick<OwnedCoreBoundedStream<unknown>, 'observeSourceOverflow'>
+  ingressDropped: number
+}
+
+/** Why the owner invalidated a peer's streams, as the next `stream-end` should say. */
+type InvalidationReason = Extract<CoreStreamTerminalReason, 'connection-lost' | 'service-changed'>
+
+// -- the backend -------------------------------------------------------------------
 
 /**
- * Binding-backed backend: every BLE data-path method dispatches through the
- * admitted session. No timers, no retries, no subscription bookkeeping live
- * here — the core owns admission, deadlines, overflow, and teardown.
+ * One admitted session projected onto the backend contract. Everything that
+ * reaches a radio crosses `session.invoke`; everything the radio reports
+ * arrives through `deliver`.
  */
 export class ReactNativeRustCoreBackend implements BleCentralBackend<string, NativeBackendIdentity<string>> {
   readonly adapter: AdapterBackend<string>
@@ -343,80 +640,64 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   readonly connections: ConnectionBackend<string>
   readonly gatt: GattBackend<string>
   readonly peers: PeerDirectoryBackend<string>
-  readonly features: ReturnType<typeof createReactNativeRustCoreFeatureRegistry>
-  readonly security = undefined
+  readonly features: FeatureRegistry
+  readonly security: RustCoreSecurityBackend | undefined
+  /** Session services the Expo layer reaches through the manager (background, companion). */
+  readonly hostServices: ReactNativeRustCoreHostServices
 
-  private identifiers: AttachmentBoundIdFactory<string>
-  private attachment: AttachmentRecord<string>
+  private readonly attachmentRecord: AttachmentRecord<string>
+  private readonly identifiers: AttachmentBoundIdFactory<string>
+  private readonly router: RustCoreDrainRouter
   private readonly peerIdsByNativeId = new Map<string, PeerId<string>>()
   private readonly nativeIdsByPeerId = new Map<string, string>()
-  private nextPeer = 1
-  private nextScan = 1
-  private nextConnection = 1
-  private nextLease = 1
-  private nextOperation = 1
-  private destroyed = false
-  private destroyResult: Promise<import('../../backend-contract/errors').CleanupRecord> | null = null
+  private readonly scanGroups = new Map<string, ScanGroup>()
+  private readonly connectionsByKey = new Map<string, ConnectionEntry>()
+  private readonly connectionsByLink = new Map<string, ConnectionEntry>()
+  private readonly retiredLinks = new Set<string>()
+  private readonly databases = new Map<string, DatabaseEntry>()
+  private readonly subscriptions = new Map<string, SubscriptionEntry>()
+  private readonly invalidations = new Map<string, InvalidationReason>()
+  private readonly eventStreams = new Set<OwnedCoreBoundedStream<BackendEvent<string>>>()
+  private readonly adapterWatches = new Set<OwnedCoreBoundedStream<AdapterStateSnapshot<string>>>()
+  private readonly backgroundLeases = new Set<string>()
+  private lastCounters: WireCounters | null = null
   private restorationActivation: ReactNativeRestorationActivation | null = null
-  private readonly eventsStream: CoreBoundedStream<BackendEvent<string>>
-  private eventsPumpStarted = false
-  private eventsStopped = false
-  /**
-   * Streams owned by this backend that outlive a single op: every scan
-   * observation stream, every subscription notification stream, and every
-   * adapter-watch transition stream. destroy() retires all of them so no
-   * pump or consumer is left polling a closed core on an open stream.
-   */
-  private readonly activeScanObservations = new Set<CoreBoundedStream<AdvertisementObservation<string>>>()
-  private readonly activeNotificationStreams = new Set<
-    BoundedAsyncStream<import('../../backend-contract/gatt').NotificationValue>
-  >()
-  private readonly activeAdapterTransitions = new Set<CoreBoundedStream<AdapterStateSnapshot<string>>>()
+  private restoration: ReactNativeRestorationCoordinator | null = null
+  private destroyed = false
+  private destroyResult: Promise<CleanupRecord> | null = null
+  private sessionDisposed = false
+  private nextOrdinal = 1
+  private nextIngressOrdinal = 1
 
   constructor(
     private readonly platform: ReactNativeRustCorePlatform,
     private readonly session: ReactNativeRustCoreSession,
     private readonly now: () => number,
-    private readonly restoration: ReactNativeRestorationCoordinator
+    runtime: ReactNativeRustCoreRuntimeFacts,
+    initialState: WireAdapterState,
+    private readonly trace: CoreTraceSink | null = null,
+    private readonly releaseModuleBackground: ((leaseId: string) => Promise<CleanupRecord>) | null = null
   ) {
-    const attachmentId = opaqueId(`rust-core-attachment-${platform}`, 'attachment', 'react-native-rust-core')
+    const attachmentId = opaqueId(`rust-core-attachment-${platform}-${session.sessionId}`, 'attachment', SCOPE)
     const backendInstanceId = opaqueId(
-      `react-native-rust-core-backend-${platform}`,
+      `react-native-rust-core-${platform}-session-${session.sessionId}`,
       'backend-instance',
-      'react-native-rust-core'
+      SCOPE
     )
-    const backendGeneration = opaqueId(
-      `rust-core-backend-generation-${platform}`,
-      'backend-generation',
-      'react-native-rust-core'
-    )
-    const adapterId = opaqueId(adapterNativeIdFor(platform), 'adapter', 'react-native-rust-core')
-    const adapterGeneration = opaqueId(
-      `rust-core-adapter-generation-${platform}`,
-      'adapter-generation',
-      'react-native-rust-core'
-    )
-    // The attachment tuple is frozen at open: identity equality covers the
-    // adapter state (including updatedAt), so live radio state must never
-    // rewrite it. Live state is served by adapter.currentState().
-    this.attachment = Object.freeze({
+    const backendGeneration = opaqueId(initialState.backendGeneration, 'backend-generation', SCOPE)
+    const adapterId = opaqueId(adapterNativeIdFor(platform), 'adapter', SCOPE)
+    const adapterGeneration = opaqueId(initialState.adapterGeneration, 'adapter-generation', SCOPE)
+    this.attachmentRecord = Object.freeze({
       attachmentId,
       backendInstanceId,
       backendGeneration,
       adapter: Object.freeze({
         adapterId,
         displayName: platform === 'android' ? 'Android default BLE adapter' : 'Apple default BLE adapter',
-        state: Object.freeze({
-          availability: 'unknown',
-          authorization: 'unknown',
-          power: 'unknown',
-          backendGeneration,
-          updatedAt: 0 as MonotonicTimestamp,
-          safeReason: 'rust-core attachment state loads on open'
-        }),
+        state: this.snapshotFrom(initialState, backendGeneration),
         adapterGeneration,
         limitations: Object.freeze([
-          'The native Rust core owns radio scheduling; this backend carries no TypeScript radio policy'
+          'The process-owned Rust mobile owner schedules every radio operation; this backend holds no TypeScript radio policy'
         ])
       })
     })
@@ -427,141 +708,246 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       adapterId,
       adapterGeneration
     })
-    this.features = createReactNativeRustCoreFeatureRegistry(platform)
-    this.eventsStream = new CoreBoundedStream<BackendEvent<string>>(
-      { itemCapacity: capacity(256), byteCapacity: capacity(262144), reservedControlCapacity: capacity(1024) },
-      'drop-oldest'
+    this.features = createReactNativeRustCoreFeatureRegistry(
+      platform,
+      REACT_NATIVE_RUST_CORE_IMPLEMENTATION_VERSION,
+      runtime
     )
+    this.security =
+      platform === 'android'
+        ? new RustCoreSecurityBackend({
+            now,
+            nativePeerId: (peerId, operation) => this.nativeIdForPeerId(peerId, operation),
+            budget: (options, operation) => this.budget(options, operation),
+            mintOperationId: kind => this.mintOperationId(kind),
+            securityState: args => this.invoke('security.state', args),
+            pair: args => this.invoke('security.pair', args),
+            cancelPairing: async args => {
+              await this.invoke('security.cancel-pairing', args)
+            },
+            watchAbort: (signal, operationId, operation) => this.watchAbort(signal, operationId, operation)
+          })
+        : undefined
+    this.router = new RustCoreDrainRouter(session, {
+      deliver: records => this.deliver(records),
+      failed: error => this.drainFailed(error)
+    })
+    const plan = platform === 'android' ? diagnosticReactNativeAndroidScanPlan : diagnosticReactNativeAppleScanPlan
     this.adapter = Object.freeze({
       currentState: () => this.currentAdapterState(),
-      watchState: async () => this.watchAdapterState()
+      watchState: () => this.watchAdapterState()
     })
     this.scanner = Object.freeze({
+      plan: (query: NormalizedScanQuery): ScanPlan => plan(query),
       start: (options: OwnerScanOptions<string, string>, clientId: ClientId<string, string>) =>
         this.startScan(options, clientId),
       join: (
-        _sharedLeaseId: LeaseId<string, string>,
-        _shareToken: ScanShareToken<string, string>,
-        _clientId: ClientId<string, string>
-      ): Promise<ScanLease<string, string>> => {
-        throw contractError('capability.unsupported', 'scan', 'react-native-rust-core.scan.join')
-      }
+        leaseId: LeaseId<string, string>,
+        token: ScanShareToken<string, string>,
+        clientId: ClientId<string, string>
+      ) => this.joinScan(leaseId, token, clientId)
     })
     this.connections = Object.freeze({
       connect: (peerId: PeerId<string>, clientId: ClientId<string, string>, options: ConnectionOptions) =>
         this.connect(peerId, clientId, options),
-      peerFromAddress: (descriptor: PeerAddressDescriptor) => this.peerFromAddress(descriptor)
+      ...(platform === 'android'
+        ? { peerFromAddress: (descriptor: PeerAddressDescriptor) => this.peerFromAddress(descriptor) }
+        : {}),
+      readRssi: <Operation extends string>(
+        connection: BackendConnection<string, string>,
+        request: ReadRssiRequest<string, Operation>
+      ) => this.readRssi(connection, request),
+      requestMtu: <Operation extends string>(
+        connection: BackendConnection<string, string>,
+        request: RequestMtuRequest<string, Operation>
+      ) => this.requestMtu(connection, request),
+      effectiveMtu: <Operation extends string>(
+        connection: BackendConnection<string, string>,
+        request: EffectiveMtuRequest<string, Operation>
+      ) => this.effectiveMtu(connection, request),
+      requestPriority: <Operation extends string>(
+        connection: BackendConnection<string, string>,
+        request: RequestPriorityRequest<string, Operation>
+      ) => this.requestPriority(connection, request),
+      readPhy: <Operation extends string>(
+        connection: BackendConnection<string, string>,
+        request: ReadPhyRequest<string, Operation>
+      ) => this.readPhy(connection, request),
+      requestPhy: <Operation extends string>(
+        connection: BackendConnection<string, string>,
+        request: RequestPhyRequest<string, Operation>
+      ) => this.requestPhy(connection, request),
+      maximumWriteLength: <Operation extends string>(
+        connection: BackendConnection<string, string>,
+        request: ConnectionMaximumWriteLengthRequest<string, Operation>
+      ) => this.maximumWriteLength(connection, request)
     })
     this.gatt = Object.freeze({
       discover: (connection: BackendConnection<string, string>, options: PublicOperationOptions) =>
         this.discover(connection, options),
-      read: (
+      read: <Operation extends string>(
         path: CharacteristicPath<string, string, string, string, string, 'current'>,
-        request: ReadRequest<string, string>
+        request: ReadRequest<string, Operation>
       ) => this.read(path, request),
-      write: (
+      write: <Operation extends string>(
         path: CharacteristicPath<string, string, string, string, string, 'current'>,
-        request: WriteRequest<string, string>
+        request: WriteRequest<string, Operation>
       ) => this.write(path, request),
-      readDescriptor: (
+      readDescriptor: <Operation extends string>(
         path: DescriptorPath<string, string, string, string, string, string, 'current'>,
-        request: ReadRequest<string, string>
+        request: ReadRequest<string, Operation>
       ) => this.readDescriptor(path, request),
-      writeDescriptor: (
+      writeDescriptor: <Operation extends string>(
         path: DescriptorPath<string, string, string, string, string, string, 'current'>,
-        request: WriteRequest<string, string>
+        request: WriteRequest<string, Operation>
       ) => this.writeDescriptor(path, request),
-      subscribe: (
+      subscribe: <Operation extends string>(
         path: CharacteristicPath<string, string, string, string, string, 'current'>,
-        request: SubscribeRequest<string, string>
+        request: SubscribeRequest<string, Operation>
       ) => this.subscribe(path, request),
-      unsubscribe: (
+      unsubscribe: <Operation extends string>(
         subscription: BackendSubscription<string, string, string, string, string>,
-        operation: OperationOptions<string, string>
+        operation: OperationOptions<string, Operation>
       ) => this.unsubscribe(subscription, operation)
     })
     this.peers = Object.freeze({
       resolve: (reference: PeerReference, options: BackendPeerQuery) => this.resolvePeer(reference, options),
-      known: (options: BackendPeerQuery) => this.knownPeers(options),
-      connected: (options: BackendPeerQuery) => this.connectedPeers(options),
-      bonded: async (_options: BackendPeerQuery) => Object.freeze([]),
-      authorized: async (_options: BackendPeerQuery) => Object.freeze([]),
-      restored: async (_options: BackendPeerQuery) => Object.freeze([])
+      known: (options: BackendPeerQuery) => this.listPeers('peers.known', 'known', options),
+      connected: (options: BackendPeerQuery) => this.listPeers('peers.connected', 'connected', options),
+      bonded: (options: BackendPeerQuery) => this.bondedPeers(options),
+      authorized: (_options: BackendPeerQuery) =>
+        Promise.reject(contractError('capability.unsupported', 'connection', `${SCOPE}.peers.authorized`)),
+      restored: (options: BackendPeerQuery) => this.restoredPeers(options)
+    })
+    this.hostServices = Object.freeze({
+      acquireBackground: (request: { readonly kind: 'connected-device'; readonly reason: string }) =>
+        this.acquireBackground(request),
+      releaseBackground: (leaseId: string) => this.releaseBackground(leaseId),
+      updateBackgroundNotification: (request: {
+        readonly leaseId: string
+        readonly title: string
+        readonly body?: string
+      }) => this.updateBackgroundNotification(request),
+      associateCompanion: (request: { readonly name?: string; readonly serviceUuid?: string }) =>
+        this.associateCompanion(request),
+      counters: () => this.describeCounters()
     })
   }
 
-  /** Loads the frozen attachment adapter state from the core (open path). */
+  /** Starts delivery (one drain collects anything queued before) and loads the counters. */
   async open(): Promise<void> {
-    const state = await this.invokeRecord('adapter.state', {})
-    this.attachment = Object.freeze({
-      ...this.attachment,
-      adapter: Object.freeze({
-        ...this.attachment.adapter,
-        state: Object.freeze(this.parseAdapterState(state))
-      })
-    })
-    await this.refreshCountersStrict()
-    this.ensureEventsPump()
+    this.router.start()
+    await this.refreshCounters()
   }
 
   activateRestoration(restoration: ReactNativeRestorationCoordinator): void {
-    this.restorationActivation = restoration.activate(this.attachment, this.nativeVersions() as NativeVersionAxes)
-  }
-
-  private nativeVersions(): NativeVersionAxes {
-    const compatibility = compatibilityFor(this.platform)
-    return Object.freeze({
-      ...negotiateCoreVersions(compatibility, compatibility),
-      nativeProtocol: negotiateVersion(compatibility.nativeProtocol, compatibility.nativeProtocol)
-    })
+    this.restoration = restoration
+    this.restorationActivation = restoration.activate(this.attachmentRecord, this.nativeVersions())
   }
 
   get identity(): NativeBackendIdentity<string> {
     return Object.freeze({
       registeredBackendId: backendIdFor(this.platform),
       registeredPlatformId: platformIdFor(this.platform),
-      attachment: this.attachment,
+      attachment: this.attachmentRecord,
       versions: this.nativeVersions(),
       runtime: Object.freeze({
         hostKind: 'native-mobile',
         implementationVersion: REACT_NATIVE_RUST_CORE_IMPLEMENTATION_VERSION,
         diagnostics: Object.freeze({
-          boundary: 'react-native-rust-core-v1',
-          transport: 'native-core-session'
+          boundary: 'ubm-mobile-wire/1',
+          transport: 'native-core-session',
+          sessionId: this.session.sessionId,
+          nativeBinding: this.session.buildIdentity.binding,
+          nativeTarget: this.session.buildIdentity.target
         })
       })
     })
   }
 
-  async attach(_request: BackendAttachmentRequest): Promise<BackendAttachment<string, NativeBackendIdentity<string>>> {
-    this.assertOperational('react-native-rust-core.attach')
-    return Object.freeze({ attachment: this.attachment, identity: this.identity })
+  /** One attachment per backend, after the caller's core version offer negotiates (legacy rule). */
+  async attach(request: BackendAttachmentRequest): Promise<BackendAttachment<string, NativeBackendIdentity<string>>> {
+    this.assertOperational(`${SCOPE}.attach`)
+    if (this.attached) throw contractError('lifecycle.invalid-state', 'core', `${SCOPE}.attach`)
+    negotiateCoreVersions(compatibilityFor(this.platform), request.coreCompatibility)
+    this.attached = true
+    return Object.freeze({ attachment: this.attachmentRecord, identity: this.identity })
   }
+
+  private attached = false
 
   events(): BoundedAsyncStream<BackendEvent<string>> {
-    return this.eventsStream
+    this.assertOperational(`${SCOPE}.events`)
+    const stream: OwnedCoreBoundedStream<BackendEvent<string>> = new OwnedCoreBoundedStream<BackendEvent<string>>(
+      { itemCapacity: capacity(256), byteCapacity: capacity(262144), reservedControlCapacity: capacity(1024) },
+      'error',
+      () => this.eventStreams.delete(stream)
+    )
+    this.eventStreams.add(stream)
+    return stream
   }
 
+  /**
+   * This manager's counters (the resources its session lease holds on the
+   * process owner) as of the last settled resource operation (every
+   * operation that acquires or releases a resource refreshes them before it
+   * resolves). Other managers' resources are not counted here; the process
+   * totals are `describeCounters().process`.
+   */
   resourceCounters(): ResourceCounters {
-    // Counters are core-owned; serve the last-known snapshot without
-    // blocking the caller, and refresh it on every read. A core that cannot
-    // report fails loudly rather than serving zeros as healthy data.
-    const snapshot = this.lastCounters
-    if (snapshot === null) {
-      throw contractError('lifecycle.invariant-violation', 'core', 'react-native-rust-core.counters-unavailable')
+    const counters = this.lastCounters
+    if (counters === null) {
+      throw contractError('lifecycle.invariant-violation', 'core', `${SCOPE}.counters-unavailable`)
     }
-    this.refreshCounters().catch(() => undefined)
-    return snapshot
+    const owned = counters.counters
+    return Object.freeze({
+      activeScanControllers: resourceCount(owned.activeScanControllers),
+      scanConsumers: resourceCount(owned.scanConsumers),
+      chooserSessions: resourceCount(owned.chooserSessions),
+      connectionLeases: resourceCount(owned.connectionLeases),
+      physicalLinks: resourceCount(owned.physicalLinks),
+      databaseSnapshots: resourceCount(owned.databaseSnapshots),
+      physicalCccdEnablements: resourceCount(owned.physicalCccdEnablements),
+      subscriptionConsumers: resourceCount(owned.subscriptionConsumers),
+      queuedOperations: resourceCount(owned.queuedOperations),
+      dispatchedOperations: resourceCount(owned.dispatchedOperations),
+      retainedByteBuffers: resourceCount(owned.retainedByteBuffers + this.retainedJsBytes()),
+      restorationRecords: resourceCount(owned.restorationRecords),
+      orphanedIpcOwners: resourceCount(owned.orphanedIpcOwners)
+    })
   }
 
-  destroy(): Promise<import('../../backend-contract/errors').CleanupRecord> {
+  /** The session's full counter record, native half and the explicitly named process totals included. */
+  async describeCounters(): Promise<WireCounters> {
+    this.assertOperational(`${SCOPE}.counters.describe`)
+    await this.refreshCounters()
+    const counters = this.lastCounters
+    if (counters === null) throw contractError('lifecycle.invariant-violation', 'core', `${SCOPE}.counters-unavailable`)
+    return counters
+  }
+
+  /**
+   * `peers.claim-restored` for the restoration journal: the restored peers
+   * this manager adopts. The owner hands each restored peer to one adopter
+   * per process (legacy consumed the OS restoration identifiers on the
+   * first adoption), so a later manager's claim finds none.
+   */
+  async claimRestoredPeers(maxPeers: number): Promise<readonly WirePeerRecord[]> {
+    this.assertOperational(`${SCOPE}.peers.claim-restored`)
+    return (await this.invoke('peers.claim-restored', { maxPeers })).peers
+  }
+
+  /** Native id for a public peer id (TCK controller). */
+  peerIdForNativeId(nativePeerId: string): string {
+    return String(this.peerIdForNative(nativePeerId))
+  }
+
+  destroy(): Promise<CleanupRecord> {
     if (this.destroyResult === null) {
       const destruction = this.destroyInternal()
       this.destroyResult = destruction.then(
         cleanup => {
-          if (cleanup.state !== 'released' || cleanup.failures.length !== 0) {
-            this.destroyResult = null
-          }
+          if (cleanup.state !== 'released') this.destroyResult = null
           return cleanup
         },
         error => {
@@ -573,1636 +959,2063 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     return this.destroyResult
   }
 
-  private lastCounters: ResourceCounters | null = null
+  // -- lifecycle --------------------------------------------------------------------
 
-  private async refreshCountersStrict(): Promise<void> {
-    const record = await this.invokeRecord('counters.describe', {})
-    this.lastCounters = parseResourceCounters(record)
+  private async destroyInternal(): Promise<CleanupRecord> {
+    this.destroyed = true
+    const records: CleanupRecord[] = []
+    if (this.restorationActivation !== null && this.restoration !== null) {
+      await this.restoration.deactivate(this.restorationActivation)
+      this.restorationActivation = null
+    }
+    if (!this.sessionDisposed) {
+      let disposal: CleanupRecord
+      try {
+        disposal = cleanupRecordFrom(await this.session.invoke('session.dispose', {}))
+      } catch (error) {
+        disposal = {
+          state: 'release-failed',
+          failures: [cleanupFailure('session', error, `${SCOPE}.session.dispose`)]
+        }
+      }
+      if (disposal.state !== 'released') {
+        // The lease stays open so a retried destroy can dispose it again.
+        return disposal
+      }
+      this.sessionDisposed = true
+      await this.refreshCounters()
+    }
+    await this.router.stop()
+    this.retireLocalState('owner-released')
+    try {
+      await this.session.close()
+    } catch (error) {
+      records.push({ state: 'release-failed', failures: [cleanupFailure('session', error, `${SCOPE}.session.close`)] })
+    }
+    for (const stream of [...this.eventStreams]) stream.closeWithReason('owner-released')
+    this.eventStreams.clear()
+    return mergeCleanup(records)
+  }
+
+  /** Ends every JS-side stream and forgets the handles (the owner released their resources). */
+  private retireLocalState(reason: CoreStreamTerminalReason, error: NormalizedBleError | null = null): void {
+    for (const group of this.scanGroups.values()) this.endScanGroup(group, reason, error)
+    this.scanGroups.clear()
+    for (const entry of this.subscriptions.values()) {
+      entry.state = 'ended'
+      entry.stream.closeWithReason(reason, error)
+    }
+    this.subscriptions.clear()
+    for (const watch of [...this.adapterWatches]) watch.closeWithReason(reason, error)
+    this.adapterWatches.clear()
+    this.security?.close()
+    for (const entry of this.connectionsByKey.values()) entry.released = true
+    this.connectionsByKey.clear()
+    this.connectionsByLink.clear()
+    this.databases.clear()
+    this.backgroundLeases.clear()
+  }
+
+  private drainFailed(error: unknown): void {
+    // The session can no longer report platform facts: every stream ends
+    // with the owner's failure rather than waiting forever.
+    const normalized = normalizedFrom(error, `${SCOPE}.drain`)
+    this.trace?.record({
+      timestamp: this.now(),
+      resource: 'manager',
+      transition: 'source-failed',
+      operation: null,
+      cause: normalized.code,
+      queuedOperations: 0,
+      dispatchedOperations: this.tracedInFlight,
+      quarantinedOperations: 0
+    })
+    for (const group of this.scanGroups.values()) this.endScanGroup(group, 'source-failed', normalized)
+    for (const entry of this.subscriptions.values()) entry.stream.closeWithReason('source-failed', normalized)
+    for (const watch of [...this.adapterWatches]) watch.closeWithReason('source-failed', normalized)
+    for (const stream of [...this.eventStreams]) stream.closeWithReason('source-failed', normalized)
+  }
+
+  private assertOperational(operation: string): void {
+    if (this.destroyed) throw contractError('lifecycle.destroyed', 'core', operation)
+  }
+
+  private nativeVersions(): NativeVersionAxes {
+    const compatibility = compatibilityFor(this.platform)
+    return Object.freeze({
+      ...negotiateCoreVersions(compatibility, compatibility),
+      nativeProtocol: negotiateVersion(compatibility.nativeProtocol, compatibility.nativeProtocol)
+    })
+  }
+
+  private invoke<Op extends WireOp>(op: Op, rawArgs: WireJsonObject): Promise<WireOpResults[Op]> {
+    let args: WireJsonObject
+    try {
+      args = this.admit(op, rawArgs)
+    } catch (error) {
+      return Promise.reject(error)
+    }
+    const trace = this.trace
+    if (trace === null) return this.session.invoke(op, args)
+    // Payload-free: the label is a per-capture ordinal, never the op's peer,
+    // path or bytes (trace-format.ts).
+    const label = `operation-${this.nextTraceLabel}`
+    this.nextTraceLabel += 1
+    this.tracedInFlight += 1
+    this.recordOperation(trace, label, 'dispatched', null)
+    return this.session.invoke(op, args).then(
+      value => {
+        this.tracedInFlight -= 1
+        this.recordOperation(trace, label, 'succeeded', null)
+        return value
+      },
+      (error: unknown) => {
+        this.tracedInFlight -= 1
+        const code = normalizedFrom(error, `${SCOPE}.${op}`).code
+        this.recordOperation(trace, label, traceOutcomeFor(code), code)
+        throw error
+      }
+    )
+  }
+
+  /**
+   * Every operation the owner can cancel, from its abort watch until it
+   * settles: the admission it was sent with (`null` until sent) and whether
+   * it was cancelled before it was sent (finding 109).
+   */
+  private readonly pendingOperations = new Map<string, { admission: number | null; cancelledBeforeSend: boolean }>()
+  private nextAdmission = 0
+
+  /**
+   * Stamp the wire `admission` (finding 109): every invoke naming an
+   * operation carries the session's next admission, assigned here in send
+   * order (the native invoke is issued synchronously after this). An
+   * operation cancelled before it was sent is refused here, with no effect.
+   * `op.cancel` names its target's admission; `scan.stop`'s `operationId`
+   * names a scan membership.
+   */
+  private admit(op: WireOp, args: WireJsonObject): WireJsonObject {
+    const operationId = args.operationId
+    if (op === 'op.cancel' || op === 'scan.stop' || typeof operationId !== 'string') return args
+    const pending = this.pendingOperations.get(operationId)
+    if (pending?.cancelledBeforeSend === true) {
+      throw contractError('operation.aborted', 'core', `${SCOPE}.${op}`)
+    }
+    this.nextAdmission += 1
+    if (pending !== undefined) pending.admission = this.nextAdmission
+    return { ...args, admission: this.nextAdmission }
+  }
+
+  private nextTraceLabel = 1
+  private tracedInFlight = 0
+
+  private recordOperation(
+    trace: CoreTraceSink,
+    label: string,
+    transition: string,
+    cause: NormalizedBleError['code'] | null
+  ): void {
+    trace.record({
+      timestamp: this.now(),
+      resource: 'operation',
+      transition,
+      operation: label,
+      cause,
+      queuedOperations: 0,
+      dispatchedOperations: this.tracedInFlight,
+      quarantinedOperations: 0
+    })
   }
 
   private async refreshCounters(): Promise<void> {
     try {
-      const record = await this.invokeRecord('counters.describe', {})
-      this.lastCounters = parseResourceCounters(record)
-    } catch {
-      // Keep serving the last-known snapshot; the ops themselves fail
-      // loudly when the core is gone.
+      this.lastCounters = await this.session.invoke('counters.describe', {})
+    } catch (error) {
+      if (this.lastCounters === null) throw error
+      // The operation that asked for the refresh already settled; the stale
+      // snapshot stays, and the failure is reported, not dropped.
+      this.emitEvent({
+        kind: 'diagnostic-warning',
+        code: 'counters-refresh-failed',
+        message: 'The Rust owner did not answer counters.describe after a resource operation',
+        detail: Object.freeze({ code: normalizedFrom(error, `${SCOPE}.counters`).code })
+      })
     }
   }
 
-  private async destroyInternal(): Promise<import('../../backend-contract/errors').CleanupRecord> {
-    this.destroyed = true
-    this.eventsStopped = true
-    // Retire owned streams first: mark subscription pumps closed, drop
-    // adapter watchers, and close every tracked scan/notification/watch
-    // stream so consumers observe terminal state. Core teardown below
-    // still runs (and still reports verbatim) when this succeeds.
-    this.adapterWatchers.clear()
-    for (const pumpState of this.subscriptionConsumers.values()) {
-      pumpState.closed = true
+  private retainedJsBytes(): number {
+    let bytes = 0
+    for (const group of this.scanGroups.values()) {
+      for (const consumer of group.consumers.values()) bytes += consumer.stream.retainedPayloadBytes()
     }
-    this.subscriptionConsumers.clear()
-    const ownedStreams: Array<{ close(): Promise<unknown> }> = [
-      ...this.activeScanObservations,
-      ...this.activeNotificationStreams,
-      ...this.activeAdapterTransitions
-    ]
-    this.activeScanObservations.clear()
-    this.activeNotificationStreams.clear()
-    this.activeAdapterTransitions.clear()
-    for (const stream of ownedStreams) {
-      await stream.close().catch(() => undefined)
-    }
-    try {
-      if (this.restorationActivation !== null) {
-        await this.restoration.deactivate(this.restorationActivation)
-        this.restorationActivation = null
-      }
-    } finally {
-      try {
-        await dispatchReactNativeRustCoreOp(this.session, 'session.dispose', {})
-      } finally {
-        await this.session.close()
-        await this.eventsStream.close()
-      }
-    }
-    return { state: 'released', failures: [] }
+    for (const entry of this.subscriptions.values()) bytes += entry.stream.retainedPayloadBytes()
+    return bytes
   }
 
-  private assertOperational(operation: string): void {
-    if (this.destroyed) {
-      throw contractError('lifecycle.destroyed', 'core', operation)
-    }
-  }
+  // -- operation plumbing ------------------------------------------------------------
 
-  private async invokeRecord(op: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const result = await dispatchReactNativeRustCoreOp(this.session, op, args)
-    if (typeof result !== 'object' || result === null || Array.isArray(result)) {
-      throw contractError('protocol.malformed', 'core', `react-native-rust-core.${op}.shape`)
-    }
-    return result as Record<string, unknown>
-  }
-
-  private timeoutMs(options: PublicOperationOptions): number | null {
-    if (options.deadline === null || options.deadline === undefined) return null
-    return Math.max(0, Number(options.deadline) - this.now())
-  }
-
-  private async requestCancellation(correlation: string): Promise<CancellationAcknowledgement<string>> {
-    try {
-      const record = await this.invokeRecord('op.cancel', { operationId: correlation })
-      const state = record.state
-      if (state === 'cancellation-requested' || state === 'already-terminal' || state === 'not-cancellable') {
-        return { handle: this.identifiers.backendOperationHandle(correlation), state }
-      }
-    } catch {
-      // A core that cannot report cancellation leaves the caller with the
-      // core-owned outcome; report not-cancellable rather than inventing one.
-    }
-    return { handle: this.identifiers.backendOperationHandle(correlation), state: 'not-cancellable' }
+  private mintOperationId(kind: string): string {
+    const ordinal = this.nextOrdinal
+    this.nextOrdinal += 1
+    return `${kind}-${ordinal}`
   }
 
   /**
-   * Attaches the abort listener BEFORE the core op starts so an abort can
-   * never miss the window between dispatch and subscription. Returns a
-   * remover the op must call when it settles, or every completed op leaks
-   * one listener (and a post-settle abort would send a spurious op.cancel
-   * for an already-terminal correlation).
+   * The caller's deadline as the owner's relative `budgetMs`. An expired
+   * deadline never reaches the owner: the operation times out here, before
+   * any effect.
    */
-  private watchAbort(signal: AbortSignal | null, onAbort: () => void): () => void {
-    if (signal === null) return () => undefined
-    if (signal.aborted) {
-      onAbort()
-      return () => undefined
-    }
-    signal.addEventListener('abort', onAbort, { once: true })
-    return () => signal.removeEventListener('abort', onAbort)
+  private budget(options: PublicOperationOptions, operation: string): { readonly budgetMs?: number } {
+    if (options.signal?.aborted === true) throw contractError('operation.aborted', 'core', operation)
+    if (options.deadline === null || options.deadline === undefined) return {}
+    const remaining = Math.floor(Number(options.deadline) - this.now())
+    if (remaining <= 0) throw contractError('operation.timed-out', 'core', operation)
+    return { budgetMs: Math.min(remaining, MAX_BUDGET_MS) }
   }
 
-  // -- adapter -----------------------------------------------------------
+  /**
+   * Exact cancellation (finding 109): a settled operation is already
+   * terminal; one not sent yet is refused when it would be sent; a sent one
+   * is cancelled by the owner, which classifies it by its admission.
+   */
+  private async cancel(operationId: string): Promise<CancellationAcknowledgement<string>> {
+    const handle = this.identifiers.backendOperationHandle(operationId)
+    const pending = this.pendingOperations.get(operationId)
+    if (pending === undefined) return Object.freeze({ handle, state: 'already-terminal' })
+    if (pending.admission === null) {
+      pending.cancelledBeforeSend = true
+      return Object.freeze({ handle, state: 'cancellation-requested' })
+    }
+    const answer = await this.invoke('op.cancel', { operationId, admission: pending.admission })
+    return Object.freeze({ handle, state: answer.state })
+  }
 
-  private parseAdapterState(record: Record<string, unknown>): AdapterStateSnapshot<string> {
-    for (const field of ['availability', 'authorization', 'power'] as const) {
-      if (typeof record[field] !== 'string') {
-        throw contractError('protocol.malformed', 'core', `react-native-rust-core.adapter-state.${field}`)
-      }
-    }
-    if (typeof record.backendGeneration !== 'string' || typeof record.updatedAt !== 'number') {
-      throw contractError('protocol.malformed', 'core', 'react-native-rust-core.adapter-state.generation')
-    }
-    if (record.safeReason !== null && record.safeReason !== undefined && typeof record.safeReason !== 'string') {
-      throw contractError('protocol.malformed', 'core', 'react-native-rust-core.adapter-state.reason')
-    }
-    return Object.freeze({
-      availability: record.availability as AdapterStateSnapshot<string>['availability'],
-      authorization: record.authorization as AdapterStateSnapshot<string>['authorization'],
-      power: record.power as AdapterStateSnapshot<string>['power'],
-      backendGeneration: this.attachment.adapter.state.backendGeneration,
-      updatedAt: record.updatedAt as AdapterStateSnapshot<string>['updatedAt'],
-      safeReason: (record.safeReason as string | null | undefined) ?? null
+  /** An abort-driven cancel: the operation settles on its own; a refused cancel is reported. */
+  private cancelDetached(operationId: string, operation: string): void {
+    this.cancel(operationId).catch((error: unknown) => {
+      this.emitEvent({
+        kind: 'diagnostic-warning',
+        code: 'cancel-failed',
+        message: `op.cancel for ${operation} was not accepted`,
+        detail: Object.freeze({ operationId, code: normalizedFrom(error, `${SCOPE}.op.cancel`).code })
+      })
     })
   }
 
+  /** Tracks `operationId` until it settles and cancels it when `signal` aborts. */
+  private watchAbort(signal: AbortSignal | null, operationId: string, operation: string): () => void {
+    this.pendingOperations.set(operationId, { admission: null, cancelledBeforeSend: false })
+    const onAbort = (): void => this.cancelDetached(operationId, operation)
+    signal?.addEventListener('abort', onAbort, { once: true })
+    return () => {
+      this.pendingOperations.delete(operationId)
+      signal?.removeEventListener('abort', onAbort)
+    }
+  }
+
+  /**
+   * Runs one owner operation linked to `operationId`: the abort listener is
+   * attached before dispatch, removed when it settles; the dispatch's cancel
+   * sends `op.cancel` for exactly this operation.
+   */
+  private dispatch<Result>(
+    operationId: string,
+    signal: AbortSignal | null,
+    operation: string,
+    run: () => Promise<Result>
+  ): BackendOperationDispatch<string, Result> {
+    const removeAbort = this.watchAbort(signal, operationId, operation)
+    const completion = (async () => {
+      try {
+        return await run()
+      } finally {
+        removeAbort()
+      }
+    })()
+    return createBackendOperationDispatch(this.identifiers.backendOperationHandle(operationId), completion, () =>
+      this.cancel(operationId)
+    )
+  }
+
+  private terminal(
+    correlation: OperationOptions<string, string>['correlation']
+  ): OperationTerminalRecord<string, string> {
+    return Object.freeze({ correlation, outcome: 'succeeded', cause: null })
+  }
+
+  private emitEvent(
+    event: DistributiveOmit<BackendEvent<string>, 'attachment' | 'attachmentId' | 'ingressOrdinal'>
+  ): void {
+    const ingressOrdinal = this.nextIngressOrdinal
+    this.nextIngressOrdinal += 1
+    const full = Object.freeze({
+      ...event,
+      attachment: this.attachmentRecord,
+      attachmentId: this.attachmentRecord.attachmentId,
+      ingressOrdinal
+    }) as BackendEvent<string>
+    const bytes = RECORD_BYTES + utf8Length(JSON.stringify(event, jsonSafe))
+    for (const stream of [...this.eventStreams]) stream.emit(full, bytes)
+  }
+
+  // -- adapter ---------------------------------------------------------------------------
+
+  private snapshotFrom(
+    state: WireAdapterState,
+    backendGeneration: AttachmentRecord<string>['backendGeneration']
+  ): AdapterStateSnapshot<string> {
+    return Object.freeze({
+      availability: state.availability,
+      authorization: state.authorization,
+      power: state.power,
+      backendGeneration,
+      updatedAt: monotonicTimestamp(state.updatedAt),
+      safeReason: state.safeReason
+    })
+  }
+
+  private sameGenerations(state: WireAdapterState): boolean {
+    return (
+      state.backendGeneration === String(this.attachmentRecord.backendGeneration) &&
+      state.adapterGeneration === String(this.attachmentRecord.adapter.adapterGeneration)
+    )
+  }
+
   private async currentAdapterState(): Promise<AdapterStateSnapshot<string>> {
-    this.assertOperational('react-native-rust-core.adapter.state')
-    return this.parseAdapterState(await this.invokeRecord('adapter.state', {}))
+    this.assertOperational(`${SCOPE}.adapter.state`)
+    const state = await this.invoke('adapter.state', {})
+    this.observeGenerations(state)
+    return this.snapshotFrom(state, opaqueId(state.backendGeneration, 'backend-generation', SCOPE))
   }
 
   private async watchAdapterState(): Promise<AdapterStateWatch<string>> {
     const initial = await this.currentAdapterState()
-    const transitions = new CoreBoundedStream<AdapterStateSnapshot<string>>(
+    const transitions: OwnedCoreBoundedStream<AdapterStateSnapshot<string>> = new OwnedCoreBoundedStream<
+      AdapterStateSnapshot<string>
+    >(
       { itemCapacity: capacity(16), byteCapacity: capacity(4096), reservedControlCapacity: capacity(512) },
-      'drop-oldest'
+      'drop-oldest',
+      () => this.adapterWatches.delete(transitions)
     )
-    const watcher = (state: AdapterStateSnapshot<string>): void => {
-      transitions.emit(state, 64)
-    }
-    this.adapterWatchers.add(watcher)
-    this.activeAdapterTransitions.add(transitions)
+    this.adapterWatches.add(transitions)
     return Object.freeze({ initial, transitions })
   }
 
-  private readonly adapterWatchers = new Set<(state: AdapterStateSnapshot<string>) => void>()
+  /** A generation the owner retired invalidates everything issued under it. */
+  private observeGenerations(state: WireAdapterState): void {
+    if (this.sameGenerations(state)) return
+    this.emitEvent({ kind: 'backend-restarted' })
+    for (const entry of this.connectionsByKey.values()) this.markLost(entry)
+  }
 
-  // -- peers -------------------------------------------------------------
+  private onAdapterRecord(state: WireAdapterState): void {
+    this.observeGenerations(state)
+    const snapshot = this.snapshotFrom(state, opaqueId(state.backendGeneration, 'backend-generation', SCOPE))
+    for (const watch of [...this.adapterWatches])
+      watch.emit(snapshot, RECORD_BYTES + utf8Length(state.safeReason ?? ''))
+    this.emitEvent({ kind: 'adapter-state' })
+  }
 
-  private peerIdForNativeId(nativePeerId: string): PeerId<string> {
+  // -- peers ---------------------------------------------------------------------------------
+
+  private peerIdForNative(nativePeerId: string): PeerId<string> {
     const existing = this.peerIdsByNativeId.get(nativePeerId)
     if (existing !== undefined) return existing
-    const peerId = opaqueId(`rust-core-peer-${this.nextPeer}`, 'peer', 'react-native-rust-core')
-    this.nextPeer += 1
+    const peerId = opaqueId(
+      `rust-core-peer-${this.session.sessionId}-${this.peerIdsByNativeId.size + 1}`,
+      'peer',
+      SCOPE
+    )
     this.peerIdsByNativeId.set(nativePeerId, peerId)
     this.nativeIdsByPeerId.set(String(peerId), nativePeerId)
     return peerId
   }
 
-  private nativeIdForPeerId(peerId: PeerId<string>, operation: string): string {
-    const native = this.nativeIdsByPeerId.get(String(peerId))
-    if (native === undefined) {
-      throw contractError('peer.not-found', 'connection', operation)
-    }
+  private nativeIdForPeerId(peerId: string, operation: string): string {
+    const native = this.nativeIdsByPeerId.get(peerId)
+    if (native === undefined) throw contractError('peer.not-found', 'connection', operation)
     return native
   }
 
-  /**
-   * Mints a connectable peer handle for a canonical radio address known out
-   * of band. The address (lowercased) is the native id; the core resolves it
-   * on connect, exactly as the reference backend canonicalizes addresses
-   * before mapping them.
-   */
+  /** Android address targeting: the canonical address is the native id the radio connects to. */
   private peerFromAddress(descriptor: PeerAddressDescriptor): PeerId<string> {
-    // Mirror the sibling backends: the address must be a canonical BLE
-    // address and the type explicit, or the core would resolve connect
-    // against an unroutable native id.
     if (descriptor.addressType !== 'public' && descriptor.addressType !== 'random') {
-      throw contractError('argument.invalid', 'connection', 'react-native-rust-core.peer-from-address')
+      throw contractError('argument.invalid', 'connection', `${SCOPE}.peer-from-address`)
     }
+    let address: string
     try {
-      return this.peerIdForNativeId(canonicalBleAddress(descriptor.address))
+      address = canonicalBleAddress(descriptor.address)
     } catch {
-      throw contractError('argument.invalid', 'connection', 'react-native-rust-core.peer-from-address')
+      throw contractError('argument.invalid', 'connection', `${SCOPE}.peer-from-address`)
     }
+    return this.peerIdForNative(address)
   }
 
-  private mapPeerRecord(record: RustCorePeerRecord): BackendPeerRecord<string> {
+  private peerRecord(record: WirePeerRecord, reference: PeerReference): BackendPeerRecord<string> {
     return Object.freeze({
-      reference: Object.freeze({
-        version: 1,
-        backendId: backendIdFor(this.platform),
-        scope: 'origin',
-        opaqueId: record.peerId
-      }),
-      peerId: this.peerIdForNativeId(record.peerId),
+      reference,
+      peerId: this.peerIdForNative(record.peerId),
       name: record.name,
       rssi: record.rssi,
-      source: record.source as BackendPeerRecord<string>['source'],
+      source: record.source,
       state: Object.freeze({
-        reachability: record.reachability as BackendPeerRecord<string>['state']['reachability'],
-        connection: record.connection as BackendPeerRecord<string>['state']['connection'],
-        bond: record.bond as BackendPeerRecord<string>['state']['bond'],
+        reachability: record.reachability,
+        connection: record.connection,
+        bond: record.bond,
         lastSeenAtMonotonicMs: record.lastSeenAtMonotonicMs
       })
     })
   }
 
-  private parsePeerRecord(value: unknown, operation: string): BackendPeerRecord<string> {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-      throw contractError('protocol.malformed', 'core', operation)
-    }
-    const record = value as Record<string, unknown>
-    if (typeof record.peerId !== 'string') {
-      throw contractError('protocol.malformed', 'core', operation)
-    }
-    return this.mapPeerRecord({
-      peerId: record.peerId as string,
-      name: typeof record.name === 'string' ? (record.name as string) : null,
-      rssi: typeof record.rssi === 'number' ? (record.rssi as number) : null,
-      source: typeof record.source === 'string' ? (record.source as string) : 'scan-observed',
-      reachability: typeof record.reachability === 'string' ? (record.reachability as string) : 'unknown',
-      connection: typeof record.connection === 'string' ? (record.connection as string) : 'unknown',
-      bond: typeof record.bond === 'string' ? (record.bond as string) : 'unknown',
-      lastSeenAtMonotonicMs:
-        typeof record.lastSeenAtMonotonicMs === 'number' ? (record.lastSeenAtMonotonicMs as number) : null
+  private originReference(nativePeerId: string): PeerReference {
+    return Object.freeze({
+      version: 1,
+      backendId: backendIdFor(this.platform),
+      scope: 'origin',
+      opaqueId: nativePeerId
     })
+  }
+
+  private systemReference(nativePeerId: string): PeerReference {
+    return Object.freeze({
+      version: 1,
+      backendId: backendIdFor(this.platform),
+      scope: 'system',
+      opaqueId: stablePeerToken(nativePeerId)
+    })
+  }
+
+  private assertPeerQuery(options: BackendPeerQuery, operation: string): void {
+    this.assertOperational(operation)
+    if (options.services !== undefined && options.services.length > 0) {
+      throw contractError('capability.unsupported', 'connection', `${operation}.services`)
+    }
+  }
+
+  private filterReferences(
+    records: readonly BackendPeerRecord<string>[],
+    options: BackendPeerQuery,
+    operation: string
+  ): readonly BackendPeerRecord<string>[] {
+    if (options.references === undefined) return Object.freeze([...records])
+    const wanted = new Set(
+      options.references.map(reference => {
+        assertPeerReference(reference, operation)
+        return encodePeerReference(reference)
+      })
+    )
+    return Object.freeze(records.filter(record => wanted.has(encodePeerReference(record.reference))))
   }
 
   private async resolvePeer(
     reference: PeerReference,
-    _options: BackendPeerQuery
+    options: BackendPeerQuery
   ): Promise<BackendPeerRecord<string> | null> {
-    this.assertOperational('react-native-rust-core.peers.resolve')
-    const result = await dispatchReactNativeRustCoreOp(this.session, 'peers.resolve', {
-      reference: { ...reference }
+    const operation = `${SCOPE}.peers.resolve`
+    assertPeerReference(reference, operation)
+    this.assertPeerQuery(options, operation)
+    if (reference.backendId !== backendIdFor(this.platform)) {
+      throw contractError('peer.scope-mismatch', 'connection', operation)
+    }
+    if (reference.scope === 'system') {
+      const bonded = await this.bondedPeers({ ...options, references: [reference] })
+      return bonded[0] ?? null
+    }
+    if (reference.scope !== 'origin') throw contractError('peer.scope-mismatch', 'connection', operation)
+    const record = await this.invoke('peers.resolve', {
+      reference: {
+        opaqueId: reference.opaqueId,
+        version: reference.version,
+        backendId: reference.backendId,
+        scope: reference.scope
+      }
     })
-    if (result === null || result === undefined) return null
-    return this.parsePeerRecord(result, 'react-native-rust-core.peers.resolve.shape')
+    if (record === null) return null
+    if (options.sources !== undefined && !options.sources.includes(record.source)) return null
+    return this.peerRecord(record, this.originReference(record.peerId))
   }
 
-  private async knownPeers(_options: BackendPeerQuery): Promise<readonly BackendPeerRecord<string>[]> {
-    this.assertOperational('react-native-rust-core.peers.known')
-    const result = await dispatchReactNativeRustCoreOp(this.session, 'peers.known', {})
-    if (!Array.isArray(result)) {
-      throw contractError('protocol.malformed', 'core', 'react-native-rust-core.peers.known.shape')
-    }
-    return Object.freeze(result.map(entry => this.parsePeerRecord(entry, 'react-native-rust-core.peers.known.shape')))
+  private async listPeers(
+    op: 'peers.known' | 'peers.connected',
+    name: string,
+    options: BackendPeerQuery
+  ): Promise<readonly BackendPeerRecord<string>[]> {
+    const operation = `${SCOPE}.peers.${name}`
+    this.assertPeerQuery(options, operation)
+    const records = (await this.invoke(op, {}))
+      .filter(record => options.sources === undefined || options.sources.includes(record.source))
+      .map(record => this.peerRecord(record, this.originReference(record.peerId)))
+    return this.filterReferences(records, options, operation)
   }
 
-  private async connectedPeers(_options: BackendPeerQuery): Promise<readonly BackendPeerRecord<string>[]> {
-    this.assertOperational('react-native-rust-core.peers.connected')
-    const result = await dispatchReactNativeRustCoreOp(this.session, 'peers.connected', {})
-    if (!Array.isArray(result)) {
-      throw contractError('protocol.malformed', 'core', 'react-native-rust-core.peers.connected.shape')
+  private async bondedPeers(options: BackendPeerQuery): Promise<readonly BackendPeerRecord<string>[]> {
+    const operation = `${SCOPE}.peers.bonded`
+    this.assertPeerQuery(options, operation)
+    if (options.sources !== undefined && !options.sources.includes('system-bonded')) return Object.freeze([])
+    const operationId = this.mintOperationId('peers-bonded')
+    const removeAbort = this.watchAbort(options.signal ?? null, operationId, operation)
+    let records: readonly WirePeerRecord[]
+    try {
+      records = await this.invoke('peers.bonded', { operationId, ...this.budget(options, operation) })
+    } finally {
+      removeAbort()
     }
-    return Object.freeze(
-      result.map(entry => this.parsePeerRecord(entry, 'react-native-rust-core.peers.connected.shape'))
+    return this.filterReferences(
+      records.map(record => this.peerRecord(record, this.systemReference(record.peerId))),
+      options,
+      operation
     )
   }
 
-  // -- scan --------------------------------------------------------------
+  private async restoredPeers(options: BackendPeerQuery): Promise<readonly BackendPeerRecord<string>[]> {
+    const operation = `${SCOPE}.peers.restored`
+    this.assertPeerQuery(options, operation)
+    if (this.platform === 'android') {
+      throw contractError('capability.unsupported', 'restoration', operation)
+    }
+    const records = (await this.invoke('peers.restored', {})).map(record =>
+      this.peerRecord(record, this.originReference(record.peerId))
+    )
+    return this.filterReferences(records, options, operation)
+  }
+
+  // -- scan ------------------------------------------------------------------------------------
+
+  private nativeScanFilter(options: OwnerScanOptions<string, string>, operation: string): ScanFilter {
+    assertScanFilter(options.filter, operation)
+    const planScan = this.platform === 'android' ? planReactNativeAndroidScan : planReactNativeAppleScan
+    return trustedServiceUuidFilter(options, planScan, operation)
+  }
+
+  private scanPlatformArgs(options: OwnerScanOptions<string, string>, operation: string): WireJsonObject {
+    const platform = options.platform
+    if (platform === undefined) return {}
+    if (platform.kind !== 'android' || this.platform !== 'android') {
+      throw contractError('capability.unsupported', 'scan', `${operation}.platform-options`)
+    }
+    if (platform.reportDelayMs !== undefined || platform.phy !== undefined) {
+      throw contractError('capability.unsupported', 'scan', `${operation}.platform-options`)
+    }
+    return {
+      platform: {
+        ...(platform.mode === undefined ? {} : { mode: platform.mode }),
+        ...(platform.callbackType === undefined ? {} : { callbackType: platform.callbackType }),
+        ...(platform.legacy === undefined ? {} : { legacy: platform.legacy })
+      }
+    }
+  }
 
   private async startScan(
     options: OwnerScanOptions<string, string>,
-    clientId: ClientId<string, string>
+    _clientId: ClientId<string, string>
   ): Promise<ScanLease<string, string>> {
-    this.assertOperational('react-native-rust-core.scan.start')
-    const serviceUuids = options.filter.serviceUuids.map(service => String(service))
-    if (options.filter.manufacturerData.length > 0 || options.filter.localNamePrefix !== null) {
-      throw contractError('capability.unsupported', 'scan', 'react-native-rust-core.scan.filter')
+    const operation = `${SCOPE}.scan.start`
+    this.assertOperational(operation)
+    const nativeFilter = this.nativeScanFilter(options, operation)
+    const deviceAddresses = (nativeFilter.deviceAddresses ?? []).map(address => canonicalBleAddress(address))
+    if (deviceAddresses.length > 0 && this.platform !== 'android') {
+      throw contractError('capability.unsupported', 'scan', `${operation}.device-addresses`)
     }
-    if (options.filter.deviceAddresses !== undefined && options.filter.deviceAddresses.length > 0) {
-      throw contractError('capability.unsupported', 'scan', 'react-native-rust-core.scan.filter')
+    const operationId = this.mintOperationId('scan')
+    const args: WireJsonObject = {
+      serviceUuids: nativeFilter.serviceUuids.map(uuid => String(uuid)),
+      duplicatePolicy: 'all',
+      operationId,
+      ...(deviceAddresses.length === 0 ? {} : { deviceAddresses }),
+      ...this.scanPlatformArgs(options, operation),
+      ...this.budget(options, operation)
     }
-    const ordinal = this.nextScan
-    this.nextScan += 1
-    // Frozen mobile-core arg shape (DATA-02 decimal strings): the router
-    // and the shipped core require owner/timeoutMs/nowMs. A null deadline
-    // maps to i32::MAX (the core requires finite 1..=i32::MAX; sessions end
-    // via stop/destroy long before). Filter/policy keys ride along for
-    // desktop shims — the mobile core ignores them until R03 wires them
-    // (its staged step hardcodes services/duplicates).
-    const scanTimeout = this.timeoutMs(options)
-    const started = await this.invokeRecord('scan.start', {
-      owner: String(clientId),
-      // DATA-02 decimals: performance.now() is fractional — quantize down
-      // (a fractional wire form is bytes.invalid on the core).
-      timeoutMs: String(Math.floor(scanTimeout ?? 2147483647)),
-      nowMs: String(Math.floor(this.now())),
-      serviceUuids,
-      duplicatePolicy: options.duplicatePolicy,
-      timestampPolicy: options.timestampPolicy
-    })
-    // Tolerant op-id read: the desktop central answers `opId`/`operationId`
-    // while the mobile staged core answers `op_id` (its frozen wire form).
-    // R03 unifies the response shape; until then accept the documented
-    // variants and reject anything else without coercion.
-    const operationId = [
-      started.operationId,
-      (started as { opId?: unknown }).opId,
-      (started as { op_id?: unknown }).op_id
-    ].find((candidate): candidate is string => typeof candidate === 'string' && candidate.length > 0)
-    if (operationId === undefined) {
-      throw contractError('protocol.malformed', 'core', 'react-native-rust-core.scan.start.shape')
+    const removeAbort = this.watchAbort(options.signal, operationId, operation)
+    let membership: string
+    try {
+      membership = (await this.invoke('scan.start', args)).operationId
+    } finally {
+      removeAbort()
     }
-    const scanSessionId = this.identifiers.scanSessionId(`rust-core-scan-session-${ordinal}`)
-    const leaseId = this.identifiers.leaseId(`rust-core-scan-lease-${ordinal}`)
-    const shareToken =
-      options.sharing.mode === 'owner' && options.sharing.allowSharing
+    const ordinal = this.nextOrdinal
+    this.nextOrdinal += 1
+    const group: ScanGroup = {
+      membership,
+      scanSessionId: this.identifiers.scanSessionId(`rust-core-scan-session-${ordinal}`),
+      ownerLeaseId: this.identifiers.leaseId(`rust-core-scan-lease-${ordinal}`),
+      shareToken: options.sharing.allowSharing
         ? this.identifiers.scanShareToken(`rust-core-scan-share-${ordinal}`)
-        : null
-    const observations = new CoreBoundedStream<AdvertisementObservation<string>>(
-      options.delivery,
-      options.delivery.overflowPolicy
-    )
-    this.activeScanObservations.add(observations)
-    let stopped = false
-    const stop = async (): Promise<import('../../backend-contract/errors').CleanupRecord> => {
-      if (stopped) return { state: 'released', failures: [] }
-      stopped = true
-      try {
-        await dispatchReactNativeRustCoreOp(this.session, 'scan.stop', {
-          opId: operationId,
-          nowMs: String(Math.floor(this.now()))
-        })
-      } finally {
-        this.activeScanObservations.delete(observations)
-        await observations.close()
-      }
-      return { state: 'released', failures: [] }
+        : null,
+      consumers: new Map(),
+      state: 'active',
+      stopping: null,
+      deadlineTimer: null,
+      removeAbort: null
     }
-    this.watchAbort(options.signal, () => {
-      stop().catch(() => undefined)
-    })
-    this.pumpScanObservations(observations, scanSessionId, () => stopped, stop).catch(() => undefined)
-    return Object.freeze({ scanSessionId, leaseId, shareToken, observations, stop })
+    const owner = this.addScanConsumer(group, group.ownerLeaseId, options)
+    this.scanGroups.set(membership, group)
+    // The caller's scan duration ends the scan like its abort (legacy rule);
+    // `budgetMs` above bounded only the start.
+    const end = (): void => {
+      this.stopScanGroup(group).then(
+        cleanup => {
+          if (cleanup.state !== 'released') this.reportScanCleanup(group, cleanup)
+        },
+        (error: unknown) =>
+          this.reportScanCleanup(group, {
+            state: 'release-failed',
+            failures: [cleanupFailure('scan', error, `${SCOPE}.scan.stop`)]
+          })
+      )
+    }
+    if (options.signal !== null) {
+      if (options.signal.aborted) end()
+      else {
+        const signal = options.signal
+        signal.addEventListener('abort', end, { once: true })
+        group.removeAbort = () => signal.removeEventListener('abort', end)
+      }
+    }
+    if (options.deadline !== null && group.state === 'active') {
+      group.deadlineTimer = setTimeout(end, Math.max(0, Number(options.deadline) - this.now()))
+    }
+    await this.refreshCounters()
+    return this.scanLease(group, owner)
   }
 
-  private async pumpScanObservations(
-    observations: CoreBoundedStream<AdvertisementObservation<string>>,
-    scanSessionId: import('../../backend-contract/primitives').ScanSessionId<string, string>,
-    isStopped: () => boolean,
-    stop: () => Promise<unknown>
-  ): Promise<void> {
-    try {
-      for (;;) {
-        if (isStopped() || this.destroyed) return
-        const next = await dispatchReactNativeRustCoreOp(this.session, 'scan.take', {})
-        if (next === null || next === undefined) {
-          await pumpDelay()
-          continue
-        }
-        let observation: AdvertisementObservation<string>
-        try {
-          observation = this.mapObservation(next, scanSessionId)
-        } catch {
-          // One malformed core record must not tear down the scan or burn
-          // its core-side terminal accounting: skip it with a diagnostic
-          // trace and keep pumping. Transport failures still stop below.
-          this.noteSkippedCoreRecord()
-          continue
-        }
-        observations.emit(observation, 512)
-      }
-    } catch {
-      if (!isStopped() && !this.destroyed) {
-        await stop().catch(() => undefined)
-      }
+  private reportScanCleanup(group: ScanGroup, cleanup: CleanupRecord): void {
+    this.emitEvent({
+      kind: 'diagnostic-warning',
+      code: 'scan-cleanup-requires-retry',
+      message: 'The scan ended by its signal or deadline could not be released; stop() retries it',
+      detail: Object.freeze({
+        membership: group.membership,
+        failures: Object.freeze(cleanup.failures.map(failure => failure.error.code))
+      })
+    })
+  }
+
+  private addScanConsumer(
+    group: ScanGroup,
+    leaseId: LeaseId<string, string>,
+    options: OwnerScanOptions<string, string>
+  ): ScanConsumer {
+    const stream: OwnedCoreBoundedStream<AdvertisementObservation<string>> = new OwnedCoreBoundedStream<
+      AdvertisementObservation<string>
+    >(options.delivery, options.delivery.overflowPolicy, () => undefined)
+    const consumer: ScanConsumer = {
+      leaseId,
+      options,
+      filter: options.filter,
+      stream,
+      seenPeers: new Set(),
+      ingressDropped: 0
     }
+    group.consumers.set(String(leaseId), consumer)
+    return consumer
+  }
+
+  private scanLease(group: ScanGroup, consumer: ScanConsumer): ScanLease<string, string> {
+    return Object.freeze({
+      scanSessionId: group.scanSessionId,
+      leaseId: consumer.leaseId,
+      shareToken: consumer.leaseId === group.ownerLeaseId ? group.shareToken : null,
+      observations: consumer.stream,
+      stop: () => this.stopScanConsumer(group, consumer)
+    })
+  }
+
+  private async joinScan(
+    leaseId: LeaseId<string, string>,
+    token: ScanShareToken<string, string>,
+    _clientId: ClientId<string, string>
+  ): Promise<ScanLease<string, string>> {
+    this.assertOperational(`${SCOPE}.scan.join`)
+    const group = [...this.scanGroups.values()].find(
+      candidate => candidate.ownerLeaseId === leaseId && candidate.shareToken === token && candidate.state === 'active'
+    )
+    const owner = group?.consumers.get(String(leaseId))
+    if (group === undefined || owner === undefined) {
+      throw contractError('ownership.denied', 'scan', `${SCOPE}.scan.join`)
+    }
+    const ordinal = this.nextOrdinal
+    this.nextOrdinal += 1
+    const joined = this.addScanConsumer(
+      group,
+      this.identifiers.leaseId(`rust-core-scan-lease-${ordinal}`),
+      owner.options
+    )
+    return this.scanLease(group, joined)
+  }
+
+  private async stopScanConsumer(group: ScanGroup, consumer: ScanConsumer): Promise<CleanupRecord> {
+    if (consumer.leaseId !== group.ownerLeaseId) {
+      group.consumers.delete(String(consumer.leaseId))
+      consumer.stream.closeWithReason('owner-released')
+      return RELEASED
+    }
+    return this.stopScanGroup(group)
   }
 
   /**
-   * Evidence for a skipped malformed core record: lifecycle events the
-   * typed surface cannot express ride as diagnostics, so the skip is
-   * never silent.
+   * Stops the membership. Delivery ends at once; the membership id is kept
+   * until the owner confirms release, so a failed stop can be retried with the
+   * same identity (PR210-09). Concurrent stops share one attempt.
    */
-  private noteSkippedCoreRecord(): void {
-    this.eventsStream.emit(
-      {
-        kind: 'diagnostic',
-        attachment: this.attachment,
-        attachmentId: this.attachment.attachmentId,
-        ingressOrdinal: this.nextEventOrdinal()
+  private stopScanGroup(group: ScanGroup): Promise<CleanupRecord> {
+    if (group.state === 'released') return Promise.resolve(RELEASED)
+    if (group.stopping !== null) return group.stopping
+    this.suspendScanGroup(group)
+    group.state = 'stopping'
+    const stopping = (async (): Promise<CleanupRecord> => {
+      let record: CleanupRecord
+      try {
+        record = cleanupRecordFrom(await this.invoke('scan.stop', { operationId: group.membership }))
+      } catch (error) {
+        record = { state: 'release-failed', failures: [cleanupFailure('scan', error, `${SCOPE}.scan.stop`)] }
+      }
+      if (record.state === 'released') {
+        group.state = 'released'
+        this.scanGroups.delete(group.membership)
+        await this.refreshCounters()
+      } else {
+        group.state = 'release-failed'
+      }
+      return record
+    })()
+    group.stopping = stopping
+    stopping.then(
+      () => {
+        if (group.stopping === stopping) group.stopping = null
       },
-      64
+      () => {
+        if (group.stopping === stopping) group.stopping = null
+      }
     )
+    return stopping
   }
 
-  private mapObservation(
-    value: unknown,
-    scanSessionId: import('../../backend-contract/primitives').ScanSessionId<string, string>
+  private suspendScanGroup(group: ScanGroup): void {
+    if (group.deadlineTimer !== null) {
+      clearTimeout(group.deadlineTimer)
+      group.deadlineTimer = null
+    }
+    group.removeAbort?.()
+    group.removeAbort = null
+    for (const consumer of group.consumers.values()) consumer.stream.closeWithReason('owner-released')
+  }
+
+  private endScanGroup(group: ScanGroup, reason: CoreStreamTerminalReason, error: NormalizedBleError | null): void {
+    if (group.deadlineTimer !== null) {
+      clearTimeout(group.deadlineTimer)
+      group.deadlineTimer = null
+    }
+    group.removeAbort?.()
+    group.removeAbort = null
+    for (const consumer of group.consumers.values()) consumer.stream.closeWithReason(reason, error)
+    group.state = 'released'
+  }
+
+  private observation(
+    record: Extract<WireDrainRecord, { t: 'adv' }>,
+    scanSessionId: ScanSessionId<string, string>,
+    receivedAt: number,
+    ingressOrdinal: number
   ): AdvertisementObservation<string> {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-      throw contractError('protocol.malformed', 'core', 'react-native-rust-core.scan.observation')
+    const peerId = this.peerIdForNative(record.peerId)
+    let address: { readonly value: string; readonly type: 'opaque' } | null = null
+    try {
+      address = Object.freeze({ value: canonicalBleAddress(record.peerId), type: 'opaque' as const })
+    } catch {
+      address = null
     }
-    const record = value as RustCoreObservation & Record<string, unknown>
-    if (typeof record.peerId !== 'string' || record.peerId.length === 0) {
-      throw contractError('protocol.malformed', 'core', 'react-native-rust-core.scan.observation.peer')
-    }
-    const peerId = this.peerIdForNativeId(record.peerId)
+    const uuids = (values: readonly string[] | null): readonly Uuid[] | null =>
+      values === null ? null : Object.freeze(values.map(value => canonicalUuid(value)))
     return Object.freeze({
       device: Object.freeze({
         id: peerId,
-        backendInstanceId: this.attachment.backendInstanceId,
-        scope: 'session',
+        backendInstanceId: this.attachmentRecord.backendInstanceId,
+        scope: 'session' as const,
         stableAcrossRestarts: false,
-        address: null
+        address
       }),
-      provenance: 'platform-raw',
-      sourceTimestamp: presentField(
-        typeof record.sourceTimestampMs === 'number'
-          ? Object.freeze({
-              monotonicMs: record.sourceTimestampMs as MonotonicTimestamp,
-              origin: 'platform' as const
-            })
-          : null
-      ),
-      receivedAtMonotonicMs: this.now() as AdvertisementObservation<string>['receivedAtMonotonicMs'],
-      ingressOrdinal:
-        typeof record.ingressOrdinal === 'number'
-          ? record.ingressOrdinal
-          : (0 as AdvertisementObservation<string>['ingressOrdinal']),
+      provenance: 'platform-derived' as const,
+      sourceTimestamp: present<SourceTimestamp>(null, 'the owner clock is not the host monotonic clock'),
+      receivedAtMonotonicMs: monotonicTimestamp(receivedAt),
+      ingressOrdinal,
       scanSessionId,
-      localName: presentField<string>(typeof record.localName === 'string' ? record.localName : null),
-      rssi: presentField<number>(typeof record.rssi === 'number' ? record.rssi : null),
-      txPower: presentField<number>(typeof record.txPower === 'number' ? record.txPower : null),
-      connectable: presentField<boolean>(typeof record.connectable === 'boolean' ? record.connectable : null),
-      appearance: absentField<number>('appearance not reported by the core observation'),
-      serviceUuids: presentField<readonly Uuid[]>(
-        Array.isArray(record.serviceUuids)
-          ? Object.freeze(
-              (record.serviceUuids as unknown[]).map(entry =>
-                uuidFromCore(String(entry), 'react-native-rust-core.scan.service-uuids')
+      localName: present(record.localName, 'not reported by the platform'),
+      rssi: present(record.rssi, 'not reported by the platform'),
+      txPower: present(record.txPower, 'not reported by the platform'),
+      connectable: present(record.connectable, 'not reported by the platform'),
+      appearance: present(record.appearance, 'not reported by the platform'),
+      serviceUuids: present(uuids(record.serviceUuids), ABSENT_EMPTY_OR_UNREPORTED),
+      solicitedServiceUuids: present(uuids(record.solicitedServiceUuids), ABSENT_EMPTY_OR_UNREPORTED),
+      overflowServiceUuids: present(uuids(record.overflowServiceUuids), ABSENT_EMPTY_OR_UNREPORTED),
+      serviceData: present(
+        record.serviceData === null
+          ? null
+          : Object.freeze(
+              record.serviceData.map(entry =>
+                Object.freeze({ serviceUuid: canonicalUuid(entry.uuid), value: ownedCopy(entry.payload) })
               )
-            )
-          : null
+            ),
+        ABSENT_EMPTY_OR_UNREPORTED
       ),
-      solicitedServiceUuids: absentField<readonly import('../../backend-contract/primitives').Uuid[]>(
-        'solicited services not reported by the core observation'
-      ),
-      overflowServiceUuids: absentField<readonly import('../../backend-contract/primitives').Uuid[]>(
-        'overflow services not reported by the core observation'
-      ),
-      serviceData: presentField(
-        Array.isArray(record.serviceData)
-          ? Object.freeze(
-              (record.serviceData as Array<{ uuid: string; payload: unknown }>).map(entry =>
-                Object.freeze({
-                  serviceUuid: uuidFromCore(String(entry.uuid), 'react-native-rust-core.scan.service-data'),
-                  value: ownedBytes(bytesFromCore(entry.payload))
-                })
+      manufacturerData: present(
+        record.manufacturerData === null
+          ? null
+          : Object.freeze(
+              record.manufacturerData.map(entry =>
+                Object.freeze({ companyIdentifier: entry.companyId, value: ownedCopy(entry.payload) })
               )
-            )
-          : null
+            ),
+        ABSENT_EMPTY_OR_UNREPORTED
       ),
-      manufacturerData: presentField(
-        Array.isArray(record.manufacturerData)
-          ? Object.freeze(
-              (record.manufacturerData as Array<{ companyId: number; payload: unknown }>).map(entry =>
-                Object.freeze({
-                  companyIdentifier: Number(entry.companyId),
-                  value: ownedBytes(bytesFromCore(entry.payload))
-                })
-              )
-            )
-          : null
+      rawRecord: present(
+        record.rawRecord === null ? null : ownedCopy(record.rawRecord),
+        'not reported by the platform'
       ),
-      rawRecord: absentField<import('../../backend-contract/primitives').OwnedBytes>(
-        'raw record not reported by the core observation'
-      ),
-      scanResponseRecord: absentField<import('../../backend-contract/primitives').OwnedBytes>(
-        'scan response record not reported by the core observation'
-      )
+      scanResponseRecord: present<OwnedBytes>(null, 'scan response records are not reported by the mobile owner')
     })
   }
 
-  // -- connections --------------------------------------------------------
+  private onAdvertisement(record: Extract<WireDrainRecord, { t: 'adv' }>): void {
+    const bytes = advertisementBytes(record)
+    const receivedAt = this.now()
+    for (const group of this.scanGroups.values()) {
+      if (group.state !== 'active') continue
+      const ingressOrdinal = this.nextIngressOrdinal
+      this.nextIngressOrdinal += 1
+      const observation = this.observation(record, group.scanSessionId, receivedAt, ingressOrdinal)
+      for (const consumer of group.consumers.values()) {
+        if (consumer.stream.isTerminal()) continue
+        if (!advertisementMatchesFilter(consumer.filter, observation)) continue
+        if (consumer.options.duplicatePolicy === 'first') {
+          if (consumer.seenPeers.has(record.peerId)) continue
+          consumer.seenPeers.add(record.peerId)
+        }
+        consumer.stream.emit(observation, bytes, record.peerId, bytes - RECORD_BYTES)
+      }
+    }
+  }
 
-  private readonly connectionLeases = new Map<string, { lease: string; nativePeerId: string }>()
+  private onScanEnd(record: Extract<WireDrainRecord, { t: 'scan-end' }>): void {
+    const group = this.scanGroups.get(record.operationId)
+    if (group === undefined) {
+      this.emitEvent({
+        kind: 'diagnostic-warning',
+        code: 'unmatched-scan-end',
+        message: 'The owner ended a scan membership this backend does not hold',
+        detail: Object.freeze({ membership: record.operationId, reason: record.reason })
+      })
+      return
+    }
+    // The owner released the membership itself: nothing remains to stop.
+    this.endScanGroup(group, record.reason, null)
+    this.scanGroups.delete(record.operationId)
+  }
+
+  // -- connections -------------------------------------------------------------------------------
 
   private async connect(
     peerId: PeerId<string>,
     _clientId: ClientId<string, string>,
     options: ConnectionOptions
   ): Promise<ConnectionLease<string, string, string>> {
-    this.assertOperational('react-native-rust-core.connection.connect')
-    const nativePeerId = this.nativeIdForPeerId(peerId, 'react-native-rust-core.connection.unknown-peer')
-    const ordinal = this.nextConnection
-    this.nextConnection += 1
-    const leaseOrdinal = this.nextLease
-    this.nextLease += 1
-    const lease = `rust-core-lease-${leaseOrdinal}`
-    // The connect has no caller correlation, so mint one: the core needs
-    // the operationId up front to link a later op.cancel, and the abort
-    // listener must be attached before dispatch so the abort cannot miss.
-    const correlation = String(this.mintedCorrelation('connect'))
-    const removeAbort = this.watchAbort(options.signal, () => {
-      this.requestCancellation(correlation).catch(() => undefined)
-    })
-    let connected: Record<string, unknown>
+    const operation = `${SCOPE}.connection.connect`
+    this.assertOperational(operation)
+    const nativePeerId = this.nativeIdForPeerId(String(peerId), operation)
+    const intent = options.intent ?? 'direct'
+    if (intent === 'when-available' && this.platform === 'apple') {
+      // CoreBluetooth has no autoConnect; the capability is not registered.
+      throw contractError('capability.unsupported', 'connection', `${operation}.when-available`)
+    }
+    const operationId = this.mintOperationId('connect')
+    const ordinal = this.nextOrdinal
+    this.nextOrdinal += 1
+    const lease = `lease-${ordinal}`
+    const args: WireJsonObject = {
+      peerId: nativePeerId,
+      lease,
+      operationId,
+      intent,
+      transport: options.transport ?? 'auto',
+      preferredPhy: [...(options.preferredPhy ?? [])],
+      ...this.budget(options, operation)
+    }
+    const removeAbort = this.watchAbort(options.signal, operationId, operation)
+    let connected: WireOpResults['connection.connect']
     try {
-      connected = await this.invokeRecord('connection.connect', {
-        peerId: nativePeerId,
-        lease,
-        timeoutMs: this.timeoutMs(options),
-        intent: options.intent ?? 'direct',
-        transport: options.transport ?? 'auto',
-        preferredPhy: options.preferredPhy ?? [],
-        operationId: correlation
-      })
+      connected = await this.invoke('connection.connect', args)
     } finally {
       removeAbort()
     }
-    if (typeof connected.peerKey !== 'string' || typeof connected.connectionGeneration !== 'string') {
-      throw contractError('protocol.malformed', 'core', 'react-native-rust-core.connection.connect.shape')
-    }
     const connectionId = this.identifiers.connectionId(`rust-core-connection-${ordinal}`)
-    const leaseId = this.identifiers.leaseId(`rust-core-connection-lease-${leaseOrdinal}`)
-    const connectionGeneration = opaqueId(
-      String(connected.connectionGeneration),
-      'connection-generation',
-      'react-native-rust-core'
+    const leaseId = this.identifiers.leaseId(`rust-core-connection-lease-${ordinal}`)
+    const key = String(connectionId)
+    const entry: ConnectionEntry = {
+      key,
+      nativePeerId,
+      lease,
+      coreGeneration: connected.connectionGeneration,
+      linkState: 'connected',
+      release: null,
+      released: false,
+      databases: new Set(),
+      resource: Object.freeze({
+        attachment: this.attachmentRecord,
+        attachmentId: this.attachmentRecord.attachmentId,
+        peerId,
+        connectionId,
+        connectionGeneration: opaqueId(connected.connectionGeneration, 'connection-generation', SCOPE),
+        get state() {
+          return entry.released ? 'disconnected' : entry.linkState === 'lost' ? 'lost' : 'connected'
+        },
+        disconnect: () => this.releaseConnection(entry)
+      })
+    }
+    this.connectionsByKey.set(key, entry)
+    this.leaseIds.set(key, leaseId)
+    this.invalidations.delete(nativePeerId)
+    this.connectionsByLink.set(linkKey(nativePeerId, connected.connectionGeneration), entry)
+    await this.refreshCounters()
+    return Object.freeze({ leaseId, connection: entry.resource, release: () => this.releaseConnection(entry) })
+  }
+
+  /**
+   * Releases the core lease. The mapping stays until the owner confirms
+   * release; a `release-failed` record keeps it for a retry (PR210-09).
+   */
+  private releaseConnection(entry: ConnectionEntry): Promise<CleanupRecord> {
+    if (entry.released) return Promise.resolve(RELEASED)
+    if (entry.release !== null) return entry.release
+    const release = (async (): Promise<CleanupRecord> => {
+      let record: CleanupRecord
+      try {
+        record = cleanupRecordFrom(
+          await this.invoke('connection.disconnect', { peerId: entry.nativePeerId, lease: entry.lease })
+        )
+      } catch (error) {
+        record = {
+          state: 'release-failed',
+          failures: [cleanupFailure('connection', error, `${SCOPE}.connection.disconnect`)]
+        }
+      }
+      if (record.state === 'released') {
+        entry.released = true
+        this.forgetConnection(entry)
+        await this.refreshCounters()
+      }
+      return record
+    })()
+    entry.release = release
+    release.then(
+      () => {
+        if (entry.release === release) entry.release = null
+      },
+      () => {
+        if (entry.release === release) entry.release = null
+      }
     )
-    // The core matches discover/disconnect against the exact lease string
-    // connect established: retain the raw core lease (not the branded
-    // public leaseId) so every op on this connection addresses one lease.
-    this.connectionLeases.set(String(connectionId), { lease, nativePeerId })
-    const connection: BackendConnection<string, string> = Object.freeze({
-      attachment: this.attachment,
-      attachmentId: this.attachment.attachmentId,
-      peerId,
-      connectionId,
-      connectionGeneration,
-      state: 'connected',
-      disconnect: async () => this.disconnectConnection(nativePeerId, lease)
-    })
+    return release
+  }
+
+  private forgetConnection(entry: ConnectionEntry): void {
+    this.connectionsByKey.delete(entry.key)
+    this.leaseIds.delete(entry.key)
+    const link = linkKey(entry.nativePeerId, entry.coreGeneration)
+    if (this.connectionsByLink.get(link) === entry) {
+      this.connectionsByLink.delete(link)
+      if (entry.linkState === 'connected') this.rememberRetiredLink(link)
+    }
+    for (const database of entry.databases) this.databases.delete(database)
+    entry.databases.clear()
+  }
+
+  private rememberRetiredLink(link: string): void {
+    this.retiredLinks.add(link)
+    if (this.retiredLinks.size > RETIRED_LINK_CAPACITY) {
+      const oldest = this.retiredLinks.values().next().value
+      if (oldest !== undefined) this.retiredLinks.delete(oldest)
+    }
+  }
+
+  private markLost(entry: ConnectionEntry): void {
+    entry.linkState = 'lost'
+    for (const database of entry.databases) {
+      const stored = this.databases.get(database)
+      if (stored !== undefined) stored.valid = false
+    }
+  }
+
+  private connectionPath(entry: ConnectionEntry, leaseId: LeaseId<string, string>) {
     return Object.freeze({
-      leaseId,
-      connection,
-      release: async () => this.disconnectConnection(nativePeerId, lease)
+      attachment: this.attachmentRecord,
+      attachmentId: this.attachmentRecord.attachmentId,
+      peerId: entry.resource.peerId,
+      connectionId: entry.resource.connectionId,
+      ownerLeaseId: leaseId,
+      connectionGeneration: entry.resource.connectionGeneration
     })
   }
 
-  private async disconnectConnection(
-    nativePeerId: string,
-    lease: string
-  ): Promise<import('../../backend-contract/errors').CleanupRecord> {
-    await dispatchReactNativeRustCoreOp(this.session, 'connection.disconnect', { peerId: nativePeerId, lease })
-    return { state: 'released', failures: [] }
+  private onLink(
+    record: Pick<Extract<WireDrainRecord, { t: 'link' }>, 'peerId' | 'connectionGeneration' | 'reason'>
+  ): void {
+    const link = linkKey(record.peerId, record.connectionGeneration)
+    const entry = this.connectionsByLink.get(link)
+    if (entry === undefined) {
+      if (this.retiredLinks.delete(link)) return
+      this.emitEvent({
+        kind: 'diagnostic-warning',
+        code: 'unmatched-link',
+        message: 'The owner reported a link transition for a connection this backend does not hold',
+        detail: Object.freeze({ reason: record.reason })
+      })
+      return
+    }
+    this.endLink(entry, record.reason)
   }
 
-  // -- GATT ----------------------------------------------------------------
-
-  private selectorFor(
-    path: CharacteristicPath<string, string, string, string, string, 'current'>,
-    operation: string
-  ): Record<string, unknown> {
-    const service = path as unknown as Record<string, unknown>
-    for (const field of ['serviceUuid', 'characteristicUuid'] as const) {
-      if (typeof service[field] !== 'string') {
-        throw contractError('protocol.malformed', 'core', `${operation}.selector`)
+  /**
+   * The owner ended `entry`'s link. `null`: the owner no longer reports the
+   * link but the record saying why was lost at its full control queue, so it
+   * ends as lost and its streams end `connection-lost` here (their own
+   * `stream-end` records may have been lost with it).
+   */
+  private endLink(entry: ConnectionEntry, reason: 'local' | 'peer' | 'adapter' | null): void {
+    this.connectionsByLink.delete(linkKey(entry.nativePeerId, entry.coreGeneration))
+    this.invalidations.set(entry.nativePeerId, 'connection-lost')
+    this.markLost(entry)
+    const path = this.connectionPath(entry, this.leaseIdFor(entry))
+    if (reason === null) {
+      for (const [consumer, stored] of [...this.subscriptions]) {
+        if (stored.connectionKey !== entry.key || stored.state === 'ended') continue
+        this.subscriptions.delete(consumer)
+        stored.state = 'ended'
+        stored.stream.finishWithReason('connection-lost')
       }
     }
-    return {
-      serviceUuid: service.serviceUuid as string,
-      serviceOccurrence: this.occurrenceNumeral(String(service.serviceOccurrence), `${operation}.service-occurrence`),
-      characteristicUuid: service.characteristicUuid as string,
-      characteristicOccurrence: this.occurrenceNumeral(
-        String(service.characteristicOccurrence),
-        `${operation}.characteristic-occurrence`
-      )
+    if (reason === 'peer' || reason === null) {
+      this.emitEvent({ kind: 'connection-lost', connection: path })
+    } else {
+      this.emitEvent({ kind: 'disconnected', connection: path, reason })
     }
   }
 
-  private descriptorSelectorFor(
-    path: DescriptorPath<string, string, string, string, string, string, 'current'>,
-    operation: string
-  ): Record<string, unknown> {
-    const selector = this.selectorFor(path, operation)
-    const record = path as unknown as Record<string, unknown>
-    if (typeof record.descriptorUuid !== 'string') {
-      throw contractError('protocol.malformed', 'core', `${operation}.selector`)
+  private readonly leaseIds = new Map<string, LeaseId<string, string>>()
+
+  private leaseIdFor(entry: ConnectionEntry): LeaseId<string, string> {
+    const known = this.leaseIds.get(entry.key)
+    if (known === undefined) {
+      throw contractError('lifecycle.invariant-violation', 'connection', `${SCOPE}.connection.lease`)
     }
-    return {
-      ...selector,
-      descriptorUuid: record.descriptorUuid as string,
-      descriptorOccurrence: this.occurrenceNumeral(
-        String(record.descriptorOccurrence),
-        `${operation}.descriptor-occurrence`
-      )
+    return known
+  }
+
+  /**
+   * The owner's `db-changed` names the database generation the change
+   * invalidated: every database this backend holds of that generation is
+   * stale (the owner is undiscovered until the next discover).
+   */
+  private onDatabaseChanged(
+    record: Pick<
+      Extract<WireDrainRecord, { t: 'db-changed' }>,
+      'peerId' | 'connectionGeneration' | 'databaseGeneration'
+    >
+  ): void {
+    const entry = this.connectionsByLink.get(linkKey(record.peerId, record.connectionGeneration))
+    if (entry === undefined) {
+      this.emitEvent({
+        kind: 'diagnostic-warning',
+        code: 'unmatched-database-change',
+        message: 'The owner reported a database change for a connection this backend does not hold',
+        detail: Object.freeze({})
+      })
+      return
+    }
+    this.invalidations.set(record.peerId, 'service-changed')
+    for (const key of entry.databases) {
+      const stored = this.databases.get(key)
+      if (stored === undefined || !stored.valid || stored.coreGeneration !== record.databaseGeneration) continue
+      stored.valid = false
+      this.emitEvent({ kind: 'database-changed', database: stored.path })
     }
   }
 
-  private nativePeerForPath(path: { peerId?: unknown }, operation: string): string {
-    const peerId = (path as { peerId?: unknown }).peerId
-    // Characteristic paths carry the connection-scoped peer through their
-    // connection path; resolve the native id from the mapped opaque peer.
-    if (typeof peerId === 'string') {
-      const native = this.nativeIdsByPeerId.get(peerId)
-      if (native !== undefined) return native
+  private requireConnection(connection: BackendConnection<string, string>, operation: string): ConnectionEntry {
+    this.assertOperational(operation)
+    const entry = this.connectionsByKey.get(String(connection.connectionId))
+    if (
+      entry === undefined ||
+      entry.released ||
+      entry.linkState !== 'connected' ||
+      entry.resource.connectionGeneration !== connection.connectionGeneration
+    ) {
+      throw contractError('connection.stale', 'connection', operation)
     }
-    // Otherwise search connection records: paths built by this backend
-    // always reference a mapped peer.
-    throw contractError('peer.not-found', 'connection', operation)
+    return entry
   }
 
-  private succeededTerminal(
-    correlation: OperationTerminalRecord<string, string>['correlation']
-  ): OperationTerminalRecord<string, string> {
-    return Object.freeze({ correlation, outcome: 'succeeded', cause: null })
+  // -- connection controls -----------------------------------------------------------------------
+
+  private control<Result, Operation extends string>(
+    connection: BackendConnection<string, string>,
+    request: { readonly operation: OperationOptions<string, Operation> },
+    name: string,
+    run: (entry: ConnectionEntry, operationId: string, budget: { readonly budgetMs?: number }) => Promise<Result>
+  ): BackendOperationDispatch<string, Result> {
+    const operation = `${SCOPE}.connection.${name}`
+    const entry = this.requireConnection(connection, operation)
+    const operationId = String(request.operation.correlation)
+    const budget = this.budget(request.operation, operation)
+    return this.dispatch(operationId, request.operation.signal, operation, () => run(entry, operationId, budget))
   }
 
-  private readonly databases = new Map<string, StoredRustCoreDatabase>()
-  private readonly occurrenceNumerals = new Map<string, number>()
-
-  private mintOccurrence(kind: string, numeral: number): string {
-    // Occurrence identities are decimal strings of the core numeral (the
-    // portable snapshot layer requires `/^(0|[1-9][0-9]*)$/`): the brand
-    // carries scope, the value stays the numeral.
-    const id = String(opaqueId(String(numeral), kind, 'react-native-rust-core'))
-    this.occurrenceNumerals.set(id, numeral)
-    return id
+  private readRssi<Operation extends string>(
+    connection: BackendConnection<string, string>,
+    request: ReadRssiRequest<string, Operation>
+  ): BackendOperationDispatch<string, RssiMeasurement<string, Operation>> {
+    return this.control(connection, request, 'rssi', async (entry, operationId, budget) => {
+      const answer = await this.invoke('connection.rssi', {
+        peerId: entry.nativePeerId,
+        lease: entry.lease,
+        operationId,
+        ...budget
+      })
+      return Object.freeze({
+        rssi: answer.rssi,
+        observedAtMonotonicMs: this.now(),
+        terminal: this.terminal(request.operation.correlation)
+      })
+    })
   }
 
-  private occurrenceNumeral(id: string, operation: string): number {
-    const numeral = this.occurrenceNumerals.get(id)
-    if (numeral === undefined) {
-      throw contractError('gatt.stale-handle', 'gatt', operation)
-    }
-    return numeral
+  private requestMtu<Operation extends string>(
+    connection: BackendConnection<string, string>,
+    request: RequestMtuRequest<string, Operation>
+  ): BackendOperationDispatch<string, MtuNegotiation<string, Operation>> {
+    return this.control(connection, request, 'request-mtu', async (entry, operationId, budget) => {
+      const answer = await this.invoke('connection.request-mtu', {
+        peerId: entry.nativePeerId,
+        lease: entry.lease,
+        mtu: request.requestedMtu,
+        operationId,
+        ...budget
+      })
+      return Object.freeze({
+        requestedMtu: request.requestedMtu,
+        negotiatedMtu: answer.mtu,
+        observedAtMonotonicMs: this.now(),
+        terminal: this.terminal(request.operation.correlation)
+      })
+    })
   }
+
+  private effectiveMtu<Operation extends string>(
+    connection: BackendConnection<string, string>,
+    request: EffectiveMtuRequest<string, Operation>
+  ): BackendOperationDispatch<string, EffectiveMtuMeasurement<string, Operation>> {
+    return this.control(connection, request, 'effective-mtu', async entry => {
+      const answer = await this.invoke('connection.effective-mtu', { peerId: entry.nativePeerId, lease: entry.lease })
+      return Object.freeze({
+        connectionId: entry.resource.connectionId,
+        connectionGeneration: entry.resource.connectionGeneration,
+        attMtu: answer.mtu,
+        payloadBytes: answer.mtu === null ? null : answer.mtu - 3,
+        platformPduBytes: null,
+        observedAtMonotonicMs: this.now(),
+        terminal: this.terminal(request.operation.correlation)
+      })
+    })
+  }
+
+  private requestPriority<Operation extends string>(
+    connection: BackendConnection<string, string>,
+    request: RequestPriorityRequest<string, Operation>
+  ): BackendOperationDispatch<string, ConnectionPriorityRequest<string, Operation>> {
+    return this.control(connection, request, 'request-priority', async (entry, operationId, budget) => {
+      const answer = await this.invoke('connection.request-priority', {
+        peerId: entry.nativePeerId,
+        lease: entry.lease,
+        priority: request.priority,
+        operationId,
+        ...budget
+      })
+      return Object.freeze({
+        requested: request.priority,
+        accepted: answer.accepted,
+        observedAtMonotonicMs: this.now(),
+        terminal: this.terminal(request.operation.correlation)
+      })
+    })
+  }
+
+  private readPhy<Operation extends string>(
+    connection: BackendConnection<string, string>,
+    request: ReadPhyRequest<string, Operation>
+  ): BackendOperationDispatch<string, ConnectionPhyObservation<string, Operation>> {
+    return this.control(connection, request, 'read-phy', async (entry, operationId, budget) => {
+      const answer = await this.invoke('connection.read-phy', {
+        peerId: entry.nativePeerId,
+        lease: entry.lease,
+        operationId,
+        ...budget
+      })
+      return Object.freeze({
+        txPhy: answer.tx,
+        rxPhy: answer.rx,
+        observedAtMonotonicMs: this.now(),
+        terminal: this.terminal(request.operation.correlation)
+      })
+    })
+  }
+
+  private requestPhy<Operation extends string>(
+    connection: BackendConnection<string, string>,
+    request: RequestPhyRequest<string, Operation>
+  ): BackendOperationDispatch<string, ConnectionPhyRequest<string, Operation>> {
+    return this.control(connection, request, 'request-phy', async (entry, operationId, budget) => {
+      const answer = await this.invoke('connection.request-phy', {
+        peerId: entry.nativePeerId,
+        lease: entry.lease,
+        operationId,
+        ...(request.preference.tx === undefined ? {} : { tx: request.preference.tx }),
+        ...(request.preference.rx === undefined ? {} : { rx: request.preference.rx }),
+        ...budget
+      })
+      const observedAtMonotonicMs = this.now()
+      const terminal = this.terminal(request.operation.correlation)
+      return Object.freeze({
+        requested: Object.freeze({ ...request.preference }),
+        accepted: answer.accepted,
+        observation:
+          answer.observation === null
+            ? null
+            : Object.freeze({
+                txPhy: answer.observation.tx,
+                rxPhy: answer.observation.rx,
+                observedAtMonotonicMs,
+                terminal
+              }),
+        observedAtMonotonicMs,
+        terminal
+      })
+    })
+  }
+
+  private maximumWriteLength<Operation extends string>(
+    connection: BackendConnection<string, string>,
+    _request: ConnectionMaximumWriteLengthRequest<string, Operation>
+  ): BackendOperationDispatch<string, ConnectionMaximumWriteLengthMeasurement<string, Operation>> {
+    this.requireConnection(connection, `${SCOPE}.connection.maximum-write-length`)
+    throw contractError('capability.unavailable', 'gatt', `${SCOPE}.gatt.maximum-write-length`)
+  }
+
+  // -- GATT ------------------------------------------------------------------------------------------
 
   private async discover(
     connection: BackendConnection<string, string>,
     options: PublicOperationOptions
   ): Promise<GattDatabase<string, string, string>> {
-    this.assertOperational('react-native-rust-core.gatt.discover')
-    const nativePeerId = this.nativeIdForPeerId(connection.peerId, 'react-native-rust-core.gatt.discover.peer')
-    // Never address the core with an empty lease: without a live
-    // connection lease the handle is stale and the core cannot route it.
-    const leaseEntry = this.connectionLeases.get(String(connection.connectionId))
-    if (leaseEntry === undefined) {
-      throw contractError('gatt.stale-handle', 'gatt', 'react-native-rust-core.gatt.discover.lease')
+    const operation = `${SCOPE}.gatt.discover`
+    const entry = this.requireConnection(connection, operation)
+    const operationId = this.mintOperationId('discover')
+    const args: WireJsonObject = {
+      peerId: entry.nativePeerId,
+      lease: entry.lease,
+      operationId,
+      ...this.budget(options, operation)
     }
-    const lease = leaseEntry.lease
-    const correlation = String(this.mintedCorrelation('discover'))
-    const removeAbort = this.watchAbort(options.signal, () => {
-      this.requestCancellation(correlation).catch(() => undefined)
-    })
-    let report: Record<string, unknown>
+    const removeAbort = this.watchAbort(options.signal, operationId, operation)
+    let discovery: WireDiscovery
     try {
-      report = await this.invokeRecord('gatt.discover', {
-        peerId: nativePeerId,
-        lease,
-        timeoutMs: this.timeoutMs(options),
-        operationId: correlation
-      })
+      discovery = await this.invoke('gatt.discover', args)
     } finally {
       removeAbort()
     }
-    const tree = parseDatabase(report, 'react-native-rust-core.gatt.discover.shape')
-    const databaseOrdinal = this.nextOperation
-    this.nextOperation += 1
-    const databaseId = this.identifiers.databaseId(`rust-core-database-${databaseOrdinal}`)
-    const databaseGeneration = opaqueId(
-      `rust-core-database-generation-${databaseOrdinal}`,
-      'database-generation',
-      'react-native-rust-core'
-    )
-    const path = Object.freeze({
-      attachment: this.attachment,
-      attachmentId: this.attachment.attachmentId,
-      peerId: connection.peerId,
-      connectionId: connection.connectionId,
-      ownerLeaseId: this.identifiers.leaseId(`rust-core-database-lease-${databaseOrdinal}`),
-      connectionGeneration: connection.connectionGeneration,
+    if (discovery.connectionGeneration !== entry.coreGeneration) {
+      throw contractError('protocol.violation', 'gatt', `${operation}.connection-generation`)
+    }
+    this.requireConnection(connection, operation)
+    const ordinal = this.nextOrdinal
+    this.nextOrdinal += 1
+    const databaseId = this.identifiers.databaseId(`rust-core-database-${ordinal}`)
+    const leaseId = this.leaseIdFor(entry)
+    const path: DatabasePath<string, string, string> = Object.freeze({
+      ...this.connectionPath(entry, leaseId),
       databaseId,
-      databaseGeneration
+      databaseGeneration: opaqueId(discovery.databaseGeneration, 'database-generation', SCOPE)
     })
-    // Mint stable occurrence identities once per discovery: snapshot paths
-    // flow back into this.gatt.* unchanged, and the numerals map back to
-    // the core selector occurrences for the wire.
-    const stored: StoredRustCoreDatabase = { tree, base: path, services: [] }
-    tree.services.forEach(service => {
-      const serviceOccurrence = this.mintOccurrence('service-occurrence', service.occurrence)
-      const characteristics = service.characteristics.map(characteristic => {
-        const characteristicOccurrence = this.mintOccurrence('characteristic-occurrence', characteristic.occurrence)
-        const descriptors = characteristic.descriptors.map(descriptor =>
-          this.mintOccurrence('descriptor-occurrence', descriptor.occurrence)
-        )
-        return { characteristic, characteristicOccurrence, descriptors }
-      })
-      stored.services.push({ service, serviceOccurrence, characteristics })
-    })
-    this.databases.set(String(databaseId), stored)
+    const key = String(databaseId)
+    const stored: DatabaseEntry = {
+      key,
+      connectionKey: entry.key,
+      coreGeneration: discovery.databaseGeneration,
+      path,
+      discovery,
+      valid: true
+    }
+    for (const previous of entry.databases) {
+      const old = this.databases.get(previous)
+      if (old !== undefined) old.valid = false
+    }
+    this.databases.set(key, stored)
+    entry.databases.add(key)
+    await this.refreshCounters()
     return Object.freeze({
       path,
-      snapshot: async () => this.databaseSnapshot(path),
+      snapshot: async () => this.snapshot(stored),
       read: async (
         characteristic: CharacteristicPath<string, string, string, string, string, 'current'>,
         readOptions: PublicOperationOptions
-      ) => this.databaseRead(path, characteristic, readOptions),
+      ) =>
+        (await this.read(characteristic, { operation: this.operationFor(readOptions, 'gdb-read') }).completion).value,
       write: async (
         characteristic: CharacteristicPath<string, string, string, string, string, 'current'>,
-        value: import('../../backend-contract/primitives').BorrowedBytes,
-        writeOptions: import('../../backend-contract/operations').WritePolicy
-      ) => this.databaseWrite(path, characteristic, value, writeOptions),
+        value: BorrowedBytes,
+        writeOptions: WritePolicy
+      ): Promise<WriteReceipt<string, string>> =>
+        this.write(characteristic, {
+          operation: this.operationFor(writeOptions, 'gdb-write'),
+          bytes: value,
+          mode: writeOptions.mode
+        }).completion,
       readDescriptor: async (
         descriptor: DescriptorPath<string, string, string, string, string, string, 'current'>,
         readOptions: PublicOperationOptions
-      ) => this.databaseReadDescriptor(path, descriptor, readOptions),
+      ) =>
+        (
+          await this.readDescriptor(descriptor, { operation: this.operationFor(readOptions, 'gdb-read-desc') })
+            .completion
+        ).value,
       writeDescriptor: async (
         descriptor: DescriptorPath<string, string, string, string, string, string, 'current'>,
-        value: import('../../backend-contract/primitives').BorrowedBytes,
-        writeOptions: import('../../backend-contract/operations').WritePolicy
-      ) => this.databaseWriteDescriptor(path, descriptor, value, writeOptions),
+        value: BorrowedBytes,
+        writeOptions: WritePolicy
+      ): Promise<WriteReceipt<string, string>> =>
+        this.writeDescriptor(descriptor, {
+          operation: this.operationFor(writeOptions, 'gdb-write-desc'),
+          bytes: value,
+          mode: writeOptions.mode
+        }).completion,
       subscribe: async (
         characteristic: CharacteristicPath<string, string, string, string, string, 'current'>,
-        subscribeOptions: import('../../backend-contract/operations').SubscriptionOptions
-      ) => this.databaseSubscribe(path, characteristic, subscribeOptions)
+        subscribeOptions: SubscriptionOptions
+      ): Promise<Subscription<string, string, string, string, string, string>> => {
+        const subscription = await this.subscribe(characteristic, {
+          operation: this.operationFor(subscribeOptions, 'gdb-subscribe'),
+          options: subscribeOptions
+        }).completion
+        return Object.freeze({
+          subscriptionId: subscription.subscriptionId,
+          path: subscription.path,
+          values: subscription.notifications,
+          remove: async (): Promise<CleanupRecord> => {
+            try {
+              await this.unsubscribe(
+                subscription,
+                this.operationFor({ signal: null, deadline: null }, 'gdb-unsubscribe')
+              ).completion
+              return RELEASED
+            } catch (error) {
+              return {
+                state: 'release-failed',
+                failures: [cleanupFailure('subscription', error, `${SCOPE}.gatt.unsubscribe`)]
+              }
+            }
+          }
+        })
+      }
     })
   }
 
-  private storedDatabase(path: { databaseId: unknown }, operation: string): StoredRustCoreDatabase {
-    const stored = this.databases.get(String(path.databaseId))
-    if (stored === undefined) {
-      throw contractError('gatt.stale-handle', 'gatt', operation)
-    }
-    return stored
+  private operationFor(options: PublicOperationOptions, kind: string): OperationOptions<string, string> {
+    return Object.freeze({
+      signal: options.signal,
+      deadline: options.deadline,
+      correlation: this.identifiers.operationCorrelation(this.mintOperationId(kind))
+    })
   }
 
-  private async databaseSnapshot(
-    path: GattDatabase<string, string, string>['path']
-  ): Promise<import('../../backend-contract/gatt').GattDatabaseSnapshot<string, string, string>> {
-    this.assertOperational('react-native-rust-core.gatt.snapshot')
-    const stored = this.storedDatabase(path, 'react-native-rust-core.gatt.snapshot')
-    const services: import('../../backend-contract/gatt').Service<string, string, string, string>[] = []
-    const characteristics: import('../../backend-contract/gatt').Characteristic<
-      string,
-      string,
-      string,
-      string,
-      string
-    >[] = []
-    const descriptors: import('../../backend-contract/gatt').Descriptor<
-      string,
-      string,
-      string,
-      string,
-      string,
-      string
-    >[] = []
-    for (const entry of stored.services) {
+  private snapshot(stored: DatabaseEntry): GattDatabaseSnapshot<string, string, string> {
+    this.assertOperational(`${SCOPE}.gatt.snapshot`)
+    if (!stored.valid) throw contractError('gatt.stale-handle', 'gatt', `${SCOPE}.gatt.snapshot`)
+    const services: Service<string, string, string, string>[] = []
+    const characteristics: Characteristic<string, string, string, string, string>[] = []
+    const descriptors: Descriptor<string, string, string, string, string, string>[] = []
+    for (const service of stored.discovery.services) {
       const servicePath = Object.freeze({
-        ...stored.base,
-        serviceUuid: uuidFromCore(entry.service.uuid, 'react-native-rust-core.gatt.snapshot.service'),
-        serviceOccurrence: entry.serviceOccurrence as import('../../backend-contract/primitives').GenerationId<
-          'service-occurrence',
-          string
-        >
+        ...stored.path,
+        serviceUuid: canonicalUuid(service.uuid),
+        serviceOccurrence: opaqueId(String(service.occurrence), 'service-occurrence', SCOPE)
       })
       services.push(Object.freeze({ path: servicePath, primary: true, includedServices: Object.freeze([]) }))
-      for (const characteristicEntry of entry.characteristics) {
+      for (const characteristic of service.characteristics) {
         const characteristicPath = Object.freeze({
           ...servicePath,
-          characteristicUuid: uuidFromCore(
-            characteristicEntry.characteristic.uuid,
-            'react-native-rust-core.gatt.snapshot.characteristic'
-          ),
-          characteristicOccurrence:
-            characteristicEntry.characteristicOccurrence as import('../../backend-contract/primitives').GenerationId<
-              'characteristic-occurrence',
-              string
-            >,
+          characteristicUuid: canonicalUuid(characteristic.uuid),
+          characteristicOccurrence: opaqueId(String(characteristic.occurrence), 'characteristic-occurrence', SCOPE),
           validity: 'current' as const
         })
         characteristics.push(
           Object.freeze({
             path: characteristicPath,
-            properties: characteristicPropertiesFromBits(characteristicEntry.characteristic.properties),
-            access: Object.freeze({ read: 'unknown', write: 'unknown' as const })
+            properties: characteristicPropertiesFromBits(characteristic.properties),
+            access: Object.freeze({ read: 'unknown' as const, write: 'unknown' as const })
           })
         )
-        characteristicEntry.characteristic.descriptors.forEach((descriptor, descriptorIndex) => {
+        for (const descriptor of characteristic.descriptors) {
           descriptors.push(
             Object.freeze({
               path: Object.freeze({
                 ...characteristicPath,
-                descriptorUuid: uuidFromCore(descriptor.uuid, 'react-native-rust-core.gatt.snapshot.descriptor'),
-                descriptorOccurrence: characteristicEntry.descriptors[
-                  descriptorIndex
-                ] as import('../../backend-contract/primitives').GenerationId<'descriptor-occurrence', string>
+                descriptorUuid: canonicalUuid(descriptor.uuid),
+                descriptorOccurrence: opaqueId(String(descriptor.occurrence), 'descriptor-occurrence', SCOPE)
               }),
-              properties: Object.freeze({
-                read: true,
-                write: true,
-                availability: Object.freeze({ read: 'unknown' as const, write: 'unknown' as const }),
-                access: Object.freeze({ read: 'unknown' as const, write: 'unknown' as const })
-              })
+              properties: createGattDescriptorProperties(
+                true,
+                true,
+                { read: 'unknown', write: 'unknown' },
+                { read: 'unknown', write: 'unknown' }
+              )
             })
           )
-        })
+        }
       }
     }
     return Object.freeze({
-      path: stored.base,
+      path: stored.path,
       services: Object.freeze(services),
       characteristics: Object.freeze(characteristics),
       descriptors: Object.freeze(descriptors)
     })
   }
 
+  /**
+   * Resolves a handle against the discovery that issued it: the database and
+   * its connection must be the core's current ones, and the attribute must
+   * exist. Anything else fails before native I/O (PR210-16).
+   */
   private resolveCharacteristic(
-    stored: StoredRustCoreDatabase,
-    characteristic: {
-      serviceUuid?: unknown
-      serviceOccurrence?: unknown
-      characteristicUuid?: unknown
-      characteristicOccurrence?: unknown
-    },
+    path: CharacteristicPath<string, string, string, string, string, 'current'>,
     operation: string
-  ): CharacteristicPath<string, string, string, string, string, 'current'> {
-    for (const entry of stored.services) {
-      if (entry.service.uuid !== String(characteristic.serviceUuid)) continue
-      if (entry.serviceOccurrence !== String(characteristic.serviceOccurrence)) continue
-      for (const characteristicEntry of entry.characteristics) {
-        if (characteristicEntry.characteristic.uuid !== String(characteristic.characteristicUuid)) continue
-        if (characteristicEntry.characteristicOccurrence !== String(characteristic.characteristicOccurrence)) {
-          continue
+  ): { readonly entry: ConnectionEntry; readonly database: DatabaseEntry; readonly selector: CharacteristicSelector } {
+    this.assertOperational(operation)
+    if (path.validity !== 'current') throw contractError('gatt.stale-handle', 'gatt', operation)
+    const database = this.databases.get(String(path.databaseId))
+    if (database === undefined || !database.valid || database.path.databaseGeneration !== path.databaseGeneration) {
+      throw contractError('gatt.stale-handle', 'gatt', operation)
+    }
+    const entry = this.connectionsByKey.get(database.connectionKey)
+    if (
+      entry === undefined ||
+      entry.linkState !== 'connected' ||
+      String(path.connectionId) !== database.connectionKey ||
+      path.connectionGeneration !== entry.resource.connectionGeneration
+    ) {
+      throw contractError('connection.stale', 'connection', operation)
+    }
+    const serviceUuid = String(path.serviceUuid)
+    const characteristicUuid = String(path.characteristicUuid)
+    for (const service of database.discovery.services) {
+      if (service.uuid !== serviceUuid || String(service.occurrence) !== String(path.serviceOccurrence)) continue
+      for (const characteristic of service.characteristics) {
+        if (
+          characteristic.uuid === characteristicUuid &&
+          String(characteristic.occurrence) === String(path.characteristicOccurrence)
+        ) {
+          return {
+            entry,
+            database,
+            selector: Object.freeze({
+              serviceUuid: service.uuid,
+              serviceOccurrence: service.occurrence,
+              characteristicUuid: characteristic.uuid,
+              characteristicOccurrence: characteristic.occurrence
+            })
+          }
         }
-        const servicePath = {
-          ...stored.base,
-          serviceUuid: uuidFromCore(entry.service.uuid, `${operation}.service`),
-          serviceOccurrence: entry.serviceOccurrence as import('../../backend-contract/primitives').GenerationId<
-            'service-occurrence',
-            string
-          >
-        }
-        return Object.freeze({
-          ...servicePath,
-          characteristicUuid: uuidFromCore(characteristicEntry.characteristic.uuid, `${operation}.characteristic`),
-          characteristicOccurrence:
-            characteristicEntry.characteristicOccurrence as import('../../backend-contract/primitives').GenerationId<
-              'characteristic-occurrence',
-              string
-            >,
-          validity: 'current' as const
-        })
       }
     }
     throw contractError('gatt.not-found', 'gatt', operation)
   }
 
-  private mintedCorrelation(
-    kind: string
-  ): import('../../backend-contract/primitives').OperationCorrelation<string, string> {
-    const ordinal = this.nextOperation
-    this.nextOperation += 1
-    return this.identifiers.operationCorrelation(`rust-core-${kind}-${ordinal}`)
-  }
-
-  private async databaseRead(
-    path: GattDatabase<string, string, string>['path'],
-    characteristic: CharacteristicPath<string, string, string, string, string, 'current'>,
-    options: PublicOperationOptions
-  ): Promise<import('../../backend-contract/primitives').OwnedBytes> {
-    const stored = this.storedDatabase(path, 'react-native-rust-core.gatt.database-read')
-    const resolved = this.resolveCharacteristic(stored, characteristic, 'react-native-rust-core.gatt.database-read')
-    const dispatch = this.read(resolved, {
-      operation: { signal: options.signal, deadline: options.deadline, correlation: this.mintedCorrelation('gdb-read') }
-    })
-    return (await dispatch.completion).value
-  }
-
-  private async databaseWrite(
-    path: GattDatabase<string, string, string>['path'],
-    characteristic: CharacteristicPath<string, string, string, string, string, 'current'>,
-    value: import('../../backend-contract/primitives').BorrowedBytes,
-    options: import('../../backend-contract/operations').WritePolicy
-  ): Promise<import('../../backend-contract/operations').WriteReceipt<string, string>> {
-    const stored = this.storedDatabase(path, 'react-native-rust-core.gatt.database-write')
-    const resolved = this.resolveCharacteristic(stored, characteristic, 'react-native-rust-core.gatt.database-write')
-    const dispatch = this.write(resolved, {
-      operation: {
-        signal: options.signal,
-        deadline: options.deadline,
-        correlation: this.mintedCorrelation('gdb-write')
-      },
-      bytes: value,
-      mode: options.mode
-    })
-    return dispatch.completion
-  }
-
-  private async databaseReadDescriptor(
-    path: GattDatabase<string, string, string>['path'],
-    descriptor: DescriptorPath<string, string, string, string, string, string, 'current'>,
-    options: PublicOperationOptions
-  ): Promise<import('../../backend-contract/primitives').OwnedBytes> {
-    const stored = this.storedDatabase(path, 'react-native-rust-core.gatt.database-read-descriptor')
-    const resolved = this.resolveCharacteristic(
-      stored,
-      descriptor,
-      'react-native-rust-core.gatt.database-read-descriptor'
-    )
-    const full = Object.freeze({
-      ...resolved,
-      descriptorUuid: (descriptor as unknown as Record<string, unknown>)
-        .descriptorUuid as import('../../backend-contract/primitives').Uuid,
-      descriptorOccurrence: (descriptor as unknown as Record<string, unknown>)
-        .descriptorOccurrence as import('../../backend-contract/primitives').GenerationId<
-        'descriptor-occurrence',
-        string
-      >
-    })
-    const dispatch = this.readDescriptor(full, {
-      operation: {
-        signal: options.signal,
-        deadline: options.deadline,
-        correlation: this.mintedCorrelation('gdb-read-desc')
-      }
-    })
-    return (await dispatch.completion).value
-  }
-
-  private async databaseWriteDescriptor(
-    path: GattDatabase<string, string, string>['path'],
-    descriptor: DescriptorPath<string, string, string, string, string, string, 'current'>,
-    value: import('../../backend-contract/primitives').BorrowedBytes,
-    options: import('../../backend-contract/operations').WritePolicy
-  ): Promise<import('../../backend-contract/operations').WriteReceipt<string, string>> {
-    const stored = this.storedDatabase(path, 'react-native-rust-core.gatt.database-write-descriptor')
-    const resolved = this.resolveCharacteristic(
-      stored,
-      descriptor,
-      'react-native-rust-core.gatt.database-write-descriptor'
-    )
-    const full = Object.freeze({
-      ...resolved,
-      descriptorUuid: (descriptor as unknown as Record<string, unknown>)
-        .descriptorUuid as import('../../backend-contract/primitives').Uuid,
-      descriptorOccurrence: (descriptor as unknown as Record<string, unknown>)
-        .descriptorOccurrence as import('../../backend-contract/primitives').GenerationId<
-        'descriptor-occurrence',
-        string
-      >
-    })
-    const dispatch = this.writeDescriptor(full, {
-      operation: {
-        signal: options.signal,
-        deadline: options.deadline,
-        correlation: this.mintedCorrelation('gdb-write-desc')
-      },
-      bytes: value,
-      mode: options.mode
-    })
-    return dispatch.completion
-  }
-
-  private async databaseSubscribe(
-    path: GattDatabase<string, string, string>['path'],
-    characteristic: CharacteristicPath<string, string, string, string, string, 'current'>,
-    options: import('../../backend-contract/operations').SubscriptionOptions
-  ): Promise<import('../../backend-contract/gatt').Subscription<string, string, string, string, string, string>> {
-    const stored = this.storedDatabase(path, 'react-native-rust-core.gatt.database-subscribe')
-    const resolved = this.resolveCharacteristic(
-      stored,
-      characteristic,
-      'react-native-rust-core.gatt.database-subscribe'
-    )
-    const dispatch = this.subscribe(resolved, {
-      operation: {
-        signal: options.signal,
-        deadline: options.deadline,
-        correlation: this.mintedCorrelation('gdb-subscribe')
-      },
-      options
-    })
-    const backendSubscription = await dispatch.completion
-    return Object.freeze({
-      subscriptionId: backendSubscription.subscriptionId,
-      path: backendSubscription.path,
-      values: backendSubscription.notifications,
-      remove: async () => {
-        const removal = this.unsubscribe(backendSubscription, {
-          signal: null,
-          deadline: null,
-          correlation: this.mintedCorrelation('gdb-unsubscribe')
-        })
-        await removal.completion
-        return { state: 'released', failures: [] } as import('../../backend-contract/errors').CleanupRecord
-      }
-    })
-  }
-
-  private dispatchFor<Result>(
-    correlationValue: string,
-    completion: Promise<Result>
-  ): BackendOperationDispatch<string, Result> {
-    const handle = this.identifiers.backendOperationHandle(correlationValue)
-    return createBackendOperationDispatch<string, Result>(handle, completion, () =>
-      this.requestCancellation(correlationValue)
-    )
-  }
-
-  private read(
-    path: CharacteristicPath<string, string, string, string, string, 'current'>,
-    request: ReadRequest<string, string>
-  ): BackendOperationDispatch<string, ReadResult<string, string>> {
-    this.assertOperational('react-native-rust-core.gatt.read')
-    const selector = this.selectorFor(path, 'react-native-rust-core.gatt.read')
-    const nativePeerId = this.nativePeerForPath(
-      path as unknown as { peerId?: unknown },
-      'react-native-rust-core.gatt.read.peer'
-    )
-    const correlation = String(request.operation.correlation)
-    const timeoutMs = this.timeoutMs(request.operation)
-    const removeAbort = this.watchAbort(request.operation.signal, () => {
-      this.requestCancellation(correlation).catch(() => undefined)
-    })
-    const completion = (async (): Promise<ReadResult<string, string>> => {
-      try {
-        const result = await this.invokeRecord('gatt.read', {
-          peerId: nativePeerId,
-          selector,
-          timeoutMs,
-          operationId: correlation
-        })
-        return Object.freeze({
-          value: ownedBytes(bytesFromCore(result.value)),
-          terminal: this.succeededTerminal(request.operation.correlation)
-        })
-      } finally {
-        removeAbort()
-      }
-    })()
-    return this.dispatchFor(correlation, completion)
-  }
-
-  private write(
-    path: CharacteristicPath<string, string, string, string, string, 'current'>,
-    request: WriteRequest<string, string>
-  ): BackendOperationDispatch<string, WriteResult<string, string>> {
-    this.assertOperational('react-native-rust-core.gatt.write')
-    const selector = this.selectorFor(path, 'react-native-rust-core.gatt.write')
-    const nativePeerId = this.nativePeerForPath(
-      path as unknown as { peerId?: unknown },
-      'react-native-rust-core.gatt.write.peer'
-    )
-    const correlation = String(request.operation.correlation)
-    const timeoutMs = this.timeoutMs(request.operation)
-    const value = bytesToCore(request.bytes)
-    const mode = request.mode
-    const removeAbort = this.watchAbort(request.operation.signal, () => {
-      this.requestCancellation(correlation).catch(() => undefined)
-    })
-    const completion = (async (): Promise<WriteResult<string, string>> => {
-      try {
-        await this.invokeRecord('gatt.write', {
-          peerId: nativePeerId,
-          selector,
-          value,
-          mode,
-          timeoutMs,
-          operationId: correlation
-        })
-        return Object.freeze({
-          terminal: this.succeededTerminal(request.operation.correlation),
-          commitState: 'confirmed'
-        })
-      } finally {
-        removeAbort()
-      }
-    })()
-    return this.dispatchFor(correlation, completion)
-  }
-
-  private readDescriptor(
+  private resolveDescriptor(
     path: DescriptorPath<string, string, string, string, string, string, 'current'>,
-    request: ReadRequest<string, string>
-  ): BackendOperationDispatch<string, ReadResult<string, string>> {
-    this.assertOperational('react-native-rust-core.gatt.read-descriptor')
-    const selector = this.descriptorSelectorFor(path, 'react-native-rust-core.gatt.read-descriptor')
-    const nativePeerId = this.nativePeerForPath(
-      path as unknown as { peerId?: unknown },
-      'react-native-rust-core.gatt.read-descriptor.peer'
-    )
-    const correlation = String(request.operation.correlation)
-    const timeoutMs = this.timeoutMs(request.operation)
-    const removeAbort = this.watchAbort(request.operation.signal, () => {
-      this.requestCancellation(correlation).catch(() => undefined)
-    })
-    const completion = (async (): Promise<ReadResult<string, string>> => {
-      try {
-        const result = await this.invokeRecord('gatt.read-descriptor', {
-          peerId: nativePeerId,
-          selector,
-          timeoutMs,
-          operationId: correlation
-        })
-        return Object.freeze({
-          value: ownedBytes(bytesFromCore(result.value)),
-          terminal: this.succeededTerminal(request.operation.correlation)
-        })
-      } finally {
-        removeAbort()
-      }
-    })()
-    return this.dispatchFor(correlation, completion)
-  }
-
-  private writeDescriptor(
-    path: DescriptorPath<string, string, string, string, string, string, 'current'>,
-    request: WriteRequest<string, string>
-  ): BackendOperationDispatch<string, WriteResult<string, string>> {
-    this.assertOperational('react-native-rust-core.gatt.write-descriptor')
-    const selector = this.descriptorSelectorFor(path, 'react-native-rust-core.gatt.write-descriptor')
-    const nativePeerId = this.nativePeerForPath(
-      path as unknown as { peerId?: unknown },
-      'react-native-rust-core.gatt.write-descriptor.peer'
-    )
-    const correlation = String(request.operation.correlation)
-    const timeoutMs = this.timeoutMs(request.operation)
-    const value = bytesToCore(request.bytes)
-    const mode = request.mode
-    const removeAbort = this.watchAbort(request.operation.signal, () => {
-      this.requestCancellation(correlation).catch(() => undefined)
-    })
-    const completion = (async (): Promise<WriteResult<string, string>> => {
-      try {
-        await this.invokeRecord('gatt.write-descriptor', {
-          peerId: nativePeerId,
-          selector,
-          value,
-          mode,
-          timeoutMs,
-          operationId: correlation
-        })
-        return Object.freeze({
-          terminal: this.succeededTerminal(request.operation.correlation),
-          commitState: 'confirmed'
-        })
-      } finally {
-        removeAbort()
-      }
-    })()
-    return this.dispatchFor(correlation, completion)
-  }
-
-  private readonly subscriptionConsumers = new Map<
-    string,
-    { nativePeerId: string; selector: Record<string, unknown>; consumer: string; closed: boolean }
-  >()
-
-  private subscribe(
-    path: CharacteristicPath<string, string, string, string, string, 'current'>,
-    request: SubscribeRequest<string, string>
-  ): BackendOperationDispatch<string, BackendSubscription<string, string, string, string, string>> {
-    this.assertOperational('react-native-rust-core.gatt.subscribe')
-    const selector = this.selectorFor(path, 'react-native-rust-core.gatt.subscribe')
-    const nativePeerId = this.nativePeerForPath(
-      path as unknown as { peerId?: unknown },
-      'react-native-rust-core.gatt.subscribe.peer'
-    )
-    const correlation = String(request.operation.correlation)
-    const timeoutMs = this.timeoutMs(request.operation)
-    const consumerOrdinal = this.nextOperation
-    this.nextOperation += 1
-    const consumer = `rust-core-consumer-${consumerOrdinal}`
-    const removeAbort = this.watchAbort(request.operation.signal, () => {
-      this.requestCancellation(correlation).catch(() => undefined)
-    })
-    const completion = (async (): Promise<BackendSubscription<string, string, string, string, string>> => {
-      try {
-        await this.invokeRecord('gatt.subscribe', {
-          peerId: nativePeerId,
-          selector,
-          consumer,
-          deliveryMode: request.options.deliveryMode ?? 'prefer-notification',
-          timeoutMs,
-          operationId: correlation
-        })
-        const subscriptionId = this.identifiers.subscriptionId(`rust-core-subscription-${consumerOrdinal}`)
-        const notifications = new CoreBoundedStream<import('../../backend-contract/gatt').NotificationValue>(
-          request.options.delivery,
-          request.options.delivery.overflowPolicy
-        )
-        this.activeNotificationStreams.add(notifications)
-        const pumpState = { nativePeerId, selector, consumer, closed: false }
-        this.subscriptionConsumers.set(String(subscriptionId), pumpState)
-        const pump = (async (): Promise<void> => {
-          try {
-            for (;;) {
-              if (pumpState.closed || this.destroyed) return
-              const next = await dispatchReactNativeRustCoreOp(this.session, 'notifications.take', {
-                peerId: nativePeerId,
-                selector,
-                consumer
-              })
-              if (next === null || next === undefined) {
-                await pumpDelay()
-                continue
-              }
-              if (typeof next !== 'object' || next === null || Array.isArray(next)) {
-                // One malformed notification must not retire the
-                // subscription: skip it with a diagnostic trace.
-                this.noteSkippedCoreRecord()
-                continue
-              }
-              let value: import('../../backend-contract/primitives').OwnedBytes
-              try {
-                value = ownedBytes(bytesFromCore((next as Record<string, unknown>).value))
-              } catch {
-                this.noteSkippedCoreRecord()
-                continue
-              }
-              notifications.emit(
-                Object.freeze({
-                  value,
-                  indication: false
-                }),
-                512
-              )
-            }
-          } catch {
-            if (!pumpState.closed && !this.destroyed) {
-              await notifications.close().catch(() => undefined)
-            }
-          }
-        })()
-        pump.catch(() => undefined)
-        const subscription = Object.freeze({
-          subscriptionId,
-          path,
-          terminal: this.succeededTerminal(request.operation.correlation),
-          notifications
-        })
-        return subscription as BackendSubscription<string, string, string, string, string>
-      } finally {
-        removeAbort()
-      }
-    })()
-    return this.dispatchFor(correlation, completion)
-  }
-
-  private unsubscribe(
-    subscription: BackendSubscription<string, string, string, string, string>,
-    operation: OperationOptions<string, string>
-  ): BackendOperationDispatch<string, OperationTerminalRecord<string, string>> {
-    this.assertOperational('react-native-rust-core.gatt.unsubscribe')
-    const stored = this.subscriptionConsumers.get(String(subscription.subscriptionId))
-    const correlation = String(operation.correlation)
-    const removeAbort = this.watchAbort(operation.signal, () => {
-      this.requestCancellation(correlation).catch(() => undefined)
-    })
-    const completion = (async (): Promise<OperationTerminalRecord<string, string>> => {
-      try {
-        if (stored !== undefined) {
-          stored.closed = true
-          try {
-            await this.invokeRecord('gatt.unsubscribe', {
-              peerId: stored.nativePeerId,
-              selector: stored.selector,
-              consumer: stored.consumer,
-              operationId: correlation
-            })
-          } finally {
-            this.subscriptionConsumers.delete(String(subscription.subscriptionId))
-          }
-        }
-        this.activeNotificationStreams.delete(subscription.notifications)
-        await subscription.notifications.close().catch(() => undefined)
-        return this.succeededTerminal(operation.correlation)
-      } finally {
-        removeAbort()
-      }
-    })()
-    return this.dispatchFor(correlation, completion)
-  }
-
-  // -- backend events --------------------------------------------------------
-
-  private ensureEventsPump(): void {
-    if (this.eventsPumpStarted) return
-    this.eventsPumpStarted = true
-    this.pumpBackendEvents().catch(() => undefined)
-  }
-
-  private async pumpBackendEvents(): Promise<void> {
-    try {
-      for (;;) {
-        if (this.eventsStopped) return
-        const next = await dispatchReactNativeRustCoreOp(this.session, 'events.take', {})
-        if (next === null || next === undefined) {
-          await pumpDelay()
+    operation: string
+  ): { readonly entry: ConnectionEntry; readonly selector: DescriptorSelector } {
+    const resolved = this.resolveCharacteristic(path, operation)
+    for (const service of resolved.database.discovery.services) {
+      if (service.uuid !== resolved.selector.serviceUuid || service.occurrence !== resolved.selector.serviceOccurrence)
+        continue
+      for (const characteristic of service.characteristics) {
+        if (
+          characteristic.uuid !== resolved.selector.characteristicUuid ||
+          characteristic.occurrence !== resolved.selector.characteristicOccurrence
+        ) {
           continue
         }
-        this.emitBackendEvent(next)
-      }
-    } catch {
-      if (!this.eventsStopped) {
-        this.eventsStopped = true
-      }
-    }
-  }
-
-  private emitBackendEvent(value: unknown): void {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) return
-    const record = value as Record<string, unknown>
-    if (typeof record.kind !== 'string') return
-    const kind = record.kind as string
-    if (kind === 'adapter-state-changed') {
-      try {
-        const state = this.parseAdapterState((record.state as Record<string, unknown>) ?? {})
-        for (const watcher of this.adapterWatchers) {
-          try {
-            watcher(state)
-          } catch {
-            // One slow watcher must not break event delivery.
+        const descriptor = characteristic.descriptors.find(
+          candidate =>
+            candidate.uuid === String(path.descriptorUuid) &&
+            String(candidate.occurrence) === String(path.descriptorOccurrence)
+        )
+        if (descriptor !== undefined) {
+          return {
+            entry: resolved.entry,
+            selector: Object.freeze({
+              ...resolved.selector,
+              descriptorUuid: descriptor.uuid,
+              descriptorOccurrence: descriptor.occurrence
+            })
           }
         }
-        this.eventsStream.emit(
-          {
-            kind: 'adapter-state',
-            attachment: this.attachment,
-            attachmentId: this.attachment.attachmentId,
-            ingressOrdinal: this.nextEventOrdinal()
-          },
-          64
-        )
-      } catch {
-        // Malformed adapter events never break the pump.
       }
+    }
+    throw contractError('gatt.not-found', 'gatt', operation)
+  }
+
+  private read<Operation extends string>(
+    path: CharacteristicPath<string, string, string, string, string, 'current'>,
+    request: ReadRequest<string, Operation>
+  ): BackendOperationDispatch<string, ReadResult<string, Operation>> {
+    const operation = `${SCOPE}.gatt.read`
+    const { entry, selector } = this.resolveCharacteristic(path, operation)
+    const operationId = String(request.operation.correlation)
+    const budget = this.budget(request.operation, operation)
+    return this.dispatch(operationId, request.operation.signal, operation, async () => {
+      const answer = await this.invoke('gatt.read', { peerId: entry.nativePeerId, selector, operationId, ...budget })
+      return Object.freeze({ value: ownedCopy(answer.value), terminal: this.terminal(request.operation.correlation) })
+    })
+  }
+
+  private readDescriptor<Operation extends string>(
+    path: DescriptorPath<string, string, string, string, string, string, 'current'>,
+    request: ReadRequest<string, Operation>
+  ): BackendOperationDispatch<string, ReadResult<string, Operation>> {
+    const operation = `${SCOPE}.gatt.read-descriptor`
+    const { entry, selector } = this.resolveDescriptor(path, operation)
+    const operationId = String(request.operation.correlation)
+    const budget = this.budget(request.operation, operation)
+    return this.dispatch(operationId, request.operation.signal, operation, async () => {
+      const answer = await this.invoke('gatt.read-descriptor', {
+        peerId: entry.nativePeerId,
+        selector,
+        operationId,
+        ...budget
+      })
+      return Object.freeze({ value: ownedCopy(answer.value), terminal: this.terminal(request.operation.correlation) })
+    })
+  }
+
+  /** A write's result is the owner's receipt; its failure carries the owner's commit state. */
+  private writeWith<Operation extends string>(
+    op: 'gatt.write' | 'gatt.write-descriptor',
+    nativePeerId: string,
+    selector: CharacteristicSelector | DescriptorSelector,
+    request: WriteRequest<string, Operation>,
+    operation: string
+  ): BackendOperationDispatch<string, WriteResult<string, Operation>> {
+    if (!(request.bytes instanceof Uint8Array)) throw contractError('argument.invalid', 'gatt', operation)
+    const valueB64 = unwrap(encodeBase64(request.bytes))
+    const operationId = String(request.operation.correlation)
+    const budget = this.budget(request.operation, operation)
+    return this.dispatch(operationId, request.operation.signal, operation, async () => {
+      const receipt = unwrap(
+        checkWriteReceipt(
+          await this.invoke(op, {
+            peerId: nativePeerId,
+            selector,
+            valueB64,
+            mode: request.mode,
+            operationId,
+            ...budget
+          }),
+          request.mode
+        )
+      )
+      return Object.freeze({ terminal: this.terminal(request.operation.correlation), commitState: receipt.commitState })
+    })
+  }
+
+  private write<Operation extends string>(
+    path: CharacteristicPath<string, string, string, string, string, 'current'>,
+    request: WriteRequest<string, Operation>
+  ): BackendOperationDispatch<string, WriteResult<string, Operation>> {
+    const operation = `${SCOPE}.gatt.write`
+    const { entry, selector } = this.resolveCharacteristic(path, operation)
+    return this.writeWith('gatt.write', entry.nativePeerId, selector, request, operation)
+  }
+
+  private writeDescriptor<Operation extends string>(
+    path: DescriptorPath<string, string, string, string, string, string, 'current'>,
+    request: WriteRequest<string, Operation>
+  ): BackendOperationDispatch<string, WriteResult<string, Operation>> {
+    const operation = `${SCOPE}.gatt.write-descriptor`
+    const { entry, selector } = this.resolveDescriptor(path, operation)
+    return this.writeWith('gatt.write-descriptor', entry.nativePeerId, selector, request, operation)
+  }
+
+  private subscribe<Operation extends string>(
+    path: CharacteristicPath<string, string, string, string, string, 'current'>,
+    request: SubscribeRequest<string, Operation>
+  ): BackendOperationDispatch<string, BackendSubscription<string, string, string, string, string>> {
+    const operation = `${SCOPE}.gatt.subscribe`
+    const { entry, selector } = this.resolveCharacteristic(path, operation)
+    const operationId = String(request.operation.correlation)
+    const budget = this.budget(request.operation, operation)
+    const consumer = this.mintOperationId('consumer')
+    const subscriptionId = this.identifiers.subscriptionId(`rust-core-subscription-${consumer}`)
+    // Registered before the owner can deliver: a value that arrives in the
+    // drain before `gatt.subscribe` resolves is routed, not lost.
+    const stream: OwnedCoreBoundedStream<NotificationValue> = new OwnedCoreBoundedStream<NotificationValue>(
+      request.options.delivery,
+      request.options.delivery.overflowPolicy,
+      () => undefined
+    )
+    const stored: SubscriptionEntry = {
+      consumer,
+      subscriptionId,
+      nativePeerId: entry.nativePeerId,
+      connectionKey: entry.key,
+      selector,
+      stream,
+      state: 'subscribing',
+      removal: null,
+      ingressDropped: 0
+    }
+    this.subscriptions.set(consumer, stored)
+    return this.dispatch(operationId, request.operation.signal, operation, async () => {
+      try {
+        await this.invoke('gatt.subscribe', {
+          peerId: entry.nativePeerId,
+          selector,
+          consumer,
+          operationId,
+          ...(request.options.deliveryMode === undefined ? {} : { deliveryMode: request.options.deliveryMode }),
+          ...budget
+        })
+      } catch (error) {
+        this.subscriptions.delete(consumer)
+        stream.closeWithReason('source-failed', normalizedFrom(error, operation))
+        throw error
+      }
+      if (stored.state === 'subscribing') stored.state = 'active'
+      await this.refreshCounters()
+      return Object.freeze({
+        subscriptionId,
+        path,
+        terminal: this.terminal(request.operation.correlation),
+        notifications: stream
+      })
+    })
+  }
+
+  /**
+   * Releases one consumer. The consumer and its stream stay registered until
+   * the owner confirms; a failure keeps them for a retry with the same
+   * identity (PR210-09). A consumer the owner already retired
+   * (`stream-end`) needs no native call.
+   */
+  private unsubscribe<Operation extends string>(
+    subscription: BackendSubscription<string, string, string, string, string>,
+    operationOptions: OperationOptions<string, Operation>
+  ): BackendOperationDispatch<string, OperationTerminalRecord<string, string>> {
+    const operation = `${SCOPE}.gatt.unsubscribe`
+    this.assertOperational(operation)
+    const stored = [...this.subscriptions.values()].find(entry => entry.subscriptionId === subscription.subscriptionId)
+    const operationId = String(operationOptions.correlation)
+    if (stored === undefined || stored.state === 'ended') {
+      if (stored !== undefined) this.subscriptions.delete(stored.consumer)
+      return this.dispatch(operationId, null, operation, async () => this.terminal(operationOptions.correlation))
+    }
+    if (stored.removal !== null) {
+      const removal = stored.removal
+      return this.dispatch(operationId, null, operation, () => removal)
+    }
+    const budget = this.budget(operationOptions, operation)
+    const dispatch = this.dispatch(operationId, operationOptions.signal, operation, async () => {
+      try {
+        await this.invoke('gatt.unsubscribe', {
+          peerId: stored.nativePeerId,
+          selector: stored.selector,
+          consumer: stored.consumer,
+          operationId,
+          ...budget
+        })
+      } finally {
+        stored.removal = null
+      }
+      this.subscriptions.delete(stored.consumer)
+      stored.state = 'ended'
+      stored.stream.closeWithReason('owner-released')
+      await this.refreshCounters()
+      return this.terminal(operationOptions.correlation)
+    })
+    stored.removal = dispatch.completion
+    return dispatch
+  }
+
+  private onValue(record: Extract<WireDrainRecord, { t: 'value' }>): void {
+    const stored = this.subscriptions.get(record.consumer)
+    if (stored === undefined || stored.state === 'ended') {
+      this.emitEvent({
+        kind: 'diagnostic-warning',
+        code: 'unmatched-notification',
+        message: 'The owner delivered a value for a consumer this backend does not hold',
+        detail: Object.freeze({ bytes: record.value.byteLength })
+      })
       return
     }
-    // Lifecycle events the typed surface cannot express ride as
-    // diagnostics; dropping them silently would hide core truth.
-    this.eventsStream.emit(
-      {
-        kind: 'diagnostic',
-        attachment: this.attachment,
-        attachmentId: this.attachment.attachmentId,
-        ingressOrdinal: this.nextEventOrdinal()
-      },
-      64
-    )
+    const value: NotificationValue = Object.freeze({ value: ownedCopy(record.value), delivery: record.delivery })
+    stored.stream.emit(value, record.value.byteLength)
   }
 
-  private eventOrdinal = 1
-
-  private nextEventOrdinal(): number {
-    const ordinal = this.eventOrdinal
-    this.eventOrdinal += 1
-    return ordinal
-  }
-}
-
-function numberField(record: Record<string, unknown>, field: string): number {
-  const value = record[field]
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
-    throw contractError('protocol.malformed', 'core', `react-native-rust-core.counters.${field}`)
-  }
-  return Math.floor(value)
-}
-
-interface StoredRustCoreService {
-  readonly service: { readonly uuid: string; readonly occurrence: number }
-  readonly serviceOccurrence: string
-  readonly characteristics: ReadonlyArray<{
-    readonly characteristic: {
-      readonly uuid: string
-      readonly occurrence: number
-      readonly properties: number
-      readonly descriptors: ReadonlyArray<{ readonly uuid: string; readonly occurrence: number }>
+  private onStreamEnd(
+    record: Pick<Extract<WireDrainRecord, { t: 'stream-end' }>, 'consumer' | 'reason' | 'droppedItems' | 'droppedBytes'>
+  ): void {
+    const stored = this.subscriptions.get(record.consumer)
+    if (stored === undefined) return
+    this.subscriptions.delete(record.consumer)
+    stored.state = 'ended'
+    if (record.droppedItems > 0 || record.droppedBytes > 0) {
+      stored.stream.observeSourceOverflow({
+        kind: 'overflow',
+        policy: 'error',
+        droppedItems: resourceCount(record.droppedItems + stored.ingressDropped),
+        droppedBytes: resourceCount(record.droppedBytes),
+        replacedItems: resourceCount(0)
+      })
     }
-    readonly characteristicOccurrence: string
-    readonly descriptors: ReadonlyArray<string>
-  }>
-}
+    const reason: CoreStreamTerminalReason =
+      record.reason === 'overflow'
+        ? 'overflow'
+        : record.reason === 'closed'
+          ? 'closed'
+          : (this.invalidations.get(stored.nativePeerId) ?? 'connection-lost')
+    stored.stream.finishWithReason(reason)
+  }
 
-interface StoredRustCoreDatabase {
-  readonly tree: RustCoreDatabase
-  readonly base: import('../../backend-contract/gatt').DatabasePath<string, string, string>
-  readonly services: StoredRustCoreService[]
-}
+  // -- drain ------------------------------------------------------------------------------------------
 
-function parseDatabase(value: Record<string, unknown>, operation: string): RustCoreDatabase {
-  if (!Array.isArray(value.services)) {
-    throw contractError('protocol.malformed', 'core', operation)
-  }
-  const services = (value.services as unknown[]).map(entry => parseDatabaseService(entry, operation))
-  return { services }
-}
-
-function parseDatabaseService(entry: unknown, operation: string): RustCoreDatabase['services'][number] {
-  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
-    throw contractError('protocol.malformed', 'core', operation)
-  }
-  const record = entry as Record<string, unknown>
-  if (typeof record.uuid !== 'string' || typeof record.occurrence !== 'number') {
-    throw contractError('protocol.malformed', 'core', operation)
-  }
-  if (!Array.isArray(record.characteristics)) {
-    throw contractError('protocol.malformed', 'core', operation)
-  }
-  return {
-    uuid: record.uuid as string,
-    occurrence: Math.floor(record.occurrence as number),
-    characteristics: (record.characteristics as unknown[]).map(characteristic =>
-      parseDatabaseCharacteristic(characteristic, operation)
-    )
-  }
-}
-
-function parseDatabaseCharacteristic(
-  entry: unknown,
-  operation: string
-): RustCoreDatabase['services'][number]['characteristics'][number] {
-  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
-    throw contractError('protocol.malformed', 'core', operation)
-  }
-  const record = entry as Record<string, unknown>
-  if (
-    typeof record.uuid !== 'string' ||
-    typeof record.occurrence !== 'number' ||
-    typeof record.properties !== 'number'
-  ) {
-    throw contractError('protocol.malformed', 'core', operation)
-  }
-  if (!Array.isArray(record.descriptors)) {
-    throw contractError('protocol.malformed', 'core', operation)
-  }
-  return {
-    uuid: record.uuid as string,
-    occurrence: Math.floor(record.occurrence as number),
-    properties: Math.floor(record.properties as number),
-    descriptors: (record.descriptors as unknown[]).map(descriptor => {
-      if (typeof descriptor !== 'object' || descriptor === null || Array.isArray(descriptor)) {
-        throw contractError('protocol.malformed', 'core', operation)
+  private deliver(records: readonly WireDrainRecord[]): void {
+    for (const record of records) {
+      switch (record.t) {
+        case 'adv':
+          this.onAdvertisement(record)
+          break
+        case 'scan-end':
+          this.onScanEnd(record)
+          break
+        case 'value':
+          this.onValue(record)
+          break
+        case 'stream-end':
+          this.onStreamEnd(record)
+          break
+        case 'adapter':
+          this.onAdapterRecord(record.state)
+          break
+        case 'link':
+          this.onLink(record)
+          break
+        case 'db-changed':
+          this.onDatabaseChanged(record)
+          break
+        case 'ingress-drop':
+          this.onIngressDrop(record)
+          break
+        case 'security':
+          this.onSecurity(record.peerId, record.state)
+          break
+        case 'restored':
+          this.onRestored(record.peers)
+          break
       }
-      const descriptorRecord = descriptor as Record<string, unknown>
-      if (typeof descriptorRecord.uuid !== 'string' || typeof descriptorRecord.occurrence !== 'number') {
-        throw contractError('protocol.malformed', 'core', operation)
+    }
+  }
+
+  /**
+   * The owner dropped records at a full native queue. A dropped advertisement
+   * or notification is lost before routing, so the owner cannot say which
+   * consumer it was for: every stream that could have received it counts it
+   * in its drop accounting (an upper bound, never silence). A dropped control
+   * record is re-read from the owner.
+   */
+  private onIngressDrop(record: Extract<WireDrainRecord, { t: 'ingress-drop' }>): void {
+    if (record.class === 'advertisement') {
+      for (const group of this.scanGroups.values()) {
+        for (const consumer of group.consumers.values()) this.noteIngressLoss(consumer, record.count)
       }
-      return {
-        uuid: descriptorRecord.uuid as string,
-        occurrence: Math.floor(descriptorRecord.occurrence as number)
+    } else if (record.class === 'notification') {
+      for (const stored of this.subscriptions.values()) {
+        if (stored.state !== 'ended') this.noteIngressLoss(stored, record.count)
       }
+    } else {
+      this.reconcileControlLoss()
+    }
+    this.emitEvent({
+      kind: 'diagnostic-warning',
+      code: 'native-ingress-drop',
+      message: `The Rust owner dropped ${record.count} ${record.class} record(s) at a full queue`,
+      detail: Object.freeze({ class: record.class, count: record.count })
+    })
+  }
+
+  private noteIngressLoss(account: IngressLossAccount, count: number): void {
+    account.ingressDropped += count
+    account.stream.observeSourceOverflow({
+      kind: 'overflow',
+      policy: 'drop-newest',
+      droppedItems: resourceCount(account.ingressDropped),
+      droppedBytes: resourceCount(0),
+      replacedItems: resourceCount(0)
+    })
+  }
+
+  private controlReconcile: Promise<void> | null = null
+  private controlReconcileAgain = false
+
+  /**
+   * Control records were lost at the owner's full control queue. The owner
+   * answers every fact they carried (`session.reconcile`, 104/105), and each
+   * lost record becomes the transition it would have caused: the adapter
+   * state; a held link the owner ended (with its reason) or no longer holds
+   * under this generation (lost, e.g. it reconnected under a new one); a
+   * database change on a held link; a stream the owner ended (its reason and
+   * drop counts); a security report or restored set this backend has not
+   * delivered; a scan membership the owner no longer holds (`source-failed`).
+   * What the owner still reports live is left alone: nothing is inferred.
+   * One re-read runs at a time; drops during it schedule one more.
+   */
+  private reconcileControlLoss(): void {
+    if (this.controlReconcile !== null) {
+      this.controlReconcileAgain = true
+      return
+    }
+    this.controlReconcile = this.rereadAfterControlLoss()
+      .catch((error: unknown) => {
+        this.emitEvent({
+          kind: 'diagnostic-warning',
+          code: 'control-reconcile-failed',
+          message: 'The owner did not answer the re-read after a lost control record',
+          detail: Object.freeze({ code: normalizedFrom(error, `${SCOPE}.control-reconcile`).code })
+        })
+      })
+      .finally(() => {
+        this.controlReconcile = null
+        if (this.controlReconcileAgain && !this.destroyed) {
+          this.controlReconcileAgain = false
+          this.reconcileControlLoss()
+        }
+      })
+  }
+
+  private async rereadAfterControlLoss(): Promise<void> {
+    if (this.destroyed) return
+    const snapshot = await this.invoke('session.reconcile', {})
+    if (this.destroyed) return
+    this.onAdapterRecord(snapshot.adapter)
+    for (const entry of [...this.connectionsByLink.values()]) {
+      if (entry.linkState !== 'connected') continue
+      const link = snapshot.links.find(
+        candidate => candidate.peerId === entry.nativePeerId && candidate.connectionGeneration === entry.coreGeneration
+      )
+      if (link === undefined) {
+        this.endLink(entry, null)
+      } else if (link.state === 'ended') {
+        this.onLink(link)
+      } else if (link.databaseChange !== null) {
+        this.onDatabaseChanged({ ...link, databaseGeneration: link.databaseChange })
+      }
+    }
+    for (const [consumer, stored] of [...this.subscriptions]) {
+      if (stored.state !== 'active') continue
+      const owned = snapshot.subscriptions.find(candidate => candidate.consumer === consumer)
+      if (owned === undefined) {
+        this.emitEvent({
+          kind: 'diagnostic-warning',
+          code: 'reconcile-unknown-consumer',
+          message: 'The owner no longer reports a consumer this backend holds active',
+          detail: Object.freeze({})
+        })
+      } else if (owned.state === 'ended') {
+        this.onStreamEnd(owned)
+      }
+    }
+    for (const report of snapshot.security) {
+      if (this.securityDelivered.get(report.peerId) !== securityKey(report.state)) {
+        this.onSecurity(report.peerId, report.state)
+      }
+    }
+    if (snapshot.restored.length > 0) this.onRestored(snapshot.restored)
+    for (const [membership, group] of [...this.scanGroups]) {
+      if (group.state !== 'active' || membership === snapshot.scan) continue
+      this.endScanGroup(group, 'source-failed', null)
+      this.scanGroups.delete(membership)
+    }
+  }
+
+  /** The last security state delivered per native peer (reconcile delivers only a change). */
+  private readonly securityDelivered = new Map<string, string>()
+  private restoredDelivered: string | null = null
+
+  private onRestored(peers: readonly WireRestoredPeer[]): void {
+    const key = JSON.stringify(peers.map(peer => [peer.peerId, peer.name, peer.connected]))
+    if (key === this.restoredDelivered) return
+    this.restoredDelivered = key
+    this.emitEvent({
+      kind: 'restoration-received',
+      record: Object.freeze({
+        peers: Object.freeze(
+          peers.map(peer =>
+            Object.freeze({ peerId: String(this.peerIdForNative(peer.peerId)), connected: peer.connected })
+          )
+        )
+      })
+    })
+  }
+
+  private onSecurity(nativePeerId: string, state: WireSecurityState): void {
+    this.securityDelivered.set(nativePeerId, securityKey(state))
+    const peerId = this.peerIdForNative(nativePeerId)
+    this.security?.observe(String(peerId), state)
+    this.emitEvent({
+      kind: 'bond-security-changed',
+      peerId,
+      bond:
+        state.bond === 'bonded'
+          ? 'bonded'
+          : state.bond === 'bonding'
+            ? 'bonding'
+            : state.bond === 'not-bonded'
+              ? 'none'
+              : 'unavailable',
+      security:
+        state.encryption === 'encrypted'
+          ? state.authentication === 'authenticated'
+            ? 'authenticated'
+            : 'encrypted'
+          : state.encryption === 'not-encrypted'
+            ? 'unencrypted'
+            : 'unavailable'
+    })
+  }
+
+  // -- host services ------------------------------------------------------------------------------------
+
+  private async acquireBackground(request: {
+    readonly kind: 'connected-device'
+    readonly reason: string
+  }): Promise<{ readonly leaseId: string }> {
+    this.assertOperational(`${SCOPE}.background.acquire`)
+    const answer = await this.invoke('background.acquire', {
+      kind: request.kind,
+      reason: request.reason,
+      operationId: this.mintOperationId('background')
+    })
+    this.backgroundLeases.add(answer.leaseId)
+    return answer
+  }
+
+  private async releaseBackground(leaseId: string): Promise<CleanupRecord> {
+    if (this.destroyed && this.releaseModuleBackground !== null) {
+      // The lease outlived this manager (87/N8); the module still holds it.
+      return this.releaseModuleBackground(leaseId)
+    }
+    this.assertOperational(`${SCOPE}.background.release`)
+    const record = cleanupRecordFrom(await this.invoke('background.release', { leaseId }))
+    if (record.state === 'released') this.backgroundLeases.delete(leaseId)
+    return record
+  }
+
+  private async updateBackgroundNotification(request: {
+    readonly leaseId: string
+    readonly title: string
+    readonly body?: string
+  }): Promise<void> {
+    this.assertOperational(`${SCOPE}.background.update-notification`)
+    await this.invoke('background.update-notification', {
+      leaseId: request.leaseId,
+      title: request.title,
+      ...(request.body === undefined ? {} : { body: request.body })
+    })
+  }
+
+  private associateCompanion(request: {
+    readonly name?: string
+    readonly serviceUuid?: string
+  }): Promise<WireOpResults['companion.associate']> {
+    this.assertOperational(`${SCOPE}.companion.associate`)
+    return this.invoke('companion.associate', {
+      ...(request.name === undefined ? {} : { name: request.name }),
+      ...(request.serviceUuid === undefined ? {} : { serviceUuid: String(canonicalUuid(request.serviceUuid)) }),
+      operationId: this.mintOperationId('companion')
     })
   }
 }
 
-function parseResourceCounters(
-  record: Record<string, unknown>
-): import('../../backend-contract/backend').ResourceCounters {
-  return Object.freeze({
-    activeScanControllers: resourceCount(numberField(record, 'activeScanControllers')),
-    scanConsumers: resourceCount(numberField(record, 'scanConsumers')),
-    chooserSessions: resourceCount(numberField(record, 'chooserSessions')),
-    connectionLeases: resourceCount(numberField(record, 'connectionLeases')),
-    physicalLinks: resourceCount(numberField(record, 'physicalLinks')),
-    databaseSnapshots: resourceCount(numberField(record, 'databaseSnapshots')),
-    physicalCccdEnablements: resourceCount(numberField(record, 'physicalCccdEnablements')),
-    subscriptionConsumers: resourceCount(numberField(record, 'subscriptionConsumers')),
-    queuedOperations: resourceCount(numberField(record, 'queuedOperations')),
-    dispatchedOperations: resourceCount(numberField(record, 'dispatchedOperations')),
-    retainedByteBuffers: resourceCount(numberField(record, 'retainedByteBuffers')),
-    restorationRecords: resourceCount(numberField(record, 'restorationRecords')),
-    orphanedIpcOwners: resourceCount(numberField(record, 'orphanedIpcOwners'))
-  })
+/** Session services the Expo layer reaches through a Rust-core manager. */
+export interface ReactNativeRustCoreHostServices {
+  acquireBackground(request: { readonly kind: 'connected-device'; readonly reason: string }): Promise<{
+    readonly leaseId: string
+  }>
+  releaseBackground(leaseId: string): Promise<CleanupRecord>
+  updateBackgroundNotification(request: {
+    readonly leaseId: string
+    readonly title: string
+    readonly body?: string
+  }): Promise<void>
+  associateCompanion(request: { readonly name?: string; readonly serviceUuid?: string }): Promise<{
+    readonly source: 'associated'
+    readonly associationId: number
+    readonly peerId: string | null
+    readonly displayName: string | null
+  }>
+  counters(): Promise<WireCounters>
 }
 
-/** Accepts in-process bytes or `{ base64 }` from out-of-process bindings. */
-function bytesFromCore(value: unknown): Uint8Array {
-  if (value instanceof Uint8Array) return value
-  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(value)) return new Uint8Array(value)
-  if (Array.isArray(value)) {
-    // Reject out-of-range elements loudly: Uint8Array.from would wrap
-    // them modulo 256 and silently corrupt the value.
-    for (const entry of value as unknown[]) {
-      if (typeof entry !== 'number' || !Number.isInteger(entry) || entry < 0 || entry > 255) {
-        throw contractError('protocol.malformed', 'core', 'react-native-rust-core.bytes')
-      }
-    }
-    return Uint8Array.from(value as number[])
-  }
-  if (typeof value === 'object' && value !== null && typeof (value as { base64?: unknown }).base64 === 'string') {
-    // R16 non-Node boundary: base64 decode needs Buffer (Node) — without
-    // it (Hermes/JSC) fail structurally, never ReferenceError.
-    if (typeof Buffer === 'undefined') {
-      throw contractError('protocol.malformed', 'core', 'react-native-rust-core.bytes')
-    }
-    const binary = Buffer.from((value as { base64: string }).base64, 'base64')
-    return new Uint8Array(binary)
-  }
-  throw contractError('protocol.malformed', 'core', 'react-native-rust-core.bytes')
+type DistributiveOmit<Type, Key extends PropertyKey> = Type extends unknown ? Omit<Type, Key> : never
+
+/** JSON replacer for event byte accounting: bytes count as their length. */
+function jsonSafe(_key: string, value: unknown): unknown {
+  if (value instanceof Uint8Array) return value.byteLength
+  return value
 }
 
-function bytesToCore(value: Uint8Array): Uint8Array {
-  // Outbound bytes are BorrowedBytes: accept the typed array (Buffers
-  // included) and reject anything else rather than coercing garbage.
-  if (!(value instanceof Uint8Array)) {
-    throw contractError('argument.invalid', 'gatt', 'react-native-rust-core.bytes')
-  }
-  return Uint8Array.from(value)
+function ownedCopy(bytes: Readonly<Uint8Array>): OwnedBytes {
+  return Uint8Array.from(bytes) as OwnedBytes
 }
 
-function ownedBytes(value: Uint8Array): OwnedBytes {
-  return new Uint8Array(value) as OwnedBytes
-}
-
-function uuidFromCore(value: unknown, operation: string): Uuid {
-  if (typeof value !== 'string') {
-    throw contractError('protocol.malformed', 'core', operation)
-  }
-  try {
-    return canonicalUuid(value)
-  } catch {
-    throw contractError('protocol.malformed', 'core', operation)
+/** Actual retained bytes of one advertisement (payloads, strings, UUID text). */
+/** The legacy coordinator's terminal outcome vocabulary for a failed operation. */
+function traceOutcomeFor(code: NormalizedBleError['code']): OperationTerminalOutcome {
+  switch (code) {
+    case 'operation.aborted':
+      return 'aborted'
+    case 'operation.timed-out':
+      return 'timed-out'
+    case 'operation.disconnected':
+      return 'disconnected'
+    case 'lifecycle.destroyed':
+      return 'destroyed'
+    case 'adapter.unavailable':
+    case 'adapter.powered-off':
+    case 'adapter.resetting':
+      return 'adapter-unavailable'
+    default:
+      return 'failed'
   }
 }
 
-function presentField<Value>(
-  value: Value | null
-): import('../../backend-contract/advertisement').AdvertisementField<Value> {
-  if (value === null || value === undefined) {
-    return Object.freeze({
-      state: 'absent',
-      reason: 'not reported by the core observation',
-      provenance: 'not-provided'
-    }) as import('../../backend-contract/advertisement').AdvertisementField<Value>
+function advertisementBytes(record: Extract<WireDrainRecord, { t: 'adv' }>): number {
+  let bytes = RECORD_BYTES + utf8Length(record.peerId)
+  if (record.localName !== null) bytes += utf8Length(record.localName)
+  for (const list of [record.serviceUuids, record.solicitedServiceUuids, record.overflowServiceUuids]) {
+    if (list !== null) bytes += list.length * UUID_BYTES
   }
-  return Object.freeze({
-    state: 'present',
-    value,
-    provenance: 'observed'
-  }) as import('../../backend-contract/advertisement').AdvertisementField<Value>
+  for (const entry of record.serviceData ?? []) bytes += UUID_BYTES + entry.payload.byteLength
+  for (const entry of record.manufacturerData ?? []) bytes += 2 + entry.payload.byteLength
+  if (record.rawRecord !== null) bytes += record.rawRecord.byteLength
+  return bytes
 }
 
-function absentField<Value>(reason: string): import('../../backend-contract/advertisement').AdvertisementField<Value> {
-  return Object.freeze({
-    state: 'absent',
-    reason,
-    provenance: 'not-provided'
-  }) as import('../../backend-contract/advertisement').AdvertisementField<Value>
-}
-
-/**
- * Consumer-side delivery pacing between core `take` polls (mirrors the NAPI
- * proof's poll loop). This paces delivery only: admission, deadlines,
- * overflow, and teardown all stay core-owned.
- */
-function pumpDelay(): Promise<void> {
-  return new Promise<void>(resolve => {
-    // The pacing timer stays ref'd: an active subscription pump is
-    // outstanding work, and an unref'd timer lets the host evaporate
-    // mid-subscribe (a bare `for await` on `values` holds no handle of
-    // its own). Pumps always terminate on unsubscribe/destroy, so a
-    // cleaned-up consumer never holds the process open.
-    setTimeout(resolve, 5)
-  })
-}
-
-// Core property bits (ubm-core GATT_PROP_*): READ=0x01, WRITE=0x02,
-// WRITE_NO_RESPONSE=0x04, NOTIFY=0x08, INDICATE=0x10.
-function characteristicPropertiesFromBits(
-  bits: number
-): import('../../backend-contract/gatt').CharacteristicProperties {
-  return createGattCharacteristicProperties({
-    read: (bits & 0x01) !== 0,
-    writeWithResponse: (bits & 0x02) !== 0,
-    writeWithoutResponse: (bits & 0x04) !== 0,
-    notify: (bits & 0x08) !== 0,
-    indicate: (bits & 0x10) !== 0,
-    broadcast: false,
-    authenticatedSignedWrites: false,
-    extendedProperties: false
-  })
-}
-
-export function createReactNativeRustCoreFeatureRegistry(platform: ReactNativeRustCorePlatform) {
-  return combineReactNativeFeatureRegistries(
-    createReactNativeConnectionControlFeatureRegistry(platform, REACT_NATIVE_RUST_CORE_IMPLEMENTATION_VERSION),
-    createReactNativeRustCoreScanPlatformFeatureRegistry(),
-    createReactNativeRustCorePeerFeatureRegistry(),
-    createReactNativeDescriptorFeatureRegistry(platform, REACT_NATIVE_RUST_CORE_IMPLEMENTATION_VERSION),
-    createReactNativeRestorationFeatureRegistry(platform, REACT_NATIVE_RUST_CORE_IMPLEMENTATION_VERSION)
-  )
-}
-
-function createReactNativeRustCoreScanPlatformFeatureRegistry() {
-  return createFeatureRegistry(
-    Object.freeze([
-      createBackendOperationCapabilityRegistration({
-        id: BUILT_IN_FEATURE_IDS.scanPlatformOptions,
-        implementationVersion: REACT_NATIVE_RUST_CORE_IMPLEMENTATION_VERSION,
-        sourceDigest: 'react-native-rust-core-scan-platform-options-v1',
-        tckSuiteId: 'capability.catalog-v2',
-        requiredScenarioIds: ['capability.truth-limits-evidence-and-binding'],
-        operation: 'scan:platform-options.invoke-without-scan'
-      })
-    ])
-  )
-}
-
-function createReactNativeRustCorePeerFeatureRegistry() {
-  const scenarioIds = ['capability.truth-limits-evidence-and-binding']
-  const ids: readonly BuiltInFeatureId[] = Object.freeze([
-    BUILT_IN_FEATURE_IDS.peerBonded,
-    BUILT_IN_FEATURE_IDS.peerResolveReference,
-    BUILT_IN_FEATURE_IDS.connectionDirect,
-    BUILT_IN_FEATURE_IDS.connectionWhenAvailable
-  ])
-  return createFeatureRegistry(
-    Object.freeze(
-      ids.map(id =>
-        createBackendOperationCapabilityRegistration({
-          id,
-          implementationVersion: REACT_NATIVE_RUST_CORE_IMPLEMENTATION_VERSION,
-          sourceDigest: `react-native-rust-core-${id.replace(':', '-')}-v1`,
-          tckSuiteId: 'capability.catalog-v2',
-          requiredScenarioIds: scenarioIds,
-          operation: `${id}.invoke-without-peer-directory`
-        })
-      )
-    )
-  )
-}
+/** Identity of the connection records for tests that inspect retained state. */
+export type { SerializableRecord, GenerationId, WireDelivery }

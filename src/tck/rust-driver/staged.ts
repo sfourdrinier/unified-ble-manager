@@ -909,6 +909,154 @@ export const PROGRAM_SUBSCRIPTION_FANOUT: StagedProgram = {
   ]
 }
 
+/** Second staged service UUID and a non-CCCD descriptor UUID for the duplicate-UUID world. */
+export const STAGED_SVC_2 = '12345678-1234-5678-1234-56789abcdef2'
+export const STAGED_USER_DESCRIPTION = '00002901-0000-1000-8000-00805f9b34fb'
+
+function discoverDuplicateUuidWorld(owner: string): string {
+  const characteristic = (occurrence: number, descriptors: string) =>
+    `{"uuid":"${STAGED_CHR}","occurrence":${occurrence},"properties":"read+notify"${descriptors}}`
+  const userDescriptions =
+    `,"descriptors":[{"uuid":"${STAGED_USER_DESCRIPTION}","occurrence":0},` +
+    `{"uuid":"${STAGED_USER_DESCRIPTION}","occurrence":1}]`
+  return step(
+    `{"step":"gatt.discover","peer":"p","owner":"${owner}","services":[` +
+      `{"uuid":"${STAGED_SVC}","occurrence":0,"characteristics":[${characteristic(0, userDescriptions)},${characteristic(1, '')}]},` +
+      `{"uuid":"${STAGED_SVC_2}","occurrence":0,"characteristics":[${characteristic(0, '')}]},` +
+      `{"uuid":"${STAGED_SVC}","occurrence":1,"characteristics":[${characteristic(0, '')}]}]}`
+  )
+}
+
+function resolveAt(service: string, serviceOccurrence: number, extra: string): string {
+  return step(
+    `{"step":"gatt.resolve","peer":"p","service":"${service}","service_occurrence":${serviceOccurrence}${extra}}`
+  )
+}
+
+/** Staged program closing `gatt.duplicate-uuid-occurrences-route-exactly`. */
+export const PROGRAM_GATT_DUPLICATE_OCCURRENCES: StagedProgram = {
+  scenarioId: 'gatt.duplicate-uuid-occurrences-route-exactly',
+  provenance:
+    'Pins transcribe complete-path resolution over a database with a second service UUID and a ' +
+    'same-UUID occurrence 1 at the service, characteristic and descriptor levels (a UUID alone is ' +
+    'ambiguous; each occurrence resolves to its own path), and notification routing to the consumer ' +
+    'on the addressed instance only; captured from a staged run of this program.',
+  steps: [
+    ...linkSetup('lease-a', 'conn0'),
+    discoverDuplicateUuidWorld('lease-a'),
+    resolveAt(STAGED_SVC, 0, `,"characteristic":"${STAGED_CHR}"`),
+    resolveAt(STAGED_SVC, 0, `,"characteristic":"${STAGED_CHR}","characteristic_occurrence":0`),
+    resolveAt(STAGED_SVC, 0, `,"characteristic":"${STAGED_CHR}","characteristic_occurrence":1`),
+    resolveAt(STAGED_SVC_2, 0, `,"characteristic":"${STAGED_CHR}","characteristic_occurrence":0`),
+    resolveAt(STAGED_SVC, 1, `,"characteristic":"${STAGED_CHR}","characteristic_occurrence":0`),
+    resolveAt(
+      STAGED_SVC,
+      0,
+      `,"characteristic":"${STAGED_CHR}","characteristic_occurrence":0,"descriptor":"${STAGED_USER_DESCRIPTION}"`
+    ),
+    resolveAt(
+      STAGED_SVC,
+      0,
+      `,"characteristic":"${STAGED_CHR}","characteristic_occurrence":0,"descriptor":"${STAGED_USER_DESCRIPTION}","descriptor_occurrence":1`
+    ),
+    step('{"step":"sub.subscribe","op":"sub0","path":1,"consumer":"c0"}'),
+    step('{"step":"sub.subscribe","op":"sub1","path":4,"consumer":"c1"}'),
+    step('{"step":"sub.subscribe","op":"sub2","path":8,"consumer":"c2"}'),
+    step('{"step":"sub.settle-enable","path":1,"success":true,"consumer":"c0"}'),
+    step('{"step":"sub.settle-enable","path":4,"success":true,"consumer":"c1"}'),
+    step('{"step":"sub.settle-enable","path":8,"success":true,"consumer":"c2"}'),
+    step('{"step":"sub.notify","path":4,"value":"b1","consumer":"c1"}'),
+    step('{"step":"sub.take","path":4,"consumer":"c1"}'),
+    step('{"step":"sub.notify","path":8,"value":"c2","consumer":"c2"}'),
+    step('{"step":"sub.take","path":8,"consumer":"c2"}'),
+    step('{"step":"sub.notify","path":1,"value":"a0","consumer":"c0"}'),
+    step('{"step":"sub.take","path":1,"consumer":"c0"}')
+  ],
+  expected: [
+    ...linkSetupSeen('@op0'),
+    norm({
+      step: 'gatt.discover',
+      ok: true,
+      peer_key: 'platform-guid:peer-1',
+      services: 3,
+      paths: 9,
+      first_path: 0,
+      staged: 0,
+      effects: ''
+    }),
+    norm({ step: 'gatt.resolve', ok: false, error: 'gatt.ambiguous-path|gatt|staged-gatt-resolve|path.resolve' }),
+    norm({ step: 'gatt.resolve', ok: true, path: 1, staged: 0, effects: '' }),
+    norm({ step: 'gatt.resolve', ok: true, path: 4, staged: 0, effects: '' }),
+    norm({ step: 'gatt.resolve', ok: true, path: 6, staged: 0, effects: '' }),
+    norm({ step: 'gatt.resolve', ok: true, path: 8, staged: 0, effects: '' }),
+    norm({ step: 'gatt.resolve', ok: false, error: 'gatt.ambiguous-path|gatt|staged-gatt-resolve|path.resolve' }),
+    norm({ step: 'gatt.resolve', ok: true, path: 3, staged: 0, effects: '' }),
+    norm({
+      step: 'sub.subscribe',
+      ok: true,
+      op_id: '@op1',
+      consumer: 'enabling',
+      cccd: false,
+      staged: 1,
+      effects: 'central.subscribe-enable#@op1:subscribe.enable'
+    }),
+    norm({
+      step: 'sub.subscribe',
+      ok: true,
+      op_id: '@op2',
+      consumer: 'enabling',
+      cccd: false,
+      staged: 1,
+      effects: 'central.subscribe-enable#@op2:subscribe.enable'
+    }),
+    norm({
+      step: 'sub.subscribe',
+      ok: true,
+      op_id: '@op3',
+      consumer: 'enabling',
+      cccd: false,
+      staged: 1,
+      effects: 'central.subscribe-enable#@op3:subscribe.enable'
+    }),
+    norm({ step: 'sub.settle-enable', ok: true, consumer: 'ready', cccd: true, staged: 5, effects: '' }),
+    norm({ step: 'sub.settle-enable', ok: true, consumer: 'ready', cccd: true, staged: 5, effects: '' }),
+    norm({ step: 'sub.settle-enable', ok: true, consumer: 'ready', cccd: true, staged: 5, effects: '' }),
+    norm({
+      step: 'sub.notify',
+      ok: true,
+      bytes: 'b1',
+      delivery: 'c1=delivered',
+      consumer: 'ready',
+      cccd: true,
+      staged: 0,
+      effects: ''
+    }),
+    norm({ step: 'sub.take', ok: true, bytes: 'b1', consumer: 'ready', cccd: true, staged: 0, effects: '' }),
+    norm({
+      step: 'sub.notify',
+      ok: true,
+      bytes: 'c2',
+      delivery: 'c2=delivered',
+      consumer: 'ready',
+      cccd: true,
+      staged: 0,
+      effects: ''
+    }),
+    norm({ step: 'sub.take', ok: true, bytes: 'c2', consumer: 'ready', cccd: true, staged: 0, effects: '' }),
+    norm({
+      step: 'sub.notify',
+      ok: true,
+      bytes: 'a0',
+      delivery: 'c0=delivered',
+      consumer: 'ready',
+      cccd: true,
+      staged: 0,
+      effects: ''
+    }),
+    norm({ step: 'sub.take', ok: true, bytes: 'a0', consumer: 'ready', cccd: true, staged: 0, effects: '' })
+  ]
+}
+
 const OVERFLOW_BYTES_200 = 'ab'.repeat(200)
 
 /** Staged program closing `subscription.pre-ready-overflow-controls-and-late-quarantine`. */
@@ -1251,7 +1399,7 @@ export const STAY_OPEN_STAGED_PROBES: readonly StayOpenProbe[] = [
   }
 ]
 
-/** The eleven transition-proving staged programs (one per closed scenario). */
+/** The twelve transition-proving staged programs (one per closed scenario). */
 export const STAGED_PROGRAMS: readonly StagedProgram[] = [
   PROGRAM_CAPABILITY,
   PROGRAM_SCAN_OWNER,
@@ -1259,6 +1407,7 @@ export const STAGED_PROGRAMS: readonly StagedProgram[] = [
   PROGRAM_CONNECTION_LEASE,
   PROGRAM_CONNECTION_ARBITRATION,
   PROGRAM_GATT_DISCOVERY,
+  PROGRAM_GATT_DUPLICATE_OCCURRENCES,
   PROGRAM_GATT_IO,
   PROGRAM_SUBSCRIPTION_FANOUT,
   PROGRAM_SUBSCRIPTION_OVERFLOW,

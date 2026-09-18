@@ -18,6 +18,7 @@ import { snapshotSerializableRecord } from '../backend-contract/serializable'
 import { validateCapabilitySnapshot } from '../backend-contract/capabilities'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
 import { createIpcBootstrapRequest, IPC_CLIENT_COMPATIBILITY_OFFER } from '../ipc/protocol'
+import { relativeBudgetPayload } from '../ipc/relative-budget'
 import {
   decodeConnectionEventCleanupReceipt,
   decodeConnectionEventsSubscribeResponse,
@@ -189,7 +190,7 @@ export class ElectronRendererBleClient<Attachment extends string, Renderer exten
       correlation,
       dispatchEpoch,
       command: request.command,
-      payload: request.payload,
+      payload: relativeBudgetPayload(request.payload, 'electron-renderer'),
       binaryPayload
     }
     const abort = () => {

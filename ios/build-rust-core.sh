@@ -3,9 +3,19 @@
 #
 # Builds the pod-selected shared Rust core (`ubm5_uniffi_echo` staticlib)
 # for the Apple matrix and assembles ios/RustCore/RustCore.xcframework plus
-# a build-identity.txt (mirroring the Android jniLibs pattern). Invoked by
-# the podspec `prepare_command` on the 5.x lane, so `pod install` on a
-# macOS host always links the shipped sources — never a stale prebuilt.
+# build-identity.json (PR210-18): the sealed source digest and binding schema
+# the binary was built with (scripts/release/native-build-identity.js, passed
+# to cargo as UBM_BUILD_SOURCE_DIGEST / UBM_BUILD_BINDING_SCHEMA), the
+# Info.plist sha256, and every slice parsed from Info.plist with its sha256.
+# ios/verify-rust-core.sh then verifies the staging it just wrote.
+#
+# This is the canonical builder for both producers: the publish workflow's
+# macOS `native-rustcore` job (prebuilt artifacts shipped in the package) and
+# contributor source mode, run directly BEFORE pod install:
+#   UBM_NATIVE_BUILD=source pnpm --dir <ubm checkout> native:apple:prepare
+# No podspec hook runs it (CocoaPods skips prepare_command for :path pods);
+# in source mode the pod script phase rejects a staging whose digests no
+# longer match the sources and prints this command.
 #
 # Declared matrix (device + simulator, physical-target load in macOS CI):
 #   iOS     device    aarch64-apple-ios
@@ -35,8 +45,9 @@
 #     Linux-runnable: `cargo check` the core for every matrix target (no
 #     Apple SDK needed — type/metadata only). Runs in the F01 packed proof.
 #   sh ios/build-rust-core.sh [--profile release] [--out <dir>]
-#     macOS-only: full staticlib build + XCFramework assembly. Fails loudly
-#     anywhere else (the Apple link needs Xcode tooling).
+#     macOS-only: full staticlib build + XCFramework assembly + identity.
+#     Fails loudly anywhere else (the Apple link needs Xcode tooling). Needs
+#     Node (NODE_BINARY or `node` on PATH) for the identity digests.
 set -eu
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
@@ -125,6 +136,22 @@ fi
 need xcodebuild
 need lipo
 need nm
+need plutil
+
+# PR210-18: seal the identity the binary carries. The digests are computed
+# once, before any cargo run, and the same values are recorded in
+# build-identity.json — a source edit during the build shows up as a
+# mismatch in the verification below, never as a silently mixed artifact.
+NODE="${NODE_BINARY:-node}"
+command -v "$NODE" >/dev/null 2>&1 || { echo "build-rust-core: Node is required for the build identity (set NODE_BINARY or put node on PATH)" >&2; exit 1; }
+IDENTITY_SCRIPT="$ROOT/scripts/release/native-build-identity.js"
+[ -f "$IDENTITY_SCRIPT" ] || { echo "build-rust-core: missing $IDENTITY_SCRIPT" >&2; exit 1; }
+IDENTITY_ENV="$("$NODE" "$IDENTITY_SCRIPT" --root "$ROOT" --write --print-env uniffi)"
+UBM_BUILD_SOURCE_DIGEST="$(printf '%s\n' "$IDENTITY_ENV" | sed -n 's/^UBM_BUILD_SOURCE_DIGEST=//p')"
+UBM_BUILD_BINDING_SCHEMA="$(printf '%s\n' "$IDENTITY_ENV" | sed -n 's/^UBM_BUILD_BINDING_SCHEMA=//p')"
+[ -n "$UBM_BUILD_SOURCE_DIGEST" ] && [ -n "$UBM_BUILD_BINDING_SCHEMA" ] || { echo "build-rust-core: native-build-identity.js printed no digests" >&2; exit 1; }
+export UBM_BUILD_SOURCE_DIGEST UBM_BUILD_BINDING_SCHEMA
+echo "build-rust-core: identity sourceDigest=$UBM_BUILD_SOURCE_DIGEST bindingSchema=$UBM_BUILD_BINDING_SCHEMA"
 
 # R02 Apple cutover: the assembled framework must PROVE it carries the real
 # UniFFI core session. Slice counts and digests pass for any well-formed
@@ -247,40 +274,25 @@ xcodebuild -create-xcframework -output "$FRAMEWORK_DIR" \
   -library "$TVOS_DEVICE_LIB" -headers "$HEADERS" \
   -library "$TVOS_SIM_FAT" -headers "$HEADERS"
 
-# Post-assembly proof: the framework must exist with exactly one slice per
-# platform (device + simulator for iOS and tvOS). A count drift means the
-# matrix and the assembly disagree — fail here, not at consumer link time.
+# Post-assembly identity (PR210-18): Info.plist parsed with plutil (never
+# grepped), every slice hashed, the sealed digests recorded; then the
+# independent shell verifier checks the declared slice set and hash chain.
 if [ ! -f "$FRAMEWORK_DIR/Info.plist" ]; then
   echo "build-rust-core: assembly produced no $FRAMEWORK_DIR/Info.plist" >&2
   exit 1
 fi
-SLICE_COUNT="$(grep -c "<key>LibraryIdentifier</key>" "$FRAMEWORK_DIR/Info.plist" || true)"
-if [ "$SLICE_COUNT" != "4" ]; then
-  echo "build-rust-core: expected 4 platform slices in $FRAMEWORK_DIR, found $SLICE_COUNT" >&2
-  exit 1
-fi
-
-if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
-  echo "build-rust-core: need sha256sum or shasum to record slice digests" >&2
-  exit 1
-fi
-{
-  echo "# UBM 5.0 Apple Rust core. Maintained by ios/build-rust-core.sh — do not hand-edit."
-  echo "profile=$PROFILE"
-  echo "targets=$TARGETS"
-  echo "toolchain=$(rustup run "$PINNED_TOOLCHAIN" rustc --version)"
-  echo "xcodebuild=$(xcodebuild -version | head -n 1)"
-  # Best-effort: packed-tarball consumers have no .git checkout, so a
-  # missing source-sha must not fail the install build.
-  # shellcheck disable=SC2162
-  (cd "$ROOT" && git rev-parse HEAD 2>/dev/null | sed 's/^/source-sha=/')
-  find "$FRAMEWORK_DIR" -name '*.a' | sort | while IFS= read -r lib; do
-    if command -v sha256sum >/dev/null 2>&1; then
-      digest="$(sha256sum "$lib" | cut -d' ' -f1)"
-    else
-      digest="$(shasum -a 256 "$lib" | cut -d' ' -f1)"
-    fi
-    echo "slice=$lib sha256=$digest bytes=$(wc -c < "$lib" | tr -d ' ')"
-  done
-} > "$OUT_DIR/build-identity.txt"
-echo "build-rust-core: wrote $FRAMEWORK_DIR + build-identity.txt"
+# The pre-PR210-18 text identity is superseded by build-identity.json.
+rm -f "$OUT_DIR/build-identity.txt"
+PLIST_JSON="$OUT_DIR/.Info.plist.json"
+plutil -convert json -o "$PLIST_JSON" "$FRAMEWORK_DIR/Info.plist"
+"$NODE" "$IDENTITY_SCRIPT" --root "$ROOT" --write-apple-identity \
+  --dir "$OUT_DIR" \
+  --plist-json "$PLIST_JSON" \
+  --source-digest "$UBM_BUILD_SOURCE_DIGEST" \
+  --binding-schema "$UBM_BUILD_BINDING_SCHEMA" \
+  --profile "$PROFILE" \
+  --toolchain "$(rustup run "$PINNED_TOOLCHAIN" rustc --version)" \
+  --xcodebuild "$(xcodebuild -version | head -n 1)"
+rm -f "$PLIST_JSON"
+sh "$SCRIPT_DIR/verify-rust-core.sh" --dir "$OUT_DIR"
+echo "build-rust-core: wrote $FRAMEWORK_DIR + build-identity.json"

@@ -7,15 +7,91 @@ license-file = "../../LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
 description = "Host-neutral desktop central radio/executor for UBM 5.0 (HOST-DESKTOP)"
 repository = "https://github.com/sfourdrinier/unified-ble-manager"
 
+[features]
+# The production btleplug radio (`BtleplugRadio`). Default on for desktop
+# hosts; hosts that bring their own `RadioBoundary` (the mobile Rust owner)
+# build with `default-features = false` and link no btleplug code.
+default = ["btleplug"]
+btleplug = [
+    "dep:btleplug",
+    "dep:futures-util",
+    "dep:uuid",
+    "dep:zbus",
+    "dep:windows",
+    "dep:windows-future",
+    "dep:objc2",
+    "dep:objc2-core-bluetooth",
+]
+
 [dependencies]
 ubm-core = { path = "../ubm-core" }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
-futures-util = "0.3"
-btleplug = "0.12"
-uuid = { version = "1", default-features = false, features = ["std"] }
+futures-util = { version = "0.3", optional = true }
+btleplug = { version = "0.12", optional = true }
+uuid = { version = "1", default-features = false, features = ["std"], optional = true }
+
+# Narrow OS adapters behind `RadioBoundary` for what btleplug 0.12 does not
+# expose (PR210 decision 7). Each is the platform's own API, compiled only
+# for its target and only with the production `btleplug` radio.
+#
+# Linux: BlueZ over D-Bus (pure Rust): pairing + just-works Agent1, bond
+# state and its change signals, ConnectDevice address targeting, adapter
+# power, characteristic Flags and the negotiated MTU.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", default-features = false, features = ["tokio"], optional = true }
+
+# Windows: WinRT pairing (DeviceInformationPairing), GattSession
+# MaintainConnection per connection, adapter listing, selection and
+# presence watch, and the package-identity (`deployment`) diagnostic.
+# Same `windows` major btleplug 0.12 already links (0.62), so no second copy.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-future = { version = "0.3", optional = true }
+windows = { version = "0.62", optional = true, features = [
+    "Devices_Bluetooth",
+    "Devices_Bluetooth_GenericAttributeProfile",
+    "Devices_Enumeration",
+    "Devices_Radios",
+    "Foundation",
+    "Foundation_Collections",
+    # `GetCurrentPackageFullName`: the legacy `deployment` diagnostic.
+    "Win32_Foundation",
+    "Win32_Storage_Packaging_Appx",
+] }
+
+# macOS: `+[CBManager authorization]` (a class property: no second
+# CBCentralManager). Both crates are already in the graph through btleplug
+# 0.12, which enables the same `CBManager` feature.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.5.2", optional = true }
+objc2-core-bluetooth = { version = "0.2.2", default-features = false, features = ["std", "CBManager"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "time", "test-util"] }
 # F22 fixture replay only: the shared vendor advertisement JSON also feeds
 # the consumer matcher suite in bun-mono. Never a runtime dependency.
 serde_json = "1"
+
+# Tests that link the production btleplug backend.
+[[test]]
+name = "production_ingress"
+required-features = ["btleplug"]
+
+[[test]]
+name = "radio_drop_safety"
+required-features = ["btleplug"]
+
+[[test]]
+name = "legacy_parity"
+required-features = ["btleplug"]
+
+[[test]]
+name = "notification_loss"
+required-features = ["btleplug"]
+
+# macOS test-only: builds CoreBluetooth-shaped advertisement dictionaries to
+# test the vendored advertisement-extras parser (UBM_PATCHES.md #2).
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2 = "0.5.2"
+objc2-foundation = { version = "0.2.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSString", "NSValue", "NSObject"] }
+objc2-core-bluetooth = { version = "0.2.2", default-features = false, features = ["std", "CBUUID", "CBAdvertisementData"] }
+

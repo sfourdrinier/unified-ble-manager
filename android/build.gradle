@@ -129,107 +129,101 @@ react {
 // android/build-rust-cdylib.sh (single source of truth, shared with the
 // five0 probe-app build); no cargo-ndk required.
 //
-// Two contexts, one loader (F01); mode is explicit-first (D2(iii)):
-//   * Source mode (UBM_NATIVE_BUILD=source, or dev-checkout inference):
-//     build from source per profile/ABI exactly as below (F20 semantics
-//     preserved).
-//   * Packed consumer (Expo CNG, node_modules — no ../.git): the npm
-//     artifact ships COMMITTED release prebuilts under src/main/jniLibs
-//     plus build-identity.txt. The tasks VERIFY them (presence, bytes,
-//     sha256 vs the identity file) and the variants package them — the
-//     bridge natives LOAD in packed consumers, never skip. A packed tree
-//     without prebuilts fails LOUD (broken artifact), never silently.
+// Two modes, one loader (F01). PR210-19 (ADR D2.6): the mode is explicit
+// configuration, parsed exactly like the podspec — never inferred from
+// `.git`, installed toolchains or the presence of Rust sources:
+//   UBM_NATIVE_BUILD unset or empty -> prebuilt
+//   UBM_NATIVE_BUILD=prebuilt       -> prebuilt
+//   UBM_NATIVE_BUILD=source         -> source
+//   anything else                   -> GradleException (configuration fails)
+//   * Prebuilt (the default, packed consumers and checkouts alike): the npm
+//     artifact ships COMMITTED release prebuilts under src/main/jniLibs plus
+//     build-identity.json. The tasks VERIFY them (presence, bytes, sha256
+//     vs the identity file) and the variants package them. Neither Rust,
+//     the NDK nor Node is invoked. A tree without prebuilts fails LOUD.
+//     Whether those prebuilts match the current Rust sources is checked by
+//     the publish gate (native-build-identity.js --check-android-prebuilts)
+//     and, at runtime, by the native build identity check.
+//   * Source (UBM_NATIVE_BUILD=source; contributors and CI source jobs):
+//     build from source per profile/ABI with the canonical builder
+//     (build-rust-cdylib.sh, which seals the build identity), F20
+//     semantics preserved.
 //
 // F20: one task per profile (no task-name sniffing — a joint
 // `assembleDebug assembleRelease` builds each profile for its own
 // variant), the COMPLETE Rust input graph declared, and ABI/profile
 // outputs isolated under build/ (never a shared tree). Source builds
 // package ONLY their own profile's staging via per-variant jniLibs
-// srcDirs; packed builds package the committed src/main/jniLibs tree.
+// srcDirs; prebuilt builds package the committed src/main/jniLibs tree.
 def ubmRustAbis = ["arm64-v8a", "x86_64"]
 def ubmRustScript = file("build-rust-cdylib.sh")
-// projectDir-relative: rootDir is example/android when the library is
-// included as a module, so repo-root paths must go through ../.
-def ubmRustSrcDir = projectDir.toPath().resolve("../bindings/jni/src").toFile()
-def ubmRustManifest = projectDir.toPath().resolve("../bindings/jni/Cargo.toml").toFile()
-def ubmRustSourcesPresent = ubmRustSrcDir.isDirectory() && ubmRustManifest.isFile()
 def ubmRust16kScript = file("check-elf-16k-pages.sh")
-// Mode selection is explicit-first per docs/5.0.0-DISTRIBUTION_CONTRACT.md:
-//   UBM_NATIVE_BUILD=source   → build from source (fails loud without sources)
-//   UBM_NATIVE_BUILD=prebuilt → verify committed prebuilts (fails loud without them)
-//   unset/empty               → dev-checkout inference backstopped by BOTH
-//     Rust sources AND ../.git — never bare `.git` inference. Packed
-//     consumers must never need NDK/Rust.
-def ubmNativeBuildEnv = (System.getenv("UBM_NATIVE_BUILD") ?: "").trim().toLowerCase(Locale.ROOT)
-if (!["", "source", "prebuilt"].contains(ubmNativeBuildEnv)) {
-  throw new GradleException(
-    "UBM_NATIVE_BUILD must be unset, 'source', or 'prebuilt' — got '${System.getenv('UBM_NATIVE_BUILD')}'.")
-}
-def ubmRustDevCheckout
-if (ubmNativeBuildEnv == "source") {
-  if (!ubmRustSourcesPresent) {
-    throw new GradleException(
-      "UBM_NATIVE_BUILD=source but no Rust sources at ${ubmRustSrcDir} (expected in a dev checkout or source distribution).")
-  }
-  ubmRustDevCheckout = true
-} else if (ubmNativeBuildEnv == "prebuilt") {
-  ubmRustDevCheckout = false
+def ubmNativeBuildRaw = System.getenv("UBM_NATIVE_BUILD")
+def ubmNativeBuildMode
+if (ubmNativeBuildRaw == null || ubmNativeBuildRaw.isEmpty()) {
+  ubmNativeBuildMode = "prebuilt"
+} else if (["prebuilt", "source"].contains(ubmNativeBuildRaw)) {
+  ubmNativeBuildMode = ubmNativeBuildRaw
 } else {
-  ubmRustDevCheckout = ubmRustSourcesPresent && projectDir.toPath().resolve("../.git").toFile().exists()
+  throw new GradleException(
+    "[unified-ble-manager] UBM_NATIVE_BUILD must be unset, 'prebuilt' or 'source' (got '${ubmNativeBuildRaw}').")
 }
+def ubmRustSourceBuild = ubmNativeBuildMode == "source"
 def ubmRustPrebuiltDir = file("src/main/jniLibs")
-def ubmRustPrebuiltIdentity = new File(ubmRustPrebuiltDir, "build-identity.txt")
-// Complete Rust input graph (F20): the cdylib crate plus its transitive
-// path dependencies, exactly as pinned in bindings/jni/Cargo.toml
-// [dependencies] (ubm-core, ubm-fake-radio; ubm-fake-radio itself
-// path-depends on ubm-core), the workspace manifest + lockfile, and the
-// toolchain pin. A core edit, a lock change, or a toolchain change all
-// invalidate the staged .so. Keep this list in sync with the manifest's
-// path-deps when they change.
-def ubmRustInputDirs = [
-  ubmRustSrcDir,
-  projectDir.toPath().resolve("../crates/ubm-core/src").toFile(),
-  projectDir.toPath().resolve("../crates/ubm-fake-radio/src").toFile(),
-]
-def ubmRustInputFiles = [
-  ubmRustManifest,
-  projectDir.toPath().resolve("../crates/ubm-core/Cargo.toml").toFile(),
-  projectDir.toPath().resolve("../crates/ubm-fake-radio/Cargo.toml").toFile(),
-  projectDir.toPath().resolve("../Cargo.toml").toFile(),
-  projectDir.toPath().resolve("../Cargo.lock").toFile(),
-  projectDir.toPath().resolve("../rust-toolchain.toml").toFile(),
-]
+def ubmRustPrebuiltIdentity = new File(ubmRustPrebuiltDir, "build-identity.json")
+// Complete Rust input graph (F20), source mode only: the identity library
+// lists the cdylib crate, its transitive path dependencies (parsed from
+// the Cargo manifests, never hand-maintained here), the workspace
+// manifest, lockfile, toolchain pin and the JNI binding schema — the same
+// inputs its sourceDigest/bindingSchema cover. projectDir-relative: rootDir
+// is example/android when the library is included as a module.
+def ubmRustInputFiles = []
+if (ubmRustSourceBuild) {
+  def ubmPackageRoot = projectDir.toPath().resolve("..").normalize().toFile()
+  def ubmIdentityScript = new File(ubmPackageRoot, "scripts/release/native-build-identity.js")
+  if (!ubmIdentityScript.isFile()) {
+    throw new GradleException(
+      "[unified-ble-manager] UBM_NATIVE_BUILD=source but ${ubmIdentityScript} is missing (a source build needs the package's Rust sources and identity script).")
+  }
+  def ubmNode = System.getenv("NODE_BINARY") ?: "node"
+  def ubmInputsResult
+  try {
+    ubmInputsResult = runUbmScript([ubmNode, ubmIdentityScript.absolutePath,
+      "--root", ubmPackageRoot.absolutePath, "--inputs", "jni"], ubmPackageRoot)
+  } catch (IOException error) {
+    throw new GradleException(
+      "[unified-ble-manager] UBM_NATIVE_BUILD=source needs Node to resolve the Rust input graph ('${ubmNode}' failed to start: ${error.message}). Set NODE_BINARY or put node on PATH.", error)
+  }
+  if (ubmInputsResult.exitValue != 0) {
+    throw new GradleException(
+      "[unified-ble-manager] UBM_NATIVE_BUILD=source: native-build-identity.js --inputs jni failed:\n${ubmInputsResult.stderr}")
+  }
+  ubmRustInputFiles = ubmInputsResult.stdout.readLines().findAll { it.trim() }.collect { new File(it) }
+  if (ubmRustInputFiles.isEmpty()) {
+    throw new GradleException("[unified-ble-manager] UBM_NATIVE_BUILD=source: the identity library listed no Rust inputs.")
+  }
+}
 
 ["debug", "release"].each { ubmRustProfile ->
   def taskName = "buildUbmRustCdylib${ubmRustProfile.capitalize()}"
   def stagingDir = file("${buildDir}/ubmRustCdylib/${ubmRustProfile}")
   tasks.register(taskName) {
-    description = "UBM 5.0 Rust cdylib (${ubmRustProfile}) for ${ubmRustAbis}: builds from source in a dev checkout, verifies committed prebuilts in a packed consumer."
+    description = "UBM 5.0 Rust cdylib (${ubmRustProfile}) for ${ubmRustAbis}: builds from source when UBM_NATIVE_BUILD=source, otherwise verifies the committed prebuilts."
     inputs.property("ubmRustProfile", ubmRustProfile)
     inputs.property("ubmRustAbis", ubmRustAbis)
-    inputs.property("ubmRustDevCheckout", ubmRustDevCheckout)
-    inputs.property("ubmNativeBuildEnv", ubmNativeBuildEnv)
+    inputs.property("ubmNativeBuildMode", ubmNativeBuildMode)
     inputs.file(ubmRustScript)
     inputs.file(ubmRust16kScript)
-    if (ubmRustDevCheckout) {
-      ubmRustInputDirs.each { dir ->
-        if (dir.isDirectory()) {
-          inputs.dir(dir)
-        }
-      }
-      ubmRustInputFiles.each { manifest ->
-        if (manifest.isFile()) {
-          inputs.file(manifest)
-        }
-      }
+    if (ubmRustSourceBuild) {
+      ubmRustInputFiles.each { input -> inputs.file(input) }
     } else if (ubmRustPrebuiltDir.isDirectory()) {
       inputs.dir(ubmRustPrebuiltDir)
     }
     outputs.dir(stagingDir)
     doLast {
-      if (!ubmRustDevCheckout) {
+      if (!ubmRustSourceBuild) {
         verifyUbmRustPrebuilts(taskName, stagingDir, ubmRustPrebuiltDir, ubmRustPrebuiltIdentity, ubmRustAbis)
-        // Packed path: opportunistic 16 KB check over the verified prebuilts.
+        // Prebuilt path: opportunistic 16 KB check over the verified prebuilts.
         // --offline-ok keeps NDK-less consumers green (consumers must never
         // need the NDK); misalignment still fails loud wherever the tool
         // resolves. File names come from the verify receipt, never assumed.
@@ -249,7 +243,7 @@ def ubmRustInputFiles = [
           }
         }
         new File(stagingDir, "packed-16k-receipt.txt").text = receipt16k.toString()
-        logger.lifecycle("${taskName} 16K page check (packed):\n${receipt16k}")
+        logger.lifecycle("${taskName} 16K page check (prebuilt):\n${receipt16k}")
         return
       }
       def identity = new StringBuilder()
@@ -269,6 +263,14 @@ def ubmRustInputFiles = [
             "(NDK 27.x, pinned Rust from rust-toolchain.toml + aarch64-linux-android and x86_64-linux-android targets).\n" +
             "--- build-rust-cdylib.sh stdout ---\n${execResult.stdout}\n--- build-rust-cdylib.sh stderr ---\n${execResult.stderr}")
         }
+        // PR210-18: the builder sealed the binary with the identity digests
+        // it computed; record them so the receipt says what was built from.
+        def sealed = (execResult.stdout =~ /build-rust-cdylib: identity sourceDigest=([0-9a-f]{64}) bindingSchema=([0-9a-f]{64})/)
+        if (!sealed.find()) {
+          throw new GradleException(
+            "${taskName} FAILED: build-rust-cdylib.sh reported no sealed build identity for ABI ${abi}.\n${execResult.stdout}")
+        }
+        identity.append("abi=${abi} sourceDigest=${sealed.group(1)} bindingSchema=${sealed.group(2)}\n")
         def staged = new File(libDir, "libubm5_jni_echo.so")
         if (!staged.isFile()) {
           throw new GradleException(
@@ -290,15 +292,15 @@ def ubmRustInputFiles = [
         identity.append("abi=${abi} sha256=${digest.digest().encodeHex().toString()} " +
           "bytes=${staged.length()} file=libubm5_jni_echo.so\n")
       }
-      new File(stagingDir, "build-identity.txt").text = identity.toString()
+      new File(stagingDir, "source-build-receipt.txt").text = identity.toString()
       logger.lifecycle("${taskName} staged ${stagingDir}:\n${identity}")
     }
   }
 }
 
-// Packed-consumer path (F01): verify the committed release prebuilts the
-// npm artifact ships — presence, non-empty bytes, and sha256 against
-// build-identity.txt — then record the receipt under the variant staging
+// Prebuilt path (F01): verify the committed release prebuilts the npm
+// artifact ships — presence, non-empty bytes, and sha256 against
+// build-identity.json — then record the receipt under the variant staging
 // dir. The variants package src/main/jniLibs itself (see below), so this
 // copies nothing: a second copy of the same SONAME would collide at merge.
 // Missing or mismatched prebuilts fail LOUD: a packed tree without a
@@ -311,23 +313,30 @@ def ubmRustInputFiles = [
 void verifyUbmRustPrebuilts(String taskName, File stagingDir, File prebuiltDir, File identity, List<String> abis) {
   if (!identity.isFile()) {
     throw new GradleException(
-      "${taskName} FAILED: prebuilt context (UBM_NATIVE_BUILD=prebuilt, or packed tree without dev-checkout markers) but no committed prebuilts at ${prebuiltDir} " +
-      "(build-identity.txt missing). The npm artifact must ship src/main/jniLibs/<abi>/libubm5_jni_echo.so for ${abis}.")
+      "${taskName} FAILED: prebuilt mode (UBM_NATIVE_BUILD unset/empty or 'prebuilt') but no committed prebuilts at ${prebuiltDir} " +
+      "(build-identity.json missing). The npm artifact must ship src/main/jniLibs/<abi>/libubm5_jni_echo.so for ${abis}; " +
+      "from a checkout, build from source instead with UBM_NATIVE_BUILD=source.")
+  }
+  def record
+  try {
+    record = new groovy.json.JsonSlurper().parse(identity)
+  } catch (Exception error) {
+    throw new GradleException("${taskName} FAILED: ${identity} is not valid JSON: ${error.message}", error)
+  }
+  if (record.schema != "ubm-android-jnilibs-identity/1" || !(record.abis instanceof List)) {
+    throw new GradleException("${taskName} FAILED: ${identity} is not an ubm-android-jnilibs-identity/1 record.")
   }
   def expected = [:]
-  identity.eachLine { line ->
-    def matcher = line =~ /^abi=(\S+) sha256=([0-9a-f]{64}) bytes=(\d+) file=(\S+)$/
-    if (matcher.matches()) {
-      expected[matcher.group(1)] = [sha256: matcher.group(2), bytes: matcher.group(3).toLong(), file: matcher.group(4)]
-    }
+  record.abis.each { entry ->
+    expected[entry.abi] = [sha256: entry.sha256, bytes: (entry.bytes as Long), file: entry.file]
   }
   def receipt = new StringBuilder()
-  receipt.append("context=packed-prebuilt\n")
+  receipt.append("context=prebuilt\n")
   abis.each { abi ->
     def want = expected[abi]
     if (want == null) {
       throw new GradleException(
-        "${taskName} FAILED: build-identity.txt has no entry for ABI ${abi} (expected one abi= line per ABI in ${abis}).")
+        "${taskName} FAILED: build-identity.json has no entry for ABI ${abi} (expected one per ABI in ${abis}).")
     }
     def prebuilt = new File(new File(prebuiltDir, abi), want.file)
     if (!prebuilt.isFile() || prebuilt.length() == 0) {
@@ -343,13 +352,13 @@ void verifyUbmRustPrebuilts(String taskName, File stagingDir, File prebuiltDir, 
     def actual = digest.digest().encodeHex().toString()
     if (actual != want.sha256) {
       throw new GradleException(
-        "${taskName} FAILED: prebuilt ${prebuilt} sha256 ${actual} does not match build-identity.txt (${want.sha256}).")
+        "${taskName} FAILED: prebuilt ${prebuilt} sha256 ${actual} does not match build-identity.json (${want.sha256}).")
     }
     receipt.append("abi=${abi} sha256=${actual} bytes=${prebuilt.length()} file=${want.file}\n")
   }
   stagingDir.mkdirs()
   new File(stagingDir, "packed-prebuilt-receipt.txt").text = receipt.toString()
-  logger.lifecycle("${taskName} verified packed prebuilts at ${prebuiltDir}:\n${receipt}")
+  logger.lifecycle("${taskName} verified committed prebuilts at ${prebuiltDir}:\n${receipt}")
 }
 
 // Version-proof script runner: Project.exec() was REMOVED in Gradle 9 (Expo
@@ -368,9 +377,9 @@ Map<String, Object> runUbmScript(List<String> command, File workingDir) {
   return [exitValue: proc.exitValue(), stdout: stdout.toString(), stderr: stderr.toString()]
 }
 
-// Back-compat lifecycle task: builds (dev) or verifies (packed) both profiles.
+// Back-compat lifecycle task: builds (source) or verifies (prebuilt) both profiles.
 tasks.register("buildUbmRustCdylib") {
-  description = "UBM 5.0 Rust cdylib (debug + release): source builds in a dev checkout, prebuilt verification in a packed consumer."
+  description = "UBM 5.0 Rust cdylib (debug + release): source builds when UBM_NATIVE_BUILD=source, prebuilt verification otherwise."
   dependsOn("buildUbmRustCdylibDebug", "buildUbmRustCdylibRelease")
 }
 
@@ -382,14 +391,14 @@ afterEvaluate {
   tasks.named("preDebugBuild") { dependsOn("buildUbmRustCdylibDebug") }
   tasks.named("preReleaseBuild") { dependsOn("buildUbmRustCdylibRelease") }
 }
-if (ubmRustDevCheckout) {
+if (ubmRustSourceBuild) {
   android.sourceSets.debug.jniLibs.srcDirs += file("${buildDir}/ubmRustCdylib/debug")
   android.sourceSets.release.jniLibs.srcDirs += file("${buildDir}/ubmRustCdylib/release")
   // Source builds never merge the committed prebuilt tree: each variant
   // packages ONLY its own profile's staging.
   android.sourceSets.main.jniLibs.srcDirs = []
 } else {
-  // Packed consumers package the committed release prebuilts: the bridge
+  // Prebuilt mode packages the committed release prebuilts: the bridge
   // natives load from the AAR, no NDK/Rust required. Verified per-variant
   // by the tasks above; a missing tree fails loud there, never here.
   android.sourceSets.main.jniLibs.srcDirs = [file("src/main/jniLibs")]

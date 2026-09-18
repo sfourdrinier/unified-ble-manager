@@ -20,7 +20,7 @@ const {
 const { createDeterministicTestBackend } = require('../../src/testing/deterministic/deterministic-test-backend')
 const { createBluezBackendProvider } = require('../../src/backends/bluez/bluez-backend-provider')
 const { createCoreBluetoothBackendProvider } = require('../../src/backends/corebluetooth/corebluetooth-provider')
-const { prepareNativeCoreBluetoothBoundary } = require('../../src/node-corebluetooth')
+const { prepareNativeCoreBluetoothBoundary } = require('../../src/backends/corebluetooth/corebluetooth-native-boundary')
 const { assertWinRtAdapterReady, winRtAdapterIsReady } = require('../../src/backends/winrt/winrt-adapter-state')
 const { ReactNativeAppleProtocolBoundary } = require('../../src/native-protocol/rn-apple-boundary')
 const { ReactNativeAndroidProtocolBoundary } = require('../../src/native-protocol/rn-android-boundary')

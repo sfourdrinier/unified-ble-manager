@@ -32,7 +32,8 @@ import {
 import type { OwnerScanOptions, ScanOptions } from '../../backend-contract/advertisement'
 import type { NormalizedScanQuery } from '../../backend-contract/scan-query'
 import { BUILT_IN_FEATURE_IDS } from '../../backend-contract/capabilities'
-import type { CapabilityDescriptor, FeatureId } from '../../backend-contract/capabilities'
+import type { CapabilityDescriptor, FeatureId, FeatureState } from '../../backend-contract/capabilities'
+import { MAXIMUM_REQUESTED_ATT_MTU, MINIMUM_ATT_MTU } from '../../backend-contract/connection-controls'
 import type { SecurityBackend } from '../../backend-contract/security'
 import {
   assertBackendLifecycleTransition,
@@ -86,9 +87,18 @@ import type {
   OwnedBytes,
   PeerId
 } from '../../backend-contract/primitives'
-import { capacity, deadline, opaqueId, ownBytes } from '../../backend-contract/primitives'
+import {
+  capacity,
+  createAttachmentBoundIdFactory,
+  deadline,
+  opaqueId,
+  ownBytes,
+  type AttachmentBoundIdFactory
+} from '../../backend-contract/primitives'
 import { utf8ByteLength } from '../../backend-contract/serializable'
 import type {
+  BackendOperationDispatch,
+  OperationOptions,
   LongWriteChunkProgress,
   LongWritePolicy,
   LongWriteReceipt,
@@ -102,9 +112,9 @@ import type { RestorationAdoptionRequest, RestorationAdoptionResult } from '../.
 import type { ScanPlan } from '../../backend-contract/scan-planning'
 import type { BoundedAsyncStream } from '../../backend-contract/streams'
 import type { DiagnosticTraceDocument } from '../../diagnostics/trace-format'
-import type { CoreTraceRecord } from '../../core/trace-recorder'
-import { UNIFIED_BLE_TRACE_FORMAT } from '../../diagnostics/trace-format'
+import type { CoreTraceRecord, CoreTraceRecorder } from '../../core/trace-recorder'
 import {
+  recordBackendDiagnostic,
   retryableCleanup,
   scheduleCoreDeadline,
   type CoreDeadlineHandle,
@@ -155,6 +165,11 @@ export interface ReactNativeRustCoreManagerOptions {
   readonly now: () => number
   readonly timer?: CoreDeadlineScheduler
   readonly maximumValueBytes: ByteLimit
+  /**
+   * The bounded diagnostic trace the backend records into
+   * (`diagnostics.traceMaximumRecords` / `traceMaximumBytes`).
+   */
+  readonly trace: CoreTraceRecorder
 }
 
 /**
@@ -263,6 +278,43 @@ class ReactNativeRustCoreManager {
     return this.features.descriptors
   }
 
+  /** The registered state of one feature (`unsupported` when not registered). */
+  featureState(id: FeatureId): FeatureState {
+    return this.features.registrations.find(candidate => candidate.id === id)?.state ?? 'unsupported'
+  }
+
+  get backendConnections(): ReactNativeRustCoreBackend['connections'] {
+    return this.backend.connections
+  }
+
+  /** Operation options with a fresh correlation bound to this attachment. */
+  operationOptions(options: PublicOperationOptions, kind: string): OperationOptions<string, string> {
+    const ordinal = this.nextCorrelation
+    this.nextCorrelation += 1
+    return Object.freeze({
+      signal: options.signal,
+      deadline: options.deadline,
+      correlation: this.correlations.operationCorrelation(`rust-core-manager-${kind}-${ordinal}`)
+    })
+  }
+
+  private nextCorrelation = 1
+  private correlationIds: AttachmentBoundIdFactory<string> | null = null
+
+  private get correlations(): AttachmentBoundIdFactory<string> {
+    if (this.correlationIds === null) {
+      const attachment = this.backend.identity.attachment
+      this.correlationIds = createAttachmentBoundIdFactory<string>({
+        attachmentId: attachment.attachmentId,
+        backendInstanceId: attachment.backendInstanceId,
+        backendGeneration: attachment.backendGeneration,
+        adapterId: attachment.adapter.adapterId,
+        adapterGeneration: attachment.adapter.adapterGeneration
+      })
+    }
+    return this.correlationIds
+  }
+
   adoptRestoration(request: RestorationAdoptionRequest<string>): Promise<RestorationAdoptionResult<string>> {
     if (this.managerState !== 'ready') {
       throw contractError('lifecycle.destroyed', 'restoration', 'rust-core-manager.adopt-restoration')
@@ -298,12 +350,12 @@ class ReactNativeRustCoreManager {
     const tracked = { stop: () => lease.stop() }
     this.openScans.add(tracked)
     const originalStop = lease.stop.bind(lease)
+    // The scan stays tracked until the owner confirms release: a failed stop
+    // is retried by the next stop() or by destroy (PR210-09).
     const stopOnce = async (): Promise<CleanupRecord> => {
-      try {
-        return await originalStop()
-      } finally {
-        this.openScans.delete(tracked)
-      }
+      const record = await originalStop()
+      if (record.state === 'released') this.openScans.delete(tracked)
+      return record
     }
     // The lease already carries the scan-session surface (ids, observation
     // stream, stop); the cast retypes it without wrapping behavior.
@@ -364,8 +416,15 @@ class ReactNativeRustCoreManager {
     return this.releaseOwnedResources()
   }
 
+  // Ownership transfer (PR210-71). The legacy factory built this manager with
+  // `createBleManagerFromProvider`, whose attachment authority was issued
+  // internally and never returned: no application could obtain a grant for
+  // it or register a borrower. This manager is no authority participant
+  // either, so a borrower cannot be admitted against it, and these members
+  // answer the identities the legacy authority answered
+  // (`__tests__/backends/reactnative/rust-core-legacy-parity.test.js`).
   async transferOwnership(_grant: OwnershipTransferGrant<string>): Promise<CleanupRecord> {
-    throw contractError('ownership.denied', 'core', 'rust-core-manager.transfer')
+    throw contractError('ownership.denied', 'core', 'manager-ownership-authority.transfer-grant')
   }
 
   acceptsOwnershipTransfer(): boolean {
@@ -373,25 +432,20 @@ class ReactNativeRustCoreManager {
   }
 
   becomeOwnershipTransferDestination(_capability: OwnershipRoleTransitionCapability): void {
-    throw contractError('ownership.denied', 'core', 'rust-core-manager.transfer-destination')
+    throw contractError('ownership.denied', 'core', 'manager-ownership-authority.role-capability')
   }
 
   relinquishOwnershipTransferSource(_capability: OwnershipRoleTransitionCapability): void {
-    throw contractError('ownership.denied', 'core', 'rust-core-manager.transfer-relinquish')
+    throw contractError('ownership.denied', 'core', 'manager-ownership-authority.role-capability')
   }
 
+  /** The bounded trace of every operation this manager's backend sent to the owner. */
   traces(): readonly CoreTraceRecord[] {
-    return Object.freeze([])
+    return Object.freeze(this.options.trace.snapshot())
   }
 
   traceDocument(): DiagnosticTraceDocument {
-    // No TypeScript trace authority exists on this path; diagnostics ride
-    // the backend counters. The empty document is the honest record.
-    return Object.freeze({
-      format: UNIFIED_BLE_TRACE_FORMAT,
-      truncated: false,
-      records: Object.freeze([])
-    })
+    return this.options.trace.snapshotDocument()
   }
 
   monotonicNow(): number {
@@ -550,11 +604,11 @@ class ReactNativeRustCoreManager {
       try {
         const record = await scan.stop()
         failures.push(...record.failures)
+        if (record.state === 'released') this.openScans.delete(scan)
       } catch (error) {
         failures.push(asCleanupFailure('scan', error))
       }
     }
-    this.openScans.clear()
     for (const connection of [...this.connections.values()]) {
       try {
         const record = await this.releaseConnection(connection, cause)
@@ -608,8 +662,13 @@ class ReactNativeRustCoreManager {
     } catch (error) {
       backendResult = { state: 'release-failed', failures: [asCleanupFailure('connection', error)] }
     }
-    connection.markReleased()
     connection.finishLifecycle(cause, null)
+    if (backendResult.state !== 'released') {
+      // The backend kept the lease; the connection stays registered so a
+      // retried release reaches the same native identity (PR210-09).
+      return { state: 'release-failed', failures: [...children.failures, ...backendResult.failures] }
+    }
+    connection.markReleased()
     this.connections.delete(String(connection.resource.connectionId))
     if (children.state !== 'released') {
       return { state: 'release-failed', failures: [...children.failures, ...backendResult.failures] }
@@ -644,6 +703,10 @@ class ReactNativeRustCoreManager {
   }
 
   private applyBackendEvent(event: BackendEvent<string>): void {
+    if (event.kind === 'diagnostic-warning') {
+      recordBackendDiagnostic(this.options.trace, this.options.now, event)
+      return
+    }
     if (event.kind === 'backend-restarted' || event.kind === 'backend-restarting') {
       if (event.attachment.adapter.adapterId === this.attached.attachment.attachment.adapter.adapterId) {
         this.releaseOwnedResources('backend-restart').catch(() => undefined)
@@ -788,47 +851,117 @@ class NativeConnection {
     return this.manager.releaseConnection(this, 'requested-disconnect')
   }
 
-  async readRssi(_options: PortableOperationOptions): Promise<RssiMeasurement<string, string>> {
-    throw contractError('capability.unsupported', 'connection', 'rust-core-manager.connection.read-rssi')
+  async readRssi(options: PortableOperationOptions): Promise<RssiMeasurement<string, string>> {
+    return this.control(BUILT_IN_FEATURE_IDS.connectionRssi, options, 'read-rssi', (connections, operation) =>
+      requireControl(connections.readRssi, 'read-rssi')(this.resource, { operation })
+    )
   }
 
-  async requestMtu(_requestedMtu: number, _options: PortableOperationOptions): Promise<MtuNegotiation<string, string>> {
-    throw contractError('capability.unsupported', 'connection', 'rust-core-manager.connection.request-mtu')
+  async requestMtu(requestedMtu: number, options: PortableOperationOptions): Promise<MtuNegotiation<string, string>> {
+    if (
+      !Number.isSafeInteger(requestedMtu) ||
+      requestedMtu < MINIMUM_ATT_MTU ||
+      requestedMtu > MAXIMUM_REQUESTED_ATT_MTU
+    ) {
+      throw contractError('argument.invalid', 'connection', 'rust-core-manager.connection.request-mtu')
+    }
+    return this.control(BUILT_IN_FEATURE_IDS.connectionRequestMtu, options, 'request-mtu', (connections, operation) =>
+      requireControl(connections.requestMtu, 'request-mtu')(this.resource, { operation, requestedMtu })
+    )
   }
 
   async effectiveMtu(): Promise<EffectiveMtuMeasurement<string, string>> {
-    throw contractError('capability.unsupported', 'connection', 'rust-core-manager.connection.effective-mtu')
+    return this.control(
+      BUILT_IN_FEATURE_IDS.connectionEffectiveMtu,
+      { signal: null, deadline: null },
+      'effective-mtu',
+      (connections, operation) =>
+        requireControl(connections.effectiveMtu, 'effective-mtu')(this.resource, { operation })
+    )
   }
 
   async requestPriority(
-    _priority: ConnectionPriority,
-    _options: PortableOperationOptions
+    priority: ConnectionPriority,
+    options: PortableOperationOptions
   ): Promise<ConnectionPriorityRequest<string, string>> {
-    throw contractError('capability.unsupported', 'connection', 'rust-core-manager.connection.request-priority')
+    if (priority !== 'low-power' && priority !== 'balanced' && priority !== 'high-throughput') {
+      throw contractError('argument.invalid', 'connection', 'rust-core-manager.connection.request-priority')
+    }
+    return this.control(
+      BUILT_IN_FEATURE_IDS.connectionPriority,
+      options,
+      'request-priority',
+      (connections, operation) =>
+        requireControl(connections.requestPriority, 'request-priority')(this.resource, { operation, priority })
+    )
   }
 
-  async readPhy(_options: PortableOperationOptions): Promise<ConnectionPhyObservation<string, string>> {
-    throw contractError('capability.unsupported', 'connection', 'rust-core-manager.connection.read-phy')
+  async readPhy(options: PortableOperationOptions): Promise<ConnectionPhyObservation<string, string>> {
+    return this.control(BUILT_IN_FEATURE_IDS.connectionPhy, options, 'read-phy', (connections, operation) =>
+      requireControl(connections.readPhy, 'read-phy')(this.resource, { operation })
+    )
   }
 
   async requestPhy(
-    _preference: PhyPreference,
-    _options: PortableOperationOptions
+    preference: PhyPreference,
+    options: PortableOperationOptions
   ): Promise<ConnectionPhyRequest<string, string>> {
-    throw contractError('capability.unsupported', 'connection', 'rust-core-manager.connection.request-phy')
+    if (preference.tx === undefined && preference.rx === undefined) {
+      throw contractError('argument.invalid', 'connection', 'rust-core-manager.connection.request-phy')
+    }
+    return this.control(BUILT_IN_FEATURE_IDS.connectionPhy, options, 'request-phy', (connections, operation) =>
+      requireControl(connections.requestPhy, 'request-phy')(this.resource, { operation, preference })
+    )
   }
 
   async maximumWriteLength(
     _mode: WriteMode,
     _options: PortableOperationOptions
   ): Promise<MaximumWriteLengthObservation<string>> {
-    throw contractError('capability.unsupported', 'connection', 'rust-core-manager.connection.maximum-write-length')
+    this.assertCurrent()
+    throw contractError(
+      this.manager.featureState(BUILT_IN_FEATURE_IDS.maximumWriteLength) === 'unavailable'
+        ? 'capability.unavailable'
+        : 'capability.unsupported',
+      'gatt',
+      'rust-core-manager.connection.maximum-write-length'
+    )
   }
 
   async writeWithoutResponseReadiness(
     _options?: PortableOperationOptions
   ): Promise<ConnectionWriteReadinessWatch<string>> {
     throw contractError('capability.unsupported', 'connection', 'rust-core-manager.connection.write-readiness')
+  }
+
+  /**
+   * One connection control through the backend: refused before any native
+   * call when the backend does not register the capability, the connection
+   * is no longer current, or the caller already aborted or expired.
+   */
+  private async control<Result extends { readonly terminal: unknown }>(
+    featureId: FeatureId,
+    options: PortableOperationOptions,
+    name: string,
+    dispatch: (
+      connections: ReactNativeRustCoreBackend['connections'],
+      operation: OperationOptions<string, string>
+    ) => BackendOperationDispatch<string, Result>
+  ): Promise<Result> {
+    const operationName = `rust-core-manager.connection.${name}`
+    const state = this.manager.featureState(featureId)
+    if (state !== 'supported' && state !== 'limited') {
+      throw contractError(
+        state === 'unavailable' ? 'capability.unavailable' : 'capability.unsupported',
+        'connection',
+        operationName
+      )
+    }
+    this.assertCurrent()
+    const publicOptions = toPublicOperationOptions(options)
+    if (publicOptions.signal?.aborted === true) throw contractError('operation.aborted', 'connection', operationName)
+    const operation = this.manager.operationOptions(publicOptions, name)
+    return dispatch(this.manager.backendConnections, operation).completion
   }
 
   isCurrent(): boolean {
@@ -1463,12 +1596,11 @@ class NativeSubscription {
     return this.removal
   }
 
+  /** The subscription stays tracked until the owner confirms release, so a failed removal can be retried. */
   async removeBackend(): Promise<CleanupRecord> {
-    try {
-      return await this.backendSubscription.remove()
-    } finally {
-      this.database.untrackSubscription(this)
-    }
+    const record = await this.backendSubscription.remove()
+    if (record.state === 'released') this.database.untrackSubscription(this)
+    return record
   }
 }
 
@@ -1724,4 +1856,11 @@ function receiptFromLongWriteProgress(
     committedBytes,
     failedChunkIndex: failedChunk?.index ?? null
   })
+}
+
+function requireControl<Method>(method: Method | undefined, name: string): Method {
+  if (method === undefined) {
+    throw contractError('capability.unsupported', 'connection', `rust-core-manager.connection.${name}`)
+  }
+  return method
 }

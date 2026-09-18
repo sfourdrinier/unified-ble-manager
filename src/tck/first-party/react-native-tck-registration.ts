@@ -1,17 +1,21 @@
 // src/tck/first-party/react-native-tck-registration.ts
+//
+// The React Native first-party TCK legs run the Rust route: the production
+// `createReactNativeRustCoreBinding` (and so the production serializer) over a
+// deterministic `UnifiedBleRustCore` module the caller supplies, under the
+// production Rust-core provider. No legacy provider or protocol control is
+// involved.
 
-import type { Spec as NativeProtocolControl } from '../../NativeUnifiedBleProtocolControl'
+import type { Spec as NativeUnifiedBleRustCore } from '../../NativeUnifiedBleRustCore'
+import { createReactNativeRustCoreBinding } from '../../backends/reactnative/react-native-rust-core-binding'
+import { createReactNativeRustCoreBackendProvider } from '../../backends/reactnative/react-native-rust-core-provider'
+import type { ReactNativeRestorationAuthority } from '../../backends/reactnative/react-native-rust-core-restoration'
 import {
-  createReactNativeAndroidBackendProvider,
   reactNativeAndroidDefaultAdapterId,
-  REACT_NATIVE_ANDROID_BACKEND_ID
-} from '../../backends/reactnative/react-native-android-provider'
-import {
-  createReactNativeAppleBackendProvider,
   reactNativeAppleDefaultAdapterId,
+  REACT_NATIVE_ANDROID_BACKEND_ID,
   REACT_NATIVE_APPLE_BACKEND_ID
-} from '../../backends/reactnative/react-native-apple-provider'
-import type { CoreBluetoothCharacteristicAddress } from '../../backends/corebluetooth/corebluetooth-boundary'
+} from '../../backends/reactnative/react-native-platform-identity'
 import { BUILT_IN_FEATURE_IDS } from '../../backend-contract/capabilities'
 import type { NativeBackendIdentity } from '../../backend-contract/identity'
 import { opaqueId, type ClientId, type SerializableRecord } from '../../backend-contract/primitives'
@@ -23,9 +27,19 @@ import type {
 } from '../contracts'
 import type { FirstPartyBackendTckRegistration } from './first-party-tck-registry'
 
+/** The characteristic a deterministic notification is emitted on. */
+export interface DeterministicReactNativeCharacteristicAddress {
+  readonly nativePeerId: string
+  readonly serviceUuid: string
+  readonly serviceOccurrence: number
+  readonly characteristicUuid: string
+  readonly characteristicOccurrence: number
+}
+
+/** Controller hooks into the deterministic native module (radio events the TCK drives). */
 export interface DeterministicReactNativeTckBoundary {
   emitAdvertisement(): void
-  emitNotification(address: CoreBluetoothCharacteristicAddress, bytes: Uint8Array): void
+  emitNotification(address: DeterministicReactNativeCharacteristicAddress, bytes: Uint8Array): void
   prepareSecurityCancellation?(): void
 }
 
@@ -34,7 +48,8 @@ export interface DeterministicReactNativeAppleTckBoundary extends DeterministicR
 }
 
 interface ReactNativeFirstPartyTckOptions {
-  readonly control: NativeProtocolControl
+  /** A deterministic `UnifiedBleRustCore` module speaking `ubm-mobile-wire/1`. */
+  readonly native: NativeUnifiedBleRustCore
   readonly now: () => number
   readonly nativePeerId: string
   readonly boundary: DeterministicReactNativeTckBoundary
@@ -49,8 +64,15 @@ export interface ReactNativeAndroidSecurityTckOptions {
 }
 
 export interface ReactNativeAndroidFirstPartyTckRegistrationOptions extends ReactNativeFirstPartyTckOptions {
-  /** Opt-in deterministic security evidence; omitted while the supplied native control is security-unaware. */
+  /**
+   * What the deterministic module proves for the Android security suite. The
+   * Rust route always registers Android security, so the suite always runs;
+   * absent, the system-ceremony defaults apply (cancellation, no custom
+   * ceremony, no unpair).
+   */
   readonly security?: ReactNativeAndroidSecurityTckOptions
+  /** Android API level the deterministic host reports (PHY needs 26+). */
+  readonly androidApiLevel?: number
 }
 
 export interface ReactNativeAppleFirstPartyTckRegistrationOptions
@@ -64,6 +86,7 @@ const reactNativeProviderScenarioIds: readonly TckScenarioId[] = Object.freeze([
   'identity.valid-all-axis-negotiation',
   'identity.version-skew-and-malformed-offers',
   'capability.truth-limits-evidence-and-binding',
+  'gatt.duplicate-uuid-occurrences-route-exactly',
   'scenario.scan-connect-discover-read-notify-destroy'
 ])
 
@@ -87,14 +110,24 @@ const androidSecurityFeatureSuite = Object.freeze({
   scenarioIds: Object.freeze(['security.state-pair-cancel-unpair' as const])
 })
 
-/** Registers Android's deterministic JSI provider path, including its limited RSSI and ATT-MTU controls. */
+const defaultAndroidSecurityTck: ReactNativeAndroidSecurityTckOptions = Object.freeze({
+  customCeremonySupported: false,
+  supportsAlreadyUnpaired: false,
+  supportsCancellation: true,
+  supportsUnpair: false
+})
+
+/** Registers Android's Rust route with its deterministic native module. */
 export function createReactNativeAndroidFirstPartyTckRegistration(
   options: ReactNativeAndroidFirstPartyTckRegistrationOptions
 ): FirstPartyBackendTckRegistration {
-  const provider = createReactNativeAndroidBackendProvider({
-    control: options.control,
+  const provider = createReactNativeRustCoreBackendProvider({
+    platform: 'android',
+    binding: createReactNativeRustCoreBinding({ platform: 'android', native: options.native }),
+    owner: 'react-native-android-tck',
     now: options.now,
-    createOwnerId: options.createOwnerId
+    runtime: { androidApiLevel: options.androidApiLevel ?? 34 },
+    ...(options.createOwnerId === undefined ? {} : { createOwnerId: options.createOwnerId })
   })
   return {
     backendId: REACT_NATIVE_ANDROID_BACKEND_ID,
@@ -114,15 +147,11 @@ export function createReactNativeAndroidFirstPartyTckRegistration(
           controller: createReactNativeController(options.boundary, options.nativePeerId, options.now),
           featureScenarioAdapters: Object.freeze({
             connectionControls: Object.freeze({ requestedMtu: 247 }),
-            ...(options.security === undefined
-              ? {}
-              : {
-                  security: Object.freeze({
-                    peerId: publicPeerId,
-                    ...options.security,
-                    prepareCancellation: () => options.boundary.prepareSecurityCancellation?.()
-                  })
-                })
+            security: Object.freeze({
+              peerId: publicPeerId,
+              ...(options.security ?? defaultAndroidSecurityTck),
+              prepareCancellation: () => options.boundary.prepareSecurityCancellation?.()
+            })
           }),
           dispose: () => backend.destroy()
         }
@@ -137,7 +166,7 @@ export function createReactNativeAndroidFirstPartyTckRegistration(
     featureSuites: Object.freeze([
       connectionControlsFeatureSuite,
       descriptorOperationsFeatureSuite,
-      ...(options.security === undefined ? [] : [androidSecurityFeatureSuite])
+      androidSecurityFeatureSuite
     ]),
     capabilityExclusions: Object.freeze([
       Object.freeze({
@@ -149,14 +178,27 @@ export function createReactNativeAndroidFirstPartyTckRegistration(
   }
 }
 
-/** Registers Apple's deterministic JSI provider path, including RSSI and provider-owned restoration adoption. */
+const APPLE_TCK_NAMESPACE = 'unified-ble.react-native.apple.tck'
+const APPLE_TCK_EPOCH = 'react-native-apple-tck-restoration-epoch'
+const APPLE_TCK_HOST_SESSION = 'react-native-apple-tck-session'
+
+/**
+ * Registers Apple's Rust route with its deterministic native module, including
+ * RSSI and CoreBluetooth state-restoration adoption under a deterministic
+ * app-declared authority (the client the TCK authenticates).
+ */
 export function createReactNativeAppleFirstPartyTckRegistration(
   options: ReactNativeAppleFirstPartyTckRegistrationOptions
 ): FirstPartyBackendTckRegistration {
-  const provider = createReactNativeAppleBackendProvider({
-    control: options.control,
+  let authority: ReactNativeRestorationAuthority | null = null
+  const provider = createReactNativeRustCoreBackendProvider({
+    platform: 'apple',
+    binding: createReactNativeRustCoreBinding({ platform: 'apple', native: options.native }),
+    owner: 'react-native-apple-tck',
     now: options.now,
-    createOwnerId: options.createOwnerId
+    runtime: { androidApiLevel: null },
+    restorationAuthority: () => authority,
+    ...(options.createOwnerId === undefined ? {} : { createOwnerId: options.createOwnerId })
   })
   return {
     backendId: REACT_NATIVE_APPLE_BACKEND_ID,
@@ -175,17 +217,24 @@ export function createReactNativeAppleFirstPartyTckRegistration(
         >({
           connectionControls: Object.freeze({ requestedMtu: 247 }),
           restoration: Object.freeze({
-            createCapability: (clientId: ClientId<string, string>) =>
-              Object.freeze({
-                client: Object.freeze({ clientId, hostSessionScope: 'react-native-apple-tck-session' }),
+            createCapability: (clientId: ClientId<string, string>) => {
+              authority = Object.freeze({
+                namespaceValue: APPLE_TCK_NAMESPACE,
+                adoptionEpoch: APPLE_TCK_EPOCH,
+                clientId: String(clientId),
+                hostSessionScope: APPLE_TCK_HOST_SESSION
+              })
+              return Object.freeze({
+                client: Object.freeze({ clientId, hostSessionScope: APPLE_TCK_HOST_SESSION }),
                 coordinator: provider.restoration
-              }),
+              })
+            },
             createRequest: (identity: NativeBackendIdentity<string>) =>
               Object.freeze({
-                namespace: 'unified-ble.react-native.apple.tck',
+                namespace: APPLE_TCK_NAMESPACE,
                 attachmentId: identity.attachment.attachmentId,
                 expectedBackendInstanceId: identity.attachment.backendInstanceId,
-                expectedEpoch: opaqueId('react-native-apple-tck-restoration-epoch', 'restoration-epoch', 'tck'),
+                expectedEpoch: opaqueId(APPLE_TCK_EPOCH, 'restoration-epoch', 'tck'),
                 expectedVersions: identity.versions
               }),
             seedJournal: (controller: TckScenarioController) =>

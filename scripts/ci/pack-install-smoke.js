@@ -614,7 +614,9 @@ function verifyInstalledNativeTooling(consumer) {
     "assert.strictEqual(typeof loader.tryLoadNative, 'function', 'packed CoreBluetooth loader exposes direct addon lookup');",
     "assert.strictEqual(typeof loader.createContractBoundary, 'function', 'packed CoreBluetooth loader exposes its boundary factory');",
     "const coreBluetooth = require('unified-ble-manager/node/corebluetooth');",
-    "assert.strictEqual(typeof coreBluetooth.createNativeCoreBluetoothBoundary, 'function', 'node/corebluetooth boundary factory');",
+    "assert.strictEqual(typeof coreBluetooth.createDesktopRustCoreBackendProvider, 'function', 'node/corebluetooth shared Rust core provider');",
+    "assert.strictEqual('createNativeCoreBluetoothBoundary' in coreBluetooth, false, 'node/corebluetooth exposes no legacy boundary (PR210-02)');",
+    "assert.ok(fs.existsSync(path.join(packageRoot, 'native', 'desktop-core', 'index.js')), 'packed consumer includes the desktop-core loader');",
     "assert.strictEqual(typeof coreBluetooth.createNativeCoreBluetoothBackendProvider, 'function', 'node/corebluetooth provider factory');",
     "console.log('pack+install native tooling assertions ok');"
   ].join('\n')
@@ -641,7 +643,9 @@ function buildAndLoadInstalledCoreBluetoothAddon(consumer) {
     "const loader = require(path.join(packageRoot, 'native', 'electron', 'corebluetooth'));",
     'const native = loader.tryLoadNative();',
     "assert.strictEqual(typeof native?.createNativeRadio, 'function', `installed CoreBluetooth loader loads the node-gyp output; exports: ${Object.keys(native ?? {}).join(',')}`);",
-    "const { createNativeCoreBluetoothBoundary } = require('unified-ble-manager/node/corebluetooth');",
+    // LEGACY (Phase 4 deletion): the node-gyp boundary is unreachable from
+    // public entrypoints; its build/load leg loads the internal module.
+    "const { createNativeCoreBluetoothBoundary } = require(path.join(packageRoot, 'lib', 'commonjs', 'backends', 'corebluetooth', 'corebluetooth-native-boundary.js'));",
     'const boundary = createNativeCoreBluetoothBoundary();',
     "for (const method of ['adapterSnapshot', 'startScan', 'stopScan', 'connect', 'disconnect', 'connectionState', 'discover', 'read', 'write', 'startNotify', 'stopNotify', 'onDisconnect', 'onAdapterState', 'destroy']) {",
     "  assert.strictEqual(typeof boundary[method], 'function', `installed CoreBluetooth boundary exposes ${method}`);",

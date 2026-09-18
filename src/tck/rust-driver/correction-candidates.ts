@@ -70,6 +70,8 @@ const FAMILY_NOTES: Readonly<Record<string, string>> = Object.freeze({
     'connection lease surface (no link layer on this boundary)',
   'connection.two-client-arbitration': 'connection arbitration surface (no link layer on this boundary)',
   'gatt.discovery-complete-paths-and-services-changed': 'GATT discovery surface (no ATT transport on this boundary)',
+  'gatt.duplicate-uuid-occurrences-route-exactly':
+    'duplicate-UUID occurrence and notification routing surface (no ATT transport on this boundary)',
   'gatt.reads-descriptors-write-policy-and-dispatched-cancellation':
     'GATT operation surface (no ATT transport on this boundary)',
   'subscription.enable-ready-shared-cccd-and-fanout': 'subscription fanout surface (no ATT transport on this boundary)',
@@ -121,6 +123,7 @@ const STAGED_PROGRAM_IDS: Readonly<Record<string, string>> = Object.freeze({
   'connection.lease-joins-borrowing-transfer-and-revocation': 'PROGRAM_CONNECTION_LEASE',
   'connection.two-client-arbitration': 'PROGRAM_CONNECTION_ARBITRATION',
   'gatt.discovery-complete-paths-and-services-changed': 'PROGRAM_GATT_DISCOVERY',
+  'gatt.duplicate-uuid-occurrences-route-exactly': 'PROGRAM_GATT_DUPLICATE_OCCURRENCES',
   'gatt.reads-descriptors-write-policy-and-dispatched-cancellation': 'PROGRAM_GATT_IO',
   'subscription.enable-ready-shared-cccd-and-fanout': 'PROGRAM_SUBSCRIPTION_FANOUT',
   'subscription.pre-ready-overflow-controls-and-late-quarantine': 'PROGRAM_SUBSCRIPTION_OVERFLOW',

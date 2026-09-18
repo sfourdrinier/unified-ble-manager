@@ -21,7 +21,6 @@ schemars = "0.8"
 serde_json = "1"
 tauri = { version = "2", default-features = false }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
-tokio-util = "0.7"
 # F01: the plugin schedules BLE ops through the shared desktop authority
 # (`ubm-desktop`, itself over `ubm-core`); error and contract identities stay
 # single-owned by the shared core and cross verbatim.
@@ -29,32 +28,16 @@ ubm-core = { path = "../../crates/ubm-core" }
 ubm-desktop = { path = "../../crates/ubm-desktop" }
 uuid = "1"
 
-# Linux only, and only to classify one BlueZ error. btleplug reports a removed
-# D-Bus device object as Error::Other(Box<BluetoothError>), and the D-Bus error
-# *name* inside it is a protocol constant - the one piece of evidence that
-# distinguishes "the peer is gone" from "we could not tell". Reading it requires
-# naming the type to downcast to. The semver requirement matches btleplug's own,
-# so Cargo unifies to a single copy; the round-trip test guards against a future
-# divergence turning the downcast into a silent no-op.
-[target.'cfg(target_os = "linux")'.dependencies]
-bluez-async = "0.8"
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-# Only to construct a real dbus::Error in the classifier tests.
-dbus = "0.9"
-
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "time", "test-util"] }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-# Real CoreBluetooth authorization (`+[CBManager authorization]`) for adapter
-# state. Both crates are already in this crate's dependency graph through
-# btleplug 0.12, which enables the same `CBManager` feature, so declaring them
-# adds no new compiled crate.
-objc2 = "0.5.2"
-objc2-core-bluetooth = { version = "0.2.2", default-features = false, features = ["std", "CBManager"] }
 
 [build-dependencies]
 schemars = "0.8"
 serde = { version = "1", features = ["derive"] }
 tauri-plugin = { version = "2", features = ["build"] }
+
+# Vendored btleplug with the UBM patches (vendor/btleplug/UBM_PATCHES.md):
+# Tauri must link the same patched copy as the root workspace.
+[patch.crates-io]
+btleplug = { path = "../../vendor/btleplug" }
+bluez-async = { path = "../../vendor/bluez-async" }

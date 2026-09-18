@@ -23,21 +23,19 @@ import {
 import { contractError } from '../../backend-contract/errors'
 import type { SecurityBackend } from '../../backend-contract/security'
 import type { AdapterSelection, NativeBackendIdentity, AttachmentRecord } from '../../backend-contract/identity'
-import { UNIFIED_BLE_IMPLEMENTATION_VERSION } from '../../implementation-version'
-import type { NativeAttachmentIdentity, Spec as NativeProtocolControl } from '../../NativeUnifiedBleProtocolControl'
 import {
-  negotiateVersion,
-  opaqueId,
-  version,
-  versionRange,
-  type CoreVersionAxes,
-  type NativeCompatibilityOffer,
-  type NativeVersionAxes
-} from '../../backend-contract/primitives'
+  REACT_NATIVE_ANDROID_BACKEND_ID,
+  REACT_NATIVE_ANDROID_PLATFORM_ID,
+  REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION,
+  REACT_NATIVE_ANDROID_DEFAULT_ADAPTER_NATIVE_ID,
+  reactNativeAndroidCompatibility,
+  reactNativeAndroidDefaultAdapterId
+} from './react-native-platform-identity'
+import type { NativeAttachmentIdentity, Spec as NativeProtocolControl } from '../../NativeUnifiedBleProtocolControl'
+import { negotiateVersion, type CoreVersionAxes, type NativeVersionAxes } from '../../backend-contract/primitives'
 import type { ClientId } from '../../backend-contract/primitives'
 import type { BoundedAsyncStream } from '../../backend-contract/streams'
 import { CoreBluetoothBackend, type DirectGattBackendIdentityOptions } from '../corebluetooth/corebluetooth-backend'
-import { coreBluetoothCompatibility } from '../corebluetooth/corebluetooth-provider'
 import { ReactNativeAndroidProtocolBoundary } from '../../native-protocol/rn-android-boundary'
 import { createReactNativeConnectionControlFeatureRegistry } from './react-native-connection-control-features'
 import { createReactNativeDescriptorFeatureRegistry } from './react-native-descriptor-features'
@@ -55,15 +53,14 @@ import {
   type ReactNativeRestorationBackendProvider
 } from './react-native-restoration'
 
-export const REACT_NATIVE_ANDROID_BACKEND_ID = 'unified-ble:react-native-android'
-export const REACT_NATIVE_ANDROID_PLATFORM_ID = 'unified-ble:android-gatt'
-export const REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION = UNIFIED_BLE_IMPLEMENTATION_VERSION
-export const REACT_NATIVE_ANDROID_DEFAULT_ADAPTER_NATIVE_ID = 'android-default-adapter'
-
-export const reactNativeAndroidCompatibility: NativeCompatibilityOffer = Object.freeze({
-  ...coreBluetoothCompatibility,
-  nativeProtocol: versionRange(version('native-protocol', 2), version('native-protocol', 2))
-})
+export {
+  REACT_NATIVE_ANDROID_BACKEND_ID,
+  REACT_NATIVE_ANDROID_PLATFORM_ID,
+  REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION,
+  REACT_NATIVE_ANDROID_DEFAULT_ADAPTER_NATIVE_ID,
+  reactNativeAndroidCompatibility,
+  reactNativeAndroidDefaultAdapterId
+}
 
 let nextBoundaryOwner = 1
 
@@ -409,8 +406,4 @@ function allocateBoundaryOwnerId(): string {
   const ordinal = nextBoundaryOwner
   nextBoundaryOwner += 1
   return `react-native-android-owner-${ordinal}`
-}
-
-export function reactNativeAndroidDefaultAdapterId() {
-  return opaqueId(REACT_NATIVE_ANDROID_DEFAULT_ADAPTER_NATIVE_ID, 'adapter', 'react-native-android')
 }

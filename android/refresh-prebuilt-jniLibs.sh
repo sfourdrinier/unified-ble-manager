@@ -3,10 +3,13 @@
 #
 # Rebuilds the COMMITTED release cdylibs shipped to packed consumers
 # (android/src/main/jniLibs/<abi>/libubm5_jni_echo.so) plus the
-# build-identity.txt provenance file the Gradle packed path verifies
-# (presence, bytes, sha256 per ABI). Run this on the pinned toolchain with
-# NDK 27.x whenever the Rust inputs change (bindings/jni, crates, Cargo
-# manifests/lock, toolchain pin); commit the refreshed tree.
+# build-identity.json the Gradle prebuilt path verifies (presence, bytes,
+# sha256 per ABI). PR210-18: the record also carries the sealed sourceDigest
+# and bindingSchema the binaries were built with; the publish gate
+# (`node scripts/release/native-build-identity.js --check-android-prebuilts`)
+# fails whenever they differ from the current Rust sources, so run this on
+# the pinned toolchain with NDK 27.x whenever those inputs change, and
+# commit the refreshed tree.
 #
 # This is a MAINTAINER step, not part of `prepack`: packing and consuming
 # must never require NDK/Rust. The committed tree is the source of truth;
@@ -25,18 +28,23 @@ fail() { echo "refresh-prebuilt-jniLibs: FAIL $1" >&2; exit 1; }
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/android/src/main/jniLibs"
 BUILDER="$ROOT/android/build-rust-cdylib.sh"
-IDENTITY="$OUT/build-identity.txt"
+IDENTITY="$OUT/build-identity.json"
 
 [ -x "$BUILDER" ] || fail "builder missing: $BUILDER"
-command -v git >/dev/null 2>&1 || fail "git not on PATH (needed for source-sha provenance)"
+NODE="${NODE_BINARY:-node}"
+command -v "$NODE" >/dev/null 2>&1 || fail "Node is required for the build identity (set NODE_BINARY or put node on PATH)"
+IDENTITY_SCRIPT="$ROOT/scripts/release/native-build-identity.js"
 
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT INT TERM
 
 PINNED_TOOLCHAIN="$(grep -E '^channel[[:space:]]*=' "$ROOT/rust-toolchain.toml" | sed -E 's/.*"([^"]+)".*/\1/')"
 RUSTC_LINE="$(rustup run "$PINNED_TOOLCHAIN" rustc --version 2>/dev/null || echo unknown)"
-SOURCE_SHA="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
-SOURCE_DESC="$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || echo unknown)"
+# The digests every ABI is built with (the builder computes the same values
+# and embeds them); recorded once, verified against the sources at the end.
+IDENTITY_ENV="$("$NODE" "$IDENTITY_SCRIPT" --root "$ROOT" --write --print-env jni)" || fail "identity computation failed"
+SOURCE_DIGEST="$(printf '%s\n' "$IDENTITY_ENV" | sed -n 's/^UBM_BUILD_SOURCE_DIGEST=//p')"
+BINDING_SCHEMA="$(printf '%s\n' "$IDENTITY_ENV" | sed -n 's/^UBM_BUILD_BINDING_SCHEMA=//p')"
 SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}}"
 NDK_VERSION="unknown"
 if [ -n "${ANDROID_NDK_HOME:-}" ] && [ -d "$ANDROID_NDK_HOME" ]; then
@@ -46,17 +54,6 @@ else
     if [ -d "$candidate" ]; then NDK_VERSION="$(basename "$candidate")"; break; fi
   done
 fi
-
-{
-  echo "# Committed UBM 5.0 Android prebuilts. Maintained by"
-  echo "# android/refresh-prebuilt-jniLibs.sh — do not hand-edit."
-  echo "profile=$PROFILE"
-  echo "abis=$(printf '%s' "$ABIS" | tr ' ' ',')"
-  echo "toolchain=$PINNED_TOOLCHAIN ($RUSTC_LINE)"
-  echo "ndk=$NDK_VERSION"
-  echo "source-sha=$SOURCE_SHA"
-  echo "source-describe=$SOURCE_DESC"
-} > "$IDENTITY.tmp"
 
 for abi in $ABIS; do
   echo "refresh-prebuilt-jniLibs: building $abi/$PROFILE"
@@ -81,12 +78,17 @@ for abi in $ABIS; do
     || fail "16 KB page-size check failed for $abi (see output above)"
   mkdir -p "$OUT/$abi"
   cp -f "$BUILT" "$OUT/$abi/$LIB"
-  sha="$(sha256sum "$OUT/$abi/$LIB" | cut -d' ' -f1)"
-  bytes="$(wc -c < "$OUT/$abi/$LIB")"
-  echo "abi=$abi sha256=$sha bytes=$bytes file=$LIB" >> "$IDENTITY.tmp"
-  echo "refresh-prebuilt-jniLibs: OK $abi ($bytes bytes sha256:$sha)"
+  echo "refresh-prebuilt-jniLibs: OK $abi ($(wc -c < "$OUT/$abi/$LIB" | tr -d ' ') bytes)"
 done
 
-mv -f "$IDENTITY.tmp" "$IDENTITY"
+"$NODE" "$IDENTITY_SCRIPT" --root "$ROOT" --write-android-identity \
+  --dir "$OUT" \
+  --source-digest "$SOURCE_DIGEST" \
+  --binding-schema "$BINDING_SCHEMA" \
+  --profile "$PROFILE" \
+  --toolchain "$PINNED_TOOLCHAIN ($RUSTC_LINE)" \
+  --ndk "$NDK_VERSION" || fail "could not write $IDENTITY"
+"$NODE" "$IDENTITY_SCRIPT" --root "$ROOT" --check-android-prebuilts \
+  || fail "the refreshed prebuilts do not match the current sources (did they change during the build?)"
 echo "refresh-prebuilt-jniLibs: wrote $IDENTITY"
 cat "$IDENTITY"

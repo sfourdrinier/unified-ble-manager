@@ -58,13 +58,28 @@ pnpm add unified-ble-manager
 
 Installable with npm, yarn, or Bun. This repository uses pnpm. Bun as a runtime is not a tested host.
 
-Linux BlueZ also needs the optional D-Bus peer in the **application**:
+Node and Electron on macOS, Windows and Linux use the shared Rust core,
+shipped prebuilt in the package for `darwin`, `win32` and `linux` on
+`arm64`/`x64`: nothing compiles on install, no Rust toolchain is needed, and
+no other package is required (Linux no longer needs `dbus-next`). Linux needs
+glibc 2.35+ and `libdbus-1.so.3`; see [`docs/NODE.md`](docs/NODE.md) for the
+runtime requirements and load errors.
 
-```sh
-pnpm add unified-ble-manager dbus-next@^0.10.2
-```
+React Native iOS and Android consume the prebuilt Rust core shipped in the
+package by default: no Rust toolchain is needed. `UBM_NATIVE_BUILD` accepts
+only unset/empty or `prebuilt` (default) and `source` (contributors building
+the Rust core themselves; see `CONTRIBUTING.md`); any other value fails
+`pod install` and the Gradle build.
 
-React Native, Web, macOS CoreBluetooth, and Windows WinRT do not need `dbus-next`.
+Every React Native and Expo factory runs that core through the
+`UnifiedBleRustCore` TurboModule: one process-owned Rust owner per app, one
+session lease per manager. There is no TypeScript or protocol-control route and
+no option to request one. Before its first radio call the factory checks the
+binary's build identity, contract revision and wire revision against the
+identity this package was sealed with, and fails `protocol.incompatible` on any
+difference. Platform events reach JavaScript through one wake-driven drain, so
+an idle manager makes no bridge calls. The wire is described in
+[`docs/MOBILE_RUST_WIRE.md`](docs/MOBILE_RUST_WIRE.md).
 
 ## Public entrypoints
 
@@ -80,9 +95,9 @@ The root import selects no radio. Import the host you actually run.
 | `unified-ble-manager/electron/main`      | Trusted Electron-main radio + IPC router                                       |
 | `unified-ble-manager/electron/renderer`  | Public `BleManager` factory over an authenticated IPC transport; never a radio |
 | `unified-ble-manager/tauri`              | Tauri v2 zero-plumbing `BleManager` factory                                    |
-| `unified-ble-manager/node/corebluetooth` | macOS CoreBluetooth Node provider                                              |
-| `unified-ble-manager/node/winrt`         | Windows WinRT Node provider                                                    |
-| `unified-ble-manager/node/bluez`         | Linux BlueZ D-Bus provider                                                     |
+| `unified-ble-manager/node/corebluetooth` | macOS Node provider (shared Rust core over CoreBluetooth)                      |
+| `unified-ble-manager/node/winrt`         | Windows Node provider (shared Rust core over WinRT)                            |
+| `unified-ble-manager/node/bluez`         | Linux Node provider (shared Rust core over BlueZ)                              |
 | `unified-ble-manager/backend-sdk`        | Backend authoring contract                                                     |
 | `unified-ble-manager/testing`            | Deterministic backend and TCK utilities                                        |
 | `unified-ble-manager/codecs`             | Byte/`DataView` helpers and IEEE-11073 numbers — not Base64                    |
@@ -347,7 +362,7 @@ after disconnect, service change, or rediscovery.
 
 - **Web:** user-gesture `ble.choose()`, then the same `connect` / GATT handles. No continuous scan. [`docs/WEB.md`](docs/WEB.md)
 - **Electron:** main owns the radio; the renderer creates the public manager from its authenticated preload transport. [`docs/ELECTRON.md`](docs/ELECTRON.md)
-- **Node:** `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager`, or list adapters and `createBleManagerFromProvider`. Published releases ship Node-API v8 prebuilds for macOS and Windows `arm64`/`x64`. [`docs/NODE.md`](docs/NODE.md)
+- **Node:** `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager`, or list adapters and `createBleManagerFromProvider`. Published releases ship the Node-API desktop-core prebuild for macOS, Windows and Linux on `arm64`/`x64`. [`docs/NODE.md`](docs/NODE.md)
 - **Tauri:** `createTauriBleManager()` returns the public `BleManager`; test transports use `createTauriBleManagerWithEnvironment`. [`docs/TAURI.md`](docs/TAURI.md)
 
 Stable 4.x versions publish to npm `latest`. Later prereleases, if any, publish to `next`. Publication uses npm trusted publishing/OIDC with provenance.

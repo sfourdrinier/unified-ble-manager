@@ -6,12 +6,15 @@
 // an explicit native distribution strategy, and nothing here publishes,
 // tags, or merges.
 //
-// Native distribution strategy (F01): the packed tarball ships the Rust
-// sources (crates/ + bindings/), the committed Android jniLibs prebuilts,
-// and the F23 content-fingerprint seal. Packed consumers build dispatch
-// addons from those shipped sources and verify package/core/fingerprint
-// identity at runtime; no stray prebuilt .node binary rides along, and the
-// Rust trees stay off the npm export map (direct-path loads only).
+// Native distribution strategy (PR210-03, supersedes F01): the packed
+// tarball ships verified per-platform prebuilt desktop-core N-API addons
+// under native/desktop-core/prebuilds/<platform>-<arch>/, each with an
+// identity sidecar (sha256 + the binary's own nativeBuildIdentity()). Packed
+// consumers never build Rust: the loader (native/desktop-core/index.js)
+// loads exactly this platform's prebuild from its own location and the JS
+// host checks its identity before any radio call. The Rust sources still
+// ship (Tauri builds them), the F23 fingerprint seal ships, no binary under
+// bindings/ ships, and the Rust trees stay off the npm export map.
 //
 // What this proves (fail-closed, offline unless a tarball/consumer is given):
 //   A. every new 5.0 Rust crate carries publish=false + a resolvable SAL
@@ -23,15 +26,18 @@
 //      hooks, contracts) and the lane version is exactly a 5.0.0-rc.N
 //      prerelease (never a final 5.x shipment claim, never an older lane);
 //   C. (--tarball) the packed tarball contains the Rust source trees, the
-//      fingerprint seal, no stray .node binaries, the license trio, and the
-//      same export guard on the packed manifest;
+//      fingerprint seal, the license trio, the same export guard on the
+//      packed manifest, no .node outside the maintained prebuild paths (zero
+//      under bindings/), and every desktop-core prebuild paired with a
+//      sidecar naming its exact sha256. With --require-all-prebuilds it must
+//      carry all six desktop-core targets (the release tarball);
 //   D. (--consumer) an installed packed consumer cannot resolve the dev-only
 //      subpaths, the shipped ./testing entry exposes no Rust/fault-hook
 //      constructors, the Rust source trees are installed for dispatch
 //      builds, and the license trio is installed.
 //
 // Usage:
-//   node scripts/ci/check-napi-artifact-packaging.js [--tarball <tgz>] [--consumer <dir>]
+//   node scripts/ci/check-napi-artifact-packaging.js [--tarball <tgz> [--require-all-prebuilds]] [--consumer <dir>]
 //
 // The fast path (no flags) runs A+B only and needs no build.
 
@@ -199,18 +205,52 @@ function checkSourceExportMap() {
 }
 
 // Section C: packed tarball assertions.
-function checkPackedTarball(tarballPath) {
+function checkPackedTarball(tarballPath, requireAllPrebuilds = false) {
+  const crypto = require('crypto')
   const { readTarball } = require('./verify-package-tarballs')
   const { NATIVE_PREBUILD_TARGETS } = require('../native-prebuilds/targets')
   const allowedPrebuilds = new Set(NATIVE_PREBUILD_TARGETS.map(target => `package/${target.prebuildPath}`))
   const files = readTarball(path.resolve(tarballPath))
   for (const entryPath of files.keys()) {
+    if (entryPath.startsWith('package/bindings/') && entryPath.endsWith('.node')) {
+      fail(`packed tarball ships a checkout-built binding: ${entryPath}`)
+    }
     if (entryPath.endsWith('.node') && !allowedPrebuilds.has(entryPath)) {
       fail(`packed tarball contains a non-prebuild native binary: ${entryPath}`)
     }
   }
-  // F01 native distribution: packed consumers build dispatch addons from
-  // the shipped Rust sources, so every 5.0 crate manifest must be present.
+  const desktopCore = NATIVE_PREBUILD_TARGETS.filter(target => target.backend === 'desktop-core')
+  let shippedDesktopCore = 0
+  let desktopCoreBytes = 0
+  for (const target of desktopCore) {
+    const binary = files.get(`package/${target.prebuildPath}`)
+    if (binary === undefined) {
+      if (requireAllPrebuilds) fail(`packed tarball is missing the desktop-core prebuild ${target.prebuildPath}`)
+      continue
+    }
+    const sidecarBytes = files.get(`package/${target.sidecarPath}`)
+    if (sidecarBytes === undefined) fail(`packed desktop-core prebuild ${target.prebuildPath} has no sidecar`)
+    const sidecar = JSON.parse(sidecarBytes.toString('utf8'))
+    const digest = crypto.createHash('sha256').update(binary).digest('hex')
+    if (sidecar.schema !== 'ubm-desktop-core-prebuild/1' || sidecar.sha256 !== digest) {
+      fail(`packed sidecar ${target.sidecarPath} does not name its binary (sha256 ${digest})`)
+    }
+    const identity = JSON.parse(sidecar.identity)
+    if (identity.profile !== 'release' || identity.target !== target.rustTarget) {
+      fail(`packed desktop-core prebuild ${target.prebuildPath} is not a release build for ${target.rustTarget}`)
+    }
+    shippedDesktopCore += 1
+    desktopCoreBytes += binary.length
+  }
+  if (!files.has('package/native/desktop-core/index.js')) {
+    fail('packed tarball is missing the desktop-core loader package/native/desktop-core/index.js')
+  }
+  console.log(
+    `napi-artifact-packaging-proof: desktop-core prebuilds ${shippedDesktopCore}/${desktopCore.length} ` +
+      `(${desktopCoreBytes} bytes of addons; each sidecar names its sha256)`
+  )
+  // The Rust sources keep shipping (Tauri consumers build them), so every
+  // 5.0 crate manifest must be present.
   for (const crate of NEW_RUST_CRATES) {
     if (!files.has(`package/${crate}/Cargo.toml`)) {
       fail(`packed tarball is missing Rust source manifest package/${crate}/Cargo.toml`)
@@ -233,7 +273,7 @@ function checkPackedTarball(tarballPath) {
     )
   }
   console.log(
-    `napi-artifact-packaging-proof: tarball clean (${files.size} entries, Rust sources + fingerprint seal present, no stray .node, license trio present)`
+    `napi-artifact-packaging-proof: tarball clean (${files.size} entries, Rust sources + fingerprint seal present, no stray .node, license trio present, tarball ${fs.statSync(path.resolve(tarballPath)).size} bytes)`
   )
 }
 
@@ -279,8 +319,11 @@ function checkPackedConsumer(consumerDir) {
   }
   for (const tree of ['bindings', 'crates']) {
     if (!fs.existsSync(path.join(packageRoot, tree))) {
-      fail(`installed packed consumer is missing ${tree}/ (F01 ships Rust sources for dispatch builds)`)
+      fail(`installed packed consumer is missing ${tree}/ (the Rust sources ship for Tauri builds)`)
     }
+  }
+  if (!fs.existsSync(path.join(packageRoot, 'native', 'desktop-core', 'index.js'))) {
+    fail('installed packed consumer is missing native/desktop-core/index.js (the desktop core loader)')
   }
   if (!fs.existsSync(path.join(packageRoot, 'lib', 'ubm-build-fingerprint.json'))) {
     fail('installed packed consumer is missing lib/ubm-build-fingerprint.json (F23 seal)')
@@ -291,7 +334,7 @@ function checkPackedConsumer(consumerDir) {
 function runNapiArtifactPackagingProof(options = {}) {
   checkRustCrateMetadata()
   checkSourceExportMap()
-  if (options.tarballPath !== undefined) checkPackedTarball(options.tarballPath)
+  if (options.tarballPath !== undefined) checkPackedTarball(options.tarballPath, options.requireAllPrebuilds === true)
   if (options.consumerDir !== undefined) checkPackedConsumer(options.consumerDir)
   console.log('napi-artifact-packaging-proof PASS')
   return true
@@ -306,6 +349,10 @@ function parseArguments(argv) {
       if (!value) fail('--tarball requires a path')
       options.tarballPath = value
       index += 1
+      continue
+    }
+    if (argument === '--require-all-prebuilds') {
+      options.requireAllPrebuilds = true
       continue
     }
     if (argument === '--consumer') {

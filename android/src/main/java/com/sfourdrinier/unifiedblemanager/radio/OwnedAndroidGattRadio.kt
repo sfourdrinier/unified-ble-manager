@@ -232,7 +232,9 @@ internal class OwnedAndroidSubscriptionOwnership<K> {
 internal class AndroidGattOperationFailure(
   val operation: String,
   val gattStatus: Int?,
-  val isLinkLoss: Boolean = gattStatus == ANDROID_GATT_LINK_LOSS_STATUS
+  val isLinkLoss: Boolean = gattStatus == ANDROID_GATT_LINK_LOSS_STATUS,
+  /** False when Android refused the request synchronously, before anything reached the peer. */
+  val submitted: Boolean = true
 ) : IllegalStateException(
   when {
     gattStatus != null -> "$operation status=$gattStatus"
@@ -241,7 +243,28 @@ internal class AndroidGattOperationFailure(
   }
 )
 
+/**
+ * Android refused to start a GATT request (the legacy `BluetoothGatt`
+ * boolean API returned false): nothing reached the peer.
+ */
+internal class AndroidGattNotSubmitted(message: String) : IllegalStateException(message)
+
+/**
+ * The GATT link went down (peer or app disconnect, a failed connect, or a
+ * close that never saw DISCONNECTED) while this operation was pending or
+ * queued (finding 132). Legacy's dispatcher failed every pending command with
+ * `connectionLost`. [submitted] is false for work still queued behind the
+ * in-flight operation; [gattStatus] is the disconnect callback's status.
+ */
+internal class AndroidGattLinkLost(
+  reason: String,
+  val gattStatus: Int?,
+  val submitted: Boolean
+) : IllegalStateException(reason)
+
 internal const val ANDROID_GATT_LINK_LOSS_STATUS = 19
+/** Pending work failed by an adapter loss stays a platform failure (legacy). */
+internal const val ADAPTER_UNAVAILABLE_REASON = "adapter unavailable"
 internal const val ANDROID_PROPERTY_NOTIFY = 0x10
 internal const val ANDROID_PROPERTY_INDICATE = 0x20
 internal val ANDROID_CCCD_ENABLE_NOTIFICATION = byteArrayOf(0x01, 0x00)
@@ -613,11 +636,14 @@ class OwnedAndroidGattRadio private constructor(
   private val deviceQueues = ConcurrentHashMap<String, GattSerialQueue>()
   private val nextGattOperationId = AtomicLong(1L)
 
+  /** The connectGatt parameters of one pending (re)connect: autoConnect and the PHY mask (0 = none). */
+  private data class PendingConnect(val autoConnect: Boolean, val phyMask: Int)
+
   /**
-   * autoConnect flag for a reconnect that must wait until the prior GATT reports
+   * Connect parameters for a reconnect that must wait until the prior GATT reports
    * [BluetoothProfile.STATE_DISCONNECTED] before [BluetoothDevice.connectGatt] (R3-F003).
    */
-  private val pendingReconnect = ConcurrentHashMap<String, Boolean>()
+  private val pendingReconnect = ConcurrentHashMap<String, PendingConnect>()
   private val pendingDisconnectCallbacks = ConcurrentHashMap<String, (OwnedRadioTeardownFailure?) -> Unit>()
 
   /** Physical cleanup that failed after public cancellation or a remote rejection. */
@@ -1125,7 +1151,11 @@ class OwnedAndroidGattRadio private constructor(
     Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
       context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
 
-  fun connect(deviceId: String, autoConnect: Boolean) {
+  /**
+   * [phyMask]: `BluetoothDevice.PHY_LE_*_MASK` bits the link is established on
+   * (`connectGatt(…, TRANSPORT_LE, phy)`, API 26+); 0 keeps the platform default.
+   */
+  fun connect(deviceId: String, autoConnect: Boolean, phyMask: Int = 0) {
     val key = deviceId.uppercase()
     check(!pendingGattTeardowns.containsKey(key)) {
       "Android GATT cleanup is still pending for $deviceId"
@@ -1139,7 +1169,7 @@ class OwnedAndroidGattRadio private constructor(
       clearCharCacheForDevice(key)
       deviceQueues.remove(key)?.clear()
       discovered.remove(key)
-      pendingReconnect[key] = autoConnect
+      pendingReconnect[key] = PendingConnect(autoConnect, phyMask)
       scheduleSafeClose(key, prior)
       try {
         prior.disconnect()
@@ -1150,11 +1180,11 @@ class OwnedAndroidGattRadio private constructor(
           "Android GATT cleanup failed before reconnect",
           teardownFailure.throwable
         )
-        openGatt(deviceId, key, autoConnect)
+        openGatt(deviceId, key, autoConnect, phyMask)
       }
       return
     }
-    openGatt(deviceId, key, autoConnect)
+    openGatt(deviceId, key, autoConnect, phyMask)
   }
 
   internal fun disconnect(
@@ -1204,7 +1234,7 @@ class OwnedAndroidGattRadio private constructor(
     return cleanupFailure
   }
 
-  private fun openGatt(deviceId: String, key: String, autoConnect: Boolean) {
+  private fun openGatt(deviceId: String, key: String, autoConnect: Boolean, phyMask: Int) {
     pendingReconnect.remove(key)
     val a = adapter ?: throw IllegalStateException("Bluetooth adapter unavailable")
     val device = try {
@@ -1213,8 +1243,13 @@ class OwnedAndroidGattRadio private constructor(
       throw IllegalStateException("Android rejected Bluetooth device $deviceId", throwable)
     }
     val gatt = try {
-      device.connectGatt(context, autoConnect, gattCallback, BluetoothDevice.TRANSPORT_LE)
-        ?: throw IllegalStateException("Android returned no BluetoothGatt for $deviceId")
+      val opened = when {
+        phyMask == 0 -> device.connectGatt(context, autoConnect, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ->
+          device.connectGatt(context, autoConnect, gattCallback, BluetoothDevice.TRANSPORT_LE, phyMask)
+        else -> throw UnsupportedOperationException("connectGatt with a PHY preference needs API 26")
+      }
+      opened ?: throw IllegalStateException("Android returned no BluetoothGatt for $deviceId")
     } catch (throwable: Exception) {
       throw IllegalStateException("Android could not open BluetoothGatt for $deviceId", throwable)
     }
@@ -1278,10 +1313,10 @@ class OwnedAndroidGattRadio private constructor(
           pendingDisconnectCallbacks.remove(key)?.invoke(teardownFailure)
           if (teardownFailure != null) return@Runnable
           // If a reconnect was queued, attempt it after forced teardown.
-          pendingReconnect.remove(key)?.let { autoConnect ->
+          pendingReconnect.remove(key)?.let { pending ->
             try {
               // device address is the key uppercased; openGatt needs original or upper — both OK.
-              openGatt(key, key, autoConnect)
+              openGatt(key, key, pending.autoConnect, pending.phyMask)
             } catch (t: Throwable) {
               OwnedAndroidLog.e("reconnect after close timeout", t)
               dispatchConnectionState(key, false, BluetoothGatt.GATT_FAILURE)
@@ -1632,7 +1667,7 @@ class OwnedAndroidGattRadio private constructor(
             removeAndroidWritePayloadIfSame(exactWriteValues, characteristic, observedPayload)
             completeExactByte(
               pending,
-              Result.failure(classifyAndroidGattOperationFailure("characteristic-write", status))
+              Result.failure(AndroidGattOperationFailure("characteristic-write", status, submitted = false))
             )
           }
         }
@@ -1647,7 +1682,7 @@ class OwnedAndroidGattRadio private constructor(
             removeAndroidWritePayloadIfSame(exactWriteValues, characteristic, observedPayload)
             completeExactByte(
               pending,
-              Result.failure(IllegalStateException("writeCharacteristic failed to start"))
+              Result.failure(AndroidGattNotSubmitted("writeCharacteristic failed to start"))
             )
           }
         }
@@ -2305,7 +2340,7 @@ class OwnedAndroidGattRadio private constructor(
           if (exactDescriptorWritePending.remove(descriptor, pending)) {
             completeExactUnit(
               pending,
-              Result.failure(IllegalStateException("writeDescriptor failed to start status=$status"))
+              Result.failure(AndroidGattNotSubmitted("writeDescriptor failed to start status=$status"))
             )
           }
         }
@@ -2316,7 +2351,7 @@ class OwnedAndroidGattRadio private constructor(
         val started = gatt.writeDescriptor(descriptor)
         if (!started) {
           if (exactDescriptorWritePending.remove(descriptor, pending)) {
-            completeExactUnit(pending, Result.failure(IllegalStateException("writeDescriptor failed to start")))
+            completeExactUnit(pending, Result.failure(AndroidGattNotSubmitted("writeDescriptor failed to start")))
           }
         }
       }
@@ -2374,7 +2409,7 @@ class OwnedAndroidGattRadio private constructor(
     pendingDeviceKeys.addAll(exactRegistrationPending.values.map { it.deviceKeyUpper })
     pendingDeviceKeys.addAll(exactDescriptorReadPending.values.map { it.deviceKeyUpper })
     pendingDeviceKeys.addAll(exactDescriptorWritePending.values.map { it.deviceKeyUpper })
-    pendingDeviceKeys.forEach { key -> failPendingForDevice(key, "radio destroyed") }
+    pendingDeviceKeys.forEach { key -> failPendingForDevice(key, "radio destroyed", linkLost = false) }
     // failPendingForDevice may create retryable CCCD rollback ownership; include
     // that cleanup in this destroy receipt rather than reducing it to a log.
     failures.addAll(retryCleanupLedger())
@@ -2448,7 +2483,7 @@ class OwnedAndroidGattRadio private constructor(
   private fun enqueue(
     deviceId: String,
     onCancelled: () -> Unit = {},
-    onStartFailure: (Throwable) -> Unit = {},
+    onStartFailure: (Throwable) -> Unit = GattSerialQueue.NO_START_FAILURE,
     op: (token: GattSerialQueue.GattOperationToken, done: () -> Unit) -> Unit
   ): Long {
     val key = deviceId.uppercase()
@@ -2497,16 +2532,27 @@ class OwnedAndroidGattRadio private constructor(
       }
   }
 
+  /**
+   * Fails every operation pending for one device. By default the link went
+   * down (disconnect, failed connect, close timeout, reconnect), so each
+   * failure is an [AndroidGattLinkLost] carrying [gattStatus], as legacy's
+   * dispatcher reported `connectionLost` (finding 132). Adapter loss, a
+   * database change and destroy pass `linkLost = false`: those stay plain
+   * platform failures.
+   */
   private fun failPendingForDevice(
     deviceKeyUpper: String,
     reason: String,
-    gattStatus: Int? = null
+    gattStatus: Int? = null,
+    linkLost: Boolean = reason != ADAPTER_UNAVAILABLE_REASON
   ) {
+    fun failure(submitted: Boolean): Throwable =
+      if (linkLost) AndroidGattLinkLost(reason, gattStatus, submitted) else IllegalStateException(reason)
     effectiveMtuByDevice.remove(deviceKeyUpper)
-    deviceQueues.remove(deviceKeyUpper)?.clear(IllegalStateException(reason))
-    val failBytes = Result.failure<ByteArray?>(IllegalStateException(reason))
-    val failInt = Result.failure<Int>(IllegalStateException(reason))
-    val failUnit = Result.failure<Unit>(IllegalStateException(reason))
+    deviceQueues.remove(deviceKeyUpper)?.clear(failure(submitted = false))
+    val failBytes = Result.failure<ByteArray?>(failure(submitted = true))
+    val failInt = Result.failure<Int>(failure(submitted = true))
+    val failUnit = Result.failure<Unit>(failure(submitted = true))
     // A peer link-loss callback can win the race with an asynchronous GATT
     // callback. Keep that exact Android status on pending CCCD work so the
     // protocol boundary reports connectionLost instead of flattening the race
@@ -2528,10 +2574,10 @@ class OwnedAndroidGattRadio private constructor(
     pendingMtu.remove("mtu:$deviceKeyUpper")?.invoke(failInt)
     pendingRssi.remove("rssi:$deviceKeyUpper")?.invoke(failInt)
     pendingPhyReads.remove("phyRead:$deviceKeyUpper")?.invoke(
-      Result.failure(IllegalStateException(reason))
+      Result.failure(failure(submitted = true))
     )
     pendingPhyRequests.remove("phyRequest:$deviceKeyUpper")?.invoke(
-      Result.failure(IllegalStateException(reason))
+      Result.failure(failure(submitted = true))
     )
     pendingDesc.keys
       .filter { key ->
@@ -2929,9 +2975,9 @@ class OwnedAndroidGattRadio private constructor(
         pendingDisconnectCallbacks.remove(key)?.invoke(teardownFailure)
         if (teardownFailure != null) return
         // Reconnect that waited for a clean prior teardown.
-        pendingReconnect.remove(key)?.let { autoConnect ->
+        pendingReconnect.remove(key)?.let { pending ->
           try {
-            openGatt(id, key, autoConnect)
+            openGatt(id, key, pending.autoConnect, pending.phyMask)
           } catch (t: Throwable) {
             OwnedAndroidLog.e("reconnect after DISCONNECTED", t)
             dispatchConnectionState(id, false, BluetoothGatt.GATT_FAILURE)
@@ -3292,7 +3338,7 @@ class OwnedAndroidGattRadio private constructor(
       val id = gatt.device.address
       val key = id.uppercase()
       val generation = gattGenerationByInstance[gatt] ?: return
-      failPendingForDevice(key, "GATT database changed")
+      failPendingForDevice(key, "GATT database changed", linkLost = false)
       invalidateNativeSubscriptionsForDatabaseChange(key, gatt, generation)
       discovered.remove(key)
       clearCharCacheForDevice(key)
@@ -3345,12 +3391,12 @@ class OwnedAndroidGattRadio private constructor(
     private var running: RunningOperation? = null
 
     fun submit(op: (done: () -> Unit) -> Unit, onCancelled: () -> Unit): Long =
-      submitCancellable({ _, done -> op(done) }, onCancelled, {})
+      submitCancellable({ _, done -> op(done) }, onCancelled, NO_START_FAILURE)
 
     fun submitCancellable(
       op: (token: GattOperationToken, done: () -> Unit) -> Unit,
       onCancelled: () -> Unit,
-      onStartFailure: (Throwable) -> Unit = {}
+      onStartFailure: (Throwable) -> Unit = NO_START_FAILURE
     ): Long {
       val operation = QueuedOperation(
         idProvider?.invoke() ?: nextOperationId.getAndIncrement(),
@@ -3410,7 +3456,12 @@ class OwnedAndroidGattRadio private constructor(
         if (active == null) busy.set(false)
       }
       cancelled.forEach { operation ->
-        invokeCancellation(operation, reason)
+        if (reason is AndroidGattLinkLost && operation.startFailure !== NO_START_FAILURE) {
+          // Never started: its caller learns the link loss itself (132).
+          if (operation.token.markPubliclySettled()) invokeStartFailure(operation, reason, settled = true)
+        } else {
+          invokeCancellation(operation, reason)
+        }
       }
       // The pending callback is the physical-settlement owner for an
       // in-flight non-abortable Android request. failPendingForDevice()
@@ -3466,9 +3517,9 @@ class OwnedAndroidGattRadio private constructor(
       }
     }
 
-    private fun invokeStartFailure(operation: QueuedOperation, error: Throwable) {
+    private fun invokeStartFailure(operation: QueuedOperation, error: Throwable, settled: Boolean = false) {
       if (!operation.startFailureDelivered.compareAndSet(false, true)) return
-      if (operation.token.isPubliclySettled()) return
+      if (!settled && operation.token.isPubliclySettled()) return
       try {
         operation.startFailure.invoke(error)
       } catch (throwable: Throwable) {
@@ -3477,6 +3528,11 @@ class OwnedAndroidGattRadio private constructor(
     }
 
     private fun schedule(task: () -> Unit): Boolean = post?.invoke(task) ?: handler?.post(task) ?: false
+
+    companion object {
+      /** An operation that did not ask to hear why it never started. */
+      val NO_START_FAILURE: (Throwable) -> Unit = {}
+    }
   }
 
   companion object {

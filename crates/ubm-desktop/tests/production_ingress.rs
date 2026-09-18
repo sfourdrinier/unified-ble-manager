@@ -16,12 +16,12 @@
 //!   mode, no `biased;` — tokio picks the first branch randomly) between the
 //!   real flooded ingress receiver and a scripted control source, mirroring
 //!   `BtleplugRadio::next_event`;
-//! * ambiguity: the real [`NotificationRoute::matches`] filter inside two
-//!   live real forwarders, the real [`route_is_ambiguous`] gate over the
-//!   real [`live_scopes`], and the real [`ambiguous_routing_error`];
-//! * setup failure: the real [`subscribe_and_stream`] sequencing
-//!   (subscribe-ok-then-notifications-err split with compensating rollback)
-//!   folded through the real [`apply_enable_stream_failure`];
+//! * instance routing: the real [`NotificationRoute::matches`] filter inside
+//!   live real forwarders, for same-UUID characteristics under two services
+//!   and same-UUID instances under one service (UBM_PATCHES.md #6);
+//! * setup: the real [`subscribe_and_stream`] sequencing (the stream opens
+//!   before the enable, finding 128), including a value sent the moment the
+//!   enable lands;
 //! * teardown failure: the real [`unsubscribe_and_fold`] (native-first,
 //!   forwarder retained on failure) with values proven to keep flowing
 //!   through the real retained forwarder, then a succeeding retry;
@@ -58,9 +58,8 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use ubm_desktop::boundary::{FakeRadio, InstanceKey, RadioBoundary, RadioEvent};
 use ubm_desktop::btleplug_backend::{
     EnableStreamError, ForwardTarget, ForwarderEntry, NOTIFICATION_BYTES, NOTIFICATION_CAP,
-    NotificationRoute, NotificationStream, NotificationTransport, ambiguous_routing_error,
-    apply_enable_stream_failure, forwarder_key, ingress_release, ingress_try_reserve, live_scopes,
-    route_is_ambiguous, spawn_notification_forwarder, subscribe_and_stream, unsubscribe_and_fold,
+    NotificationRoute, NotificationStream, NotificationTransport, forwarder_key, ingress_release,
+    ingress_try_reserve, spawn_notification_forwarder, subscribe_and_stream, unsubscribe_and_fold,
 };
 
 const HRM_SERVICE: &str = "0000180d-0000-1000-8000-00805f9b34fb";
@@ -75,15 +74,20 @@ fn uuid(text: &str) -> uuid::Uuid {
 fn note(service: &str, characteristic: &str, value: Vec<u8>) -> ValueNotification {
     ValueNotification {
         uuid: uuid(characteristic),
+        instance: 0,
         service_uuid: uuid(service),
+        service_instance: 0,
         value,
+        lost_before: 0,
     }
 }
 
 fn characteristic(service: &str, characteristic: &str) -> Characteristic {
     Characteristic {
         uuid: uuid(characteristic),
+        instance: 0,
         service_uuid: uuid(service),
+        service_instance: 0,
         properties: CharPropFlags::NOTIFY,
         descriptors: BTreeSet::new(),
     }
@@ -269,21 +273,28 @@ async fn recv_notification(
 async fn f07_flood_real_forwarder_exact_drops_and_byte_bounds() {
     // Flood the REAL production forwarder while nobody drains: every
     // expectation is derived from the REAL caps, never restated. Each value
-    // is 2048 bytes so the BYTE bound (128 admits) binds strictly before
-    // the item bound (256) — this test is sensitive to byte accounting, not
-    // just channel capacity.
-    const NOTES: usize = 300;
+    // is 2048 bytes so the BYTE bound binds strictly before the item bound
+    // — this test is sensitive to byte accounting, not just channel
+    // capacity. 172 values more than the byte bound admits are sent.
     const VALUE_LEN: usize = 2048;
+    const OVERLOAD: usize = 172;
     let byte_admit = NOTIFICATION_BYTES as usize / VALUE_LEN;
-    let admitted = NOTES.min(NOTIFICATION_CAP).min(byte_admit);
-    let dropped_expected = (NOTES - admitted) as u64;
-    assert_eq!(byte_admit, 128, "fixture divides the byte cap exactly");
-    assert_eq!(admitted, 128, "the byte bound binds before the item bound");
-    assert_eq!(dropped_expected, 172, "exact expected overload drops");
+    assert_eq!(
+        byte_admit * VALUE_LEN,
+        NOTIFICATION_BYTES as usize,
+        "fixture divides the byte cap exactly"
+    );
+    assert!(
+        byte_admit < NOTIFICATION_CAP,
+        "the byte bound binds before the item bound"
+    );
+    let notes_sent = byte_admit + OVERLOAD;
+    let admitted = byte_admit;
+    let dropped_expected = OVERLOAD as u64;
 
     let handle = tokio::runtime::Handle::current();
     let scope = scope(PEER, HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
-    let notes: Vec<ValueNotification> = (0..NOTES)
+    let notes: Vec<ValueNotification> = (0..notes_sent)
         .map(|i| {
             note(
                 HRM_SERVICE,
@@ -293,7 +304,7 @@ async fn f07_flood_real_forwarder_exact_drops_and_byte_bounds() {
         })
         .collect();
     let mut ingress = ingress();
-    let route = NotificationRoute::new(uuid(HRM_SERVICE), uuid(HRM_MEASUREMENT));
+    let route = NotificationRoute::new(uuid(HRM_SERVICE), 0, uuid(HRM_MEASUREMENT), 0);
     let join = spawn_notification_forwarder(
         &handle,
         futures_util::stream::iter(notes),
@@ -317,21 +328,26 @@ async fn f07_flood_real_forwarder_exact_drops_and_byte_bounds() {
         (admitted * VALUE_LEN) as u64,
         "queued bytes sit exactly at the byte cap"
     );
-    assert_eq!(
-        ingress.receiver.len(),
-        admitted,
-        "channel holds every admit"
-    );
-
     // Drain through the REAL release path: bytes return to exactly zero and
-    // the queue empties — no leak, no negative accounting.
-    for _ in 0..admitted {
-        let event = recv_notification(&mut ingress.receiver, &ingress.queued).await;
-        assert!(
-            matches!(event, RadioEvent::Notification { .. }),
-            "flood carries only notifications"
-        );
+    // the queue empties — no leak, no negative accounting. Every refused
+    // value is also reported as this subscription's loss (finding 131).
+    let mut notifications = 0usize;
+    let mut reported_loss = 0u64;
+    while !ingress.receiver.is_empty() {
+        match recv_notification(&mut ingress.receiver, &ingress.queued).await {
+            RadioEvent::Notification { .. } => notifications += 1,
+            RadioEvent::NotificationsLost { lost, epoch, .. } => {
+                assert_eq!(epoch, 3, "on the subscription's own epoch");
+                reported_loss += lost;
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
+    assert_eq!(notifications, admitted, "channel holds every admit");
+    assert_eq!(
+        reported_loss, dropped_expected,
+        "every drop reported as loss"
+    );
     assert_eq!(
         ingress.queued.load(Ordering::Relaxed),
         0,
@@ -349,7 +365,8 @@ async fn f07_control_disconnect_delivered_under_flood() {
     // shape (default unbiased mode, exactly as `BtleplugRadio::next_event`:
     // no `biased;`) between the flooded data receiver and a scripted
     // control source. The exact disconnect must arrive despite the flood.
-    const VALUE_LEN: usize = 1024;
+    // Values fill the item and byte bounds together.
+    let value_len = NOTIFICATION_BYTES as usize / NOTIFICATION_CAP;
     let handle = tokio::runtime::Handle::current();
     let scope = scope(PEER, HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
     let notes: Vec<ValueNotification> = (0..NOTIFICATION_CAP)
@@ -357,12 +374,12 @@ async fn f07_control_disconnect_delivered_under_flood() {
             note(
                 HRM_SERVICE,
                 HRM_MEASUREMENT,
-                vec![(i % 251) as u8; VALUE_LEN],
+                vec![(i % 251) as u8; value_len],
             )
         })
         .collect();
     let mut ingress = ingress();
-    let route = NotificationRoute::new(uuid(HRM_SERVICE), uuid(HRM_MEASUREMENT));
+    let route = NotificationRoute::new(uuid(HRM_SERVICE), 0, uuid(HRM_MEASUREMENT), 0);
     let join = spawn_notification_forwarder(
         &handle,
         futures_util::stream::iter(notes),
@@ -439,7 +456,7 @@ async fn f09_same_characteristic_uuid_two_services_routes_only_to_owner() {
     let hrm = spawn_notification_forwarder(
         &handle,
         futures_util::stream::iter(air.clone()),
-        NotificationRoute::new(uuid(HRM_SERVICE), uuid(HRM_MEASUREMENT)),
+        NotificationRoute::new(uuid(HRM_SERVICE), 0, uuid(HRM_MEASUREMENT), 0),
         target_for(&scope_hrm, 7),
         ingress.sender.clone(),
         Arc::clone(&ingress.queued),
@@ -448,7 +465,7 @@ async fn f09_same_characteristic_uuid_two_services_routes_only_to_owner() {
     let battery = spawn_notification_forwarder(
         &handle,
         futures_util::stream::iter(air.clone()),
-        NotificationRoute::new(uuid(BATTERY_SERVICE), uuid(HRM_MEASUREMENT)),
+        NotificationRoute::new(uuid(BATTERY_SERVICE), 0, uuid(HRM_MEASUREMENT), 0),
         target_for(&scope_battery, 9),
         ingress.sender.clone(),
         Arc::clone(&ingress.queued),
@@ -505,181 +522,180 @@ async fn f09_same_characteristic_uuid_two_services_routes_only_to_owner() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn f09_duplicate_occurrence_enable_rejected_explicitly() {
-    // One REAL forwarder task owns (peer, HRM service 0, char 0). The native
-    // stream carries no occurrence identity, so enabling char occurrence 1
-    // of the same scope must be rejected explicitly — never fanned out.
+async fn f61_same_uuid_instances_of_one_scope_route_to_their_own_forwarders() {
+    // Two REAL forwarders own two same-UUID characteristics of one service
+    // (handles 0x12 and 0x15, occurrences 0 and 1). The air carries both
+    // instances; every value reaches only the forwarder of the instance
+    // that fired (UBM_PATCHES.md #6), so the second enablement is served,
+    // not refused.
     let handle = tokio::runtime::Handle::current();
-    let live_scope = scope(PEER, HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
-    // The push handle stays alive: dropping it would close the stream and
-    // end the installed forwarder.
-    let (_push, pending) = script_pair();
-    let task = spawn_notification_forwarder(
-        &handle,
-        pending,
-        NotificationRoute::new(uuid(HRM_SERVICE), uuid(HRM_MEASUREMENT)),
-        target_for(&live_scope, 11),
-        ingress().sender,
-        Arc::new(AtomicU64::new(0)),
-        Arc::new(AtomicU64::new(0)),
-    );
-    let key = forwarder_key(PEER, HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
-    let mut forwarders = HashMap::new();
-    forwarders.insert(
-        key.clone(),
-        ForwarderEntry {
-            task,
-            peer_id: live_scope.0.clone(),
-            service_uuid: live_scope.1.clone(),
-            service_occurrence: live_scope.2,
-            characteristic_uuid: live_scope.3.clone(),
-            characteristic_occurrence: live_scope.4,
-        },
-    );
-    let debt = HashSet::new();
-    let live = live_scopes(&forwarders, &debt);
-    assert_eq!(
-        live,
-        vec![live_scope.clone()],
-        "real table reports one live scope"
-    );
+    let first = scope(PEER, HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+    let second = scope(PEER, HRM_SERVICE, 0, HRM_MEASUREMENT, 1);
+    let at = |instance: u64, value: u8| ValueNotification {
+        uuid: uuid(HRM_MEASUREMENT),
+        instance,
+        service_uuid: uuid(HRM_SERVICE),
+        service_instance: 0x10,
+        value: vec![value],
+        lost_before: 0,
+    };
+    let air = vec![
+        at(0x12, 0x01),
+        at(0x15, 0x02),
+        at(0x12, 0x03),
+        at(0x15, 0x04),
+    ];
+    let mut ingress = ingress();
+    let tasks = [(0x12u64, &first, 21u64), (0x15, &second, 22)].map(|(instance, scope, epoch)| {
+        spawn_notification_forwarder(
+            &handle,
+            futures_util::stream::iter(air.clone()),
+            NotificationRoute::new(uuid(HRM_SERVICE), 0x10, uuid(HRM_MEASUREMENT), instance),
+            target_for(scope, epoch),
+            ingress.sender.clone(),
+            Arc::clone(&ingress.queued),
+            Arc::clone(&ingress.dropped),
+        )
+    });
+    for task in tasks {
+        tokio::time::timeout(Duration::from_secs(10), task)
+            .await
+            .expect("finite script drains")
+            .expect("forwarder never panics");
+    }
+    let mut by_occurrence: HashMap<u64, Vec<Vec<u8>>> = HashMap::new();
+    for _ in 0..4 {
+        match recv_notification(&mut ingress.receiver, &ingress.queued).await {
+            RadioEvent::Notification {
+                characteristic_occurrence,
+                epoch,
+                value,
+                ..
+            } => {
+                assert_eq!(epoch, 21 + characteristic_occurrence, "owner epoch");
+                by_occurrence
+                    .entry(characteristic_occurrence)
+                    .or_default()
+                    .push(value);
+            }
+            other => panic!("only notifications, saw {other:?}"),
+        }
+    }
     assert!(
-        route_is_ambiguous(&live, PEER, HRM_SERVICE, 0, HRM_MEASUREMENT, 1),
-        "second characteristic occurrence of a live scope is ambiguous"
+        ingress.receiver.try_recv().is_err(),
+        "no fan-out: exactly four events"
     );
-    assert!(
-        route_is_ambiguous(&live, PEER, HRM_SERVICE, 1, HRM_MEASUREMENT, 0),
-        "same characteristic under a duplicate service occurrence is ambiguous"
-    );
-    assert!(
-        !route_is_ambiguous(&live, PEER, HRM_SERVICE, 0, HRM_MEASUREMENT, 0),
-        "re-enabling the exact same instance stays idempotent, not ambiguous"
-    );
-    // The rejection production raises is explicit and contract-attributed.
-    let error = ambiguous_routing_error(HRM_SERVICE, HRM_MEASUREMENT);
-    assert_eq!(
-        error.code_str(),
-        "gatt.subscribe-failed",
-        "exact contract code"
-    );
-    assert_eq!(error.operation(), "gatt.subscribe", "exact operation path");
-    assert!(
-        error
-            .detail()
-            .is_some_and(|detail| detail.contains("ambiguous")),
-        "rejection names the ambiguity, never a silent fan-out"
-    );
-    // Cleanup: the installed forwarder aborts like a successful teardown.
-    let entry = forwarders.remove(&key).expect("installed forwarder");
-    entry.task.abort();
-    let outcome = tokio::time::timeout(Duration::from_secs(10), entry.task).await;
-    assert!(
-        outcome.is_err() || matches!(outcome, Ok(Err(_))),
-        "task stops"
-    );
+    for values in by_occurrence.values_mut() {
+        values.sort();
+    }
+    assert_eq!(by_occurrence[&0], vec![vec![0x01], vec![0x03]], "0x12 only");
+    assert_eq!(by_occurrence[&1], vec![vec![0x02], vec![0x04]], "0x15 only");
 }
 
+/// Finding 128: the value stream opens before the native enable, so a
+/// stream that cannot open enables nothing (no rollback owed, no debt), and
+/// a refused enable drops the opened stream.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn f13_subscribe_ok_then_notifications_err_rolls_back_or_parks_debt() {
+async fn f13_the_stream_opens_before_the_enable() {
     let ch = characteristic(HRM_SERVICE, HRM_MEASUREMENT);
-    let scope = scope(PEER, HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
 
-    // Rollback succeeds: no debt, error carries the stream detail.
-    let ok_rollback = StubTransport::new()
-        .with_subscribe(Ok(()))
-        .with_notifications(Err(StubTransport::script_error("scripted stream refused")))
-        .with_unsubscribe(Ok(()));
-    let error = subscribe_and_stream(&ok_rollback, &ch)
+    // The stream cannot open: nothing was enabled, nothing to roll back.
+    let no_stream = StubTransport::new()
+        .with_notifications(Err(StubTransport::script_error("scripted stream refused")));
+    let error = subscribe_and_stream(&no_stream, &ch)
         .await
         .err()
         .expect("stream failure must surface");
     match &error {
-        EnableStreamError::Stream {
-            detail,
-            rollback_ok,
-        } => {
-            assert!(*rollback_ok, "rollback succeeded");
+        EnableStreamError::Stream(refusal) => {
+            assert_eq!(refusal.code_str(), "gatt.subscribe-failed");
             assert!(
-                detail.contains("scripted stream refused"),
+                refusal
+                    .detail()
+                    .is_some_and(|detail| detail.contains("scripted stream refused")),
                 "detail preserved"
             );
         }
-        other => panic!("expected the stream split, saw {other:?}"),
+        other => panic!("expected the stream refusal, saw {other:?}"),
     }
-    let mut debt = HashSet::new();
-    apply_enable_stream_failure(&mut debt, &scope, true);
-    assert!(
-        debt.is_empty(),
-        "successful rollback leaves no cleanup debt"
-    );
-    assert_eq!(
-        ok_rollback.calls(),
-        (1, 1, 1),
-        "subscribe, stream, rollback — once each"
-    );
+    assert_eq!(no_stream.calls(), (0, 1, 0), "no enable, no rollback");
 
-    // Rollback fails: the orphaned CCCD parks as debt with its exact scope.
-    let failed_rollback = StubTransport::new()
-        .with_subscribe(Ok(()))
-        .with_notifications(Err(StubTransport::script_error("scripted stream refused")))
-        .with_unsubscribe(Err(StubTransport::script_error(
-            "scripted rollback refused",
+    // The enable is refused after the stream opened: the refusal surfaces.
+    let (_values, stream) = script_pair();
+    let refused = StubTransport::new()
+        .with_notifications(Ok(Box::pin(stream)))
+        .with_subscribe(Err(StubTransport::script_error(
+            "scripted subscribe refused",
         )));
-    let error = subscribe_and_stream(&failed_rollback, &ch)
-        .await
-        .err()
-        .expect("stream failure must surface");
-    assert!(
-        matches!(
-            error,
-            EnableStreamError::Stream {
-                rollback_ok: false,
-                ..
-            }
-        ),
-        "failed rollback reported, saw {error:?}"
-    );
-    let mut debt = HashSet::new();
-    apply_enable_stream_failure(&mut debt, &scope, false);
-    assert_eq!(
-        debt,
-        HashSet::from([scope.clone()]),
-        "failed rollback parks the orphaned enablement as debt"
-    );
-    // Debt counts as live: a sibling occurrence enablement stays ambiguous.
-    let live = live_scopes(&HashMap::new(), &debt);
-    assert!(
-        route_is_ambiguous(&live, PEER, HRM_SERVICE, 0, HRM_MEASUREMENT, 1),
-        "debt CCCD blocks the ambiguous sibling"
-    );
-    assert_eq!(
-        failed_rollback.calls(),
-        (1, 1, 1),
-        "exact native call counts"
-    );
-
-    // Subscribe refused: no CCCD enabled, so no rollback is even attempted.
-    let refused = StubTransport::new().with_subscribe(Err(StubTransport::script_error(
-        "scripted subscribe refused",
-    )));
     let error = subscribe_and_stream(&refused, &ch)
         .await
         .err()
         .expect("subscribe failure must surface");
     match &error {
-        EnableStreamError::Subscribe(detail) => {
+        EnableStreamError::Subscribe(refusal) => {
+            assert_eq!(refusal.code_str(), "gatt.subscribe-failed");
             assert!(
-                detail.contains("scripted subscribe refused"),
+                refusal
+                    .detail()
+                    .is_some_and(|detail| detail.contains("scripted subscribe refused")),
                 "detail preserved"
             );
         }
         other => panic!("expected the subscribe refusal, saw {other:?}"),
     }
-    assert_eq!(
-        refused.calls(),
-        (1, 0, 0),
-        "refused subscribe attempts no rollback"
-    );
+    assert_eq!(refused.calls(), (1, 1, 0), "stream first, then the enable");
+}
+
+/// Finding 128: a value the peer sends the moment the enable lands reaches
+/// the subscription. The stream is the real btleplug broadcast stream
+/// (vendored patch 10), which only sees values sent after it opens; the
+/// scripted enable sends a value as it succeeds. BlueZ has no broadcast
+/// (its values arrive over an unbounded D-Bus stream), so this is the
+/// CoreBluetooth and WinRT path; `f13_the_stream_opens_before_the_enable`
+/// pins the order on every OS.
+#[cfg(not(target_os = "linux"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_value_sent_right_after_the_enable_is_not_lost() {
+    use futures_util::StreamExt;
+    struct EagerPeer {
+        sender: tokio::sync::broadcast::Sender<ValueNotification>,
+    }
+    impl NotificationTransport for EagerPeer {
+        async fn transport_subscribe(
+            &self,
+            _characteristic: &Characteristic,
+        ) -> Result<(), btleplug::Error> {
+            // The peer notifies as soon as its CCCD is written; a
+            // broadcast with no receiver drops the value.
+            let _ = self
+                .sender
+                .send(note(HRM_SERVICE, HRM_MEASUREMENT, vec![0x5a]));
+            Ok(())
+        }
+
+        async fn transport_notifications(&self) -> Result<NotificationStream, btleplug::Error> {
+            Ok(btleplug::ubm::notifications_stream_from_broadcast_receiver(
+                self.sender.subscribe(),
+            ))
+        }
+
+        async fn transport_unsubscribe(
+            &self,
+            _characteristic: &Characteristic,
+        ) -> Result<(), btleplug::Error> {
+            Ok(())
+        }
+    }
+    let (sender, _keep) = tokio::sync::broadcast::channel(16);
+    let peer = EagerPeer { sender };
+    let mut stream = subscribe_and_stream(&peer, &characteristic(HRM_SERVICE, HRM_MEASUREMENT))
+        .await
+        .expect("enabled");
+    let first = tokio::time::timeout(Duration::from_secs(5), stream.next())
+        .await
+        .expect("the first value arrives")
+        .expect("stream open");
+    assert_eq!(first.value, vec![0x5a]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -696,7 +712,7 @@ async fn f13_disable_failure_keeps_values_flowing_until_retry_succeeds() {
     let task = spawn_notification_forwarder(
         &handle,
         stream,
-        NotificationRoute::new(uuid(HRM_SERVICE), uuid(HRM_MEASUREMENT)),
+        NotificationRoute::new(uuid(HRM_SERVICE), 0, uuid(HRM_MEASUREMENT), 0),
         target_for(&scope, 5),
         ingress.sender.clone(),
         Arc::clone(&ingress.queued),
@@ -711,6 +727,7 @@ async fn f13_disable_failure_keeps_values_flowing_until_retry_succeeds() {
             service_occurrence: scope.2,
             characteristic_uuid: scope.3.clone(),
             characteristic_occurrence: scope.4,
+            epoch: 5,
         },
     )]));
     let debt = StdMutex::new(HashSet::new());
@@ -725,8 +742,11 @@ async fn f13_disable_failure_keeps_values_flowing_until_retry_succeeds() {
     let error = unsubscribe_and_fold(&transport, &ch, &forwarders, &debt, &key, &scope)
         .await
         .expect_err("failed native disable must surface");
+    assert_eq!(error.code_str(), "gatt.subscribe-failed");
     assert!(
-        error.contains("scripted teardown refused"),
+        error
+            .detail()
+            .is_some_and(|detail| detail.contains("scripted teardown refused")),
         "detail preserved"
     );
     assert!(
@@ -880,4 +900,128 @@ async fn fake_control_overload_is_counted_not_silent() {
         6,
         "the count is stable after the drain"
     );
+}
+
+/// Finding 124: a refused native disable keeps the platform's answer (the
+/// legacy WinRT and BlueZ unsubscribe failures carried it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_disable_keeps_the_platform_answer() {
+    let scope = scope(PEER, HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+    let key = forwarder_key(PEER, HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+    let ch = characteristic(HRM_SERVICE, HRM_MEASUREMENT);
+    let forwarders = StdMutex::new(HashMap::new());
+    let debt = StdMutex::new(HashSet::new());
+    let transport = StubTransport::new().with_unsubscribe(Err(btleplug::Error::Platform(
+        btleplug::PlatformError::new("winrt", "gatt-status", "CCCD write refused")
+            .with("gattStatus", "access-denied"),
+    )));
+    let error = unsubscribe_and_fold(&transport, &ch, &forwarders, &debt, &key, &scope)
+        .await
+        .expect_err("refused");
+    assert_eq!(error.code_str(), "gatt.subscribe-failed");
+    assert_eq!(
+        error.platform(),
+        Some(
+            &ubm_desktop::PlatformDetail::new("winrt", "gatt-status")
+                .with_message("CCCD write refused")
+                .with_metadata(
+                    "gattStatus",
+                    ubm_desktop::PlatformValue::Text("access-denied".into())
+                )
+        )
+    );
+}
+
+/// Finding 129: at a disconnect the forwarder is drained, not aborted:
+/// every value btleplug already buffered for it reaches the ingress, and
+/// what does not fit is returned as loss for the subscription, never
+/// dropped silently.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn f129_a_drained_forwarder_delivers_its_buffered_values_or_their_loss() {
+    let handle = tokio::runtime::Handle::current();
+    let scope = scope(PEER, HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+    let (scripted, stream) = script_pair();
+    // A two-slot ingress: the drain must deliver two and report one lost.
+    let (sender, mut receiver) = mpsc::channel(2);
+    let queued = Arc::new(AtomicU64::new(0));
+    let dropped = Arc::new(AtomicU64::new(0));
+    let task = spawn_notification_forwarder(
+        &handle,
+        stream,
+        NotificationRoute::new(uuid(HRM_SERVICE), 0, uuid(HRM_MEASUREMENT), 0),
+        target_for(&scope, 7),
+        sender,
+        Arc::clone(&queued),
+        Arc::clone(&dropped),
+    );
+    // Buffered in the OS stream when the disconnect arrives.
+    for byte in 1..=3u8 {
+        scripted
+            .send(note(HRM_SERVICE, HRM_MEASUREMENT, vec![byte]))
+            .expect("stream open");
+    }
+    let lost = task.drain(Duration::from_secs(5)).await;
+    let mut delivered = Vec::new();
+    while let Ok(event) = receiver.try_recv() {
+        if let RadioEvent::Notification { value, epoch, .. } = event {
+            assert_eq!(epoch, 7, "install-time epoch");
+            delivered.push(value[0]);
+        }
+    }
+    assert_eq!(
+        delivered.len() as u64 + lost,
+        3,
+        "every buffered value is delivered or returned as loss: {delivered:?} + {lost}"
+    );
+    assert_eq!(delivered, vec![1, 2], "delivered in order");
+    assert_eq!(lost, 1);
+}
+
+/// Finding 131: a value the full ingress refuses is attributed to its
+/// subscription as upstream loss (a `NotificationsLost` on its scope and
+/// epoch, reported as soon as the ingress has room), so the consumer's
+/// overflow policy applies, not only the global counter.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn f131_an_ingress_drop_is_reported_on_its_subscription() {
+    let handle = tokio::runtime::Handle::current();
+    let scope = scope(PEER, HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+    let (scripted, stream) = script_pair();
+    let (sender, mut receiver) = mpsc::channel(1);
+    let queued = Arc::new(AtomicU64::new(0));
+    let dropped = Arc::new(AtomicU64::new(0));
+    let _task = spawn_notification_forwarder(
+        &handle,
+        stream,
+        NotificationRoute::new(uuid(HRM_SERVICE), 0, uuid(HRM_MEASUREMENT), 0),
+        target_for(&scope, 4),
+        sender,
+        Arc::clone(&queued),
+        Arc::clone(&dropped),
+    );
+    scripted
+        .send(note(HRM_SERVICE, HRM_MEASUREMENT, vec![1]))
+        .expect("open");
+    scripted
+        .send(note(HRM_SERVICE, HRM_MEASUREMENT, vec![2]))
+        .expect("open");
+    // The one-slot ingress holds the first value; the second is refused.
+    for _ in 0..500 {
+        if dropped.load(Ordering::Relaxed) == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    assert_eq!(dropped.load(Ordering::Relaxed), 1, "counted globally");
+    let first = recv_notification(&mut receiver, &queued).await;
+    assert!(matches!(first, RadioEvent::Notification { ref value, .. } if value == &vec![1]));
+    let loss = tokio::time::timeout(Duration::from_secs(5), receiver.recv())
+        .await
+        .expect("the loss is reported once the ingress has room")
+        .expect("open");
+    match loss {
+        RadioEvent::NotificationsLost { epoch, lost, .. } => {
+            assert_eq!((epoch, lost), (4, 1), "on its own subscription");
+        }
+        other => panic!("expected the loss report, saw {other:?}"),
+    }
 }

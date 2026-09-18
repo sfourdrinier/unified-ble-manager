@@ -1,194 +1,75 @@
 // __tests__/backends/reactnative/r16-non-node-boundary.test.js
 //
-// R16 row "Non-Node boundary": with no Buffer global (Hermes/JSC), the
-// supported wire forms decode correctly or fail structurally — never a
-// bare ReferenceError.
-
-let mockNativeModule = null
-
-jest.mock('react-native', () => ({
-  Platform: { OS: 'android', Version: 35 },
-  TurboModuleRegistry: {
-    get: () => mockNativeModule
-  },
-  NativeModules: {}
-}))
+// R16 row "Non-Node boundary": with no Buffer, atob or btoa global
+// (Hermes/JSC), the production serializer encodes and decodes every byte form
+// correctly, and malformed bytes fail structurally — never a bare
+// ReferenceError. The deterministic module keeps its own Node Buffer
+// reference, so only the package code runs without the globals.
 
 const {
-  createReactNativeBleManagerWithEnvironment
-} = require('../../../src/react-native-manager')
-const {
-  RUST_CORE_CONTRACT_REVISION
-} = require('../../../src/backends/reactnative/react-native-rust-core')
+  rustCoreHarness,
+  environment,
+  subscribeOptions,
+  settle
+} = require('../../../test-support/react-native/rust-core-harness')
+const { DEFAULT_PEER } = require('../../../test-support/react-native/deterministic-rust-core-native')
 
-function record(overrides = {}) {
-  return {
-    ok: true,
-    value: '{}',
-    code: '',
-    domain: '',
-    operation: 'test.op',
-    ...overrides
+const removed = {}
+
+beforeAll(() => {
+  for (const name of ['Buffer', 'atob', 'btoa']) {
+    removed[name] = Object.getOwnPropertyDescriptor(globalThis, name)
+    delete globalThis[name]
   }
-}
-
-const ZERO_COUNTERS = {
-  activeScanControllers: 0,
-  scanConsumers: 0,
-  chooserSessions: 0,
-  connectionLeases: 0,
-  physicalLinks: 0,
-  databaseSnapshots: 0,
-  physicalCccdEnablements: 0,
-  subscriptionConsumers: 0,
-  queuedOperations: 0,
-  dispatchedOperations: 0,
-  retainedByteBuffers: 0,
-  restorationRecords: 0,
-  orphanedIpcOwners: 0
-}
-
-function presentNative(readValue) {
-  mockNativeModule = {
-    openSession: async () => ({ sessionId: 'sess-1' }),
-    invoke: async (sessionId, op, argsJson) => {
-      JSON.parse(argsJson)
-      switch (op) {
-        case 'adapter.state':
-          return record({
-            operation: op,
-            value: JSON.stringify({
-              availability: 'available',
-              authorization: 'unknown',
-              power: 'on',
-              backendGeneration: 'gen-1',
-              updatedAt: 123,
-              safeReason: null
-            })
-          })
-        case 'counters.describe':
-          return record({ operation: op, value: JSON.stringify(ZERO_COUNTERS) })
-        case 'events.take':
-          return record({ operation: op, value: 'null' })
-        case 'connection.connect':
-          return record({
-            operation: op,
-            value: JSON.stringify({ peerKey: 'peerkey-1', connectionGeneration: 'conngen-1' })
-          })
-        case 'gatt.discover':
-          return record({
-            operation: op,
-            value: JSON.stringify({
-              services: [
-                {
-                  uuid: '0000180d-0000-1000-8000-00805f9b34fb',
-                  occurrence: 0,
-                  characteristics: [
-                    {
-                      uuid: '00002a37-0000-1000-8000-00805f9b34fb',
-                      occurrence: 0,
-                      properties: 9,
-                      descriptors: []
-                    }
-                  ]
-                }
-              ]
-            })
-          })
-        case 'gatt.read':
-          return record({ operation: op, value: JSON.stringify({ value: readValue }) })
-        case 'connection.disconnect':
-        case 'session.dispose':
-          return record({ operation: op, value: JSON.stringify({ state: 'released' }) })
-        default:
-          throw new Error(`unexpected native op ${op}`)
-      }
-    },
-    close: async () => undefined,
-    contractRevision: async () => RUST_CORE_CONTRACT_REVISION
-  }
-}
-
-function environment() {
-  return {
-    platform: 'android',
-    control: {},
-    now: () => 1000,
-    clientId: 'client-a',
-    managerId: 'manager-a',
-    hostSessionScope: 'scope-a'
-  }
-}
-
-async function readMeasurement() {
-  const manager = await createReactNativeBleManagerWithEnvironment(environment())
-  try {
-    const peerId = manager.attachedBackend.backend.connections.peerFromAddress({
-      address: 'AA:BB:CC:DD:EE:FF',
-      addressType: 'public'
-    })
-    const connection = await manager.connect(peerId, { signal: null, deadline: null })
-    try {
-      const database = await connection.discover({ signal: null, deadline: null })
-      const snapshot = await database.snapshot()
-      return await database.read(snapshot.characteristics[0].path, { signal: null, deadline: null })
-    } finally {
-      await connection.release()
-    }
-  } finally {
-    await manager.destroy()
-  }
-}
-
-function withoutBuffer() {
-  const realBuffer = global.Buffer
-  delete global.Buffer
-  return () => {
-    global.Buffer = realBuffer
-  }
-}
-
-function errorCode(error) {
-  return (error && error.normalized && error.normalized.code) || (error && error.code)
-}
-
-beforeEach(() => {
-  mockNativeModule = null
 })
 
-describe('R16 non-Node boundary (no Buffer global)', () => {
-  test('array wire form decodes without Buffer', async () => {
-    presentNative([0x42])
-    const restore = withoutBuffer()
-    try {
-      expect(typeof Buffer).toBe('undefined')
-      const value = await readMeasurement()
-      expect(value).toBeInstanceOf(Uint8Array)
-      expect([...value]).toEqual([0x42])
-    } finally {
-      restore()
-    }
+afterAll(() => {
+  for (const [name, descriptor] of Object.entries(removed)) {
+    if (descriptor !== undefined) Object.defineProperty(globalThis, name, descriptor)
+  }
+})
+
+const { createReactNativeBleManagerWithEnvironment } = require('../../../src/react-native-manager')
+
+const NO_OPTIONS = Object.freeze({ signal: null, deadline: null })
+
+async function opened() {
+  const harness = rustCoreHarness({ platform: 'android' })
+  const manager = await createReactNativeBleManagerWithEnvironment(environment(harness))
+  const backend = manager.attachedBackend.backend
+  const connection = await manager.connect(
+    backend.connections.peerFromAddress({ address: DEFAULT_PEER, addressType: 'public' }),
+    NO_OPTIONS
+  )
+  const database = await connection.discover(NO_OPTIONS)
+  const path = (await database.snapshot()).characteristics[0].path
+  return { native: harness.native, manager, database, path }
+}
+
+describe('R16 non-Node boundary', () => {
+  test('the globals are really gone', () => {
+    expect(typeof Buffer).toBe('undefined')
+    expect(typeof atob).toBe('undefined')
   })
 
-  test('base64 wire form fails structurally without Buffer (never ReferenceError)', async () => {
-    presentNative({ base64: 'Qg==' })
-    const restore = withoutBuffer()
-    try {
-      const error = await readMeasurement().then(
-        () => null,
-        failure => failure
-      )
-      expect(error).not.toBeNull()
-      expect(error).not.toBeInstanceOf(ReferenceError)
-      expect(errorCode(error)).toBe('protocol.malformed')
-    } finally {
-      restore()
-    }
+  test('write, read and notification bytes round-trip without Buffer', async () => {
+    const { native, manager, database, path } = await opened()
+    await database.write(path, new Uint8Array([0x00, 0x80, 0xff]), { ...NO_OPTIONS, mode: 'with-response' })
+    expect([...(await database.read(path, NO_OPTIONS))]).toEqual([0x00, 0x80, 0xff])
+    const subscription = await database.subscribe(path, subscribeOptions())
+    native.emitNotification(new Uint8Array([0xff, 0x00]))
+    const item = await subscription.values[Symbol.asyncIterator]().next()
+    expect([...item.value.value.value]).toEqual([0xff, 0x00])
+    await manager.destroy()
   })
 
-  test('base64 wire form decodes with Buffer present (control)', async () => {
-    presentNative({ base64: 'Qg==' })
-    const value = await readMeasurement()
-    expect([...value]).toEqual([0x42])
+  test('malformed base64 fails structurally (protocol.malformed), never ReferenceError', async () => {
+    const { native, manager, database, path } = await opened()
+    native.hold('gatt.read')
+    const read = database.read(path, NO_OPTIONS)
+    await settle()
+    native.release('gatt.read', { valueB64: 'not base64!' })
+    await expect(read).rejects.toMatchObject({ normalized: { code: 'protocol.malformed' } })
+    await manager.destroy()
   })
 })

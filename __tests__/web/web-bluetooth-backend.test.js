@@ -1108,7 +1108,8 @@ describe('InMemoryWebBluetoothTckBoundary', () => {
       optionalServices: []
     })
     boundary.resolveChooser()
-    await expect(choosing).resolves.toMatchObject({ grantedServices: [HEART_RATE_SERVICE] })
+    // A browser grants only the services a request names; this one names none.
+    await expect(choosing).resolves.toMatchObject({ grantedServices: [] })
   })
 })
 

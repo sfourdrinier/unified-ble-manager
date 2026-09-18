@@ -257,12 +257,13 @@ function legAndroid(installed) {
     }
     if (header.readUInt16LE(18) !== machine) fail(`${abi} prebuilt has the wrong ELF machine`)
   }
-  const identity = fs.readFileSync(
-    path.join(installed, 'android', 'src', 'main', 'jniLibs', 'build-identity.txt'),
-    'utf8'
+  // PR210-18: the committed identity is JSON (build-identity.json).
+  const identity = JSON.parse(
+    fs.readFileSync(path.join(installed, 'android', 'src', 'main', 'jniLibs', 'build-identity.json'), 'utf8')
   )
+  const recordedAbis = Array.isArray(identity.abis) ? identity.abis.map(entry => entry.abi) : []
   for (const abi of Object.keys(ELF_MACHINE)) {
-    if (!identity.includes(abi)) fail(`build-identity.txt does not cover ${abi}`)
+    if (!recordedAbis.includes(abi)) fail(`build-identity.json does not cover ${abi}`)
   }
   log('Android arm64-v8a + x86_64 prebuilts are real ELF objects (device load runs on device CI)')
 }

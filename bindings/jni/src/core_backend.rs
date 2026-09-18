@@ -649,7 +649,7 @@ mod tests {
         assert_ne!(out.as_ptr(), input.as_ptr());
         assert_eq!(
             CoreBackend::echo_bytes(&core, &[], "echo-bytes").unwrap(),
-            vec![]
+            Vec::<u8>::new()
         );
         let err = CoreBackend::echo_bytes(
             &core,

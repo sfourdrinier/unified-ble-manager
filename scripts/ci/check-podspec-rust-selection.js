@@ -38,10 +38,10 @@ function readRepoFile(relativePath) {
   }
 }
 
-function evalPodspec(dir, extraEnv) {
+function evalPodspecOutcome(dir, extraEnv) {
   // The harness ships with this check (scripts/ never packs); only the
   // evaluated podspec/package come from the target root. extraEnv selects
-  // the D2 distribution mode under test (UBM_NATIVE_BUILD).
+  // the build mode under test (UBM_NATIVE_BUILD).
   const harness = path.join(__dirname, 'podspec-stub-eval.rb')
   const probed = spawnSync('ruby', [harness, '--dir', dir], {
     encoding: 'utf8',
@@ -50,8 +50,16 @@ function evalPodspec(dir, extraEnv) {
     // resurrect a deliberately deleted key.
     env: extraEnv === undefined ? process.env : { ...extraEnv }
   })
+  if (probed.error) {
+    fail(`podspec stub eval could not run ruby in ${dir}: ${probed.error.message}`)
+  }
+  return { status: probed.status, stdout: probed.stdout || '', stderr: probed.stderr || '' }
+}
+
+function evalPodspec(dir, extraEnv) {
+  const probed = evalPodspecOutcome(dir, extraEnv)
   if (probed.status !== 0) {
-    fail(`podspec stub eval failed in ${dir}: ${(probed.stderr || '').trim()}`)
+    fail(`podspec stub eval failed in ${dir}: ${probed.stderr.trim()}`)
   }
   try {
     return JSON.parse(probed.stdout)
@@ -67,25 +75,41 @@ function checkPodspecSelection() {
   if (!pod.includes('start_with?("5.")')) {
     fail('podspec must gate the Rust core selection on the 5.x lane version')
   }
-  // D2 distribution modes, executed (real package.json) once per mode.
-  // Prebuilt is the default: no prepare_command, no toolchain on the
-  // consumer. Only the explicit UBM_NATIVE_BUILD=source builds.
-  const prebuiltEnv = { ...process.env }
-  delete prebuiltEnv.UBM_NATIVE_BUILD
-  const lane = evalPodspec(repoRoot, prebuiltEnv)
-  if (lane.prepare_command !== undefined && lane.prepare_command !== null) {
-    fail('5.x podspec must not build in prebuilt (default) mode')
+  // PR210-19 (ADR D2.6/D2.7) build modes, executed (real package.json) once
+  // per mode. Unset or empty means prebuilt; `prebuilt` and `source` are
+  // explicit; anything else is a hard pod-install error. No mode relies on
+  // prepare_command: CocoaPods skips it for :path pods, so source
+  // preparation is the explicit `native:apple:prepare` package script.
+  const modeEnv = value => {
+    const env = { ...process.env }
+    if (value === undefined) delete env.UBM_NATIVE_BUILD
+    else env.UBM_NATIVE_BUILD = value
+    return env
   }
-  const sourceEnv = { ...process.env, UBM_NATIVE_BUILD: 'source' }
-  const sourceLane = evalPodspec(repoRoot, sourceEnv)
-  if (sourceLane.prepare_command !== 'sh ios/build-rust-core.sh') {
-    fail('5.x podspec must build the Rust core at pod install in source mode')
+  const lane = evalPodspec(repoRoot, modeEnv(undefined))
+  const emptyLane = evalPodspec(repoRoot, modeEnv(''))
+  const prebuiltLane = evalPodspec(repoRoot, modeEnv('prebuilt'))
+  const sourceLane = evalPodspec(repoRoot, modeEnv('source'))
+  for (const invalid of ['bogus', 'SOURCE', ' source']) {
+    const refused = evalPodspecOutcome(repoRoot, modeEnv(invalid))
+    if (refused.status === 0) {
+      fail(`5.x podspec must refuse UBM_NATIVE_BUILD=${JSON.stringify(invalid)} instead of silently choosing a mode`)
+    }
+    if (!refused.stderr.includes("UBM_NATIVE_BUILD must be unset, 'prebuilt' or 'source'")) {
+      fail(`5.x podspec refused UBM_NATIVE_BUILD=${JSON.stringify(invalid)} without the actionable mode error: ${refused.stderr.trim()}`)
+    }
   }
-  // Both modes verify the staging before any source compiles.
-  for (const [mode, evaluated] of [
-    ['prebuilt', lane],
-    ['source', sourceLane]
+  const verifyMarker = '${PODS_TARGET_SRCROOT}/ios/verify-rust-core.sh'
+  const staleMarker = 'scripts/release/native-build-identity.js" --root "${PODS_TARGET_SRCROOT}" --check-apple'
+  for (const [mode, evaluated, expectStaleCheck] of [
+    ['unset', lane, false],
+    ['empty', emptyLane, false],
+    ['prebuilt', prebuiltLane, false],
+    ['source', sourceLane, true]
   ]) {
+    if (evaluated.prepare_command !== undefined && evaluated.prepare_command !== null) {
+      fail(`5.x podspec must not use prepare_command (${mode} mode): it never runs for :path pods`)
+    }
     const phase = evaluated.script_phase
     if (phase === null || typeof phase !== 'object') {
       fail(`5.x podspec ${mode} mode must verify the staged RustCore`)
@@ -93,11 +117,25 @@ function checkPodspecSelection() {
     if (phase.name !== 'Verify staged RustCore' || phase.execution_position !== 'before_compile') {
       fail(`5.x podspec ${mode} mode must verify before_compile`)
     }
-    for (const marker of ['build-identity.txt', 'LibraryIdentifier', 'UBM_NATIVE_BUILD=source']) {
-      if (typeof phase.script !== 'string' || !phase.script.includes(marker)) {
-        fail(`5.x podspec ${mode} mode verify phase is missing ${marker}`)
-      }
+    if (typeof phase.script !== 'string' || !phase.script.includes(verifyMarker)) {
+      fail(`5.x podspec ${mode} mode verify phase must run ios/verify-rust-core.sh`)
     }
+    if (phase.script.includes('grep -c')) {
+      fail(`5.x podspec ${mode} mode must parse the XCFramework, not grep-count LibraryIdentifier lines`)
+    }
+    if (phase.script.includes(staleMarker) !== expectStaleCheck) {
+      fail(`5.x podspec ${mode} mode ${expectStaleCheck ? 'must' : 'must not'} run the source staleness check (--check-apple)`)
+    }
+    if (!(evaluated.preserve_paths || []).includes('ios/verify-rust-core.sh')) {
+      fail(`5.x podspec ${mode} mode must preserve ios/verify-rust-core.sh for the script phase`)
+    }
+  }
+  if (!sourceLane.script_phase.script.includes('native:apple:prepare')) {
+    fail('5.x podspec source-mode phase must print the native:apple:prepare rerun command')
+  }
+  const scripts = JSON.parse(readRepoFile('package.json')).scripts || {}
+  if (scripts['native:apple:prepare'] !== 'sh ios/build-rust-core.sh') {
+    fail('package.json must expose native:apple:prepare = sh ios/build-rust-core.sh (the direct source preparation step)')
   }
   // 5.x lane outcome, executed (real package.json): Rust core selected
   // beside the Owned radio (mode-independent selection below).
@@ -161,7 +199,9 @@ function checkPodspecSelection() {
         author: 'stub'
       })
     )
-    const legacy = evalPodspec(legacyDir)
+    const legacyEnv = { ...process.env }
+    delete legacyEnv.UBM_NATIVE_BUILD
+    const legacy = evalPodspec(legacyDir, legacyEnv)
     if (legacy.prepare_command !== undefined && legacy.prepare_command !== null) {
       fail('4.x podspec must not build the Rust core')
     }
@@ -174,6 +214,7 @@ function checkPodspecSelection() {
   } finally {
     fs.rmSync(legacyDir, { recursive: true, force: true })
   }
+  console.log('podspec-rust-selection: modes unset/empty/prebuilt/source evaluated, invalid values refused')
   console.log('podspec-rust-selection: 5.x selects Rust+Owned, 4.x keeps Owned-only')
 }
 
@@ -193,7 +234,14 @@ function checkBuildScript() {
     fail(`${scriptRelative} fails sh -n: ${(probed.stderr || '').trim()}`)
   }
   const script = fs.readFileSync(scriptPath, 'utf8')
-  for (const marker of ['aarch64-apple-ios', 'aarch64-apple-ios-sim', 'create-xcframework', '--check']) {
+  for (const marker of [
+    'aarch64-apple-ios',
+    'aarch64-apple-ios-sim',
+    'create-xcframework',
+    '--check',
+    '--write-apple-identity',
+    'verify-rust-core.sh'
+  ]) {
     if (!script.includes(marker)) {
       fail(`${scriptRelative} is missing matrix piece ${marker}`)
     }

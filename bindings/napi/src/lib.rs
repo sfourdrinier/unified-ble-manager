@@ -26,6 +26,22 @@
 mod core_backend;
 mod dispatch;
 
+/// Compile-time build identity (PR210-18): the `ubm-native-build-identity/1`
+/// constants `build.rs` sealed into this binary from
+/// `UBM_BUILD_SOURCE_DIGEST` / `UBM_BUILD_BINDING_SCHEMA`.
+mod build_identity {
+    include!(concat!(env!("OUT_DIR"), "/ubm_build_identity.rs"));
+}
+
+/// This binary's `ubm-native-build-identity/1` record as JSON. The JS
+/// loader compares it with the packaged expected identity before any radio
+/// call: `contractRevision` is the core's own constant, and an unsealed
+/// build reports `"unsealed"` digests, which the check always rejects.
+#[napi(catch_unwind)]
+pub fn native_build_identity() -> String {
+    build_identity::ubm_build_identity_json(ubm_core::contracts::CONTRACT_REVISION)
+}
+
 use std::sync::Mutex;
 
 use core_backend::{check_revision, CoreBackend, CoreSession, EchoError};

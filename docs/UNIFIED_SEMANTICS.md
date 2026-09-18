@@ -491,13 +491,18 @@ unmeasured maximum is not infinity: the feature is `unavailable` until a safe
 limit is declared. Output larger than an advertised limit is a backend protocol
 failure and invalidates the affected attachment.
 
-For React Native, a negotiated metadata-only control module installs the one
-`__unifiedBleNativeProtocolV2` JSI owner. Its retain operation copies the exact
-`Uint8Array` view before asynchronous use; copy returns an independent
-`Uint8Array`; release is explicit; and attachment close invalidates the owner.
-The installer, its control result, and normal event metadata never carry byte
-content. Any absent, stale, or closed JSI owner is a typed boundary failure,
-not a bridge, text, cache, or fabricated empty-value fallback.
+For React Native, bytes cross the `UnifiedBleRustCore` TurboModule as strict
+RFC 4648 padded base64 inside the JSON wire text (`ubm-mobile-wire/1`,
+docs/MOBILE_RUST_WIRE.md). One pure codec encodes exactly the bytes of the
+`Uint8Array` view (a subarray sends only its own bytes) and decodes into an
+independent `Uint8Array`, with no `Buffer` or `atob`. Size is checked before
+anything is allocated (`bytes.too-large`); malformed text, the URL alphabet,
+whitespace and non-zero pad bits are `protocol.malformed`, never a guessed
+value.
+
+A notification value reports how it arrived: `delivery` is `notification`,
+`indication`, or `unknown` when the platform does not report it (CoreBluetooth,
+BlueZ). A backend never reports a delivery the platform did not report.
 
 The versioned command record carries concrete scan settings (service filters,
 duplicate policy, scan mode, callback type, and legacy-scan selection) and a
@@ -515,6 +520,18 @@ It is not an API selector, it is not stable across restart, and callers MUST
 NOT expose public transaction IDs. Cancellation is expressed only by an
 `AbortSignal`; deadlines are absolute monotonic instants or a duration converted
 to one at request admission. A pre-aborted signal rejects before queueing.
+
+A monotonic instant is meaningful only on the clock that produced it. When a
+request crosses into another clock domain (an Electron renderer to Electron
+main, a Tauri webview to the Rust plugin), the sender replaces its deadline
+with `budgetMs`, the remaining budget in whole milliseconds measured just
+before send: a non-negative safe integer, `0` when already expired, absent when
+the caller gave no deadline. The receiver admits it against its own monotonic
+clock at receipt, so queueing on the receiving side is charged to the same
+budget, and an expired budget times out there with no effects. Electron main
+rejects an absolute `deadline` from a renderer as `protocol.malformed` instead
+of comparing it with its own clock. The sender keeps its own deadline locally
+and still routes cancellation for the exact correlation when it expires.
 
 | Phase | Admission and cancellation behavior |
 | --- | --- |
@@ -534,6 +551,26 @@ settles promptly to its chosen caller-visible terminal result, retains hidden
 cleanup ownership, and suppresses its later native completion. Reused backend
 correlation values cannot settle a newer operation because correlation includes
 backend generation and an unrepeatable dispatch epoch.
+
+A failure reports whether the operation may be repeated as `retryability`, and
+that is the operation's own answer, not something derived from the error code.
+`caller-decides` means nothing was committed: the operation never reached the
+radio, or it commits nothing (a read). An aborted or timed-out operation that
+was dispatched and may already have committed at the peripheral (a write, a
+descriptor write) is `never`, with commit state `unknown`. The public
+`BleError` carries the same `retryability`, and its `recovery` follows it: an
+aborted or timed-out `never` failure advises `verify-state` (read the state
+back) under `caller-policy`, never `retry`, because repeating it could apply its
+effect twice.
+
+When the operation's owner states it, a failure also carries `commit`:
+`not-dispatched` (nothing reached the radio), `uncertain` (dispatched, and may
+have committed), or `null` (the owner does not know). The public `BleError`
+exposes it as `commit` (`null` when not stated). An `uncertain` commit is
+never replayed, whatever the code: recovery keeps the code's prerequisite
+actions (for example `reconnect` after `operation.disconnected`), drops
+`retry`, and ends with `verify-state` under `caller-policy`. A
+`not-dispatched` commit keeps the code's own advice.
 
 <!-- SEM-COVERAGE: SEM-RACES -->
 ## 14. Race arbitration and happens-before rules
@@ -903,6 +940,17 @@ trace record with redacted client identity, resource kind, opaque diagnostic
 operation identity, generation tuple, ingress ordinal, state transition,
 terminal cause, queue counters, and timing. Diagnostics are bounded according
 to Section 11 and cannot be required for normal operation success.
+
+A backend reports a fact that no typed result or event can carry as a
+`diagnostic-warning` backend event. The manager records each one in its
+diagnostic trace (`diagnostics.snapshot().trace`) as an `attachment` record
+whose event is `diagnostic-warning:<code>` and whose cause is the normalized
+error code the backend reported, or `null`. A warning is never the only report
+of a fact the contract has a typed home for: an observation lost before it
+reached a stream counts in that stream's drop accounting, a source that stops
+ends its streams `source-failed`, missed lifecycle facts are re-read and
+emitted as the transitions they would have been, and an event source that can
+no longer deliver fails the manager's backend event stream.
 
 Raw addresses, peer names, advertisement bytes, GATT values, security material,
 permission prompts, and platform messages are sensitive by default. A trace

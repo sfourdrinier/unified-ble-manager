@@ -514,7 +514,7 @@ export class CoreBluetoothGattOperations {
       }
       const copied = ownBytes(source, maximumValueBytes)
       const push = consumer.stream.emit(
-        Object.freeze({ value: ownBytes(copied, maximumValueBytes), indication: false }),
+        Object.freeze({ value: ownBytes(copied, maximumValueBytes), delivery: 'unknown' as const }),
         copied.byteLength
       )
       if (push.terminated) {

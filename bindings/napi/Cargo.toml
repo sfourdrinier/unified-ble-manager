@@ -14,7 +14,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 napi = { version = "=2.16.17", features = ["napi4", "tokio_rt"] }
 napi-derive = "=2.16.13"
-tokio = { version = "1", features = ["macros", "rt", "time"] }
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 ubm-core = { path = "../../crates/ubm-core" }
 ubm-desktop = { path = "../../crates/ubm-desktop" }
 ubm-fake-radio = { path = "../../crates/ubm-fake-radio" }

@@ -91,17 +91,34 @@ honour it. Their unsupported peer methods fail with `capability.unsupported`.
 
 ## React Native notification bursts
 
-React Native Android and Apple both deliver native BLE events through a bounded
-native-to-JavaScript ingress queue. Each queue retains at most 512 records or
-1 MiB, whichever limit is reached first. This gives applications room for a
-peripheral to send a few hundred notifications in a catch-up burst—for example,
-about 288 five-minute records covering 24 hours—without turning the queue into
-unbounded memory.
+React Native Android and Apple both deliver native BLE events through the Rust
+owner's bounded per-session outbox (docs/MOBILE_RUST_WIRE.md, "Drain records").
+Advertisements and notification values share a data queue of 2048 records or
+4 MiB, whichever limit is reached first; lifecycle records (link loss, database
+changes, adapter, security, scan end) use a separate reserved queue of 1024
+records, so they stay deliverable when data is backed up. The owner wakes
+JavaScript once when the outbox turns non-empty, and JavaScript drains it in
+batches of 256 records / 64 KiB; an idle manager makes no bridge calls. This
+gives applications room for a peripheral to send a few hundred notifications
+in a catch-up burst—for example, about 288 five-minute records covering 24
+hours—without turning the queue into unbounded memory.
 
 Applications should still process notifications promptly and split larger
-application-protocol transfers into resumable ranges. If JavaScript cannot drain
-the bounded queue, the backend reports `stream.overflow` and closes that ingress
-rather than silently losing a prefix. Android and Apple use the same limits;
+application-protocol transfers into resumable ranges. If a notification value
+cannot be queued, its stream ends with `overflow` and the dropped counts. An
+advertisement or notification the owner dropped at a full native queue counts
+in the drop accounting of every scan or notification stream that could have
+received it (the owner drops it before routing, so the count is an upper
+bound). A lost lifecycle record (`link`, `scan-end`, `adapter`) is re-read from
+the owner: a link it no longer reports ends as lost, a scan it no longer holds
+ends `source-failed`, and adapter watches receive the current state. Each drop
+is also recorded in the manager's diagnostic trace
+(`diagnostics.snapshot().trace`) as `diagnostic-warning:native-ingress-drop`,
+never dropped silently.
+Each notification value carries the delivery the platform reported: Android
+reports the CCCD mode it wrote (`notification` or `indication`); CoreBluetooth
+does not report it, so Apple values carry `unknown`. Android and Apple use the
+same limits;
 Web, BlueZ, CoreBluetooth desktop, WinRT, Electron, Tauri, and the deterministic
 backend do not pass through this React Native bridge and retain their existing
 stream limits and capability reports.

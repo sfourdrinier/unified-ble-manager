@@ -243,6 +243,62 @@ typedef void (*UniffiForeignFutureCompleteVoid)(uint64_t, UniffiForeignFutureRes
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_MOBILE_INVOKE_COMPLETION_METHOD0
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_MOBILE_INVOKE_COMPLETION_METHOD0
+typedef void (*UniffiCallbackInterfaceMobileInvokeCompletionMethod0)(uint64_t, RustBuffer, void* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_MOBILE_PLATFORM_RADIO_METHOD0
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_MOBILE_PLATFORM_RADIO_METHOD0
+typedef void (*UniffiCallbackInterfaceMobilePlatformRadioMethod0)(uint64_t, RustBuffer, void* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_MOBILE_PLATFORM_RADIO_METHOD1
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_MOBILE_PLATFORM_RADIO_METHOD1
+typedef void (*UniffiCallbackInterfaceMobilePlatformRadioMethod1)(uint64_t, uint64_t, void* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_MOBILE_WAKE_SINK_METHOD0
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_MOBILE_WAKE_SINK_METHOD0
+typedef void (*UniffiCallbackInterfaceMobileWakeSinkMethod0)(uint64_t, uint64_t, void* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_MOBILE_INVOKE_COMPLETION
+#define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_MOBILE_INVOKE_COMPLETION
+typedef struct UniffiVTableCallbackInterfaceMobileInvokeCompletion {
+    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
+    UniffiCallbackInterfaceClone _Nonnull uniffiClone;
+    UniffiCallbackInterfaceMobileInvokeCompletionMethod0 _Nonnull complete;
+} UniffiVTableCallbackInterfaceMobileInvokeCompletion;
+
+#endif
+#ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_MOBILE_PLATFORM_RADIO
+#define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_MOBILE_PLATFORM_RADIO
+typedef struct UniffiVTableCallbackInterfaceMobilePlatformRadio {
+    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
+    UniffiCallbackInterfaceClone _Nonnull uniffiClone;
+    UniffiCallbackInterfaceMobilePlatformRadioMethod0 _Nonnull submit;
+    UniffiCallbackInterfaceMobilePlatformRadioMethod1 _Nonnull cancel;
+} UniffiVTableCallbackInterfaceMobilePlatformRadio;
+
+#endif
+#ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_MOBILE_WAKE_SINK
+#define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_MOBILE_WAKE_SINK
+typedef struct UniffiVTableCallbackInterfaceMobileWakeSink {
+    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
+    UniffiCallbackInterfaceClone _Nonnull uniffiClone;
+    UniffiCallbackInterfaceMobileWakeSinkMethod0 _Nonnull wake;
+} UniffiVTableCallbackInterfaceMobileWakeSink;
+
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_CLONE_ECHOSESSION
 #define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_CLONE_ECHOSESSION
 uint64_t uniffi_ubm5_uniffi_echo_fn_clone_echosession(uint64_t handle, RustCallStatus *_Nonnull out_status
@@ -331,6 +387,110 @@ RustBuffer uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_drain_log(uint64
 #ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_METHOD_ECHOSESSION_STAGED_STEP
 #define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_METHOD_ECHOSESSION_STAGED_STEP
 RustBuffer uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_step(uint64_t ptr, RustBuffer line, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_CLONE_MOBILECOREHOST
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_CLONE_MOBILECOREHOST
+uint64_t uniffi_ubm5_uniffi_echo_fn_clone_mobilecorehost(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_FREE_MOBILECOREHOST
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_FREE_MOBILECOREHOST
+void uniffi_ubm5_uniffi_echo_fn_free_mobilecorehost(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_METHOD_MOBILECOREHOST_COMPLETE
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_METHOD_MOBILECOREHOST_COMPLETE
+RustBuffer uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_complete(uint64_t ptr, uint64_t request_id, RustBuffer completion, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_METHOD_MOBILECOREHOST_INGEST
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_METHOD_MOBILECOREHOST_INGEST
+RustBuffer uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_ingest(uint64_t ptr, RustBuffer ingress, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_METHOD_MOBILECOREHOST_OPEN_SESSION
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_METHOD_MOBILECOREHOST_OPEN_SESSION
+uint64_t uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_open_session(uint64_t ptr, RustBuffer owner, RustBuffer expected_wire_revision, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_METHOD_MOBILECOREHOST_SHUTDOWN
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_METHOD_MOBILECOREHOST_SHUTDOWN
+RustBuffer uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_shutdown(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_CLONE_MOBILECORESESSION
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_CLONE_MOBILECORESESSION
+uint64_t uniffi_ubm5_uniffi_echo_fn_clone_mobilecoresession(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_FREE_MOBILECORESESSION
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_FREE_MOBILECORESESSION
+void uniffi_ubm5_uniffi_echo_fn_free_mobilecoresession(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_METHOD_MOBILECORESESSION_ADMISSION_JSON
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_METHOD_MOBILECORESESSION_ADMISSION_JSON
+RustBuffer uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_admission_json(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_METHOD_MOBILECORESESSION_DRAIN
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_METHOD_MOBILECORESESSION_DRAIN
+RustBuffer uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_drain(uint64_t ptr, uint32_t max_items, uint32_t max_bytes, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_METHOD_MOBILECORESESSION_INVOKE
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_METHOD_MOBILECORESESSION_INVOKE
+void uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_invoke(uint64_t ptr, RustBuffer op, RustBuffer args_json, uint64_t completion, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_METHOD_MOBILECORESESSION_SESSION_ID
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_METHOD_MOBILECORESESSION_SESSION_ID
+uint64_t uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_session_id(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_INIT_CALLBACK_VTABLE_MOBILEINVOKECOMPLETION
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_INIT_CALLBACK_VTABLE_MOBILEINVOKECOMPLETION
+void uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobileinvokecompletion(const UniffiVTableCallbackInterfaceMobileInvokeCompletion* _Nonnull vtable
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_INIT_CALLBACK_VTABLE_MOBILEPLATFORMRADIO
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_INIT_CALLBACK_VTABLE_MOBILEPLATFORMRADIO
+void uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobileplatformradio(const UniffiVTableCallbackInterfaceMobilePlatformRadio* _Nonnull vtable
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_INIT_CALLBACK_VTABLE_MOBILEWAKESINK
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_INIT_CALLBACK_VTABLE_MOBILEWAKESINK
+void uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobilewakesink(const UniffiVTableCallbackInterfaceMobileWakeSink* _Nonnull vtable
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_FUNC_MOBILE_BUILD_IDENTITY_JSON
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_FUNC_MOBILE_BUILD_IDENTITY_JSON
+RustBuffer uniffi_ubm5_uniffi_echo_fn_func_mobile_build_identity_json(RustCallStatus *_Nonnull out_status
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_FUNC_MOBILE_CONTRACT_REVISION
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_FUNC_MOBILE_CONTRACT_REVISION
+RustBuffer uniffi_ubm5_uniffi_echo_fn_func_mobile_contract_revision(RustCallStatus *_Nonnull out_status
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_FUNC_MOBILE_HOST_CURRENT
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_FUNC_MOBILE_HOST_CURRENT
+RustBuffer uniffi_ubm5_uniffi_echo_fn_func_mobile_host_current(RustCallStatus *_Nonnull out_status
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_FUNC_MOBILE_HOST_INSTALL
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_FUNC_MOBILE_HOST_INSTALL
+uint64_t uniffi_ubm5_uniffi_echo_fn_func_mobile_host_install(uint64_t radio, uint64_t wake, RustBuffer platform, RustBuffer owner, RustBuffer adapter_label, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_FUNC_MOBILE_WIRE_REVISION
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_FUNC_MOBILE_WIRE_REVISION
+RustBuffer uniffi_ubm5_uniffi_echo_fn_func_mobile_wire_revision(RustCallStatus *_Nonnull out_status
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_UBM5_UNIFFI_ECHO_RUSTBUFFER_ALLOC
@@ -593,6 +753,36 @@ void ffi_ubm5_uniffi_echo_rust_future_free_void(uint64_t handle
 void ffi_ubm5_uniffi_echo_rust_future_complete_void(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_FUNC_MOBILE_BUILD_IDENTITY_JSON
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_FUNC_MOBILE_BUILD_IDENTITY_JSON
+uint16_t uniffi_ubm5_uniffi_echo_checksum_func_mobile_build_identity_json(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_FUNC_MOBILE_CONTRACT_REVISION
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_FUNC_MOBILE_CONTRACT_REVISION
+uint16_t uniffi_ubm5_uniffi_echo_checksum_func_mobile_contract_revision(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_FUNC_MOBILE_HOST_CURRENT
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_FUNC_MOBILE_HOST_CURRENT
+uint16_t uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_current(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_FUNC_MOBILE_HOST_INSTALL
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_FUNC_MOBILE_HOST_INSTALL
+uint16_t uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_install(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_FUNC_MOBILE_WIRE_REVISION
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_FUNC_MOBILE_WIRE_REVISION
+uint16_t uniffi_ubm5_uniffi_echo_checksum_func_mobile_wire_revision(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_ECHOSESSION_BLE_SCAN_START
 #define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_ECHOSESSION_BLE_SCAN_START
 uint16_t uniffi_ubm5_uniffi_echo_checksum_method_echosession_ble_scan_start(void
@@ -683,9 +873,81 @@ uint16_t uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_step(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_MOBILECOREHOST_COMPLETE
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_MOBILECOREHOST_COMPLETE
+uint16_t uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_complete(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_MOBILECOREHOST_INGEST
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_MOBILECOREHOST_INGEST
+uint16_t uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_ingest(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_MOBILECOREHOST_OPEN_SESSION
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_MOBILECOREHOST_OPEN_SESSION
+uint16_t uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_open_session(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_MOBILECOREHOST_SHUTDOWN
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_MOBILECOREHOST_SHUTDOWN
+uint16_t uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_shutdown(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_MOBILECORESESSION_ADMISSION_JSON
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_MOBILECORESESSION_ADMISSION_JSON
+uint16_t uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_admission_json(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_MOBILECORESESSION_DRAIN
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_MOBILECORESESSION_DRAIN
+uint16_t uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_drain(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_MOBILECORESESSION_INVOKE
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_MOBILECORESESSION_INVOKE
+uint16_t uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_invoke(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_MOBILECORESESSION_SESSION_ID
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_MOBILECORESESSION_SESSION_ID
+uint16_t uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_session_id(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_CONSTRUCTOR_ECHOSESSION_NEW
 #define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_CONSTRUCTOR_ECHOSESSION_NEW
 uint16_t uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_MOBILEINVOKECOMPLETION_COMPLETE
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_MOBILEINVOKECOMPLETION_COMPLETE
+uint16_t uniffi_ubm5_uniffi_echo_checksum_method_mobileinvokecompletion_complete(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_MOBILEPLATFORMRADIO_SUBMIT
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_MOBILEPLATFORMRADIO_SUBMIT
+uint16_t uniffi_ubm5_uniffi_echo_checksum_method_mobileplatformradio_submit(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_MOBILEPLATFORMRADIO_CANCEL
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_MOBILEPLATFORMRADIO_CANCEL
+uint16_t uniffi_ubm5_uniffi_echo_checksum_method_mobileplatformradio_cancel(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_MOBILEWAKESINK_WAKE
+#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_MOBILEWAKESINK_WAKE
+uint16_t uniffi_ubm5_uniffi_echo_checksum_method_mobilewakesink_wake(void
     
 );
 #endif

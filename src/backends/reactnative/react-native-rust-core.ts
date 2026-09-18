@@ -1,108 +1,92 @@
 // src/backends/reactnative/react-native-rust-core.ts
 //
-// F01 React Native shared-core seam: selection, binding resolution, and
-// contract admission between the RN factory layer and the native Rust core
-// (the future JNI/UniFFI op surface; both bindings are echo-only today, so
-// no factory constructs through this seam yet).
+// The React Native seam over the process-owned Rust mobile host
+// (docs/MOBILE_RUST_WIRE.md, wire `ubm-mobile-wire/1`). The production
+// implementation is `createReactNativeRustCoreBinding` over the
+// `UnifiedBleRustCore` TurboModule; tests inject a binding built by the same
+// function over a deterministic native module, so every byte crosses the real
+// production serializer.
 //
-// The seam never constructs (or falls back to) the TypeScript manager: a
-// missing binding or a foreign revision fails loudly, so the F01
-// acceptance proof can never silently exercise the old TS runtime. The
-// follow-up composes these primitives into a binding-backed provider once
-// the native op surface lands; the dispatched ops below are the exact F01
-// slice it must route (scan/connect/subscribe/disconnect/dispose).
+// The seam never constructs (or falls back to) a TypeScript radio: a missing
+// module, a foreign identity or revision, or a malformed admission fails
+// loudly before any radio operation.
 
 import { contractError } from '../../backend-contract/errors'
+import { EXPECTED_NATIVE_BUILD_IDENTITY } from '../../generated/native-build-identity'
+import type { NativeBuildIdentityRecord } from '../../native-build-identity-check'
+import type { WireDrainBatch, WireJsonObject, WireOp, WireOpResults, WireRestorationIdentity } from './rust-core-wire'
 
 /**
  * The linked `ubm-core` contract revision a native Rust core must report.
- * Pinned like the Tauri compatibility entry; the RN seam suite asserts it
- * still equals the frozen contracts revision.
+ * It is the revision the package's native build identity was sealed with.
  */
-export const RUST_CORE_CONTRACT_REVISION = 'C-UBM.0.1.2-DRAFT'
+export const RUST_CORE_CONTRACT_REVISION: string = EXPECTED_NATIVE_BUILD_IDENTITY.contractRevision
 
-/** One admitted native Rust core session. Implemented by the native module. */
+/** One admitted session lease on the process-owned Rust mobile host. */
 export interface ReactNativeRustCoreSession {
-  /** The linked `ubm-core` contract revision this session executes. */
-  contractRevision(): string
+  /** The host-issued session id (decimal string). */
+  readonly sessionId: string
+  /** The verified build identity of the binary serving this session. */
+  readonly buildIdentity: NativeBuildIdentityRecord
   /**
-   * Invoke one core op. The seam interprets nothing: args cross verbatim
-   * and the raw core result returns. No TS scheduling, subscription, or
-   * timeout state lives here.
+   * Runs one wire operation: arguments are serialized by the production
+   * codec and the envelope is parsed strictly. A failure rejects with the
+   * exact contract identity Rust reported, including the write commit state.
    */
-  invoke(op: string, args: Record<string, unknown>): Promise<unknown>
-  /** Release the session. Idempotent. */
+  invoke<Op extends WireOp>(op: Op, args: WireJsonObject): Promise<WireOpResults[Op]>
+  /** Drains queued records; ordinals are checked against the last delivered one. */
+  drain(maxItems: number, maxBytes: number): Promise<WireDrainBatch>
+  /** Registers the one wake listener of this session; returns its remover. */
+  onWake(listener: () => void): () => void
+  /** Ends the lease after `session.dispose` reported its record. Idempotent; a failure permits a retry. */
   close(): Promise<void>
 }
 
-/** Native Rust core entry injected by the host application. */
-export interface ReactNativeRustCoreBinding {
-  openSession(owner: string): Promise<ReactNativeRustCoreSession>
+/** Restoration identity request (`restorationIdentity`). */
+export interface RustCoreRestorationIdentityRequest {
+  readonly restorationId: string
+  readonly generation: string
 }
 
-function isRustCoreSession(candidate: unknown): candidate is ReactNativeRustCoreSession {
-  if (typeof candidate !== 'object' || candidate === null) return false
-  const session = candidate as Record<string, unknown>
+/** Native Rust core entry. */
+export interface ReactNativeRustCoreBinding {
+  /** Verifies the binary identity, then admits one session lease. */
+  openSession(owner: string): Promise<ReactNativeRustCoreSession>
+  /** Cryptographically secure random bytes from the platform CSPRNG (1..1024). */
+  randomBytes(length: number): Promise<Uint8Array>
+  /** The app-declared restoration identity (Info.plist / manifest). */
+  restorationIdentity(request: RustCoreRestorationIdentityRequest): Promise<WireRestorationIdentity>
+  /**
+   * The identity the app configured natively (Info.plist
+   * `UnifiedBleProtocolRestorationId` / `…Generation`) without naming it
+   * from JS, or `null` when it configured none (always on Android). The
+   * legacy native module read this authority at init.
+   */
+  configuredRestorationIdentity(): Promise<WireRestorationIdentity | null>
+}
+
+function hasFunction(candidate: object, name: string): boolean {
+  return typeof Reflect.get(candidate, name) === 'function'
+}
+
+function isBinding(candidate: unknown): candidate is ReactNativeRustCoreBinding {
   return (
-    typeof session.contractRevision === 'function' &&
-    typeof session.invoke === 'function' &&
-    typeof session.close === 'function'
+    typeof candidate === 'object' &&
+    candidate !== null &&
+    hasFunction(candidate, 'openSession') &&
+    hasFunction(candidate, 'randomBytes') &&
+    hasFunction(candidate, 'restorationIdentity') &&
+    hasFunction(candidate, 'configuredRestorationIdentity')
   )
 }
 
 /**
- * Resolve the injected native binding. Anything but a well-shaped binding
- * fails with `capability.unsupported`: there is no silent TypeScript
- * fallback, by design.
+ * Resolves an injected binding. Anything but a well-shaped binding fails
+ * with `capability.unsupported`: there is no TypeScript fallback.
  */
 export function resolveReactNativeRustCoreBinding(candidate: unknown): ReactNativeRustCoreBinding {
-  if (typeof candidate !== 'object' || candidate === null) {
+  if (!isBinding(candidate)) {
     throw contractError('capability.unsupported', 'capability', 'react-native-manager.rust-core-missing')
   }
-  const binding = (candidate as { openSession?: unknown }).openSession
-  if (typeof binding !== 'function') {
-    throw contractError('capability.unsupported', 'capability', 'react-native-manager.rust-core-missing')
-  }
-  return candidate as ReactNativeRustCoreBinding
-}
-
-/**
- * Admit one open session: its reported revision must equal the pinned
- * shared-core revision, else `protocol.incompatible`. A session that fails
- * the shape check fails as a missing core, never as an implicit pass.
- */
-export async function admitReactNativeRustCoreSession(session: unknown): Promise<ReactNativeRustCoreSession> {
-  if (!isRustCoreSession(session)) {
-    throw contractError('capability.unsupported', 'capability', 'react-native-manager.rust-core-missing')
-  }
-  if (session.contractRevision() !== RUST_CORE_CONTRACT_REVISION) {
-    throw contractError('protocol.incompatible', 'core', 'react-native-manager.rust-core-revision')
-  }
-  return session
-}
-
-/** Open one session on the binding and admit its contract revision. */
-export async function openAdmittedRustCoreSession(
-  binding: ReactNativeRustCoreBinding,
-  owner: string
-): Promise<ReactNativeRustCoreSession> {
-  if (owner.length === 0) {
-    throw contractError('argument.invalid', 'core', 'react-native-manager.rust-core-owner')
-  }
-  return admitReactNativeRustCoreSession(await binding.openSession(owner))
-}
-
-/**
- * Dispatch one op through an admitted session. The op name must be
- * non-empty; everything else crosses untouched.
- */
-export async function dispatchReactNativeRustCoreOp(
-  session: ReactNativeRustCoreSession,
-  op: string,
-  args: Record<string, unknown>
-): Promise<unknown> {
-  if (op.length === 0) {
-    throw contractError('argument.invalid', 'core', 'react-native-manager.rust-core-op')
-  }
-  return session.invoke(op, args)
+  return candidate
 }

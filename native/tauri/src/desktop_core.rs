@@ -1,49 +1,41 @@
-//! F01 Tauri scheduling authority: BLE op scheduling executes `ubm-desktop`.
+//! Tauri scheduling authority: every BLE op schedules through one shared
+//! `ubm-desktop` [`DesktopCentral`].
 //!
-//! [`DesktopCore`] owns one [`DesktopCentral`] over a caller-supplied radio
-//! boundary: the production [`BtleplugRadio`] or a scripted boundary in
-//! tests. Every BLE data-path op — scan, connect, discover, read, write,
-//! subscribe, notifications, cancel, shutdown — schedules through
-//! `ubm-desktop` / `ubm-core`. This module holds no scan policy, no
-//! subscription state, no retry logic, and no timeout timers: deadlines
-//! cross as `timeout_ms` args so the core owns every caller outcome.
+//! The dispatcher holds `Arc<dyn CoreAuthority>`; production implements it
+//! with a [`DesktopCentral`] over the btleplug radio, tests with a
+//! [`DesktopCentral`] over a scripted boundary. [`DesktopCentral`] is an
+//! `Arc` over internally locked state whose methods take `&self`, so the
+//! dispatcher clones the handle and never serializes BLE work behind a lock
+//! of its own (PR210-04): one peer's slow connect or discovery cannot stall
+//! another peer's notifications, a cancel, or shutdown.
+//!
+//! Every operation carries an [`OpControl`]: the caller's budget, admitted
+//! on the plugin's own clock from the relative `budgetMs` the webview sent
+//! (PR210-06), and the ticket that receives the core operation id at
+//! admission so a cancel targets exactly that operation, even one that
+//! arrives before the id exists (PR210-05). The core owns every outcome:
+//! this module holds no scan policy, no subscription state, no retry logic
+//! and no timers.
 //!
 //! Contract error identities pass through verbatim: methods return
-//! [`DesktopError`] unchanged, and the IPC layer renders its
-//! `code`/`domain`/`operation` without substitution (see
-//! [`error_identity`]). A missing radio (no adapter on headless CI) fails
-//! loudly with `adapter.unavailable`, never silently.
-//!
-//! Status in the F01 factory-routing migration (PARTIAL, honest scope):
-//! this authority is complete and proven (tests below drive the full op
-//! slice through the real `DesktopCentral` over a scripted boundary), and
-//! the plugin owns `ubm-desktop` as a real dependency (the executor seam in
-//! `btleplug_dispatcher.rs` already resolves through it). The remaining
-//! follow-up — cutting the IPC op methods in `btleplug_dispatcher.rs`
-//! (scan start/stop, connect, disconnect, discover, read, write,
-//! descriptor read/write, subscribe, unsubscribe, cancel, dispose) from raw
-//! btleplug `Adapter`/`Peripheral` calls to this authority, then deleting
-//! the parallel policy (`SCAN_POLL_INTERVAL` poll loop, `scan_plan.rs`
-//! duplicate/merge derivation, per-op btleplug timeout handling) and
-//! remodelling the radio-holding resources (`ScanResource.task` to core op
-//! id, `ConnectionResource.peripheral` to peer key/lease, `DatabaseResource`
-//! to core discovery paths, `SubscriptionBody::Native` to core consumer) —
-//! is a state-machine remodel of that 6890-line file, deliberately left as
-//! one coherent follow-up rather than churned halfway here. Routing half the
-//! ops would create the very second scheduling authority F01 forbids, so the
-//! dispatcher keeps single (if legacy) radio ownership until that cutover.
+//! [`DesktopError`] unchanged (code, domain, operation, detail, commit state
+//! and retryability), and the IPC layer renders them without substitution.
+//! A missing radio fails loudly with `adapter.unavailable`, never silently.
 
 use std::future::Future;
 use std::pin::Pin;
 
-use ubm_core::contracts::OperationId;
+use tokio::sync::broadcast;
+use ubm_core::contracts::{AttachmentTuple, OperationId};
 use ubm_desktop::{
-    ConnectionHandle, DesktopCentral, DesktopError, DiscoveredPath, DiscoveryReport, PeerSnapshot,
-    RadioBoundary,
+    AdapterAuthorization, AdapterPowerState, AdapterStatus, CancelAck, ConnectionHandle,
+    DeliveryMode, DesktopCentral, DesktopError, DiscoveredPath, DiscoveryReport, LifecycleEvent,
+    LinkRelease, NotificationPoll, ObservedDelivery, OpControl, OpTicket, PathSelector,
+    PeerSnapshot, RadioBoundary, ScanStop, ScanTerminalEvent, ShutdownReport,
 };
 
 /// GATT path selector parts (UUIDs plus optional duplicate occurrences).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CoreSelector {
     /// Canonical service UUID.
     pub service_uuid: String,
@@ -59,246 +51,16 @@ pub struct CoreSelector {
     pub descriptor_occurrence: Option<u64>,
 }
 
-/// Tauri scheduling authority over one shared-core central.
-///
-/// The central opens lazily on the first BLE op so dispatcher construction
-/// never touches the radio; every method below is one thin delegation into
-/// [`DesktopCentral`].
-pub struct DesktopCore<B: RadioBoundary> {
-    central: Option<DesktopCentral<B>>,
-    pending_boundary: Option<B>,
-    owner: String,
-}
-
-impl<B: RadioBoundary> DesktopCore<B> {
-    /// Stage a radio boundary; the central opens on the first BLE op.
-    /// `owner` labels the core attachment (host identity, e.g. `"tauri"`).
-    pub fn new(boundary: B, owner: &str) -> Self {
-        Self {
-            central: None,
-            pending_boundary: Some(boundary),
-            owner: owner.to_owned(),
-        }
-    }
-
-    /// The open central, opening it on first use. Radio failures (no
-    /// adapter, withheld readout) surface verbatim — never synthesized.
-    pub async fn ensure_open(&mut self) -> Result<&DesktopCentral<B>, DesktopError> {
-        if self.central.is_none() {
-            let boundary = self.pending_boundary.take().ok_or_else(|| {
-                DesktopError::adapter_unavailable("desktop.open")
-                    .with_detail("boundary already consumed")
-            })?;
-            let central = DesktopCentral::open(boundary, &self.owner).await?;
-            self.central = Some(central);
-        }
-        self.central.as_ref().ok_or_else(|| {
-            DesktopError::adapter_unavailable("desktop.open")
-                .with_detail("central missing after open")
-        })
-    }
-
-    /// True once the central is open (no radio effect: reports admission only).
-    pub fn is_open(&self) -> bool {
-        self.central.is_some()
-    }
-
-    /// Start a scan through the core: duplicate/merge/timeout policy is the
-    /// core's, not the caller's. Returns the core scan operation id.
-    pub async fn start_scan(
-        &mut self,
-        owner: &str,
-        service_uuids: &[String],
-        timeout_ms: u64,
-    ) -> Result<String, DesktopError> {
-        let refs: Vec<&str> = service_uuids.iter().map(String::as_str).collect();
-        let central = self.ensure_open().await?;
-        let session = central.start_scan(owner, &refs, timeout_ms).await?;
-        Ok(session.operation_id().to_string())
-    }
-
-    /// Stop the owned scan (idempotent in the core).
-    pub async fn stop_scan(&mut self) -> Result<(), DesktopError> {
-        let central = self.ensure_open().await?;
-        central.stop_scan().await
-    }
-
-    /// Take one queued advertisement from the core observation queue
-    /// (`None` = none queued now; the caller paces delivery, the core owns
-    /// admission/overflow).
-    pub async fn take_advertisement(&self) -> Result<Option<PeerSnapshot>, DesktopError> {
-        let central = self.central.as_ref().ok_or_else(|| {
-            DesktopError::adapter_unavailable("desktop.scan").with_detail("scan before open")
-        })?;
-        Ok(central.take_advertisement().await)
-    }
-
-    /// Connect through the core (deadline-owned by the core).
-    pub async fn connect(
-        &mut self,
-        peer_id: &str,
-        lease: &str,
-        timeout_ms: u64,
-    ) -> Result<ConnectionHandle, DesktopError> {
-        let central = self.ensure_open().await?;
-        central.connect(peer_id, lease, timeout_ms).await
-    }
-
-    /// Disconnect through the core.
-    pub async fn disconnect(&mut self, peer_id: &str, lease: &str) -> Result<(), DesktopError> {
-        let central = self.ensure_open().await?;
-        central.disconnect(peer_id, lease).await
-    }
-
-    /// Run discovery through the core (partial-failure report, never a
-    /// silent short snapshot).
-    pub async fn discover(
-        &mut self,
-        peer_id: &str,
-        lease: &str,
-    ) -> Result<DiscoveryReport, DesktopError> {
-        let central = self.ensure_open().await?;
-        central.discover(peer_id, lease).await
-    }
-
-    /// Read the whole current discovery tree for one peer.
-    pub async fn discovered_paths(
-        &self,
-        peer_id: &str,
-    ) -> Result<Vec<DiscoveredPath>, DesktopError> {
-        let central = self.central.as_ref().ok_or_else(|| {
-            DesktopError::adapter_unavailable("desktop.discover")
-                .with_detail("discover before open")
-        })?;
-        central.discovered_paths(peer_id).await
-    }
-
-    fn selector(selector: &CoreSelector) -> Result<ubm_desktop::PathSelector, DesktopError> {
+impl CoreSelector {
+    fn path<B: RadioBoundary>(&self) -> Result<PathSelector, DesktopError> {
         DesktopCentral::<B>::selector(
-            &selector.service_uuid,
-            selector.service_occurrence,
-            selector.characteristic_uuid.as_deref(),
-            selector.characteristic_occurrence,
-            selector.descriptor_uuid.as_deref(),
-            selector.descriptor_occurrence,
+            &self.service_uuid,
+            self.service_occurrence,
+            self.characteristic_uuid.as_deref(),
+            self.characteristic_occurrence,
+            self.descriptor_uuid.as_deref(),
+            self.descriptor_occurrence,
         )
-    }
-
-    /// Read through the core (deadline-owned by the core).
-    pub async fn read(
-        &mut self,
-        peer_id: &str,
-        selector: &CoreSelector,
-        timeout_ms: u64,
-    ) -> Result<Vec<u8>, DesktopError> {
-        let path = Self::selector(selector)?;
-        let central = self.ensure_open().await?;
-        central.read(peer_id, &path, timeout_ms).await
-    }
-
-    /// Write through the core (`mode`: `with-response` / `without-response`;
-    /// the core validates MTU and properties inside the op deadline).
-    pub async fn write(
-        &mut self,
-        peer_id: &str,
-        selector: &CoreSelector,
-        value: Vec<u8>,
-        mode: &str,
-        timeout_ms: u64,
-    ) -> Result<(), DesktopError> {
-        let path = Self::selector(selector)?;
-        let central = self.ensure_open().await?;
-        central.write(peer_id, &path, value, mode, timeout_ms).await
-    }
-
-    /// Descriptor read through the core.
-    pub async fn read_descriptor(
-        &mut self,
-        peer_id: &str,
-        selector: &CoreSelector,
-        timeout_ms: u64,
-    ) -> Result<Vec<u8>, DesktopError> {
-        let path = Self::selector(selector)?;
-        let central = self.ensure_open().await?;
-        central.read_descriptor(peer_id, &path, timeout_ms).await
-    }
-
-    /// Descriptor write through the core.
-    pub async fn write_descriptor(
-        &mut self,
-        peer_id: &str,
-        selector: &CoreSelector,
-        value: Vec<u8>,
-        timeout_ms: u64,
-    ) -> Result<(), DesktopError> {
-        let path = Self::selector(selector)?;
-        let central = self.ensure_open().await?;
-        central
-            .write_descriptor(peer_id, &path, value, timeout_ms)
-            .await
-    }
-
-    /// Subscribe through the core (enablement is core-arbitrated: concurrent
-    /// subscribers share one physical enable).
-    pub async fn subscribe(
-        &mut self,
-        peer_id: &str,
-        selector: &CoreSelector,
-        consumer: &str,
-        timeout_ms: u64,
-    ) -> Result<(), DesktopError> {
-        let path = Self::selector(selector)?;
-        let central = self.ensure_open().await?;
-        central
-            .subscribe(peer_id, &path, consumer, timeout_ms)
-            .await
-    }
-
-    /// Take one queued notification for a subscribed consumer.
-    pub async fn take_notification(
-        &self,
-        peer_id: &str,
-        selector: &CoreSelector,
-        consumer: &str,
-    ) -> Result<Option<Vec<u8>>, DesktopError> {
-        let path = Self::selector(selector)?;
-        let central = self.central.as_ref().ok_or_else(|| {
-            DesktopError::adapter_unavailable("desktop.subscribe")
-                .with_detail("subscribe before open")
-        })?;
-        central.take_notification(peer_id, &path, consumer).await
-    }
-
-    /// Unsubscribe through the core (last consumer disables the physical CCCD).
-    pub async fn unsubscribe(
-        &mut self,
-        peer_id: &str,
-        selector: &CoreSelector,
-        consumer: &str,
-    ) -> Result<bool, DesktopError> {
-        let path = Self::selector(selector)?;
-        let central = self.ensure_open().await?;
-        central.unsubscribe(peer_id, &path, consumer).await
-    }
-
-    /// Cancel one core operation by id (caller completion stays core-owned:
-    /// cancellation requests best-effort physical halt, the settled core
-    /// outcome is still the caller result).
-    pub async fn cancel_operation(
-        &mut self,
-        operation_id: &str,
-    ) -> Result<ubm_desktop::CompletionOutcome, DesktopError> {
-        let operation = OperationId::new(operation_id).map_err(DesktopError::from)?;
-        let central = self.ensure_open().await?;
-        central.cancel_operation(&operation).await
-    }
-
-    /// Shut the central down (idempotent; other centrals are unaffected —
-    /// executor shutdown stays an explicit process-owner step).
-    pub async fn shutdown(&mut self) {
-        if let Some(central) = self.central.take() {
-            central.shutdown().await;
-        }
     }
 }
 
@@ -318,165 +80,209 @@ pub type CoreFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, DesktopError>
 
 /// Shared-core scheduling authority behind the Tauri IPC dispatcher.
 ///
-/// Every BLE verdict the dispatcher serves comes through this trait: the
-/// production implementation is [`DesktopCore`] over the btleplug radio, and
-/// tests inject [`DesktopCore`] over a scripted boundary through the same
-/// object. The dispatcher holds `Arc<dyn CoreAuthority>` so the radio type
-/// never leaks into IPC code, and it performs no BLE scheduling of its own —
-/// no scan policy, no retry, no timeout timers, no ownership generations.
+/// Every BLE verdict the dispatcher serves comes through this trait. The
+/// dispatcher holds `Arc<dyn CoreAuthority>` so the radio type never leaks
+/// into IPC code, and it performs no BLE scheduling of its own. Every
+/// method is a direct delegation to the shared [`DesktopCentral`]; none of
+/// them takes a lock across the radio call.
 pub trait CoreAuthority: Send + Sync {
-    /// Start a scan through the core; returns the core scan operation id.
+    /// Start a scan; returns the core scan operation id.
     fn start_scan<'a>(
         &'a self,
         owner: &'a str,
         service_uuids: &'a [String],
-        timeout_ms: u64,
-    ) -> CoreFuture<'a, String>;
-    /// Stop the owned scan (idempotent in the core).
-    fn stop_scan(&self) -> CoreFuture<'_, ()>;
+        ctl: OpControl,
+    ) -> CoreFuture<'a, OperationId>;
+    /// Stop exactly the scan `scan` names ([`ScanStop::NotActive`] for any
+    /// other id, with no radio call). A failed stop keeps the scan owned.
+    fn stop_scan<'a>(&'a self, scan: &'a OperationId, ctl: OpControl) -> CoreFuture<'a, ScanStop>;
     /// Take one queued advertisement (`None` = none queued now).
     fn take_advertisement(&self) -> CoreFuture<'_, Option<PeerSnapshot>>;
-    /// Connect through the core (deadline-owned by the core).
+    /// Connect; the lease is the exact string later ops echo back.
     fn connect<'a>(
         &'a self,
         peer_id: &'a str,
         lease: &'a str,
-        timeout_ms: u64,
+        ctl: OpControl,
     ) -> CoreFuture<'a, ConnectionHandle>;
-    /// Disconnect through the core.
-    fn disconnect<'a>(&'a self, peer_id: &'a str, lease: &'a str) -> CoreFuture<'a, ()>;
-    /// Run discovery through the core (partial-failure report).
-    fn discover<'a>(&'a self, peer_id: &'a str, lease: &'a str) -> CoreFuture<'a, DiscoveryReport>;
+    /// Release the link held under `lease`. A failed release keeps it.
+    fn disconnect<'a>(
+        &'a self,
+        peer_id: &'a str,
+        lease: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, LinkRelease>;
+    /// Run discovery (partial-failure report).
+    fn discover<'a>(
+        &'a self,
+        peer_id: &'a str,
+        lease: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, DiscoveryReport>;
     /// Read the whole current discovery tree for one peer.
     fn discovered_paths<'a>(&'a self, peer_id: &'a str) -> CoreFuture<'a, Vec<DiscoveredPath>>;
-    /// Read through the core (deadline-owned by the core).
+    /// Characteristic read.
     fn read<'a>(
         &'a self,
         peer_id: &'a str,
         selector: &'a CoreSelector,
-        timeout_ms: u64,
+        ctl: OpControl,
     ) -> CoreFuture<'a, Vec<u8>>;
-    /// Write through the core (`mode`: `with-response` / `without-response`).
+    /// Characteristic write (`mode`: `with-response` / `without-response`).
     fn write<'a>(
         &'a self,
         peer_id: &'a str,
         selector: &'a CoreSelector,
         value: Vec<u8>,
         mode: &'a str,
-        timeout_ms: u64,
+        ctl: OpControl,
     ) -> CoreFuture<'a, ()>;
-    /// Descriptor read through the core.
+    /// Descriptor read.
     fn read_descriptor<'a>(
         &'a self,
         peer_id: &'a str,
         selector: &'a CoreSelector,
-        timeout_ms: u64,
+        ctl: OpControl,
     ) -> CoreFuture<'a, Vec<u8>>;
-    /// Descriptor write through the core.
+    /// Descriptor write.
     fn write_descriptor<'a>(
         &'a self,
         peer_id: &'a str,
         selector: &'a CoreSelector,
         value: Vec<u8>,
-        timeout_ms: u64,
+        ctl: OpControl,
     ) -> CoreFuture<'a, ()>;
-    /// Subscribe through the core (enablement is core-arbitrated).
+    /// Subscribe one consumer, carrying a hard delivery requirement to the
+    /// radio; answers the delivery the radio reported.
     fn subscribe<'a>(
         &'a self,
         peer_id: &'a str,
         selector: &'a CoreSelector,
         consumer: &'a str,
-        timeout_ms: u64,
-    ) -> CoreFuture<'a, ()>;
-    /// Take one queued notification for a subscribed consumer.
-    fn take_notification<'a>(
+        delivery: Option<DeliveryMode>,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ObservedDelivery>;
+    /// Poll one consumer's notification stream with a typed outcome.
+    fn poll_notification<'a>(
         &'a self,
         peer_id: &'a str,
         selector: &'a CoreSelector,
         consumer: &'a str,
-    ) -> CoreFuture<'a, Option<Vec<u8>>>;
-    /// Unsubscribe through the core (last consumer disables the CCCD).
+    ) -> CoreFuture<'a, NotificationPoll>;
+    /// Remove one consumer (the last one disables the CCCD).
     fn unsubscribe<'a>(
         &'a self,
         peer_id: &'a str,
         selector: &'a CoreSelector,
         consumer: &'a str,
+        ctl: OpControl,
     ) -> CoreFuture<'a, bool>;
-    /// Cancel one core operation by id (the settled core outcome is still
-    /// the caller result).
-    fn cancel_operation<'a>(
+    /// Connected RSSI of the link held under `lease`.
+    fn read_rssi<'a>(
         &'a self,
-        operation_id: &'a str,
-    ) -> CoreFuture<'a, ubm_desktop::CompletionOutcome>;
-    /// Shut the central down (idempotent).
-    fn shutdown(&self) -> CoreFuture<'_, ()>;
+        peer_id: &'a str,
+        lease: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, i16>;
+    /// The largest single write the OS accepts on the link held under
+    /// `lease`, for one write mode (the same limit a write of that mode is
+    /// admitted against).
+    fn connection_maximum_write_length<'a>(
+        &'a self,
+        peer_id: &'a str,
+        lease: &'a str,
+        with_response: bool,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, u64>;
+    /// Cancel the operation behind `ticket` (before or after admission).
+    fn cancel<'a>(&'a self, ticket: &'a OpTicket) -> CoreFuture<'a, CancelAck>;
+    /// Subscribe to connection-lifecycle events.
+    fn lifecycle_events(&self) -> broadcast::Receiver<LifecycleEvent>;
+    /// Subscribe to scans the core ended without a stop request (the OS
+    /// stopped it, or an adapter loss took it).
+    fn scan_terminal_events(&self) -> broadcast::Receiver<ScanTerminalEvent>;
+    /// Shut the central down (idempotent) and return its authoritative
+    /// report.
+    fn shutdown(&self) -> Pin<Box<dyn Future<Output = ShutdownReport> + Send + '_>>;
+    /// The central's current attachment scope: minted at open, replaced by
+    /// every adapter reset (finding 57). The one attachment identity the
+    /// plugin reports; it opens no radio of its own for it (finding 43).
+    fn attachment(&self) -> AttachmentTuple;
+    /// The adapter facts admission reads, as the radio last reported them.
+    fn adapter_status(&self) -> AdapterStatus;
+    /// Adapter power state read from the radio under the budget.
+    fn adapter_state(&self, ctl: OpControl) -> CoreFuture<'_, AdapterPowerState>;
+    /// Whether the OS lets this process use the adapter, under the budget.
+    fn adapter_authorization(&self, ctl: OpControl) -> CoreFuture<'_, AdapterAuthorization>;
     /// Radio adapter label through the core boundary (attachment identity).
     fn adapter_name(&self) -> CoreFuture<'_, String>;
-    /// Live ATT MTU for one connected peer through the core boundary
-    /// (`None` = withheld by the OS; never synthesized).
-    fn mtu<'a>(&'a self, peer_id: &'a str) -> CoreFuture<'a, Option<u16>>;
     /// Currently visible radio peers through the core boundary (heard facts).
     fn peers(&self) -> CoreFuture<'_, Vec<PeerSnapshot>>;
 }
 
-/// Shared dispatch over one [`DesktopCore`]: lock, open, delegate. The mutex
-/// is the only dispatcher-side serialization; every verdict stays core-made.
-impl<B: RadioBoundary> CoreAuthority for tokio::sync::Mutex<DesktopCore<B>> {
+impl<B: RadioBoundary> CoreAuthority for DesktopCentral<B> {
     fn start_scan<'a>(
         &'a self,
         owner: &'a str,
         service_uuids: &'a [String],
-        timeout_ms: u64,
-    ) -> CoreFuture<'a, String> {
+        ctl: OpControl,
+    ) -> CoreFuture<'a, OperationId> {
         Box::pin(async move {
-            self.lock()
-                .await
-                .start_scan(owner, service_uuids, timeout_ms)
-                .await
+            let refs: Vec<&str> = service_uuids.iter().map(String::as_str).collect();
+            let session = DesktopCentral::start_scan(self, owner, &refs, ctl).await?;
+            Ok(session.operation_id().clone())
         })
     }
 
-    fn stop_scan(&self) -> CoreFuture<'_, ()> {
-        Box::pin(async move { self.lock().await.stop_scan().await })
+    fn stop_scan<'a>(&'a self, scan: &'a OperationId, ctl: OpControl) -> CoreFuture<'a, ScanStop> {
+        Box::pin(DesktopCentral::stop_scan(self, scan, ctl))
     }
 
     fn take_advertisement(&self) -> CoreFuture<'_, Option<PeerSnapshot>> {
-        Box::pin(async move {
-            let mut core = self.lock().await;
-            core.ensure_open().await?;
-            core.take_advertisement().await
-        })
+        Box::pin(async move { Ok(DesktopCentral::take_advertisement(self).await) })
     }
 
     fn connect<'a>(
         &'a self,
         peer_id: &'a str,
         lease: &'a str,
-        timeout_ms: u64,
+        ctl: OpControl,
     ) -> CoreFuture<'a, ConnectionHandle> {
-        Box::pin(async move { self.lock().await.connect(peer_id, lease, timeout_ms).await })
+        Box::pin(DesktopCentral::connect(self, peer_id, lease, ctl))
     }
 
-    fn disconnect<'a>(&'a self, peer_id: &'a str, lease: &'a str) -> CoreFuture<'a, ()> {
-        Box::pin(async move { self.lock().await.disconnect(peer_id, lease).await })
+    fn disconnect<'a>(
+        &'a self,
+        peer_id: &'a str,
+        lease: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, LinkRelease> {
+        Box::pin(DesktopCentral::disconnect(self, peer_id, lease, ctl))
     }
 
-    fn discover<'a>(&'a self, peer_id: &'a str, lease: &'a str) -> CoreFuture<'a, DiscoveryReport> {
-        Box::pin(async move { self.lock().await.discover(peer_id, lease).await })
+    fn discover<'a>(
+        &'a self,
+        peer_id: &'a str,
+        lease: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, DiscoveryReport> {
+        Box::pin(DesktopCentral::discover(self, peer_id, lease, ctl))
     }
 
     fn discovered_paths<'a>(&'a self, peer_id: &'a str) -> CoreFuture<'a, Vec<DiscoveredPath>> {
-        Box::pin(async move { self.lock().await.discovered_paths(peer_id).await })
+        Box::pin(DesktopCentral::discovered_paths(self, peer_id))
     }
 
     fn read<'a>(
         &'a self,
         peer_id: &'a str,
         selector: &'a CoreSelector,
-        timeout_ms: u64,
+        ctl: OpControl,
     ) -> CoreFuture<'a, Vec<u8>> {
-        let owned = selector.clone();
-        Box::pin(async move { self.lock().await.read(peer_id, &owned, timeout_ms).await })
+        Box::pin(async move {
+            let path = selector.path::<B>()?;
+            DesktopCentral::read(self, peer_id, &path, ctl).await
+        })
     }
 
     fn write<'a>(
@@ -485,14 +291,11 @@ impl<B: RadioBoundary> CoreAuthority for tokio::sync::Mutex<DesktopCore<B>> {
         selector: &'a CoreSelector,
         value: Vec<u8>,
         mode: &'a str,
-        timeout_ms: u64,
+        ctl: OpControl,
     ) -> CoreFuture<'a, ()> {
-        let owned = selector.clone();
         Box::pin(async move {
-            self.lock()
-                .await
-                .write(peer_id, &owned, value, mode, timeout_ms)
-                .await
+            let path = selector.path::<B>()?;
+            DesktopCentral::write(self, peer_id, &path, value, mode, ctl).await
         })
     }
 
@@ -500,14 +303,11 @@ impl<B: RadioBoundary> CoreAuthority for tokio::sync::Mutex<DesktopCore<B>> {
         &'a self,
         peer_id: &'a str,
         selector: &'a CoreSelector,
-        timeout_ms: u64,
+        ctl: OpControl,
     ) -> CoreFuture<'a, Vec<u8>> {
-        let owned = selector.clone();
         Box::pin(async move {
-            self.lock()
-                .await
-                .read_descriptor(peer_id, &owned, timeout_ms)
-                .await
+            let path = selector.path::<B>()?;
+            DesktopCentral::read_descriptor(self, peer_id, &path, ctl).await
         })
     }
 
@@ -516,14 +316,11 @@ impl<B: RadioBoundary> CoreAuthority for tokio::sync::Mutex<DesktopCore<B>> {
         peer_id: &'a str,
         selector: &'a CoreSelector,
         value: Vec<u8>,
-        timeout_ms: u64,
+        ctl: OpControl,
     ) -> CoreFuture<'a, ()> {
-        let owned = selector.clone();
         Box::pin(async move {
-            self.lock()
-                .await
-                .write_descriptor(peer_id, &owned, value, timeout_ms)
-                .await
+            let path = selector.path::<B>()?;
+            DesktopCentral::write_descriptor(self, peer_id, &path, value, ctl).await
         })
     }
 
@@ -532,29 +329,24 @@ impl<B: RadioBoundary> CoreAuthority for tokio::sync::Mutex<DesktopCore<B>> {
         peer_id: &'a str,
         selector: &'a CoreSelector,
         consumer: &'a str,
-        timeout_ms: u64,
-    ) -> CoreFuture<'a, ()> {
-        let owned = selector.clone();
+        delivery: Option<DeliveryMode>,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ObservedDelivery> {
         Box::pin(async move {
-            self.lock()
-                .await
-                .subscribe(peer_id, &owned, consumer, timeout_ms)
-                .await
+            let path = selector.path::<B>()?;
+            DesktopCentral::subscribe(self, peer_id, &path, consumer, delivery, ctl).await
         })
     }
 
-    fn take_notification<'a>(
+    fn poll_notification<'a>(
         &'a self,
         peer_id: &'a str,
         selector: &'a CoreSelector,
         consumer: &'a str,
-    ) -> CoreFuture<'a, Option<Vec<u8>>> {
-        let owned = selector.clone();
+    ) -> CoreFuture<'a, NotificationPoll> {
         Box::pin(async move {
-            self.lock()
-                .await
-                .take_notification(peer_id, &owned, consumer)
-                .await
+            let path = selector.path::<B>()?;
+            DesktopCentral::poll_notification(self, peer_id, &path, consumer).await
         })
     }
 
@@ -563,92 +355,139 @@ impl<B: RadioBoundary> CoreAuthority for tokio::sync::Mutex<DesktopCore<B>> {
         peer_id: &'a str,
         selector: &'a CoreSelector,
         consumer: &'a str,
+        ctl: OpControl,
     ) -> CoreFuture<'a, bool> {
-        let owned = selector.clone();
         Box::pin(async move {
-            self.lock()
-                .await
-                .unsubscribe(peer_id, &owned, consumer)
-                .await
+            let path = selector.path::<B>()?;
+            DesktopCentral::unsubscribe(self, peer_id, &path, consumer, ctl).await
         })
     }
 
-    fn cancel_operation<'a>(
+    fn read_rssi<'a>(
         &'a self,
-        operation_id: &'a str,
-    ) -> CoreFuture<'a, ubm_desktop::CompletionOutcome> {
-        Box::pin(async move { self.lock().await.cancel_operation(operation_id).await })
+        peer_id: &'a str,
+        lease: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, i16> {
+        Box::pin(DesktopCentral::read_rssi(self, peer_id, lease, ctl))
     }
 
-    fn shutdown(&self) -> CoreFuture<'_, ()> {
-        Box::pin(async move {
-            self.lock().await.shutdown().await;
-            Ok(())
-        })
+    fn connection_maximum_write_length<'a>(
+        &'a self,
+        peer_id: &'a str,
+        lease: &'a str,
+        with_response: bool,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, u64> {
+        Box::pin(DesktopCentral::connection_maximum_write_length(
+            self,
+            peer_id,
+            lease,
+            with_response,
+            ctl,
+        ))
+    }
+
+    fn cancel<'a>(&'a self, ticket: &'a OpTicket) -> CoreFuture<'a, CancelAck> {
+        Box::pin(DesktopCentral::cancel(self, ticket))
+    }
+
+    fn lifecycle_events(&self) -> broadcast::Receiver<LifecycleEvent> {
+        DesktopCentral::lifecycle_events(self)
+    }
+
+    fn scan_terminal_events(&self) -> broadcast::Receiver<ScanTerminalEvent> {
+        DesktopCentral::scan_terminal_events(self)
+    }
+
+    fn shutdown(&self) -> Pin<Box<dyn Future<Output = ShutdownReport> + Send + '_>> {
+        Box::pin(DesktopCentral::shutdown(self))
+    }
+
+    fn attachment(&self) -> AttachmentTuple {
+        DesktopCentral::attachment(self)
+    }
+
+    fn adapter_status(&self) -> AdapterStatus {
+        DesktopCentral::adapter_status(self)
+    }
+
+    fn adapter_state(&self, ctl: OpControl) -> CoreFuture<'_, AdapterPowerState> {
+        Box::pin(DesktopCentral::adapter_state(self, ctl))
+    }
+
+    fn adapter_authorization(&self, ctl: OpControl) -> CoreFuture<'_, AdapterAuthorization> {
+        Box::pin(DesktopCentral::adapter_authorization(self, ctl))
     }
 
     fn adapter_name(&self) -> CoreFuture<'_, String> {
-        Box::pin(async move {
-            let mut core = self.lock().await;
-            let central = core.ensure_open().await?;
-            central.boundary().adapter_name().await
-        })
-    }
-
-    fn mtu<'a>(&'a self, peer_id: &'a str) -> CoreFuture<'a, Option<u16>> {
-        Box::pin(async move {
-            let mut core = self.lock().await;
-            let central = core.ensure_open().await?;
-            // The boundary reports an unmeasured MTU as `None` directly
-            // (never an error): withhold, never synthesize.
-            Ok(central.boundary().mtu(peer_id).await)
-        })
+        Box::pin(self.boundary().adapter_name())
     }
 
     fn peers(&self) -> CoreFuture<'_, Vec<PeerSnapshot>> {
-        Box::pin(async move {
-            let mut core = self.lock().await;
-            let central = core.ensure_open().await?;
-            central.boundary().peers().await
-        })
+        Box::pin(self.boundary().peers())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use ubm_desktop::FakeRadio;
 
     const HRM_SERVICE: &str = "0000180d-0000-1000-8000-00805f9b34fb";
 
-    async fn open_core() -> DesktopCore<FakeRadio> {
-        let executor = ubm_desktop::executor::desktop_runtime();
-        let _guard = executor.enter();
-        let mut core = DesktopCore::new(FakeRadio::new(), "tauri-test");
-        core.ensure_open()
+    /// Opens the central on the shared desktop executor, as production does.
+    async fn open_authority() -> Arc<dyn CoreAuthority> {
+        let central = ubm_desktop::executor::desktop_runtime()
+            .spawn(DesktopCentral::open(FakeRadio::new(), "tauri-test"))
             .await
+            .expect("open task joins")
             .expect("fake radio opens without hardware");
-        core
+        Arc::new(central)
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn scan_schedules_through_the_shared_core() {
-        let mut core = open_core().await;
+        let core = open_authority().await;
         let operation = core
-            .start_scan("owner-a", &[HRM_SERVICE.to_owned()], 5000)
+            .start_scan(
+                "owner-a",
+                &[HRM_SERVICE.to_owned()],
+                OpControl::budget_ms(5000),
+            )
             .await
             .expect("core admits scan");
-        assert!(!operation.is_empty(), "scan carries a core operation id");
-        core.stop_scan().await.expect("core stops scan");
+        assert_eq!(
+            core.stop_scan(&operation, OpControl::budget_ms(5000))
+                .await
+                .expect("core stops scan"),
+            ScanStop::Stopped
+        );
+        assert_eq!(
+            core.stop_scan(&operation, OpControl::budget_ms(5000))
+                .await
+                .expect("second stop"),
+            ScanStop::NotActive,
+            "a released scan id answers not-active without a radio call"
+        );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn full_op_slice_executes_ubm_desktop() {
-        let mut core = open_core().await;
-        core.start_scan("owner-a", &[HRM_SERVICE.to_owned()], 5000)
+        let core = open_authority().await;
+        let operation = core
+            .start_scan(
+                "owner-a",
+                &[HRM_SERVICE.to_owned()],
+                OpControl::budget_ms(5000),
+            )
             .await
             .expect("scan");
-        core.stop_scan().await.expect("stop");
+        core.stop_scan(&operation, OpControl::budget_ms(5000))
+            .await
+            .expect("stop");
         // A never-connected peer fails reads with the frozen core identity,
         // never an empty surprise.
         let selector = CoreSelector {
@@ -660,7 +499,7 @@ mod tests {
             descriptor_occurrence: None,
         };
         let error = core
-            .read("peer-unknown", &selector, 500)
+            .read("peer-unknown", &selector, OpControl::budget_ms(500))
             .await
             .expect_err("unknown peer must fail");
         let (code, domain, _, _) = error_identity(&error);
@@ -670,16 +509,20 @@ mod tests {
         core.shutdown().await;
         core.shutdown().await;
         let error = core
-            .start_scan("owner-a", &[HRM_SERVICE.to_owned()], 100)
+            .start_scan(
+                "owner-a",
+                &[HRM_SERVICE.to_owned()],
+                OpControl::budget_ms(100),
+            )
             .await
             .expect_err("post-shutdown scan must fail");
         let (code, _, _, _) = error_identity(&error);
         assert_eq!(code, "adapter.unavailable");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn malformed_selectors_fail_before_the_radio() {
-        let mut core = open_core().await;
+        let core = open_authority().await;
         let bad = CoreSelector {
             service_uuid: "not-a-uuid".to_owned(),
             service_occurrence: None,
@@ -689,7 +532,7 @@ mod tests {
             descriptor_occurrence: None,
         };
         let error = core
-            .read("peer-1", &bad, 500)
+            .read("peer-1", &bad, OpControl::budget_ms(500))
             .await
             .expect_err("malformed UUID must fail");
         let (code, domain, _, _) = error_identity(&error);

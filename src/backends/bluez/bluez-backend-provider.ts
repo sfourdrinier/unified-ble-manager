@@ -3,14 +3,13 @@
 import { type BluezPairingGenerationController } from './bluez-pairing-generation'
 import { contractError } from '../../backend-contract/errors'
 import type { AdapterDescriptor, BackendProvider, HostNeutralBackendIdentity } from '../../backend-contract/identity'
-import { UNIFIED_BLE_IMPLEMENTATION_VERSION } from '../../implementation-version'
+import { monotonicTimestamp, opaqueId } from '../../backend-contract/primitives'
 import {
-  monotonicTimestamp,
-  opaqueId,
-  version,
-  versionRange,
-  type BackendCompatibilityOffer
-} from '../../backend-contract/primitives'
+  BLUEZ_BACKEND_ID,
+  BLUEZ_IMPLEMENTATION_VERSION,
+  BLUEZ_PLATFORM_ID,
+  bluezCompatibility
+} from '../desktop/platform-identity'
 import { BluezBackend } from './bluez-backend'
 import {
   BLUEZ_ADAPTER_INTERFACE,
@@ -22,16 +21,7 @@ import {
 } from './bluez-dbus-contract'
 import { BluezObjectStore } from './bluez-object-store'
 
-export const BLUEZ_BACKEND_ID = 'unified-ble:bluez-dbus'
-export const BLUEZ_PLATFORM_ID = 'unified-ble:linux-bluez'
-export const BLUEZ_IMPLEMENTATION_VERSION = UNIFIED_BLE_IMPLEMENTATION_VERSION
-
-export const bluezCompatibility: BackendCompatibilityOffer = Object.freeze({
-  backendContract: versionRange(version('backend-contract', 1), version('backend-contract', 1)),
-  capabilitySchema: versionRange(version('capability-schema', 1), version('capability-schema', 1)),
-  eventSchema: versionRange(version('event-schema', 1), version('event-schema', 1)),
-  traceFormat: versionRange(version('trace-format', 1), version('trace-format', 1))
-})
+export { BLUEZ_BACKEND_ID, BLUEZ_IMPLEMENTATION_VERSION, BLUEZ_PLATFORM_ID, bluezCompatibility }
 
 export interface BluezBackendProviderOptions {
   readonly busKind: BluezBusKind

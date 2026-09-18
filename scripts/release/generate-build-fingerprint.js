@@ -29,9 +29,16 @@
 //   native.apple     staged RustCore XCFramework slices (file, sha256,
 //                    bytes) + LibraryIdentifiers (empty when unstaged —
 //                    the framework is macOS-built at release time)
+//   native.napi      desktop-core N-API prebuilds recorded in
+//                    native/PREBUILDS.json (empty when none are staged)
+//   sourceDigest     per binding (napi/jni/uniffi): Rust source + transitive
+//                    path-dependency digest, from native-build-identity.js
+//   bindingSchema    per binding: wrapper-side declaration digest (contract
+//                    §4, closes T1), from native-build-identity.js
 //   fingerprint      sha256 over the canonical seal (tamper-evident)
-// bindingSchema (contract §4) stays unsealed: T1 is open — the cutover has
-// not defined the authoritative binding revision source yet.
+// The per-binding digests are the same values the builders embed in each
+// binary (UBM_BUILD_SOURCE_DIGEST / UBM_BUILD_BINDING_SCHEMA) and the runtime
+// compares, so the seal and the binaries answer from one implementation.
 //
 // Usage:
 //   node scripts/release/generate-build-fingerprint.js [--check] [--root <dir>]
@@ -42,6 +49,8 @@
 const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
+
+const nativeBuildIdentity = require('./native-build-identity')
 
 const SEAL_RELATIVE = path.join('lib', 'ubm-build-fingerprint.json')
 const MAX_DRIFT_REPORT = 10
@@ -159,11 +168,7 @@ function walkInputs(root) {
 
 function readContractRevision(root) {
   const contracts = path.join(root, 'crates', 'ubm-core', 'src', 'contracts.rs')
-  if (!fs.existsSync(contracts)) return null
-  const match = fs
-    .readFileSync(contracts, 'utf8')
-    .match(/pub const CONTRACT_REVISION:\s*&str\s*=\s*"([^"]+)"/)
-  return match ? match[1] : null
+  return fs.existsSync(contracts) ? nativeBuildIdentity.readContractRevision(root) : null
 }
 
 function androidNativeIdentity(root, files) {
@@ -283,6 +288,33 @@ function appleNativeIdentity(root, files) {
   return { staged: slices.length > 0, slices, libraryIdentifiers }
 }
 
+// Per-binding identity digests. A binding whose crate is absent from the
+// root seals null; a present crate with an incomplete input set throws.
+function readBindingIdentities(root) {
+  const sourceDigest = {}
+  const bindingSchema = {}
+  for (const binding of nativeBuildIdentity.BINDING_NAMES) {
+    const manifest = path.join(root, nativeBuildIdentity.BINDINGS[binding].crateDir, 'Cargo.toml')
+    if (!fs.existsSync(manifest)) {
+      sourceDigest[binding] = null
+      bindingSchema[binding] = null
+      continue
+    }
+    const computed = nativeBuildIdentity.computeBindingIdentity(root, binding)
+    sourceDigest[binding] = computed.sourceDigest
+    bindingSchema[binding] = computed.bindingSchema
+  }
+  return { sourceDigest, bindingSchema }
+}
+
+function napiNativeIdentity(root) {
+  const manifest = path.join(root, 'native', 'PREBUILDS.json')
+  if (!fs.existsSync(manifest)) return []
+  const parsed = JSON.parse(fs.readFileSync(manifest, 'utf8'))
+  const entries = Array.isArray(parsed.entries) ? parsed.entries : []
+  return entries.filter(entry => entry.backend === 'desktop-core')
+}
+
 function nativeTargets(android, apple) {
   return {
     android: Object.fromEntries(
@@ -300,6 +332,8 @@ function canonicalSeal({
   features,
   targets,
   deploymentMinimum,
+  sourceDigest,
+  bindingSchema,
   files,
   native
 }) {
@@ -312,6 +346,8 @@ function canonicalSeal({
     features,
     targets,
     deploymentMinimum,
+    sourceDigest,
+    bindingSchema,
     files: sortedFiles,
     native
   }
@@ -338,8 +374,9 @@ function generateBuildFingerprint(root) {
     features: readFeatures(absoluteRoot),
     targets: nativeTargets(android, apple),
     deploymentMinimum: readDeploymentMinimum(absoluteRoot),
+    ...readBindingIdentities(absoluteRoot),
     files,
-    native: { android, apple }
+    native: { android, apple, napi: napiNativeIdentity(absoluteRoot) }
   })
   return { ...canonical, fingerprint: sealDigest(canonical) }
 }
@@ -399,7 +436,15 @@ function checkBuildFingerprint(root) {
   }
   // Identity drift fails closed like file drift (a seal written before an
   // identity field existed reports it as changed: rebuild the library).
-  for (const identity of ['toolchain', 'features', 'targets', 'deploymentMinimum', 'native']) {
+  for (const identity of [
+    'toolchain',
+    'features',
+    'targets',
+    'deploymentMinimum',
+    'sourceDigest',
+    'bindingSchema',
+    'native'
+  ]) {
     if (JSON.stringify(stored[identity] ?? null) !== JSON.stringify(fresh[identity])) {
       drifted.unshift(`${identity} identity changed since the seal was written`)
     }

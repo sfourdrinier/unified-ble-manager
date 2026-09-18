@@ -28,15 +28,20 @@ describe('Tauri caller lifecycle cleanup', () => {
     expect(dispatcher).toContain('tauri.connect-stale-lease')
     expect(dispatcher).toContain('tauri.scan-stale-lease')
     expect(dispatcher).toContain('tauri.subscribe-stale-lease')
-    // R03 contract update (justified): the dispatcher-side quarantine is
-    // deleted with the second scheduling authority — orphaned core work is
-    // compensated inline at the late-validation sites (core disconnect for
-    // a stale connect, core stop for a stale/duplicate scan) instead of
-    // retained for a dispatcher-owned retry. The lease binding itself is
-    // unchanged and still pinned above.
-    expect(dispatcher).toContain('authority.disconnect(&peer_id, &lease).await')
-    expect(dispatcher).toContain('authority.stop_scan().await')
+    // PR210-08 contract update (justified): core work admitted for a caller
+    // that can no longer own it is compensated by its own core identity —
+    // the exact link lease, the exact scan operation id — never by a blind
+    // global stop that could hit a replacement caller's scan, and a failed
+    // compensation is retained as orphan debt that the next release retries
+    // and reports (behavior proven in native/tauri/src/dispatcher_packet_b_tests.rs).
+    expect(dispatcher).toContain('OrphanResource::Link { peer_id, lease }')
+    expect(dispatcher).toContain('OrphanResource::Scan(scan_id)')
+    expect(dispatcher).toContain('.stop_scan(scan_id, OpControl::unbounded())')
+    expect(dispatcher).toContain('orphan_debt')
+    expect(dispatcher).not.toContain('authority.stop_scan().await')
+    expect(dispatcher).not.toMatch(/let _ = authority\.(disconnect|unsubscribe|stop_scan)/)
     expect(dispatcher).toContain('bootstrap_admission')
-    expect(dispatcher).toContain('emit_connection_failure')
+    // PR210-11: lifecycle transitions are delivered by the stream handle.
+    expect(dispatcher).toContain('fn emit_connection_transition')
   })
 })

@@ -68,6 +68,7 @@ import {
   cleanupFailure,
   cloneObservation,
   deactivateScanLifetime,
+  recordBackendDiagnostic,
   retryableCleanup,
   scheduleCoreDeadline,
   type CoreDeadlineHandle,
@@ -1072,6 +1073,10 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
   }
 
   private applyBackendEvent(event: BackendEvent<Attachment>): void {
+    if (event.kind === 'diagnostic-warning') {
+      recordBackendDiagnostic(this.trace, this.options.now, event)
+      return
+    }
     if (event.kind === 'backend-restarted' || event.kind === 'backend-restarting') {
       if (event.attachment.adapter.adapterId === this.requireAttachment().attachment.adapter.adapterId) {
         this.lifecycleObserver.observeCleanup(this.releaseResources('backend-restart'), 'backend-restarted-cleanup')

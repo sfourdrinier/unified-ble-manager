@@ -4,9 +4,18 @@ members = [
     "crates/ubm-core",
     "crates/ubm-desktop",
     "crates/ubm-fake-radio",
+    "crates/ubm-mobile",
     "bindings/jni",
     "bindings/napi",
     "bindings/uniffi",
     "bindings/wasm",
 ]
 exclude = ["native/tauri", "example-tauri/src-tauri", "fuzz"]
+
+# Minimally patched btleplug (PR210 decision 10): each change is listed and
+# tested in vendor/btleplug/UBM_PATCHES.md. Workspaces outside this one
+# (native/tauri, example-tauri) build against crates.io btleplug until they
+# add the same patch line; ubm-desktop detects which one it links.
+[patch.crates-io]
+btleplug = { path = "vendor/btleplug" }
+bluez-async = { path = "vendor/bluez-async" }

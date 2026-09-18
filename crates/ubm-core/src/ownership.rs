@@ -43,13 +43,19 @@ use crate::contracts::{
 };
 
 /// Kernel-local admission bound on live operations (queued + dispatched +
-/// terminal awaiting release report). Documented as kernel-local: C-UBM
-/// freezes per-resource counters, not this aggregate.
-pub const DEFAULT_MAX_OPERATIONS: usize = 256;
+/// terminal awaiting release report): a memory-safety bound, never a quota
+/// below legacy (finding 106). The legacy core queued 8 operations per
+/// connection behind the one in flight, with no global or per-owner cap;
+/// 65 536 is far above that on the 3 840 links one controller can hold
+/// (34 560). Documented as kernel-local: C-UBM freezes per-resource
+/// counters, not this aggregate.
+pub const DEFAULT_MAX_OPERATIONS: usize = 65_536;
 /// Kernel-local bound on effects appended by one [`Kernel::handle`] call.
 pub const DEFAULT_MAX_EFFECTS_PER_CALL: usize = 64;
-/// Kernel-local bound on live operations per owner lease.
-pub const DEFAULT_MAX_OPERATIONS_PER_OWNER: usize = 8;
+/// Kernel-local bound on live operations per owner lease. Legacy had no
+/// per-owner bound (finding 106), so the default is the kernel's own bound:
+/// one lease may drive every link it holds.
+pub const DEFAULT_MAX_OPERATIONS_PER_OWNER: usize = DEFAULT_MAX_OPERATIONS;
 
 /// Kernel configuration. All bounds are explicit so hosts size the kernel to
 /// their budgets; admission-boundary tests use small values.

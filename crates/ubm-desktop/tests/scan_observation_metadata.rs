@@ -15,6 +15,7 @@
 use std::time::Duration;
 
 use serde_json::Value;
+use ubm_desktop::OpControl;
 use ubm_desktop::{DesktopCentral, FakeRadio, PeerSnapshot, RadioEvent};
 
 const FIXTURES: &str = include_str!("fixtures/vendor_advertisements.json");
@@ -166,6 +167,7 @@ fn snapshot_from_fixture(event: &Value) -> PeerSnapshot {
         manufacturer_data,
         service_data,
         tx_power_level: event["txPowerLevel"].as_i64().map(|tx| tx as i16),
+        extras: ubm_desktop::AdvertisementExtras::default(),
     }
 }
 
@@ -279,7 +281,7 @@ async fn replay_vendor_advertisements_preserve_matcher_facts() {
         .await
         .expect("open central");
     central
-        .start_scan("owner-f22", &[], 60_000)
+        .start_scan("owner-f22", &[], OpControl::budget_ms(60_000))
         .await
         .expect("start scan");
     assert!(
@@ -324,7 +326,7 @@ async fn scan_response_updates_arrive_in_order() {
         .await
         .expect("open central");
     central
-        .start_scan("owner-f22", &[], 60_000)
+        .start_scan("owner-f22", &[], OpControl::budget_ms(60_000))
         .await
         .expect("start scan");
     for event in events {
@@ -343,18 +345,22 @@ async fn scan_response_updates_arrive_in_order() {
     central.shutdown().await;
 }
 
+/// F22 plus the finding-107 audit: every advertisement stays pollable until
+/// the host takes it, up to the public stream maximum (legacy CoreBluetooth
+/// queued every advertisement for the public scan stream without a bound
+/// below the caller's policy), so 300 observations the host has not polled
+/// yet are all retained and nothing is evicted.
 #[tokio::test]
-async fn advertisement_queue_is_bounded_with_explicit_overflow() {
+async fn advertisement_queue_retains_a_burst_the_host_has_not_polled() {
     let central = DesktopCentral::open(FakeRadio::new(), "f22-host")
         .await
         .expect("open central");
     central
-        .start_scan("owner-f22", &[], 60_000)
+        .start_scan("owner-f22", &[], OpControl::budget_ms(60_000))
         .await
         .expect("start scan");
     // Pace pushes to loop speed (one peer resolution per push): the scripted
-    // boundary's own control queue is 64 deep, so an unpaced 300-push burst
-    // would drop at the boundary instead of exercising the central's 256 cap.
+    // boundary's own control queue is 64 deep.
     for index in 0..300 {
         let peer_id = format!("f22-flood-{index}");
         central
@@ -368,29 +374,153 @@ async fn advertisement_queue_is_bounded_with_explicit_overflow() {
                 manufacturer_data: Vec::new(),
                 service_data: Vec::new(),
                 tx_power_level: None,
+                extras: ubm_desktop::AdvertisementExtras::default(),
             }));
         wait_peer(&central, &peer_id).await;
     }
-    let mut observed = 0;
-    for _ in 0..600 {
-        if central.take_advertisement().await.is_some() {
-            observed += 1;
-        } else {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        if observed == 256 {
-            break;
-        }
+    let mut observed = Vec::new();
+    while let Some(observation) = central.take_advertisement().await {
+        observed.push(observation.id);
     }
-    assert_eq!(observed, 256, "bounded queue retains exactly its cap");
-    assert_eq!(
-        central.advertisement_overflow_count(),
-        44,
-        "every evicted observation is counted, never silent"
-    );
+    assert_eq!(observed.len(), 300, "every observation retained");
+    assert_eq!(observed[0], "f22-flood-0", "FIFO from the first");
+    assert_eq!(central.advertisement_overflow_count(), 0, "nothing evicted");
+    central.shutdown().await;
+}
+
+fn sighting(peer_id: &str, name: &str) -> RadioEvent {
+    RadioEvent::Advertisement(PeerSnapshot {
+        id: peer_id.to_owned(),
+        address: None,
+        service_uuids: Vec::new(),
+        rssi: Some(-70),
+        local_name: Some(name.to_owned()),
+        manufacturer_data: Vec::new(),
+        service_data: Vec::new(),
+        tx_power_level: None,
+        extras: ubm_desktop::AdvertisementExtras::default(),
+    })
+}
+
+/// Finding 121: sightings are observations only while a scan runs, and
+/// each belongs to the scan that was live when it arrived. A sighting from
+/// before any scan, or from an earlier scan, is never delivered as a fresh
+/// observation of a later scan (a find-by-name must not match a device
+/// that is gone), and each observation carries its scan and its age.
+#[tokio::test]
+async fn sightings_belong_to_the_scan_that_was_live() {
+    let central = DesktopCentral::open(FakeRadio::new(), "f121-host")
+        .await
+        .expect("open central");
+    central
+        .boundary()
+        .push_event(sighting("before", "Pre-scan"));
+    wait_peer(&central, "before").await;
+    let first = central
+        .start_scan("owner", &[], OpControl::budget_ms(5000))
+        .await
+        .expect("first scan");
     assert!(
-        central.take_advertisement().await.is_none(),
-        "no observation beyond the retained cap plus counted overflow"
+        central.take_scan_observation().await.is_none(),
+        "a sighting from before the scan is not an observation"
     );
+    central
+        .boundary()
+        .push_event(sighting("during-first", "First"));
+    wait_peer(&central, "during-first").await;
+    central
+        .boundary()
+        .push_event(sighting("tail-first", "Tail"));
+    wait_peer(&central, "tail-first").await;
+    let taken = central
+        .take_scan_observation()
+        .await
+        .expect("first scan's sighting");
+    assert_eq!(taken.snapshot.id, "during-first");
+    assert_eq!(&taken.scan_operation_id, first.operation_id());
+    assert!(
+        taken.age < Duration::from_secs(5),
+        "age measured from receipt"
+    );
+    central
+        .stop_scan(first.operation_id(), OpControl::budget_ms(5000))
+        .await
+        .expect("stop");
+    central
+        .boundary()
+        .push_event(sighting("between", "Between"));
+    wait_peer(&central, "between").await;
+    let second = central
+        .start_scan("owner", &[], OpControl::budget_ms(5000))
+        .await
+        .expect("second scan");
+    assert!(
+        central.take_scan_observation().await.is_none(),
+        "neither the first scan's tail nor an unscanned sighting reaches the second scan"
+    );
+    central
+        .boundary()
+        .push_event(sighting("during-second", "Second"));
+    wait_peer(&central, "during-second").await;
+    let taken = central
+        .take_scan_observation()
+        .await
+        .expect("second scan's sighting");
+    assert_eq!(taken.snapshot.id, "during-second");
+    assert_eq!(&taken.scan_operation_id, second.operation_id());
+    central.shutdown().await;
+}
+
+/// Finding 120 (Tauri cadence): a host that re-read every known peripheral
+/// during a scan (Tauri 4.x, every 2 s) keeps that cadence: each known
+/// peer is observed again every period while a scan runs, labelled as the
+/// OS's device state, and never outside a scan.
+#[tokio::test(start_paused = true)]
+async fn known_peers_are_re_observed_on_the_configured_cadence() {
+    let central = DesktopCentral::open(FakeRadio::new(), "f120-host")
+        .await
+        .expect("open central");
+    central.boundary().set_peers(vec![PeerSnapshot {
+        id: "known".to_owned(),
+        address: None,
+        service_uuids: Vec::new(),
+        rssi: Some(-66),
+        local_name: Some("Known".to_owned()),
+        manufacturer_data: Vec::new(),
+        service_data: Vec::new(),
+        tx_power_level: None,
+        extras: ubm_desktop::AdvertisementExtras::default(),
+    }]);
+    central.set_known_peer_refresh(Some(Duration::from_secs(2)));
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let scan = central
+        .start_scan("owner", &[], OpControl::budget_ms(5000))
+        .await
+        .expect("scan");
+    assert!(
+        central.take_scan_observation().await.is_none(),
+        "no re-read outside a scan reaches it"
+    );
+    for round in 0..3 {
+        tokio::time::sleep(Duration::from_millis(2_100)).await;
+        let observation = central
+            .take_scan_observation()
+            .await
+            .unwrap_or_else(|| panic!("re-read {round}"));
+        assert_eq!(observation.snapshot.id, "known");
+        assert_eq!(&observation.scan_operation_id, scan.operation_id());
+        assert_eq!(
+            observation.snapshot.extras.source,
+            ubm_desktop::ObservationSource::DeviceState
+        );
+        assert!(
+            central.take_scan_observation().await.is_none(),
+            "one per period"
+        );
+    }
+    central
+        .stop_scan(scan.operation_id(), OpControl::budget_ms(5000))
+        .await
+        .expect("stop");
     central.shutdown().await;
 }

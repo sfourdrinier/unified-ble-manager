@@ -460,7 +460,45 @@ fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
 
 
 // Public interface members begin here.
+// Magic number for the Rust proxy to call using the same mechanism as every other method,
+// to free the callback once it's dropped by Rust.
+private let IDX_CALLBACK_FREE: Int32 = 0
+// Callback return codes
+private let UNIFFI_CALLBACK_SUCCESS: Int32 = 0
+private let UNIFFI_CALLBACK_ERROR: Int32 = 1
+private let UNIFFI_CALLBACK_UNEXPECTED_ERROR: Int32 = 2
 
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterUInt16: FfiConverterPrimitive {
+    typealias FfiType = UInt16
+    typealias SwiftType = UInt16
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt16 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterInt16: FfiConverterPrimitive {
+    typealias FfiType = Int16
+    typealias SwiftType = Int16
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Int16 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: Int16, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -474,6 +512,54 @@ fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
     }
 
     public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterInt32: FfiConverterPrimitive {
+    typealias FfiType = Int32
+    typealias SwiftType = Int32
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Int32 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: Int32, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterUInt64: FfiConverterPrimitive {
+    typealias FfiType = UInt64
+    typealias SwiftType = UInt64
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt64 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterInt64: FfiConverterPrimitive {
+    typealias FfiType = Int64
+    typealias SwiftType = Int64
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Int64 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: Int64, into buf: inout [UInt8]) {
         writeInt(&buf, lower(value))
     }
 }
@@ -859,6 +945,315 @@ public func FfiConverterTypeEchoSession_lower(_ value: EchoSession) -> UInt64 {
 
 
 
+
+
+public protocol MobileCoreHostProtocol: AnyObject, Sendable {
+    
+    func complete(requestId: UInt64, completion: MobileRadioCompletion)  -> String
+    
+    func ingest(ingress: MobileRadioIngress)  -> String
+    
+    func openSession(owner: String, expectedWireRevision: String) throws  -> MobileCoreSession
+    
+    func shutdown()  -> String
+    
+}
+open class MobileCoreHost: MobileCoreHostProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_ubm5_uniffi_echo_fn_clone_mobilecorehost(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_ubm5_uniffi_echo_fn_free_mobilecorehost(handle, $0) }
+    }
+
+    
+
+    
+open func complete(requestId: UInt64, completion: MobileRadioCompletion) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_complete(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt64.lower(requestId),
+        FfiConverterTypeMobileRadioCompletion_lower(completion),uniffiCallStatus
+    )
+})
+}
+    
+open func ingest(ingress: MobileRadioIngress) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_ingest(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeMobileRadioIngress_lower(ingress),uniffiCallStatus
+    )
+})
+}
+    
+open func openSession(owner: String, expectedWireRevision: String)throws  -> MobileCoreSession  {
+    return try  FfiConverterTypeMobileCoreSession_lift(try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_open_session(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(owner),
+        FfiConverterString.lower(expectedWireRevision),uniffiCallStatus
+    )
+})
+}
+    
+open func shutdown() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_shutdown(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileCoreHost: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = MobileCoreHost
+
+    public static func lift(_ handle: UInt64) throws -> MobileCoreHost {
+        return MobileCoreHost(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: MobileCoreHost) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileCoreHost {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: MobileCoreHost, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileCoreHost_lift(_ handle: UInt64) throws -> MobileCoreHost {
+    return try FfiConverterTypeMobileCoreHost.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileCoreHost_lower(_ value: MobileCoreHost) -> UInt64 {
+    return FfiConverterTypeMobileCoreHost.lower(value)
+}
+
+
+
+
+
+
+public protocol MobileCoreSessionProtocol: AnyObject, Sendable {
+    
+    func admissionJson()  -> String
+    
+    func drain(maxItems: UInt32, maxBytes: UInt32)  -> String
+    
+    func invoke(op: String, argsJson: String, completion: MobileInvokeCompletion) 
+    
+    func sessionId()  -> UInt64
+    
+}
+open class MobileCoreSession: MobileCoreSessionProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_ubm5_uniffi_echo_fn_clone_mobilecoresession(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_ubm5_uniffi_echo_fn_free_mobilecoresession(handle, $0) }
+    }
+
+    
+
+    
+open func admissionJson() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_admission_json(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+open func drain(maxItems: UInt32, maxBytes: UInt32) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_drain(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(maxItems),
+        FfiConverterUInt32.lower(maxBytes),uniffiCallStatus
+    )
+})
+}
+    
+open func invoke(op: String, argsJson: String, completion: MobileInvokeCompletion)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_invoke(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(op),
+        FfiConverterString.lower(argsJson),
+        FfiConverterCallbackInterfaceMobileInvokeCompletion_lower(completion),uniffiCallStatus
+    )
+}
+}
+    
+open func sessionId() -> UInt64  {
+    return try!  FfiConverterUInt64.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_session_id(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileCoreSession: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = MobileCoreSession
+
+    public static func lift(_ handle: UInt64) throws -> MobileCoreSession {
+        return MobileCoreSession(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: MobileCoreSession) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileCoreSession {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: MobileCoreSession, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileCoreSession_lift(_ handle: UInt64) throws -> MobileCoreSession {
+    return try FfiConverterTypeMobileCoreSession.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileCoreSession_lower(_ value: MobileCoreSession) -> UInt64 {
+    return FfiConverterTypeMobileCoreSession.lower(value)
+}
+
+
+
+
 public struct EchoBytesResult: Equatable, Hashable {
     public var ok: Bool
     public var data: Data
@@ -1052,6 +1447,2532 @@ public func FfiConverterTypeEchoStatus_lower(_ value: EchoStatus) -> RustBuffer 
     return FfiConverterTypeEchoStatus.lower(value)
 }
 
+
+public struct MobileAdapterSnapshot: Equatable, Hashable {
+    public var availability: String
+    public var authorization: String
+    public var power: String
+    public var safeReason: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(availability: String, authorization: String, power: String, safeReason: String?) {
+        self.availability = availability
+        self.authorization = authorization
+        self.power = power
+        self.safeReason = safeReason
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MobileAdapterSnapshot: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileAdapterSnapshot: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileAdapterSnapshot {
+        return
+            try MobileAdapterSnapshot(
+                availability: FfiConverterString.read(from: &buf), 
+                authorization: FfiConverterString.read(from: &buf), 
+                power: FfiConverterString.read(from: &buf), 
+                safeReason: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileAdapterSnapshot, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.availability, into: &buf)
+        FfiConverterString.write(value.authorization, into: &buf)
+        FfiConverterString.write(value.power, into: &buf)
+        FfiConverterOptionString.write(value.safeReason, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileAdapterSnapshot_lift(_ buf: RustBuffer) throws -> MobileAdapterSnapshot {
+    return try FfiConverterTypeMobileAdapterSnapshot.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileAdapterSnapshot_lower(_ value: MobileAdapterSnapshot) -> RustBuffer {
+    return FfiConverterTypeMobileAdapterSnapshot.lower(value)
+}
+
+
+public struct MobileAdvertisement: Equatable, Hashable {
+    public var peerId: String
+    public var address: String?
+    public var localName: String?
+    public var rssi: Int16?
+    public var txPowerLevel: Int16?
+    public var serviceUuids: [String]
+    public var manufacturerData: [MobileManufacturerData]
+    public var serviceData: [MobileServiceData]
+    public var connectable: Bool?
+    public var solicitedServiceUuids: [String]?
+    public var overflowServiceUuids: [String]?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(peerId: String, address: String?, localName: String?, rssi: Int16?, txPowerLevel: Int16?, serviceUuids: [String], manufacturerData: [MobileManufacturerData], serviceData: [MobileServiceData], connectable: Bool?, solicitedServiceUuids: [String]?, overflowServiceUuids: [String]?) {
+        self.peerId = peerId
+        self.address = address
+        self.localName = localName
+        self.rssi = rssi
+        self.txPowerLevel = txPowerLevel
+        self.serviceUuids = serviceUuids
+        self.manufacturerData = manufacturerData
+        self.serviceData = serviceData
+        self.connectable = connectable
+        self.solicitedServiceUuids = solicitedServiceUuids
+        self.overflowServiceUuids = overflowServiceUuids
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MobileAdvertisement: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileAdvertisement: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileAdvertisement {
+        return
+            try MobileAdvertisement(
+                peerId: FfiConverterString.read(from: &buf), 
+                address: FfiConverterOptionString.read(from: &buf), 
+                localName: FfiConverterOptionString.read(from: &buf), 
+                rssi: FfiConverterOptionInt16.read(from: &buf), 
+                txPowerLevel: FfiConverterOptionInt16.read(from: &buf), 
+                serviceUuids: FfiConverterSequenceString.read(from: &buf), 
+                manufacturerData: FfiConverterSequenceTypeMobileManufacturerData.read(from: &buf), 
+                serviceData: FfiConverterSequenceTypeMobileServiceData.read(from: &buf), 
+                connectable: FfiConverterOptionBool.read(from: &buf), 
+                solicitedServiceUuids: FfiConverterOptionSequenceString.read(from: &buf), 
+                overflowServiceUuids: FfiConverterOptionSequenceString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileAdvertisement, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.peerId, into: &buf)
+        FfiConverterOptionString.write(value.address, into: &buf)
+        FfiConverterOptionString.write(value.localName, into: &buf)
+        FfiConverterOptionInt16.write(value.rssi, into: &buf)
+        FfiConverterOptionInt16.write(value.txPowerLevel, into: &buf)
+        FfiConverterSequenceString.write(value.serviceUuids, into: &buf)
+        FfiConverterSequenceTypeMobileManufacturerData.write(value.manufacturerData, into: &buf)
+        FfiConverterSequenceTypeMobileServiceData.write(value.serviceData, into: &buf)
+        FfiConverterOptionBool.write(value.connectable, into: &buf)
+        FfiConverterOptionSequenceString.write(value.solicitedServiceUuids, into: &buf)
+        FfiConverterOptionSequenceString.write(value.overflowServiceUuids, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileAdvertisement_lift(_ buf: RustBuffer) throws -> MobileAdvertisement {
+    return try FfiConverterTypeMobileAdvertisement.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileAdvertisement_lower(_ value: MobileAdvertisement) -> RustBuffer {
+    return FfiConverterTypeMobileAdvertisement.lower(value)
+}
+
+
+public struct MobileCloseFailure: Equatable, Hashable {
+    public var instance: MobileInstance
+    public var detail: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(instance: MobileInstance, detail: String) {
+        self.instance = instance
+        self.detail = detail
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MobileCloseFailure: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileCloseFailure: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileCloseFailure {
+        return
+            try MobileCloseFailure(
+                instance: FfiConverterTypeMobileInstance.read(from: &buf), 
+                detail: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileCloseFailure, into buf: inout [UInt8]) {
+        FfiConverterTypeMobileInstance.write(value.instance, into: &buf)
+        FfiConverterString.write(value.detail, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileCloseFailure_lift(_ buf: RustBuffer) throws -> MobileCloseFailure {
+    return try FfiConverterTypeMobileCloseFailure.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileCloseFailure_lower(_ value: MobileCloseFailure) -> RustBuffer {
+    return FfiConverterTypeMobileCloseFailure.lower(value)
+}
+
+
+public struct MobileGattCharacteristic: Equatable, Hashable {
+    public var uuid: String
+    public var occurrence: UInt64
+    public var properties: MobileGattProperties
+    public var descriptors: [MobileGattDescriptor]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(uuid: String, occurrence: UInt64, properties: MobileGattProperties, descriptors: [MobileGattDescriptor]) {
+        self.uuid = uuid
+        self.occurrence = occurrence
+        self.properties = properties
+        self.descriptors = descriptors
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MobileGattCharacteristic: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileGattCharacteristic: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileGattCharacteristic {
+        return
+            try MobileGattCharacteristic(
+                uuid: FfiConverterString.read(from: &buf), 
+                occurrence: FfiConverterUInt64.read(from: &buf), 
+                properties: FfiConverterTypeMobileGattProperties.read(from: &buf), 
+                descriptors: FfiConverterSequenceTypeMobileGattDescriptor.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileGattCharacteristic, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.uuid, into: &buf)
+        FfiConverterUInt64.write(value.occurrence, into: &buf)
+        FfiConverterTypeMobileGattProperties.write(value.properties, into: &buf)
+        FfiConverterSequenceTypeMobileGattDescriptor.write(value.descriptors, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileGattCharacteristic_lift(_ buf: RustBuffer) throws -> MobileGattCharacteristic {
+    return try FfiConverterTypeMobileGattCharacteristic.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileGattCharacteristic_lower(_ value: MobileGattCharacteristic) -> RustBuffer {
+    return FfiConverterTypeMobileGattCharacteristic.lower(value)
+}
+
+
+public struct MobileGattDescriptor: Equatable, Hashable {
+    public var uuid: String
+    public var occurrence: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(uuid: String, occurrence: UInt64) {
+        self.uuid = uuid
+        self.occurrence = occurrence
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MobileGattDescriptor: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileGattDescriptor: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileGattDescriptor {
+        return
+            try MobileGattDescriptor(
+                uuid: FfiConverterString.read(from: &buf), 
+                occurrence: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileGattDescriptor, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.uuid, into: &buf)
+        FfiConverterUInt64.write(value.occurrence, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileGattDescriptor_lift(_ buf: RustBuffer) throws -> MobileGattDescriptor {
+    return try FfiConverterTypeMobileGattDescriptor.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileGattDescriptor_lower(_ value: MobileGattDescriptor) -> RustBuffer {
+    return FfiConverterTypeMobileGattDescriptor.lower(value)
+}
+
+
+public struct MobileGattProperties: Equatable, Hashable {
+    public var read: Bool
+    public var write: Bool
+    public var writeWithoutResponse: Bool
+    public var notify: Bool
+    public var indicate: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(read: Bool, write: Bool, writeWithoutResponse: Bool, notify: Bool, indicate: Bool) {
+        self.read = read
+        self.write = write
+        self.writeWithoutResponse = writeWithoutResponse
+        self.notify = notify
+        self.indicate = indicate
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MobileGattProperties: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileGattProperties: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileGattProperties {
+        return
+            try MobileGattProperties(
+                read: FfiConverterBool.read(from: &buf), 
+                write: FfiConverterBool.read(from: &buf), 
+                writeWithoutResponse: FfiConverterBool.read(from: &buf), 
+                notify: FfiConverterBool.read(from: &buf), 
+                indicate: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileGattProperties, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.read, into: &buf)
+        FfiConverterBool.write(value.write, into: &buf)
+        FfiConverterBool.write(value.writeWithoutResponse, into: &buf)
+        FfiConverterBool.write(value.notify, into: &buf)
+        FfiConverterBool.write(value.indicate, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileGattProperties_lift(_ buf: RustBuffer) throws -> MobileGattProperties {
+    return try FfiConverterTypeMobileGattProperties.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileGattProperties_lower(_ value: MobileGattProperties) -> RustBuffer {
+    return FfiConverterTypeMobileGattProperties.lower(value)
+}
+
+
+public struct MobileGattService: Equatable, Hashable {
+    public var uuid: String
+    public var occurrence: UInt64
+    public var characteristics: [MobileGattCharacteristic]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(uuid: String, occurrence: UInt64, characteristics: [MobileGattCharacteristic]) {
+        self.uuid = uuid
+        self.occurrence = occurrence
+        self.characteristics = characteristics
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MobileGattService: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileGattService: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileGattService {
+        return
+            try MobileGattService(
+                uuid: FfiConverterString.read(from: &buf), 
+                occurrence: FfiConverterUInt64.read(from: &buf), 
+                characteristics: FfiConverterSequenceTypeMobileGattCharacteristic.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileGattService, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.uuid, into: &buf)
+        FfiConverterUInt64.write(value.occurrence, into: &buf)
+        FfiConverterSequenceTypeMobileGattCharacteristic.write(value.characteristics, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileGattService_lift(_ buf: RustBuffer) throws -> MobileGattService {
+    return try FfiConverterTypeMobileGattService.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileGattService_lower(_ value: MobileGattService) -> RustBuffer {
+    return FfiConverterTypeMobileGattService.lower(value)
+}
+
+
+public struct MobileInstance: Equatable, Hashable {
+    public var peerId: String
+    public var serviceUuid: String
+    public var serviceOccurrence: UInt64
+    public var characteristicUuid: String
+    public var characteristicOccurrence: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(peerId: String, serviceUuid: String, serviceOccurrence: UInt64, characteristicUuid: String, characteristicOccurrence: UInt64) {
+        self.peerId = peerId
+        self.serviceUuid = serviceUuid
+        self.serviceOccurrence = serviceOccurrence
+        self.characteristicUuid = characteristicUuid
+        self.characteristicOccurrence = characteristicOccurrence
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MobileInstance: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileInstance: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileInstance {
+        return
+            try MobileInstance(
+                peerId: FfiConverterString.read(from: &buf), 
+                serviceUuid: FfiConverterString.read(from: &buf), 
+                serviceOccurrence: FfiConverterUInt64.read(from: &buf), 
+                characteristicUuid: FfiConverterString.read(from: &buf), 
+                characteristicOccurrence: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileInstance, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.peerId, into: &buf)
+        FfiConverterString.write(value.serviceUuid, into: &buf)
+        FfiConverterUInt64.write(value.serviceOccurrence, into: &buf)
+        FfiConverterString.write(value.characteristicUuid, into: &buf)
+        FfiConverterUInt64.write(value.characteristicOccurrence, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileInstance_lift(_ buf: RustBuffer) throws -> MobileInstance {
+    return try FfiConverterTypeMobileInstance.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileInstance_lower(_ value: MobileInstance) -> RustBuffer {
+    return FfiConverterTypeMobileInstance.lower(value)
+}
+
+
+public struct MobileManufacturerData: Equatable, Hashable {
+    public var companyId: UInt16
+    public var payload: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(companyId: UInt16, payload: Data) {
+        self.companyId = companyId
+        self.payload = payload
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MobileManufacturerData: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileManufacturerData: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileManufacturerData {
+        return
+            try MobileManufacturerData(
+                companyId: FfiConverterUInt16.read(from: &buf), 
+                payload: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileManufacturerData, into buf: inout [UInt8]) {
+        FfiConverterUInt16.write(value.companyId, into: &buf)
+        FfiConverterData.write(value.payload, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileManufacturerData_lift(_ buf: RustBuffer) throws -> MobileManufacturerData {
+    return try FfiConverterTypeMobileManufacturerData.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileManufacturerData_lower(_ value: MobileManufacturerData) -> RustBuffer {
+    return FfiConverterTypeMobileManufacturerData.lower(value)
+}
+
+
+public struct MobilePeerName: Equatable, Hashable {
+    public var peerId: String
+    public var name: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(peerId: String, name: String?) {
+        self.peerId = peerId
+        self.name = name
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MobilePeerName: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobilePeerName: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobilePeerName {
+        return
+            try MobilePeerName(
+                peerId: FfiConverterString.read(from: &buf), 
+                name: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobilePeerName, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.peerId, into: &buf)
+        FfiConverterOptionString.write(value.name, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobilePeerName_lift(_ buf: RustBuffer) throws -> MobilePeerName {
+    return try FfiConverterTypeMobilePeerName.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobilePeerName_lower(_ value: MobilePeerName) -> RustBuffer {
+    return FfiConverterTypeMobilePeerName.lower(value)
+}
+
+
+public struct MobileRestoredPeer: Equatable, Hashable {
+    public var peerId: String
+    public var name: String?
+    public var connected: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(peerId: String, name: String?, connected: Bool) {
+        self.peerId = peerId
+        self.name = name
+        self.connected = connected
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MobileRestoredPeer: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileRestoredPeer: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileRestoredPeer {
+        return
+            try MobileRestoredPeer(
+                peerId: FfiConverterString.read(from: &buf), 
+                name: FfiConverterOptionString.read(from: &buf), 
+                connected: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileRestoredPeer, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.peerId, into: &buf)
+        FfiConverterOptionString.write(value.name, into: &buf)
+        FfiConverterBool.write(value.connected, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileRestoredPeer_lift(_ buf: RustBuffer) throws -> MobileRestoredPeer {
+    return try FfiConverterTypeMobileRestoredPeer.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileRestoredPeer_lower(_ value: MobileRestoredPeer) -> RustBuffer {
+    return FfiConverterTypeMobileRestoredPeer.lower(value)
+}
+
+
+public struct MobileSecurityState: Equatable, Hashable {
+    public var bond: String
+    public var encryption: String
+    public var authentication: String
+    public var secureConnections: String
+    public var pairingPossible: Bool?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(bond: String, encryption: String, authentication: String, secureConnections: String, pairingPossible: Bool?) {
+        self.bond = bond
+        self.encryption = encryption
+        self.authentication = authentication
+        self.secureConnections = secureConnections
+        self.pairingPossible = pairingPossible
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MobileSecurityState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileSecurityState: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileSecurityState {
+        return
+            try MobileSecurityState(
+                bond: FfiConverterString.read(from: &buf), 
+                encryption: FfiConverterString.read(from: &buf), 
+                authentication: FfiConverterString.read(from: &buf), 
+                secureConnections: FfiConverterString.read(from: &buf), 
+                pairingPossible: FfiConverterOptionBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileSecurityState, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.bond, into: &buf)
+        FfiConverterString.write(value.encryption, into: &buf)
+        FfiConverterString.write(value.authentication, into: &buf)
+        FfiConverterString.write(value.secureConnections, into: &buf)
+        FfiConverterOptionBool.write(value.pairingPossible, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileSecurityState_lift(_ buf: RustBuffer) throws -> MobileSecurityState {
+    return try FfiConverterTypeMobileSecurityState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileSecurityState_lower(_ value: MobileSecurityState) -> RustBuffer {
+    return FfiConverterTypeMobileSecurityState.lower(value)
+}
+
+
+public struct MobileServiceData: Equatable, Hashable {
+    public var uuid: String
+    public var payload: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(uuid: String, payload: Data) {
+        self.uuid = uuid
+        self.payload = payload
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MobileServiceData: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileServiceData: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileServiceData {
+        return
+            try MobileServiceData(
+                uuid: FfiConverterString.read(from: &buf), 
+                payload: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MobileServiceData, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.uuid, into: &buf)
+        FfiConverterData.write(value.payload, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileServiceData_lift(_ buf: RustBuffer) throws -> MobileServiceData {
+    return try FfiConverterTypeMobileServiceData.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileServiceData_lower(_ value: MobileServiceData) -> RustBuffer {
+    return FfiConverterTypeMobileServiceData.lower(value)
+}
+
+
+public 
+enum MobileCoreError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+
+    
+    
+    case Failed(code: String, domain: String, operation: String, detail: String?
+    )
+
+    
+
+    
+
+    
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+    
+}
+
+#if compiler(>=6)
+extension MobileCoreError: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileCoreError: FfiConverterRustBuffer {
+    typealias SwiftType = MobileCoreError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileCoreError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        
+
+        
+        case 1: return .Failed(
+            code: try FfiConverterString.read(from: &buf), 
+            domain: try FfiConverterString.read(from: &buf), 
+            operation: try FfiConverterString.read(from: &buf), 
+            detail: try FfiConverterOptionString.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MobileCoreError, into buf: inout [UInt8]) {
+        switch value {
+
+        
+
+        
+        
+        case let .Failed(code,domain,operation,detail):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(code, into: &buf)
+            FfiConverterString.write(domain, into: &buf)
+            FfiConverterString.write(operation, into: &buf)
+            FfiConverterOptionString.write(detail, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileCoreError_lift(_ buf: RustBuffer) throws -> MobileCoreError {
+    return try FfiConverterTypeMobileCoreError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileCoreError_lower(_ value: MobileCoreError) -> RustBuffer {
+    return FfiConverterTypeMobileCoreError.lower(value)
+}
+
+
+
+public enum MobileRadioCompletion: Equatable, Hashable {
+    
+    case unit
+    case bytes(value: Data
+    )
+    case adapter(snapshot: MobileAdapterSnapshot
+    )
+    case discovered(services: [MobileGattService]
+    )
+    case notifyEnabled(delivery: String
+    )
+    case mtu(mtu: UInt16?
+    )
+    case writeLimits(withResponse: UInt16, withoutResponse: UInt16
+    )
+    case rssi(rssi: Int16
+    )
+    case accepted(accepted: Bool
+    )
+    case phy(tx: String, rx: String
+    )
+    case phyRequest(accepted: Bool, tx: String?, rx: String?
+    )
+    case security(state: MobileSecurityState
+    )
+    case bondedPeers(peers: [MobilePeerName]
+    )
+    case lease(leaseId: String
+    )
+    case companion(associationId: Int64, peerId: String?, displayName: String?
+    )
+    case closed(failures: [MobileCloseFailure]
+    )
+    case failed(kind: String, gattStatus: Int32?, nativeDomain: String?, nativeCode: Int64?, detail: String, dispatched: Bool
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileRadioCompletion: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileRadioCompletion: FfiConverterRustBuffer {
+    typealias SwiftType = MobileRadioCompletion
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileRadioCompletion {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .unit
+        
+        case 2: return .bytes(value: try FfiConverterData.read(from: &buf)
+        )
+        
+        case 3: return .adapter(snapshot: try FfiConverterTypeMobileAdapterSnapshot.read(from: &buf)
+        )
+        
+        case 4: return .discovered(services: try FfiConverterSequenceTypeMobileGattService.read(from: &buf)
+        )
+        
+        case 5: return .notifyEnabled(delivery: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 6: return .mtu(mtu: try FfiConverterOptionUInt16.read(from: &buf)
+        )
+        
+        case 7: return .writeLimits(withResponse: try FfiConverterUInt16.read(from: &buf), withoutResponse: try FfiConverterUInt16.read(from: &buf)
+        )
+        
+        case 8: return .rssi(rssi: try FfiConverterInt16.read(from: &buf)
+        )
+        
+        case 9: return .accepted(accepted: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 10: return .phy(tx: try FfiConverterString.read(from: &buf), rx: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 11: return .phyRequest(accepted: try FfiConverterBool.read(from: &buf), tx: try FfiConverterOptionString.read(from: &buf), rx: try FfiConverterOptionString.read(from: &buf)
+        )
+        
+        case 12: return .security(state: try FfiConverterTypeMobileSecurityState.read(from: &buf)
+        )
+        
+        case 13: return .bondedPeers(peers: try FfiConverterSequenceTypeMobilePeerName.read(from: &buf)
+        )
+        
+        case 14: return .lease(leaseId: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 15: return .companion(associationId: try FfiConverterInt64.read(from: &buf), peerId: try FfiConverterOptionString.read(from: &buf), displayName: try FfiConverterOptionString.read(from: &buf)
+        )
+        
+        case 16: return .closed(failures: try FfiConverterSequenceTypeMobileCloseFailure.read(from: &buf)
+        )
+        
+        case 17: return .failed(kind: try FfiConverterString.read(from: &buf), gattStatus: try FfiConverterOptionInt32.read(from: &buf), nativeDomain: try FfiConverterOptionString.read(from: &buf), nativeCode: try FfiConverterOptionInt64.read(from: &buf), detail: try FfiConverterString.read(from: &buf), dispatched: try FfiConverterBool.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MobileRadioCompletion, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .unit:
+            writeInt(&buf, Int32(1))
+        
+        
+        case let .bytes(value):
+            writeInt(&buf, Int32(2))
+            FfiConverterData.write(value, into: &buf)
+            
+        
+        case let .adapter(snapshot):
+            writeInt(&buf, Int32(3))
+            FfiConverterTypeMobileAdapterSnapshot.write(snapshot, into: &buf)
+            
+        
+        case let .discovered(services):
+            writeInt(&buf, Int32(4))
+            FfiConverterSequenceTypeMobileGattService.write(services, into: &buf)
+            
+        
+        case let .notifyEnabled(delivery):
+            writeInt(&buf, Int32(5))
+            FfiConverterString.write(delivery, into: &buf)
+            
+        
+        case let .mtu(mtu):
+            writeInt(&buf, Int32(6))
+            FfiConverterOptionUInt16.write(mtu, into: &buf)
+            
+        
+        case let .writeLimits(withResponse,withoutResponse):
+            writeInt(&buf, Int32(7))
+            FfiConverterUInt16.write(withResponse, into: &buf)
+            FfiConverterUInt16.write(withoutResponse, into: &buf)
+            
+        
+        case let .rssi(rssi):
+            writeInt(&buf, Int32(8))
+            FfiConverterInt16.write(rssi, into: &buf)
+            
+        
+        case let .accepted(accepted):
+            writeInt(&buf, Int32(9))
+            FfiConverterBool.write(accepted, into: &buf)
+            
+        
+        case let .phy(tx,rx):
+            writeInt(&buf, Int32(10))
+            FfiConverterString.write(tx, into: &buf)
+            FfiConverterString.write(rx, into: &buf)
+            
+        
+        case let .phyRequest(accepted,tx,rx):
+            writeInt(&buf, Int32(11))
+            FfiConverterBool.write(accepted, into: &buf)
+            FfiConverterOptionString.write(tx, into: &buf)
+            FfiConverterOptionString.write(rx, into: &buf)
+            
+        
+        case let .security(state):
+            writeInt(&buf, Int32(12))
+            FfiConverterTypeMobileSecurityState.write(state, into: &buf)
+            
+        
+        case let .bondedPeers(peers):
+            writeInt(&buf, Int32(13))
+            FfiConverterSequenceTypeMobilePeerName.write(peers, into: &buf)
+            
+        
+        case let .lease(leaseId):
+            writeInt(&buf, Int32(14))
+            FfiConverterString.write(leaseId, into: &buf)
+            
+        
+        case let .companion(associationId,peerId,displayName):
+            writeInt(&buf, Int32(15))
+            FfiConverterInt64.write(associationId, into: &buf)
+            FfiConverterOptionString.write(peerId, into: &buf)
+            FfiConverterOptionString.write(displayName, into: &buf)
+            
+        
+        case let .closed(failures):
+            writeInt(&buf, Int32(16))
+            FfiConverterSequenceTypeMobileCloseFailure.write(failures, into: &buf)
+            
+        
+        case let .failed(kind,gattStatus,nativeDomain,nativeCode,detail,dispatched):
+            writeInt(&buf, Int32(17))
+            FfiConverterString.write(kind, into: &buf)
+            FfiConverterOptionInt32.write(gattStatus, into: &buf)
+            FfiConverterOptionString.write(nativeDomain, into: &buf)
+            FfiConverterOptionInt64.write(nativeCode, into: &buf)
+            FfiConverterString.write(detail, into: &buf)
+            FfiConverterBool.write(dispatched, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileRadioCompletion_lift(_ buf: RustBuffer) throws -> MobileRadioCompletion {
+    return try FfiConverterTypeMobileRadioCompletion.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileRadioCompletion_lower(_ value: MobileRadioCompletion) -> RustBuffer {
+    return FfiConverterTypeMobileRadioCompletion.lower(value)
+}
+
+
+
+
+public enum MobileRadioIngress: Equatable, Hashable {
+    
+    case advertisement(advertisement: MobileAdvertisement
+    )
+    case connection(peerId: String, connected: Bool, status: Int32?
+    )
+    case servicesChanged(peerId: String
+    )
+    case notification(instance: MobileInstance, epoch: UInt64, value: Data
+    )
+    case adapterState(snapshot: MobileAdapterSnapshot
+    )
+    case scanFailed(detail: String
+    )
+    case securityChanged(peerId: String, state: MobileSecurityState
+    )
+    case restored(peers: [MobileRestoredPeer]
+    )
+    case dropped(ingressClass: String, detail: String
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileRadioIngress: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileRadioIngress: FfiConverterRustBuffer {
+    typealias SwiftType = MobileRadioIngress
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileRadioIngress {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .advertisement(advertisement: try FfiConverterTypeMobileAdvertisement.read(from: &buf)
+        )
+        
+        case 2: return .connection(peerId: try FfiConverterString.read(from: &buf), connected: try FfiConverterBool.read(from: &buf), status: try FfiConverterOptionInt32.read(from: &buf)
+        )
+        
+        case 3: return .servicesChanged(peerId: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 4: return .notification(instance: try FfiConverterTypeMobileInstance.read(from: &buf), epoch: try FfiConverterUInt64.read(from: &buf), value: try FfiConverterData.read(from: &buf)
+        )
+        
+        case 5: return .adapterState(snapshot: try FfiConverterTypeMobileAdapterSnapshot.read(from: &buf)
+        )
+        
+        case 6: return .scanFailed(detail: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 7: return .securityChanged(peerId: try FfiConverterString.read(from: &buf), state: try FfiConverterTypeMobileSecurityState.read(from: &buf)
+        )
+        
+        case 8: return .restored(peers: try FfiConverterSequenceTypeMobileRestoredPeer.read(from: &buf)
+        )
+        
+        case 9: return .dropped(ingressClass: try FfiConverterString.read(from: &buf), detail: try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MobileRadioIngress, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .advertisement(advertisement):
+            writeInt(&buf, Int32(1))
+            FfiConverterTypeMobileAdvertisement.write(advertisement, into: &buf)
+            
+        
+        case let .connection(peerId,connected,status):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(peerId, into: &buf)
+            FfiConverterBool.write(connected, into: &buf)
+            FfiConverterOptionInt32.write(status, into: &buf)
+            
+        
+        case let .servicesChanged(peerId):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(peerId, into: &buf)
+            
+        
+        case let .notification(instance,epoch,value):
+            writeInt(&buf, Int32(4))
+            FfiConverterTypeMobileInstance.write(instance, into: &buf)
+            FfiConverterUInt64.write(epoch, into: &buf)
+            FfiConverterData.write(value, into: &buf)
+            
+        
+        case let .adapterState(snapshot):
+            writeInt(&buf, Int32(5))
+            FfiConverterTypeMobileAdapterSnapshot.write(snapshot, into: &buf)
+            
+        
+        case let .scanFailed(detail):
+            writeInt(&buf, Int32(6))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .securityChanged(peerId,state):
+            writeInt(&buf, Int32(7))
+            FfiConverterString.write(peerId, into: &buf)
+            FfiConverterTypeMobileSecurityState.write(state, into: &buf)
+            
+        
+        case let .restored(peers):
+            writeInt(&buf, Int32(8))
+            FfiConverterSequenceTypeMobileRestoredPeer.write(peers, into: &buf)
+            
+        
+        case let .dropped(ingressClass,detail):
+            writeInt(&buf, Int32(9))
+            FfiConverterString.write(ingressClass, into: &buf)
+            FfiConverterString.write(detail, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileRadioIngress_lift(_ buf: RustBuffer) throws -> MobileRadioIngress {
+    return try FfiConverterTypeMobileRadioIngress.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileRadioIngress_lower(_ value: MobileRadioIngress) -> RustBuffer {
+    return FfiConverterTypeMobileRadioIngress.lower(value)
+}
+
+
+
+
+public enum MobileRadioRequest: Equatable, Hashable {
+    
+    case adapterState(id: UInt64
+    )
+    case startScan(id: UInt64, serviceUuids: [String], deviceAddresses: [String], scanMode: String?, callbackType: String?, legacy: Bool?
+    )
+    case stopScan(id: UInt64
+    )
+    case connect(id: UInt64, peerId: String, autoConnect: Bool, preferredPhy: [String]
+    )
+    case disconnect(id: UInt64, peerId: String
+    )
+    case discover(id: UInt64, peerId: String
+    )
+    case read(id: UInt64, instance: MobileInstance
+    )
+    case write(id: UInt64, instance: MobileInstance, value: Data, withResponse: Bool
+    )
+    case readDescriptor(id: UInt64, instance: MobileInstance, descriptorUuid: String, descriptorOccurrence: UInt64
+    )
+    case writeDescriptor(id: UInt64, instance: MobileInstance, descriptorUuid: String, descriptorOccurrence: UInt64, value: Data
+    )
+    case enableNotifications(id: UInt64, instance: MobileInstance, epoch: UInt64, requested: String?, preferred: String?
+    )
+    case disableNotifications(id: UInt64, instance: MobileInstance
+    )
+    case readMtu(id: UInt64, peerId: String
+    )
+    case readWriteLimits(id: UInt64, peerId: String
+    )
+    case requestMtu(id: UInt64, peerId: String, mtu: UInt16
+    )
+    case readRssi(id: UInt64, peerId: String
+    )
+    case requestConnectionPriority(id: UInt64, peerId: String, priority: String
+    )
+    case readPhy(id: UInt64, peerId: String
+    )
+    case requestPhy(id: UInt64, peerId: String, tx: String?, rx: String?
+    )
+    case securityState(id: UInt64, peerId: String
+    )
+    case createBond(id: UInt64, peerId: String, transport: String
+    )
+    case cancelBond(id: UInt64, peerId: String
+    )
+    case bondedPeers(id: UInt64
+    )
+    case acquireBackground(id: UInt64, kind: String, reason: String
+    )
+    case releaseBackground(id: UInt64, leaseId: String
+    )
+    case updateBackgroundNotification(id: UInt64, leaseId: String, title: String, body: String?
+    )
+    case associateCompanion(id: UInt64, name: String?, serviceUuid: String?
+    )
+    case close(id: UInt64
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MobileRadioRequest: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMobileRadioRequest: FfiConverterRustBuffer {
+    typealias SwiftType = MobileRadioRequest
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileRadioRequest {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .adapterState(id: try FfiConverterUInt64.read(from: &buf)
+        )
+        
+        case 2: return .startScan(id: try FfiConverterUInt64.read(from: &buf), serviceUuids: try FfiConverterSequenceString.read(from: &buf), deviceAddresses: try FfiConverterSequenceString.read(from: &buf), scanMode: try FfiConverterOptionString.read(from: &buf), callbackType: try FfiConverterOptionString.read(from: &buf), legacy: try FfiConverterOptionBool.read(from: &buf)
+        )
+        
+        case 3: return .stopScan(id: try FfiConverterUInt64.read(from: &buf)
+        )
+        
+        case 4: return .connect(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), autoConnect: try FfiConverterBool.read(from: &buf), preferredPhy: try FfiConverterSequenceString.read(from: &buf)
+        )
+        
+        case 5: return .disconnect(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 6: return .discover(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 7: return .read(id: try FfiConverterUInt64.read(from: &buf), instance: try FfiConverterTypeMobileInstance.read(from: &buf)
+        )
+        
+        case 8: return .write(id: try FfiConverterUInt64.read(from: &buf), instance: try FfiConverterTypeMobileInstance.read(from: &buf), value: try FfiConverterData.read(from: &buf), withResponse: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 9: return .readDescriptor(id: try FfiConverterUInt64.read(from: &buf), instance: try FfiConverterTypeMobileInstance.read(from: &buf), descriptorUuid: try FfiConverterString.read(from: &buf), descriptorOccurrence: try FfiConverterUInt64.read(from: &buf)
+        )
+        
+        case 10: return .writeDescriptor(id: try FfiConverterUInt64.read(from: &buf), instance: try FfiConverterTypeMobileInstance.read(from: &buf), descriptorUuid: try FfiConverterString.read(from: &buf), descriptorOccurrence: try FfiConverterUInt64.read(from: &buf), value: try FfiConverterData.read(from: &buf)
+        )
+        
+        case 11: return .enableNotifications(id: try FfiConverterUInt64.read(from: &buf), instance: try FfiConverterTypeMobileInstance.read(from: &buf), epoch: try FfiConverterUInt64.read(from: &buf), requested: try FfiConverterOptionString.read(from: &buf), preferred: try FfiConverterOptionString.read(from: &buf)
+        )
+        
+        case 12: return .disableNotifications(id: try FfiConverterUInt64.read(from: &buf), instance: try FfiConverterTypeMobileInstance.read(from: &buf)
+        )
+        
+        case 13: return .readMtu(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 14: return .readWriteLimits(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 15: return .requestMtu(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), mtu: try FfiConverterUInt16.read(from: &buf)
+        )
+        
+        case 16: return .readRssi(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 17: return .requestConnectionPriority(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), priority: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 18: return .readPhy(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 19: return .requestPhy(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), tx: try FfiConverterOptionString.read(from: &buf), rx: try FfiConverterOptionString.read(from: &buf)
+        )
+        
+        case 20: return .securityState(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 21: return .createBond(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), transport: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 22: return .cancelBond(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 23: return .bondedPeers(id: try FfiConverterUInt64.read(from: &buf)
+        )
+        
+        case 24: return .acquireBackground(id: try FfiConverterUInt64.read(from: &buf), kind: try FfiConverterString.read(from: &buf), reason: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 25: return .releaseBackground(id: try FfiConverterUInt64.read(from: &buf), leaseId: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 26: return .updateBackgroundNotification(id: try FfiConverterUInt64.read(from: &buf), leaseId: try FfiConverterString.read(from: &buf), title: try FfiConverterString.read(from: &buf), body: try FfiConverterOptionString.read(from: &buf)
+        )
+        
+        case 27: return .associateCompanion(id: try FfiConverterUInt64.read(from: &buf), name: try FfiConverterOptionString.read(from: &buf), serviceUuid: try FfiConverterOptionString.read(from: &buf)
+        )
+        
+        case 28: return .close(id: try FfiConverterUInt64.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MobileRadioRequest, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .adapterState(id):
+            writeInt(&buf, Int32(1))
+            FfiConverterUInt64.write(id, into: &buf)
+            
+        
+        case let .startScan(id,serviceUuids,deviceAddresses,scanMode,callbackType,legacy):
+            writeInt(&buf, Int32(2))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterSequenceString.write(serviceUuids, into: &buf)
+            FfiConverterSequenceString.write(deviceAddresses, into: &buf)
+            FfiConverterOptionString.write(scanMode, into: &buf)
+            FfiConverterOptionString.write(callbackType, into: &buf)
+            FfiConverterOptionBool.write(legacy, into: &buf)
+            
+        
+        case let .stopScan(id):
+            writeInt(&buf, Int32(3))
+            FfiConverterUInt64.write(id, into: &buf)
+            
+        
+        case let .connect(id,peerId,autoConnect,preferredPhy):
+            writeInt(&buf, Int32(4))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+            FfiConverterBool.write(autoConnect, into: &buf)
+            FfiConverterSequenceString.write(preferredPhy, into: &buf)
+            
+        
+        case let .disconnect(id,peerId):
+            writeInt(&buf, Int32(5))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+            
+        
+        case let .discover(id,peerId):
+            writeInt(&buf, Int32(6))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+            
+        
+        case let .read(id,instance):
+            writeInt(&buf, Int32(7))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileInstance.write(instance, into: &buf)
+            
+        
+        case let .write(id,instance,value,withResponse):
+            writeInt(&buf, Int32(8))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileInstance.write(instance, into: &buf)
+            FfiConverterData.write(value, into: &buf)
+            FfiConverterBool.write(withResponse, into: &buf)
+            
+        
+        case let .readDescriptor(id,instance,descriptorUuid,descriptorOccurrence):
+            writeInt(&buf, Int32(9))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileInstance.write(instance, into: &buf)
+            FfiConverterString.write(descriptorUuid, into: &buf)
+            FfiConverterUInt64.write(descriptorOccurrence, into: &buf)
+            
+        
+        case let .writeDescriptor(id,instance,descriptorUuid,descriptorOccurrence,value):
+            writeInt(&buf, Int32(10))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileInstance.write(instance, into: &buf)
+            FfiConverterString.write(descriptorUuid, into: &buf)
+            FfiConverterUInt64.write(descriptorOccurrence, into: &buf)
+            FfiConverterData.write(value, into: &buf)
+            
+        
+        case let .enableNotifications(id,instance,epoch,requested,preferred):
+            writeInt(&buf, Int32(11))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileInstance.write(instance, into: &buf)
+            FfiConverterUInt64.write(epoch, into: &buf)
+            FfiConverterOptionString.write(requested, into: &buf)
+            FfiConverterOptionString.write(preferred, into: &buf)
+            
+        
+        case let .disableNotifications(id,instance):
+            writeInt(&buf, Int32(12))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterTypeMobileInstance.write(instance, into: &buf)
+            
+        
+        case let .readMtu(id,peerId):
+            writeInt(&buf, Int32(13))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+            
+        
+        case let .readWriteLimits(id,peerId):
+            writeInt(&buf, Int32(14))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+            
+        
+        case let .requestMtu(id,peerId,mtu):
+            writeInt(&buf, Int32(15))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+            FfiConverterUInt16.write(mtu, into: &buf)
+            
+        
+        case let .readRssi(id,peerId):
+            writeInt(&buf, Int32(16))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+            
+        
+        case let .requestConnectionPriority(id,peerId,priority):
+            writeInt(&buf, Int32(17))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+            FfiConverterString.write(priority, into: &buf)
+            
+        
+        case let .readPhy(id,peerId):
+            writeInt(&buf, Int32(18))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+            
+        
+        case let .requestPhy(id,peerId,tx,rx):
+            writeInt(&buf, Int32(19))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+            FfiConverterOptionString.write(tx, into: &buf)
+            FfiConverterOptionString.write(rx, into: &buf)
+            
+        
+        case let .securityState(id,peerId):
+            writeInt(&buf, Int32(20))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+            
+        
+        case let .createBond(id,peerId,transport):
+            writeInt(&buf, Int32(21))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+            FfiConverterString.write(transport, into: &buf)
+            
+        
+        case let .cancelBond(id,peerId):
+            writeInt(&buf, Int32(22))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+            
+        
+        case let .bondedPeers(id):
+            writeInt(&buf, Int32(23))
+            FfiConverterUInt64.write(id, into: &buf)
+            
+        
+        case let .acquireBackground(id,kind,reason):
+            writeInt(&buf, Int32(24))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterString.write(kind, into: &buf)
+            FfiConverterString.write(reason, into: &buf)
+            
+        
+        case let .releaseBackground(id,leaseId):
+            writeInt(&buf, Int32(25))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterString.write(leaseId, into: &buf)
+            
+        
+        case let .updateBackgroundNotification(id,leaseId,title,body):
+            writeInt(&buf, Int32(26))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterString.write(leaseId, into: &buf)
+            FfiConverterString.write(title, into: &buf)
+            FfiConverterOptionString.write(body, into: &buf)
+            
+        
+        case let .associateCompanion(id,name,serviceUuid):
+            writeInt(&buf, Int32(27))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterOptionString.write(name, into: &buf)
+            FfiConverterOptionString.write(serviceUuid, into: &buf)
+            
+        
+        case let .close(id):
+            writeInt(&buf, Int32(28))
+            FfiConverterUInt64.write(id, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileRadioRequest_lift(_ buf: RustBuffer) throws -> MobileRadioRequest {
+    return try FfiConverterTypeMobileRadioRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMobileRadioRequest_lower(_ value: MobileRadioRequest) -> RustBuffer {
+    return FfiConverterTypeMobileRadioRequest.lower(value)
+}
+
+
+
+
+
+public protocol MobileInvokeCompletion: AnyObject, Sendable {
+    
+    func complete(envelope: String) 
+    
+}
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceMobileInvokeCompletion {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceMobileInvokeCompletion = UniffiVTableCallbackInterfaceMobileInvokeCompletion(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterCallbackInterfaceMobileInvokeCompletion.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface MobileInvokeCompletion: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterCallbackInterfaceMobileInvokeCompletion.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface MobileInvokeCompletion: handle missing in uniffiClone")
+            }
+        },
+        complete: { (
+            uniffiHandle: UInt64,
+            envelope: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceMobileInvokeCompletion.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.complete(
+                     envelope: try FfiConverterString.lift(envelope)
+                )
+            }
+
+            
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceMobileInvokeCompletion> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceMobileInvokeCompletion>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitMobileInvokeCompletion() {
+    uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobileinvokecompletion(UniffiCallbackInterfaceMobileInvokeCompletion.vtablePtr)
+}
+
+// FfiConverter protocol for callback interfaces
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterCallbackInterfaceMobileInvokeCompletion {
+    fileprivate static let handleMap = UniffiHandleMap<MobileInvokeCompletion>()
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+extension FfiConverterCallbackInterfaceMobileInvokeCompletion : FfiConverter {
+    typealias SwiftType = MobileInvokeCompletion
+    typealias FfiType = UInt64
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lift(_ handle: UInt64) throws -> SwiftType {
+        try handleMap.get(handle: handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lower(_ v: SwiftType) -> UInt64 {
+        return handleMap.insert(obj: v)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func write(_ v: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(v))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceMobileInvokeCompletion_lift(_ handle: UInt64) throws -> MobileInvokeCompletion {
+    return try FfiConverterCallbackInterfaceMobileInvokeCompletion.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceMobileInvokeCompletion_lower(_ v: MobileInvokeCompletion) -> UInt64 {
+    return FfiConverterCallbackInterfaceMobileInvokeCompletion.lower(v)
+}
+
+
+
+
+public protocol MobilePlatformRadio: AnyObject, Sendable {
+    
+    func submit(request: MobileRadioRequest) 
+    
+    func cancel(requestId: UInt64) 
+    
+}
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceMobilePlatformRadio {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceMobilePlatformRadio = UniffiVTableCallbackInterfaceMobilePlatformRadio(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterCallbackInterfaceMobilePlatformRadio.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface MobilePlatformRadio: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterCallbackInterfaceMobilePlatformRadio.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface MobilePlatformRadio: handle missing in uniffiClone")
+            }
+        },
+        submit: { (
+            uniffiHandle: UInt64,
+            request: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceMobilePlatformRadio.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.submit(
+                     request: try FfiConverterTypeMobileRadioRequest_lift(request)
+                )
+            }
+
+            
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        cancel: { (
+            uniffiHandle: UInt64,
+            requestId: UInt64,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceMobilePlatformRadio.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.cancel(
+                     requestId: try FfiConverterUInt64.lift(requestId)
+                )
+            }
+
+            
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceMobilePlatformRadio> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceMobilePlatformRadio>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitMobilePlatformRadio() {
+    uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobileplatformradio(UniffiCallbackInterfaceMobilePlatformRadio.vtablePtr)
+}
+
+// FfiConverter protocol for callback interfaces
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterCallbackInterfaceMobilePlatformRadio {
+    fileprivate static let handleMap = UniffiHandleMap<MobilePlatformRadio>()
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+extension FfiConverterCallbackInterfaceMobilePlatformRadio : FfiConverter {
+    typealias SwiftType = MobilePlatformRadio
+    typealias FfiType = UInt64
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lift(_ handle: UInt64) throws -> SwiftType {
+        try handleMap.get(handle: handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lower(_ v: SwiftType) -> UInt64 {
+        return handleMap.insert(obj: v)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func write(_ v: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(v))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceMobilePlatformRadio_lift(_ handle: UInt64) throws -> MobilePlatformRadio {
+    return try FfiConverterCallbackInterfaceMobilePlatformRadio.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceMobilePlatformRadio_lower(_ v: MobilePlatformRadio) -> UInt64 {
+    return FfiConverterCallbackInterfaceMobilePlatformRadio.lower(v)
+}
+
+
+
+
+public protocol MobileWakeSink: AnyObject, Sendable {
+    
+    func wake(sessionId: UInt64) 
+    
+}
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceMobileWakeSink {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceMobileWakeSink = UniffiVTableCallbackInterfaceMobileWakeSink(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterCallbackInterfaceMobileWakeSink.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface MobileWakeSink: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterCallbackInterfaceMobileWakeSink.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface MobileWakeSink: handle missing in uniffiClone")
+            }
+        },
+        wake: { (
+            uniffiHandle: UInt64,
+            sessionId: UInt64,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceMobileWakeSink.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.wake(
+                     sessionId: try FfiConverterUInt64.lift(sessionId)
+                )
+            }
+
+            
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceMobileWakeSink> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceMobileWakeSink>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitMobileWakeSink() {
+    uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobilewakesink(UniffiCallbackInterfaceMobileWakeSink.vtablePtr)
+}
+
+// FfiConverter protocol for callback interfaces
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterCallbackInterfaceMobileWakeSink {
+    fileprivate static let handleMap = UniffiHandleMap<MobileWakeSink>()
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+extension FfiConverterCallbackInterfaceMobileWakeSink : FfiConverter {
+    typealias SwiftType = MobileWakeSink
+    typealias FfiType = UInt64
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lift(_ handle: UInt64) throws -> SwiftType {
+        try handleMap.get(handle: handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lower(_ v: SwiftType) -> UInt64 {
+        return handleMap.insert(obj: v)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func write(_ v: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(v))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceMobileWakeSink_lift(_ handle: UInt64) throws -> MobileWakeSink {
+    return try FfiConverterCallbackInterfaceMobileWakeSink.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceMobileWakeSink_lower(_ v: MobileWakeSink) -> UInt64 {
+    return FfiConverterCallbackInterfaceMobileWakeSink.lower(v)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionUInt16: FfiConverterRustBuffer {
+    typealias SwiftType = UInt16?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt16.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt16.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionInt16: FfiConverterRustBuffer {
+    typealias SwiftType = Int16?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterInt16.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterInt16.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionInt32: FfiConverterRustBuffer {
+    typealias SwiftType = Int32?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterInt32.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterInt32.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionInt64: FfiConverterRustBuffer {
+    typealias SwiftType = Int64?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterInt64.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterInt64.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionBool: FfiConverterRustBuffer {
+    typealias SwiftType = Bool?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterBool.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterBool.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
+    typealias SwiftType = String?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterString.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterString.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeMobileCoreHost: FfiConverterRustBuffer {
+    typealias SwiftType = MobileCoreHost?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeMobileCoreHost.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeMobileCoreHost.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionSequenceString: FfiConverterRustBuffer {
+    typealias SwiftType = [String]?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterSequenceString.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterSequenceString.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
+    typealias SwiftType = [String]
+
+    public static func write(_ value: [String], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterString.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [String]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterString.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMobileCloseFailure: FfiConverterRustBuffer {
+    typealias SwiftType = [MobileCloseFailure]
+
+    public static func write(_ value: [MobileCloseFailure], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMobileCloseFailure.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MobileCloseFailure] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MobileCloseFailure]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMobileCloseFailure.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMobileGattCharacteristic: FfiConverterRustBuffer {
+    typealias SwiftType = [MobileGattCharacteristic]
+
+    public static func write(_ value: [MobileGattCharacteristic], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMobileGattCharacteristic.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MobileGattCharacteristic] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MobileGattCharacteristic]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMobileGattCharacteristic.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMobileGattDescriptor: FfiConverterRustBuffer {
+    typealias SwiftType = [MobileGattDescriptor]
+
+    public static func write(_ value: [MobileGattDescriptor], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMobileGattDescriptor.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MobileGattDescriptor] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MobileGattDescriptor]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMobileGattDescriptor.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMobileGattService: FfiConverterRustBuffer {
+    typealias SwiftType = [MobileGattService]
+
+    public static func write(_ value: [MobileGattService], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMobileGattService.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MobileGattService] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MobileGattService]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMobileGattService.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMobileManufacturerData: FfiConverterRustBuffer {
+    typealias SwiftType = [MobileManufacturerData]
+
+    public static func write(_ value: [MobileManufacturerData], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMobileManufacturerData.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MobileManufacturerData] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MobileManufacturerData]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMobileManufacturerData.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMobilePeerName: FfiConverterRustBuffer {
+    typealias SwiftType = [MobilePeerName]
+
+    public static func write(_ value: [MobilePeerName], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMobilePeerName.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MobilePeerName] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MobilePeerName]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMobilePeerName.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMobileRestoredPeer: FfiConverterRustBuffer {
+    typealias SwiftType = [MobileRestoredPeer]
+
+    public static func write(_ value: [MobileRestoredPeer], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMobileRestoredPeer.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MobileRestoredPeer] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MobileRestoredPeer]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMobileRestoredPeer.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMobileServiceData: FfiConverterRustBuffer {
+    typealias SwiftType = [MobileServiceData]
+
+    public static func write(_ value: [MobileServiceData], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMobileServiceData.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MobileServiceData] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MobileServiceData]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMobileServiceData.read(from: &buf))
+        }
+        return seq
+    }
+}
+public func mobileBuildIdentityJson() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_func_mobile_build_identity_json(uniffiCallStatus
+    )
+})
+}
+public func mobileContractRevision() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_func_mobile_contract_revision(uniffiCallStatus
+    )
+})
+}
+public func mobileHostCurrent() -> MobileCoreHost?  {
+    return try!  FfiConverterOptionTypeMobileCoreHost.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_func_mobile_host_current(uniffiCallStatus
+    )
+})
+}
+public func mobileHostInstall(radio: MobilePlatformRadio, wake: MobileWakeSink, platform: String, owner: String, adapterLabel: String)throws  -> MobileCoreHost  {
+    return try  FfiConverterTypeMobileCoreHost_lift(try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_func_mobile_host_install(
+        FfiConverterCallbackInterfaceMobilePlatformRadio_lower(radio),
+        FfiConverterCallbackInterfaceMobileWakeSink_lower(wake),
+        FfiConverterString.lower(platform),
+        FfiConverterString.lower(owner),
+        FfiConverterString.lower(adapterLabel),uniffiCallStatus
+    )
+})
+}
+public func mobileWireRevision() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_func_mobile_wire_revision(uniffiCallStatus
+    )
+})
+}
+
 private enum InitializationResult {
     case ok
     case contractVersionMismatch
@@ -1066,6 +3987,21 @@ private let initializationResult: InitializationResult = {
     let scaffolding_contract_version = ffi_ubm5_uniffi_echo_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_func_mobile_build_identity_json() != 23485) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_func_mobile_contract_revision() != 25256) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_current() != 45739) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_install() != 16863) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_func_mobile_wire_revision() != 16069) {
+        return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ubm5_uniffi_echo_checksum_method_echosession_ble_scan_start() != 17628) {
         return InitializationResult.apiChecksumMismatch
@@ -1112,10 +4048,49 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ubm5_uniffi_echo_checksum_method_echosession_staged_step() != 36705) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_complete() != 1326) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_ingest() != 56427) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_open_session() != 1864) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_shutdown() != 30988) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_admission_json() != 37308) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_drain() != 45874) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_invoke() != 36422) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecoresession_session_id() != 62933) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new() != 28077) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobileinvokecompletion_complete() != 48577) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobileplatformradio_submit() != 31117) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobileplatformradio_cancel() != 62733) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilewakesink_wake() != 8417) {
+        return InitializationResult.apiChecksumMismatch
+    }
 
+    uniffiCallbackInitMobileInvokeCompletion()
+    uniffiCallbackInitMobilePlatformRadio()
+    uniffiCallbackInitMobileWakeSink()
     return InitializationResult.ok
 }()
 

@@ -921,7 +921,7 @@ function mapGattValueStream(
 ): GattValueStream {
   let sequence = 1
   return mapPublicBoundedAsyncStream(source, value => {
-    const delivery = value.delivery ?? (value.indication ? 'indication' : 'notification')
+    const delivery = value.delivery
     if (delivery !== 'notification' && delivery !== 'indication' && delivery !== 'unknown') {
       throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.notification.delivery'))
     }

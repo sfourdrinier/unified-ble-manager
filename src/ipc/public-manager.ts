@@ -672,7 +672,6 @@ function toPortableNotificationStream(
 ): PortableBoundedAsyncStream<PortableNotificationValue> {
   return mapPublicBoundedAsyncStream(source, value => ({
     value: new Uint8Array(value.value),
-    indication: value.delivery === 'indication',
     delivery: value.delivery,
     observedAtMonotonicMs: value.observedAtMonotonicMs,
     sequence: value.sequence

@@ -18,6 +18,9 @@ crate-type = ["cdylib", "rlib", "staticlib"]
 uniffi = { version = "=0.32.1", features = ["build"] }
 ubm-core = { path = "../../crates/ubm-core" }
 ubm-fake-radio = { path = "../../crates/ubm-fake-radio" }
+# Production mobile owner (`Mobile*` UDL surface): no fake radio, no btleplug.
+ubm-mobile = { path = "../../crates/ubm-mobile" }
+ubm-desktop = { path = "../../crates/ubm-desktop", default-features = false }
 
 [build-dependencies]
 uniffi = { version = "=0.32.1", features = ["build"] }

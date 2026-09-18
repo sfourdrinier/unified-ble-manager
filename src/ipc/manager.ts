@@ -1,8 +1,10 @@
 import {
   BackendContractError,
+  BLE_COMMIT_UNCERTAINTIES,
   BLE_ERROR_CODES,
   BLE_ERROR_DOMAINS,
   contractError,
+  type BleCommitUncertainty,
   type CleanupFailure,
   type CleanupRecord,
   type NormalizedBleError
@@ -505,8 +507,17 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       const receipt = await this.client.request({ command, payload, binaryPayload, signal: controller.signal })
       return receipt.payload
     } catch (error) {
-      if (timedOut && !callerAborted && error instanceof BackendContractError) {
-        throw contractError('operation.timed-out', 'ipc', `ipc-manager.${command}`)
+      // The deadline, not the caller, aborted the request, so the native
+      // abort is reported as the expiry it was. Only the code changes: the
+      // native answer about retryability (a dispatched write is `never`) and
+      // its platform detail are the operation's own and are kept.
+      if (
+        timedOut &&
+        !callerAborted &&
+        error instanceof BackendContractError &&
+        error.normalized.code === 'operation.aborted'
+      ) {
+        throw new BackendContractError({ ...error.normalized, code: 'operation.timed-out' })
       }
       throw error
     } finally {
@@ -2207,9 +2218,10 @@ function requiredTerminalError(value: SerializableValue | undefined, operation: 
   ) {
     throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-error`)
   }
+  const commit = requiredTerminalCommit(value, operation)
   const platform = value.platform
   if (platform === null) {
-    return { code, domain, operation: value.operation, platform: null, retryability }
+    return { code, domain, operation: value.operation, platform: null, retryability, ...commit }
   }
   if (!isSerializableRecord(platform)) {
     throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-error-platform`)
@@ -2232,8 +2244,24 @@ function requiredTerminalError(value: SerializableValue | undefined, operation: 
       safeMessage: platform.safeMessage,
       metadata: platform.metadata
     },
-    retryability
+    retryability,
+    ...commit
   }
+}
+
+/**
+ * The native commit state of a terminal's error (PR210-37), carried only when
+ * the native side stated it; an unknown word is malformed.
+ */
+function requiredTerminalCommit(
+  value: SerializableRecord,
+  operation: string
+): { readonly commit?: BleCommitUncertainty | null } {
+  if (!('commit' in value)) return {}
+  if (value.commit === null) return { commit: null }
+  const commit = BLE_COMMIT_UNCERTAINTIES.find(candidate => candidate === value.commit)
+  if (commit === undefined) throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-error-commit`)
+  return { commit }
 }
 
 function isSerializableRecord(value: unknown): value is SerializableRecord {

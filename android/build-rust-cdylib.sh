@@ -14,8 +14,19 @@
 # no 32-bit ARM device exists on this lane, so it is a documented boundary,
 # not a failure.
 #
+# PR210-18: before cargo runs, the builder seals the build identity:
+# scripts/release/native-build-identity.js computes the jni source digest and
+# binding schema (and refreshes src/generated/native-build-identity.ts);
+# they reach cargo as UBM_BUILD_SOURCE_DIGEST / UBM_BUILD_BINDING_SCHEMA and
+# bindings/jni/build.rs embeds them in the binary. Needs Node (NODE_BINARY
+# or `node` on PATH).
+#
 # Usage: build-rust-cdylib.sh --abi arm64-v8a|x86_64 --profile debug|release \
 #          --libdir <dir> [--minsdk 24]
+#        build-rust-cdylib.sh --prepare [--profile debug|release]
+#          PR210-19 direct source-preparation step (`pnpm native:android:prepare`):
+#          builds every declared ABI into android/build/ubmRustCdylib/<profile>/<abi>,
+#          the staging layout the Gradle source-mode tasks use.
 # Every failure is actionable: the exact missing piece (NDK dir, linker,
 # toolchain target, cargo) plus the command that failed.
 set -eu
@@ -28,8 +39,11 @@ MINSDK="24"
 # once ROOT is known) — never hardcode a version here.
 PINNED_TOOLCHAIN=""
 
+PREPARE=0
+
 while [ $# -gt 0 ]; do
   case "$1" in
+    --prepare) PREPARE=1; shift ;;
     --abi) ABI="$2"; shift 2 ;;
     --profile) PROFILE="$2"; shift 2 ;;
     --libdir) LIBDIR="$2"; shift 2 ;;
@@ -39,6 +53,20 @@ while [ $# -gt 0 ]; do
 done
 
 fail() { echo "build-rust-cdylib: FAIL $1" >&2; exit 1; }
+
+DECLARED_ABIS="arm64-v8a x86_64"
+if [ "$PREPARE" = "1" ]; then
+  [ -z "$ABI" ] && [ -z "$LIBDIR" ] || fail "--prepare builds every declared ABI; do not combine it with --abi/--libdir"
+  [ "$PROFILE" = "debug" ] || [ "$PROFILE" = "release" ] || fail "--profile must be debug|release, got '$PROFILE'"
+  PREPARE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+  for prepare_abi in $DECLARED_ABIS; do
+    sh "$PREPARE_ROOT/android/build-rust-cdylib.sh" --abi "$prepare_abi" --profile "$PROFILE" --minsdk "$MINSDK" \
+      --libdir "$PREPARE_ROOT/android/build/ubmRustCdylib/$PROFILE/$prepare_abi" \
+      || fail "prepare failed for $prepare_abi (see output above)"
+  done
+  echo "build-rust-cdylib: prepared $DECLARED_ABIS ($PROFILE) under $PREPARE_ROOT/android/build/ubmRustCdylib/$PROFILE"
+  exit 0
+fi
 
 [ -n "$ABI" ] || fail "missing --abi (supported: arm64-v8a x86_64)"
 [ -n "$LIBDIR" ] || fail "missing --libdir (staging directory)"
@@ -88,6 +116,20 @@ rustup target list --installed --toolchain "$PINNED_TOOLCHAIN" 2>/dev/null | gre
 # build". Anchor cargo at this script's own package root instead.
 [ -f "$ROOT/Cargo.toml" ] || fail "no Cargo workspace at script root $ROOT (Expo CNG/packed copy without Rust sources?)"
 cd "$ROOT" || fail "cannot cd to script root $ROOT"
+
+# PR210-18: seal the identity the binary carries (computed once, before
+# cargo; a mid-build source edit surfaces as a digest mismatch later).
+NODE="${NODE_BINARY:-node}"
+command -v "$NODE" >/dev/null 2>&1 || fail "Node is required for the build identity (set NODE_BINARY or put node on PATH)"
+IDENTITY_SCRIPT="$ROOT/scripts/release/native-build-identity.js"
+[ -f "$IDENTITY_SCRIPT" ] || fail "missing $IDENTITY_SCRIPT"
+IDENTITY_ENV="$("$NODE" "$IDENTITY_SCRIPT" --root "$ROOT" --write --print-env jni)" \
+  || fail "native-build-identity.js could not compute the jni identity (see its error above)"
+UBM_BUILD_SOURCE_DIGEST="$(printf '%s\n' "$IDENTITY_ENV" | sed -n 's/^UBM_BUILD_SOURCE_DIGEST=//p')"
+UBM_BUILD_BINDING_SCHEMA="$(printf '%s\n' "$IDENTITY_ENV" | sed -n 's/^UBM_BUILD_BINDING_SCHEMA=//p')"
+[ -n "$UBM_BUILD_SOURCE_DIGEST" ] && [ -n "$UBM_BUILD_BINDING_SCHEMA" ] || fail "native-build-identity.js printed no digests"
+export UBM_BUILD_SOURCE_DIGEST UBM_BUILD_BINDING_SCHEMA
+echo "build-rust-cdylib: identity sourceDigest=$UBM_BUILD_SOURCE_DIGEST bindingSchema=$UBM_BUILD_BINDING_SCHEMA"
 
 echo "build-rust-cdylib: abi=$ABI target=$TARGET profile=$PROFILE ndk=$NDK minsdk=$MINSDK toolchain=$PINNED_TOOLCHAIN"
 

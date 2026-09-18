@@ -80,7 +80,7 @@ bindings/*/target/
 # packed consumers (built by android/refresh-prebuilt-jniLibs.sh); only the
 # exact shipped paths are tracked, everything else under jniLibs stays out.
 android/src/main/jniLibs/*
-!android/src/main/jniLibs/build-identity.txt
+!android/src/main/jniLibs/build-identity.json
 !android/src/main/jniLibs/arm64-v8a/
 !android/src/main/jniLibs/x86_64/
 android/src/main/jniLibs/arm64-v8a/*
@@ -115,6 +115,13 @@ example/ios/Pods/
 example/ios/build/
 example/ios/Podfile.lock
 
-# Built by ios/build-rust-core.sh via the podspec prepare_command at pod
-# install; never shipped, always rebuilt from bindings/uniffi sources.
+# Built by ios/build-rust-core.sh (publish workflow native-rustcore job, or
+# contributors via `UBM_NATIVE_BUILD=source pnpm native:apple:prepare`);
+# never committed — the release stages the CI-built copy before pack.
 ios/RustCore/
+
+# Desktop-core prebuilds (PR210-03): built by the publish workflow (and by
+# `pnpm native-prebuild:build -- --backend desktop-core` locally); never
+# committed. The package `files` list still ships them in the tarball.
+native/desktop-core/prebuilds/
+.native-prebuild-artifact/

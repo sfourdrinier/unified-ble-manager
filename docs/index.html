@@ -756,8 +756,10 @@ await manager.background.updateNotification({
             <h1>Electron</h1>
             <p>Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.</p>
             <p>
-              This source targets <code>5.0.0-rc.0</code>. Tagged releases ship Node-API v8 prebuilds covering macOS and
-              Windows <code>arm64</code>/<code>x64</code> for both Node and modern Electron.
+              This source targets <code>5.0.0-rc.0</code>. Main executes the shared Rust core
+              (<code>DesktopCentral</code>) through one N-API addon. Tagged releases ship it prebuilt for Linux, macOS
+              and Windows on <code>arm64</code>/<code>x64</code>. The addon is Node-API, so one binary serves Node and
+              modern Electron alike.
             </p>
             <p>
               <code>unified-ble-manager/electron/main</code> and <code>unified-ble-manager/electron/renderer</code> are
@@ -836,30 +838,56 @@ await manager.background.updateNotification({
                 construct providers or select radios.
               </p>
             </blockquote>
-            <p>Select one concrete backend in main. The native loaders are fail-closed:</p>
+            <p>
+              Select one concrete backend in main. Every provider is the shared Rust core for one OS, and each refuses
+              the wrong OS before anything loads:
+            </p>
             <ul>
+              <li><code>createElectronMainCoreBluetoothBackendProvider({ now })</code> for macOS.</li>
               <li>
-                <code>createElectronMainCoreBluetoothBackendProvider({ now })</code> loads only the package-controlled
-                CoreBluetooth Node-API artifact and rejects non-macOS hosts.
+                <code>createElectronMainWinRtBackendProvider({ now })</code> for Windows (adapters listed and selectable
+                by id).
               </li>
               <li>
-                <code>createElectronMainWinRtBackendProvider({ now })</code> loads only the package-controlled WinRT
-                Node-API artifact, requires Windows, and verifies native boundary protocol v2. Its private boundary
-                fixes scan ownership at <code>startScan(scanToken, serviceUuids, onAdvertisement)</code> and requires
-                the <code>onScanTerminal(listener)</code> registration method; a v1 or incomplete artifact is rejected
-                rather than adapted.
-              </li>
-              <li>
-                <code>createDbusNextBluezBackendProvider({ busKind, now })</code> constructs the owned BlueZ D-Bus
-                backend for the explicitly selected system or session bus.
+                <code>createElectronMainBluezBackendProvider({ now, busKind?, pairingGeneration? })</code> for Linux. It
+                takes the Node BlueZ factory's options: <code>busKind</code> (<code>'system'</code> by default, or
+                <code>'session'</code>) and a host-supplied privileged <code>pairingGeneration</code> controller. See
+                <a href="NODE.md#bluez-bus-and-pairing-generation"><code>NODE.md</code></a> for what each does and the
+                privilege a controller carries.
               </li>
             </ul>
             <p>
               An Electron application chooses the backend from trusted main-process platform configuration.
-              Renderer-provided data is never a backend selector. Native addons must be available for the host platform
-              and architecture; an absent, incompatible, unauthorized, or unavailable native backend reports a typed
-              failure rather than silently using a simulated radio. Published builds use Node-API v8, so one prebuild
-              per OS/CPU is shared by maintained Node and modern Electron runtimes.
+              Renderer-provided data is never a backend selector. The addon is loaded from the package's own
+              <code>native/desktop-core/prebuilds/&#x3C;platform>-&#x3C;arch>/</code> and its build identity is checked
+              before any radio call. An absent, mismatched, unauthorized or unavailable core reports a typed failure
+              (the table in <a href="NODE.md#load-and-identity-failures"><code>NODE.md</code></a
+              >), never a simulated radio.
+            </p>
+            <p>
+              <strong>Bundlers:</strong> keep <code>unified-ble-manager/native/desktop-core</code> external and unpacked
+              from ASAR (for example <code>asarUnpack: ['**/native/desktop-core/**']</code>, and mark it external in
+              webpack/vite/esbuild). The loader finds the addon relative to its own file, so inlining it into a bundle,
+              or moving the <code>.node</code> away from <code>index.js</code>, turns into
+              <code>no-prebuilt-for-target</code>. Include the <code>.node</code> file in your signing/notarization
+              process.
+            </p>
+            <p>
+              <strong>Deadlines across the IPC boundary:</strong> the renderer never sends its
+              <code>performance.now()</code> deadline to main, because the two processes have different clock origins.
+              It sends <code>budgetMs</code>, the remaining budget in whole milliseconds measured just before the
+              request is sent (<code>0</code> when the deadline has already passed; absent when the caller gave none).
+              Main admits the budget against its own clock on receipt, so time queued in main counts against it, and the
+              core bounds the operation with that budget. Without one, the core's liveness backstops apply.
+            </p>
+            <p>
+              <strong>Legacy node-gyp boundaries (5.0 only, Phase 4 deletion):</strong> the TypeScript
+              CoreBluetooth/WinRT backends and their node-gyp addons
+              (<code>native/electron/{corebluetooth,winrt}</code>) remain in source until the Rust path is verified end
+              to end, but no public entrypoint reaches them. For the record of what is being retired: the WinRT addon
+              implements native boundary protocol v2, whose private boundary fixes scan ownership at
+              <code>startScan(scanToken, serviceUuids, onAdvertisement)</code> and requires the
+              <code>onScanTerminal(listener)</code> registration method.
             </p>
             <h2>IPC integration requirements</h2>
             <p>Install one <code>ElectronMainBleBinding</code> on <code>ipcMain</code> with:</p>
@@ -886,6 +914,18 @@ await manager.background.updateNotification({
               <code>binding.destroy()</code> before it destroys the manager. The binding handles operation correlation,
               event acknowledgement, bounded backpressure, cancellation routing, and retryable cleanup; applications
               must not duplicate those policies.
+            </p>
+            <p>
+              The renderer and main negotiate the IPC protocol at bootstrap; both offer exactly version 3. Version 3
+              sends the caller's deadline as a relative <code>budgetMs</code> that main admits against its own monotonic
+              clock at receipt (the renderer's <code>performance.now()</code> instant has a different time origin), and
+              main rejects an absolute renderer <code>deadline</code> as <code>protocol.malformed</code>. Normalized
+              errors may carry <code>commit</code> (<code>not-dispatched</code>, <code>uncertain</code>, or
+              <code>null</code>). A renderer and main built from different package versions where one side speaks
+              protocol 2 fail at bootstrap with <code>protocol.incompatible</code>, in either direction, before a lease
+              is registered or any operation runs, so preload, renderer bundle and main must ship from the same package
+              version. The IPC channel name (<code>unified-ble-manager:v2</code>) is unchanged so the refusal arrives as
+              a typed error rather than a missing handler.
             </p>
             <p>
               For a connected opaque handle, <code>subscribeConnectionEvents(connectionHandle)</code> returns a
@@ -920,31 +960,26 @@ await manager.background.updateNotification({
               It is useful as a fast deterministic check, but it does not substitute for the packed router/client
               boundary smoke or an Electron-runtime security test.
             </p>
-            <p>Published packages include these Node-API prebuilds:</p>
-            <ul>
-              <li>macOS <code>arm64</code> and <code>x64</code> CoreBluetooth;</li>
-              <li>Windows <code>arm64</code> and <code>x64</code> WinRT.</li>
-            </ul>
             <p>
-              The release matrix builds each artifact on its native runner and loads the same file under both Node and
-              Electron before npm publication. Native <code>.node</code> files must remain unpacked from ASAR and must
-              be included in the consumer application's signing/notarization process.
-            </p>
-            <p>Source and <code>node-gyp</code> remain available as an explicit fallback. For example:</p>
-            <p>
-              Published prebuilds remain the default after a source build. To deliberately load the local
-              <code>build/Release</code> (then <code>build/Debug</code>) artifact before the bundled prebuild, set the
-              explicit process-level override:
+              Published packages include the desktop-core prebuild for <code>linux-x64</code>, <code>linux-arm64</code>,
+              <code>darwin-arm64</code>, <code>darwin-x64</code>, <code>win32-x64</code> and <code>win32-arm64</code>,
+              each with an identity sidecar (<code>ubm_desktop_core.identity.json</code>: the file's sha256 and the
+              binary's own build identity). The release matrix builds each on its native runner, then loads it under
+              Electron main: the identity is verified, and one central is opened and closed on the synthetic radio
+              (<code>scripts/ci/electron-main-smoke.js</code>). Native <code>.node</code> files must remain unpacked
+              from ASAR and must be included in the consumer application's signing/notarization process.
             </p>
             <p>
-              With Node-API v8, an Electron-targeted rebuild is not required merely because Electron's module ABI
-              differs from Node's. Rebuild only when using an unsupported target, changing native source, or
-              deliberately overriding the bundled prebuild. Windows and Linux still have their own native/runtime
-              requirements and are not implied by a macOS build. The Node/Electron load smoke checks the method surface
-              and destroys the boundary; it does not start a scan, observe an advertisement, or establish live-radio
-              support. Published evidence records state the exact backend, package digest, OS/runtime/ABI, hardware,
-              scenario, limitations, and proof level. See <a href="PLATFORMS.md"><code>PLATFORMS.md</code></a> and the
-              controlling
+              Consumers never build the core. Contributors working from a checkout can load their own build by setting
+              <code>UBM_NAPI_ADDON</code> to its absolute path. It is used exclusively, and its digests are still
+              checked:
+            </p>
+            <p>
+              With Node-API v8, an Electron-targeted rebuild is never required because Electron's module ABI differs
+              from Node's. The Electron load smoke verifies identity and runs a synthetic central; it does not start a
+              real scan, observe an advertisement, or establish live-radio support. Published evidence records state the
+              exact backend, package digest, OS/runtime/ABI, hardware, scenario, limitations, and proof level. See
+              <a href="PLATFORMS.md"><code>PLATFORMS.md</code></a> and the controlling
               <a href="UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md"><code>UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md</code></a
               >.
             </p>
@@ -1068,18 +1103,30 @@ await manager.background.updateNotification({
             </p>
             <h2>React Native notification bursts</h2>
             <p>
-              React Native Android and Apple both deliver native BLE events through a bounded native-to-JavaScript
-              ingress queue. Each queue retains at most 512 records or 1 MiB, whichever limit is reached first. This
-              gives applications room for a peripheral to send a few hundred notifications in a catch-up burst—for
-              example, about 288 five-minute records covering 24 hours—without turning the queue into unbounded memory.
+              React Native Android and Apple both deliver native BLE events through the Rust owner's bounded per-session
+              outbox (docs/MOBILE_RUST_WIRE.md, "Drain records"). Advertisements and notification values share a data
+              queue of 2048 records or 4 MiB, whichever limit is reached first; lifecycle records (link loss, database
+              changes, adapter, security, scan end) use a separate reserved queue of 1024 records, so they stay
+              deliverable when data is backed up. The owner wakes JavaScript once when the outbox turns non-empty, and
+              JavaScript drains it in batches of 256 records / 64 KiB; an idle manager makes no bridge calls. This gives
+              applications room for a peripheral to send a few hundred notifications in a catch-up burst—for example,
+              about 288 five-minute records covering 24 hours—without turning the queue into unbounded memory.
             </p>
             <p>
               Applications should still process notifications promptly and split larger application-protocol transfers
-              into resumable ranges. If JavaScript cannot drain the bounded queue, the backend reports
-              <code>stream.overflow</code> and closes that ingress rather than silently losing a prefix. Android and
-              Apple use the same limits; Web, BlueZ, CoreBluetooth desktop, WinRT, Electron, Tauri, and the
-              deterministic backend do not pass through this React Native bridge and retain their existing stream limits
-              and capability reports.
+              into resumable ranges. If a notification value cannot be queued, its stream ends with
+              <code>overflow</code> and the dropped counts. An advertisement or notification the owner dropped at a full
+              native queue counts in the drop accounting of every scan or notification stream that could have received
+              it (the owner drops it before routing, so the count is an upper bound). A lost lifecycle record
+              (<code>link</code>, <code>scan-end</code>, <code>adapter</code>) is re-read from the owner: a link it no
+              longer reports ends as lost, a scan it no longer holds ends <code>source-failed</code>, and adapter
+              watches receive the current state. Each drop is also recorded in the manager's diagnostic trace
+              (<code>diagnostics.snapshot().trace</code>) as <code>diagnostic-warning:native-ingress-drop</code>, never
+              dropped silently. Each notification value carries the delivery the platform reported: Android reports the
+              CCCD mode it wrote (<code>notification</code> or <code>indication</code>); CoreBluetooth does not report
+              it, so Apple values carry <code>unknown</code>. Android and Apple use the same limits; Web, BlueZ,
+              CoreBluetooth desktop, WinRT, Electron, Tauri, and the deterministic backend do not pass through this
+              React Native bridge and retain their existing stream limits and capability reports.
             </p>
             <p>
               Deterministic and mock boundaries are test-only. They prove contract/fault behavior, not live radio.

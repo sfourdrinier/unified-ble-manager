@@ -104,6 +104,8 @@ async function chooseReadAndSubscribe(): Promise<void> {
         domain: error.domain,
         operation: error.operation,
         browserCause: error.platform?.metadata.browserErrorName,
+        retryability: error.retryability,
+        commit: error.commit,
         recovery: error.recovery
       })
     }
@@ -209,13 +211,15 @@ Each cleanup returns a receipt. Production applications should verify `state ===
 
 Catch `BleError` from the root package and retain its structured fields. Do not replace every failure with one generic message.
 
-| Field       | Meaning                                                                                        |
-| ----------- | ---------------------------------------------------------------------------------------------- |
-| `code`      | Stable UBM category such as `chooser.cancelled`, `operation.timed-out`, or `connection.failed` |
-| `domain`    | UBM subsystem such as `chooser`, `connection`, or `gatt`                                       |
-| `operation` | Exact operation boundary, for example `web-connection.connect`                                 |
-| `platform`  | Safe browser detail, including `browserErrorName` when Chrome supplies one                     |
-| `recovery`  | Deterministic recovery disposition and suggested actions                                       |
+| Field          | Meaning                                                                                        |
+| -------------- | ---------------------------------------------------------------------------------------------- |
+| `code`         | Stable UBM category such as `chooser.cancelled`, `operation.timed-out`, or `connection.failed` |
+| `domain`       | UBM subsystem such as `chooser`, `connection`, or `gatt`                                       |
+| `operation`    | Exact operation boundary, for example `web-connection.connect`                                 |
+| `platform`     | Safe browser detail, including `browserErrorName` when Chrome supplies one                     |
+| `retryability` | `never` or `caller-decides`: the operation's own answer about repeating it                     |
+| `commit`       | `uncertain`, `not-dispatched`, or `null`: whether the failed operation may have taken effect   |
+| `recovery`     | Recovery disposition and suggested actions, following `code`, `retryability` and `commit`      |
 
 Common boundaries:
 

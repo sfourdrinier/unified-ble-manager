@@ -20,6 +20,10 @@ abort 'usage: podspec-stub-eval.rb --dir <dir>' if dir.nil?
 dir = dir.gsub('\\', '/')
 
 module Pod
+  # Mirrors CocoaPods' user-facing error class: the podspec raises it for an
+  # invalid UBM_NATIVE_BUILD, and the harness must surface that message.
+  class Informative < StandardError; end
+
   class SpecStub
     attr_reader :attrs
 

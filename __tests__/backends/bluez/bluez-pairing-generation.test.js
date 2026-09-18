@@ -7,7 +7,7 @@
 const {
   generationForSecureConnections,
   withPairingGeneration
-} = require('../../../src/backends/bluez/bluez-pairing-generation')
+} = require('../../../src/backends/desktop/bluez-pairing-generation')
 
 function controller(initial, overrides = {}) {
   const calls = []

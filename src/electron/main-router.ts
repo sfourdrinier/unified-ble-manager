@@ -3,6 +3,7 @@
 import {
   BackendContractError,
   contractError,
+  serializeNormalizedError,
   type CleanupFailure,
   type CleanupRecord
 } from '../backend-contract/errors'
@@ -44,6 +45,7 @@ import { snapshotSerializableRecord } from '../backend-contract/serializable'
 import { snapshotScanPlan } from '../backend-contract/scan-planning'
 import type { ScanPlan } from '../backend-contract/scan-planning'
 import { decodeIpcScanQuery, encodeIpcScanPlan } from '../ipc/scan-planning'
+import { IPC_CLIENT_COMPATIBILITY_OFFER } from '../ipc/protocol'
 import { BleManager, Connection, DiscoveredGattDatabase } from '../manager/ble-manager'
 import type {
   ElectronBleIpcEvent,
@@ -316,8 +318,11 @@ export class ElectronMainBleRouter {
   }
 
   private async route<Renderer extends string, Operation extends string>(
-    envelope: IpcEnvelope<string, Renderer, Operation>
+    received: IpcEnvelope<string, Renderer, Operation>
   ): Promise<SerializableRecord> {
+    let receivedAt: number | null = null
+    const receiptClock = (): number => (receivedAt ??= this.manager.monotonicNow())
+    const envelope = { ...received, payload: admitRelativeBudget(received.payload, receiptClock) }
     const resources = this.resourcesFor(envelope.rendererLease)
     if (resources.lifecycle !== 'active') {
       throw contractError('lifecycle.invalid-state', 'ipc', 'electron-main-router.renderer-releasing')
@@ -342,7 +347,7 @@ export class ElectronMainBleRouter {
       const preAdmissionFailure = operationAdmissionFailure(
         controller,
         envelope.payload,
-        () => this.manager.monotonicNow(),
+        receiptClock,
         envelope.command
       )
       if (preAdmissionFailure !== null) {
@@ -388,7 +393,7 @@ export class ElectronMainBleRouter {
       } else {
         throw contractError('argument.invalid', 'ipc', 'electron-main-router.command')
       }
-      if (!isDestructiveCleanupCommand(envelope.command)) {
+      if (!reportsCompletedEffect(envelope.command)) {
         const admissionFailure = operationAdmissionFailure(
           controller,
           envelope.payload,
@@ -1217,7 +1222,7 @@ export class ElectronMainBleRouter {
 
 function createElectronHostIpcVersionAxes(core: HostNeutralBackendIdentity<string>['versions']): IpcVersionAxes {
   const coreOffer = coreCompatibilityOffer(core)
-  const ipcOffer = versionRange(version('ipc-protocol', 2), version('ipc-protocol', 2))
+  const ipcOffer = IPC_CLIENT_COMPATIBILITY_OFFER.ipcProtocol
   return Object.freeze({
     ...negotiateCoreVersions(coreOffer, coreOffer),
     ipcProtocol: negotiateVersion(ipcOffer, ipcOffer)
@@ -1229,7 +1234,7 @@ export function createElectronIpcVersionAxes(
   remoteOffer: IpcCompatibilityOffer
 ): IpcVersionAxes {
   const coreOffer = coreCompatibilityOffer(core)
-  const ipcOffer = versionRange(version('ipc-protocol', 2), version('ipc-protocol', 2))
+  const ipcOffer = IPC_CLIENT_COMPATIBILITY_OFFER.ipcProtocol
   return Object.freeze({
     ...negotiateCoreVersions(coreOffer, remoteOffer),
     ipcProtocol: negotiateVersion(ipcOffer, remoteOffer.ipcProtocol)
@@ -1254,7 +1259,7 @@ function coreCompatibilityOffer(core: HostNeutralBackendIdentity<string>['versio
       version('trace-format', core.traceFormat.selected.value),
       version('trace-format', core.traceFormat.selected.value)
     ),
-    ipcProtocol: versionRange(version('ipc-protocol', 2), version('ipc-protocol', 2))
+    ipcProtocol: IPC_CLIENT_COMPATIBILITY_OFFER.ipcProtocol
   }
 }
 
@@ -1349,6 +1354,26 @@ function deliveryFromPayload(payload: SerializableRecord): SubscriptionOptions['
   }
 }
 
+/**
+ * Admits the renderer's relative `budgetMs` against main's own monotonic clock,
+ * read once when the request is received, and returns the payload with the
+ * resulting main-clock `deadline`. The renderer's clock has a different time
+ * origin, so an absolute renderer `deadline` is rejected rather than compared
+ * with main's clock. Everything after receipt, including queueing, is charged
+ * to the admitted budget.
+ */
+function admitRelativeBudget(payload: SerializableRecord, receiptClock: () => number): SerializableRecord {
+  const { budgetMs, ...withoutBudget } = payload
+  if (withoutBudget.deadline !== undefined && withoutBudget.deadline !== null) {
+    throw contractError('protocol.malformed', 'ipc', 'electron-main-router.budget')
+  }
+  if (budgetMs === undefined) return payload
+  if (typeof budgetMs !== 'number' || !Number.isSafeInteger(budgetMs) || budgetMs < 0) {
+    throw contractError('protocol.malformed', 'ipc', 'electron-main-router.budget')
+  }
+  return { ...withoutBudget, deadline: receiptClock() + budgetMs }
+}
+
 function deadlineFromPayload(payload: SerializableRecord) {
   const value = payload.deadline
   if (value === null || value === undefined) {
@@ -1384,6 +1409,17 @@ function isDestructiveCleanupCommand(command: string): boolean {
     command === 'gatt.unsubscribe' ||
     command === 'gatt.database.release'
   )
+}
+
+/**
+ * Commands whose completed result is reported even when cancellation or the
+ * deadline arrived after dispatch. Their effect cannot be rolled back: a
+ * cleanup has released its resource, and a write has committed at the
+ * peripheral. Reporting either as aborted/timed-out would invite the caller to
+ * repeat an effect that already happened.
+ */
+function reportsCompletedEffect(command: string): boolean {
+  return isDestructiveCleanupCommand(command) || command === 'gatt.write' || command === 'gatt.descriptor.write'
 }
 
 function operationOptions(payload: SerializableRecord, controller: AbortController) {
@@ -1513,24 +1549,6 @@ function cleanupRecord(cleanup: CleanupRecord): SerializableRecord {
         })
       )
     )
-  })
-}
-
-function serializeNormalizedError(error: CleanupRecord['failures'][number]['error']): SerializableRecord {
-  return Object.freeze({
-    code: error.code,
-    domain: error.domain,
-    operation: error.operation,
-    retryability: error.retryability,
-    platform:
-      error.platform === null
-        ? null
-        : Object.freeze({
-            domain: error.platform.domain,
-            code: error.platform.code,
-            safeMessage: error.platform.safeMessage,
-            metadata: error.platform.metadata
-          })
   })
 }
 

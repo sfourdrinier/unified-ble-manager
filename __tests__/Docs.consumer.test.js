@@ -252,11 +252,13 @@ describe('consumer documentation matches the published package', () => {
     expect(document).toContain('## Rejected alternatives')
   })
 
-  test.each(laneAdrDocuments)('%s is a lane-scoped working record', relativePath => {
+  test.each(laneAdrDocuments)('%s is an owner-accepted lane-scoped decision record', relativePath => {
     const document = read(relativePath)
 
     expect(document.split('\n')[0]).toBe(`<!-- ${relativePath} -->`)
-    expect(document).toContain('**Status:** Draft')
+    expect(document).toContain('**Status:** Accepted')
+    expect(document).not.toContain('**Status:** Draft')
+    expect(document).toContain('## Mapping: PR210 review findings → decisions')
   })
 
   test('canonical ADRs record the accepted binary, restoration, and scope decisions', () => {

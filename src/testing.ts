@@ -39,9 +39,11 @@ export { TckAssertionError } from './tck/contracts'
 export { createDeterministicBackendTckFactory } from './tck/deterministic/deterministic-tck-factory'
 export { createFirstPartyBackendTckRegistry } from './tck/first-party/first-party-tck-registry'
 export { createWebBluetoothFirstPartyTckRegistration } from './tck/first-party/web-bluetooth-tck-registration'
-export { createCoreBluetoothFirstPartyTckRegistration } from './tck/first-party/corebluetooth-tck-registration'
-export { createBluezFirstPartyTckRegistration } from './tck/first-party/bluez-tck-registration'
-export { createWinRtFirstPartyTckRegistration } from './tck/first-party/winrt-tck-registration'
+export {
+  createBluezFirstPartyTckRegistration,
+  createCoreBluetoothFirstPartyTckRegistration,
+  createWinRtFirstPartyTckRegistration
+} from './tck/first-party/desktop-rust-core-tck-registration'
 export {
   createReactNativeAndroidFirstPartyTckRegistration,
   createReactNativeAppleFirstPartyTckRegistration
@@ -75,23 +77,24 @@ export type {
   FirstPartyTckSuite
 } from './tck/first-party/first-party-tck-registry'
 export type {
+  BluezFirstPartyTckRegistrationOptions,
+  BluezNotificationInput,
   CoreBluetoothFirstPartyTckRegistrationOptions,
-  DeterministicCoreBluetoothBoundary
-} from './tck/first-party/corebluetooth-tck-registration'
+  DesktopRustCoreFirstPartyTckRegistrationOptions,
+  DesktopRustCoreSyntheticAdvertisement,
+  DesktopRustCoreSyntheticNotification,
+  DesktopRustCoreSyntheticRadio,
+  DesktopRustCoreSyntheticService,
+  DeterministicBluezTckBoundary,
+  DeterministicCoreBluetoothBoundary,
+  DeterministicWinRtBoundary,
+  WinRtFirstPartyTckRegistrationOptions
+} from './tck/first-party/desktop-rust-core-tck-registration'
 export type {
   DeterministicWebBluetoothTckBoundary,
   WebBluetoothFirstPartyTckRegistrationOptions,
   WebBluetoothNotificationInput
 } from './tck/first-party/web-bluetooth-tck-registration'
-export type {
-  BluezFirstPartyTckRegistrationOptions,
-  BluezNotificationInput,
-  DeterministicBluezTckBoundary
-} from './tck/first-party/bluez-tck-registration'
-export type {
-  DeterministicWinRtBoundary,
-  WinRtFirstPartyTckRegistrationOptions
-} from './tck/first-party/winrt-tck-registration'
 export type {
   DeterministicReactNativeAppleTckBoundary,
   DeterministicReactNativeTckBoundary,

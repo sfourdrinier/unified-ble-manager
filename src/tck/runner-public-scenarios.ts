@@ -61,6 +61,8 @@ import { executePublicVerticalSlice } from './runner-public-vertical-scenario'
 import { executeSubscriptionOverflowScenario } from './runner-public-subscription-overflow-scenario'
 import { executeDiagnosticsScenario, executeLifecycleScenario } from './runner-public-lifecycle-diagnostics-scenario'
 import { executeDescriptorOperationsScenario } from './runner-public-descriptor-scenario'
+import { executeDuplicateUuidOccurrenceScenario } from './runner-public-occurrence-scenario'
+import { inspectOccurrenceIndexing, occurrenceIndexingDetail } from './runner-public-occurrence-support'
 import { executePublicWebChooserVerticalSlice } from './runner-public-web-chooser-vertical-scenario'
 import { executePublicWebUnsupportedCapabilitiesScenario } from './runner-public-web-unsupported-capabilities-scenario'
 import type { PublicManagerSeamOption } from './public-manager-seam-option'
@@ -225,6 +227,9 @@ async function executeManagerScenario<
   }
   if (definition.id === 'gatt.discovery-complete-paths-and-services-changed') {
     return executeGattDiscoveryScenario(manager, fixture, definition)
+  }
+  if (definition.id === 'gatt.duplicate-uuid-occurrences-route-exactly') {
+    return executeDuplicateUuidOccurrenceScenario(manager, fixture, definition)
   }
   if (definition.id === 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation') {
     return executeGattReadWriteScenario(manager, fixture, definition)
@@ -1073,66 +1078,19 @@ async function executeGattDiscoveryScenario<
   if (characteristic === undefined) {
     throw new TckAssertionError(definition.id, 'discovery returned no characteristic')
   }
-  const serviceOccurrenceKeys = connected.snapshot.services.map(candidate => String(candidate.path.serviceOccurrence))
-  const serviceParentKeys = new Set(
-    connected.snapshot.services.map(candidate =>
-      JSON.stringify([String(candidate.path.serviceOccurrence), String(candidate.path.serviceUuid)])
-    )
-  )
-  const characteristicOccurrenceKeys = connected.snapshot.characteristics.map(candidate =>
-    JSON.stringify([String(candidate.path.serviceOccurrence), String(candidate.path.characteristicOccurrence)])
-  )
-  const characteristicParents = new Set(
-    connected.snapshot.characteristics.map(candidate =>
-      JSON.stringify([
-        String(candidate.path.serviceOccurrence),
-        String(candidate.path.serviceUuid),
-        String(candidate.path.characteristicOccurrence),
-        String(candidate.path.characteristicUuid)
-      ])
-    )
-  )
-  const descriptorOccurrenceKeys = connected.snapshot.descriptors.map(candidate =>
-    JSON.stringify([
-      String(candidate.path.serviceOccurrence),
-      String(candidate.path.characteristicOccurrence),
-      String(candidate.path.descriptorOccurrence)
-    ])
-  )
+  const indexing = inspectOccurrenceIndexing(connected.snapshot)
+  const databaseGeneration = String(connected.snapshot.path.databaseGeneration)
   const completePaths =
     connected.snapshot.services.length > 0 &&
     connected.snapshot.characteristics.length > 0 &&
-    connected.snapshot.services.every(
+    indexing.pathsUnique &&
+    indexing.parentsResolve &&
+    indexing.occurrencesExact &&
+    connected.snapshot.services.every(candidate => String(candidate.path.databaseGeneration) === databaseGeneration) &&
+    [...connected.snapshot.characteristics, ...connected.snapshot.descriptors].every(
       candidate =>
-        String(candidate.path.databaseGeneration) === String(connected.snapshot.path.databaseGeneration) &&
-        String(candidate.path.serviceOccurrence).length > 0
-    ) &&
-    new Set(serviceOccurrenceKeys).size === serviceOccurrenceKeys.length &&
-    connected.snapshot.characteristics.every(
-      candidate =>
-        candidate.path.validity === 'current' &&
-        String(candidate.path.databaseGeneration) === String(connected.snapshot.path.databaseGeneration) &&
-        String(candidate.path.characteristicOccurrence).length > 0 &&
-        serviceParentKeys.has(
-          JSON.stringify([String(candidate.path.serviceOccurrence), String(candidate.path.serviceUuid)])
-        )
-    ) &&
-    new Set(characteristicOccurrenceKeys).size === characteristicOccurrenceKeys.length &&
-    connected.snapshot.descriptors.every(
-      candidate =>
-        candidate.path.validity === 'current' &&
-        String(candidate.path.databaseGeneration) === String(connected.snapshot.path.databaseGeneration) &&
-        String(candidate.path.descriptorOccurrence).length > 0 &&
-        characteristicParents.has(
-          JSON.stringify([
-            String(candidate.path.serviceOccurrence),
-            String(candidate.path.serviceUuid),
-            String(candidate.path.characteristicOccurrence),
-            String(candidate.path.characteristicUuid)
-          ])
-        )
-    ) &&
-    new Set(descriptorOccurrenceKeys).size === descriptorOccurrenceKeys.length
+        candidate.path.validity === 'current' && String(candidate.path.databaseGeneration) === databaseGeneration
+    )
   await fixture.controller.perform(
     'trigger-services-changed',
     Object.freeze({ peerId: String(connected.connection.peerId) })
@@ -1154,7 +1112,8 @@ async function executeGattDiscoveryScenario<
     fact('gatt-discovery-returns-complete-occurrence-safe-paths', completePaths, {
       serviceCount: connected.snapshot.services.length,
       characteristicCount: connected.snapshot.characteristics.length,
-      descriptorCount: connected.snapshot.descriptors.length
+      descriptorCount: connected.snapshot.descriptors.length,
+      ...occurrenceIndexingDetail(indexing)
     }),
     fact('gatt-services-changed-invalidates-database-generation', snapshotInvalidated, { snapshotInvalidated }),
     fact('gatt-stale-path-rejects-before-dispatch', staleReadRejected && staleReadDidNotDispatch, {

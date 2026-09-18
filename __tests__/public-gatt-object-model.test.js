@@ -295,7 +295,8 @@ describe('stable public GATT object model (PR3 TDD)', () => {
     const { connection, database } = await connectAndDiscover(fixture, manager)
 
     expect(database.generation).toEqual(expect.any(String))
-    expect(database.services).toHaveLength(2)
+    // Two battery services, then the heart-rate service of the duplicate-UUID world.
+    expect(database.services).toHaveLength(3)
     expect(Object.isFrozen(database.services)).toBe(true)
     expect(database.servicesByUuid('180f').map(service => service.occurrence)).toEqual([0, 1])
 

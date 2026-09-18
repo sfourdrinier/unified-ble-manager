@@ -56,6 +56,18 @@ function fixtureRoot() {
     '[package]\nname = "ubm5_jni_echo"\n\n[features]\nbeta = []\nalpha = []\n'
   )
   writeFile(root, 'bindings/uniffi/Cargo.toml', '[package]\nname = "ubm5_uniffi_echo"\n')
+  // PR210-18: complete (minimal) binding crates, so the seal can record the
+  // per-binding sourceDigest + bindingSchema from the identity library.
+  writeFile(root, 'bindings/ubm_build_identity.rs', '// helper\n')
+  writeFile(root, 'bindings/napi/Cargo.toml', '[package]\nname = "ubm5_napi_echo"\n')
+  writeFile(root, 'bindings/napi/src/lib.rs', '// napi\n')
+  writeFile(root, 'bindings/napi/src/dispatch.rs', '// dispatch\n')
+  writeFile(root, 'bindings/jni/src/lib.rs', '// jni\n')
+  writeFile(root, 'bindings/uniffi/src/lib.rs', '// uniffi\n')
+  writeFile(root, 'bindings/uniffi/src/ubm_echo.udl', 'namespace ubm_echo {};\n')
+  writeFile(root, 'bindings/uniffi/generated/swift/ubm_echo.swift', '// swift\n')
+  writeFile(root, 'bindings/uniffi/generated/swift/ubm_echoFFI.h', '// h\n')
+  writeFile(root, 'bindings/uniffi/generated/swift/ubm_echoFFI.modulemap', 'module ubm_echoFFI {}\n')
   writeFile(
     root,
     'ios/RustCore/RustCore.xcframework/Info.plist',
@@ -196,6 +208,48 @@ describe('build fingerprint (F23)', () => {
     const seal = generateBuildFingerprint(root)
     expect(seal.native.apple).toEqual({ staged: false, slices: [], libraryIdentifiers: [] })
     expect(seal.targets.apple).toEqual([])
+  })
+
+  test('bindingSchema and sourceDigest are sealed per binding (T1 closed)', () => {
+    const root = fixtureRoot()
+    const identity = require('../scripts/release/native-build-identity')
+    const seal = generateBuildFingerprint(root)
+    for (const binding of ['napi', 'jni', 'uniffi']) {
+      const expected = identity.computeBindingIdentity(root, binding)
+      expect(seal.bindingSchema[binding]).toBe(expected.bindingSchema)
+      expect(seal.sourceDigest[binding]).toBe(expected.sourceDigest)
+    }
+  })
+
+  test('a binding schema edit fails the seal as identity drift', () => {
+    const root = fixtureRoot()
+    writeBuildFingerprint(root)
+    writeFile(root, 'bindings/uniffi/generated/swift/ubm_echo.swift', '// regenerated\n')
+    expect(() => checkBuildFingerprint(root)).toThrow(/bindingSchema identity changed/)
+  })
+
+  test('the generator no longer declares bindingSchema unsealed', () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'release', 'generate-build-fingerprint.js'), 'utf8')
+    expect(source).not.toMatch(/stays unsealed/)
+  })
+
+  test('desktop-core NAPI prebuilds from PREBUILDS.json join native.napi', () => {
+    const root = fixtureRoot()
+    expect(generateBuildFingerprint(root).native.napi).toEqual([])
+    const entry = {
+      backend: 'desktop-core',
+      platform: 'darwin',
+      arch: 'arm64',
+      path: 'native/desktop-core/prebuilds/darwin-arm64/ubm_desktop_core.node',
+      bytes: 3,
+      sha256: 'c'.repeat(64)
+    }
+    writeFile(
+      root,
+      'native/PREBUILDS.json',
+      JSON.stringify({ schemaVersion: 1, entries: [entry, { ...entry, backend: 'corebluetooth' }] })
+    )
+    expect(generateBuildFingerprint(root).native.napi).toEqual([entry])
   })
 
   test('identity drift fails closed and names the identity', () => {

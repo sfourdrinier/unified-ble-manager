@@ -6,7 +6,10 @@ const repositoryRoot = path.resolve(__dirname, '../../..')
 describe('Android PHY source seam', () => {
   test('routes PHY operations through the per-device serial queue and current-GATT quarantine', () => {
     const source = fs.readFileSync(
-      path.join(repositoryRoot, 'android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt'),
+      path.join(
+        repositoryRoot,
+        'android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt'
+      ),
       'utf8'
     )
     const dispatcher = fs.readFileSync(

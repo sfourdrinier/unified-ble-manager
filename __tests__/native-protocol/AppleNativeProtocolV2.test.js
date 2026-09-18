@@ -508,7 +508,10 @@ describe('Apple Native Protocol v2 radio boundary', () => {
     expect(descriptors).toContain('writeDescriptor(')
     expect(descriptors).toContain('didUpdateValueFor descriptor')
     expect(descriptors).toContain('didWriteValueFor descriptor')
-    expect(radio).toContain('"descriptors": descriptors')
+    // The discovery snapshot is a stateless projection, so it lives in support.
+    const support = read('ios/Owned/OwnedCoreBluetoothProtocolRadioSupport.swift')
+    expect(radio).toContain('OwnedCoreBluetoothProtocolRadioSupport.discoverySnapshot(')
+    expect(support).toContain('"descriptors": descriptors')
     expect(execution).toContain('if (kind == "readDescriptor")')
     expect(execution).toContain('kind == "readDescriptor" || kind == "writeDescriptor"')
     expect(execution).toContain('descriptorEndpointFor')

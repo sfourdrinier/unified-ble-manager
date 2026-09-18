@@ -6,6 +6,7 @@
 //! there. No radio is touched. Per-central shutdown itself (F14) never sets
 //! that latch — other managers keep working and new managers can open.
 
+use ubm_desktop::OpControl;
 use ubm_desktop::{
     CharacteristicSnapshot, DescriptorSnapshot, DesktopCentral, FakeRadio, PeerSnapshot,
     PropertyFlags, RadioEvent, ServiceSnapshot,
@@ -20,7 +21,7 @@ async fn shutdown_stops_scan_and_refuses_new_work() {
         .await
         .expect("open");
     central
-        .start_scan("owner-a", &[], 5000)
+        .start_scan("owner-a", &[], OpControl::budget_ms(5000))
         .await
         .expect("start scan");
     assert!(central.has_active_scan().await);
@@ -37,9 +38,10 @@ async fn shutdown_stops_scan_and_refuses_new_work() {
             manufacturer_data: Vec::new(),
             service_data: Vec::new(),
             tx_power_level: None,
+            extras: ubm_desktop::AdvertisementExtras::default(),
         }));
     central
-        .connect("peer-1", "lease-a", 5000)
+        .connect("peer-1", "lease-a", OpControl::budget_ms(5000))
         .await
         .expect("connect");
     central.boundary().set_services(
@@ -65,7 +67,7 @@ async fn shutdown_stops_scan_and_refuses_new_work() {
         }],
     );
     central
-        .discover("peer-1", "lease-a")
+        .discover("peer-1", "lease-a", OpControl::unbounded())
         .await
         .expect("discover");
     let selector = DesktopCentral::<FakeRadio>::selector(
@@ -78,7 +80,13 @@ async fn shutdown_stops_scan_and_refuses_new_work() {
     )
     .expect("selector");
     central
-        .subscribe("peer-1", &selector, "consumer-a", 5000)
+        .subscribe(
+            "peer-1",
+            &selector,
+            "consumer-a",
+            None,
+            OpControl::budget_ms(5000),
+        )
         .await
         .expect("subscribe");
     assert_eq!(
@@ -109,12 +117,12 @@ async fn shutdown_stops_scan_and_refuses_new_work() {
         "shutdown drives the boundary teardown hook"
     );
     let error = central
-        .start_scan("owner-a", &[], 5000)
+        .start_scan("owner-a", &[], OpControl::budget_ms(5000))
         .await
         .expect_err("no admission after shutdown");
     assert_eq!(error.code_str(), "adapter.unavailable");
     let error = central
-        .connect("peer-x", "lease-a", 5000)
+        .connect("peer-x", "lease-a", OpControl::budget_ms(5000))
         .await
         .expect_err("no admission after shutdown");
     assert_eq!(error.code_str(), "adapter.unavailable");

@@ -143,7 +143,8 @@ describe('ci-release canonical package (4.0)', () => {
   test('R2-F005 ci.yml CoreBluetooth L2 requires the public compiled boundary after prepack', () => {
     const ci = read('.github/workflows/ci.yml')
     expect(ci).toContain("require('./lib/commonjs/node-corebluetooth')")
-    expect(ci).toContain('createNativeCoreBluetoothBoundary')
+    expect(ci).toContain("'createNativeCoreBluetoothBoundary' in publicEntry")
+    expect(ci).toContain("require('./lib/commonjs/backends/corebluetooth/corebluetooth-native-boundary')")
     expect(ci).not.toMatch(/hosts\/electron|createCoreBluetoothBlePort/)
     // macOS/Windows L2 must prepack before the requireNative probes
     expect(ci).toMatch(/Build package artifacts \(macOS\/Windows L2 hosts\)/)
@@ -303,7 +304,8 @@ describe('ci-release canonical package (4.0)', () => {
     expect(sh).toMatch(/classic RN Android assemble required/)
     expect(sh).toContain('build:electron:macos')
     expect(sh).toContain("require('./lib/commonjs/node-corebluetooth')")
-    expect(sh).toContain('createNativeCoreBluetoothBoundary')
+    expect(sh).toContain("'createNativeCoreBluetoothBoundary' in publicEntry")
+    expect(sh).toContain("require('./lib/commonjs/backends/corebluetooth/corebluetooth-native-boundary')")
     expect(publish).toContain('scripts/ci/check-host-exports.js')
     expect(publish).toContain('Assemble Expo CNG Android debug APK')
     expect(publish).toContain('Assemble classic RN Android debug APK')

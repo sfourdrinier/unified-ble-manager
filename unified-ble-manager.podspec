@@ -29,6 +29,7 @@ Pod::Spec.new do |s|
     "ios/UnifiedBleRustCore.mm",
     "ios/UnifiedBleRustCoreSessions.swift",
     "ios/UnifiedBleRustCoreAdapterState.swift",
+    "ios/UnifiedBleRustRadioAdapter.swift",
     "ios/Generated/**/*.swift",
     "ios/NativeProtocol/**/*.{h,m,mm}",
     "ios/Owned/OwnedCoreBluetoothCentralDelegate.swift",
@@ -72,33 +73,39 @@ Pod::Spec.new do |s|
     s.dependency "ReactCommon/turbomodule/core"
   end
 
-  # D2 distribution modes (docs/5.0.0-DISTRIBUTION_CONTRACT.md): prebuilt
-  # is the default — the shipped ios/RustCore artifacts are consumed as
-  # built by CI, with no toolchain needed on the consumer. Only the
-  # explicit UBM_NATIVE_BUILD=source selects a from-source build of the
-  # same artifacts with the canonical builder. Never inferred: any other
-  # value (including empty) means prebuilt.
-  ubm_native_source_build = ENV['UBM_NATIVE_BUILD'] == 'source'
+  # PR210-19 build mode (docs/5.0.0-DISTRIBUTION_CONTRACT.md §1, ADR D2.6):
+  # explicit configuration, parsed and validated — never inferred. Unset or
+  # empty means prebuilt (the CI-built ios/RustCore shipped in the package,
+  # no Rust toolchain needed); `prebuilt` and `source` are explicit; any
+  # other value stops pod install. Android (android/build.gradle) applies
+  # the identical policy.
+  ubm_native_build_raw = ENV['UBM_NATIVE_BUILD']
+  ubm_native_build_mode =
+    if ubm_native_build_raw.nil? || ubm_native_build_raw.empty?
+      'prebuilt'
+    elsif %w[prebuilt source].include?(ubm_native_build_raw)
+      ubm_native_build_raw
+    else
+      raise Pod::Informative,
+            "[unified-ble-manager] UBM_NATIVE_BUILD must be unset, 'prebuilt' or 'source' (got #{ubm_native_build_raw.inspect})."
+    end
   # F01: the 5.x lane selects the shared Rust core alongside the Owned
-  # radio above. The UniFFI staticlib XCFramework ships staged in
-  # ios/RustCore (prebuilt mode) or is built from the shipped
-  # bindings/uniffi sources by ios/build-rust-core.sh (source mode); the
-  # generated Swift joins the pod module; the Owned CoreBluetooth radio
-  # stays the thin platform adapter calling into it.
+  # radio above. The UniFFI staticlib XCFramework is consumed from
+  # ios/RustCore in both modes: in prebuilt mode it is the CI-staged
+  # artifact; in source mode the contributor produced it BEFORE pod install
+  # with the canonical builder (`UBM_NATIVE_BUILD=source pnpm native:apple:prepare`,
+  # i.e. sh ios/build-rust-core.sh). The pod never builds Rust itself:
+  # CocoaPods skips prepare_command for :path pods (ADR D2.7), so no hook
+  # is used. The generated Swift joins the pod module; the Owned
+  # CoreBluetooth radio stays the thin platform adapter calling into it.
   # 4.x keeps the Owned-only selection (no Rust core).
   if package["version"].start_with?("5.")
-    # Source mode builds via prepare_command (observed to run during pod
-    # install for the example consumers; the CocoaPods guides claim :path
-    # pods skip it, so the Verify phase below stays the
-    # mechanism-independent backstop with actionable errors either way).
-    if ubm_native_source_build
-      s.prepare_command = 'sh ios/build-rust-core.sh'
-    end
     s.source_files = base_source_files + ['bindings/uniffi/generated/swift/ubm_echo.swift']
     s.vendored_frameworks = ['ios/RustCore/RustCore.xcframework']
     s.preserve_paths = base_preserve_paths + [
       'bindings/uniffi/generated/swift/ubm_echoFFI.h',
-      'bindings/uniffi/generated/swift/ubm_echoFFI.modulemap'
+      'bindings/uniffi/generated/swift/ubm_echoFFI.modulemap',
+      'ios/verify-rust-core.sh'
     ]
     # ubm_echo.swift compiles in the POD target, so the ubm_echoFFI
     # modulemap (which defines RustBuffer and friends) must be visible
@@ -121,24 +128,38 @@ Pod::Spec.new do |s|
       'SWIFT_INCLUDE_PATHS' => '$(PODS_TARGET_SRCROOT)/bindings/uniffi/generated/swift',
       'OTHER_SWIFT_FLAGS' => ubm_swift_flags
     )
-    # Mechanism-independent backstop: whatever produced ios/RustCore
-    # (prepare_command above, an explicit contributor build, or CI
-    # staging), the compile fails here — before any source compiles —
-    # with an actionable error when the staging is missing or partial.
+    # Before any source compiles, in both modes: ios/verify-rust-core.sh
+    # (PR210-18) parses the XCFramework Info.plist and checks the exact
+    # declared slice set plus the Info.plist and per-slice sha256 recorded in
+    # build-identity.json. Source mode additionally rejects a staging whose
+    # sealed source digest / binding schema no longer match the sources and
+    # prints the command that rebuilds it.
+    ubm_verify_script = <<~'UBM_VERIFY_SH'
+      set -eu
+      RUST_CORE_DIR="${PODS_TARGET_SRCROOT}/ios/RustCore"
+      sh "${PODS_TARGET_SRCROOT}/ios/verify-rust-core.sh" --dir "${RUST_CORE_DIR}" || {
+        echo "error: [unified-ble-manager] staged ios/RustCore failed verification (see above)." >&2
+        exit 1
+      }
+    UBM_VERIFY_SH
+    if ubm_native_build_mode == 'source'
+      ubm_verify_script += <<~'UBM_SOURCE_SH'
+        # UBM_NATIVE_BUILD=source: the staging must be built from these sources.
+        UBM_NODE="${NODE_BINARY:-$(command -v node || true)}"
+        [ -n "${UBM_NODE}" ] || {
+          echo "error: [unified-ble-manager] UBM_NATIVE_BUILD=source needs Node for the RustCore staleness check (set NODE_BINARY)." >&2
+          exit 1
+        }
+        "${UBM_NODE}" "${PODS_TARGET_SRCROOT}/scripts/release/native-build-identity.js" --root "${PODS_TARGET_SRCROOT}" --check-apple || {
+          echo "error: [unified-ble-manager] ios/RustCore is stale for UBM_NATIVE_BUILD=source. Rebuild it, then build again: UBM_NATIVE_BUILD=source pnpm --dir \"${PODS_TARGET_SRCROOT}\" native:apple:prepare" >&2
+          exit 1
+        }
+      UBM_SOURCE_SH
+    end
     s.script_phase = {
       :name => 'Verify staged RustCore',
       :execution_position => :before_compile,
-      :script => <<~'UBM_VERIFY_SH'
-        set -eu
-        RUST_CORE_DIR="${PODS_TARGET_SRCROOT}/ios/RustCore"
-        FRAMEWORK="${RUST_CORE_DIR}/RustCore.xcframework"
-        IDENTITY="${RUST_CORE_DIR}/build-identity.txt"
-        fail() { echo "error: [unified-ble-manager] $1" >&2; exit 1; }
-        [ -d "${FRAMEWORK}" ] || fail "missing ${FRAMEWORK}. Prebuilt mode (default) needs the CI-staged XCFramework in the package: reinstall or upgrade unified-ble-manager. For a from-source build instead: UBM_NATIVE_BUILD=source sh ios/build-rust-core.sh from the package root, then pod install."
-        [ -f "${IDENTITY}" ] || fail "missing ${IDENTITY}: the RustCore staging is incomplete; restage it (see above)."
-        SLICES=$(grep -c 'LibraryIdentifier' "${FRAMEWORK}/Info.plist" 2>/dev/null || true)
-        [ "${SLICES}" = '4' ] || fail "expected 4 platform slices in ${FRAMEWORK}/Info.plist, found '${SLICES}': restage RustCore (see above)."
-      UBM_VERIFY_SH
+      :script => ubm_verify_script
     }
   end
 end

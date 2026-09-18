@@ -473,7 +473,17 @@ export class WebBluetoothGattRuntime {
       }
       const copied = ownBytes(value, MAXIMUM_VALUE_BYTES)
       const result = stream.emit(
-        { value: copied, indication: characteristic.properties.indicate && !characteristic.properties.notify },
+        // Web Bluetooth's startNotifications() writes the notification CCCD
+        // bit when the characteristic has the notify property, and the
+        // indication bit only otherwise (Web Bluetooth §5.6.4).
+        {
+          value: copied,
+          delivery: characteristic.properties.notify
+            ? 'notification'
+            : characteristic.properties.indicate
+              ? 'indication'
+              : 'unknown'
+        },
         copied.byteLength
       )
       if (result.terminated) {
