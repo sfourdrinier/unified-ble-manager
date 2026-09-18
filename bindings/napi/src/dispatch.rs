@@ -23,12 +23,12 @@ use napi::bindgen_prelude::{Buffer, Result};
 use napi::{Error, Status};
 use napi_derive::napi;
 use ubm_core::contracts::{BleErrorCode, BleErrorDomain, CoreError, OperationId};
+use ubm_desktop::executor::desktop_runtime;
 use ubm_desktop::{
     BtleplugRadio, CompletionOutcome, DesktopCentral, DesktopError, DiscoveredPath, FakeRadio,
     FaultOp, ManufacturerData, PathSelector, PeerSnapshot, PropertyFlags, RadioBoundary,
     RadioCloseFailure, RadioEvent, ScanFilterSpec, ServiceData, ServiceSnapshot,
 };
-use ubm_desktop::executor::desktop_runtime;
 
 /// Typed dispatch failure carrying a frozen C-UBM identity. [`DesktopError`]
 /// and [`CoreError`] identities pass through verbatim; only malformed JS
