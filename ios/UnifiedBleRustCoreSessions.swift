@@ -36,8 +36,8 @@ public final class UnifiedBleRustCoreSessions: NSObject {
   /// Seam for the `adapter.state` minter (production live-central reader by
   /// default). A separate seam, not the UniFFI bridge, because the value is
   /// live platform state — mirrors Android's injected `AdapterStateReader`.
-  /// `nonobjc`: closure types cannot cross the ObjC boundary.
-  nonobjc var adapterStateReader: () -> String = UnifiedBleRustCoreAdapterState.readAdapterStateJson
+  /// `@nonobjc`: closure types cannot cross the ObjC boundary.
+  @nonobjc var adapterStateReader: () -> String = UnifiedBleRustCoreAdapterState.readAdapterStateJson
 
   private let lock = NSLock()
   private var sessions: [String: EchoSession] = [:]
