@@ -118,6 +118,32 @@ pub struct BtleplugRadio {
     close_failures: StdMutex<Vec<RadioCloseFailure>>,
 }
 
+impl Drop for BtleplugRadio {
+    /// Safety net for a radio dropped without [`RadioBoundary::close`]
+    /// (e.g. a NAPI finalizer on a V8 thread): the event stream's Drop
+    /// spawns a task, so an off-runtime drop aborts the host process. A
+    /// leftover stream is handed to the shared executor instead; an
+    /// in-context drop stays inline. `try_lock` cannot be contended here:
+    /// the guard is only held by polls borrowing a live owner, and this
+    /// runs at last-owner drop.
+    fn drop(&mut self) {
+        let stream = self
+            .events
+            .try_lock()
+            .ok()
+            .and_then(|mut events| events.take());
+        if let Some(stream) = stream {
+            if tokio::runtime::Handle::try_current().is_ok() {
+                drop(stream);
+            } else {
+                self.spawn.spawn(async move {
+                    drop(stream);
+                });
+            }
+        }
+    }
+}
+
 impl BtleplugRadio {
     /// Open the default btleplug adapter. When `adapter_id` is `Some`, it
     /// must equal `Adapter::adapter_info()` exactly; otherwise
@@ -1278,6 +1304,11 @@ impl RadioBoundary for BtleplugRadio {
     /// characteristic misses are skipped without a receipt; only a refused
     /// or errored native unsubscribe is a failure.
     async fn close(&self) {
+        // NOTE: the adapter event stream is deliberately NOT taken here.
+        // The scan loop holds the events guard across its select until
+        // loop_stop (sent after this returns), so taking it here deadlocks
+        // shutdown. The stream releases via the `Drop` impl instead: by
+        // then the loop is joined and the handoff is uncontended.
         let entries: Vec<ForwarderEntry> = self
             .forwarders
             .lock()
