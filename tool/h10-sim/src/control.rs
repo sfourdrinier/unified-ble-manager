@@ -72,7 +72,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("pair-policy", "set pairing policy just-works/disabled"),
     ("load-profile", "load a JSON device profile live"),
     ("set-advertising", "start/stop advertising"),
-    ("drop-link", "tear down advertising and the live link"),
+    (
+        "drop-link",
+        "halt ECG and disconnect centrals; advertising and GATT stay up",
+    ),
     ("set-silent", "stop notifying while keeping the link up"),
     (
         "reject-next-pmd",

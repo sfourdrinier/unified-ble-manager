@@ -9,10 +9,23 @@ Type=simple
 # Installed by tool/h10-sim/scripts/install-service.sh: the binary lives in
 # ~/.local/bin and the profile in ~/.config/h10-sim/profile.json. Secrets
 # (H10SIM_TOKEN) come from the EnvironmentFile, never from the unit itself.
-ExecStart=%h/.local/bin/h10-sim --profile %h/.config/h10-sim/profile.json
+#
+# Advertising path: bluez (default) or mgmt-legacy, set by the installer in
+# the EnvironmentFile as H10SIM_LINUX_ADVERTISING. A user unit cannot grant
+# capabilities (AmbientCapabilities= fails with 218/CAPABILITIES under the
+# user manager), so mgmt-legacy here relies on the file capability the owner
+# grants explicitly: `sudo setcap cap_net_admin+ep ~/.local/bin/h10-sim`.
+# For CAP_NET_ADMIN without a file capability on disk, use the system unit
+# systemd/h10-sim-mgmt-legacy.service.in instead (README, Always-on).
+Environment=H10SIM_LINUX_ADVERTISING=bluez
 EnvironmentFile=-%h/.config/h10-sim/env
+ExecStart=%h/.local/bin/h10-sim --profile %h/.config/h10-sim/profile.json --linux-advertising ${H10SIM_LINUX_ADVERTISING}
 Restart=on-failure
 RestartSec=5
+# 78 = advertising unavailable (BlueZ/kernel mismatch, missing CAP_NET_ADMIN):
+# a restart cannot fix it, and every failed bluetoothd registration leaks a
+# kernel advertising instance, so the unit must not loop on it.
+RestartPreventExitStatus=78
 
 [Install]
 WantedBy=default.target

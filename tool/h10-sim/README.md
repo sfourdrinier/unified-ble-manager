@@ -25,7 +25,7 @@ One `PeripheralRadio` trait (`src/radio.rs`), one backend per platform:
 | Platform | Backend | Version |
 | --- | --- | --- |
 | macOS | `ble-peripheral-rust` 0.2.0 (CoreBluetooth `CBPeripheralManager` via `objc2-core-bluetooth`) | 0.2.2 |
-| Linux | `bluer` directly (BlueZ GATT server + `LEAdvertisement1`) | 0.17.4 |
+| Linux | `bluer` directly (BlueZ GATT server + `LEAdvertisement1`); opt-in `--linux-advertising mgmt-legacy` adds the advertisement on the kernel MGMT socket (`libc`) | 0.17.4 |
 | Windows | `ble-peripheral-rust` 0.2.0 (WinRT `GattServiceProvider` via `windows`) | 0.57 |
 
 Linux drives `bluer` directly (`src/bluer_radio.rs`) instead of going through
@@ -72,6 +72,14 @@ the scan response (UTF-8-boundary safe, logged as `advertising-name-truncated`
 name's budget. Unit tests cover the default name, the 17-character Linux
 name, a 29-character maximum and an over-long name.
 
+`--linux-advertising mgmt-legacy` (Linux, below) writes the same bytes itself
+(`src/mgmt.rs`, golden-byte tests): advertisement data `02 01 06 05 03 0D 18
+EE FE` (+ manufacturer data when staged), scan response `12 09 "Polar H10
+SIM0001"`. The Flags AD is written by the sim with the real H10's `0x06`
+(LE General Discoverable, BR/EDR not supported), so the instance is added
+connectable with no kernel-managed flag bits; the kernel would otherwise
+write its own Flags byte, which follows the adapter's BR/EDR setting.
+
 ## Simulated GATT surface
 
 Advertised name `Polar H10 SIM<4 hex>` (default `Polar H10 SIM0001`,
@@ -84,16 +92,29 @@ that is an OS limitation), so the sim sends none — see fidelity gaps.
 | --- | --- | --- |
 | Heart Rate `180D` | `2A37` measurement: notify ~1 Hz, flags `0x16` (uint8 bpm, contact detected, RR present), 1 RR interval | notify |
 | | `2A38` body sensor location: chest (`1`) | read |
+| Device Information `180A` | `2A29` manufacturer `Polar Electro Oy`, `2A24` model `H10`, `2A25` serial, `2A27` hardware, `2A26` firmware, `2A28` software, `2A23` system id (hardware before firmware, like the strap) | read |
 | Battery `180F` | `2A19` level (default 85%) | read, notify (60 s) |
-| Device Information `180A` | `2A29` manufacturer `Polar Electro Oy`, `2A24` model `H10`, `2A25` serial, `2A26` firmware, `2A27` hardware, `2A28` software, `2A23` system id | read |
-| Polar PMD `FB005C80-…` | `FB005C81` control point: read returns features (ECG); write `0x01` get-settings / `0x02` start / `0x03` stop, each answered with an indicate `[0xF0, op, type, status, more, params…]` | read, write, indicate |
+| Polar vendor `6217FF4B-…` | `6217FF4C-…` readable (value UNCONFIRMED, served empty) | read |
+| | `6217FF4D-…`: write-command, indications (no behaviour model: writes are refused loudly, nothing is ever indicated) | write-without-response, indicate |
+| Polar PMD `FB005C80-…` | `FB005C81` control point: read returns features (ECG + ACC, the strap's exact 15 bytes); write `0x01` get-settings / `0x02` start / `0x03` stop, each answered with an indicate `[0xF0, op, type, status, more, params…]` | read, write, indicate |
 | | `FB005C82` data: ECG frames at ~130 samples/s (`[0x00, timestampNs u64 LE, 0x00, samples…]`, signed 24-bit LE µV, deterministic synthetic PQRST) | notify |
+| Polar `FEEE` | `FB005C51-…` (write, write-command, notify), `FB005C52-…` (notify), `FB005C53-…` (write, write-command): no behaviour model, writes refused loudly, nothing ever notified | mixed |
+
+Services, their order and the characteristic counts/properties match the
+captured strap fingerprints in `fixtures/h10-fingerprints/` exactly
+(`180D`, `180A`, `180F`, `6217FF4B`, PMD, `FEEE`; seven CCCDs). Indication
+confirmations keep the subscription session up: BlueZ reports each
+confirmation on the notify file descriptor, and only a closed descriptor ends
+the session (logged as `indication-confirmed` vs `unsubscribed`).
 
 No PnP ID (`2A50`), like the real H10 — `device-info read` reports that read
 as its own failed outcome. Start commands must request 130 Hz / 14 bit;
 anything else is refused with the SDK status codes (`ERROR_INVALID_SAMPLE_RATE`
-0x08, `ERROR_INVALID_RESOLUTION` 0x07). Valid Polar types the H10 lacks
-(PPG/ACC/PPI) answer `ERROR_NOT_SUPPORTED` (0x03).
+0x08, `ERROR_INVALID_RESOLUTION` 0x07). A repeated start and a stop while
+idle answer `ERROR_ALREADY_IN_STATE` (0x06) without changing the stream, like
+the strap. Valid Polar types the H10 cannot stream here (PPG/PPI, and ACC —
+the features bitmap advertises it but its frame format is UNCONFIRMED) answer
+`ERROR_NOT_SUPPORTED` (0x03).
 
 Byte layouts follow the Polar BLE SDK source
 ([`polarofficial/polar-ble-sdk`](https://github.com/polarofficial/polar-ble-sdk):
@@ -107,7 +128,7 @@ specifications ([spec index](https://www.bluetooth.com/specifications/specs/)).
 ```sh
 cd tool/h10-sim
 cargo build        # binary: target/debug/h10-sim (set CARGO_TARGET_DIR to redirect)
-cargo test         # 57 unit tests on macOS/Windows, 67 on Linux (see Tests below)
+cargo test         # 98 unit tests on macOS/Windows, 110 on Linux (see Tests below)
 node tests/xcheck/run-xcheck.cjs   # run from the repo root; see Tests below
 cargo clippy --all-targets   # must stay warning-free
 cargo fmt --check
@@ -127,7 +148,7 @@ module (`src/bluer_radio.rs`) is not compiled on macOS at all, so a Linux
 ./target/debug/h10-sim [--profile profiles/low-battery-legacy.json] [--name "Polar H10 SIM0001"]
   [--bpm 72] [--battery 85] [--pair-policy just-works] [--ecg-file ecg.txt]
   [--control-bind 127.0.0.1] [--control-port 17935] [--control-token-file token.txt]
-  [--driver ws://127.0.0.1:8795/host]
+  [--driver ws://127.0.0.1:8795/host] [--linux-advertising bluez|mgmt-legacy]
 ```
 
 Later flags win: `--profile` applies first, then `--name`/`--bpm`/`--battery`.
@@ -139,13 +160,15 @@ Later flags win: `--profile` applies first, then `--name`/`--bpm`/`--battery`.
 
 ## Linux requirements
 
-- `bluetoothd` running (BlueZ 5.72 verified), adapter powered; build needs
+- `bluetoothd` running (BlueZ 5.72 and 5.85 verified; advertising on current
+  kernels needs `--linux-advertising mgmt-legacy`, see below), adapter powered; build needs
   `libdbus-1-dev` (`sudo apt install libdbus-1-dev`).
 - Known identity: the default profile advertises `Polar H10 SIM0001` with
   serial `SIM000001`, firmware 3.2.1 and System ID manufacturer 1 / OUI
   `6B:00:00`. The radio address is the controller's own public address, not
   the sim's to choose — read it with `bluetoothctl show` (controller
-  `90:DE:80:3B:69:78` on the reference host) and document it beside the
+  `90:DE:80:3B:69:78` on the reference host, `DC:56:7B:D9:E8:A4` on
+  lx5090wifi) and document it beside the
   profile. Driver scenarios target the sim by name (`device: "Polar H10
   SIM0001"`), so the address never enters a command; use the address only to
   confirm over the air (e.g. in `btmon` or `bluetoothctl devices`) that the
@@ -154,6 +177,23 @@ Later flags win: `--profile` applies first, then `--name`/`--bpm`/`--battery`.
   group (check `groups`; `sudo usermod -aG bluetooth $USER` then log back in).
   An access denial surfaces immediately as a D-Bus `AccessDenied` error, not
   as a registration failure.
+- BlueZ's own Device Information service must be disabled: bluetoothd core
+  exposes a second `180A` (PnP-ID only) next to every peripheral GATT
+  application (`src/gatt-database.c` `populate_devinfo_service`, gated on the
+  Device ID source — not the `deviceinfo` plugin, which is only the client
+  side), so every `180A` read resolves `gatt.ambiguous-path` over the air.
+  There is no per-application opt-out, so the reference host sets
+  `DeviceID = false` under `[General]` in `/etc/bluetooth/main.conf`, then
+  `sudo systemctl restart bluetooth` and restarts the sim (its GATT
+  registration is lost with the daemon). Two central-view deltas versus a
+  real strap remain, neither breaking any scenario: host services whose
+  UUIDs match BlueZ's MIDI profile (`03B80E5A-…`, `7772E5DB-…`, see
+  `profiles/midi/libmidi.h`) plus unattributed host services
+  (`d0611e78-…`, `9fa480e0-…`), and ATT attribute order, which varies per sim
+  registration because bluer's `GetManagedObjects` reply serializes from a
+  `HashMap` (`dbus-crossroads` 0.5.3 `stdimpl.rs` `PathPropMap`) — the
+  declared order is the strap's, but BlueZ numbers handles in enumeration
+  order.
 - Stop any other advertiser first (`bluetoothctl advertise clear`, companion
   apps, a previous sim still running) — instances are per-registration and a
   stale owner confuses the diagnosis.
@@ -166,25 +206,77 @@ Later flags win: `--profile` applies first, then `--name`/`--bpm`/`--battery`.
   `bluetoothd` and the kernel rejected it — D-Bus delivery itself worked.
 - A `register advertisement` failure carries the adapter's
   `LEAdvertisingManager1` counters read just before registering
-  (`ActiveInstances=… SupportedInstances=…`). Before changing the sim, check
-  whether the host can advertise at all: `bluetoothctl`, `menu advertise`,
-  `back`, `advertise on` with no sim running. If that empty advertisement
-  fails with the same `add_client_complete() … Invalid Parameters (0x0d)` in
-  `journalctl -u bluetooth --since -5min`, the rejection is host state, not an
-  `LEAdvertisement1` property: on the reference host every property
-  combination was bisected (none, each of 180D/FEEE/name/Discoverable
-  on/off/manufacturer data, Includes local-name/tx-power, Appearance,
-  intervals, TxPower, SecondaryChannel, DiscoverableTimeout, `broadcast`
-  type) and all failed identically, `bluetoothctl` included.
-- `ActiveInstances` counts registrations `bluetoothd` still holds. BlueZ
-  5.72 installs the owner-disconnect watch only once a registration
-  completes, so a registration whose owner never answered the property fetch
-  is never released and keeps its instance id, and every new registration is
-  given the next id up. Freeing them needs root: `sudo systemctl restart
-  bluetooth` (drops every registration on the host). To see the HCI status
-  behind `0x0d`, capture `sudo btmon` during a registration — it shows
-  whether `LE Set Extended Advertising Parameters` or `… Data` was rejected
-  and with which handle. The sim never escalates to do either.
+  (`ActiveInstances=… SupportedInstances=…`) and the kernel release.
+
+### Linux advertising: `bluez` (default) and `mgmt-legacy` (opt-in)
+
+**Root cause of `Failed to register advertisement`.** bluetoothd adds an
+`LEAdvertisement1` object to the kernel with `MGMT_OP_ADD_EXT_ADV_PARAMS`
+(0x0054) then `MGMT_OP_ADD_EXT_ADV_DATA` (0x0055), and sizes the 0x0055
+parameters with `sizeof(struct mgmt_cp_add_advertising)` (11 bytes) where
+`struct mgmt_cp_add_ext_adv_data` is 3: every request carries 8 extra zero
+bytes (BlueZ `src/advertising.c`, 5.72 and master). Kernels that check the
+parameter length exactly answer `Invalid Parameters (0x0d)`, so **every**
+D-Bus advertisement fails, `bluetoothctl advertise on` included, whatever its
+properties. Proven with `btmon` on two hosts: Ubuntu 24.04 / kernel
+6.8.0-139 / BlueZ 5.72, and Ubuntu 26.04 / kernel 7.0.0-30 / BlueZ 5.85. The
+journal shows `add_client_complete() Failed to add advertisement: Invalid
+Parameters (0x0d)`. GATT application registration is unaffected, and the
+older, correctly sized `MGMT_OP_ADD_ADVERTISING` (0x003E) works on the same
+controllers.
+
+**`--linux-advertising bluez`** (default, no privilege): today's path. On the
+failure above the sim names the mismatch, the journal line that confirms it
+and the `mgmt-legacy` workaround, then exits with status **78** without
+retrying: each failed registration leaks a kernel advertising instance
+(`btmgmt advinfo`; `sudo systemctl restart bluetooth` frees them). The units
+set `RestartPreventExitStatus=78` so systemd does not retry either.
+
+**`--linux-advertising mgmt-legacy`** (explicit opt-in): the GATT application
+stays on bluetoothd (via `bluer`, as before); the advertisement is added by
+the sim on a raw MGMT socket (`AF_BLUETOOTH`/`BTPROTO_HCI` bound to
+`HCI_CHANNEL_CONTROL`, `src/mgmt_socket.rs`) with `MGMT_OP_ADD_ADVERTISING`,
+the exact H10 payload above, connectable, no duration or timeout.
+
+- **Privilege.** The kernel only trusts a control socket whose process holds
+  `CAP_NET_ADMIN`. The sim checks `CapEff` first and, without it, exits 78
+  naming the command; it never runs `sudo` or asks for escalation. Grant it
+  to the binary yourself:
+
+  ```sh
+  sudo setcap cap_net_admin+ep target/debug/h10-sim   # after every cargo build
+  getcap target/debug/h10-sim                         # cap_net_admin=ep
+  ./target/debug/h10-sim --linux-advertising mgmt-legacy --profile profiles/stock-h10.json
+  ```
+
+- **Blast radius.** Anyone who can run that file gets `CAP_NET_ADMIN` in it:
+  the binary can then issue any Bluetooth management command on every
+  adapter (power, discoverable/connectable, pairing and privacy settings,
+  advertising of other programs) and administer other network interfaces
+  (routes, firewall, addresses). Grant it only on a dedicated test host, to a
+  binary only you can write. Remove it with `sudo setcap -r
+  target/debug/h10-sim` (a rebuild also replaces the file and drops it). A
+  failed start leaves no setting behind: the sim changes nothing but its own
+  advertising instance.
+- **Instance choice.** `MGMT_OP_READ_ADV_FEATURES` lists the instances in use;
+  the kernel lists only instances numbered at most its instance count, so the
+  sim takes the highest number it can prove free (a gap below the listed
+  count, else count + 1), keeping clear of bluetoothd's lowest-first ids. The
+  `advertising-backend` and `advertising-started` log lines name the listed
+  instances and the one taken.
+- **Cleanup.** The instance is removed with `MGMT_OP_REMOVE_ADVERTISING` on
+  `set-advertising off`, `drop-link`, SIGINT, SIGTERM (systemd stop), on drop,
+  and from a panic hook when the simulator loop panics. A run killed with
+  SIGKILL cannot clean up; it leaves a record
+  (`$XDG_RUNTIME_DIR/h10-sim-mgmt-hci0.instance`, else the temp dir) with the
+  boot id and instance, and the next start in the same boot removes that
+  instance (`"stale":{"removedInstance":N}` in `advertising-backend`). A
+  removal by anyone else is read from the kernel's `Advertising Removed`
+  event. Check with `sudo btmgmt advinfo`; remove by hand with `sudo btmgmt
+  rm-adv <instance>`.
+- **Residual risk.** Another MGMT client (bluetoothd, `btmgmt`) that adds an
+  instance with the sim's number replaces it without an event; do not run a
+  second advertiser on the same controller.
 
 Every GATT event (subscribe, read, write, PMD command, notify) is logged to
 stdout as one JSON object per line with `seq`, `ts` (RFC 3339 UTC) and `kind`.
@@ -210,7 +302,7 @@ printf '{"cmd":"get-state"}\n' | nc 127.0.0.1 17935
 | `{"cmd":"pair-policy","policy":"disabled"}` | Pairing policy `just-works`/`disabled` |
 | `{"cmd":"load-profile","path":"…"}` | Load a profile file live (re-advertises when advertising) |
 | `{"cmd":"set-advertising","on":false}` | Stop/start advertising |
-| `{"cmd":"drop-link"}` | Stop advertising, halt ECG, and disconnect centrals (BlueZ `Device1.Disconnect`, counted in the reply; on CoreBluetooth a connected central stays connected — no disconnect API) |
+| `{"cmd":"drop-link"}` | Halt ECG and disconnect centrals; advertising and the GATT database stay up so centrals see a lifecycle loss with no Service Changed and can reconnect at once (BlueZ `Device1.Disconnect`, counted in the reply; on CoreBluetooth a connected central stays connected — no disconnect API) |
 | `{"cmd":"set-silent","on":true}` | Stop notifying while keeping the link up |
 | `{"cmd":"reject-next-pmd","status":3}` | Fail the next PMD command with a status code, then clear |
 | `{"cmd":"clear-pmd-fault"}` | Disarm without firing |
@@ -309,6 +401,7 @@ reports `pmd.request-rejected`).
 
 ```sh
 tool/h10-sim/scripts/install-service.sh [--profile profiles/low-battery-legacy.json] [--token …]
+  [--linux-advertising bluez|mgmt-legacy] [--system-unit]
 ```
 
 Builds the release binary, installs `~/.local/bin/h10-sim`,
@@ -318,30 +411,60 @@ refuses non-Linux systems, never escalates (run it as the Bluetooth user;
 the `bluetooth` group is enough), and stores a token in
 `~/.config/h10-sim/env` (mode 600) rather than in the unit. For start-at-boot
 without a login session: `loginctl enable-linger $USER`. Verify on the host
-with `systemd-analyze verify ~/.config/systemd/user/h10-sim.service`.
+with `systemd-analyze verify ~/.config/systemd/user/h10-sim.service`. Both
+units carry `RestartPreventExitStatus=78` (advertising unavailable, see
+Linux advertising).
+
+`--linux-advertising mgmt-legacy` needs `CAP_NET_ADMIN`, and a user unit
+cannot grant capabilities (`AmbientCapabilities=` fails with
+`218/CAPABILITIES` under the user manager). Two ways, both granted by the
+owner with sudo, never by the script:
+
+- user unit (default): the mode goes to `~/.config/h10-sim/env` as
+  `H10SIM_LINUX_ADVERTISING=mgmt-legacy`; the script prints `sudo setcap
+  cap_net_admin+ep ~/.local/bin/h10-sim` and does not start the unit until
+  `getcap` shows it (each install replaces the binary and drops it);
+- `--system-unit`: renders `systemd/h10-sim-mgmt-legacy.service.in` into
+  `~/.config/h10-sim/h10-sim-mgmt-legacy.service` — `User=` you,
+  `AmbientCapabilities=CAP_NET_ADMIN`, `CapabilityBoundingSet=CAP_NET_ADMIN`,
+  `NoNewPrivileges=yes`, so the capability exists only inside that service and
+  no file capability sits on disk — verifies it, and prints the `sudo
+  install` / `systemctl enable --now` commands and how to remove it.
 
 ## Tests
 
-- `cargo test` — 71 unit tests on macOS/Windows (81 on Linux): encoders (HR
+- `cargo test` — 98 unit tests on macOS/Windows (110 on Linux): encoders (HR
   measurement incl. contact states, PMD ECG frames, control-point responses,
-  settings TLV, features, system id), the synthetic ECG waveform plus replay
-  files, PMD command handling (start/stop/settings validation, one-shot
+  settings TLV, features incl. the strap's 15 bytes, system id), the synthetic
+  ECG waveform plus replay files, PMD command handling (start/stop/settings
+  validation, repeated-start/idle-stop `ALREADY_IN_STATE`, one-shot
   fault, op/type/status errors), profiles (stock + low-battery parsing,
   hex, pair policy), battery drain, RR jitter and BPM curves, the control
   protocol (parsing/validation, token gate over an in-memory duplex,
   bind refusal), the advertisement budget (names plus manufacturer-data
-  sizes), the defaulted radio-trait methods, the driver hello/decode shapes,
+  sizes), the defaulted radio-trait methods, the H10 service layout against
+  the fingerprints (service order, DIS order, vendor/FEEE properties, seven
+  CCCDs), the driver hello/decode shapes,
   the timing model (seeded sampling, fingerprint loading, UNCONFIRMED
-  placeholders, checked-in defaults) and the fingerprint comparator
-  (synthetic real/sim pairs), and — Linux only, no radio needed — the
+  placeholders, checked-in defaults), the fingerprint comparator
+  (synthetic real/sim pairs), the `mgmt-legacy` MGMT packets against the
+  kernel's `include/net/bluetooth/mgmt.h` layouts (golden `Add Advertising`
+  packet, advertisement data, name scan response, connectable flag with no
+  kernel-managed Flags bits, Command Complete / Status / Advertising Removed
+  parsing, `Read Advertising Features` replies, instance choice), the Linux
+  advertising mode, `CapEff` parsing, the setcap message, the BlueZ mismatch
+  diagnosis and the stale-instance record and cleanup decision — all pure,
+  so they run on macOS too — and — Linux only, no radio needed — the
   `bluer` GATT application
-  declaration (4 services, characteristic counts, control-point
-  read/write/indicate flags, read/write flags following each declared
-  property and permission with no encryption flags, a read without the
-  Readable permission refused with `NotPermitted` before the sim sees it, a
-  permission without its property and an unreadable initial value both
-  refused, first live reads equal to the declared initial values) and the
-  exact `LEAdvertisement1` object (every property pinned).
+  declaration (6 services, characteristic counts, control-point
+  read/write/indicate flags, write-without-response flags, read/write flags
+  following each declared property and permission with no encryption flags,
+  a read without the Readable permission refused with `NotPermitted` before
+  the sim sees it, a permission without its property and an unreadable
+  initial value both refused, indication-confirmation drains keeping the
+  session while a closed fd ends it, first live reads equal to the declared
+  initial values) and the exact `LEAdvertisement1` object (every property
+  pinned).
 - `node tests/xcheck/run-xcheck.cjs` (repo root) — emits vectors from the Rust
   encoders via `h10-sim --emit-test-vectors`, compiles the repo's own
   `examples-shared/driver/polar-pmd.ts` and `src/profiles/heart-rate.ts` with
@@ -358,15 +481,19 @@ with `systemd-analyze verify ~/.config/systemd/user/h10-sim.service`.
   bytes), on Linux only. Apple exposes no manufacturer-data peripheral API,
   which the `advertising-started` log states every time. `scan-details` sees
   no `manufacturerCompanyIds` from the default profile.
-- `drop-link` on CoreBluetooth stops advertising but cannot force-disconnect
-  an active central (no disconnect API); BlueZ disconnects via
-  `Device1.Disconnect` (counted in the reply) and releases the GATT app.
+- `drop-link` drops the link, not the peripheral: advertising and the GATT
+  database stay up, so centrals see a lifecycle loss with no Service Changed
+  and reconnect at once. On CoreBluetooth it cannot force-disconnect an
+  active central (no disconnect API); BlueZ disconnects via
+  `Device1.Disconnect` (counted in the reply).
 - No encryption-gated characteristics: like the real H10, PMD streams without
   a bond; `--pair-policy disabled` is policy state, not a BlueZ pairing
   refusal (a GATT app cannot enforce that — see Pairing and bonding).
 - ECG only: no ACC/PPI streams (their PMD types answer `NOT_SUPPORTED`;
-  the H10 supports ACC but its PMD frame format needs a documented source
-  before implementing).
+  the features bitmap advertises ACC like the strap, but its PMD frame format
+  needs a documented source before implementing). The vendor `6217ff4c` value
+  and the FEEE characteristics' payloads are likewise UNCONFIRMED (empty /
+  refused loudly, never guessed).
 - Synthetic waveform by default (recorded replay available), synthetic serial
   and system id, 130-sample/s ECG only (no other rates).
 - ATT MTU and connection parameters are the platform's answer, not the sim's.
@@ -458,7 +585,8 @@ answers and are never synthesized).
 | --- | --- |
 | HR flags `0x16`, RR in 1/1024 s, chest location `1` | SIG HRS 1.0 §3.3–§3.4 (`src/gatt_spec.rs`) |
 | Battery uint8 percent; DIS strings UTF-8; System ID 8 bytes | SIG BAS 1.1 §3.2; SIG DIS 1.1 (`src/gatt_spec.rs`) |
-| PMD response `[0xF0, op, type, status, more, params…]`, ECG frames `[0x00, tsNs u64 LE, 0x00, s24 LE µV]`, 130 Hz / 14 bit, feature bitmap ECG = 0x01, settings TLV, status codes | Polar BLE SDK `BlePMDClient` / `PmdControlPointResponse` / `PmdDataFrame` / `PmdSetting` / `PmdMeasurementType` (`src/gatt_spec.rs`, `examples-shared/driver/polar-pmd.ts`) |
+| PMD response `[0xF0, op, type, status, more, params…]`, ECG frames `[0x00, tsNs u64 LE, 0x00, s24 LE µV]`, 130 Hz / 14 bit, settings TLV, status codes | Polar BLE SDK `BlePMDClient` / `PmdControlPointResponse` / `PmdDataFrame` / `PmdSetting` / `PmdMeasurementType` (`src/gatt_spec.rs`, `examples-shared/driver/polar-pmd.ts`) |
+| GATT database (services, order, counts, properties, DIS hardware-before-firmware order), PMD feature bytes (`0f0500…`, ECG + ACC), `ALREADY_IN_STATE` on repeated start / idle stop, indication confirmations keeping the session | h10-capture fingerprints `fixtures/h10-fingerprints/` (all three capture hosts agree) |
 | Advertisement: Flags + 16-bit UUID list in AD, name in scan response | BlueZ 5.72 `src/advertising.c` layout (`src/advertisement.rs`) |
 | HR ~1 Hz cadence, PMD response latency, ECG frame jitter, advertising interval | capture `timings.*` — **all four UNCONFIRMED** (see below) |
 

@@ -2,6 +2,10 @@
 
 const { createConnectionSupervisor } = require('../src/public/connection-supervisor')
 const { BleError } = require('../src/public/errors')
+const { EVENT_VOCABULARY } = require('../src/backend-contract/event-vocabulary')
+const { IpcConnection } = require('../src/ipc/manager')
+const { mapIpcConnectionEvents } = require('../src/ipc/public-manager')
+const { broadcastConnectionEvents } = require('../src/public/ble-manager')
 
 function lifecycleEvents() {
   let closed = false
@@ -603,6 +607,165 @@ describe('public connection supervisor', () => {
     expect(supervisor.snapshot.state).toBe('stopped')
     await expect(supervisor.stop()).resolves.toMatchObject({ state: 'released' })
   })
+
+  // Finding F4: one vocabulary, same behaviour on every platform. The event
+  // table says an app-requested disconnect reconnects; the supervisor must
+  // make that decision whether the link beneath it is a reference-host
+  // connection or an IPC (Electron/Tauri) connection whose renderer
+  // delivered the release through the shared projection.
+  test.each([['reference host'], ['IPC (Electron/Tauri)']])(
+    'an app-requested disconnect reconnects on %s, per the event vocabulary',
+    async host => {
+      const entry = EVENT_VOCABULARY.find(row => row.event === 'requested-disconnect')
+      expect(entry.supervisor).toMatchObject({ context: 'lifecycle', decision: 'reconnect' })
+      expect(entry.names.lifecycle).toMatchObject({ current: 'disconnected', cause: 'requested-disconnect' })
+      const releasedEvent = {
+        kind: 'connection-lifecycle',
+        previous: 'connected',
+        current: entry.names.lifecycle.current,
+        cause: entry.names.lifecycle.cause,
+        connectionGeneration: 'generation-1',
+        sequence: 2
+      }
+
+      let releaseAppLink
+      let first
+      if (host === 'IPC (Electron/Tauri)') {
+        const queued = []
+        const waiters = []
+        let closed = false
+        const settle = () => {
+          while (waiters.length > 0 && (queued.length > 0 || closed)) {
+            const waiter = waiters.shift()
+            if (queued.length > 0) waiter.resolve({ done: false, value: queued.shift() })
+            else waiter.resolve({ done: true, value: undefined })
+          }
+        }
+        const hostEvents = {
+          [Symbol.asyncIterator]() {
+            return {
+              next() {
+                if (queued.length > 0) return Promise.resolve({ done: false, value: queued.shift() })
+                if (closed) return Promise.resolve({ done: true, value: undefined })
+                return new Promise(resolve => waiters.push({ resolve }))
+              },
+              return: async () => {
+                closed = true
+                settle()
+                return { done: true, value: undefined }
+              }
+            }
+          }
+        }
+        const subscription = {
+          events: hostEvents,
+          unsubscribe: async () => {
+            closed = true
+            settle()
+            return { state: 'released', failures: [] }
+          }
+        }
+        const ipcManager = {
+          bootstrap: { attachment: { attachmentId: 'attachment-1' } },
+          subscribeConnectionEvents: async () => subscription,
+          route: async command => {
+            if (command === 'connection.disconnect') return { state: 'released', failures: [] }
+            throw new Error(`unexpected route ${command}`)
+          },
+          retryUnresolvedAdmissionCleanup: async () => []
+        }
+        const base = new IpcConnection(ipcManager, 'handle-1', 'peer-1', 'connection-1', 'lease-1', 'generation-1')
+        const identity = {
+          attachmentId: 'attachment-1',
+          peerId: 'peer-1',
+          connectionId: 'connection-1',
+          ownerLeaseId: 'lease-1',
+          connectionGeneration: 'generation-1'
+        }
+        first = {
+          peer: { id: 'peer-1', name: null, rssi: null, reference: null, sources: [], lastAdvertisement: null },
+          lifecycleEvents: broadcastConnectionEvents(mapIpcConnectionEvents(base.events, identity)),
+          release: jest.fn(async () => base.release()),
+          disconnect: jest.fn(async () => base.disconnect()),
+          discover: jest.fn(async () => undefined)
+        }
+        releaseAppLink = () => base.disconnect()
+      } else {
+        const queue = [
+          {
+            kind: 'connection-lifecycle',
+            previous: 'connecting',
+            current: 'connected',
+            cause: 'connected',
+            connectionGeneration: 'generation-1',
+            sequence: 1
+          }
+        ]
+        let closed = false
+        let resolveNext
+        const pushable = {
+          [Symbol.asyncIterator]() {
+            return {
+              next: async () => {
+                if (queue.length > 0) return { done: false, value: queue.shift() }
+                if (closed) return { done: true, value: undefined }
+                return new Promise(resolve => {
+                  resolveNext = resolve
+                })
+              },
+              return: async () => {
+                closed = true
+                if (resolveNext !== undefined) resolveNext({ done: true, value: undefined })
+                return { done: true, value: undefined }
+              },
+              [Symbol.asyncIterator]() {
+                return this
+              }
+            }
+          },
+          push(value) {
+            queue.push(value)
+            if (resolveNext !== undefined) {
+              const resolve = resolveNext
+              resolveNext = undefined
+              resolve({ done: false, value: queue.shift() })
+            }
+          },
+          closeBare() {
+            closed = true
+            if (resolveNext !== undefined) {
+              const resolve = resolveNext
+              resolveNext = undefined
+              resolve({ done: true, value: undefined })
+            }
+          }
+        }
+        first = connection()
+        first.lifecycleEvents = pushable
+        releaseAppLink = async () => {
+          pushable.push({ ...releasedEvent })
+          pushable.closeBare()
+        }
+      }
+
+      const second = connection()
+      const ble = manager(first)
+      ble.connect.mockResolvedValueOnce(first).mockResolvedValue(second)
+      const supervisor = createConnectionSupervisor(ble, 'peer-1', {
+        retry: { initialDelayMs: 1, maximumDelayMs: 1, multiplier: 1, jitter: 0 }
+      })
+      supervisor.start()
+      for (let turn = 0; turn < 200 && supervisor.snapshot.state !== 'connected'; turn += 1) await wait(5)
+      expect(supervisor.snapshot.state).toBe('connected')
+      expect(ble.connect).toHaveBeenCalledTimes(1)
+
+      await releaseAppLink()
+      for (let turn = 0; turn < 400 && ble.connect.mock.calls.length < 2; turn += 1) await wait(5)
+      expect(ble.connect).toHaveBeenCalledTimes(2)
+      expect(first.release).toHaveBeenCalled()
+      await supervisor.stop()
+    }
+  )
 
   test('retains a late configure-session disposal failure after stop finalized', async () => {
     const configurePending = deferred()

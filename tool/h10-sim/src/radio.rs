@@ -14,7 +14,10 @@
 //! * Linux: [`BluerRadio`](crate::bluer_radio::BluerRadio) in
 //!   `src/bluer_radio.rs`, implemented with `bluer` 0.17.4 directly so every
 //!   `LEAdvertisement1` property stays under the sim's control and the GATT
-//!   application is registered before the advertisement.
+//!   application is registered before the advertisement. With
+//!   `--linux-advertising mgmt-legacy` the advertisement is instead the
+//!   sim's own kernel MGMT instance (`src/mgmt_socket.rs`); GATT stays on
+//!   bluetoothd.
 //!
 //! Deliberately not used anywhere: `btleplug` (central role only), `bluest`
 //! (no GATT server on macOS), raw `objc2-core-bluetooth` (would need a
@@ -45,7 +48,12 @@ use ble_peripheral_rust::{
 #[path = "bluer_radio.rs"]
 mod bluer_radio;
 #[cfg(target_os = "linux")]
+#[path = "mgmt_socket.rs"]
+mod mgmt_socket;
+#[cfg(target_os = "linux")]
 pub use self::bluer_radio::BluerRadio as PlatformRadio;
+#[cfg(target_os = "linux")]
+pub use self::mgmt_socket::require_net_admin;
 #[cfg(not(target_os = "linux"))]
 pub use self::CrateRadio as PlatformRadio;
 
@@ -79,6 +87,14 @@ pub enum RadioEvent {
         characteristic: String,
         subscribed: bool,
     },
+    /// A central confirmed an indication: the session stays up (BlueZ
+    /// reports confirmations on the notify fd; they are telemetry, not an
+    /// unsubscribe). Constructed only by the Linux backend.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    IndicationConfirmed {
+        service: String,
+        characteristic: String,
+    },
     Read {
         service: String,
         characteristic: String,
@@ -99,6 +115,7 @@ pub enum RadioEvent {
 pub enum CharProperty {
     Read,
     Write,
+    WriteWithoutResponse,
     Notify,
     Indicate,
 }
@@ -139,7 +156,12 @@ pub trait PeripheralRadio: Send {
     async fn start_advertising(&mut self, name: &str, uuids: &[Uuid]) -> Result<(), RadioError>;
     async fn stop_advertising(&mut self) -> Result<(), RadioError>;
     async fn add_service(&mut self, service: &ServiceSpec) -> Result<(), RadioError>;
-    async fn notify(&mut self, characteristic: Uuid, value: Vec<u8>) -> Result<(), RadioError>;
+    /// Sends a notification/indication to subscribed centrals. Returns whether
+    /// the value reached at least one live subscription session: `Ok(false)`
+    /// is the normal "nobody subscribed" case (stream ticks skip their log
+    /// line rather than reporting a notify that never happened), never an
+    /// error. A dead session is an `Err` — never a silent drop.
+    async fn notify(&mut self, characteristic: Uuid, value: Vec<u8>) -> Result<bool, RadioError>;
     /// Stages manufacturer data for the next advertisement. Default: no-op
     /// (Apple exposes no manufacturer-data peripheral API).
     async fn set_adv_manufacturer_data(
@@ -158,11 +180,25 @@ pub trait PeripheralRadio: Send {
     async fn disconnect_centrals(&mut self) -> Result<usize, RadioError> {
         Ok(0)
     }
+    /// Which path carries the advertisement and what it holds, for the log.
+    /// Default: nothing beyond the platform backend itself.
+    fn advertising_detail(&self) -> Option<serde_json::Value> {
+        None
+    }
+    /// True after an advertising failure that restarting cannot fix (the
+    /// process exits with `EXIT_ADVERTISING_UNAVAILABLE` instead of 1, so a
+    /// supervisor does not loop on it). Default: never.
+    fn advertising_unavailable(&self) -> bool {
+        false
+    }
 }
 
-/// Short-UUID declarations for the whole H10 surface. Initial values mirror the
-/// simulator config so backends that serve reads from the declaration agree
-/// with the event-driven answers in the main loop.
+/// Declarations for the whole H10 surface: services, order, characteristic
+/// order, properties and counts match the h10-capture fingerprints in
+/// `fixtures/h10-fingerprints/` exactly (180D, 180A, 180F, the `6217ff4b`
+/// vendor service, PMD, FEEE). Initial values mirror the simulator config so
+/// backends that serve reads from the declaration agree with the
+/// event-driven answers in the main loop.
 pub fn h10_services(config: &SimConfig) -> Result<Vec<ServiceSpec>, RadioError> {
     let read = || vec![CharPermission::Readable];
     let write = || vec![CharPermission::Writeable];
@@ -185,22 +221,15 @@ pub fn h10_services(config: &SimConfig) -> Result<Vec<ServiceSpec>, RadioError> 
             ],
         },
         ServiceSpec {
-            uuid: advertisement::short_uuid(gatt_spec::uuid16::BATTERY_SERVICE),
-            characteristics: vec![CharSpec {
-                uuid: advertisement::short_uuid(gatt_spec::uuid16::BATTERY_LEVEL),
-                properties: vec![CharProperty::Read, CharProperty::Notify],
-                permissions: read(),
-                initial_value: Some(gatt_spec::encode_battery_level(config.battery_percent)),
-            }],
-        },
-        ServiceSpec {
             uuid: advertisement::short_uuid(gatt_spec::uuid16::DEVICE_INFORMATION_SERVICE),
+            // The strap lists hardware revision (0x2A27) before firmware
+            // revision (0x2A26) — pinned by the fingerprints.
             characteristics: vec![
                 (gatt_spec::uuid16::MANUFACTURER_NAME, "Polar Electro Oy"),
                 (gatt_spec::uuid16::MODEL_NUMBER, "H10"),
                 (gatt_spec::uuid16::SERIAL_NUMBER, "SIM000001"),
-                (gatt_spec::uuid16::FIRMWARE_REVISION, "3.2.1"),
                 (gatt_spec::uuid16::HARDWARE_REVISION, "9"),
+                (gatt_spec::uuid16::FIRMWARE_REVISION, "3.2.1"),
                 (gatt_spec::uuid16::SOFTWARE_REVISION, "3.2.1"),
             ]
             .into_iter()
@@ -230,9 +259,40 @@ pub fn h10_services(config: &SimConfig) -> Result<Vec<ServiceSpec>, RadioError> 
                 uuid: advertisement::short_uuid(gatt_spec::uuid16::SYSTEM_ID),
                 properties: vec![CharProperty::Read],
                 permissions: read(),
-                initial_value: Some(gatt_spec::encode_system_id(1, [0x6B, 0x00, 0x00])),
+                initial_value: Some(gatt_spec::encode_system_id(
+                    config.system_id_manufacturer,
+                    config.system_id_oui,
+                )),
             }))
             .collect(),
+        },
+        ServiceSpec {
+            uuid: advertisement::short_uuid(gatt_spec::uuid16::BATTERY_SERVICE),
+            characteristics: vec![CharSpec {
+                uuid: advertisement::short_uuid(gatt_spec::uuid16::BATTERY_LEVEL),
+                properties: vec![CharProperty::Read, CharProperty::Notify],
+                permissions: read(),
+                initial_value: Some(gatt_spec::encode_battery_level(config.battery_percent)),
+            }],
+        },
+        ServiceSpec {
+            uuid: parse_uuid(gatt_spec::vendor::SERVICE)?,
+            characteristics: vec![
+                CharSpec {
+                    uuid: parse_uuid(gatt_spec::vendor::READ)?,
+                    properties: vec![CharProperty::Read],
+                    permissions: read(),
+                    // The value is UNCONFIRMED (no capture reads it): an
+                    // explicit empty placeholder, never a guessed payload.
+                    initial_value: Some(Vec::new()),
+                },
+                CharSpec {
+                    uuid: parse_uuid(gatt_spec::vendor::WRITE_INDICATE)?,
+                    properties: vec![CharProperty::WriteWithoutResponse, CharProperty::Indicate],
+                    permissions: write(),
+                    initial_value: None,
+                },
+            ],
         },
         ServiceSpec {
             uuid: parse_uuid(gatt_spec::pmd::SERVICE)?,
@@ -255,6 +315,33 @@ pub fn h10_services(config: &SimConfig) -> Result<Vec<ServiceSpec>, RadioError> 
                     uuid: parse_uuid(gatt_spec::pmd::DATA)?,
                     properties: vec![CharProperty::Notify],
                     permissions: Vec::new(),
+                    initial_value: None,
+                },
+            ],
+        },
+        ServiceSpec {
+            uuid: advertisement::short_uuid(gatt_spec::uuid16::POLAR_ADV_SERVICE),
+            characteristics: vec![
+                CharSpec {
+                    uuid: parse_uuid(gatt_spec::feee::CHAR_51)?,
+                    properties: vec![
+                        CharProperty::Write,
+                        CharProperty::WriteWithoutResponse,
+                        CharProperty::Notify,
+                    ],
+                    permissions: write(),
+                    initial_value: None,
+                },
+                CharSpec {
+                    uuid: parse_uuid(gatt_spec::feee::CHAR_52)?,
+                    properties: vec![CharProperty::Notify],
+                    permissions: Vec::new(),
+                    initial_value: None,
+                },
+                CharSpec {
+                    uuid: parse_uuid(gatt_spec::feee::CHAR_53)?,
+                    properties: vec![CharProperty::Write, CharProperty::WriteWithoutResponse],
+                    permissions: write(),
                     initial_value: None,
                 },
             ],
@@ -291,6 +378,7 @@ fn map_property(property: &CharProperty) -> CharacteristicProperty {
     match property {
         CharProperty::Read => CharacteristicProperty::Read,
         CharProperty::Write => CharacteristicProperty::Write,
+        CharProperty::WriteWithoutResponse => CharacteristicProperty::WriteWithoutResponse,
         CharProperty::Notify => CharacteristicProperty::Notify,
         CharProperty::Indicate => CharacteristicProperty::Indicate,
     }
@@ -382,10 +470,13 @@ impl PeripheralRadio for CrateRadio {
             .map_err(|error| RadioError(error.to_string()))
     }
 
-    async fn notify(&mut self, characteristic: Uuid, value: Vec<u8>) -> Result<(), RadioError> {
+    async fn notify(&mut self, characteristic: Uuid, value: Vec<u8>) -> Result<bool, RadioError> {
+        // CoreBluetooth stages the value in the backend even with no live
+        // subscriber, so delivery is always "accepted" here.
         self.inner
             .update_characteristic(characteristic, value)
             .await
+            .map(|()| true)
             .map_err(|error| RadioError(error.to_string()))
     }
 }
@@ -503,9 +594,95 @@ mod tests {
             &mut self,
             _characteristic: Uuid,
             _value: Vec<u8>,
-        ) -> Result<(), RadioError> {
-            Ok(())
+        ) -> Result<bool, RadioError> {
+            Ok(true)
         }
+    }
+
+    #[test]
+    fn h10_surface_matches_the_real_fingerprint_layout() {
+        use crate::advertisement::short_uuid;
+        use crate::gatt_spec::{feee, pmd, uuid16, vendor};
+        let services = h10_services(&SimConfig::default()).expect("H10 surface builds");
+        let uuids: Vec<String> = services
+            .iter()
+            .map(|service| service.uuid.to_string().to_lowercase())
+            .collect();
+        assert_eq!(
+            uuids,
+            vec![
+                short_uuid(uuid16::HEART_RATE_SERVICE).to_string(),
+                short_uuid(uuid16::DEVICE_INFORMATION_SERVICE).to_string(),
+                short_uuid(uuid16::BATTERY_SERVICE).to_string(),
+                vendor::SERVICE.to_lowercase(),
+                pmd::SERVICE.to_lowercase(),
+                short_uuid(uuid16::POLAR_ADV_SERVICE).to_string(),
+            ],
+            "service order and set match fixtures/h10-fingerprints (180D, 180A, 180F, 6217ff4b, PMD, FEEE)",
+        );
+        let counts: Vec<usize> = services
+            .iter()
+            .map(|service| service.characteristics.len())
+            .collect();
+        assert_eq!(counts, vec![2, 7, 1, 2, 2, 3]);
+        // Device Information lists hardware (0x2A27) before firmware (0x2A26).
+        let dis_shorts: Vec<u16> = services[1]
+            .characteristics
+            .iter()
+            .map(|characteristic| super::short_of(&characteristic.uuid).unwrap())
+            .collect();
+        assert_eq!(
+            dis_shorts,
+            vec![
+                uuid16::MANUFACTURER_NAME,
+                uuid16::MODEL_NUMBER,
+                uuid16::SERIAL_NUMBER,
+                uuid16::HARDWARE_REVISION,
+                uuid16::FIRMWARE_REVISION,
+                uuid16::SOFTWARE_REVISION,
+                uuid16::SYSTEM_ID,
+            ]
+        );
+        // The vendor service is read plus write-without-response/indicate.
+        assert_eq!(
+            services[3].characteristics[1].properties,
+            vec![CharProperty::WriteWithoutResponse, CharProperty::Indicate]
+        );
+        // The FEEE characteristics follow the PMD base UUID with the
+        // fingerprint's write/notify mix.
+        let feee_uuids: Vec<String> = services[5]
+            .characteristics
+            .iter()
+            .map(|characteristic| characteristic.uuid.to_string().to_lowercase())
+            .collect();
+        assert_eq!(
+            feee_uuids,
+            vec![
+                feee::CHAR_51.to_lowercase(),
+                feee::CHAR_52.to_lowercase(),
+                feee::CHAR_53.to_lowercase(),
+            ]
+        );
+        assert!(services[5].characteristics[0]
+            .properties
+            .contains(&CharProperty::WriteWithoutResponse));
+        assert!(services[5].characteristics[0]
+            .properties
+            .contains(&CharProperty::Notify));
+        assert_eq!(
+            services[5].characteristics[1].properties,
+            vec![CharProperty::Notify]
+        );
+        // Seven notify/indicate characteristics carry the seven CCCDs.
+        let cccd = services
+            .iter()
+            .flat_map(|service| &service.characteristics)
+            .filter(|characteristic| {
+                characteristic.properties.contains(&CharProperty::Notify)
+                    || characteristic.properties.contains(&CharProperty::Indicate)
+            })
+            .count();
+        assert_eq!(cccd, 7);
     }
 
     #[tokio::test]
@@ -520,5 +697,7 @@ mod tests {
             "a backend without the OS API must say so"
         );
         assert_eq!(radio.disconnect_centrals().await.unwrap(), 0);
+        assert_eq!(radio.advertising_detail(), None);
+        assert!(!radio.advertising_unavailable());
     }
 }

@@ -46,6 +46,24 @@ pub mod pmd {
     pub const DATA: &str = "FB005C82-02E7-F387-1CAD-8ACD2D8DF0C8";
 }
 
+/// Full 128-bit UUIDs of the second Polar vendor service and its two
+/// characteristics, pinned by the h10-capture fingerprints in
+/// `fixtures/h10-fingerprints/` (each characteristic has its own base UUID).
+pub mod vendor {
+    pub const SERVICE: &str = "6217FF4B-FB31-1140-AD5A-A45545D7ECF3";
+    pub const READ: &str = "6217FF4C-C8EC-B1FB-1380-3AD986708E2D";
+    pub const WRITE_INDICATE: &str = "6217FF4D-91BB-91D0-7E2A-7CD3BDA8A1F3";
+}
+
+/// Full 128-bit UUIDs of the Polar advertisement service's GATT characteristics
+/// (PMD base UUID), pinned by the same fingerprints. None is readable; their
+/// values are UNCONFIRMED (see README).
+pub mod feee {
+    pub const CHAR_51: &str = "FB005C51-02E7-F387-1CAD-8ACD2D8DF0C8";
+    pub const CHAR_52: &str = "FB005C52-02E7-F387-1CAD-8ACD2D8DF0C8";
+    pub const CHAR_53: &str = "FB005C53-02E7-F387-1CAD-8ACD2D8DF0C8";
+}
+
 /// Polar's Bluetooth SIG company identifier (real H10 advertises manufacturer
 /// data under it; the peripheral backends used here cannot emit manufacturer
 /// data, so this is a documented fidelity gap — see README).
@@ -65,14 +83,16 @@ pub const PMD_OP_STOP: u8 = 0x03;
 pub const PMD_MEASUREMENT_ECG: u8 = 0x00;
 pub const PMD_RESPONSE_CODE: u8 = 0xF0;
 
-/// PMD status codes (Polar SDK `PmdControlPointResponseCode`).
+/// PMD status codes (Polar SDK `PmdControlPointResponseCode`, same order as
+/// `RESPONSE_STATUS_NAMES` in `examples-shared/driver/polar-pmd.ts`).
 pub const PMD_STATUS_SUCCESS: u8 = 0x00;
 pub const PMD_STATUS_INVALID_OP: u8 = 0x01;
 pub const PMD_STATUS_INVALID_MEASUREMENT_TYPE: u8 = 0x02;
 pub const PMD_STATUS_NOT_SUPPORTED: u8 = 0x03;
+pub const PMD_STATUS_INVALID_LENGTH: u8 = 0x04;
+pub const PMD_STATUS_ALREADY_IN_STATE: u8 = 0x06;
 pub const PMD_STATUS_INVALID_RESOLUTION: u8 = 0x07;
 pub const PMD_STATUS_INVALID_SAMPLE_RATE: u8 = 0x08;
-pub const PMD_STATUS_INVALID_LENGTH: u8 = 0x04;
 
 /// Heart Rate Measurement flags (SIG HRS §3.3).
 /// Bit 2: sensor contact supported; bit 1: contact detected.
@@ -127,11 +147,16 @@ pub fn encode_battery_level(percent: u8) -> Vec<u8> {
     vec![percent.min(100)]
 }
 
-/// Encodes the PMD control-point feature read. Byte 1 is the SDK feature
-/// bitmap (ECG = 0x01); a third zero byte keeps SDK clients that index
-/// `data[2]` (see `PmdMeasurementType.fromByteArray`) safe.
+/// Encodes the PMD control-point feature read: the exact 15 bytes a real H10
+/// answers, pinned by the h10-capture fingerprints in
+/// `fixtures/h10-fingerprints/` (`0f050000…`, stable across all three capture
+/// hosts). Byte 1 is the SDK feature bitmap (`PmdMeasurementType.fromByteArray`):
+/// ECG = 0x01, ACC = 0x04 — the strap streams ECG; ACC streaming stays an
+/// UNCONFIRMED gap (see README).
 pub fn encode_pmd_features() -> Vec<u8> {
-    vec![0x00, 0x01, 0x00]
+    vec![
+        0x0F, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]
 }
 
 /// Encodes a PMD control-point response:
@@ -232,10 +257,18 @@ mod tests {
     }
 
     #[test]
-    fn pmd_features_advertise_ecg() {
+    fn pmd_features_match_the_real_strap_bytes() {
+        assert_eq!(
+            encode_pmd_features(),
+            vec![
+                0x0F, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00,
+            ],
+            "byte-identical to fixtures/h10-fingerprints/*/values.pmdFeatures.raw",
+        );
         let features = encode_pmd_features();
-        assert!(features.len() >= 2);
         assert_eq!(features[1] & 0x01, 0x01, "ECG bit must be set");
+        assert_eq!(features[1] & 0x04, 0x04, "ACC bit must be set");
     }
 
     #[test]

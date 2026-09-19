@@ -22,7 +22,6 @@ import {
   type BackendAttachment,
   type BackendConnection,
   type BackendEvent,
-  type BleCentralBackend,
   type ConnectionLease,
   type ConnectionOptions,
   type ConnectionState,
@@ -30,7 +29,7 @@ import {
   type ResourceCounters,
   type ScanLease
 } from '../../backend-contract/backend'
-import type { OwnerScanOptions, ScanOptions } from '../../backend-contract/advertisement'
+import type { ScanOptions } from '../../backend-contract/advertisement'
 import type { NormalizedScanQuery } from '../../backend-contract/scan-query'
 import { BUILT_IN_FEATURE_IDS } from '../../backend-contract/capabilities'
 import type { CapabilityDescriptor, FeatureId, FeatureState } from '../../backend-contract/capabilities'
@@ -177,20 +176,169 @@ export interface ReactNativeRustCoreManagerOptions {
 export async function createReactNativeRustCoreManager(
   options: ReactNativeRustCoreManagerOptions
 ): Promise<InternalBleManager<string, NativeBackendIdentity<string>>> {
-  const attached = await attachBackend(
-    options.backend as unknown as BleCentralBackend<string, NativeBackendIdentity<string>>,
-    options.coreCompatibility
-  )
+  // The backend already implements the central contract; no cast is needed.
+  const attached = await attachBackend(options.backend, options.coreCompatibility)
   const manager = new ReactNativeRustCoreManager(options, attached)
   manager.startBackendEventPump()
-  // Structural cast: the class below implements every public member of the
-  // internal manager shape without extending it (the constructor demands a
-  // `UnifiedBleCore`, which this path must never build). The prototype-parity
-  // test fails loudly on any drift.
-  return manager as unknown as InternalBleManager<string, NativeBackendIdentity<string>>
+  // The class below implements every public member of the internal manager
+  // shape without extending it (the constructor demands a `UnifiedBleCore`,
+  // which this path must never build). The shape is verified, not cast: the
+  // prototype-parity and bridge-shape tests fail loudly on any drift.
+  assertInternalManager(manager)
+  return manager
 }
 
 type ManagerState = 'ready' | 'destroying' | 'destroyed'
+
+/**
+ * The public surface this bridge guarantees for one internal handle: the
+ * methods it must expose and the properties it must carry. Each list must
+ * cover the whole prototype of the internal class it bridges (private
+ * members included — they ride the prototype too);
+ * `rust-core-bridge-shape.test.js` fails loudly on any drift, so a new
+ * member cannot slip past the runtime check below.
+ */
+export interface BridgeShape {
+  readonly methods: readonly string[]
+  readonly properties: readonly string[]
+}
+
+export const BRIDGE_SHAPES: Record<string, BridgeShape> = {
+  manager: {
+    methods: [
+      'onAttachmentAdvanced',
+      'securityBackend',
+      'supports',
+      'capability',
+      'capabilities',
+      'adoptRestoration',
+      'scan',
+      'planScan',
+      'connect',
+      'destroy',
+      'traces',
+      'traceDocument',
+      'monotonicNow',
+      'scheduleDeadline',
+      'localResourceCounters',
+      'adapterState',
+      'adapterStates',
+      'revokeForOwnerDestroy',
+      'transferOwnership',
+      'acceptsOwnershipTransfer',
+      'becomeOwnershipTransferDestination',
+      'relinquishOwnershipTransferSource',
+      'releaseOwnedResources',
+      'destroyBorrowingManager',
+      'destroyOwningManager'
+    ],
+    properties: [
+      'state',
+      'identity',
+      'attachmentId',
+      'managerId',
+      'clientId',
+      'ownerMode',
+      'attachedBackend',
+      'features'
+    ]
+  },
+  scanSession: {
+    methods: ['stop'],
+    properties: ['scanSessionId', 'leaseId', 'shareToken', 'observations']
+  },
+  connection: {
+    methods: [
+      'discover',
+      'rediscoverGatt',
+      'release',
+      'disconnect',
+      'readRssi',
+      'requestMtu',
+      'effectiveMtu',
+      'requestPriority',
+      'readPhy',
+      'requestPhy',
+      'maximumWriteLength',
+      'writeWithoutResponseReadiness'
+    ],
+    properties: ['peerId', 'connectionId', 'ownerLeaseId', 'connectionGeneration', 'events']
+  },
+  discoveredDatabase: {
+    methods: [
+      'monotonicNow',
+      'assertCurrent',
+      'scheduleDeadline',
+      'snapshot',
+      'read',
+      'readReceipt',
+      'write',
+      'writeWhenReady',
+      'maximumWriteLength',
+      'writeLong',
+      'readDescriptor',
+      'writeDescriptor',
+      'subscribe',
+      'resolveCharacteristicPath',
+      'resolveDescriptorPath'
+    ],
+    properties: ['path', 'changed']
+  },
+  subscription: {
+    methods: ['remove'],
+    properties: ['subscriptionId', 'path', 'values']
+  }
+}
+
+/**
+ * Verifies a bridged value carries the claimed surface instead of casting it
+ * into place: every method present and callable, every property present. A
+ * mismatch is a host-side shape defect, never a silent retype.
+ */
+function assertBridgeShape(value: unknown, shape: string, operation: string): void {
+  const expected = BRIDGE_SHAPES[shape]
+  if (expected === undefined || typeof value !== 'object' || value === null) {
+    throw contractError('lifecycle.invariant-violation', 'core', `${operation}.${shape}`)
+  }
+  for (const name of expected.methods) {
+    if (typeof Reflect.get(value, name) !== 'function') {
+      throw contractError('lifecycle.invariant-violation', 'core', `${operation}.${shape}.${name}`)
+    }
+  }
+  for (const name of expected.properties) {
+    if (Reflect.get(value, name) === undefined && !(name in value)) {
+      throw contractError('lifecycle.invariant-violation', 'core', `${operation}.${shape}.${name}`)
+    }
+  }
+}
+
+export function assertInternalManager(
+  value: unknown
+): asserts value is InternalBleManager<string, NativeBackendIdentity<string>> {
+  assertBridgeShape(value, 'manager', 'rust-core-manager.shape')
+}
+
+export function assertInternalScanSession(value: unknown): asserts value is InternalScanSession<string> {
+  assertBridgeShape(value, 'scanSession', 'rust-core-manager.shape')
+}
+
+export function assertInternalConnection(
+  value: unknown
+): asserts value is InternalConnection<string, NativeBackendIdentity<string>> {
+  assertBridgeShape(value, 'connection', 'rust-core-manager.shape')
+}
+
+export function assertInternalDiscoveredDatabase(
+  value: unknown
+): asserts value is InternalDiscoveredGattDatabase<string, NativeBackendIdentity<string>> {
+  assertBridgeShape(value, 'discoveredDatabase', 'rust-core-manager.shape')
+}
+
+export function assertInternalSubscription(
+  value: unknown
+): asserts value is InternalSubscription<string, NativeBackendIdentity<string>> {
+  assertBridgeShape(value, 'subscription', 'rust-core-manager.shape')
+}
 
 class ReactNativeRustCoreManager {
   private managerState: ManagerState = 'ready'
@@ -333,10 +481,7 @@ class ReactNativeRustCoreManager {
     try {
       lease =
         options.sharing.mode === 'owner'
-          ? await this.backend.scanner.start(
-              { ...options, sharing: options.sharing } as OwnerScanOptions<string, string>,
-              this.options.clientId
-            )
+          ? await this.backend.scanner.start({ ...options, sharing: options.sharing }, this.options.clientId)
           : await this.backend.scanner.join(options.sharing.sharedLeaseId, options.sharing.token, this.options.clientId)
     } catch (error) {
       throw error instanceof BackendContractError
@@ -358,8 +503,10 @@ class ReactNativeRustCoreManager {
       return record
     }
     // The lease already carries the scan-session surface (ids, observation
-    // stream, stop); the cast retypes it without wrapping behavior.
-    return { ...lease, stop: stopOnce } as unknown as InternalScanSession<string>
+    // stream, stop); the shape is verified, not cast, without wrapping behavior.
+    const session = { ...lease, stop: stopOnce }
+    assertInternalScanSession(session)
+    return session
   }
 
   planScan(query: NormalizedScanQuery): ScanPlan | null {
@@ -373,21 +520,22 @@ class ReactNativeRustCoreManager {
   ): Promise<InternalConnection<string, NativeBackendIdentity<string>>> {
     this.assertReady('connect')
     this.assertOperationAdmission(options, 'connect')
-    let lease: ConnectionLease<string, string, string>
-    try {
-      lease = await this.backend.connections.connect(peerId, this.options.clientId, options)
-    } catch (error) {
-      throw error instanceof BackendContractError
-        ? error
-        : contractError('connection.failed', 'connection', 'rust-core-manager.connect')
-    }
+    // A host bug below the contract (a TypeError, a malformed return) is the
+    // host's own answer, never a connect outcome: it surfaces as itself so
+    // the defect stays visible instead of wearing connection.failed.
+    const lease: ConnectionLease<string, string, string> = await this.backend.connections.connect(
+      peerId,
+      this.options.clientId,
+      options
+    )
     if (this.managerState !== 'ready') {
       await lease.release().catch(() => undefined)
       throw contractError('lifecycle.destroyed', 'core', 'connect')
     }
     const connection = new NativeConnection(this, lease)
     this.connections.set(String(lease.connection.connectionId), connection)
-    return connection as unknown as InternalConnection<string, NativeBackendIdentity<string>>
+    assertInternalConnection(connection)
+    return connection
   }
 
   destroy(): Promise<CleanupRecord> {
@@ -491,9 +639,13 @@ class ReactNativeRustCoreManager {
       stop: async () => {
         try {
           await watch.transitions.close()
-        } finally {
-          this.openAdapterWatches.delete(tracked)
+        } catch (error) {
+          // The native watch is still open; it stays tracked so a later
+          // stop() or destroy() retries it, and the debt is reported
+          // (PR210-09, same as a scan stop).
+          return { state: 'release-failed', failures: [asCleanupFailure('adapter', error)] }
         }
+        this.openAdapterWatches.delete(tracked)
         return { state: 'released', failures: [] }
       }
     }
@@ -582,10 +734,9 @@ class ReactNativeRustCoreManager {
     database: NativeGattDatabase
   ): Promise<InternalDiscoveredGattDatabase<string, NativeBackendIdentity<string>>> {
     const snapshot = await database.snapshot()
-    return new NativeDiscoveredGattDatabase(database, snapshot) as unknown as InternalDiscoveredGattDatabase<
-      string,
-      NativeBackendIdentity<string>
-    >
+    const discovered = new NativeDiscoveredGattDatabase(database, snapshot)
+    assertInternalDiscoveredDatabase(discovered)
+    return discovered
   }
 
   /** Releases scans, connections, and watches; the backend + session close at destroy. */
@@ -666,9 +817,15 @@ class ReactNativeRustCoreManager {
       }
     }
     for (const watch of [...this.openAdapterWatches]) {
-      await watch.close().catch(() => undefined)
+      try {
+        await watch.close()
+        this.openAdapterWatches.delete(watch)
+      } catch (error) {
+        // The native watch is still open; it stays tracked so a retried
+        // destroy reaches it again, and the debt is reported (PR210-09).
+        failures.push(asCleanupFailure('adapter', error))
+      }
     }
-    this.openAdapterWatches.clear()
     this.managerState = 'destroyed'
     return failures.length === 0 ? { state: 'released', failures: [] } : { state: 'release-failed', failures }
   }
@@ -737,17 +894,45 @@ class ReactNativeRustCoreManager {
             return
           }
           if (item.kind !== 'value') {
-            await this.releaseOwnedResources('backend-failure')
+            this.reportPumpCleanup(await this.releaseOwnedResources('backend-failure'), 'backend-event-terminal')
             return
           }
           assertBackendEvent(item.value)
           this.applyBackendEvent(item.value)
         }
       } catch {
-        await this.releaseOwnedResources('backend-failure').catch(() => undefined)
+        try {
+          this.reportPumpCleanup(await this.releaseOwnedResources('backend-failure'), 'backend-event-error')
+        } catch (error) {
+          console.error('[ReactNativeRustCoreManager] Backend-failure release trace failed:', error)
+        }
       }
     })()
     pump.catch(() => undefined)
+  }
+
+  /**
+   * A backend-failure release the application never asked for has no caller
+   * to return its record to, so every failure rides the bounded manager
+   * trace (resource `manager`, cause the failure's own code). A released
+   * record leaves no trace: there is no debt to report.
+   */
+  private reportPumpCleanup(record: CleanupRecord, operation: string): void {
+    if (record.state === 'released') {
+      return
+    }
+    for (const failure of record.failures) {
+      this.options.trace.record({
+        timestamp: this.options.now(),
+        resource: 'manager',
+        transition: 'backend-failure-release-failed',
+        operation,
+        cause: failure.error.code,
+        queuedOperations: 0,
+        dispatchedOperations: 0,
+        quarantinedOperations: 0
+      })
+    }
   }
 
   private applyBackendEvent(event: BackendEvent<string>): void {
@@ -1601,7 +1786,8 @@ class NativeDiscoveredGattDatabase {
     )
     const subscription = new NativeSubscription(this.database, backendSubscription)
     this.database.trackSubscription(subscription)
-    return subscription as unknown as InternalSubscription<string, NativeBackendIdentity<string>>
+    assertInternalSubscription(subscription)
+    return subscription
   }
 
   private resolveCharacteristicPath(path: PortableCurrentCharacteristicPath): CurrentCharacteristicPath {
@@ -1614,7 +1800,7 @@ class NativeDiscoveredGattDatabase {
     if (!characteristicPathMatches(characteristic.path, path)) {
       throw contractError('gatt.stale-handle', 'gatt', 'rust-core-discovered-gatt.resolve-characteristic-path')
     }
-    return characteristic.path as CurrentCharacteristicPath
+    return characteristic.path
   }
 
   private resolveDescriptorPath(path: PortableCurrentDescriptorPath): CurrentDescriptorPath {
@@ -1627,7 +1813,7 @@ class NativeDiscoveredGattDatabase {
     if (!descriptorPathMatches(descriptor.path, path)) {
       throw contractError('gatt.stale-handle', 'gatt', 'rust-core-discovered-gatt.resolve-descriptor-path')
     }
-    return descriptor.path as CurrentDescriptorPath
+    return descriptor.path
   }
 }
 

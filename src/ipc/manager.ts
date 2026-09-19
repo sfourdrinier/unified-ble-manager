@@ -218,7 +218,7 @@ export interface IpcWriteReceipt {
     readonly cause: string | null
   }
   readonly mode: 'with-response' | 'without-response'
-  readonly commitState: 'confirmed' | 'accepted' | 'unknown' | 'not-started'
+  readonly commitState: 'confirmed' | 'unknown' | 'not-started'
   readonly bytesSubmitted: number
 }
 
@@ -1232,6 +1232,10 @@ export class IpcConnection {
   private disconnectResult: Promise<CleanupRecord> | null = null
   private lifecycleReleased = false
   private connectionReleased = false
+  private appReleaseGate: Promise<boolean> | null = null
+  private resolveAppReleaseGate: ((released: boolean) => void) | null = null
+  private lastLifecycleSequence = 0
+  private lastLifecycleState = 'connected'
 
   constructor(
     private readonly manager: IpcBleManager,
@@ -1311,7 +1315,13 @@ export class IpcConnection {
         continue
       }
       const value = lifecycleEventValue(event)
+      this.noteLifecycleValue(value)
       this.lifecycleEvents.emit(value, estimateByteLength(value))
+    }
+    if (await this.awaitAppReleaseOutcome()) {
+      this.finishAppReleasedLifecycle()
+      this.invalidateDatabases().catch(() => undefined)
+      return
     }
     this.lifecycleEvents.closeWithReason('source-failed')
     this.invalidateDatabases().catch(() => undefined)
@@ -1415,6 +1425,91 @@ export class IpcConnection {
   private async disconnectInternal(): Promise<CleanupRecord> {
     const databaseCleanup = await this.invalidateDatabases()
     this.admissionAbort.abort()
+    this.armAppReleaseGate()
+    try {
+      return await this.disconnectReleased(databaseCleanup)
+    } finally {
+      this.settleAppReleaseGate()
+    }
+  }
+
+  /**
+   * The app asked for this link to go down, so the renderer reports the
+   * release in the vocabulary every host uses: the lifecycle stream delivers
+   * the final `disconnected` / `requested-disconnect` value (unless the host
+   * already delivered a terminal event itself) and ends `owner-released`.
+   * Without this, an unsubscribe-first disconnect ends the pump's loop bare
+   * and the supervisor reads `stream.closed` and stops, while the reference
+   * host reconnects on the same physical event.
+   */
+  private armAppReleaseGate(): void {
+    if (this.resolveAppReleaseGate !== null) return
+    let resolve: ((released: boolean) => void) | null = null
+    this.appReleaseGate = new Promise<boolean>(settled => {
+      resolve = settled
+    })
+    this.resolveAppReleaseGate = resolve
+  }
+
+  private settleAppReleaseGate(): void {
+    const resolve = this.resolveAppReleaseGate
+    this.resolveAppReleaseGate = null
+    const released = this.connectionReleased
+    if (resolve !== null) {
+      resolve(released)
+    }
+    if (released && this.appReleaseGate !== null) {
+      this.finishAppReleasedLifecycle()
+    }
+  }
+
+  private async awaitAppReleaseOutcome(): Promise<boolean> {
+    const gate = this.appReleaseGate
+    this.appReleaseGate = null
+    if (gate === null) return false
+    try {
+      return await gate
+    } catch {
+      return false
+    }
+  }
+
+  private finishAppReleasedLifecycle(): void {
+    if (this.lifecycleEvents.isTerminal()) return
+    if (this.lastLifecycleState !== 'disconnected' && this.lastLifecycleState !== 'lost') {
+      const sequence = this.lastLifecycleSequence + 1
+      const record = Object.freeze({
+        kind: 'connection-lifecycle',
+        schemaVersion: 2,
+        attachmentId: this.manager.bootstrap.attachment.attachmentId,
+        peerId: this.peerId,
+        connectionId: this._connectionId,
+        connectionGeneration: this._connectionGeneration,
+        ownerLeaseId: this._ownerLeaseId,
+        sequence,
+        previous: this.lastLifecycleState,
+        current: 'disconnected',
+        cause: 'requested-disconnect'
+      })
+      this.lifecycleEvents.emit(record, estimateByteLength(record))
+      this.lastLifecycleSequence = sequence
+      this.lastLifecycleState = 'disconnected'
+    }
+    this.lifecycleEvents.finishWithReason('owner-released')
+  }
+
+  private noteLifecycleValue(value: SerializableRecord): void {
+    const sequence: unknown = value.sequence
+    if (typeof sequence === 'number' && Number.isSafeInteger(sequence) && sequence > this.lastLifecycleSequence) {
+      this.lastLifecycleSequence = sequence
+    }
+    const current: unknown = value.current
+    if (typeof current === 'string' && isConnectionLifecycleState(current)) {
+      this.lastLifecycleState = current
+    }
+  }
+
+  private async disconnectReleased(databaseCleanup: CleanupRecord): Promise<CleanupRecord> {
     if (this.lifecycleSubscription === null) {
       this.lifecycleReleased = true
     }
@@ -2500,7 +2595,7 @@ function requiredWriteReceipt(
   const outcome = terminal.outcome
   const cause = terminal.cause
   const successful = outcome === 'succeeded'
-  const expectedCommitState = mode === 'with-response' ? 'confirmed' : 'accepted'
+  const expectedCommitState = mode === 'with-response' ? 'confirmed' : 'unknown'
   const knownCause = cause === null || (typeof cause === 'string' && BLE_ERROR_CODES.some(code => code === cause))
   if (
     (!successful && outcome !== 'failed') ||
@@ -2508,10 +2603,7 @@ function requiredWriteReceipt(
     (successful ? cause !== null || commitState !== expectedCommitState : cause === null) ||
     (!successful && commitState !== 'unknown' && commitState !== 'not-started') ||
     (mode !== 'with-response' && mode !== 'without-response') ||
-    (commitState !== 'confirmed' &&
-      commitState !== 'accepted' &&
-      commitState !== 'unknown' &&
-      commitState !== 'not-started') ||
+    (commitState !== 'confirmed' && commitState !== 'unknown' && commitState !== 'not-started') ||
     (requestedMode !== undefined && mode !== requestedMode) ||
     !Number.isSafeInteger(submitted) ||
     submitted < 0 ||

@@ -125,3 +125,8 @@ export type {
   ManagerScenarioController,
   ManagerScenarioExecutionContext
 } from './testing/scenarios/manager-scenario-executor'
+export { inspectElectronMainBleBindingForTests } from './electron/main-binding-inspection'
+export type {
+  ElectronMainBindingReleaseInspection,
+  ElectronMainBindingRendererReleaseSnapshot
+} from './electron/main-binding-inspection'

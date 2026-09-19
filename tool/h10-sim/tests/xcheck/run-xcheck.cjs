@@ -106,9 +106,11 @@ check('hr no-rr flags still parse', noRr.beatsPerMinute, vectors.hr_no_rr.bpm)
 check('hr no-rr has no intervals', noRr.rrIntervalsSeconds.length, 0)
 check('hr body location', hr.parseBodySensorLocation(Uint8Array.from(vectors.body_location)), 1)
 
-// 4. PMD feature read.
+// 4. PMD feature read (real-strap bytes: ECG + ACC).
 const features = pmd.parsePmdFeatures(Uint8Array.from(vectors.pmd_features))
 check('pmd features ecg', features.ecg, true)
+check('pmd features acc', features.acc, true)
+check('pmd features raw length', vectors.pmd_features.length, 15)
 
 // 5. PMD control-point responses (get-settings success, start success, forced error).
 for (const vector of vectors.pmd_responses) {

@@ -3003,3 +3003,37 @@ async fn finding_182_a_second_discover_replaces_the_snapshot() {
         "stale generation, not appended state"
     );
 }
+
+// Findings F1/F2 — one vocabulary across hosts: a successful
+// without-response write reports the contract word `unknown` (the same word
+// Electron/Node report for the same physical event; the contract
+// `WriteReceipt` allows only `confirmed`/`unknown`), and a with-response
+// write reports `confirmed`. The shared renderer decoder rejects anything
+// else as `protocol.malformed`, so a Tauri-only word would surface every
+// successful without-response write as a protocol error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn findings_f1_f2_write_receipt_commit_state_matches_the_contract_on_both_modes() {
+    let harness = Harness::new().await;
+    let link = harness.connect("peer-a").await;
+    let database = harness.discover(&link).await;
+    let write = |correlation: &'static str, mode: &'static str| {
+        let mut entries = Harness::gatt_entries(&link, &database, CONTROL_POINT);
+        entries.push(("mode", string(mode)));
+        harness.route("gatt.write", correlation, entries, Some(vec![0x5a; 3]))
+    };
+    let without_response = write("write-without-response", "without-response")
+        .await
+        .expect("a without-response write succeeds");
+    assert_eq!(text(&without_response, "mode"), "without-response");
+    assert_eq!(
+        text(&without_response, "commitState"),
+        "unknown",
+        "the contract word for an unconfirmed write, on every host"
+    );
+    assert_eq!(field(&without_response, "bytesSubmitted"), &number(3));
+    let with_response = write("write-with-response", "with-response")
+        .await
+        .expect("a with-response write succeeds");
+    assert_eq!(text(&with_response, "mode"), "with-response");
+    assert_eq!(text(&with_response, "commitState"), "confirmed");
+}

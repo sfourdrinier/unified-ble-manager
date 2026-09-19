@@ -627,6 +627,23 @@ previousAttachmentId, attachmentId, attachment}}`. The renderer/webview
 
 ### Fixed
 
+- **Write receipts, IPC release and reconnect (review wave R2).** A write
+  without response reports `commitState: 'unknown'` on every host, Tauri
+  included; a renderer receiving `'accepted'` rejects it as
+  `protocol.malformed`. An app-requested release over IPC (Electron renderer,
+  Tauri) delivers `disconnected` / `requested-disconnect` and then the
+  `owner-released` terminal, so `createConnectionSupervisor` makes the same
+  decision as on React Native. Electron main bounds renderer release retries
+  (30 × 100 ms); exhaustion reports a `release-failed` record and teardown
+  disarms pending retries.
+- **React Native manager cleanup is truthful.** A failing adapter-watch close
+  fails `destroy()`/`stop()` with `release-failed` (the watch is retained for a
+  retry) instead of reporting `released`. Errors thrown below `connect` that
+  are not contract outcomes surface as themselves rather than as
+  `connection.failed`. A failed release during a backend-failure teardown is
+  recorded on the manager trace. The bridge's structural casts are replaced
+  with verified shapes.
+
 - **Web discovery failed on descriptor-less characteristics and the chooser
   peer name was lost (finding 188).** Web Bluetooth's `getDescriptors()`
   rejects with `NotFoundError` when a characteristic has no descriptors

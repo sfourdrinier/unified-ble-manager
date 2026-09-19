@@ -225,6 +225,34 @@ impl SimState {
         gatt_spec::encode_pmd_features()
     }
 
+    /// Reads a 128-bit vendor characteristic by full UUID. Only the readable
+    /// `6217ff4c` answers; its value is UNCONFIRMED (no capture reads it), so
+    /// an explicit empty placeholder — never a guessed payload.
+    pub fn vendor_read(&self, uuid: &uuid::Uuid) -> Option<Vec<u8>> {
+        if uuid
+            .to_string()
+            .eq_ignore_ascii_case(gatt_spec::vendor::READ)
+        {
+            Some(Vec::new())
+        } else {
+            None
+        }
+    }
+
+    /// Whether a full-UUID characteristic is writable but has no behaviour
+    /// model (`6217ff4d`, FEEE `0x51`/`0x53`): writes there are refused
+    /// loudly as `unmodeled-vendor-write`, never absorbed.
+    pub fn vendor_writable(&self, uuid: &uuid::Uuid) -> bool {
+        let text = uuid.to_string();
+        [
+            gatt_spec::vendor::WRITE_INDICATE,
+            gatt_spec::feee::CHAR_51,
+            gatt_spec::feee::CHAR_53,
+        ]
+        .iter()
+        .any(|known| text.eq_ignore_ascii_case(known))
+    }
+
     /// Device Information / Battery read handler. `None` means the
     /// characteristic does not exist on an H10 (notably PnP ID 0x2A50).
     pub fn static_read(&self, char_uuid16: u16) -> Option<Vec<u8>> {
@@ -357,14 +385,25 @@ impl SimState {
                 &gatt_spec::encode_ecg_settings(),
                 PmdAction::None,
             ),
-            gatt_spec::PMD_OP_START => match validate_start_settings(&bytes[2..]) {
-                Ok(()) => {
-                    self.ecg_streaming = true;
-                    answer(gatt_spec::PMD_STATUS_SUCCESS, &[], PmdAction::StartEcg)
+            gatt_spec::PMD_OP_START => {
+                // Like the strap, starting twice is ALREADY_IN_STATE: the
+                // stream keeps running, no second start is emitted.
+                if self.ecg_streaming {
+                    return answer(gatt_spec::PMD_STATUS_ALREADY_IN_STATE, &[], PmdAction::None);
                 }
-                Err(status) => answer(status, &[], PmdAction::None),
-            },
+                match validate_start_settings(&bytes[2..]) {
+                    Ok(()) => {
+                        self.ecg_streaming = true;
+                        answer(gatt_spec::PMD_STATUS_SUCCESS, &[], PmdAction::StartEcg)
+                    }
+                    Err(status) => answer(status, &[], PmdAction::None),
+                }
+            }
             gatt_spec::PMD_OP_STOP => {
+                // Like the strap, stopping while idle is ALREADY_IN_STATE.
+                if !self.ecg_streaming {
+                    return answer(gatt_spec::PMD_STATUS_ALREADY_IN_STATE, &[], PmdAction::None);
+                }
                 self.ecg_streaming = false;
                 answer(gatt_spec::PMD_STATUS_SUCCESS, &[], PmdAction::StopEcg)
             }
@@ -602,6 +641,47 @@ mod tests {
                 false,
                 &[]
             ))
+        );
+    }
+
+    #[test]
+    fn vendor_read_serves_only_the_readable_characteristic() {
+        use std::str::FromStr;
+        let sim = state();
+        let read = uuid::Uuid::from_str(crate::gatt_spec::vendor::READ).expect("valid UUID");
+        assert_eq!(sim.vendor_read(&read), Some(Vec::new()));
+        let indicate =
+            uuid::Uuid::from_str(crate::gatt_spec::vendor::WRITE_INDICATE).expect("valid UUID");
+        assert_eq!(sim.vendor_read(&indicate), None);
+        assert!(sim.vendor_writable(&indicate));
+        assert!(!sim.vendor_writable(&read));
+        let char51 = uuid::Uuid::from_str(crate::gatt_spec::feee::CHAR_51).expect("valid UUID");
+        assert!(sim.vendor_writable(&char51));
+        assert_eq!(sim.vendor_read(&char51), None);
+    }
+
+    #[test]
+    fn repeated_start_and_idle_stop_report_already_in_state() {
+        let mut sim = state();
+        let start = [0x02, 0x00, 0x00, 0x01, 0x82, 0x00, 0x01, 0x01, 0x0E, 0x00];
+        let first = sim.handle_pmd_write(&start);
+        assert_eq!(first.action, PmdAction::StartEcg);
+        assert!(sim.ecg_streaming);
+        let repeated = sim.handle_pmd_write(&start);
+        assert_eq!(repeated.action, PmdAction::None, "no second start emitted");
+        assert_eq!(
+            repeated.indicate.as_ref().unwrap()[3],
+            gatt_spec::PMD_STATUS_ALREADY_IN_STATE
+        );
+        assert!(sim.ecg_streaming, "the stream keeps running");
+        let stop = sim.handle_pmd_write(&[0x03, 0x00]);
+        assert_eq!(stop.action, PmdAction::StopEcg);
+        assert!(!sim.ecg_streaming);
+        let idle_stop = sim.handle_pmd_write(&[0x03, 0x00]);
+        assert_eq!(idle_stop.action, PmdAction::None);
+        assert_eq!(
+            idle_stop.indicate.as_ref().unwrap()[3],
+            gatt_spec::PMD_STATUS_ALREADY_IN_STATE
         );
     }
 

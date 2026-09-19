@@ -3023,10 +3023,12 @@ impl BtleplugDispatcher {
             .await
             .map_err(|error| DispatchError::from_core(&error))?;
         let write_correlation = self.id("write-operation");
+        // The contract `WriteReceipt` allows only `confirmed`/`unknown`: an
+        // unconfirmed write reports `unknown` on every host (findings F1/F2).
         let commit_state = if mode == "with-response" {
             "confirmed"
         } else {
-            "accepted"
+            "unknown"
         };
         Ok(object([
             (

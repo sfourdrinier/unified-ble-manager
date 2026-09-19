@@ -5,6 +5,8 @@ mod driver;
 mod ecg;
 mod events;
 mod gatt_spec;
+mod linux_advertising;
+mod mgmt;
 mod profile;
 mod radio;
 mod sim;
@@ -25,6 +27,7 @@ use uuid::Uuid;
 
 use control::{apply_rates, ControlCommand, ControlReply, ControlRequest};
 use events::EventLog;
+use linux_advertising::LinuxAdvertising;
 
 fn usage() -> String {
     ("h10-sim: Polar H10 BLE peripheral simulator (test tool)\n\
@@ -44,6 +47,8 @@ fn usage() -> String {
          \x20 --ecg-file <path>      Replay recorded ECG (text, one integer µV per line @130 Hz)\n\
          \x20 --driver <url>        Join the test driver as a peripheral-sim host (ws://host:port/path)\n\
          \x20 --emit-driver-hello    Print the driver hello JSON and exit (no radio)\n\
+         \x20 --linux-advertising <mode>  Linux only: bluez (default, LEAdvertisement1 via bluetoothd)\n\
+         \x20                        or mgmt-legacy (MGMT_OP_ADD_ADVERTISING; needs CAP_NET_ADMIN, see README)\n\
          \n\
          \x20 A non-loopback --control-bind without a token refuses to start.\n\
          \x20 --emit-test-vectors    Print encoder vectors as JSON and exit (no radio)\n\
@@ -137,6 +142,7 @@ fn main() -> ExitCode {
     let mut compare_paths: Option<(String, String)> = None;
     let mut tolerance_p50 = compare::Tolerances::default().p50_relative;
     let mut tolerance_ms = compare::Tolerances::default().min_abs_ms;
+    let mut linux_advertising = LinuxAdvertising::default();
 
     let mut args = std::env::args().skip(1).peekable();
     while let Some(arg) = args.next() {
@@ -187,6 +193,16 @@ fn main() -> ExitCode {
                 "--emit-test-vectors" => emit_vectors = true,
                 "--driver" => driver_url = Some(value(&mut args, "--driver")?),
                 "--emit-driver-hello" => emit_driver_hello = true,
+                "--linux-advertising" => {
+                    linux_advertising =
+                        LinuxAdvertising::parse(&value(&mut args, "--linux-advertising")?)?;
+                    if !cfg!(target_os = "linux") {
+                        return Err(format!(
+                            "--linux-advertising applies to Linux only (this is {})",
+                            std::env::consts::OS
+                        ));
+                    }
+                }
                 "--emit-timing-defaults" => emit_timing_defaults = true,
                 "--timing-profile" => {
                     timing_profile_path = Some(value(&mut args, "--timing-profile")?)
@@ -322,6 +338,7 @@ fn main() -> ExitCode {
             control_token,
             driver_url,
             timing_profile,
+            linux_advertising,
         )
     }
 }
@@ -340,6 +357,7 @@ fn run(
     control_token: Option<String>,
     driver_url: Option<String>,
     timing_profile: timing::TimingProfile,
+    linux_advertising: LinuxAdvertising,
 ) -> ExitCode {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -358,13 +376,92 @@ fn run(
         control_token,
         driver_url,
         timing_profile,
+        linux_advertising,
     )) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("h10-sim: {error}");
-            ExitCode::FAILURE
+        Err(fatal) => {
+            eprintln!("h10-sim: {}", fatal.message);
+            ExitCode::from(fatal.exit)
         }
     }
+}
+
+/// A startup or runtime failure that ends the process, with its exit status:
+/// 1 by default, [`linux_advertising::EXIT_ADVERTISING_UNAVAILABLE`] when a
+/// restart cannot help.
+struct Fatal {
+    message: String,
+    exit: u8,
+}
+
+impl From<String> for Fatal {
+    fn from(message: String) -> Self {
+        Self { message, exit: 1 }
+    }
+}
+
+impl Fatal {
+    fn unavailable(message: String) -> Self {
+        Self {
+            message,
+            exit: linux_advertising::EXIT_ADVERTISING_UNAVAILABLE,
+        }
+    }
+}
+
+/// Resolves when the process is asked to stop: SIGINT everywhere, SIGTERM
+/// (systemd stop, `kill`) on Unix. Returns the signal name for the log.
+async fn shutdown_signal() -> Result<&'static str, String> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut terminate = signal(SignalKind::terminate())
+            .map_err(|error| format!("cannot watch SIGTERM: {error}"))?;
+        tokio::select! {
+            interrupted = tokio::signal::ctrl_c() => interrupted
+                .map(|()| "SIGINT")
+                .map_err(|error| format!("cannot watch SIGINT: {error}")),
+            _ = terminate.recv() => Ok("SIGTERM"),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .map(|()| "ctrl-c")
+            .map_err(|error| format!("cannot watch ctrl-c: {error}"))
+    }
+}
+
+/// Selects the Linux advertising path before anything is registered.
+/// `mgmt-legacy` without `CAP_NET_ADMIN` is refused with the exit status a
+/// supervisor does not restart on.
+#[cfg(target_os = "linux")]
+fn select_linux_advertising(
+    radio: &mut PlatformRadio,
+    mode: LinuxAdvertising,
+    log: &mut EventLog,
+) -> Result<(), Fatal> {
+    if mode == LinuxAdvertising::MgmtLegacy {
+        radio::require_net_admin().map_err(Fatal::unavailable)?;
+        let found = radio.use_mgmt_legacy().map_err(|error| error.to_string())?;
+        log.log(
+            "advertising-backend",
+            json!({"mode": mode.as_str(), "mgmt": found}),
+        );
+    } else {
+        log.log("advertising-backend", json!({"mode": mode.as_str()}));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn select_linux_advertising(
+    _radio: &mut PlatformRadio,
+    _mode: LinuxAdvertising,
+    _log: &mut EventLog,
+) -> Result<(), Fatal> {
+    Ok(())
 }
 
 /// Resolves the configured ECG source to replay samples (None = synthetic).
@@ -383,7 +480,8 @@ async fn serve(
     control_token: Option<String>,
     driver_url: Option<String>,
     timing_profile: timing::TimingProfile,
-) -> Result<(), String> {
+    linux_advertising: LinuxAdvertising,
+) -> Result<(), Fatal> {
     let mut log = EventLog::new();
     let mut sim = SimState::new(config);
     sim.ecg_replay = load_ecg_replay(&sim.config.ecg_source)?;
@@ -400,6 +498,7 @@ async fn serve(
         .map_err(|error| error.to_string())?;
 
     wait_powered(&mut radio, &mut log).await?;
+    select_linux_advertising(&mut radio, linux_advertising, &mut log)?;
 
     for service in h10_services(&sim.config).map_err(|error| error.to_string())? {
         radio
@@ -409,10 +508,16 @@ async fn serve(
     }
     log.log(
         "services-registered",
-        json!({"services": ["180D", "180F", "180A", "PMD"]}),
+        json!({"services": ["180D", "180A", "180F", "6217ff4b", "PMD", "FEEE"]}),
     );
 
-    start_advertising(&mut radio, &sim, &mut log).await?;
+    if let Err(message) = start_advertising(&mut radio, &sim, &mut log).await {
+        return Err(if radio.advertising_unavailable() {
+            Fatal::unavailable(message)
+        } else {
+            Fatal::from(message)
+        });
+    }
 
     let (control_tx, mut control_rx) = mpsc::channel::<ControlRequest>(64);
     let control_server = tokio::spawn(control::serve(
@@ -447,14 +552,29 @@ async fn serve(
     let boot = Instant::now();
     let tick = tokio::time::interval(Duration::from_millis(50));
     tokio::pin!(tick);
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
 
     loop {
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                log.log_simple("shutdown");
-                let _ = radio.stop_advertising().await;
+            signal = &mut shutdown => {
+                let signal = signal?;
+                log.log("shutdown", json!({"signal": signal}));
                 control_server.abort();
-                return Ok(());
+                let detail = radio.advertising_detail();
+                return match radio.stop_advertising().await {
+                    Ok(()) => {
+                        log.log("advertising-stopped", json!({"advertising": detail}));
+                        Ok(())
+                    }
+                    Err(error) => {
+                        log.log(
+                            "radio-error",
+                            json!({"op": "stop-advertising", "error": error.to_string()}),
+                        );
+                        Err(Fatal::from(format!("shutdown cleanup failed: {error}")))
+                    }
+                };
             }
             _ = tick.tick() => {
                 let now = Instant::now();
@@ -519,7 +639,10 @@ async fn start_advertising(
 ) -> Result<(), String> {
     match radio.is_advertising().await {
         Ok(true) => {
-            let _ = radio.stop_advertising().await;
+            radio
+                .stop_advertising()
+                .await
+                .map_err(|error| format!("replace the running advertisement: {error}"))?;
         }
         Ok(false) => {}
         Err(error) => {
@@ -562,7 +685,7 @@ async fn start_advertising(
     };
     log.log(
         "advertising-started",
-        json!({"name": fitted, "services": ["180D", "FEEE"], "advLen": sizes.adv_len, "scanRspLen": sizes.scan_rsp_len, "polarCompanyId": gatt_spec::POLAR_COMPANY_ID, "manufacturerData": manufacturer_data}),
+        json!({"name": fitted, "services": ["180D", "FEEE"], "advLen": sizes.adv_len, "scanRspLen": sizes.scan_rsp_len, "polarCompanyId": gatt_spec::POLAR_COMPANY_ID, "manufacturerData": manufacturer_data, "advertising": radio.advertising_detail()}),
     );
     Ok(())
 }
@@ -574,7 +697,10 @@ async fn send_hr(radio: &mut PlatformRadio, sim: &mut SimState, log: &mut EventL
     let payload = sim.hr_payload();
     let uuid = advertisement::short_uuid(gatt_spec::uuid16::HEART_RATE_MEASUREMENT);
     match radio.notify(uuid, payload.clone()).await {
-        Ok(()) => log.log("hr-notify", json!({"bpm": sim.config.bpm})),
+        // With no subscriber there is no delivery to report; a dead session
+        // is loud below.
+        Ok(true) => log.log("hr-notify", json!({"bpm": sim.config.bpm})),
+        Ok(false) => {}
         Err(error) => log.log(
             "radio-error",
             json!({"op": "hr-notify", "error": error.to_string()}),
@@ -589,10 +715,11 @@ async fn send_battery(radio: &mut PlatformRadio, sim: &SimState, log: &mut Event
     let payload = gatt_spec::encode_battery_level(sim.config.battery_percent);
     let uuid = advertisement::short_uuid(gatt_spec::uuid16::BATTERY_LEVEL);
     match radio.notify(uuid, payload).await {
-        Ok(()) => log.log(
+        Ok(true) => log.log(
             "battery-notify",
             json!({"percent": sim.config.battery_percent}),
         ),
+        Ok(false) => {}
         Err(error) => {
             log.log(
                 "radio-error",
@@ -628,10 +755,11 @@ async fn send_ecg(
     let frame = gatt_spec::encode_ecg_frame(timestamp_ns, &samples);
     let uuid = Uuid::parse_str(gatt_spec::pmd::DATA).unwrap_or_else(|_| Uuid::nil());
     match radio.notify(uuid, frame.clone()).await {
-        Ok(()) => log.log(
+        Ok(true) => log.log(
             "ecg-notify",
             json!({"samples": samples.len(), "bytes": frame.len(), "timestampNs": timestamp_ns.to_string()}),
         ),
+        Ok(false) => {}
         Err(error) => {
             log.log("radio-error", json!({"op": "ecg-notify", "error": error.to_string()}));
         }
@@ -666,6 +794,15 @@ async fn handle_radio(
                 } else {
                     "unsubscribed"
                 },
+                json!({"service": service, "characteristic": characteristic}),
+            );
+        }
+        RadioEvent::IndicationConfirmed {
+            service,
+            characteristic,
+        } => {
+            log.log(
+                "indication-confirmed",
                 json!({"service": service, "characteristic": characteristic}),
             );
         }
@@ -709,7 +846,7 @@ fn read_answer(sim: &SimState, uuid: &Uuid, offset: u64) -> radio::RadioReadAnsw
     } else {
         match short_of(uuid) {
             Some(short) => sim.static_read(short),
-            None => None,
+            None => sim.vendor_read(uuid),
         }
     };
     match full.and_then(|value| slice_at(&value, offset)) {
@@ -733,9 +870,16 @@ async fn write_request(
     let control_point =
         Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap_or_else(|_| Uuid::nil());
     if *uuid != control_point {
+        // Writable vendor characteristics (6217ff4d, FEEE 0x51/0x53) have no
+        // behaviour model: the write is refused loudly, never absorbed.
+        let reason = if sim.vendor_writable(uuid) {
+            "unmodeled-vendor-write"
+        } else {
+            "not-writable"
+        };
         log.log(
             "write-rejected",
-            json!({"service": service, "reason": "not-writable"}),
+            json!({"service": service, "reason": reason}),
         );
         return false;
     }
@@ -746,12 +890,24 @@ async fn write_request(
             // The measured PMD response latency, once a capture confirmed
             // it; immediate by default so behaviour is unchanged.
             timing.pmd_response_delay().await;
-            if let Err(error) = radio.notify(control_point, response.clone()).await {
-                log.log(
-                    "radio-error",
-                    json!({"op": "pmd-indicate", "error": error.to_string()}),
-                );
-                return false;
+            // Awaited: a lost indication surfaces here instead of timing out
+            // the central 5 s later.
+            match radio.notify(control_point, response.clone()).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    log.log(
+                        "radio-error",
+                        json!({"op": "pmd-indicate", "error": "no live indication session"}),
+                    );
+                    return false;
+                }
+                Err(error) => {
+                    log.log(
+                        "radio-error",
+                        json!({"op": "pmd-indicate", "error": error.to_string()}),
+                    );
+                    return false;
+                }
             }
             log.log(
                 "pmd-command",
@@ -911,11 +1067,12 @@ async fn set_advertising(
         start_advertising(radio, sim, log).await?;
         Ok(ControlReply::ok())
     } else {
+        let detail = radio.advertising_detail();
         radio
             .stop_advertising()
             .await
             .map_err(|error| error.to_string())?;
-        log.log_simple("advertising-stopped");
+        log.log("advertising-stopped", json!({"advertising": detail}));
         Ok(ControlReply::ok())
     }
 }
@@ -925,10 +1082,10 @@ async fn drop_link(
     sim: &mut SimState,
     log: &mut EventLog,
 ) -> Result<ControlReply, String> {
-    radio
-        .stop_advertising()
-        .await
-        .map_err(|error| error.to_string())?;
+    // A simulated link loss drops the link, not the peripheral: advertising
+    // and the GATT database stay exactly as they were, so centrals see a
+    // lifecycle loss (peer-link-loss) with no Service Changed, and can
+    // reconnect immediately — like walking back into range of a real H10.
     sim.ecg_streaming = false;
     // Genuine disconnect where the backend has the API: BlueZ drops every
     // connected central via Device1.Disconnect (counted below). CoreBluetooth
@@ -939,8 +1096,9 @@ async fn drop_link(
         .map_err(|error| error.to_string())?;
     log.log("link-dropped", json!({"disconnected": dropped}));
     Ok(ControlReply::ok_note(format!(
-        "advertising stopped, ECG halted, {dropped} central(s) disconnected \
-         (BlueZ disconnects via Device1.Disconnect; on CoreBluetooth an \
-         already-connected central stays connected until it disconnects)"
+        "ECG halted, {dropped} central(s) disconnected; advertising and the \
+         GATT database are unchanged (BlueZ disconnects via \
+         Device1.Disconnect; on CoreBluetooth an already-connected central \
+         stays connected until it disconnects)"
     )))
 }

@@ -382,7 +382,7 @@ rules as a characteristic.
 | --- | --- |
 | read | One terminal owned byte result or typed error, with the platform's provenance: `read-response` when the platform attributed the value to this read's ATT response, `read-or-notification` when the platform reports read responses and notifications through one callback and the characteristic could notify when the value arrived (CoreBluetooth). A read on a notifying characteristic is admitted on every platform; reads of one characteristic complete in request order; a value that may be a notification is still delivered to subscribers. A platform never reports `read-response` for a value it cannot attribute. A cached value is returned only when the caller explicitly requested a declared cache policy and the result labels its source. |
 | write with response | Success requires the backend's protocol-defined completion acknowledgement. |
-| write without response | Success means the backend accepted the complete input into its bounded transport submission boundary, not that a peer application consumed it. |
+| write without response | Success means the backend accepted the complete input into its bounded transport submission boundary, not that a peer application consumed it. The receipt's `commitState` is `unknown` on every host (the peer never confirms). |
 | long write | Validate support and negotiated maximum; segment deterministically; on failure report committed/unknown state and never claim atomicity without evidence. |
 | descriptor read/write | Same as characteristic I/O, including full descriptor occurrence path. |
 | MTU request | Return effective inbound/outbound payload limits, requested size, and the source of each limit. |
