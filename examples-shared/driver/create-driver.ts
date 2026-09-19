@@ -10,6 +10,7 @@ import { ScenarioRegistry, type ScenarioRuntime, type StopAllReport } from './sc
 import { BackgroundScenario } from './scenarios/background.ts'
 import { DeviceInfoScenario } from './scenarios/device-info.ts'
 import { EcgScenario } from './scenarios/ecg.ts'
+import { LiveDashboardScenario } from './scenarios/live-dashboard.ts'
 import { H10CaptureScenario } from './scenarios/h10-capture.ts'
 import { H10StreamScenario } from './scenarios/heart-rate.ts'
 import { LinkLossScenario } from './scenarios/link-loss.ts'
@@ -27,7 +28,8 @@ export const SCENARIO_IDS = [
   'ecg',
   'background',
   'restoration',
-  'h10-capture'
+  'h10-capture',
+  'live-dashboard'
 ] as const
 
 export function createScenarioRegistry(host: DriverHost): ScenarioRegistry {
@@ -40,7 +42,8 @@ export function createScenarioRegistry(host: DriverHost): ScenarioRegistry {
     new EcgScenario(host),
     new BackgroundScenario(host),
     new RestorationScenario(host),
-    new H10CaptureScenario(host)
+    new H10CaptureScenario(host),
+    new LiveDashboardScenario(host)
   ])
 }
 

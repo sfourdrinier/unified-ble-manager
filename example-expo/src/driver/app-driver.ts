@@ -10,7 +10,7 @@
 
 import { AppState, Platform, TurboModuleRegistry, type AppStateStatus, type TurboModule } from 'react-native'
 import { resolveExpoDriverPlatform } from './expo-driver-platform.ts'
-import { createExpoBleManager, type ExpoBleManager } from 'unified-ble-manager/expo'
+import { createExpoBleManager, type BleReadinessAction, type ExpoBleManager } from 'unified-ble-manager/expo'
 import ubmPackage from 'unified-ble-manager/package.json'
 import {
   DRIVER_PORT,
@@ -68,28 +68,61 @@ function appBuild(): JsonObject {
 }
 
 /**
- * Android cannot tell a never-asked permission from a denied one, so both
- * read as `denied`. Ask first; the system prompt returns at once without
- * showing anything when the user already said "don't ask".
+ * Follows the readiness actions the library returns instead of assuming one
+ * platform's flow (finding 179): a permission action performs the system
+ * prompt through `manager.permissions.request` on every platform — Android
+ * cannot tell a never-asked permission from a denied one, and Apple prompts
+ * on request — and any other action names what the operator must do, because
+ * no application API performs it (settings screens, the OS Bluetooth alert,
+ * a rebuild). The loop is bounded: a prompt that never resolves the state
+ * fails instead of asking forever.
  */
 async function prepareExpo(manager: ExpoBleManager, report: HostReport): Promise<void> {
-  const readiness = await manager.readiness()
-  report('readiness', { state: readiness.state, actions: toJsonValue(readiness.actions), adapter: toJsonValue(readiness.adapter) })
-  if (readiness.state === 'ready') return
-  if (readiness.adapter.authorization !== 'granted') {
-    const result = await manager.permissions.request({ purpose: 'scan-and-connect' })
-    report('permission-request', toJsonObject(result))
-    if (result.denied.length > 0) {
+  for (let round = 0; round < 3; round += 1) {
+    const readiness = await manager.readiness()
+    report('readiness', { state: readiness.state, actions: toJsonValue(readiness.actions), adapter: toJsonValue(readiness.adapter) })
+    if (readiness.state === 'ready') return
+    const permission = readiness.actions.find(action => action.kind === 'request-permission')
+    if (permission !== undefined && permission.permission === 'bluetooth') {
+      const result = await manager.permissions.request({ purpose: 'scan-and-connect' })
+      report('permission-request', toJsonObject(result))
+      if (result.denied.length > 0) {
+        throw new ScenarioError(
+          'scenario.permission-denied',
+          `Bluetooth permission denied (${result.denied.join(', ')}); open ${result.recommendedSettingsTarget ?? 'app'} settings to grant it`
+        )
+      }
+      continue
+    }
+    if (readiness.actions.length === 0) {
       throw new ScenarioError(
-        'scenario.permission-denied',
-        `Bluetooth permission denied (${result.denied.join(', ')}); open ${result.recommendedSettingsTarget ?? 'app'} settings to grant it`
+        'scenario.bluetooth-not-ready',
+        `Bluetooth is not ready: ${readiness.state} (no action offered; retry once the adapter settles)`
       )
     }
+    throw new ScenarioError(
+      'scenario.bluetooth-not-ready',
+      `Bluetooth is not ready: ${readiness.state} (${readiness.actions.map(describeReadinessAction).join('; ')})`
+    )
   }
-  const after = await manager.readiness()
-  report('readiness', { state: after.state, actions: toJsonValue(after.actions), adapter: toJsonValue(after.adapter) })
-  if (after.state !== 'ready') {
-    throw new ScenarioError('scenario.bluetooth-not-ready', `Bluetooth is not ready: ${after.state} (${after.actions.map(action => action.kind).join(', ')})`)
+  throw new ScenarioError(
+    'scenario.bluetooth-not-ready',
+    'Bluetooth permission did not resolve after repeated prompts.'
+  )
+}
+
+function describeReadinessAction(action: BleReadinessAction): string {
+  switch (action.kind) {
+    case 'request-permission':
+      return `grant ${action.permission} permission`
+    case 'open-settings':
+      return `open ${action.target} settings`
+    case 'enable-bluetooth':
+      return 'turn Bluetooth on in the system UI'
+    case 'create-development-build':
+      return 'run in a development build'
+    case 'rebuild-native-app':
+      return `rebuild the native app (${action.reason})`
   }
 }
 

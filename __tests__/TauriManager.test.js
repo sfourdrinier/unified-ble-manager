@@ -22,9 +22,9 @@ function negotiated(axis) {
   return { axis, selected, localRange: range, remoteRange: range }
 }
 
-function capabilityDescriptor(id, scenario, state = 'limited') {
+function capabilityDescriptor(id, scenario, state = 'limited', limitationCode = null) {
   const limitation = {
-    code: state === 'limited' ? 'deterministic-only' : 'not-implemented',
+    code: limitationCode ?? (state === 'limited' ? 'deterministic-only' : 'not-implemented'),
     explanation:
       state === 'limited'
         ? 'The fixture exposes deterministic host evidence only.'
@@ -61,18 +61,26 @@ function capabilitySnapshot(backendGeneration) {
     ['connection:direct', 'connection.lease-joins-borrowing-transfer-and-revocation'],
     ['connection:rssi', 'connection.rssi-and-att-mtu-capability-contract'],
     ['gatt:descriptors', 'gatt.descriptor-discovery-read-write'],
-    ['gatt:indications', 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation']
+    ['gatt:indications', 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation'],
+    // Finding 190b (owner decision J): Tauri advertises max-write and
+    // long-write like the desktop core over the same Rust core.
+    ['gatt:maximum-write-length', 'gatt.maximum-write-length'],
+    ['gatt:long-write', 'gatt.long-write'],
+    // Finding 190b: the effective MTU stays unsupported, but with the
+    // desktop core's own reason instead of a bare not-implemented.
+    ['connection:effective-mtu', 'connection.rssi-and-att-mtu-capability-contract', 'unsupported', 'effective-mtu-boundary-unavailable']
   ]
-  const metadata = new Map(entries)
+  const metadata = new Map(entries.map(([id, scenario, state = 'limited', limitationCode = null]) => [id, { scenario, state, limitationCode }]))
   return {
     schemaVersion: 2,
     backendGeneration,
     descriptors: Object.values(BUILT_IN_FEATURE_IDS).map(id => {
-      const scenario = metadata.get(id)
+      const meta = metadata.get(id)
       return capabilityDescriptor(
         id,
-        scenario ?? 'capability.truth-limits-evidence-and-binding',
-        scenario === undefined ? 'unsupported' : 'limited'
+        meta?.scenario ?? 'capability.truth-limits-evidence-and-binding',
+        meta?.state ?? 'unsupported',
+        meta?.limitationCode ?? null
       )
     })
   }
@@ -194,8 +202,9 @@ describe('Tauri v2 public manager', () => {
     const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
     const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
 
-    expect(manager.capabilities.supports('gatt:maximum-write-length')).toBe(false)
-    expect(manager.capabilities.supports('gatt:long-write')).toBe(false)
+    // Finding 190b (owner decision J): advertised like the desktop core.
+    expect(manager.capabilities.supports('gatt:maximum-write-length')).toBe(true)
+    expect(manager.capabilities.supports('gatt:long-write')).toBe(true)
     await expect(manager.connect('peer-1', { intent: 'when-available' })).rejects.toMatchObject({
       code: 'capability.unsupported'
     })
@@ -207,6 +216,72 @@ describe('Tauri v2 public manager', () => {
     })
     expect(invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'connection.connect')).toBe(false)
     await manager.destroy()
+  })
+
+  test('finding 190b: maximum-write-length is measured through IPC while effective MTU keeps the desktop reason', async () => {
+    const invoke = jest.fn(async (_command, args) => {
+      const request = args.request
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'event.ack') return { kind: 'event.ack' }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      const { command, payload } = request.envelope
+      if (command === 'connection.connect') {
+        return {
+          kind: 'route',
+          payload: {
+            handle: 'connection-1',
+            connectionId: 'connection-id-1',
+            ownerLeaseId: 'tauri-lease-1',
+            peerId: 'polar-h10',
+            connectionGeneration: 'generation-1'
+          }
+        }
+      }
+      if (command === 'connection.events.subscribe') {
+        return {
+          kind: 'route',
+          payload: {
+            handle: 'connection-events-ipc-1',
+            connectionId: 'connection-id-1',
+            connectionGeneration: 'generation-1',
+            eventSchemaVersion: 2
+          }
+        }
+      }
+      if (command === 'connection.events.ready') return { kind: 'route', payload: { state: 'ready' } }
+      if (command === 'connection.maximum-write-length') {
+        expect(payload.mode).toBe('with-response')
+        return { kind: 'route', payload: { bytes: 512 } }
+      }
+      if (command === 'connection.events.unsubscribe' || command === 'connection.disconnect') {
+        return { kind: 'route', payload: { state: 'released', failures: [] } }
+      }
+      throw new Error(`unexpected route ${command}`)
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+    const effectiveMtu = manager.capabilities.get('connection:effective-mtu')
+    expect(effectiveMtu).toMatchObject({ state: 'unsupported' })
+    expect(effectiveMtu.limitations.map(limitation => limitation.code)).toEqual([
+      'effective-mtu-boundary-unavailable',
+      'ipc-renderer-control-unavailable'
+    ])
+
+    const connection = await manager.connect('polar-h10')
+    await expect(connection.controls.maximumWriteLength('with-response')).resolves.toMatchObject({
+      state: 'measured',
+      mode: 'with-response',
+      maximumWriteLength: 512
+    })
+    expect(invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'connection.maximum-write-length')).toBe(
+      true
+    )
+    await expect(connection.controls.effectiveMtu()).rejects.toMatchObject({
+      code: 'capability.unsupported',
+      platform: expect.objectContaining({ code: 'effective-mtu-boundary-unavailable' })
+    })
+    await expect(connection.disconnect()).resolves.toMatchObject({ state: 'released' })
+    await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
   })
 
   test('does not discover GATT when lifecycle admission fails', async () => {

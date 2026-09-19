@@ -89,6 +89,32 @@ false, the plugin does not manage that feature declaration.
 
 The plugin never requests runtime permission during import or prebuild.
 
+### runtime permission prompt
+
+`manager.permissions.request({ purpose: 'scan-and-connect' })` performs the
+readiness `request-permission` action on every platform and reports the same
+shape: `{ requested, granted, denied, recommendedSettingsTarget }`.
+
+- Android shows the runtime prompt (`BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT` on
+  API 31+, legacy location below) and answers at once when decided.
+- Apple (iOS and tvOS) presents the CoreBluetooth prompt on request: the
+  process central is allocated by the request itself, never at startup, so
+  reading `manager.readiness()` never prompts. A decided authorization
+  answers at once; the request waits for the user's decision otherwise, and
+  accepts an optional `timeoutMs` and `signal` (`operation.timed-out` /
+  `operation.aborted`; without them it waits like bonding). A restriction
+  (parental controls/MDM) is genuinely unpromptable and refuses
+  `capability.unsupported` with its reason instead of a denial, matching the
+  `unavailable` readiness it maps to.
+- Apple decides from `CBManager.authorization` (iOS 13.1+, tvOS 13.0+): the
+  class property reads the state without allocating a manager, allocation
+  prompts while undecided, and updates arrive via
+  `centralManagerDidUpdateState`. The prompt needs the managed
+  `NSBluetoothAlwaysUsageDescription` (`bluetoothAlways` above).
+- With a restoration id configured the central is allocated at startup, as
+  `willRestoreState` requires, and the prompt may appear there; without one
+  it waits for the first explicit need.
+
 The Expo host also exposes an Android-only Companion Device Manager ceremony:
 `ble.association.associate({ name, serviceUuid })`. It launches Android system
 UI and returns an `associated` peer-directory record. Association is not a

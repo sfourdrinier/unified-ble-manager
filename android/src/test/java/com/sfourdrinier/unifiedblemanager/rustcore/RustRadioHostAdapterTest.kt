@@ -432,6 +432,28 @@ class RustRadioHostAdapterTest {
   }
 
   @Test
+  fun cccdWriteInternalErrorKeepsStatusForCallerRetry() {
+    // Finding 183: status 129 (GATT_INTERNAL_ERROR) on a submitted CCCD
+    // write is the stack's transient glitch, not a stale Gatt or a link
+    // loss. The classification keeps the GATT status identity (Rust reports
+    // platform.failure caller-decides); it must never become not-connected.
+    val failure = RustRadioHostAdapter.classify(AndroidGattOperationFailure("cccd-write", 129))
+    assertEquals(RadioFailureKind.GATT_STATUS, failure.kind)
+    assertEquals(129, failure.gattStatus)
+    assertTrue(failure.dispatched)
+  }
+
+  @Test
+  fun cccdWriteInternalErrorReachesCoreWithStatus() {
+    connect()
+    radio.characteristics[heartRate] = CharacteristicFacts(0x10, true)
+    adapter.enableNotifications(1, peer, HR_SERVICE, 0, HR_MEASUREMENT, 0, 42, null, null)
+    radio.answer("notify:$HR_MEASUREMENT:true:notification", Result.failure(AndroidGattOperationFailure("cccd-write", 129)))
+    events().onNotification(heartRate, byteArrayOf(1))
+    assertEquals(listOf("failure:1:gatt-status:129", "dropped:notification"), core.calls)
+  }
+
+  @Test
   fun linkLossAndServicesChangedEndEnablements() {
     connect()
     radio.characteristics[heartRate] = CharacteristicFacts(0x10, true)

@@ -6,6 +6,24 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ### Changed
 
+- **Departure from 4.x — Apple `permissions.request` presents the system
+  Bluetooth prompt (finding 179).** The 4.x Expo bridge refused with
+  `capability.unsupported` (`unsupportedPermissionPrompt`) while readiness
+  reported a `request-permission` action, so an app that followed the
+  library's own advice was stuck. On Apple (iOS/tvOS)
+  `manager.permissions.request({ purpose: 'scan-and-connect' })` now does
+  what Android's does: it presents the CoreBluetooth prompt through the
+  process-owned radio and reports the same shape (`requested`, `granted`,
+  `denied`, `recommendedSettingsTarget`). The prompt appears on request,
+  never from reading `manager.readiness()`: the process central is allocated
+  by the request (or, with a restoration id configured, at startup as
+  `willRestoreState` requires). An already-decided authorization answers at
+  once; the request accepts `timeoutMs` and `signal`
+  (`operation.timed-out`/`operation.aborted`, `300000ms` native bound
+  otherwise); a restriction (parental controls/MDM) refuses
+  `capability.unsupported` with its reason. The Expo example driver follows
+  readiness actions generically instead of assuming Android.
+
 - **Departure from 4.x — the React Native diagnostics and adapter limitation
   wording stays truthful to the Rust route (finding 159).** The 4.x providers
   reported the JSI protocol boundary on Android and Apple, with transport
@@ -608,6 +626,100 @@ previousAttachmentId, attachmentId, attachment}}`. The renderer/webview
   Android prebuilts predate sealing and must be refreshed before release.
 
 ### Fixed
+
+- **Web discovery failed on descriptor-less characteristics and the chooser
+  peer name was lost (finding 188).** Web Bluetooth's `getDescriptors()`
+  rejects with `NotFoundError` when a characteristic has no descriptors
+  (Polar H10 on Chrome): that is now an empty descriptor list, while any
+  other descriptor error still fails discovery with its own code. The
+  chooser-selected peer now carries the browser's `BluetoothDevice.name`
+  (`null` only when the browser withholds it — Web Bluetooth exposes no
+  advertisement payload for chooser devices). Pinned by
+  `__tests__/web/web-bluetooth-descriptor-absence.test.js` with a fake
+  `navigator.bluetooth`.
+
+- **Chooser readiness timed out on Web (finding 187).** The system chooser
+  is itself the permission step and the browser reports no radio power, so
+  `adapter.waitUntilReady({ operation: 'choose' })` waited for a power-on
+  that never comes. For `choose`, readiness is now availability plus a
+  supported chooser (an explicitly unsupported chooser fails closed at
+  once); every other operation still needs power on. The
+  `deferredToChooser` workaround is removed from
+  `examples-shared/driver/host.ts`, which waits like every other
+  operation.
+
+- **The tvOS stage kept a stale library copy and a stale Metro port
+  (finding 176).** `example-expo/scripts/build-tv.sh stage` now drops the
+  staged `node_modules/unified-ble-manager` so the next install resolves
+  the `file:` dependency fresh from the repo instead of failing closed at
+  runtime with `protocol.incompatible native-identity`; a new
+  `verify-identity` step (also in `all`) fails loudly when the staged
+  build identity differs from the repo's. `bundle-url` now replaces a
+  stale override so `TV_METRO_PORT` wins in every step. Pinned by
+  `__tests__/TvBuildStage.test.js` against a redirected stage.
+
+- **A submitted CCCD write answered with Android status 129 is the stack's
+  transient glitch, retried by the caller (finding 183).** It stays
+  `platform.failure` (the link survives; a retry passes) but now reports
+  `caller-decides` like finding 149's 133/HCI 0x3E, instead of `never`.
+  Investigation ruled out our side: generation fencing stands, the old
+  `BluetoothGatt` is closed at teardown, and the 129 arrived via callback
+  on a live Gatt whose discovery and local registration succeeded. Pinned
+  by a `ubm-mobile` failure-mapping test and Kotlin classification tests.
+
+- **A failed scan stop no longer bricks the process with
+  `scan.already-active` (finding 185).** The retained membership is now
+  retried by the next start (surfacing the release debt when it still
+  fails), and manager destroy always disposes the backend session — merged
+  into the destroy record, never swallowed — so no scan lease survives a
+  destroyed manager. Pinned by provider sequence tests
+  (`rust-core-scan-lease.test.js`) and driver scenario sequences with
+  fake managers.
+
+- **A requested disconnect ends Tauri subscriptions `owner-released`
+  (finding 190a).** The dispatcher aborted the notification tasks with no
+  terminal, so the supervisor read `stream.closed` and stopped; the stream
+  now ends with the vocabulary's requested-disconnect word, as on RN
+  iOS/Android/tvOS, so the supervisor backs off and reconnects. `tauri`
+  joins the event-vocabulary backends, extending the cross-host supervisor
+  matrix. Pinned by a dispatcher test and `__tests__/event-vocabulary.test.js`.
+
+- **Tauri advertises max-write/long-write like the desktop core (finding
+  190b, owner decision J).** `gatt:maximum-write-length` and
+  `gatt:long-write` are `limited` (measured per link through the shared
+  core; prepared writes still rejected, never silently single-written),
+  so `connection.maximumWriteLength` measures through IPC; the effective
+  MTU stays `capability.unsupported` but now carries the desktop core's
+  own reason (`effective-mtu-boundary-unavailable`) through the snapshot
+  and the IPC projection instead of a bare refusal. Pinned by a snapshot
+  test, `__tests__/TauriManager.test.js`, and
+  `__tests__/ipc/capability-bootstrap.test.js`.
+
+- **Every Tauri discovery of a database with descriptors failed with
+  `protocol.violation` at `public-gatt.duplicate-characteristic-path`
+  (finding 182).** The Tauri dispatcher rendered one IPC characteristic
+  record per core discovery row, and descriptor-level rows repeat their
+  characteristic's identity — so every characteristic with a descriptor
+  (on the Polar H10: heart-rate measurement and battery level CCCDs,
+  device-info user descriptions, PMD ECG CCCDs) reached the public
+  snapshot as duplicated paths. The dispatcher now renders one record per
+  characteristic — the same grouping the desktop N-API path applies —
+  with identical occurrence numerals, and descriptors reference the
+  single characteristic handle. A descriptor row without its
+  characteristic row fails closed as `tauri.discover-descriptor-parent`
+  instead of emitting an empty record. Rediscovery still replaces the
+  snapshot: the previous database goes stale (`gatt.stale-handle`) rather
+  than appending. Pinned by `finding_182_*` dispatcher tests over an
+  H10-shaped scripted database and by
+  `__tests__/tauri-gatt-database.test.js` (Tauri/Electron IPC codec to
+  public snapshot, plus a connect-discover-discover stack test).
+
+- **GATT topology rejections now name the offending path (finding
+  182).** `duplicate-characteristic-path`, `duplicate-service-path`,
+  `characteristic-parent`, `duplicate-descriptor-path` and
+  `descriptor-parent` carry the uuids and occurrences in the error's
+  `platform` detail (`domain: 'gatt'`) and safe message, never only a
+  bare code.
 
 - **Every filtered Tauri scan failed with `protocol.malformed` at
   `tauri.scan-query` ("normalized scan query digest is invalid"); only
@@ -1376,6 +1488,13 @@ lease, with_response, ctl)` answers without discovery.
   they were given instead of dropping it.
 
 ### Added
+
+- The example Expo app opts into restoration so the `restoration` scenario
+  can be tested physically: the plugin option for iOS
+  `restoreIdentifierKey` and Android companion presence in
+  `example-expo/app.json`, with the re-prebuild build step documented in
+  `example-expo/README.md`. Pinned by
+  `__tests__/ExampleExpoRestorationConfig.test.js`.
 
 - Desktop Rust path: `connection-lost` / `database-changed` events, adapter
   power and authorization with a watch, adapter enumeration and selection,

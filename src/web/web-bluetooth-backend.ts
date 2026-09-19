@@ -157,6 +157,8 @@ export function createWebBluetoothProvider(boundary: WebBluetoothBoundary): WebB
 export interface WebAuthorizedPeer {
   readonly peerId: PeerId<string>
   readonly browserDeviceId: string
+  /** `BluetoothDevice.name`, or `null` when the browser withheld it. */
+  readonly name: string | null
   readonly connected: boolean
 }
 /** Contract-v1 Web Bluetooth backend with chooser-limited discovery semantics. */
@@ -337,6 +339,7 @@ export class WebBluetoothBackend
       return Object.freeze({
         peerId: selected.peerId,
         browserDeviceId: device.id,
+        name: device.name ?? null,
         connected: device.gatt.connected
       })
     })
@@ -383,7 +386,7 @@ export class WebBluetoothBackend
         opaqueId: record.browserDeviceId
       }),
       peerId: record.peerId,
-      name: null,
+      name: record.name,
       rssi: null,
       source: 'origin-authorized',
       state: Object.freeze({
@@ -400,6 +403,11 @@ export class WebBluetoothBackend
     return selected === undefined
       ? null
       : Object.freeze({ backendId: this.identity.registeredBackendId, browserDeviceId: selected.device.id })
+  }
+
+  /** `BluetoothDevice.name` for a chooser-selected peer, or `null` when the browser withheld it. */
+  selectedPeerName(peerId: string): string | null {
+    return this.selectedDevices.get(peerId)?.device.name ?? null
   }
 
   events(): BoundedAsyncStream<BackendEvent<string>> {

@@ -1004,6 +1004,10 @@ class DeterministicRustCoreNative {
       }
       case 'scan.start': {
         if (args.duplicatePolicy !== 'all') throw new WireFault('capability.unsupported', 'capability', op)
+        // One live scan per session, like the real owner (finding 185):
+        // a membership kept for retry after a failed stop still occupies
+        // the session until it is released.
+        if (session.scans.size > 0) throw new WireFault('scan.already-active', 'scan', op)
         args.serviceUuids.forEach(canonicalUuid)
         if (apple && ((args.deviceAddresses ?? []).length > 0 || args.platform !== undefined)) {
           throw new WireFault('capability.unsupported', 'capability', op)

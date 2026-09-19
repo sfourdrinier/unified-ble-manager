@@ -475,3 +475,55 @@ test('disposeDriver reports a cleanup failure and rethrows it', async () => {
   assert.equal(logged.detail.code, 'scenario.stop-all-failed')
   assert.equal(logged.detail.detail.cause.failures[0].step, 'connection.release')
 })
+
+test('finding 185: a stuck scan fails one scenario loudly and the next scenario heals it without a process restart', async () => {
+  // Every scenario run creates its own manager on the process-shared scan
+  // registry. The first run's find leaves its scan open (a stop that failed
+  // while find still reported it loudly); the failed run tears down and
+  // destroys its manager, and the next run heals the retained membership
+  // instead of failing scan.already-active. The doubles model the fixed
+  // provider contract; the provider tests prove the provider honors it.
+  const sharedScans = new Map()
+  let ordinal = 0
+  const created = []
+  const host = createFakeHost({ manager: createFakeManager().manager, adapterHostManager })
+  host.createManager = async () => {
+    ordinal += 1
+    const fake = createFakeManager({
+      managerId: `sequence-${ordinal}`,
+      sharedScans,
+      failFindStop: ordinal === 1 ? 1 : 0,
+      failDispose: ordinal === 1 ? 1 : 0
+    })
+    created.push(fake)
+    return adapterHostManager(fake.manager, 'background:desktop-maintain-connection')
+  }
+  const registry = createScenarioRegistry(host)
+
+  await assert.rejects(registry.dispatch('h10-stream', 'start', {}), /scan stop failed/)
+  assert.ok(created[0].calls.includes('manager.destroy'), 'the failed run tears down its manager')
+
+  const result = await registry.dispatch('h10-stream', 'start', {})
+  assert.equal(result.device, 'Polar H10 1234')
+  assert.ok(created[1].calls.includes('heal stuck scan'), 'the next run heals the retained membership')
+  assert.ok(!created[1].calls.some(call => call.includes('already-active')))
+
+  const stop = await registry.dispatch('h10-stream', 'stop', {})
+  assert.deepEqual(stop.cleanup.map(step => [step.step, step.state]), [
+    ['subscription.remove', 'released'],
+    ['connection.release', 'released'],
+    ['manager.destroy', 'released']
+  ])
+})
+
+test('finding 185: destroy clears the owner stuck scan so a later manager finds cleanly', async () => {
+  const sharedScans = new Map()
+  const first = createFakeManager({ managerId: 'owner', sharedScans, failFindStop: 1 })
+  await assert.rejects(first.manager.find({ query: {} }), /scan stop failed/)
+  assert.equal(sharedScans.get('stuck')?.owner, 'owner')
+  await first.manager.destroy()
+  assert.ok(!sharedScans.has('stuck'), 'no scan lease survives the destroyed manager')
+  const second = createFakeManager({ managerId: 'next', sharedScans })
+  const peer = await second.manager.find({ query: {} })
+  assert.equal(peer.name, 'Polar H10 1234')
+})

@@ -17,7 +17,7 @@ retained, checksum-bound records described in [`evidence/v1/`](../../evidence/).
 | --- | --- |
 | `protocol.ts` | Wire contract `ubm-test-driver/1`, loaded by every host and by the server |
 | `scenario-core.ts` | `ScenarioController`, `ScenarioRegistry` (including `stopAll`), typed command arguments, console runtime |
-| `scenarios/*.ts` | `h10-stream`, `link-loss`, `device-info`, `mtu`, `scan-details`, `ecg`, `background` |
+| `scenarios/*.ts` | `h10-stream`, `link-loss`, `device-info`, `mtu`, `scan-details`, `ecg`, `background`, `restoration`, `h10-capture`, `live-dashboard` |
 | `polar-pmd.ts` | Polar PMD (ECG) framing, from Polar's BLE SDK |
 | `host.ts` | The host-adapter seam (`DriverHost`), peer acquisition, adapter readiness, capability lease |
 | `user-gesture.ts` | The explicit pending-user-gesture gate (Web Bluetooth chooser) |
@@ -231,6 +231,36 @@ node examples-shared/driver/server/cli.mjs capture <tauri-macos-host-id> --devic
 Use the exact host ids from `hosts` (for example
 `expo-android-google-pixel-9`). Six files, one per host per strap.
 
+### Live dashboard (`live-dashboard`)
+
+The `live-dashboard` scenario keeps one tile per Polar H10 in range: the
+strap name, live heart rate with RR intervals and skin-contact state, a
+downsampled PMD ECG trace (130 Hz, ~5 s window), battery level (180F/2A19)
+and Device Information (180A firmware revision, model, serial). A tile
+appears on the first scan observation and reconnects through an
+application-owned `createConnectionSupervisor` when the strap drops out and
+returns — the same code the example app's Live dashboard screen renders.
+
+Unlike the single-strap scenarios it takes `devices` (plural), not `device`:
+`"all-polar"` (the default, every Polar H10 in range) or a list of exact
+advertised names. Commands: `start {devices?: "all-polar" | string[],
+ecg?: boolean}`, `stop`, `snapshot`. The snapshot carries `tiles` (keyed by
+peer id) and `tileOrder`; each tile reports its coarse `status`
+(`discovered` | `connecting` | `streaming` | `reconnecting` | `lost` | `off`)
+next to the library's own words (`supervisorState`, `lifecycleCause`,
+lifecycle lines, typed error codes). Battery subscribes to notifications
+where the library allows them and falls back to a periodic read where the
+subscription is refused (`tile-battery-poll` announces the fallback with the
+refusal code). Snapshot publishes stay throttled (250 ms) and the ECG ring
+buffer is bounded (10 s), so the BLE delivery path is never blocked.
+
+```sh
+node examples-shared/driver/server/cli.mjs run android live-dashboard start '{"devices":"all-polar","ecg":true}'
+node examples-shared/driver/server/cli.mjs run android live-dashboard start '{"devices":["Polar H10 E997042F"],"ecg":false}'
+node examples-shared/driver/server/cli.mjs run android live-dashboard snapshot
+node examples-shared/driver/server/cli.mjs run android live-dashboard stop
+```
+
 ## Launching each host
 
 Every host below except Expo runs from the repository root after `pnpm prepack`,
@@ -277,6 +307,15 @@ The page connects to port 8795 on the host that served it. Use
 `adb reverse tcp:5173 tcp:5173` and `adb reverse tcp:8795 tcp:8795`, then open
 `http://localhost:5173/driver.html` on the phone. Every run that needs a peer
 waits for a click on **Open chooser for …** in the page.
+
+### Desktop hosts on macOS without clicks (`hosts.sh`)
+
+`examples-shared/driver/hosts.sh up|down|status <tauri|electron|node>` starts
+the desktop hosts idempotently: one PID file per host, one reusable Terminal
+window titled `ubm-driver-hosts` (Terminal is the app macOS credits with the
+Bluetooth permission), hosts detached, logs under `$TMPDIR/ubm-driver-hosts/`.
+A second `up` is a no-op; `down all` stops every host, including ones started
+by hand. Tauri opens the driver page directly (`UBM_TAURI_START_PAGE=driver.html`).
 
 ### Tauri
 

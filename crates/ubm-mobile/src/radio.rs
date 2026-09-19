@@ -540,7 +540,21 @@ impl PlatformFailure {
             error = error.with_platform(self.platform_detail(kind, platform, link_lost));
         }
         if self.dispatched {
-            error
+            // Finding 183: a submitted GATT operation the Android stack
+            // answers with `GATT_INTERNAL_ERROR` (129) — typically the first
+            // request after a reconnect — is the stack's own transient
+            // glitch, not a link event: the link survives and a retry
+            // passes. Like finding 149's 133/HCI 0x3E, the identity stays
+            // `platform.failure` and repeating it is the caller's policy
+            // (`caller-decides`); the library never retries it itself.
+            if android
+                && self.kind == FailureKind::GattStatus
+                && self.gatt_status == Some(ANDROID_GATT_INTERNAL_ERROR_STATUS)
+            {
+                error.with_outcome(None, ubm_desktop::Retryability::CallerDecides)
+            } else {
+                error
+            }
         } else {
             error.with_outcome(
                 Some(CommitState::NotDispatched),
@@ -586,6 +600,9 @@ impl PlatformFailure {
 
 /// Android `GATT_CONN_TIMEOUT` (0x13): legacy reported it as a link loss.
 const ANDROID_GATT_CONN_TIMEOUT_STATUS: i32 = 19;
+/// Android `GATT_INTERNAL_ERROR` (0x81): the stack's transient answer to a
+/// submitted request, typically right after a reconnect (finding 183).
+const ANDROID_GATT_INTERNAL_ERROR_STATUS: i32 = 129;
 
 /// Which verb a request is; selects the expected completion shape and the
 /// failure identity.
@@ -1245,6 +1262,27 @@ mod failure_tests {
             assert_eq!(error.domain().as_str(), domain);
             assert_eq!(FailureKind::parse(kind.as_str()), Some(kind));
         }
+    }
+
+    /// Finding 183: a submitted CCCD write answered with Android
+    /// `GATT_INTERNAL_ERROR` (129) right after a reconnect is the stack's
+    /// own transient glitch — discovery and the local registration on the
+    /// same `BluetoothGatt` succeeded, the old Gatt was closed at teardown,
+    /// and a retry passes. It stays `platform.failure` (the link survived)
+    /// but reports `caller-decides` like finding 149's 133/HCI 0x3E, never
+    /// a silent `never`.
+    #[test]
+    fn android_gatt_internal_error_is_a_transient_stack_failure() {
+        let failure = PlatformFailure {
+            gatt_status: Some(129),
+            ..PlatformFailure::new(FailureKind::GattStatus, "cccd-write status=129")
+        };
+        let error = failure.to_error(RequestKind::EnableNotifications, MobilePlatform::Android);
+        assert_eq!(error.code_str(), "platform.failure");
+        assert_eq!(
+            error.retryability(),
+            ubm_desktop::Retryability::CallerDecides
+        );
     }
 
     #[test]

@@ -5,6 +5,7 @@ import type { BleErrorCode } from './backend-contract/errors'
 import type { RestorationAdoptionResult } from './backend-contract/restoration'
 import { Platform, TurboModuleRegistry } from 'react-native'
 import { rehydratePublicError } from './public/error-bridge'
+import { BleError } from './public/errors'
 import type { BleAdapterState } from './public/ble-adapter'
 import { createPublicBleManager, type BleManager } from './public/ble-manager'
 import { normalizeBleManagerCreateOptions, type BleManagerCreateOptions } from './public/host-identity'
@@ -40,6 +41,14 @@ export interface BleReadiness {
 
 export interface ExpoPermissionRequest {
   readonly purpose: 'scan-and-connect'
+  /**
+   * Bounds the wait for the user's decision. Without one the request waits
+   * until the platform answers or the signal aborts: the prompt is
+   * user-facing UI, like bonding, and legacy waited it out too.
+   */
+  readonly timeoutMs?: number
+  /** Aborts a pending request; the late platform answer is then discarded. */
+  readonly signal?: AbortSignal
 }
 
 export interface ExpoPermissionResult {
@@ -468,6 +477,11 @@ async function requestExpoPermissions(
   if (request.purpose !== 'scan-and-connect') {
     throw rehydratePublicError(contractError('argument.invalid', 'capability', 'expo.permissions.purpose'))
   }
+  assertValidPermissionTimeout(request.timeoutMs)
+  assertValidPermissionSignal(request.signal)
+  if (request.signal?.aborted === true) {
+    throwExpoRuntimeError('operation.aborted', 'expo.permissions.request', 'The permission request was aborted.')
+  }
   if (permissionBridge === undefined) {
     throwExpoRuntimeError(
       'capability.unavailable',
@@ -476,8 +490,9 @@ async function requestExpoPermissions(
     )
   }
   try {
-    return parseExpoPermissionResult(await permissionBridge(request))
+    return parseExpoPermissionResult(await racePermissionBridge(request, permissionBridge))
   } catch (error) {
+    if (error instanceof BleError) throw error
     if (isExpoBoundaryError(error, 'expo.permissions.result')) throw error
     const nativeCode = errorCode(error)
     throwExpoRuntimeError(
@@ -486,6 +501,87 @@ async function requestExpoPermissions(
       errorMessage(error),
       nativeCode
     )
+  }
+}
+
+/**
+ * Races the platform prompt against the caller's timeout and signal. The
+ * bridge promise always settles — a late answer after a timeout or abort is
+ * discarded, with a no-op rejection guard so it never surfaces as an
+ * unhandled rejection. The result still reports what happened: the platform
+ * answer on success, `operation.timed-out` or `operation.aborted` otherwise.
+ */
+function racePermissionBridge(
+  request: ExpoPermissionRequest,
+  permissionBridge: ExpoPermissionBridge
+): Promise<ExpoPermissionResult> {
+  const pending = permissionBridge(request)
+  // A settled race must not turn a late bridge failure into an unhandled
+  // rejection: the operation already reported its outcome.
+  pending.then(undefined, () => undefined)
+  if (request.signal === undefined && request.timeoutMs === undefined) return pending
+  return new Promise<ExpoPermissionResult>((resolve, reject) => {
+    let settled = false
+    const settle = (): boolean => {
+      if (settled) return false
+      settled = true
+      if (timer !== undefined) clearTimeout(timer)
+      request.signal?.removeEventListener('abort', onAbort)
+      return true
+    }
+    const fail = (code: BleErrorCode, message: string): void => {
+      if (!settle()) return
+      try {
+        throwExpoRuntimeError(code, 'expo.permissions.request', message)
+      } catch (error) {
+        reject(error)
+      }
+    }
+    const timer =
+      request.timeoutMs === undefined
+        ? undefined
+        : setTimeout(() => {
+            fail(
+              'operation.timed-out',
+              `The permission request was not answered within ${String(request.timeoutMs)}ms.`
+            )
+          }, request.timeoutMs)
+    const onAbort = (): void => {
+      fail('operation.aborted', 'The permission request was aborted.')
+    }
+    request.signal?.addEventListener('abort', onAbort, { once: true })
+    pending.then(
+      value => {
+        if (settle()) resolve(value)
+      },
+      error => {
+        if (settle()) reject(error)
+      }
+    )
+  })
+}
+
+/** Mirrors the shared operation-options timeout bounds for this entrypoint. */
+function assertValidPermissionTimeout(value: unknown): void {
+  if (value === undefined) return
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isSafeInteger(value) || value <= 0) {
+    throw rehydratePublicError(contractError('argument.invalid', 'capability', 'expo.permissions.timeout'))
+  }
+}
+
+function assertValidPermissionSignal(value: unknown): void {
+  if (value === undefined) return
+  const abortLike =
+    typeof value === 'object' &&
+    value !== null &&
+    'aborted' in value &&
+    typeof value.aborted === 'boolean' &&
+    'addEventListener' in value &&
+    typeof value.addEventListener === 'function' &&
+    'removeEventListener' in value &&
+    typeof value.removeEventListener === 'function'
+  if (!abortLike) {
+    throw rehydratePublicError(contractError('argument.invalid', 'capability', 'expo.permissions.signal'))
   }
 }
 
@@ -942,10 +1038,20 @@ function normalizedPermissionErrorCode(nativeCode: string): BleErrorCode {
   switch (nativeCode) {
     case 'unsupportedPermissionPrompt':
       return 'capability.unsupported'
+    case 'permissionRestricted':
+      // iOS parental/MDM restrictions: the user cannot change this, so it is
+      // unsupported with the platform reason rather than a denial that would
+      // send the app to settings it cannot fix (finding 179).
+      return 'capability.unsupported'
     case 'permissionNotDeclared':
+    case 'permissionUnavailable':
       return 'capability.unavailable'
     case 'permissionDenied':
       return 'permission.denied'
+    case 'permissionTimeout':
+      return 'operation.timed-out'
+    case 'permissionInvalidPurpose':
+      return 'argument.invalid'
     default:
       return 'platform.failure'
   }

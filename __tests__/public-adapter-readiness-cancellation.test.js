@@ -260,6 +260,49 @@ test.each(['deadline', 'abort'])(
   }
 )
 
+describe('finding 187: chooser readiness is available plus a supported chooser', () => {
+  test('waitUntilReady choose on the real Web backend resolves without waiting for power', async () => {
+    const { manager } = await actualWebManager()
+    await expect(manager.adapter.waitUntilReady({ operation: 'choose', timeoutMs: 1000 })).resolves.toMatchObject({
+      availability: 'available'
+    })
+    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
+  test('waitUntilReady choose fails closed when the backend has no chooser', async () => {
+    const source = new CoreBoundedStream(limits, 'latest')
+    const stop = jest.fn(async () => source.close())
+    const internal = publicInternal({ initial: state('on'), values: source, stop })
+    internal.capability = id => (id === 'discovery:system-chooser' ? { state: 'unsupported' } : null)
+    const manager = await createPublicBleManager(internal, () => Date.now())
+    await expect(manager.adapter.waitUntilReady({ operation: 'choose', timeoutMs: 1000 })).rejects.toMatchObject({
+      code: 'capability.unsupported'
+    })
+    // The refusal lands before the adapter watch is acquired: nothing to release.
+    expect(stop).toHaveBeenCalledTimes(0)
+    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
+  test('waitUntilReady scan still waits for power on', async () => {
+    jest.useFakeTimers()
+    try {
+      const source = new CoreBoundedStream(limits, 'latest')
+      const stop = jest.fn(() => source.close())
+      const manager = await createPublicBleManager(
+        publicInternal({ initial: state('unknown'), values: source, stop }),
+        () => Date.now()
+      )
+      const pending = manager.adapter.waitUntilReady({ operation: 'scan', timeoutMs: 100 })
+      const failure = expect(pending).rejects.toMatchObject({ code: 'operation.timed-out' })
+      await jest.advanceTimersByTimeAsync(100)
+      await failure
+      expect(stop).toHaveBeenCalledTimes(1)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+})
+
 test('a caller abort stays aborted when cleanup finishes after the readiness deadline', async () => {
   jest.useFakeTimers()
   try {

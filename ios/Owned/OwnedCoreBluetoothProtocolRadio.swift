@@ -31,8 +31,24 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
   var borrowerReleaseRetryScheduled = false
 
   let queue: DispatchQueue
-  var central: CBCentralManager!
-  private var centralDelegate: OwnedCoreBluetoothCentralDelegate!
+  /// The process central, allocated on first explicit need (finding 179:
+  /// first allocation prompts while undecided). Never deallocated.
+  var central: CBCentralManager?
+  var centralDelegate: OwnedCoreBluetoothCentralDelegate!
+  let restoreIdentifierKey: String?
+  let showPowerAlert: NSNumber?
+  /// The Apple permission request; its exchange stays single-flight across
+  /// requests. Created eagerly: the closures only run on explicit request.
+  private lazy var prompter = ApplePermissionPrompter(
+    currentAuthorization: OwnedCoreBluetoothProtocolRadioSupport.currentAuthorizationWord,
+    ensureCentral: { [unowned self] in _ = self.ensureCentral() },
+    schedule: { [unowned self] delayMs, work in
+      let item = DispatchWorkItem(block: work)
+      self.queue.asyncAfter(deadline: .now() + .milliseconds(Int(delayMs)), execute: item)
+      return { item.cancel() }
+    },
+    makeError: { [unowned self] code, message in self.error(code: code, message: message) }
+  )
   var peripheralByIdentifier = [String: CBPeripheral]()
   var servicesByPeer = [String: [CBService]]()
   var pendingConnect = [String: PendingVoid]()
@@ -45,17 +61,6 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
   var pendingWrite = [CharacteristicAddress: PendingVoid]()
   let descriptorOperations = OwnedCoreBluetoothDescriptorOperations()
   var pendingNotify = [CharacteristicAddress: PendingNotify]()
-  struct PendingCancellationCleanup {
-    var peerIdentifiers = Set<String>()
-    /// The desired physical CCCD state after a cancelled notification transition.
-    /// A cancelled subscribe must end disabled; a cancelled unsubscribe must restore
-    /// the logically-installed subscription to enabled.
-    var notificationDesiredStates = [CharacteristicAddress: Bool]()
-    /// CoreBluetooth applies notification changes asynchronously.  Do not infer
-    /// completion from the current `isNotifying` value: it can still describe the
-    /// state before the cancelled operation's callback arrives.
-    var notificationAwaitingCallbacks = Set<CharacteristicAddress>()
-  }
   var pendingCancellationCleanup = [String: PendingCancellationCleanup]()
   /// At most one automatic retry may be queued for a cancelled operation.  The
   /// retained cleanup entry, rather than an unbounded timer fan-out, is the
@@ -66,76 +71,43 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
   var restoredPeerIdentifiers = [String]()
   var destroyed = false
 
-  struct CharacteristicAddress: Hashable {
-    let peerIdentifier: String
-    let serviceUUID: String
-    let serviceOccurrence: Int
-    let characteristicUUID: String
-    let characteristicOccurrence: Int
-  }
-
-  struct PendingVoid {
-    let operationIdentifier: String
-    let completion: (NSError?) -> Void
-  }
-
-  struct PendingCharacteristicRead {
-    let operationIdentifier: String
-    let completion: (NSData?, OwnedCoreBluetoothReadProvenance, NSError?) -> Void
-  }
-
-  struct PendingRssi {
-    let operationIdentifier: String
-    let completion: (NSNumber?, NSError?) -> Void
-  }
-
-  struct PendingNotify {
-    let operationIdentifier: String
-    let subscriptionIdentifier: String
-    let enabled: Bool
-    let completion: (NSError?) -> Void
-  }
-
-  struct PendingDiscovery {
-    let operationIdentifier: String
-    let completion: (NSDictionary?, NSError?) -> Void
-    var awaitingCharacteristics: Int
-    var awaitingDescriptors: Int
-  }
-
   @objc public convenience init(restoreIdentifierKey: String?) {
     self.init(restoreIdentifierKey: restoreIdentifierKey, showPowerAlert: nil)
   }
 
   @objc public init(restoreIdentifierKey: String?, showPowerAlert: NSNumber?) {
     queue = Self.radioQueue
+    self.restoreIdentifierKey = restoreIdentifierKey
+    self.showPowerAlert = showPowerAlert
     super.init()
-    var options = [String: Any]()
-    if let showPowerAlert {
-      options[CBCentralManagerOptionShowPowerAlertKey] = showPowerAlert
-    }
-    let configuredCentralDelegate: OwnedCoreBluetoothCentralDelegate
     #if os(iOS)
-    if let restoreIdentifierKey, !restoreIdentifierKey.isEmpty {
-      options[CBCentralManagerOptionRestoreIdentifierKey] = restoreIdentifierKey
-      configuredCentralDelegate = OwnedCoreBluetoothRestoringCentralDelegate(radio: self)
+    if OwnedCoreBluetoothProtocolRadioSupport.restorationConfigured(restoreIdentifierKey: restoreIdentifierKey) {
+      centralDelegate = OwnedCoreBluetoothRestoringCentralDelegate(radio: self)
     } else {
-      configuredCentralDelegate = OwnedCoreBluetoothCentralDelegate(radio: self)
+      centralDelegate = OwnedCoreBluetoothCentralDelegate(radio: self)
     }
     #else
-    configuredCentralDelegate = OwnedCoreBluetoothCentralDelegate(radio: self)
+    centralDelegate = OwnedCoreBluetoothCentralDelegate(radio: self)
     #endif
-    centralDelegate = configuredCentralDelegate
-    central = CBCentralManager(
-      delegate: configuredCentralDelegate,
-      queue: queue,
-      options: options.isEmpty ? nil : options
-    )
   }
 
   @objc public func adapterSnapshot() -> NSDictionary {
-    queue.sync {
-      OwnedCoreBluetoothProtocolRadioSupport.adapterSnapshotDictionary(central: central)
+    queue.sync { self.snapshotOnQueue() }
+  }
+
+  /// Finding 179: the Apple permission request on the process radio (like
+  /// Android's Expo module). Decided words answer at once; otherwise the
+  /// central allocation prompts and the waiter reports the decision.
+  /// `timeoutMs` bounds an unanswered prompt; concurrent requests refuse.
+  @objc public func requestPermission(
+    timeoutMs: NSNumber,
+    completion: @escaping (NSDictionary?, NSError?) -> Void
+  ) {
+    queue.async {
+      guard self.prompter.start(timeoutMs: timeoutMs.uint64Value, completion: completion) else {
+        completion(nil, self.error(code: 1037, message: "A Bluetooth permission request is already in progress"))
+        return
+      }
     }
   }
 
@@ -158,7 +130,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
         completion(self.error(code: 1021, message: "The Native Protocol v2 CoreBluetooth radio was destroyed"))
         return
       }
-      self.central.stopScan()
+      self.central?.stopScan()
       self.activeScanOperationIdentifier = nil
       self.failAllPendingOperationsOnDestroy()
       self.pendingCancellationCleanup.removeAll()
@@ -190,11 +162,12 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
         completion(self.error(code: 1002, message: "A scan service UUID is invalid"))
         return
       }
-      guard self.central.state == .poweredOn else {
+      guard let central = self.centralForUse(or: completion) else { return }
+      guard central.state == .poweredOn else {
         completion(self.error(code: 1003, message: "CoreBluetooth is not powered on"))
         return
       }
-      self.central.scanForPeripherals(
+      central.scanForPeripherals(
         withServices: serviceFilter.isEmpty ? nil : serviceFilter,
         options: [CBCentralManagerScanOptionAllowDuplicatesKey: allowDuplicates]
       )
@@ -210,7 +183,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
         completion(self.error(code: 1004, message: "No Native Protocol v2 scan is active"))
         return
       }
-      self.central.stopScan()
+      self.central?.stopScan()
       self.activeScanOperationIdentifier = nil
       completion(nil)
     }
@@ -235,6 +208,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
         completion(self.error(code: 1025, message: "The previous connection generation is still disconnecting"))
         return
       }
+      guard let central = self.centralForUse(or: completion) else { return }
       peripheral.delegate = self
       if peripheral.state == .connected {
         completion(nil)
@@ -244,7 +218,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
         operationIdentifier: operationIdentifier,
         completion: completion
       )
-      self.central.connect(peripheral, options: nil)
+      central.connect(peripheral, options: nil)
     }
   }
 
@@ -268,11 +242,12 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
         completion(nil)
         return
       }
+      guard let central = self.centralForUse(or: completion) else { return }
       self.pendingDisconnect[peerIdentifier] = PendingVoid(
         operationIdentifier: operationIdentifier,
         completion: completion
       )
-      self.central.cancelPeripheralConnection(peripheral)
+      central.cancelPeripheralConnection(peripheral)
     }
   }
 
@@ -482,7 +457,8 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
         return
       }
       self.destroyed = true
-      self.central.stopScan()
+      self.central?.stopScan()
+      self.prompter.abandon()
       self.activeScanOperationIdentifier = nil
       self.failAllPendingOperationsOnDestroy()
       self.disableActiveNotifications()
@@ -499,6 +475,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
     delegate?.protocolRadioDidUpdateAdapterState(
       OwnedCoreBluetoothProtocolRadioSupport.adapterSnapshotDictionary(central: central)
     )
+    prompter.authorizationChanged()
   }
 
   #if os(iOS)

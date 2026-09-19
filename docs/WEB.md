@@ -139,6 +139,12 @@ const peer = await manager.choose({
 
 The chooser itself belongs to the browser. UBM cannot auto-select a new device, extend the browser’s native discovery UI, or tell whether Chrome’s `NotFoundError` came from an explicit Cancel action versus the chooser closing without a compatible selection. UBM preserves the browser cause in `error.platform` and reports the stable public code `chooser.cancelled`.
 
+## Peer names and descriptor-less characteristics
+
+Web Bluetooth exposes no advertisement payload for chooser-selected devices, so the chosen peer's `name` is the browser's `BluetoothDevice.name` verbatim — and `null` when the browser withholds it (Chrome reports it; other browsers may not). A `null` name never means "no device": the peer is still the authorized chooser selection.
+
+Discovery treats a characteristic with no descriptors as an empty descriptor list. Web Bluetooth's `getDescriptors()` rejects with `NotFoundError` in that case (seen on Chrome with the Polar H10); UBM reports the characteristic with zero descriptors instead of failing discovery. Any other descriptor error still fails discovery with its own code.
+
 ## Previously authorized devices
 
 When the browser exposes `navigator.bluetooth.getDevices()`, UBM projects those origin grants through the peer directory:

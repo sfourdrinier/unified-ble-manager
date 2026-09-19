@@ -80,12 +80,33 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
     )
   }
 
+  /// The process radio behind the Expo permission prompt (finding 179): the
+  /// same instance the Rust host installs, so the prompt-triggering central
+  /// is the one central the process owns.
+  @objc(radioForPermissionPrompt)
+  public static func radioForPermissionPrompt() -> OwnedCoreBluetoothProtocolRadio {
+    let configuration = productionRadioConfiguration(bundle: .main)
+    return OwnedCoreBluetoothProtocolRadioOwner.acquire(
+      restoreIdentifierKey: configuration.restoreIdentifierKey,
+      showPowerAlert: configuration.showPowerAlert
+    )
+  }
+
   static func installProductionHost(wake: MobileWakeSink, bundle: Bundle = .main) throws -> MobileCoreHost {
     let configuration = productionRadioConfiguration(bundle: bundle)
     let radio = OwnedCoreBluetoothProtocolRadioOwner.acquire(
       restoreIdentifierKey: configuration.restoreIdentifierKey,
       showPowerAlert: configuration.showPowerAlert
     )
+    // Finding 179: `willRestoreState` only lands on a central created with
+    // the restore identifier, so a restoring app keeps legacy central timing
+    // (and the platform prompt) at startup; without restoration the central
+    // waits for first explicit need and the prompt appears on request.
+    if OwnedCoreBluetoothProtocolRadioSupport.restorationConfigured(
+      restoreIdentifierKey: configuration.restoreIdentifierKey
+    ) {
+      _ = radio.ensureCentral()
+    }
     let adapter = UnifiedBleRustRadioAdapter(driver: radio)
     guard radio.attachDelegateIfAvailable(adapter) else {
       throw MobileCoreError.Failed(

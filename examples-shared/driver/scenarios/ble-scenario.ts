@@ -19,6 +19,7 @@ import type {
   ConnectionIntent,
   GattDatabase,
   PublicBoundedAsyncStream,
+  PublicScanObservation,
   PublicStreamOverflowNotice,
   PublicStreamTerminalNotice,
   ScanQuery
@@ -92,6 +93,12 @@ export function deviceChooser(device: DeviceSelector): ChooseOptions {
 
 export const POLAR_H10_QUERY: ScanQuery = deviceQuery(DEFAULT_DEVICE)
 export const POLAR_H10_CHOOSER: ChooseOptions = deviceChooser(DEFAULT_DEVICE)
+
+/** Whether a scan observation advertises the strap a selector names (exact name, or name prefix). */
+export function matchesDevice(observation: PublicScanObservation, device: DeviceSelector): boolean {
+  const name = observation.localName ?? observation.peer.name ?? ''
+  return device.match === 'exact' ? name === device.name : name.startsWith(device.name)
+}
 
 /** The peer a run acquired and the selector that found it; reported in every snapshot and result. */
 export type PeerReport = {
@@ -330,7 +337,7 @@ export abstract class BleScenario<State extends BleScenarioState> extends Scenar
     return manager.find({ query: deviceQuery(device), signal, timeoutMs: FIND_TIMEOUT_MS })
   }
 
-  private async chooseH10(manager: BleManager, device: DeviceSelector, signal: AbortSignal): Promise<BlePeer> {
+  protected async chooseH10(manager: BleManager, device: DeviceSelector, signal: AbortSignal): Promise<BlePeer> {
     const gate = this.host.userGesture
     if (gate !== null) {
       const reason = 'Web Bluetooth opens the device chooser only from a user gesture: click "Open chooser" in the page'

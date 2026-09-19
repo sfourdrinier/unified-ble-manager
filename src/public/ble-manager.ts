@@ -2130,6 +2130,8 @@ async function waitForPublicAdapter<Attachment extends string, Identity extends 
       throw error
     })
     const iterator = watch.values[Symbol.asyncIterator]()
+    const readinessOperation = options.operation ?? 'scan'
+    if (readinessOperation === 'choose') assertChooserSupported(internal)
     return await runWithCleanup(
       async () => {
         let current = watch.initial
@@ -2138,8 +2140,8 @@ async function waitForPublicAdapter<Attachment extends string, Identity extends 
             throw contractError('operation.aborted', 'adapter', 'public-adapter.wait-until-ready')
           if (now() >= deadline)
             throw contractError('operation.timed-out', 'adapter', 'public-adapter.wait-until-ready')
-          assertAdapterCanBecomeReady(current, options.operation ?? 'scan')
-          if (adapterIsReady(current)) return snapshotPublicAdapterState(current)
+          assertAdapterCanBecomeReady(current, readinessOperation)
+          if (adapterIsReady(current, readinessOperation)) return snapshotPublicAdapterState(current)
           const item = await nextAdapterState(iterator, deadline - now(), controller.signal, () =>
             contractError(
               timedOut ? 'operation.timed-out' : 'operation.aborted',
@@ -2190,8 +2192,31 @@ async function stopAdapterWatch(
   return cleanup
 }
 
-function adapterIsReady<Attachment extends string>(state: AdapterStateSnapshot<Attachment>): boolean {
-  return state.availability === 'available' && state.power === 'on' && !isAuthorizationBlocking(state.authorization)
+/**
+ * Finding 187: chooser readiness is "available plus a supported chooser".
+ * An explicitly unsupported chooser fails closed at once instead of timing
+ * out; an unregistered one stays the chooser call's own answer.
+ */
+function assertChooserSupported<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  internal: PublicInternalManager<Attachment, Identity>
+): void {
+  const descriptor = internal.capability('discovery:system-chooser')
+  if (descriptor !== null && descriptor.state === 'unsupported') {
+    throw contractError('capability.unsupported', 'adapter', 'public-adapter.choose')
+  }
+}
+
+function adapterIsReady<Attachment extends string>(
+  state: AdapterStateSnapshot<Attachment>,
+  operation: string
+): boolean {
+  if (state.availability !== 'available' || isAuthorizationBlocking(state.authorization)) return false
+  // Finding 187: the system chooser is itself the permission step (Web
+  // Bluetooth grants access per device through it) and the browser reports
+  // no radio power, so chooser readiness is availability plus a supported
+  // chooser — never power. Every other operation still needs power on.
+  if (operation === 'choose') return true
+  return state.power === 'on'
 }
 
 function assertAdapterCanBecomeReady<Attachment extends string>(

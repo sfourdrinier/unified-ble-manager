@@ -56,15 +56,18 @@ describe('iOS and tvOS 4.0 Native Protocol defaults', () => {
 
   test('advertises CoreBluetooth restoration only when a restoration identifier is configured', () => {
     const radio = read('ios/Owned/OwnedCoreBluetoothProtocolRadio.swift')
+    const support = read('ios/Owned/OwnedCoreBluetoothProtocolRadioSupport.swift')
     const centralDelegate = read('ios/Owned/OwnedCoreBluetoothCentralDelegate.swift')
     const restoringDelegateOffset = centralDelegate.indexOf('final class OwnedCoreBluetoothRestoringCentralDelegate')
 
     expect(restoringDelegateOffset).toBeGreaterThan(0)
     expect(centralDelegate.slice(0, restoringDelegateOffset)).not.toContain('willRestoreState')
     expect(centralDelegate.slice(restoringDelegateOffset)).toContain('willRestoreState')
-    expect(radio).toContain('configuredCentralDelegate = OwnedCoreBluetoothRestoringCentralDelegate(radio: self)')
-    expect(radio).toContain('configuredCentralDelegate = OwnedCoreBluetoothCentralDelegate(radio: self)')
-    expect(radio).toContain('delegate: configuredCentralDelegate')
+    expect(radio).toContain('centralDelegate = OwnedCoreBluetoothRestoringCentralDelegate(radio: self)')
+    expect(radio).toContain('centralDelegate = OwnedCoreBluetoothCentralDelegate(radio: self)')
+    expect(radio).toContain('restorationConfigured(restoreIdentifierKey: restoreIdentifierKey)')
+    expect(support).toContain('delegate: centralDelegate')
+    expect(support).toContain('CBCentralManager(')
     expect(radio).not.toContain('CBCentralManager(delegate: self')
   })
 })

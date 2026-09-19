@@ -135,6 +135,7 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
       ) : null}
       <RemoteDriverBadge />
       <AppButton label="Test scenarios (Polar H10, ECG, scan, MTU…)" onPress={() => navigation.navigate('SCENARIOS_SCREEN')} />
+      <AppButton label="Live dashboard: Polar H10 tiles" onPress={() => navigation.navigate('LIVE_DASHBOARD_SCREEN')} />
       <AppButton label="Scan with canonical manager" onPress={() => void startScan()} />
       <AppButton label="Check Expo readiness" onPress={() => void inspectReadiness()} />
       <AppButton label="Inspect plan and diagnostics" onPress={inspectDiagnostics} />

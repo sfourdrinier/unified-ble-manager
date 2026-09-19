@@ -18,10 +18,10 @@ use tokio::sync::Notify;
 use ubm_core::contracts::{BleErrorCode, CommitState};
 use ubm_desktop::{
     AdapterAuthorization, AdapterPowerState, AdapterResetEvent, AdmissionPolicy,
-    CharacteristicSnapshot, DeliveryMode, DesktopCentral, FakeRadio, FaultOp, LifecycleEvent,
-    LifecycleKind, ObservedDelivery, OpControl, OpTicket, OperationId, PeerSnapshot,
-    PlatformDetail, PlatformValue, PropertyFlags, RadioEvent, Retryability, ServiceSnapshot,
-    WriteLimits,
+    CharacteristicSnapshot, DeliveryMode, DescriptorSnapshot, DesktopCentral, FakeRadio, FaultOp,
+    LifecycleEvent, LifecycleKind, ObservedDelivery, OpControl, OpTicket, OperationId,
+    PeerSnapshot, PlatformDetail, PlatformValue, PropertyFlags, RadioEvent, Retryability,
+    ServiceSnapshot, WriteLimits,
 };
 
 use super::{
@@ -1490,6 +1490,44 @@ async fn pr210_11_requested_disconnect_reports_requested_disconnect() {
     );
 }
 
+// Finding 190a — after an app-requested `connection.disconnect`, a live
+// notification subscription must end `owner-released` (the vocabulary's
+// requested-disconnect word, as on RN iOS/Android/tvOS), never
+// `stream.closed`: the supervisor then backs off and reconnects instead of
+// stopping.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn finding_190a_a_requested_disconnect_ends_notifications_owner_released() {
+    let harness = Harness::new().await;
+    let link = harness.connect("peer-a").await;
+    let database = harness.discover(&link).await;
+    let subscription = harness
+        .subscribe(&link, &database, NOTIFY_ONLY, None)
+        .await
+        .expect("subscribe");
+    let notifications = text(&subscription, "handle");
+    harness
+        .execute(
+            "connection.disconnect",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect("disconnect");
+    let ended = harness.wait_items(&notifications, 1).await;
+    assert_eq!(ended[0]["kind"], "terminal");
+    assert_eq!(
+        ended[0]["reason"], "owner-released",
+        "a requested disconnect ends subscriptions owner-released on every host"
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        harness.items(&notifications).len(),
+        1,
+        "exactly one terminal"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pr210_11_a_stale_generation_matches_nothing() {
     let harness = Harness::new().await;
@@ -2694,5 +2732,274 @@ async fn finding_116_the_platform_identity_crosses_per_os() {
             "metadata": {}
         }),
         "the Tauri 4.x shape"
+    );
+}
+
+// Finding 182 — the Polar H10 database through the Tauri dispatcher: a
+// characteristic that carries descriptors must register exactly once.
+// Descriptor-level core paths share their characteristic's path, and the
+// desktop N-API path renders one record per characteristic (its grouping
+// merges descriptor rows into the characteristic node). The dispatcher
+// fanned one characteristic record out per descriptor row, so every H10
+// characteristic with a CCCD or user-description descriptor (heart-rate
+// measurement, battery level, device-info strings, PMD ECG) rejected the
+// snapshot downstream with public-gatt.duplicate-characteristic-path.
+fn h10_characteristic(
+    uuid: &str,
+    properties: PropertyFlags,
+    descriptors: Vec<DescriptorSnapshot>,
+) -> CharacteristicSnapshot {
+    CharacteristicSnapshot {
+        uuid: uuid.to_owned(),
+        occurrence: 0,
+        properties,
+        descriptors,
+    }
+}
+
+fn cccd() -> DescriptorSnapshot {
+    DescriptorSnapshot {
+        uuid: "00002902-0000-1000-8000-00805f9b34fb".to_owned(),
+        occurrence: 0,
+    }
+}
+
+/// The Polar H10 E9B93D29 service set from the iOS/Android discovered
+/// events: 1800, 1801, 180D, 180A, 180F, the Polar custom service, PMD,
+/// and FEEE — with the descriptors a real strap reports.
+fn h10_services() -> Vec<ServiceSnapshot> {
+    vec![
+        ServiceSnapshot {
+            uuid: "00001800-0000-1000-8000-00805f9b34fb".to_owned(),
+            occurrence: 0,
+            characteristics: vec![
+                h10_characteristic(
+                    "00002a00-0000-1000-8000-00805f9b34fb",
+                    flags(true, false, false, false),
+                    Vec::new(),
+                ),
+                h10_characteristic(
+                    "00002a01-0000-1000-8000-00805f9b34fb",
+                    flags(true, false, false, false),
+                    Vec::new(),
+                ),
+            ],
+        },
+        ServiceSnapshot {
+            uuid: "00001801-0000-1000-8000-00805f9b34fb".to_owned(),
+            occurrence: 0,
+            characteristics: vec![h10_characteristic(
+                "00002a05-0000-1000-8000-00805f9b34fb",
+                flags(false, false, false, true),
+                Vec::new(),
+            )],
+        },
+        ServiceSnapshot {
+            uuid: "0000180d-0000-1000-8000-00805f9b34fb".to_owned(),
+            occurrence: 0,
+            characteristics: vec![
+                h10_characteristic(
+                    "00002a37-0000-1000-8000-00805f9b34fb",
+                    flags(false, false, true, false),
+                    vec![cccd()],
+                ),
+                h10_characteristic(
+                    "00002a38-0000-1000-8000-00805f9b34fb",
+                    flags(true, false, false, false),
+                    Vec::new(),
+                ),
+                h10_characteristic(
+                    "00002a39-0000-1000-8000-00805f9b34fb",
+                    flags(false, true, false, false),
+                    Vec::new(),
+                ),
+            ],
+        },
+        ServiceSnapshot {
+            uuid: "0000180a-0000-1000-8000-00805f9b34fb".to_owned(),
+            occurrence: 0,
+            characteristics: vec![
+                h10_characteristic(
+                    "00002a29-0000-1000-8000-00805f9b34fb",
+                    flags(true, false, false, false),
+                    vec![DescriptorSnapshot {
+                        uuid: "00002901-0000-1000-8000-00805f9b34fb".to_owned(),
+                        occurrence: 0,
+                    }],
+                ),
+                h10_characteristic(
+                    "00002a24-0000-1000-8000-00805f9b34fb",
+                    flags(true, false, false, false),
+                    Vec::new(),
+                ),
+            ],
+        },
+        ServiceSnapshot {
+            uuid: "0000180f-0000-1000-8000-00805f9b34fb".to_owned(),
+            occurrence: 0,
+            characteristics: vec![h10_characteristic(
+                "00002a19-0000-1000-8000-00805f9b34fb",
+                flags(true, false, true, false),
+                vec![cccd()],
+            )],
+        },
+        ServiceSnapshot {
+            uuid: "6217ff4b-fb31-1140-ad5a-a45545d7ecf3".to_owned(),
+            occurrence: 0,
+            characteristics: vec![h10_characteristic(
+                "6217ff4c-fb31-1140-ad5a-a45545d7ecf3",
+                flags(true, true, false, false),
+                Vec::new(),
+            )],
+        },
+        ServiceSnapshot {
+            uuid: "fb005c80-02e7-f387-1cad-8acd2d8df0c8".to_owned(),
+            occurrence: 0,
+            characteristics: vec![h10_characteristic(
+                "fb005c81-02e7-f387-1cad-8acd2d8df0c8",
+                flags(false, false, true, false),
+                vec![cccd()],
+            )],
+        },
+        ServiceSnapshot {
+            uuid: "0000feee-0000-1000-8000-00805f9b34fb".to_owned(),
+            occurrence: 0,
+            characteristics: vec![h10_characteristic(
+                "0000feef-0000-1000-8000-00805f9b34fb",
+                flags(true, false, false, false),
+                Vec::new(),
+            )],
+        },
+    ]
+}
+
+fn characteristic_keys(records: &[IpcValue]) -> Vec<String> {
+    records
+        .iter()
+        .map(|record| {
+            format!(
+                "{}|{}|{}|{}",
+                text(record, "serviceUuid"),
+                text(record, "serviceOccurrence"),
+                text(record, "characteristicUuid"),
+                text(record, "characteristicOccurrence"),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn finding_182_a_characteristic_with_descriptors_registers_once() {
+    let harness = Harness::new().await;
+    let link = harness.connect("peer-h10").await;
+    harness.radio().set_services("peer-h10", h10_services());
+    let response = harness
+        .execute(
+            "gatt.discover",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect("discover");
+    let IpcValue::Array(characteristics) = field(&response, "characteristics") else {
+        panic!("characteristics must be an array");
+    };
+    let IpcValue::Array(descriptors) = field(&response, "descriptors") else {
+        panic!("descriptors must be an array");
+    };
+    // Twelve scripted characteristics, four scripted descriptors: one
+    // record each, so the portable snapshot validates downstream.
+    assert_eq!(
+        characteristics.len(),
+        12,
+        "one characteristic record per characteristic: {characteristics:?}"
+    );
+    assert_eq!(
+        descriptors.len(),
+        4,
+        "one descriptor record per descriptor: {descriptors:?}"
+    );
+    let mut keys = characteristic_keys(characteristics);
+    keys.sort();
+    keys.dedup();
+    assert_eq!(
+        keys.len(),
+        12,
+        "no duplicated characteristic path reaches validateTopology"
+    );
+    let descriptor_uuids: Vec<String> = descriptors
+        .iter()
+        .map(|record| text(record, "uuid"))
+        .collect();
+    for expected in [
+        "00002902-0000-1000-8000-00805f9b34fb",
+        "00002901-0000-1000-8000-00805f9b34fb",
+    ] {
+        assert!(
+            descriptor_uuids.iter().any(|uuid| uuid == expected),
+            "descriptor {expected} survives the render: {descriptor_uuids:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn finding_182_a_second_discover_replaces_the_snapshot() {
+    let harness = Harness::new().await;
+    let link = harness.connect("peer-h10").await;
+    harness.radio().set_services("peer-h10", h10_services());
+    let first = harness.discover(&link).await;
+    let second_response = harness
+        .execute(
+            "gatt.discover",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect("rediscover");
+    let second_handle = text(&second_response, "handle");
+    assert_ne!(
+        first.handle, second_handle,
+        "rediscovery mints a fresh database handle"
+    );
+    let IpcValue::Array(second_characteristics) = field(&second_response, "characteristics") else {
+        panic!("characteristics must be an array");
+    };
+    assert_eq!(
+        second_characteristics.len(),
+        12,
+        "the replaced snapshot still carries every characteristic once: {second_characteristics:?}"
+    );
+    // The first database is stale: a read through it fails with the
+    // generation identity, never with the replaced tree's data.
+    let mut entries = Harness::link_entries(&link);
+    entries.extend([
+        ("databaseHandle", string(first.handle.clone())),
+        ("databaseId", string(first.id.clone())),
+        ("databaseGeneration", string(first.generation.clone())),
+        (
+            "characteristicHandle",
+            string(
+                first
+                    .characteristics
+                    .get("00002a37-0000-1000-8000-00805f9b34fb")
+                    .expect("heart-rate measurement handle")
+                    .clone(),
+            ),
+        ),
+    ]);
+    let error = harness
+        .execute("gatt.read", entries, None, OpControl::unbounded())
+        .await
+        .expect_err("a read on the replaced database fails");
+    assert_eq!(
+        error.identity(),
+        (
+            "gatt.stale-handle",
+            "gatt",
+            "tauri.characteristic-database-generation".to_owned()
+        ),
+        "stale generation, not appended state"
     );
 }

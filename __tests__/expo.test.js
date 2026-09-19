@@ -194,7 +194,7 @@ describe('Expo factory', () => {
     expect(nativeRuntime.openSettings).toHaveBeenCalledWith({ target: 'bluetooth' })
   })
 
-  test('fails closed with an actionable normalized error when iOS cannot issue a standalone permission prompt', async () => {
+  test('a restricted Apple platform answer is capability.unsupported with the reason, not a denial', async () => {
     const manager = {
       adapter: { state: jest.fn().mockResolvedValue(adapterState()) }
     }
@@ -204,8 +204,8 @@ describe('Expo factory', () => {
         configurationDigest: 'native-digest'
       }),
       requestPermissions: jest.fn().mockRejectedValue({
-        code: 'unsupportedPermissionPrompt',
-        message: 'iOS has no standalone Bluetooth permission prompt; invoke a Bluetooth action first.'
+        code: 'permissionRestricted',
+        message: 'iOS restrictions prevent Bluetooth use; the user cannot change this.'
       }),
       openSettings: jest.fn().mockResolvedValue(undefined)
     })
@@ -219,7 +219,8 @@ describe('Expo factory', () => {
       code: 'capability.unsupported',
       operation: 'expo.permissions.request',
       platform: {
-        safeMessage: expect.stringContaining('standalone Bluetooth permission prompt')
+        code: 'permissionRestricted',
+        safeMessage: expect.stringContaining('restrictions prevent Bluetooth use')
       }
     })
   })

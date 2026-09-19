@@ -26,14 +26,14 @@ extension OwnedCoreBluetoothProtocolRadio {
   private func cancelPendingOperation(_ operationIdentifier: String) {
     var cleanup = pendingCancellationCleanup[operationIdentifier] ?? PendingCancellationCleanup()
     if activeScanOperationIdentifier == operationIdentifier {
-      central.stopScan()
+      central?.stopScan()
       activeScanOperationIdentifier = nil
     }
     for (peerIdentifier, pending) in pendingConnect where pending.operationIdentifier == operationIdentifier {
       pendingConnect.removeValue(forKey: peerIdentifier)
       if let peripheral = peripheralByIdentifier[peerIdentifier], peripheral.state != .disconnected {
         cleanup.peerIdentifiers.insert(peerIdentifier)
-        central.cancelPeripheralConnection(peripheral)
+        central?.cancelPeripheralConnection(peripheral)
       }
     }
     let cancelledDisconnects = pendingDisconnect.compactMap { peerIdentifier, pending in
@@ -82,7 +82,7 @@ extension OwnedCoreBluetoothProtocolRadio {
       if peripheral.state == .disconnected {
         cleanup.peerIdentifiers.remove(peerIdentifier)
       } else {
-        central.cancelPeripheralConnection(peripheral)
+        central?.cancelPeripheralConnection(peripheral)
         failures.append(["resource": "connection", "peerIdentifier": peerIdentifier, "code": "cleanup.pending"] as NSDictionary)
       }
     }
@@ -272,7 +272,7 @@ extension OwnedCoreBluetoothProtocolRadio {
         self.peripheralByIdentifier.removeAll()
         self.servicesByPeer.removeAll()
         self.restoredPeerIdentifiers.removeAll()
-        self.central.delegate = nil
+        self.central?.delegate = nil
       } else {
         self.peripheralByIdentifier = self.peripheralByIdentifier.filter { restoredIdentifiers.contains($0.key) }
         self.servicesByPeer = self.servicesByPeer.filter { restoredIdentifiers.contains($0.key) }
@@ -297,7 +297,7 @@ extension OwnedCoreBluetoothProtocolRadio {
         pendingDisconnect.removeValue(forKey: entry.identifier)?.completion(nil)
         continue
       }
-      central.cancelPeripheralConnection(entry.peripheral)
+      central?.cancelPeripheralConnection(entry.peripheral)
       if entry.peripheral.state == .disconnected {
         pendingDisconnect.removeValue(forKey: entry.identifier)?.completion(nil)
       }

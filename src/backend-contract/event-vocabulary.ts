@@ -25,7 +25,11 @@ export const VOCABULARY_BACKENDS = Object.freeze([
   'desktop-macos',
   'desktop-windows',
   'desktop-linux',
-  'web'
+  'web',
+  // Finding 190a: the Tauri/IPC path reports the same words — a requested
+  // disconnect ends subscriptions `owner-released`, so the supervisor backs
+  // off and reconnects there exactly as on every other host.
+  'tauri'
 ] as const)
 export type VocabularyBackend = (typeof VOCABULARY_BACKENDS)[number]
 

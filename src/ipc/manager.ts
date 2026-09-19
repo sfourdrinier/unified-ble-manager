@@ -1144,11 +1144,16 @@ export function projectRemoteCapabilities(snapshot: IpcCapabilitySnapshotV2): Ip
 }
 
 function unsupportedRemoteRendererDescriptor(descriptor: CapabilityDescriptor): CapabilityDescriptor {
+  // Finding 190b: the projection adds its own routing note but never
+  // substitutes it for the native reason — the native limitations stay
+  // first, so every desktop host answers with the same words (for example
+  // `effective-mtu-boundary-unavailable` for the effective MTU).
   const limitation = Object.freeze({
     code: 'ipc-renderer-control-unavailable',
     explanation: 'This renderer IPC projection does not currently route this native control.',
     affectedGuarantee: 'native control support over renderer IPC'
   })
+  const limitations = Object.freeze([...descriptor.limitations, limitation])
   return Object.freeze({
     ...descriptor,
     state: 'unsupported' as const,
@@ -1157,9 +1162,9 @@ function unsupportedRemoteRendererDescriptor(descriptor: CapabilityDescriptor): 
       receiptId: `ipc-renderer-control-unavailable-${descriptor.id}`,
       evidenceLevel: 'blocked' as const,
       sourceDigest: 'ipc-renderer-control-projection-v1',
-      limitations: Object.freeze([limitation])
+      limitations
     }),
-    limitations: Object.freeze([limitation])
+    limitations
   })
 }
 

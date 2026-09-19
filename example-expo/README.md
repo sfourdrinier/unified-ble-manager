@@ -41,7 +41,8 @@ host and hardware. See the root [README](../README.md),
 The **Test scenarios** screens render the shared cross-host scenarios from
 [`../examples-shared/driver`](../examples-shared/driver/README.md):
 `h10-stream`, `link-loss`, `device-info`, `mtu`, `scan-details`, `ecg`,
-`background`. The same code runs on Web, Tauri, Electron and a Node CLI.
+`background`, `restoration`, `h10-capture`, `live-dashboard`. The same code
+runs on Web, Tauri, Electron and a Node CLI.
 `src/driver/app-driver.ts` is the Expo host adapter. It provides the Expo manager
 with its readiness and permission step and its background lease, plus
 `AppState`, the React Native WebSocket and the driver URL. In development builds
@@ -66,6 +67,64 @@ pnpm test:driver                                         # shared, server and Ex
 Every host's launch command, the protocol, and what each host can and cannot
 run are in [`../examples-shared/driver/README.md`](../examples-shared/driver/README.md).
 
+## Restoration testing (physical)
+
+`app.json` opts the fixture into the restoration paths so the `restoration`
+scenario can be tested physically: the plugin option for iOS
+`restoreIdentifierKey` (`background.ios.restoration`, id
+`example-expo-primary`) and Android companion presence
+(`background.android` connected-device foreground service with its
+notification). Plugin options bake into the native project at prebuild
+time, so after changing them regenerate and rebuild from the repository
+root:
+
+```sh
+pnpm --dir example-expo exec expo prebuild --clean --no-install
+pnpm --dir example-expo android   # or: pnpm --dir example-expo ios
+```
+
+Then run the scenario against the physical host (a paired strap nearby;
+iOS kills and relaunches the app, Android binds the companion service):
+
+```sh
+pnpm driver run android restoration start '{}'
+```
+
+Without the opt-in the scenario has nothing to restore: `background acquire`
+answers `capability.unsupported`. tvOS never opts in — it has no background
+Bluetooth mode and no state restoration (see Apple TV below).
+
+## Live dashboard screen
+
+The **Live dashboard** screen (`src/screens/MainStack/LiveDashboardScreen/`)
+renders the shared `live-dashboard` scenario: one tile per Polar H10 in
+range with the strap name, live heart rate (large), RR intervals, skin
+contact, a scrolling PMD ECG trace (~5 s, drawn with plain Views — no
+charting dependency), battery %, firmware revision, model and serial. Tile
+states are `discovered`, `connecting`, `streaming`, `reconnecting` (through
+the scenario's `createConnectionSupervisor`), and greyed `lost`/`off` with
+the last-seen age; each tile also shows the library's own words
+(supervisor state, lifecycle cause). Opening the screen auto-starts the
+scenario when it is idle; **Stop** ends it. The screen never stops the
+scenario on unmount, so the control server keeps observing the same run
+after the phone moves to another screen.
+
+How to open it:
+
+- Phone: **Dashboard → Live dashboard: Polar H10 tiles**, or **Test
+  scenarios → Live dashboard: Polar H10 tiles**. Tiles stack vertically.
+- Apple TV: the same two entries (same source tree, staged by
+  `scripts/build-tv.sh`). Tiles form a two-column grid in couch-readable
+  type; tiles are focusable and the first tile takes preferred focus, so
+  the Siri Remote moves between them — pressing a tile expands its
+  connection generation, supervisor attempt, counters and recent lifecycle
+  lines.
+
+UI updates ride the scenario's throttled snapshots (250 ms); heart-rate
+values, the bounded ECG ring buffer and battery-on-change keep the BLE
+delivery path unblocked. Drive it headlessly with
+`pnpm driver run <host> live-dashboard start '{"devices":"all-polar"}'`.
+
 ## Apple TV (tvOS)
 
 The same app and shared scenarios run on Apple TV from one source tree — not
@@ -88,8 +147,9 @@ prebuild (and the plugin's tvOS Info.plist handling, see
 it is unchanged.
 
 ```sh
-bash example-expo/scripts/build-tv.sh stage      # sync sources -> ios-tv, apply TV inputs
+bash example-expo/scripts/build-tv.sh stage      # sync sources -> ios-tv, apply TV inputs, drop the staged library copy
 bash example-expo/scripts/build-tv.sh install    # pnpm install in ios-tv (needs heap: see script)
+bash example-expo/scripts/build-tv.sh verify-identity  # staged library identity equals the repo
 bash example-expo/scripts/build-tv.sh prebuild   # EXPO_TV=1 expo prebuild --platform ios + pod install
 bash example-expo/scripts/build-tv.sh bundle-url # point the staged AppDelegate at the TV Metro
 bash example-expo/scripts/build-tv.sh metro      # serve the staged bundle on 192.168.68.116:8081

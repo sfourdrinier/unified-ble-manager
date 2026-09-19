@@ -76,7 +76,10 @@ export function peerAcquisition(manager: BleManager): PeerAcquisition {
 /**
  * The readiness step of every host whose manager is a plain `BleManager`:
  * report the adapter state, then wait for the operation the host acquires
- * peers with. `waitUntilReady` throws the library's typed error when it cannot.
+ * peers with. `waitUntilReady` throws the library's typed error when it
+ * cannot. For `choose`, readiness is availability plus a supported chooser —
+ * the chooser itself is the permission step (finding 187), so this waits
+ * like every other operation instead of deferring.
  */
 export async function prepareAdapter(manager: BleManager, report: HostReport, signal: AbortSignal): Promise<void> {
   const before = await manager.adapter.state()

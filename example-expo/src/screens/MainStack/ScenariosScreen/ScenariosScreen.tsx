@@ -17,7 +17,14 @@ export function ScenariosScreen({ navigation }: ScenariosScreenProps) {
       <ScrollView style={{ flex: 1 }}>
         {scenarioRegistry.list().map(scenario => (
           <React.Fragment key={scenario.id}>
-            <AppButton label={scenario.title} onPress={() => navigation.navigate('SCENARIO_SCREEN', { scenarioId: scenario.id })} />
+            <AppButton
+              label={scenario.title}
+              onPress={() =>
+                scenario.id === 'live-dashboard'
+                  ? navigation.navigate('LIVE_DASHBOARD_SCREEN')
+                  : navigation.navigate('SCENARIO_SCREEN', { scenarioId: scenario.id })
+              }
+            />
             <AppText style={{ fontSize: 12, marginBottom: 8 }}>{scenario.description}</AppText>
           </React.Fragment>
         ))}

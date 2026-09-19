@@ -2083,24 +2083,50 @@ impl BtleplugDispatcher {
             },
             Err(error) => Err(error),
         };
-        let detached = {
+        let (detached, owner_lease) = {
             let mut state = self.inner.lock().await;
             match state.callers.get_mut(key) {
                 Some(caller_state) if caller_state.connections.contains_key(handle) => {
                     if result.is_ok() {
                         caller_state.connections.remove(handle);
-                        Self::detach_connection_mappings(caller_state, handle)
+                        let lease = (
+                            caller_state.lease_id.clone(),
+                            caller_state.lease_generation.clone(),
+                        );
+                        (
+                            Self::detach_connection_mappings(caller_state, handle),
+                            Some(lease),
+                        )
                     } else {
                         if let Some(connection) = caller_state.connections.get_mut(handle) {
                             connection.phase = ReleasePhase::ReleaseFailed;
                         }
-                        Vec::new()
+                        (Vec::new(), None)
                     }
                 }
-                _ => Vec::new(),
+                _ => (Vec::new(), None),
             }
         };
-        for subscription in detached {
+        // Finding 190a: the app released the link, so every detached
+        // subscription ends with the vocabulary's requested-disconnect word
+        // (`owner-released`, as on RN iOS/Android/tvOS) — never a bare close
+        // the supervisor reads as a stop. The forwarder cannot race this:
+        // the connection left `Active` at `begin_release`, so delivery stays
+        // paused until the mappings below are gone.
+        if let Some((owner_lease_id, owner_lease_generation)) = owner_lease {
+            for (subscription_handle, _) in &detached {
+                let _ = self
+                    .terminal(
+                        key,
+                        (&owner_lease_id, &owner_lease_generation),
+                        subscription_handle,
+                        "owner-released",
+                        None,
+                    )
+                    .await;
+            }
+        }
+        for (_, subscription) in detached {
             if let Some(task) = subscription.task {
                 task.abort();
             }
@@ -2116,7 +2142,7 @@ impl BtleplugDispatcher {
     fn detach_connection_mappings(
         caller_state: &mut CallerState,
         connection_handle: &str,
-    ) -> Vec<CoreSubscription> {
+    ) -> Vec<(String, CoreSubscription)> {
         let subscription_handles = caller_state
             .subscriptions
             .iter()
@@ -2128,7 +2154,10 @@ impl BtleplugDispatcher {
         let subscriptions = subscription_handles
             .into_iter()
             .filter_map(|subscription_handle| {
-                caller_state.subscriptions.remove(&subscription_handle)
+                caller_state
+                    .subscriptions
+                    .remove(&subscription_handle)
+                    .map(|subscription| (subscription_handle, subscription))
             })
             .collect::<Vec<_>>();
         caller_state
@@ -2753,6 +2782,15 @@ impl BtleplugDispatcher {
         let mut characteristic_map = HashMap::new();
         let mut descriptor_map = HashMap::new();
         let mut seen_services = HashSet::new();
+        // One IPC handle per characteristic identity, as the desktop N-API
+        // path renders it (`groupCorePaths` merges descriptor rows into
+        // their characteristic node). Descriptor-level core paths repeat
+        // their characteristic's identity, so they must not mint a second
+        // characteristic record — that fanned every characteristic with a
+        // descriptor out once per descriptor and rejected the snapshot
+        // downstream with public-gatt.duplicate-characteristic-path
+        // (finding 182: every Polar H10 CCCD bearer).
+        let mut characteristic_handles = HashMap::new();
         for path in &paths {
             if seen_services.insert((path.service_uuid.clone(), path.service_occurrence)) {
                 service_records.push(object([
@@ -2766,10 +2804,29 @@ impl BtleplugDispatcher {
                     ("includedServices", IpcValue::Array(Vec::new())),
                 ]));
             }
+        }
+        // Characteristic rows render only from characteristic-level core
+        // paths, so the record carries the characteristic's own property
+        // bits (descriptor-level rows repeat the identity with the
+        // descriptor row's bits). Two passes keep this independent of row
+        // order in the whole-tree read.
+        for path in &paths {
             let Some(characteristic_uuid) = path.characteristic_uuid.clone() else {
                 continue;
             };
+            if path.descriptor_uuid.is_some() {
+                continue;
+            }
             let characteristic_occurrence = path.characteristic_occurrence.unwrap_or(0);
+            let key = (
+                path.service_uuid.clone(),
+                path.service_occurrence,
+                characteristic_uuid.clone(),
+                characteristic_occurrence,
+            );
+            if characteristic_handles.contains_key(&key) {
+                continue;
+            }
             let characteristic_handle = self.id("characteristic");
             let selector = CoreSelector {
                 service_uuid: path.service_uuid.clone(),
@@ -2796,32 +2853,56 @@ impl BtleplugDispatcher {
                     core_characteristic_properties(path.properties),
                 ),
             ]));
-            if let Some(descriptor_uuid) = path.descriptor_uuid.clone() {
-                let descriptor_occurrence = path.descriptor_occurrence.unwrap_or(0);
-                let descriptor_handle = self.id("descriptor");
-                descriptor_records.push(object([
-                    ("handle", string(descriptor_handle.clone())),
-                    (
-                        "characteristicHandle",
-                        string(characteristic_handle.clone()),
-                    ),
-                    ("uuid", string(descriptor_uuid.clone())),
-                    ("occurrence", string(descriptor_occurrence.to_string())),
-                ]));
-                descriptor_map.insert(
-                    descriptor_handle,
-                    CoreSelector {
-                        descriptor_uuid: Some(descriptor_uuid),
-                        descriptor_occurrence: Some(descriptor_occurrence),
-                        ..selector.clone()
-                    },
-                );
-            }
             characteristic_map.insert(
-                characteristic_handle,
+                characteristic_handle.clone(),
                 CoreCharacteristic {
                     selector,
                     properties: path.properties,
+                },
+            );
+            characteristic_handles.insert(key, characteristic_handle);
+        }
+        for path in &paths {
+            let Some(descriptor_uuid) = path.descriptor_uuid.clone() else {
+                continue;
+            };
+            let Some(characteristic_uuid) = path.characteristic_uuid.clone() else {
+                continue;
+            };
+            let characteristic_occurrence = path.characteristic_occurrence.unwrap_or(0);
+            let key = (
+                path.service_uuid.clone(),
+                path.service_occurrence,
+                characteristic_uuid.clone(),
+                characteristic_occurrence,
+            );
+            let Some(characteristic_handle) = characteristic_handles.get(&key).cloned() else {
+                // The whole-tree read registers a descriptor under its
+                // characteristic, so a descriptor row without one is a core
+                // invariant violation, never an empty record: fail closed.
+                return Err(DispatchError::new(
+                    BleErrorCode::ProtocolViolation,
+                    "gatt",
+                    "tauri.discover-descriptor-parent",
+                ));
+            };
+            let descriptor_occurrence = path.descriptor_occurrence.unwrap_or(0);
+            let descriptor_handle = self.id("descriptor");
+            descriptor_records.push(object([
+                ("handle", string(descriptor_handle.clone())),
+                ("characteristicHandle", string(characteristic_handle)),
+                ("uuid", string(descriptor_uuid.clone())),
+                ("occurrence", string(descriptor_occurrence.to_string())),
+            ]));
+            descriptor_map.insert(
+                descriptor_handle,
+                CoreSelector {
+                    service_uuid: path.service_uuid.clone(),
+                    service_occurrence: Some(path.service_occurrence),
+                    characteristic_uuid: Some(characteristic_uuid),
+                    characteristic_occurrence: Some(characteristic_occurrence),
+                    descriptor_uuid: Some(descriptor_uuid),
+                    descriptor_occurrence: Some(descriptor_occurrence),
                 },
             );
         }

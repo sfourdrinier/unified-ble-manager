@@ -39,7 +39,7 @@ export interface ExpoBleManager extends BleManager {
 - `ExpoCompanionAssociationRequest :: { readonly name?: string | undefined; readonly serviceUuid?: string | undefined }`
 - `ExpoCompanionAssociationResult :: { readonly source: "associated"; readonly associationId: number; readonly peerId: string | null; readonly displayName: string | null }`
 - `ExpoPermissionBridge :: { (request: ExpoPermissionRequest) => Promise<ExpoPermissionResult> }`
-- `ExpoPermissionRequest :: { readonly purpose: "scan-and-connect" }`
+- `ExpoPermissionRequest :: { readonly purpose: "scan-and-connect"; readonly timeoutMs?: number | undefined; readonly signal?: AbortSignal | undefined }`
 - `ExpoPermissionResult :: { readonly requested: readonly "bluetooth"[]; readonly granted: readonly "bluetooth"[]; readonly denied: readonly "bluetooth"[]; readonly recommendedSettingsTarget: ExpoSettingsTarget | null }`
 - `ExpoPresenceObservationRequest :: { readonly peerId: string }`
 - `ExpoPresenceObservationResult :: { readonly state: "observing" }`

@@ -1591,6 +1591,25 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   ): Promise<ScanLease<string, string>> {
     const operation = `${SCOPE}.scan.start`
     this.assertOperational(operation)
+    // Finding 185: a stop that failed keeps its membership for retry
+    // (PR210-09), but nothing ever retried it — every later start then
+    // failed scan.already-active until the process died. A start heals
+    // retained memberships first by retrying their release under the same
+    // identity.
+    for (const group of [...this.scanGroups.values()]) {
+      if (group.state !== 'release-failed') continue
+      const healed = await this.stopScanGroup(group)
+      if (healed.state !== 'released') {
+        throw contractError('scan.already-active', 'scan', operation, {
+          domain: 'react-native-rust-core',
+          code: 'scan-release-debt',
+          safeMessage: 'a previous scan could not be released; its membership is still active',
+          metadata: {
+            failures: healed.failures.map(failure => `${failure.resourceKind}:${failure.error.code}`)
+          }
+        })
+      }
+    }
     const nativeFilter = this.nativeScanFilter(options, operation)
     const deviceAddresses = (nativeFilter.deviceAddresses ?? []).map(address => canonicalBleAddress(address))
     if (deviceAddresses.length > 0 && this.platform !== 'android') {

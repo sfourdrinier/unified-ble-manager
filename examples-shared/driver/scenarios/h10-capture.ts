@@ -31,6 +31,7 @@ import {
   DEVICE_ARGUMENT_HELP,
   IDLE_BLE_STATE,
   OPERATION_TIMEOUT_MS,
+  matchesDevice,
   outcomeOf,
   parseDevice,
   type BleScenarioState,
@@ -99,6 +100,28 @@ export interface H10CaptureOptions {
   readonly hrMinValues: number
   readonly ecgFrames: number
   readonly mtu: number
+  /** Keep every raw HR measurement and ECG frame (for simulator replay). */
+  readonly recordRaw: boolean
+}
+
+export interface RawHrRecord {
+  readonly atMs: number
+  readonly hex: string
+}
+
+export interface RawEcgRecord {
+  readonly timestampNs: string
+  readonly hex: string
+  readonly samplesMicroVolts: readonly number[]
+}
+
+function booleanOption(raw: JsonObject, key: string, fallback: boolean): boolean {
+  const value = raw[key]
+  if (value === undefined) return fallback
+  if (typeof value !== 'boolean') {
+    throw new ScenarioError('scenario.invalid-argument', `argument "${key}" must be a boolean; received ${JSON.stringify(value)}`)
+  }
+  return value
 }
 
 function numberOption(raw: JsonObject, key: string, fallback: number, min: number, max: number): number {
@@ -133,7 +156,7 @@ export class H10CaptureScenario extends BleScenario<H10CaptureState> {
   protected readonly commands: Readonly<Record<string, ScenarioCommand>> = {
     capture: defineCommand({
       label: 'Capture fingerprint',
-      description: `args: {${DEVICE_ARGUMENT_HELP}, scanDurationMs?: number, hrDurationMs?: number (>= 60000 on real straps), hrMinValues?: number, ecgFrames?: number, mtu?: number}. Result: the versioned fingerprint.`,
+      description: `args: {${DEVICE_ARGUMENT_HELP}, scanDurationMs?: number, hrDurationMs?: number (>= 60000 on real straps), hrMinValues?: number, ecgFrames?: number, mtu?: number, recordRaw?: boolean}. Result: the versioned fingerprint (with a raw section when recordRaw is true).`,
       presets: [{ label: 'Capture (defaults)', args: {} }],
       acceptsDevice: true,
       parse: raw => ({
@@ -142,7 +165,8 @@ export class H10CaptureScenario extends BleScenario<H10CaptureState> {
         hrDurationMs: numberOption(raw, 'hrDurationMs', 60_000, 50, 300_000),
         hrMinValues: numberOption(raw, 'hrMinValues', 50, 1, 10_000),
         ecgFrames: numberOption(raw, 'ecgFrames', 30, 0, 1_000),
-        mtu: numberOption(raw, 'mtu', 517, 23, 517)
+        mtu: numberOption(raw, 'mtu', 517, 23, 517),
+        recordRaw: booleanOption(raw, 'recordRaw', false)
       }),
       run: options => this.capture(options)
     }),
@@ -223,11 +247,11 @@ export class H10CaptureScenario extends BleScenario<H10CaptureState> {
 
       // 6. HR subscribe: time to first value, notification intervals.
       this.patchBase({ phase: 'streaming-hr' })
-      const hr = await this.captureHeartRate(gatt, options.hrDurationMs, options.hrMinValues, signal)
+      const hr = await this.captureHeartRate(gatt, options.hrDurationMs, options.hrMinValues, options.recordRaw, signal)
 
       // 7. ECG: PMD command latencies, frame intervals, sample-count consistency.
       this.patchBase({ phase: 'streaming-ecg' })
-      const ecg = await this.captureEcg(gatt, options.ecgFrames, signal)
+      const ecg = await this.captureEcg(gatt, options.ecgFrames, options.recordRaw, signal)
       values.pmdSettingsEcg = ecg.pmdSettingsEcg
       this.emit('capture-ecg', { frames: ecg.samplesPerFrame.frames ?? null })
 
@@ -256,7 +280,8 @@ export class H10CaptureScenario extends BleScenario<H10CaptureState> {
           ecgFrameIntervalMs: ecg.frameIntervals,
           ecgSamplesPerFrame: ecg.samplesPerFrame
         },
-        behaviour
+        behaviour,
+        ...(options.recordRaw ? { raw: { hrMeasurements: toJsonValue(hr.raw), ecgFrames: toJsonValue(ecg.raw) } } : {})
       }
       this.replace({ ...this.snapshot(), fingerprint })
       await this.teardown('done')
@@ -322,8 +347,9 @@ export class H10CaptureScenario extends BleScenario<H10CaptureState> {
     gatt: GattDatabase,
     durationMs: number,
     minValues: number,
+    recordRaw: boolean,
     signal: AbortSignal
-  ): Promise<{ timeToFirstMs: number | null; intervals: TimingDistribution }> {
+  ): Promise<{ timeToFirstMs: number | null; intervals: TimingDistribution; raw: readonly RawHrRecord[] }> {
     const subscribedAt = this.runtime.now()
     const subscription = await gatt.characteristic(HEART_RATE_SERVICE, HR_MEASUREMENT).subscribe({
       signal,
@@ -332,6 +358,7 @@ export class H10CaptureScenario extends BleScenario<H10CaptureState> {
     })
     this.own('hr-subscription.remove', () => subscription.remove())
     const stamps: number[] = []
+    const raw: RawHrRecord[] = []
     let firstAt: number | null = null
     const deadline = this.runtime.now() + durationMs
     const done = new Promise<void>(resolve => {
@@ -347,6 +374,7 @@ export class H10CaptureScenario extends BleScenario<H10CaptureState> {
               this.emit('capture-first-hr', { afterMs: at - subscribedAt })
             }
             stamps.push(item.value.observedAtMonotonicMs)
+            if (recordRaw) raw.push({ atMs: item.value.observedAtMonotonicMs, hex: bytesToHex(item.value.value) })
             this.emit('capture-hr', { sequence: item.value.sequence })
             if (stamps.length >= minValues && at >= deadline) break
           }
@@ -369,14 +397,16 @@ export class H10CaptureScenario extends BleScenario<H10CaptureState> {
       const previous = stamps[index - 1]
       if (current !== undefined && previous !== undefined) intervals.push(current - previous)
     }
-    return { timeToFirstMs: firstAt === null ? null : firstAt - subscribedAt, intervals: summarizeDistribution(intervals) }
+    return { timeToFirstMs: firstAt === null ? null : firstAt - subscribedAt, intervals: summarizeDistribution(intervals), raw }
   }
 
   private async captureEcg(
     gatt: GattDatabase,
     frameBudget: number,
+    recordRaw: boolean,
     signal: AbortSignal
   ): Promise<{
+    raw: readonly RawEcgRecord[]
     getSettingsMs: number | null
     startMs: number | null
     stopMs: number | null
@@ -444,6 +474,7 @@ export class H10CaptureScenario extends BleScenario<H10CaptureState> {
 
     const frameStampsNs: bigint[] = []
     const sampleCounts: number[] = []
+    const raw: RawEcgRecord[] = []
     if (start.ok && start.value.status === 0 && frameBudget > 0) {
       const frames = new Promise<void>(resolve => {
         const cancel = this.runtime.schedule(() => resolve(), 30_000)
@@ -455,6 +486,13 @@ export class H10CaptureScenario extends BleScenario<H10CaptureState> {
                 const frame = parseEcgFrame(item.value.value)
                 frameStampsNs.push(frame.timestampNs)
                 sampleCounts.push(frame.samplesMicroVolts.length)
+                if (recordRaw) {
+                  raw.push({
+                    timestampNs: frame.timestampNs.toString(),
+                    hex: bytesToHex(item.value.value),
+                    samplesMicroVolts: [...frame.samplesMicroVolts]
+                  })
+                }
               } catch {
                 // Parse failures are counted in the ecg scenario; here a bad
                 // frame is a sample-count of -1 so the fingerprint shows it.
@@ -480,6 +518,7 @@ export class H10CaptureScenario extends BleScenario<H10CaptureState> {
     }
     const goodCounts = sampleCounts.filter(count => count >= 0)
     return {
+      raw,
       getSettingsMs: getSettings.ok ? getSettings.value.ms : null,
       startMs: start.ok ? start.value.ms : null,
       stopMs: stop.ok ? stop.value.ms : null,
@@ -564,11 +603,6 @@ export class H10CaptureScenario extends BleScenario<H10CaptureState> {
       batteryNotify: batteryNotify.ok ? { ok: true, ...batteryNotify.value } : { ok: false, error: batteryNotify.error }
     }
   }
-}
-
-function matchesDevice(observation: PublicScanObservation, device: DeviceSelector): boolean {
-  const name = observation.localName ?? observation.peer.name ?? ''
-  return device.match === 'exact' ? name === device.name : name.startsWith(device.name)
 }
 
 function dumpObservation(observation: PublicScanObservation): JsonObject {

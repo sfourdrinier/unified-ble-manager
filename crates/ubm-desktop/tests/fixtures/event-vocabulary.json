@@ -53,6 +53,15 @@
         "cause": "peer-link-loss"
       },
       "streamTerminal": "connection-lost"
+    },
+    "tauri": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": {
+        "current": "lost",
+        "cause": "peer-link-loss"
+      },
+      "streamTerminal": "connection-lost"
     }
   },
   "link-lost-during-operation": {
@@ -102,6 +111,15 @@
       "streamTerminal": "connection-lost"
     },
     "web": {
+      "error": "connection.lost",
+      "retryability": "never",
+      "lifecycle": {
+        "current": "lost",
+        "cause": "peer-link-loss"
+      },
+      "streamTerminal": "connection-lost"
+    },
+    "tauri": {
       "error": "connection.lost",
       "retryability": "never",
       "lifecycle": {
@@ -165,6 +183,15 @@
         "cause": "requested-disconnect"
       },
       "streamTerminal": "owner-released"
+    },
+    "tauri": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": {
+        "current": "disconnected",
+        "cause": "requested-disconnect"
+      },
+      "streamTerminal": "owner-released"
     }
   },
   "requested-disconnect-during-operation": {
@@ -214,6 +241,15 @@
       "streamTerminal": "owner-released"
     },
     "web": {
+      "error": "operation.disconnected",
+      "retryability": "never",
+      "lifecycle": {
+        "current": "disconnected",
+        "cause": "requested-disconnect"
+      },
+      "streamTerminal": "owner-released"
+    },
+    "tauri": {
       "error": "operation.disconnected",
       "retryability": "never",
       "lifecycle": {
@@ -277,6 +313,15 @@
         "cause": "adapter-loss"
       },
       "streamTerminal": "source-failed"
+    },
+    "tauri": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": {
+        "current": "lost",
+        "cause": "adapter-loss"
+      },
+      "streamTerminal": "source-failed"
     }
   },
   "adapter-loss-during-operation": {
@@ -333,6 +378,15 @@
         "cause": "adapter-loss"
       },
       "streamTerminal": "source-failed"
+    },
+    "tauri": {
+      "error": "operation.reset",
+      "retryability": "never",
+      "lifecycle": {
+        "current": "lost",
+        "cause": "adapter-loss"
+      },
+      "streamTerminal": "source-failed"
     }
   },
   "connect-not-established": {
@@ -367,6 +421,12 @@
       "streamTerminal": null
     },
     "web": {
+      "error": "connection.failed",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "tauri": {
       "error": "connection.failed",
       "retryability": "caller-decides",
       "lifecycle": null,
@@ -409,6 +469,12 @@
       "retryability": "caller-decides",
       "lifecycle": null,
       "streamTerminal": null
+    },
+    "tauri": {
+      "error": "connection.failed",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
     }
   },
   "peer-not-found": {
@@ -443,6 +509,12 @@
       "streamTerminal": null
     },
     "web": {
+      "error": "peer.not-found",
+      "retryability": "never",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "tauri": {
       "error": "peer.not-found",
       "retryability": "never",
       "lifecycle": null,
@@ -485,6 +557,12 @@
       "retryability": "never",
       "lifecycle": null,
       "streamTerminal": null
+    },
+    "tauri": {
+      "error": "platform.security",
+      "retryability": "never",
+      "lifecycle": null,
+      "streamTerminal": null
     }
   },
   "operation-timed-out": {
@@ -519,6 +597,12 @@
       "streamTerminal": null
     },
     "web": {
+      "error": "operation.timed-out",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "tauri": {
       "error": "operation.timed-out",
       "retryability": "caller-decides",
       "lifecycle": null,
@@ -561,6 +645,12 @@
       "retryability": "caller-decides",
       "lifecycle": null,
       "streamTerminal": null
+    },
+    "tauri": {
+      "error": "operation.aborted",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
     }
   },
   "restoration-received": {
@@ -595,6 +685,12 @@
       "streamTerminal": null
     },
     "web": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "tauri": {
       "error": null,
       "retryability": null,
       "lifecycle": null,

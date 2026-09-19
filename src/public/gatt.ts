@@ -618,7 +618,14 @@ function validateTopology(snapshot: PortableGattDatabaseSnapshot): void {
     assertDatabasePath(service.path, snapshot.path, 'public-gatt.service-path')
     const key = `${normalizeUuid(service.path.serviceUuid)}|${service.path.serviceOccurrence}`
     if (serviceKeys.has(key)) {
-      throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.duplicate-service-path'))
+      throw topologyViolation(
+        'public-gatt.duplicate-service-path',
+        `Duplicate service path ${normalizeUuid(service.path.serviceUuid)}#${service.path.serviceOccurrence} in the discovered GATT database.`,
+        {
+          serviceUuid: normalizeUuid(service.path.serviceUuid),
+          serviceOccurrence: service.path.serviceOccurrence
+        }
+      )
     }
     serviceKeys.add(key)
   }
@@ -627,14 +634,30 @@ function validateTopology(snapshot: PortableGattDatabaseSnapshot): void {
     assertDatabasePath(characteristic.path, snapshot.path, 'public-gatt.characteristic-path')
     const parents = snapshot.services.filter(service => sameService(characteristic.path, service.path))
     if (parents.length !== 1) {
-      throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.characteristic-parent'))
+      throw topologyViolation(
+        'public-gatt.characteristic-parent',
+        `Characteristic path ${normalizeUuid(characteristic.path.serviceUuid)}#${characteristic.path.serviceOccurrence}/${normalizeUuid(characteristic.path.characteristicUuid)}#${characteristic.path.characteristicOccurrence} resolves to ${parents.length} parent services in the discovered GATT database.`,
+        {
+          serviceUuid: normalizeUuid(characteristic.path.serviceUuid),
+          serviceOccurrence: characteristic.path.serviceOccurrence,
+          characteristicUuid: normalizeUuid(characteristic.path.characteristicUuid),
+          characteristicOccurrence: characteristic.path.characteristicOccurrence
+        }
+      )
     }
     const key = `${normalizeUuid(characteristic.path.serviceUuid)}|${characteristic.path.serviceOccurrence}|${normalizeUuid(
       characteristic.path.characteristicUuid
     )}|${characteristic.path.characteristicOccurrence}`
     if (characteristicKeys.has(key)) {
-      throw rehydratePublicError(
-        contractError('protocol.violation', 'gatt', 'public-gatt.duplicate-characteristic-path')
+      throw topologyViolation(
+        'public-gatt.duplicate-characteristic-path',
+        `Duplicate characteristic path ${normalizeUuid(characteristic.path.serviceUuid)}#${characteristic.path.serviceOccurrence}/${normalizeUuid(characteristic.path.characteristicUuid)}#${characteristic.path.characteristicOccurrence} in the discovered GATT database.`,
+        {
+          serviceUuid: normalizeUuid(characteristic.path.serviceUuid),
+          serviceOccurrence: characteristic.path.serviceOccurrence,
+          characteristicUuid: normalizeUuid(characteristic.path.characteristicUuid),
+          characteristicOccurrence: characteristic.path.characteristicOccurrence
+        }
       )
     }
     characteristicKeys.add(key)
@@ -646,11 +669,33 @@ function validateTopology(snapshot: PortableGattDatabaseSnapshot): void {
       sameCharacteristic(descriptor.path, characteristic.path)
     )
     if (parents.length !== 1) {
-      throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.descriptor-parent'))
+      throw topologyViolation(
+        'public-gatt.descriptor-parent',
+        `Descriptor path ${normalizeUuid(descriptor.path.serviceUuid)}#${descriptor.path.serviceOccurrence}/${normalizeUuid(descriptor.path.characteristicUuid)}#${descriptor.path.characteristicOccurrence}/${normalizeUuid(descriptor.path.descriptorUuid)}#${descriptor.path.descriptorOccurrence} resolves to ${parents.length} parent characteristics in the discovered GATT database.`,
+        {
+          serviceUuid: normalizeUuid(descriptor.path.serviceUuid),
+          serviceOccurrence: descriptor.path.serviceOccurrence,
+          characteristicUuid: normalizeUuid(descriptor.path.characteristicUuid),
+          characteristicOccurrence: descriptor.path.characteristicOccurrence,
+          descriptorUuid: normalizeUuid(descriptor.path.descriptorUuid),
+          descriptorOccurrence: descriptor.path.descriptorOccurrence
+        }
+      )
     }
     const key = `${normalizeUuid(descriptor.path.serviceUuid)}|${descriptor.path.serviceOccurrence}|${normalizeUuid(descriptor.path.characteristicUuid)}|${descriptor.path.characteristicOccurrence}|${normalizeUuid(descriptor.path.descriptorUuid)}|${descriptor.path.descriptorOccurrence}`
     if (descriptorKeys.has(key)) {
-      throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.duplicate-descriptor-path'))
+      throw topologyViolation(
+        'public-gatt.duplicate-descriptor-path',
+        `Duplicate descriptor path ${normalizeUuid(descriptor.path.serviceUuid)}#${descriptor.path.serviceOccurrence}/${normalizeUuid(descriptor.path.characteristicUuid)}#${descriptor.path.characteristicOccurrence}/${normalizeUuid(descriptor.path.descriptorUuid)}#${descriptor.path.descriptorOccurrence} in the discovered GATT database.`,
+        {
+          serviceUuid: normalizeUuid(descriptor.path.serviceUuid),
+          serviceOccurrence: descriptor.path.serviceOccurrence,
+          characteristicUuid: normalizeUuid(descriptor.path.characteristicUuid),
+          characteristicOccurrence: descriptor.path.characteristicOccurrence,
+          descriptorUuid: normalizeUuid(descriptor.path.descriptorUuid),
+          descriptorOccurrence: descriptor.path.descriptorOccurrence
+        }
+      )
     }
     descriptorKeys.add(key)
   }
@@ -664,6 +709,28 @@ function validateTopology(snapshot: PortableGattDatabaseSnapshot): void {
       }
     }
   }
+}
+
+/**
+ * Finding 182 diagnosability: a topology rejection names the offending
+ * path (uuids + occurrences) in the error's platform detail, never only a
+ * bare code — against real hardware a bare
+ * `duplicate-characteristic-path` names nothing to look at.
+ */
+function topologyViolation(
+  operation: string,
+  safeMessage: string,
+  metadata: { readonly [key: string]: string }
+): unknown {
+  const code = operation.startsWith('public-gatt.') ? operation.slice('public-gatt.'.length) : operation
+  return rehydratePublicError(
+    contractError('protocol.violation', 'gatt', operation, {
+      domain: 'gatt',
+      code,
+      safeMessage,
+      metadata: Object.freeze({ ...metadata })
+    })
+  )
 }
 
 function assertDatabasePath(

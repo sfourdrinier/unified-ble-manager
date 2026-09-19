@@ -42,8 +42,23 @@ export function createFakeManager({
   reads = {},
   connectFailures = [],
   peerName = 'Polar H10 1234',
-  releaseError = null
+  releaseError = null,
+  managerId = 'fake-manager',
+  // Finding 185: a process-shared stuck-scan registry modelling the process
+  // host's scan lease across scenario managers (every scenario run creates
+  // its own manager). The doubles model the fixed provider contract —
+  // `find` heals a retained membership before starting, `destroy` clears
+  // the owner's stuck scan like the fixed dispose — while the provider
+  // tests prove the provider honors it. `failFindStop` leaves the run's
+  // scan open while `find` still reports its cleanup failure loudly.
+  sharedScans = null,
+  failFindStop = 0,
+  // Models a dispose that also failed (finding 185 residual): the stuck
+  // scan survives destroy with visible debt, and the next find heals it.
+  failDispose = 0
 } = {}) {
+  let pendingFindStopFailures = failFindStop
+  let pendingDisposeFailures = failDispose
   const pendingConnectFailures = [...connectFailures]
   const reported = { ...(discovery === 'system-chooser' ? CHOOSING : SCANNING), ...capabilities }
   const calls = []
@@ -123,6 +138,15 @@ export function createFakeManager({
     },
     async find(options) {
       calls.push(`find ${JSON.stringify(options.query)}`)
+      if (sharedScans !== null && sharedScans.has('stuck')) {
+        calls.push('heal stuck scan')
+        sharedScans.delete('stuck')
+      }
+      if (pendingFindStopFailures > 0) {
+        pendingFindStopFailures -= 1
+        sharedScans?.set('stuck', { owner: managerId })
+        throw Object.assign(new Error('find cleanup: scan stop failed'), { code: 'platform.failure' })
+      }
       return peer
     },
     async choose(options) {
@@ -137,6 +161,14 @@ export function createFakeManager({
     },
     async destroy() {
       calls.push('manager.destroy')
+      if (pendingDisposeFailures > 0) {
+        pendingDisposeFailures -= 1
+        return {
+          state: 'release-failed',
+          failures: [{ resourceKind: 'scan', error: { code: 'platform.failure' } }]
+        }
+      }
+      if (sharedScans?.get('stuck')?.owner === managerId) sharedScans.delete('stuck')
       return released()
     }
   }

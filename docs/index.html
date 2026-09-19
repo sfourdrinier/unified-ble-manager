@@ -649,6 +649,38 @@ bunx eas build --profile development --platform android
               </li>
             </ul>
             <p>The plugin never requests runtime permission during import or prebuild.</p>
+            <h3>runtime permission prompt</h3>
+            <p>
+              <code>manager.permissions.request({ purpose: 'scan-and-connect' })</code> performs the readiness
+              <code>request-permission</code> action on every platform and reports the same shape:
+              <code>{ requested, granted, denied, recommendedSettingsTarget }</code>.
+            </p>
+            <ul>
+              <li>
+                Android shows the runtime prompt (<code>BLUETOOTH_SCAN</code>/<code>BLUETOOTH_CONNECT</code> on API 31+,
+                legacy location below) and answers at once when decided.
+              </li>
+              <li>
+                Apple (iOS and tvOS) presents the CoreBluetooth prompt on request: the process central is allocated by
+                the request itself, never at startup, so reading <code>manager.readiness()</code> never prompts. A
+                decided authorization answers at once; the request waits for the user's decision otherwise, and accepts
+                an optional <code>timeoutMs</code> and <code>signal</code> (<code>operation.timed-out</code> /
+                <code>operation.aborted</code>; without them it waits like bonding). A restriction (parental
+                controls/MDM) is genuinely unpromptable and refuses <code>capability.unsupported</code> with its reason
+                instead of a denial, matching the <code>unavailable</code> readiness it maps to.
+              </li>
+              <li>
+                Apple decides from <code>CBManager.authorization</code> (iOS 13.1+, tvOS 13.0+): the class property
+                reads the state without allocating a manager, allocation prompts while undecided, and updates arrive via
+                <code>centralManagerDidUpdateState</code>. The prompt needs the managed
+                <code>NSBluetoothAlwaysUsageDescription</code> (<code>bluetoothAlways</code> above).
+              </li>
+              <li>
+                With a restoration id configured the central is allocated at startup, as
+                <code>willRestoreState</code> requires, and the prompt may appear there; without one it waits for the
+                first explicit need.
+              </li>
+            </ul>
             <p>
               The Expo host also exposes an Android-only Companion Device Manager ceremony:
               <code>ble.association.associate({ name, serviceUuid })</code>. It launches Android system UI and returns

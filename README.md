@@ -127,6 +127,8 @@ const manager = await createReactNativeBleManager({
 
 On Android 12+ the app must request `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT` itself. The library does not call `PermissionsAndroid`.
 
+On Expo, follow `manager.readiness()` actions: `manager.permissions.request({ purpose: 'scan-and-connect' })` shows the system Bluetooth prompt on Android and on Apple (iOS/tvOS, on request — reading readiness never prompts) and reports `{ requested, granted, denied, recommendedSettingsTarget }`. See [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md) for the prompt, restriction, timeout, and restoration semantics.
+
 On Android, `manager.peers.bonded()` lists paired system peers and
 `manager.peers.resolve(reference)` rechecks a saved reference before
 `manager.connect(peer, { intent: 'when-available' })`; paired does not mean

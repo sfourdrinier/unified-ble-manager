@@ -406,10 +406,14 @@ class ReactNativeRustCoreManager {
 
   private async destroyOwningManager(): Promise<CleanupRecord> {
     const ownCleanup = await this.releaseOwnedResources()
-    if (ownCleanup.state === 'release-failed') {
-      return ownCleanup
-    }
-    return this.backend.destroy()
+    // Finding 185: a debt above must not strand the backend session — an
+    // unreleased scan membership would survive the destroyed manager and
+    // brick every later scan on the process host with scan.already-active.
+    // The backend dispose retries the native release; both records merge so
+    // no debt is swallowed.
+    const backendCleanup = await this.backend.destroy()
+    const failures: CleanupFailure[] = [...ownCleanup.failures, ...backendCleanup.failures]
+    return failures.length === 0 ? { state: 'released', failures: [] } : { state: 'release-failed', failures }
   }
 
   revokeForOwnerDestroy(): Promise<CleanupRecord> {

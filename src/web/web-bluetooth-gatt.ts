@@ -1,7 +1,7 @@
 // src/web/web-bluetooth-gatt.ts
 
 import type { BackendConnection, BackendSubscription, GattBackend } from '../backend-contract/backend'
-import { contractError } from '../backend-contract/errors'
+import { BackendContractError, contractError } from '../backend-contract/errors'
 import type { CleanupFailure, CleanupRecord } from '../backend-contract/errors'
 import type { AttachmentRecord } from '../backend-contract/identity'
 import {
@@ -325,14 +325,27 @@ export class WebBluetoothGattRuntime {
           })
         )
         characteristicBoundaries.set(characteristicKey(path), nativeCharacteristic)
-        const nativeDescriptors = await this.host.runAbortable(
-          record,
-          options,
-          () => nativeCharacteristic.getDescriptors(),
-          'gatt.not-found',
-          'gatt',
-          'web-gatt.discover-descriptors'
-        )
+        // Web Bluetooth's getDescriptors() rejects with NotFoundError when
+        // the characteristic has no descriptors (finding 188, Polar H10 on
+        // Chrome): that is an empty descriptor list, never a discovery
+        // failure. Any other error stays an error.
+        let nativeDescriptors: readonly WebBluetoothDescriptorBoundary[]
+        try {
+          nativeDescriptors = await this.host.runAbortable(
+            record,
+            options,
+            () => nativeCharacteristic.getDescriptors(),
+            'gatt.not-found',
+            'gatt',
+            'web-gatt.discover-descriptors'
+          )
+        } catch (error) {
+          if (error instanceof BackendContractError && error.normalized.code === 'gatt.not-found') {
+            nativeDescriptors = []
+          } else {
+            throw error
+          }
+        }
         const descriptorOccurrences = new Map<string, number>()
         for (let descriptorIndex = 0; descriptorIndex < nativeDescriptors.length; descriptorIndex += 1) {
           const nativeDescriptor = nativeDescriptors[descriptorIndex]

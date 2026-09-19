@@ -80,6 +80,7 @@ import type { PeerReference } from '../public/peer-reference'
 import { createPublicSecurity } from '../public/security'
 import type { BleSecurity } from '../public/security'
 import { rehydratePublicError, rehydratePublicPromise, runWithCleanup } from '../public/error-bridge'
+import { BleError } from '../public/errors'
 import { toPublicCleanupRecord, type CleanupRecord as PublicCleanupRecord } from '../public/cleanup'
 import { mapPublicBoundedAsyncStream, type PublicBoundedAsyncStream } from '../public/streams'
 import { resolveStreamPolicy } from '../public/stream-presets'
@@ -474,6 +475,34 @@ function requireIpcControlCapability(
   return descriptor
 }
 
+/**
+ * Finding 190b: a fail-closed control error that carries the snapshot's own
+ * reason, mirroring the public layer — so the renderer learns the platform
+ * words (for example `effective-mtu-boundary-unavailable`) instead of a
+ * bare `capability.unsupported`.
+ */
+function ipcControlCapabilityError(capabilities: BleCapabilities, id: `${string}:${string}`, operation: string): Error {
+  const descriptor = capabilities.get(id)
+  const limitations = descriptor?.limitations ?? []
+  const primary = limitations[0]
+  if (descriptor === undefined || primary === undefined) {
+    return contractError('capability.unsupported', 'connection', operation)
+  }
+  return new BleError('capability.unsupported', 'connection', operation, {
+    limitations,
+    platform: {
+      domain: 'capability',
+      code: primary.code,
+      safeMessage: limitations.map(limitation => limitation.explanation).join(' '),
+      metadata: {
+        featureId: descriptor.id,
+        state: descriptor.state,
+        limitationCodes: limitations.map(limitation => limitation.code)
+      }
+    }
+  })
+}
+
 function ipcControlMetadata(
   generation: string,
   capabilities: CapabilityDescriptor,
@@ -581,7 +610,17 @@ function createIpcConnectionControls(
 
   return Object.freeze({
     readRssi,
-    effectiveMtu: (): Promise<MtuObservation> => unsupportedPromise('ipc-public-manager.controls.effective-mtu'),
+    // Finding 190b: fail-closed like every desktop host, but with the
+    // snapshot's own reason (for example
+    // `effective-mtu-boundary-unavailable`), never a bare unsupported.
+    effectiveMtu: (): Promise<MtuObservation> =>
+      runIpcControl(async () => {
+        throw ipcControlCapabilityError(
+          capabilities,
+          BUILT_IN_FEATURE_IDS.connectionEffectiveMtu,
+          'ipc-public-manager.controls.effective-mtu'
+        )
+      }),
     requestMtu: (_mtu: number, _options: OperationOptions = {}): Promise<MtuNegotiation> =>
       unsupportedPromise('ipc-public-manager.controls.request-mtu'),
     maximumWriteLength,

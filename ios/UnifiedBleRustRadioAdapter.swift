@@ -120,7 +120,7 @@ extension OwnedCoreBluetoothProtocolRadio: UnifiedBleRustRadioDriver {
 
   func adapterSnapshot(completion: @escaping (NSDictionary) -> Void) {
     queue.async {
-      completion(OwnedCoreBluetoothProtocolRadioSupport.adapterSnapshotDictionary(central: self.central))
+      completion(self.snapshotOnQueue())
     }
   }
 
@@ -670,7 +670,7 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
   static func ownedRefusedBeforeSending(_ code: Int, verb: Verb) -> Bool {
     switch code {
     case 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010, 1012, 1013, 1014, 1017, 1018, 1019,
-      1022, 1023, 1024, 1028, 1029, 1033:
+      1022, 1023, 1024, 1028, 1029, 1033, 1034:
       return true
     case 1025: return true
     case 1026: return verb == .readDescriptor
@@ -717,6 +717,7 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
     case 1010, 1013, 1017, 1019, 1028: return "path-stale"
     case 1001, 1006, 1009, 1014, 1018, 1023, 1024, 1029: return "busy"
     case 1003: return "adapter-off"
+    case 1034: return "permission-not-determined"
     case 1025: return verb == .readDescriptor ? "path-stale" : "busy"
     case 1026: return verb == .readDescriptor ? "busy" : (verb == .discover ? "path-stale" : "platform")
     case 1027: return verb == .writeDescriptor ? "platform" : "path-stale"

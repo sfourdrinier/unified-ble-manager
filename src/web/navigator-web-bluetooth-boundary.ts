@@ -76,6 +76,8 @@ interface BrowserBluetoothGattServer {
 
 interface BrowserBluetoothDevice {
   readonly id: string
+  /** `BluetoothDevice.name`; absent (`null`/`undefined`) when the browser withholds it. */
+  readonly name?: string | null
   readonly gatt?: BrowserBluetoothGattServer | null
   addEventListener(type: 'gattserverdisconnected', listener: () => void): void
   removeEventListener(type: 'gattserverdisconnected', listener: () => void): void
@@ -272,11 +274,13 @@ export class NavigatorWebBluetoothBoundary implements WebBluetoothBoundary {
 
 class NavigatorDeviceBoundary implements WebBluetoothDeviceBoundary {
   readonly id: string
+  readonly name: string | null
   readonly gatt: WebBluetoothGattServerBoundary
   private readonly disconnectListeners = new Map<WebBluetoothDisconnectListener, () => void>()
 
   constructor(private readonly device: BrowserBluetoothDevice) {
     this.id = device.id
+    this.name = device.name ?? null
     if (device.gatt === undefined || device.gatt === null) {
       const error = new Error('Selected device does not expose a GATT server')
       error.name = 'NotSupportedError'

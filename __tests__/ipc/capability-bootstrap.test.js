@@ -47,6 +47,31 @@ describe('trusted IPC capability bootstrap', () => {
     })
   })
 
+  test('finding 190b: the projection keeps the native reason first and appends its routing note', () => {
+    const source = descriptor('connection:effective-mtu', 'connection-controls')
+    source.state = 'unsupported'
+    const nativeLimitation = {
+      code: 'effective-mtu-boundary-unavailable',
+      explanation: 'The dispatcher exposes no authoritative current ATT MTU observation.',
+      affectedGuarantee: 'current effective ATT MTU observation'
+    }
+    source.limitations = [nativeLimitation]
+    const projected = projectRemoteCapabilities({
+      schemaVersion: 2,
+      backendGeneration: 'backend-generation-1',
+      descriptors: [source]
+    })
+
+    expect(projected.descriptors[0]).toMatchObject({
+      id: source.id,
+      state: 'unsupported',
+      limitations: [
+        expect.objectContaining({ code: 'effective-mtu-boundary-unavailable' }),
+        expect.objectContaining({ code: 'ipc-renderer-control-unavailable' })
+      ]
+    })
+  })
+
   test('projects host descriptors without changing evidence or TCK data', () => {
     const source = descriptor('gatt:indications', 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation')
     const capabilities = createPublicBleCapabilities(

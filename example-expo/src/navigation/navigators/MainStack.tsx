@@ -14,6 +14,7 @@ export type MainStackParamList = {
   EXPO_DIAGNOSTICS_SCREEN: undefined
   SCENARIOS_SCREEN: undefined
   SCENARIO_SCREEN: { scenarioId: string }
+  LIVE_DASHBOARD_SCREEN: undefined
 }
 
 const MainStack = createNativeStackNavigator<MainStackParamList>()
@@ -79,6 +80,11 @@ export function MainStackComponent() {
         name="SCENARIO_SCREEN"
         component={screenComponents.ScenarioScreen}
         options={({ route }) => ({ headerTitle: route.params.scenarioId })}
+      />
+      <MainStack.Screen
+        name="LIVE_DASHBOARD_SCREEN"
+        component={screenComponents.LiveDashboardScreen}
+        options={{ headerTitle: 'Live dashboard' }}
       />
     </MainStack.Navigator>
   )

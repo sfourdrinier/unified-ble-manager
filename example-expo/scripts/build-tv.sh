@@ -19,10 +19,11 @@
 #   Source: npm @react-native-tvos/config-tv dist-tags (latest).
 #
 # Usage:
-#   bash example-expo/scripts/build-tv.sh stage     # rsync sources -> ios-tv, apply TV inputs
-#   bash example-expo/scripts/build-tv.sh install   # pnpm install in ios-tv
+#   bash example-expo/scripts/build-tv.sh stage     # rsync sources -> ios-tv, apply TV inputs, drop the staged library copy
+#   bash example-expo/scripts/build-tv.sh install   # pnpm install in ios-tv (re-resolves the library from the repo)
+#   bash example-expo/scripts/build-tv.sh verify-identity # staged library identity equals the repo (finding 176)
 #   bash example-expo/scripts/build-tv.sh prebuild  # EXPO_TV=1 expo prebuild --platform ios + pod install
-#   bash example-expo/scripts/build-tv.sh bundle-url # point staged AppDelegate at the TV Metro
+#   bash example-expo/scripts/build-tv.sh bundle-url # point staged AppDelegate at the TV Metro (TV_METRO_PORT wins)
 #   bash example-expo/scripts/build-tv.sh build     # Debug .app for a real Apple TV (needs DEVELOPMENT_TEAM)
 #   bash example-expo/scripts/build-tv.sh metro     # serve the staged TV bundle (TV_METRO_PORT)
 #   bash example-expo/scripts/build-tv.sh all       # stage..build
@@ -38,7 +39,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ROOT="$(cd "${APP_DIR}/.." && pwd)"
-STAGE="${APP_DIR}/ios-tv"
+STAGE="${TV_STAGE_DIR:-${APP_DIR}/ios-tv}"
 
 TV_METRO_PORT="${TV_METRO_PORT:-8081}"
 TV_LAN_HOST="${TV_LAN_HOST:-192.168.68.116}"
@@ -48,7 +49,16 @@ CONFIG_TV_VERSION="${CONFIG_TV_VERSION:-0.1.6}"
 TV_DEVICE_ID="${TV_DEVICE_ID:-27C3EE87-9EB5-54C1-8CAB-52D33CB077C9}"
 TV_BUNDLE_ID="${TV_BUNDLE_ID:-com.sfourdrinier.bleplxexample}"
 
-if [[ "${STAGE}" != "${APP_DIR}"/* ]]; then
+if [[ -n "${TV_STAGE_DIR:-}" ]]; then
+  # Test/CI override: an absolute tmp dir, never the real tree.
+  _tv_tmp="${TMPDIR:-/tmp}"
+  _tv_tmp="${_tv_tmp%/}"
+  case "${STAGE}" in
+    /tmp/*|"$_tv_tmp"/*) ;;
+    *) echo "error: TV_STAGE_DIR must be an absolute tmp dir (${STAGE})" >&2; exit 1 ;;
+  esac
+  unset _tv_tmp
+elif [[ "${STAGE}" != "${APP_DIR}"/* ]]; then
   echo "error: stage dir escaped the app dir (${STAGE})" >&2
   exit 1
 fi
@@ -67,6 +77,13 @@ cmd_stage() {
     --exclude '/dist' \
     --exclude '/web-build' \
     "${APP_DIR}/" "${STAGE}/"
+
+  # Finding 176: pnpm reuses a present `file:` dependency directory, so a
+  # re-stage must drop the staged unified-ble-manager copy. The next
+  # `install` then resolves it fresh from the current repo instead of
+  # keeping a stale build that fails closed with protocol.incompatible
+  # native-identity.
+  rm -rf "${STAGE}/node_modules/unified-ble-manager"
 
   # TV build inputs, applied to the staged copy only.
   node -e '
@@ -124,6 +141,31 @@ cmd_install() {
   (cd "${STAGE}" && NODE_OPTIONS=--max-old-space-size=8192 pnpm install --no-frozen-lockfile)
 }
 
+cmd_verify_identity() {
+  # Finding 176: the staged build identity must equal the repo's, or the TV
+  # app fails closed at runtime with protocol.incompatible native-identity.
+  # Check it here — right after install — instead of on the Apple TV.
+  local staged_lib="${STAGE}/node_modules/unified-ble-manager"
+  local staged_identity="${staged_lib}/src/generated/native-build-identity.ts"
+  local repo_identity="${ROOT}/src/generated/native-build-identity.ts"
+  if [[ ! -f "${staged_identity}" ]]; then
+    echo "error: staged unified-ble-manager has no src/generated/native-build-identity.ts (${staged_identity}): run install first" >&2
+    exit 1
+  fi
+  if ! cmp -s "${repo_identity}" "${staged_identity}"; then
+    echo "error: staged unified-ble-manager build identity is stale (diff ${repo_identity} ${staged_identity}): re-run stage, then install" >&2
+    exit 1
+  fi
+  local repo_version staged_version
+  repo_version="$(node -e "console.log(require('${ROOT}/package.json').version)")"
+  staged_version="$(node -e "console.log(require('${staged_lib}/package.json').version)")"
+  if [[ "${repo_version}" != "${staged_version}" ]]; then
+    echo "error: staged unified-ble-manager version ${staged_version} != repo ${repo_version}: re-run stage, then install" >&2
+    exit 1
+  fi
+  echo "staged unified-ble-manager identity matches the repo (version ${repo_version})"
+}
+
 cmd_prebuild() {
   (cd "${STAGE}" && EXPO_TV=1 npx expo prebuild --platform ios --clean --no-install)
   # react-native-tvos ships React-Core as a prebuilt tarball that pod install
@@ -160,8 +202,23 @@ cmd_bundle_url() {
   # override), pointed at the TV Metro: the staged tree resolves
   # react-native-tvos, so it needs its own packager, while the driver server
   # stays shared on 8795 (derived from the bundle host).
+  # Finding 176: TV_METRO_PORT wins every time. A stale override from a
+  # previous run (for example the default 8081) is replaced, never kept.
   if grep -q 'jsLocation = "' "${delegate}"; then
-    echo "bundle URL override already present in ${delegate}"
+    if grep -q "jsLocation = \"${TV_LAN_HOST}:${TV_METRO_PORT}\"" "${delegate}"; then
+      echo "bundle URL override already present in ${delegate}"
+      return 0
+    fi
+    python3 - "${delegate}" "${TV_LAN_HOST}:${TV_METRO_PORT}" <<'EOF'
+import sys
+path, location = sys.argv[1], sys.argv[2]
+import re
+text = open(path).read()
+updated, count = re.subn(r'jsLocation = "[^"]*"', f'jsLocation = "{location}"', text, count=1)
+assert count == 1, "bundle URL override not found"
+open(path, "w").write(updated)
+EOF
+    echo "bundle URL override -> ${TV_LAN_HOST}:${TV_METRO_PORT} in ${delegate}"
     return 0
   fi
   python3 - "${delegate}" "${TV_LAN_HOST}:${TV_METRO_PORT}" <<'EOF'
@@ -226,12 +283,13 @@ cmd_launch_tv() {
 case "${1:-all}" in
   stage) cmd_stage ;;
   install) cmd_install ;;
+  verify-identity) cmd_verify_identity ;;
   prebuild) cmd_prebuild ;;
   bundle-url) cmd_bundle_url ;;
   build) cmd_build ;;
   metro) cmd_metro ;;
   install-tv) cmd_install_tv ;;
   launch-tv) cmd_launch_tv ;;
-  all) cmd_stage; cmd_install; cmd_prebuild; cmd_bundle_url; cmd_build ;;
-  *) echo "usage: $0 [stage|install|prebuild|bundle-url|build|metro|install-tv|launch-tv|all]" >&2; exit 1 ;;
+  all) cmd_stage; cmd_install; cmd_verify_identity; cmd_prebuild; cmd_bundle_url; cmd_build ;;
+  *) echo "usage: $0 [stage|install|verify-identity|prebuild|bundle-url|build|metro|install-tv|launch-tv|all]" >&2; exit 1 ;;
 esac
