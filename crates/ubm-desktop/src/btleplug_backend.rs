@@ -1018,40 +1018,6 @@ impl BtleplugRadio {
         }
     }
 
-    /// Linux: every device BlueZ already knows, as the legacy BlueZ backend
-    /// reported them when a scan started (`bluez-scan-runtime.ts`): BlueZ
-    /// raises no new signal for a device it already holds, so a second scan
-    /// would otherwise never see it (finding 120). Each is its merged
-    /// `Device1` state, labelled so.
-    #[cfg(target_os = "linux")]
-    async fn report_known_devices(&self) {
-        let peripherals = match self.adapter.peripherals().await {
-            Ok(peripherals) => peripherals,
-            Err(error) => {
-                note_unread_sighting("<adapter>", &error.to_string());
-                return;
-            }
-        };
-        for peripheral in &peripherals {
-            match self.snapshot(peripheral).await {
-                Ok(snapshot) => {
-                    if self
-                        ._os_events_tx
-                        .send(RadioEvent::Advertisement(snapshot))
-                        .await
-                        .is_err()
-                    {
-                        return;
-                    }
-                }
-                Err(error) => note_unread_sighting(
-                    &peripheral.id().to_string(),
-                    error.detail().unwrap_or(error.code_str()),
-                ),
-            }
-        }
-    }
-
     /// CoreBluetooth reports read responses and notifications through one
     /// callback; the vendored btleplug (UBM_PATCHES.md #14) says which the
     /// value can be. WinRT (`ReadValueAsync`, uncached) and BlueZ
@@ -2256,8 +2222,9 @@ impl RadioBoundary for BtleplugRadio {
             })
             .await
             .map_err(|error| DesktopError::scan_start_failed(error.to_string()).with_os(&error))?;
-        #[cfg(target_os = "linux")]
-        self.report_known_devices().await;
+        // Finding 205: known devices are re-observed once by the central at
+        // scan start on every platform (`reobserve_known_peers`), so no
+        // per-OS report runs here.
         Ok(())
     }
 

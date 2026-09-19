@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 use ubm_desktop::OpControl;
-use ubm_desktop::{DesktopCentral, FakeRadio, PeerSnapshot, RadioEvent};
+use ubm_desktop::{DesktopCentral, FakeRadio, ObservationSource, PeerSnapshot, RadioEvent};
 
 const FIXTURES: &str = include_str!("fixtures/vendor_advertisements.json");
 
@@ -471,6 +471,74 @@ async fn sightings_belong_to_the_scan_that_was_live() {
     central.shutdown().await;
 }
 
+/// Finding 205: a connected-then-disconnected peer is re-observed when a new
+/// scan starts with duplicates:all, even when the OS reports no new sighting
+/// (CoreBluetooth withholds repeats for known peers). The re-observation is
+/// the OS's device state and belongs to the new scan — never a stale
+/// sighting from an earlier scan.
+#[tokio::test]
+async fn a_connected_then_disconnected_peer_is_re_observed_when_a_new_scan_starts() {
+    let central = DesktopCentral::open(FakeRadio::new(), "f205-host")
+        .await
+        .expect("open central");
+    // The peer becomes known through a full connect/disconnect lifecycle.
+    central
+        .boundary()
+        .push_event(sighting("h10", "Polar H10 SIM0001"));
+    wait_peer(&central, "h10").await;
+    central
+        .connect("h10", "lease-a", OpControl::budget_ms(5000))
+        .await
+        .expect("connect");
+    central
+        .disconnect("h10", "lease-a", OpControl::budget_ms(5000))
+        .await
+        .expect("disconnect");
+    // The OS keeps the peripheral in its known listing but reports no new
+    // sighting for it: the repeat is stale-filtered before it reaches us.
+    central.boundary().set_peers(vec![PeerSnapshot {
+        id: "h10".to_owned(),
+        address: None,
+        service_uuids: Vec::new(),
+        rssi: Some(-60),
+        local_name: Some("Polar H10 SIM0001".to_owned()),
+        manufacturer_data: Vec::new(),
+        service_data: Vec::new(),
+        tx_power_level: None,
+        extras: ubm_desktop::AdvertisementExtras::default(),
+    }]);
+    let scan = central
+        .start_scan_with(
+            "owner",
+            &[],
+            ubm_desktop::ScanDuplicatePolicy::All,
+            OpControl::budget_ms(5000),
+        )
+        .await
+        .expect("scan");
+    // No new radio sighting is pushed: the observation must come from the
+    // known-peer re-read, labelled as the OS's device state.
+    let observation = central
+        .take_scan_observation()
+        .await
+        .expect("the known peer is re-observed");
+    assert_eq!(observation.snapshot.id, "h10");
+    assert_eq!(
+        observation.snapshot.local_name.as_deref(),
+        Some("Polar H10 SIM0001")
+    );
+    assert_eq!(&observation.scan_operation_id, scan.operation_id());
+    assert_eq!(
+        observation.snapshot.extras.source,
+        ObservationSource::DeviceState
+    );
+    central
+        .stop_scan(scan.operation_id(), OpControl::budget_ms(5000))
+        .await
+        .expect("stop");
+    central.shutdown().await;
+}
+
 /// Finding 120 (Tauri cadence): a host that re-read every known peripheral
 /// during a scan (Tauri 4.x, every 2 s) keeps that cadence: each known
 /// peer is observed again every period while a scan runs, labelled as the
@@ -493,13 +561,25 @@ async fn known_peers_are_re_observed_on_the_configured_cadence() {
     }]);
     central.set_known_peer_refresh(Some(Duration::from_secs(2)));
     tokio::time::sleep(Duration::from_secs(5)).await;
+    assert!(
+        central.take_scan_observation().await.is_none(),
+        "no re-read outside a scan reaches it"
+    );
     let scan = central
         .start_scan("owner", &[], OpControl::budget_ms(5000))
         .await
         .expect("scan");
-    assert!(
-        central.take_scan_observation().await.is_none(),
-        "no re-read outside a scan reaches it"
+    // Finding 205: the scan start itself re-observes the known peer once,
+    // labelled as the OS's device state and belonging to the new scan.
+    let initial = central
+        .take_scan_observation()
+        .await
+        .expect("scan-start re-observation");
+    assert_eq!(initial.snapshot.id, "known");
+    assert_eq!(&initial.scan_operation_id, scan.operation_id());
+    assert_eq!(
+        initial.snapshot.extras.source,
+        ObservationSource::DeviceState
     );
     for round in 0..3 {
         tokio::time::sleep(Duration::from_millis(2_100)).await;

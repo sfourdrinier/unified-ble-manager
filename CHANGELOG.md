@@ -627,6 +627,14 @@ previousAttachmentId, attachmentId, attachment}}`. The renderer/webview
 
 ### Fixed
 
+- **Desktop scans keep reporting known peripherals (finding 205).** A
+  peripheral that had been connected stopped appearing in name-filtered scans
+  on macOS: CoreBluetooth replaced the advertised name with the GAP name read
+  over the connection. The merged scan name and nameless sightings now track
+  the advertised name, and every desktop scan re-observes each known
+  peripheral once at scan start (previously BlueZ only). The Tauri 2 s cadence
+  is unchanged.
+
 - **Write receipts, IPC release and reconnect (review wave R2).** A write
   without response reports `commitState: 'unknown'` on every host, Tauri
   included; a renderer receiving `'accepted'` rejects it as

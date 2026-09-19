@@ -35,6 +35,7 @@ pub struct EcgFrameVector {
 #[derive(Debug, Serialize)]
 pub struct TestVectors {
     pub hr_measurements: Vec<HrVector>,
+    pub hr_no_contact: HrVector,
     pub hr_no_rr: HrVector,
     pub body_location: Vec<u8>,
     pub pmd_features: Vec<u8>,
@@ -43,9 +44,11 @@ pub struct TestVectors {
 }
 
 pub fn test_vectors(state: &SimState) -> TestVectors {
+    // Contact-detected vectors keep exercising the parser's contact path;
+    // the strap default (no contact bits) rides in `hr_no_contact`.
     let hr_case = |bpm: u8| {
         let rr_s = vec![60.0 / f64::from(bpm)];
-        let bytes = gatt_spec::encode_hr_measurement(bpm, &rr_s);
+        let bytes = gatt_spec::encode_hr_measurement_with_contact(bpm, &rr_s, true);
         HrVector { bpm, rr_s, bytes }
     };
     let ecg_case = |timestamp_ns: u64, start_index: u64, count: usize| {
@@ -65,6 +68,13 @@ pub fn test_vectors(state: &SimState) -> TestVectors {
     };
     TestVectors {
         hr_measurements: vec![hr_case(48), hr_case(72), hr_case(150)],
+        hr_no_contact: HrVector {
+            // Byte-identical to recorded packet 1 (1058bd02): 88 bpm,
+            // one RR interval of 701/1024 s, contact not supported.
+            bpm: 88,
+            rr_s: vec![701.0 / 1024.0],
+            bytes: gatt_spec::encode_hr_measurement_no_contact(88, &[701.0 / 1024.0]),
+        },
         hr_no_rr: HrVector {
             bpm: 90,
             rr_s: Vec::new(),

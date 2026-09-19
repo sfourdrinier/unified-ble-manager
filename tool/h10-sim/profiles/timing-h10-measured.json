@@ -1,0 +1,31 @@
+{
+  "seed": 0,
+  "hr_interval": {
+    "median_ms": 993,
+    "spread_ms": 382.0272689783199,
+    "min_ms": 0,
+    "confirmed": true,
+    "source": "capture timings.hrNotificationIntervalMs"
+  },
+  "pmd_response": {
+    "median_ms": 993.9999999999418,
+    "spread_ms": 2.6246692912830594,
+    "min_ms": 989.0000000000582,
+    "confirmed": true,
+    "source": "capture timings.pmdResponseMs"
+  },
+  "ecg_frame_jitter": {
+    "median_ms": 0.0,
+    "spread_ms": 0.00916367664086846,
+    "min_ms": 0.0,
+    "confirmed": true,
+    "source": "capture timings.ecgFrameIntervalMs"
+  },
+  "advertising_interval": {
+    "median_ms": 1042,
+    "spread_ms": 752.0301774231549,
+    "min_ms": 1,
+    "confirmed": true,
+    "source": "capture timings.advertisement.advertisementIntervalMs"
+  }
+}

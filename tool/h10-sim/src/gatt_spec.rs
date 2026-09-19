@@ -72,6 +72,11 @@ pub const POLAR_COMPANY_ID: u16 = 0x006B;
 /// H10 ECG stream parameters (Polar preferred: 130 Hz, 14-bit resolution).
 pub const H10_ECG_SAMPLE_RATE_HZ: u16 = 130;
 pub const H10_ECG_RESOLUTION_BITS: u16 = 14;
+/// H10 ECG frame geometry, pinned by the h10-capture fingerprints in
+/// `fixtures/h10-fingerprints/` (`ecgSamplesPerFrame`: 73 samples, consistent,
+/// on all three capture hosts; frame interval ~561.6 ms = 73/130 s).
+pub const H10_ECG_SAMPLES_PER_FRAME: usize = 73;
+pub const H10_ECG_FRAMES_PER_SEC: f64 = 130.0 / 73.0;
 
 /// H10 body sensor location: chest (SIG Body Sensor Location §3.4, value 1).
 pub const BODY_LOCATION_CHEST: u8 = 1;
@@ -105,10 +110,31 @@ pub const DEFAULT_ADV_NAME: &str = "Polar H10 SIM0001";
 
 /// Encodes a Heart Rate Measurement (SIG 0x2A37).
 ///
-/// Flags match the H10: uint8 bpm, sensor-contact supported + detected, and
-/// RR-Interval present whenever intervals are supplied.
+/// Flags match the strap: uint8 bpm, sensor contact not supported, and
+/// RR-Interval present whenever intervals are supplied (`0x10` with RR,
+/// `0x00` without — all 120 raw packets in `fixtures/h10-raw` agree).
+/// Explicit contact simulation stays available through
+/// [`encode_hr_measurement_with_contact`].
 pub fn encode_hr_measurement(bpm: u8, rr_intervals_s: &[f64]) -> Vec<u8> {
-    encode_hr_measurement_with_contact(bpm, rr_intervals_s, true)
+    encode_hr_measurement_no_contact(bpm, rr_intervals_s)
+}
+
+/// Encodes a Heart Rate Measurement with no sensor-contact bits: `0x10`
+/// when RR intervals are present, `0x00` otherwise (SIG HRS §3.3 bits 1–2
+/// clear = contact not supported — what the strap sends).
+pub fn encode_hr_measurement_no_contact(bpm: u8, rr_intervals_s: &[f64]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + rr_intervals_s.len() * 2);
+    out.push(if rr_intervals_s.is_empty() {
+        0x00
+    } else {
+        HR_FLAG_RR_PRESENT
+    });
+    out.push(bpm);
+    for interval in rr_intervals_s {
+        let units = (interval * 1024.0).round().clamp(0.0, 65_535.0) as u16;
+        out.extend_from_slice(&units.to_le_bytes());
+    }
+    out
 }
 
 /// Encodes a Heart Rate Measurement with an explicit contact state: contact
@@ -137,6 +163,15 @@ pub fn encode_hr_measurement_with_contact(
     out
 }
 
+/// Encodes a Device Information string (SIG DIS 1.1): UTF-8 with the strap's
+/// trailing NUL (`fixtures/h10-fingerprints/*/values.*.raw` all end in 00).
+pub fn encode_dis_string(text: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len() + 1);
+    out.extend_from_slice(text.as_bytes());
+    out.push(0x00);
+    out
+}
+
 /// Encodes Body Sensor Location (SIG 0x2A38): chest.
 pub fn encode_body_sensor_location() -> Vec<u8> {
     vec![BODY_LOCATION_CHEST]
@@ -147,7 +182,7 @@ pub fn encode_battery_level(percent: u8) -> Vec<u8> {
     vec![percent.min(100)]
 }
 
-/// Encodes the PMD control-point feature read: the exact 15 bytes a real H10
+/// Encodes the PMD control-point feature read: the exact 17 bytes a real H10
 /// answers, pinned by the h10-capture fingerprints in
 /// `fixtures/h10-fingerprints/` (`0f050000…`, stable across all three capture
 /// hosts). Byte 1 is the SDK feature bitmap (`PmdMeasurementType.fromByteArray`):
@@ -156,6 +191,7 @@ pub fn encode_battery_level(percent: u8) -> Vec<u8> {
 pub fn encode_pmd_features() -> Vec<u8> {
     vec![
         0x0F, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00,
     ]
 }
 
@@ -221,9 +257,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hr_flags_match_h10_uint8_bpm_with_rr() {
+    fn hr_flags_match_strap_rr_present_contact_not_supported() {
+        // The 120 raw HR packets in fixtures/h10-raw all start with 0x10:
+        // uint8 bpm, RR present, sensor contact not supported.
         let bytes = encode_hr_measurement(72, &[0.833]);
-        assert_eq!(bytes[0], 0x16, "flags must be uint8 + contact + RR");
+        assert_eq!(bytes[0], 0x10, "flags must be uint8 + RR, no contact bits");
         assert_eq!(bytes[1], 72);
     }
 
@@ -239,9 +277,30 @@ mod tests {
     }
 
     #[test]
-    fn hr_without_rr_clears_rr_flag_but_keeps_contact() {
+    fn hr_without_rr_clears_rr_flag_and_reports_no_contact() {
         let bytes = encode_hr_measurement(90, &[]);
-        assert_eq!(bytes, vec![0x06, 90]);
+        assert_eq!(bytes, vec![0x00, 90]);
+    }
+
+    #[test]
+    fn dis_strings_carry_the_strap_trailing_nul() {
+        // Every DIS string in fixtures/h10-fingerprints ends in 0x00.
+        assert_eq!(encode_dis_string("Polar Electro Oy"), {
+            let mut expected = b"Polar Electro Oy".to_vec();
+            expected.push(0x00);
+            expected
+        });
+        assert_eq!(encode_dis_string("H10"), vec![0x48, 0x31, 0x30, 0x00]);
+    }
+
+    #[test]
+    fn ecg_geometry_matches_the_strap_frame() {
+        // All three captures: 73 samples/frame, consistent, 130 Hz.
+        assert_eq!(H10_ECG_SAMPLES_PER_FRAME, 73);
+        assert!(
+            (H10_ECG_FRAMES_PER_SEC - 130.0 / 73.0).abs() < 1e-12,
+            "frame cadence must satisfy frames x samples = 130 Hz"
+        );
     }
 
     #[test]
@@ -262,7 +321,7 @@ mod tests {
             encode_pmd_features(),
             vec![
                 0x0F, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00,
+                0x00, 0x00, 0x00,
             ],
             "byte-identical to fixtures/h10-fingerprints/*/values.pmdFeatures.raw",
         );

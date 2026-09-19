@@ -790,6 +790,21 @@ scan reports only advertisers of the requested services.
   - The report is sent after the events that update the merged state, as
     `CoreBluetoothEvent::Advertised`, and the adapter emits it.
   - Every rediscovery raises `DeviceUpdated`, named or not.
+  - Correction (finding 205): the merged name tracks the air
+    (`peripheral.rs` `fold_discovery_name`, applied in `update_name`): the
+    current advertisement's name wins, and a nameless rediscovery keeps the
+    last advertised name instead of falling back to the cached GAP name.
+    The GAP name seeds a peripheral no advertisement has named yet but
+    never overwrites an advertised one — after a connect resolves the GAP
+    name, every later nameless sighting would otherwise poison the merged
+    name, and with it every scan observation filtered on it.
+  - Correction (finding 205): a nameless sighting is labelled with the
+    last advertised name (`internal.rs` `fold_sighting_name`, stashed per
+    peripheral) instead of the GAP alias the report wears, so
+    name-filtered scans keep reporting a peer the OS replays namelessly
+    (ADV-only callbacks, daemon-synthesized replays). A named packet
+    refreshes the stash (a rename included); without any advertised name
+    yet the report keeps its GAP seed.
 - **WinRT:**
   - `Peripheral::advertisement_report` reads the received event itself, and
     the adapter emits the report, or `AdvertisementUnread`, for every
@@ -815,6 +830,12 @@ scan reports only advertisers of the requested services.
   is the labelled device state.
 - `btleplug_backend::tests::f122_a_sighting_carries_its_own_data_and_label`
   checks the observation carries the report's data and label.
+- `corebluetooth::peripheral::ubm_fold_name_tests` and
+  `corebluetooth::internal::ubm_fold_sighting_tests` (`cargo test -p
+  btleplug --lib`, macOS): first sightings, renames, GAP seeding, the
+  finding-205 merged case (a nameless rediscovery keeps the advertised
+  name despite the GAP name) and the sighting case (a nameless packet is
+  labelled from the stash).
 - The CoreBluetooth and WinRT callback wiring is compile-verified only.
 - Physical checks, not yet run:
   - on macOS, an unnamed peripheral is observed on every advertisement and

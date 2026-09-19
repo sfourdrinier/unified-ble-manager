@@ -86,6 +86,83 @@ impl CharacteristicInternal {
 /// UBM patch (UBM_PATCHES.md #14): answer the oldest pending read with one
 /// successful value update; whether the value must also reach the
 /// notification stream.
+/// UBM patch (UBM_PATCHES.md #17, finding 205): fold one advertisement
+/// callback's naming into the advertised-name stash and the sighting's
+/// label. A named packet refreshes the stash and the sighting keeps its own
+/// name; a nameless packet keeps the stash and the sighting is labelled
+/// with it instead of the GAP alias the report wears. Without any
+/// advertised name yet, the report keeps its GAP seed.
+pub(crate) fn fold_sighting_name(
+    stash: Option<String>,
+    advertisement_name: Option<String>,
+    report_name: Option<String>,
+) -> (Option<String>, Option<String>) {
+    match advertisement_name {
+        Some(advertised) => (Some(advertised), report_name),
+        None => (stash.clone(), stash.or(report_name)),
+    }
+}
+
+#[cfg(test)]
+mod ubm_fold_sighting_tests {
+    use super::fold_sighting_name;
+
+    fn owned(value: &str) -> Option<String> {
+        Some(value.to_owned())
+    }
+
+    #[test]
+    fn a_named_packet_refreshes_the_stash_and_keeps_its_name() {
+        assert_eq!(
+            fold_sighting_name(
+                owned("Polar H10 SIM0001"),
+                owned("Polar H10 SIM0001"),
+                owned("Polar H10 SIM0001")
+            ),
+            (owned("Polar H10 SIM0001"), owned("Polar H10 SIM0001"))
+        );
+    }
+
+    #[test]
+    fn a_renamed_packet_replaces_the_stash() {
+        assert_eq!(
+            fold_sighting_name(
+                owned("Polar H10 SIM0043"),
+                owned("Polar H10 SIM0044"),
+                owned("Polar H10 SIM0044"),
+            ),
+            (owned("Polar H10 SIM0044"), owned("Polar H10 SIM0044"))
+        );
+    }
+
+    #[test]
+    fn a_nameless_packet_is_labelled_with_the_stash_despite_the_gap_name() {
+        // Finding 205: the report wears the GAP alias for a nameless
+        // packet; the sighting must carry the advertised identity instead.
+        assert_eq!(
+            fold_sighting_name(owned("Polar H10 SIM0001"), None, owned("lx5090")),
+            (owned("Polar H10 SIM0001"), owned("Polar H10 SIM0001"))
+        );
+    }
+
+    #[test]
+    fn a_nameless_packet_without_a_report_name_is_labelled_from_the_stash() {
+        assert_eq!(
+            fold_sighting_name(owned("Polar H10 SIM0001"), None, None),
+            (owned("Polar H10 SIM0001"), owned("Polar H10 SIM0001"))
+        );
+    }
+
+    #[test]
+    fn without_any_advertised_name_the_gap_seed_stands() {
+        assert_eq!(
+            fold_sighting_name(None, None, owned("lx5090")),
+            (None, owned("lx5090"))
+        );
+        assert_eq!(fold_sighting_name(None, None, None), (None, None));
+    }
+}
+
 fn answer_value_update(characteristic: &mut CharacteristicInternal, data: &[u8]) -> bool {
     let route = characteristic.read_notify_state().route_value();
     if let Some(provenance) = route.read {
@@ -311,6 +388,11 @@ struct PeripheralInternal {
     pub services_discovered_future_state: Option<CoreBluetoothReplyStateShared>,
     pub read_rssi_future_state: VecDeque<CoreBluetoothReplyStateShared>,
     pub write_without_response_queue: VecDeque<PendingWriteWithoutResponse>,
+    /// UBM patch (UBM_PATCHES.md #17, finding 205): the last advertised
+    /// name this peripheral was seen with. A nameless sighting's report is
+    /// labelled with it instead of the GAP alias; a peer no advertisement
+    /// has ever named keeps the GAP seed.
+    pub advertised_name: Option<String>,
 }
 
 impl Debug for PeripheralInternal {
@@ -326,6 +408,7 @@ impl Debug for PeripheralInternal {
                     .collect::<HashMap<_, _>>(),
             )
             .field("event_sender", &self.event_sender)
+            .field("advertised_name", &self.advertised_name)
             .field("connected_future_state", &self.connected_future_state)
             .field(
                 "services_discovered_future_state",
@@ -349,6 +432,7 @@ impl PeripheralInternal {
             services_discovered_future_state: None,
             read_rssi_future_state: VecDeque::with_capacity(4),
             write_without_response_queue: VecDeque::new(),
+            advertised_name: None,
         }
     }
 
@@ -1698,7 +1782,28 @@ impl CoreBluetoothInternal {
                         self.drain_write_without_response_queue(peripheral_uuid);
                         self.on_write_readiness(peripheral_uuid).await
                     },
-                    CentralDelegateEvent::Advertised{peripheral_uuid, report} => {
+                    CentralDelegateEvent::Advertised {
+                        peripheral_uuid,
+                        report,
+                        advertisement_name,
+                    } => {
+                        // UBM patch (UBM_PATCHES.md #17, finding 205): label
+                        // a nameless sighting with the last advertised name
+                        // instead of the GAP alias, so name-filtered scans
+                        // keep reporting a peer the OS replays namelessly.
+                        // A named packet refreshes the stash (a rename
+                        // included); without any advertised name yet the
+                        // report keeps its GAP seed.
+                        let mut report = report;
+                        if let Some(entry) = self.peripherals.get_mut(&peripheral_uuid) {
+                            let (stash, name) = fold_sighting_name(
+                                entry.advertised_name.clone(),
+                                advertisement_name,
+                                report.local_name.clone(),
+                            );
+                            entry.advertised_name = stash;
+                            report.local_name = name;
+                        }
                         self.dispatch_event(CoreBluetoothEvent::Advertised {
                             uuid: peripheral_uuid,
                             report,

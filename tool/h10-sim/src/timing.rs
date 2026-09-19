@@ -8,28 +8,30 @@
 //! semi-random delays from them. Sampling is seeded ([`SeededRng`]) so a
 //! capture plus a seed reproduces a run exactly.
 //!
-//! Until the owner runs the captures, every default is a documented
-//! placeholder marked [`UNCONFIRMED`] and the sampler is deterministic
-//! (spread 0), so default behaviour is bit-identical to the fixed rates.
+//! The live defaults are measured, not placeholders: `main.rs` starts from
+//! `profiles/timing-h10-measured.json` (fitted from the Tauri strap capture
+//! in `fixtures/h10-fingerprints/`). [`TimingProfile::default_unconfirmed`]
+//! keeps the original documented placeholders marked [`UNCONFIRMED`] for
+//! explicit opt-in via `--timing-profile
+//! profiles/timing-default-unconfirmed.json`; those sample deterministically
+//! (spread 0).
 //!
 //! Sources:
 //! - Polar BLE SDK (`polarofficial/polar-ble-sdk`, Android `BlePMDClient`):
 //!   ECG streams at 130 Hz; PMD control-point commands are answered with an
-//!   indicate (`PmdControlPointResponse`). No typical latency is documented,
-//!   so the PMD default stays 0 ms (immediate, local processing) —
-//!   UNCONFIRMED until a capture measures `pmdResponseMs`.
+//!   indicate (`PmdControlPointResponse`). The SDK documents no typical
+//!   latency; the measured default comes from capture `pmdResponseMs`.
 //! - Bluetooth SIG, Heart Rate Service 1.0 §3.3: the H10 notifies the Heart
-//!   Rate Measurement about once per second; the 1000 ms HR default follows
-//!   the sim's own `hr_hz = 1.0` rate — UNCONFIRMED until a capture measures
-//!   `hrNotificationIntervalMs`.
+//!   Rate Measurement about once per second; the measured default comes from
+//!   capture `hrNotificationIntervalMs`.
 //! - Bluetooth SIG, Heart Rate Service 1.0 §3.4: body sensor location chest.
 //!   (Structural, not timing; pinned in `gatt_spec.rs`.)
-//! - ECG frame cadence (2 frames/s × 65 samples = 130 samples/s) is the sim's
-//!   own default (`ecg_frames_per_sec`, `ecg_frame_samples`) — UNCONFIRMED
-//!   until a capture measures `ecgFrameIntervalMs`.
+//! - ECG frame cadence (73 samples at 130 Hz ≈ 561.6 ms, `ecg_frames_per_sec`
+//!   × `ecg_frame_samples`) matches the captures' `ecgSamplesPerFrame`; the
+//!   residual jitter comes from capture `ecgFrameIntervalMs`, recentered on
+//!   zero (the fingerprint measures the full period).
 //! - The advertising interval is the platform's answer (BlueZ/Apple own the
-//!   radio); the sim never steers it. The default 100 ms only seeds
-//!   documentation — UNCONFIRMED until a capture measures
+//!   radio); the sim never steers it. The measured default documents capture
 //!   `advertisementIntervalMs`.
 
 use serde::{Deserialize, Serialize};
@@ -218,7 +220,7 @@ impl TimingProfile {
             ecg_frame_jitter: DelayModel::unconfirmed(
                 0.0,
                 0.0,
-                "UNCONFIRMED: sim emits 2 frames/s x 65 samples = 130 Hz (Polar SDK BlePMDClient 130 Hz); confirm from capture timings.ecgFrameIntervalMs",
+                "UNCONFIRMED: no measured frame jitter around the nominal cadence (legacy 2 frames/s x 65 samples reference; the strap runs 73 samples at 130 Hz); confirm from capture timings.ecgFrameIntervalMs",
             ),
             advertising_interval: DelayModel::unconfirmed(
                 100.0,
@@ -293,19 +295,22 @@ impl TimingProfile {
             .ok_or_else(|| "fingerprint.timings: missing object \"timings\"".to_string())?;
         let mut profile = Self::default_unconfirmed(seed);
         if let Some(distribution) = optional_distribution(timings, "hrNotificationIntervalMs")? {
-            profile.hr_interval =
-                DelayModel::measured(&distribution, "timings.hrNotificationIntervalMs");
+            profile.hr_interval = DelayModel::measured(&distribution, "hrNotificationIntervalMs");
         }
         if let Some(distribution) = optional_distribution(timings, "pmdResponseMs")? {
-            profile.pmd_response = DelayModel::measured(&distribution, "timings.pmdResponseMs");
+            profile.pmd_response = DelayModel::measured(&distribution, "pmdResponseMs");
         }
         if let Some(distribution) = optional_distribution(timings, "ecgFrameIntervalMs")? {
-            profile.ecg_frame_jitter =
-                DelayModel::measured(&distribution, "timings.ecgFrameIntervalMs");
+            profile.ecg_frame_jitter = DelayModel::measured(&distribution, "ecgFrameIntervalMs");
             // The fingerprint measures the full frame period; the sim adds
             // this as jitter around its nominal frame cadence, so recenter on
-            // zero while keeping the measured spread.
+            // zero while keeping the measured spread. The floor recenters too:
+            // keeping the measured ~561 ms minimum would add a whole period
+            // to every frame. Jitter below zero clamps at zero (a frame never
+            // goes backwards); the measured spread is ~0.01 ms, so the clamp
+            // is nearly never felt.
             profile.ecg_frame_jitter.median_ms = 0.0;
+            profile.ecg_frame_jitter.min_ms = 0.0;
         }
         let advertisement = fingerprint.get("advertisement");
         let scanned = advertisement
@@ -467,6 +472,35 @@ mod tests {
     }
 
     #[test]
+    fn ecg_jitter_recentered_around_zero_not_the_full_period() {
+        // The fingerprint measures the full frame period (~561.6 ms); the
+        // sim adds this model as jitter around its nominal cadence, so the
+        // recentered model must sample near zero — never near the period.
+        let fingerprint = serde_json::json!({
+            "version": 1,
+            "advertisement": {"ok": false},
+            "timings": {
+                "ecgFrameIntervalMs": {
+                    "n": 29, "min": 561.561716, "p10": 561.561718, "p50": 561.566804,
+                    "p90": 561.587148, "max": 561.58715,
+                    "mean": 561.5710137241381, "stdev": 0.00916367664086846
+                }
+            }
+        });
+        let profile = TimingProfile::from_fingerprint(&fingerprint, 7).unwrap();
+        assert!(profile.ecg_frame_jitter.confirmed);
+        assert_eq!(profile.ecg_frame_jitter.median_ms, 0.0);
+        let mut runtime = TimingRuntime::new(profile);
+        for _ in 0..50 {
+            let interval = runtime.ecg_interval_s(130.0 / 73.0);
+            assert!(
+                (interval - 73.0 / 130.0).abs() < 0.05,
+                "frame interval must stay near the nominal 561.5 ms cadence, got {interval}"
+            );
+        }
+    }
+
+    #[test]
     fn runtime_samples_confirmed_intervals_reproducibly() {
         let fingerprint = serde_json::json!({
             "version": 1,
@@ -501,6 +535,28 @@ mod tests {
     }
 
     #[test]
+    fn checked_in_measured_profile_matches_the_tauri_capture() {
+        // The file is generated from the Tauri fingerprint; the loader is
+        // the independent oracle — any transcription drift fails here.
+        let profile_text = std::fs::read_to_string("profiles/timing-h10-measured.json")
+            .expect("checked-in measured timing profile must exist");
+        let file: TimingProfile =
+            serde_json::from_str(&profile_text).expect("measured timing profile must parse");
+        assert!(file.fully_confirmed(), "every model must be CONFIRMED");
+        assert!(file.unconfirmed_fields().is_empty());
+        let capture_text = std::fs::read_to_string(
+            "fixtures/h10-fingerprints/tauri-macos-unknown-engine-E9B93D29-2026-09-19.json",
+        )
+        .expect("committed Tauri fingerprint must exist");
+        let capture: serde_json::Value =
+            serde_json::from_str(&capture_text).expect("Tauri fingerprint must parse");
+        assert_eq!(
+            file,
+            TimingProfile::from_fingerprint(&capture, 0).expect("Tauri fingerprint must fit")
+        );
+    }
+
+    #[test]
     fn measured_model_samples_around_the_median() {
         let distribution = TimingDistribution {
             n: 60,
@@ -512,7 +568,7 @@ mod tests {
             mean: Some(1001.0),
             stdev: Some(40.0),
         };
-        let model = DelayModel::measured(&distribution, "timings.hrNotificationIntervalMs");
+        let model = DelayModel::measured(&distribution, "hrNotificationIntervalMs");
         assert!(model.confirmed);
         assert_eq!(model.median_ms, 1000.0);
         let mut rng = SeededRng::new(3);

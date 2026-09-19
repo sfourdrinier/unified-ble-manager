@@ -2277,17 +2277,33 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 // wins deterministically, and this start compensates.
                 {
                     let mut core = self.inner.core.lock().await;
-                    let mut slot = self.inner.scan_slot();
-                    let owned = !self.inner.shut_down.load(Ordering::SeqCst)
-                        && slot.as_ref().is_some_and(|active| {
-                            active.id == id && matches!(active.phase, ScanPhase::Starting)
-                        });
-                    if owned && let Some(active) = slot.as_mut() {
-                        active.phase = ScanPhase::Active;
-                        drop(slot);
+                    // Activate inside the slot scope so no guard lives
+                    // across the re-read await below (the future is Send).
+                    let activated = {
+                        let mut slot = self.inner.scan_slot();
+                        let owned = !self.inner.shut_down.load(Ordering::SeqCst)
+                            && slot.as_ref().is_some_and(|active| {
+                                active.id == id && matches!(active.phase, ScanPhase::Starting)
+                            });
+                        if owned && let Some(active) = slot.as_mut() {
+                            active.phase = ScanPhase::Active;
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if activated {
                         // `start_scan` returning `Ok` is the OS
                         // acknowledgement.
                         let _ = core.platform_scan_started(&id);
+                        drop(core);
+                        // Finding 205: the OS may report no new sighting
+                        // for a known peer (CoreBluetooth withholds
+                        // repeats), so a fresh scan re-reads every known
+                        // peripheral once as this scan's device-state
+                        // observation. A re-read the OS cannot answer is
+                        // counted, never silent, and never fails the start.
+                        reobserve_known_peers(&self.inner).await;
                         return Ok(ScanSession { id });
                     }
                 }
@@ -5432,6 +5448,17 @@ async fn refresh_known_peers<B: RadioBoundary>(inner: &Arc<Inner<B>>) {
     if inner.scan_slot().is_none() {
         return;
     }
+    reobserve_known_peers(inner).await;
+}
+
+/// Findings 120 and 205: re-read every known peripheral and report each as
+/// an observation of the OS's device state (finding 120: Tauri 4.x re-read
+/// known peripherals every 2 s, so a peer that does not advertise again, or
+/// whose repeats the OS filters, stays visible; finding 205: CoreBluetooth
+/// withholds repeats for known peers, so a fresh scan re-reads them once at
+/// start). A re-read the OS cannot answer is counted and logged, never
+/// silent.
+async fn reobserve_known_peers<B: RadioBoundary>(inner: &Arc<Inner<B>>) {
     match inner.boundary.peers().await {
         Ok(peers) => {
             for mut snapshot in peers {

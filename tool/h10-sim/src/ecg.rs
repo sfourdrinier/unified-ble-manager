@@ -47,12 +47,31 @@ pub fn ecg_frame_samples(start_index: u64, count: usize, bpm: f64, out: &mut Vec
     }
 }
 
+/// The real strap recording, compiled in so the default ECG source works
+/// from any directory: `fixtures/h10-raw/ecg-E9B93D29-2026-09-19-130hz.txt`
+/// (one integer µV per line @130 Hz).
+const RECORDED_ECG_TXT: &str =
+    include_str!("../fixtures/h10-raw/ecg-E9B93D29-2026-09-19-130hz.txt");
+
+/// Parses the compiled-in strap recording. A corrupt fixture is a loud
+/// error naming the fixture — never silent synthetic fallback.
+pub fn recorded_samples() -> Result<Vec<i32>, String> {
+    parse_replay_text(
+        RECORDED_ECG_TXT,
+        "fixtures/h10-raw/ecg-E9B93D29-2026-09-19-130hz.txt",
+    )
+}
+
 /// Loads a recorded ECG replay file: text, one integer µV per line, sampled
 /// at 130 Hz. Blank lines are skipped; any other unparseable line fails
 /// loudly with its line number. An empty file is an error, not silence.
 pub fn load_replay_file(path: &str) -> Result<Vec<i32>, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|error| format!("cannot read ECG file {path}: {error}"))?;
+    parse_replay_text(&text, path)
+}
+
+fn parse_replay_text(text: &str, origin: &str) -> Result<Vec<i32>, String> {
     let mut samples = Vec::new();
     for (number, line) in text.lines().enumerate() {
         let line = line.trim();
@@ -61,14 +80,14 @@ pub fn load_replay_file(path: &str) -> Result<Vec<i32>, String> {
         }
         let value: i32 = line.parse().map_err(|_| {
             format!(
-                "ECG file {path} line {}: {line:?} is not an integer µV value",
+                "ECG file {origin} line {}: {line:?} is not an integer µV value",
                 number + 1
             )
         })?;
         samples.push(value);
     }
     if samples.is_empty() {
-        return Err(format!("ECG file {path} has no samples"));
+        return Err(format!("ECG file {origin} has no samples"));
     }
     Ok(samples)
 }
@@ -87,6 +106,21 @@ pub fn replay_samples(samples: &[i32], start_index: u64, count: usize, out: &mut
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn compiled_in_strap_recording_parses() {
+        let samples = recorded_samples().expect("committed strap recording must parse");
+        assert_eq!(samples.len(), 3285, "one integer µV per fixture line");
+        assert_eq!(
+            samples[..5].to_vec(),
+            vec![65, 75, 73, 68, 82],
+            "first samples match the fixture head"
+        );
+        assert!(
+            samples.iter().any(|sample| *sample > 500),
+            "recording carries real QRS complexes, not baseline"
+        );
+    }
 
     #[test]
     fn replay_file_cycles_samples_and_rejects_garbage() {

@@ -40,6 +40,9 @@ pub enum ControlCommand {
     /// Set the battery level now: `{"cmd":"set-battery","level":15}` (0–100).
     SetBattery { level: u8 },
     /// Report sensor contact lost or detected: `{"cmd":"set-contact","detected":false}`.
+    /// Takes effect over the air only when the profile declares contact
+    /// supported (the strap reports contact not supported, so the stock
+    /// profile records the state without changing the HR flags).
     SetContact { detected: bool },
     /// Switch the pairing policy: `{"cmd":"pair-policy","policy":"disabled"}`.
     PairPolicy { policy: crate::sim::PairPolicy },

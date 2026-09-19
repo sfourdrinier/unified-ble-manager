@@ -187,8 +187,10 @@ Scan observations (findings 120–122): every OS sighting is an observation
 (vendored patch 17). CoreBluetooth and WinRT report each advertisement with
 its own data; BlueZ reports its merged `Device1` state on discovery and once per
 `Device1` property-change signal, a name- or alias-only change included
-(patch 18), plus every known device when a scan starts, as the legacy BlueZ
-backend did. Each observation is labelled
+(patch 18). On every platform, each known device is re-observed once as
+`device-state` when a scan starts (finding 205; the legacy BlueZ backend did
+this on Linux only), and CoreBluetooth sightings carry the advertised name, not
+a GAP name read over a connection. Each observation is labelled
 `advertisement` or `device-state`. Sightings are observations only while a
 scan runs and belong to that scan (`take_scan_observation`: scan id and age);
 a new scan starts from an empty queue. Tauri keeps its 4.x cadence: every

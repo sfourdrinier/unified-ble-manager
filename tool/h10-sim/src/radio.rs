@@ -237,22 +237,28 @@ pub fn h10_services(config: &SimConfig) -> Result<Vec<ServiceSpec>, RadioError> 
                 uuid: advertisement::short_uuid(short),
                 properties: vec![CharProperty::Read],
                 permissions: read(),
+                // DIS strings carry the strap's trailing NUL, like the
+                // event-driven answers in `SimState::static_read`.
                 initial_value: Some(match short {
                     x if x == gatt_spec::uuid16::MANUFACTURER_NAME => {
-                        config.manufacturer.as_bytes().to_vec()
+                        gatt_spec::encode_dis_string(&config.manufacturer)
                     }
-                    x if x == gatt_spec::uuid16::MODEL_NUMBER => config.model.as_bytes().to_vec(),
-                    x if x == gatt_spec::uuid16::SERIAL_NUMBER => config.serial.as_bytes().to_vec(),
+                    x if x == gatt_spec::uuid16::MODEL_NUMBER => {
+                        gatt_spec::encode_dis_string(&config.model)
+                    }
+                    x if x == gatt_spec::uuid16::SERIAL_NUMBER => {
+                        gatt_spec::encode_dis_string(&config.serial)
+                    }
                     x if x == gatt_spec::uuid16::FIRMWARE_REVISION => {
-                        config.firmware.as_bytes().to_vec()
+                        gatt_spec::encode_dis_string(&config.firmware)
                     }
                     x if x == gatt_spec::uuid16::HARDWARE_REVISION => {
-                        config.hardware.as_bytes().to_vec()
+                        gatt_spec::encode_dis_string(&config.hardware)
                     }
                     x if x == gatt_spec::uuid16::SOFTWARE_REVISION => {
-                        config.software.as_bytes().to_vec()
+                        gatt_spec::encode_dis_string(&config.software)
                     }
-                    _ => text.as_bytes().to_vec(),
+                    _ => gatt_spec::encode_dis_string(text),
                 }),
             })
             .chain(std::iter::once(CharSpec {

@@ -278,9 +278,14 @@ pub enum CentralDelegateEvent {
     },
     // UBM patch (UBM_PATCHES.md #17): one advertisement with its own data,
     // sent after the events that update the peripheral's merged state.
+    // `advertisement_name` is this packet's advertised name, or nothing
+    // when the packet carries none (finding 205: the report itself wears
+    // the GAP fallback then, and the internal loop replaces it with the
+    // merged advertised name when one is known).
     Advertised {
         peripheral_uuid: Uuid,
         report: crate::api::AdvertisementReport,
+        advertisement_name: Option<String>,
     },
     // UBM patch (UBM_PATCHES.md #14/#15): an attribute callback carried an
     // `NSError`. Upstream dropped it, leaving the waiting read, write or
@@ -496,10 +501,12 @@ impl Debug for CentralDelegateEvent {
             CentralDelegateEvent::Advertised {
                 peripheral_uuid,
                 report,
+                advertisement_name,
             } => f
                 .debug_struct("Advertised")
                 .field("peripheral_uuid", peripheral_uuid)
                 .field("report", report)
+                .field("advertisement_name", advertisement_name)
                 .finish(),
             CentralDelegateEvent::AttributeFailed {
                 peripheral_uuid,
@@ -639,7 +646,10 @@ declare_class!(
                 .and_then(|name| unsafe { nsstring_to_string(name) });
             // UBM patch (UBM_PATCHES.md #17): this advertisement's own data,
             // named as the legacy addon named it (advertised name, else the
-            // peripheral's GAP name).
+            // peripheral's GAP name). A nameless packet therefore wears the
+            // GAP name here; finding 205 overwrites it with the merged
+            // advertised name when one is known (internal.rs), so the GAP
+            // alias never stands in for the advertised identity.
             let mut report = crate::api::AdvertisementReport {
                 source: crate::api::ReportSource::Advertisement,
                 local_name: advertisement_name
@@ -657,7 +667,7 @@ declare_class!(
 
             self.send_event(CentralDelegateEvent::DiscoveredPeripheral {
                 cbperipheral: peripheral.retain(),
-                advertisement_name,
+                advertisement_name: advertisement_name.clone(),
             });
 
             let rssi_value = rssi.as_i16();
@@ -757,6 +767,7 @@ declare_class!(
             self.send_event(CentralDelegateEvent::Advertised {
                 peripheral_uuid,
                 report,
+                advertisement_name,
             });
         }
     }

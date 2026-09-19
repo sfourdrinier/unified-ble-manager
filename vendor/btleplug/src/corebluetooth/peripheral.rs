@@ -354,9 +354,98 @@ impl Peripheral {
         advertisement_name: Option<String>,
     ) {
         if let Ok(mut props) = self.shared.properties.lock() {
-            props.local_name = local_name;
-            props.advertisement_name = advertisement_name;
+            let (local, advertised) = fold_discovery_name(
+                props.local_name.clone(),
+                props.advertisement_name.clone(),
+                advertisement_name,
+                local_name,
+            );
+            props.local_name = local;
+            props.advertisement_name = advertised;
         }
+    }
+}
+
+/// UBM patch (UBM_PATCHES.md #17, finding 205): fold one rediscovery into
+/// the merged scan name. The merged name tracks the air: the current
+/// advertisement's name wins (a rename included); a nameless rediscovery
+/// keeps the last advertised name instead of falling back to the cached GAP
+/// name. The GAP name seeds a peripheral no advertisement has named yet —
+/// without it a nameless beacon would stay nameless — but it never
+/// overwrites an advertised one: after a connect resolves the GAP name (the
+/// sim's Linux controller name, not its advertised name), every later
+/// nameless sighting would otherwise poison the merged name, and with it
+/// every scan observation filtered on it.
+pub(crate) fn fold_discovery_name(
+    previous: Option<String>,
+    previous_advertised: Option<String>,
+    advertisement_name: Option<String>,
+    gap_name: Option<String>,
+) -> (Option<String>, Option<String>) {
+    let advertised = advertisement_name.or(previous_advertised);
+    let local = advertised.clone().or(previous).or(gap_name);
+    (local, advertised)
+}
+
+#[cfg(test)]
+mod ubm_fold_name_tests {
+    use super::fold_discovery_name;
+
+    fn owned(value: &str) -> Option<String> {
+        Some(value.to_owned())
+    }
+
+    #[test]
+    fn a_first_named_sighting_reports_the_advertised_name() {
+        assert_eq!(
+            fold_discovery_name(None, None, owned("Polar H10 SIM0001"), owned("lx5090")),
+            (owned("Polar H10 SIM0001"), owned("Polar H10 SIM0001"))
+        );
+    }
+
+    #[test]
+    fn a_first_nameless_sighting_is_seeded_from_the_gap_name() {
+        assert_eq!(
+            fold_discovery_name(None, None, None, owned("lx5090")),
+            (owned("lx5090"), None)
+        );
+        assert_eq!(fold_discovery_name(None, None, None, None), (None, None));
+    }
+
+    #[test]
+    fn a_renamed_advertisement_replaces_the_merged_name() {
+        assert_eq!(
+            fold_discovery_name(
+                owned("Polar H10 SIM0043"),
+                owned("Polar H10 SIM0043"),
+                owned("Polar H10 SIM0044"),
+                owned("lx5090"),
+            ),
+            (owned("Polar H10 SIM0044"), owned("Polar H10 SIM0044"))
+        );
+    }
+
+    #[test]
+    fn a_nameless_rediscovery_keeps_the_advertised_name_despite_the_gap_name() {
+        // Finding 205: after a connect resolves the GAP name, nameless
+        // sightings must not poison the merged name back to it.
+        assert_eq!(
+            fold_discovery_name(
+                owned("Polar H10 SIM0001"),
+                owned("Polar H10 SIM0001"),
+                None,
+                owned("lx5090"),
+            ),
+            (owned("Polar H10 SIM0001"), owned("Polar H10 SIM0001"))
+        );
+    }
+
+    #[test]
+    fn a_nameless_rediscovery_of_a_never_named_peer_keeps_the_gap_seed() {
+        assert_eq!(
+            fold_discovery_name(owned("lx5090"), None, None, owned("lx5090")),
+            (owned("lx5090"), None)
+        );
     }
 }
 

@@ -7,7 +7,7 @@
 
 use serde::Deserialize;
 
-use crate::sim::{BpmStep, EcgSource, PairPolicy, SimConfig};
+use crate::sim::{BpmStep, EcgSource, HrSource, PairPolicy, SimConfig};
 
 /// Device Information service strings + System ID parts.
 #[derive(Debug, Clone, Deserialize)]
@@ -41,9 +41,17 @@ pub struct AdvertisingProfile {
 #[derive(Debug, Clone, Deserialize)]
 pub struct HeartRateProfile {
     pub bpm: u8,
+    /// Whether the HR flags carry contact bits at all (the strap reports
+    /// contact not supported; older profiles without this field parse as
+    /// strap-faithful `false`).
+    #[serde(default)]
+    pub contact_supported: bool,
     pub contact_detected: bool,
     pub rr_jitter_ms: f64,
     pub bpm_curve: Vec<BpmStep>,
+    /// Recorded HR replay (`{"file": path}`); defaults to synthetic.
+    #[serde(default)]
+    pub hr_source: HrSource,
 }
 
 /// PMD behaviour.
@@ -125,6 +133,7 @@ impl SimConfig {
             software: info.software.clone(),
             system_id_manufacturer: info.system_id_manufacturer,
             system_id_oui: info.system_id_oui,
+            contact_supported: profile.heart_rate.contact_supported,
             contact_detected: profile.heart_rate.contact_detected,
             drain_per_min: profile.battery.drain_per_min,
             rr_jitter_ms: profile.heart_rate.rr_jitter_ms,
@@ -132,6 +141,7 @@ impl SimConfig {
             mfr_payload,
             pair_policy: profile.pmd.pair_policy,
             ecg_source: profile.pmd.ecg_source.clone(),
+            hr_source: profile.heart_rate.hr_source.clone(),
             bpm_curve: profile.heart_rate.bpm_curve.clone(),
             profile_path: None,
             ..Self::default()
@@ -156,9 +166,13 @@ mod tests {
     fn stock_profile_loads_and_builds_config() {
         let profile = load_profile("profiles/stock-h10.json").unwrap();
         assert_eq!(profile.device_information.model, "H10");
+        assert_eq!(profile.device_information.firmware, "5.0.0");
+        assert_eq!(profile.device_information.hardware, "00760690.03");
+        assert_eq!(profile.device_information.software, "4.2.0");
         let config = SimConfig::from_profile(&profile).unwrap();
         assert_eq!(config.name, "Polar H10 SIM0001");
-        assert_eq!(config.battery_percent, 85);
+        assert_eq!(config.battery_percent, 90);
+        assert!(!config.contact_supported);
     }
 
     #[test]

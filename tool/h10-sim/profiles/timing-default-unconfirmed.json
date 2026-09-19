@@ -19,7 +19,7 @@
     "spread_ms": 0.0,
     "min_ms": 0.0,
     "confirmed": false,
-    "source": "UNCONFIRMED: sim emits 2 frames/s x 65 samples = 130 Hz (Polar SDK BlePMDClient 130 Hz); confirm from capture timings.ecgFrameIntervalMs"
+    "source": "UNCONFIRMED: no measured frame jitter around the nominal cadence (legacy 2 frames/s x 65 samples reference; the strap runs 73 samples at 130 Hz); confirm from capture timings.ecgFrameIntervalMs"
   },
   "advertising_interval": {
     "median_ms": 100.0,

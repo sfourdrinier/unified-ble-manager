@@ -4,6 +4,7 @@ mod control;
 mod driver;
 mod ecg;
 mod events;
+mod fidelity;
 mod gatt_spec;
 mod linux_advertising;
 mod mgmt;
@@ -45,6 +46,7 @@ fn usage() -> String {
          \x20 --bpm <bpm>            Heart rate in bpm (overrides the profile)\n\
          \x20 --battery <percent>    Battery level percent (overrides the profile)\n\
          \x20 --ecg-file <path>      Replay recorded ECG (text, one integer µV per line @130 Hz)\n\
+         \x20 --hr-replay <path>     Replay recorded HR packets (a raw capture JSON: raw.hrMeasurements)\n\
          \x20 --driver <url>        Join the test driver as a peripheral-sim host (ws://host:port/path)\n\
          \x20 --emit-driver-hello    Print the driver hello JSON and exit (no radio)\n\
          \x20 --linux-advertising <mode>  Linux only: bluez (default, LEAdvertisement1 via bluetoothd)\n\
@@ -52,9 +54,10 @@ fn usage() -> String {
          \n\
          \x20 A non-loopback --control-bind without a token refuses to start.\n\
          \x20 --emit-test-vectors    Print encoder vectors as JSON and exit (no radio)\n\
-         \x20 --timing-profile <path>  Timing profile: an h10-capture fingerprint or timing JSON (default: UNCONFIRMED placeholders)\n\
+         \x20 --timing-profile <path>  Timing profile: an h10-capture fingerprint or timing JSON (default: measured strap profile)\n\
          \x20 --timing-seed <u64>    Seed for semi-random timing sampling (default 0; same seed replays a run)\n\
          \x20 --emit-timing-defaults  Print the UNCONFIRMED default timing profile as JSON and exit (no radio)\n\
+         \x20 --emit-sim-fingerprint  Print the in-process sim fingerprint as JSON and exit (no radio)\n\
          \x20 --compare <real.json> <sim.json>  Compare fingerprints field by field, print the report and exit (no radio)\n\
          \x20 --tolerance-p50 <f>    Relative p50 tolerance for timing checks (default 0.25)\n\
          \x20 --tolerance-ms <f>     Absolute floor in ms for timing checks (default 50)\n\
@@ -66,6 +69,10 @@ fn usage() -> String {
 
 /// Stock identity, compiled in so the default works from any directory.
 const STOCK_PROFILE_JSON: &str = include_str!("../profiles/stock-h10.json");
+
+/// Measured timing, compiled in so the default works from any directory:
+/// `profiles/timing-h10-measured.json`, fitted from the Tauri strap capture.
+const MEASURED_TIMING_JSON: &str = include_str!("../profiles/timing-h10-measured.json");
 
 /// Reads a timing profile: a full `h10-capture` fingerprint or a raw timing
 /// profile document. A bad path or bad file is a loud startup failure —
@@ -137,6 +144,7 @@ fn main() -> ExitCode {
     let mut emit_vectors = false;
     let mut emit_driver_hello = false;
     let mut emit_timing_defaults = false;
+    let mut emit_sim_fingerprint = false;
     let mut timing_profile_path: Option<String> = None;
     let mut timing_seed: u64 = 0;
     let mut compare_paths: Option<(String, String)> = None;
@@ -190,6 +198,10 @@ fn main() -> ExitCode {
                     let file = value(&mut args, "--ecg-file")?;
                     config.ecg_source = sim::EcgSource::File { file };
                 }
+                "--hr-replay" => {
+                    let file = value(&mut args, "--hr-replay")?;
+                    config.hr_source = sim::HrSource::File { file };
+                }
                 "--emit-test-vectors" => emit_vectors = true,
                 "--driver" => driver_url = Some(value(&mut args, "--driver")?),
                 "--emit-driver-hello" => emit_driver_hello = true,
@@ -204,6 +216,7 @@ fn main() -> ExitCode {
                     }
                 }
                 "--emit-timing-defaults" => emit_timing_defaults = true,
+                "--emit-sim-fingerprint" => emit_sim_fingerprint = true,
                 "--timing-profile" => {
                     timing_profile_path = Some(value(&mut args, "--timing-profile")?)
                 }
@@ -306,8 +319,9 @@ fn main() -> ExitCode {
             },
         );
     }
-    // Timing placeholders stay until a capture confirms them; a bad profile
-    // path is a loud startup failure.
+    // Timing runs on the measured strap profile by default; an explicit
+    // --timing-profile overrides it, and a bad profile path is a loud
+    // startup failure.
     let timing_profile = match timing_profile_path {
         Some(path) => match load_timing_profile(&path, timing_seed) {
             Ok(profile) => profile,
@@ -316,8 +330,36 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             }
         },
-        None => timing::TimingProfile::default_unconfirmed(timing_seed),
+        None => {
+            match timing::TimingProfile::from_fingerprint_json(MEASURED_TIMING_JSON, timing_seed) {
+                Ok(profile) => profile,
+                Err(message) => {
+                    eprintln!("h10-sim: built-in measured timing profile is corrupt: {message}");
+                    return ExitCode::from(2);
+                }
+            }
+        }
     };
+    if emit_sim_fingerprint {
+        // The same builder the fidelity test compares: stock identity with
+        // CLI overrides applied, measured timing unless overridden.
+        match fidelity::sim_fingerprint(&config, &timing_profile) {
+            Ok(fingerprint) => match serde_json::to_string_pretty(&fingerprint) {
+                Ok(json) => {
+                    println!("{json}");
+                    return ExitCode::SUCCESS;
+                }
+                Err(error) => {
+                    eprintln!("h10-sim: cannot encode sim fingerprint: {error}");
+                    return ExitCode::FAILURE;
+                }
+            },
+            Err(message) => {
+                eprintln!("h10-sim: {message}");
+                return ExitCode::from(2);
+            }
+        }
+    }
     if emit_vectors {
         let state = SimState::new(config);
         match serde_json::to_string(&vectors::test_vectors(&state)) {
@@ -465,11 +507,22 @@ fn select_linux_advertising(
 }
 
 /// Resolves the configured ECG source to replay samples (None = synthetic).
-/// A missing or malformed file is a loud startup/profile-load failure.
+/// A missing or malformed file — or a corrupt built-in recording — is a
+/// loud startup/profile-load failure.
 fn load_ecg_replay(source: &sim::EcgSource) -> Result<Option<Vec<i32>>, String> {
     match source {
         sim::EcgSource::Synthetic => Ok(None),
+        sim::EcgSource::Recorded => ecg::recorded_samples().map(Some),
         sim::EcgSource::File { file } => ecg::load_replay_file(file).map(Some),
+    }
+}
+
+/// Resolves the configured HR source to replay packets (None = synthetic).
+/// A missing or malformed file is a loud startup/profile-load failure.
+fn load_hr_replay(source: &sim::HrSource) -> Result<Option<sim::HrReplay>, String> {
+    match source {
+        sim::HrSource::Synthetic => Ok(None),
+        sim::HrSource::File { file } => sim::load_hr_replay(file).map(Some),
     }
 }
 
@@ -485,6 +538,7 @@ async fn serve(
     let mut log = EventLog::new();
     let mut sim = SimState::new(config);
     sim.ecg_replay = load_ecg_replay(&sim.config.ecg_source)?;
+    sim.hr_replay = load_hr_replay(&sim.config.hr_source)?;
     let mut timing = timing::TimingRuntime::new(timing_profile);
     log.log(
         "timing-profile",
@@ -1036,11 +1090,14 @@ async fn load_profile_into(
     path: &str,
 ) -> Result<(), String> {
     let loaded = profile::load_profile(path)?;
-    // Resolve the replay file before swapping the config: a bad file keeps
+    // Resolve the replay files before swapping the config: a bad file keeps
     // the old profile instead of a half-applied one.
     let replay = load_ecg_replay(&loaded.pmd.ecg_source)?;
+    let hr_replay = load_hr_replay(&loaded.heart_rate.hr_source)?;
     sim.config.apply_profile(path, &loaded)?;
     sim.ecg_replay = replay;
+    sim.hr_replay = hr_replay;
+    sim.hr_replay_index = 0;
     log.log("profile-loaded", json!({"path": path}));
     match radio.is_advertising().await {
         Ok(true) => {

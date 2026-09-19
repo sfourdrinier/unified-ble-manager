@@ -104,13 +104,23 @@ for (const vector of vectors.hr_measurements) {
 const noRr = hr.parseHeartRateMeasurement(Uint8Array.from(vectors.hr_no_rr.bytes))
 check('hr no-rr flags still parse', noRr.beatsPerMinute, vectors.hr_no_rr.bpm)
 check('hr no-rr has no intervals', noRr.rrIntervalsSeconds.length, 0)
+// The strap default: RR present, contact not supported (flags 0x10).
+const noContact = hr.parseHeartRateMeasurement(Uint8Array.from(vectors.hr_no_contact.bytes))
+check('hr no-contact bpm', noContact.beatsPerMinute, vectors.hr_no_contact.bpm)
+check('hr no-contact contact', noContact.contact, 'unsupported')
+if (noContact.rrIntervalsSeconds.length !== vectors.hr_no_contact.rr_s.length) {
+  fail(`hr no-contact rr count: got ${noContact.rrIntervalsSeconds.length}, expected ${vectors.hr_no_contact.rr_s.length}`)
+}
+vectors.hr_no_contact.rr_s.forEach((expected, index) => {
+  checkClose(`hr no-contact rr[${index}]`, noContact.rrIntervalsSeconds[index], expected, 1 / 1024 + 1e-9)
+})
 check('hr body location', hr.parseBodySensorLocation(Uint8Array.from(vectors.body_location)), 1)
 
 // 4. PMD feature read (real-strap bytes: ECG + ACC).
 const features = pmd.parsePmdFeatures(Uint8Array.from(vectors.pmd_features))
 check('pmd features ecg', features.ecg, true)
 check('pmd features acc', features.acc, true)
-check('pmd features raw length', vectors.pmd_features.length, 15)
+check('pmd features raw length', vectors.pmd_features.length, 17)
 
 // 5. PMD control-point responses (get-settings success, start success, forced error).
 for (const vector of vectors.pmd_responses) {

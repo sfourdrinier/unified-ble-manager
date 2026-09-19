@@ -202,17 +202,21 @@ fn compare_advertisement(real: &Value, sim: &Value, fields: &mut Vec<FieldResult
     }
 }
 
-/// Ordered GATT comparison: occurrence order is part of the fingerprint.
+/// GATT rows for set comparison. The `availability` map is stripped from
+/// characteristic properties before stringifying: it records which flags
+/// the *central backend* knows (CoreBluetooth reports several as `unknown`
+/// that btleplug reports as `known`), not what the strap declares. The ten
+/// SIG property flags themselves are compared exactly.
 fn gatt_rows(database: &Value, key: &str) -> Option<Vec<String>> {
     database.get(key).and_then(Value::as_array).map(|rows| {
         rows.iter()
             .map(|row| {
                 let uuid = row.get("uuid").and_then(Value::as_str).unwrap_or("?");
                 let occurrence = row.get("occurrence").and_then(Value::as_u64).unwrap_or(0);
-                let properties = row
-                    .get("properties")
-                    .map(|properties| properties.to_string())
-                    .unwrap_or_default();
+                let mut properties = row.get("properties").cloned().unwrap_or(Value::Null);
+                if let Some(map) = properties.as_object_mut() {
+                    map.remove("availability");
+                }
                 format!("{occurrence}:{uuid}:{properties}")
             })
             .collect()
@@ -224,13 +228,24 @@ fn compare_gatt(real: &Value, sim: &Value, fields: &mut Vec<FieldResult>) {
     let sim_db = sim.get("gatt");
     match (real_db, sim_db) {
         (Some(left), Some(right)) => {
+            // ATT handle order is a backend registration artifact (BlueZ
+            // numbers handles in hash order), so rows compare as sets.
             for key in ["services", "characteristics", "descriptors"] {
                 match (gatt_rows(left, key), gatt_rows(right, key)) {
-                    (Some(a), Some(b)) if a == b => {
-                        fields.push(pass(
-                            &format!("gatt.{key}"),
-                            format!("{} rows identical, order pinned", a.len()),
-                        ));
+                    (Some(mut a), Some(mut b)) => {
+                        a.sort();
+                        b.sort();
+                        if a == b {
+                            fields.push(pass(
+                                &format!("gatt.{key}"),
+                                format!("{} rows identical as a set", a.len()),
+                            ));
+                        } else {
+                            fields.push(fail(
+                                &format!("gatt.{key}"),
+                                format!("real={a:?} sim={b:?}"),
+                            ));
+                        }
                     }
                     (a, b) => fields.push(fail(
                         &format!("gatt.{key}"),
@@ -357,17 +372,39 @@ fn compare_behaviour(real: &Value, sim: &Value, fields: &mut Vec<FieldResult>) {
                     format!("real={:?} sim={:?}", features(left), features(right)),
                 ));
             }
-            let battery =
-                |probes: &Value| probes.get("batteryNotify").map(|entry| entry.to_string());
-            if battery(left) == battery(right) {
+            // `effectiveDelivery` is the central backend's observation of
+            // the subscription (CoreBluetooth reports `notification`,
+            // btleplug `unknown` against the same strap), so it is
+            // reported, never judged — like `timings.mtu.effective`. The
+            // strap-side facts (`ok`, the scenario's `release`) must match.
+            let delivery = |probes: &Value| {
+                probes
+                    .get("batteryNotify")
+                    .and_then(|entry| entry.get("effectiveDelivery"))
+                    .cloned()
+            };
+            let settled = |probes: &Value| {
+                probes.get("batteryNotify").map(|entry| {
+                    let mut entry = entry.clone();
+                    if let Some(map) = entry.as_object_mut() {
+                        map.remove("effectiveDelivery");
+                    }
+                    entry.to_string()
+                })
+            };
+            if settled(left) == settled(right) {
                 fields.push(pass(
                     "behaviour.batteryNotify",
-                    "identical answer".to_string(),
+                    format!(
+                        "identical modulo host-side delivery (real={:?} sim={:?})",
+                        delivery(left),
+                        delivery(right)
+                    ),
                 ));
             } else {
                 fields.push(fail(
                     "behaviour.batteryNotify",
-                    format!("real={:?} sim={:?}", battery(left), battery(right)),
+                    format!("real={:?} sim={:?}", settled(left), settled(right)),
                 ));
             }
         }
@@ -561,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn gatt_order_mismatch_fails_that_field_only() {
+    fn gatt_set_difference_fails_that_field_only() {
         let real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
         let mut sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1000.0);
         sim["gatt"]["characteristics"] =
@@ -582,6 +619,26 @@ mod tests {
                 .count()
                 == 1
         );
+    }
+
+    #[test]
+    fn gatt_same_set_in_different_order_passes() {
+        // ATT handle order depends on the backend's registration order
+        // (BlueZ numbers handles in hash order), so only the set is judged.
+        let real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
+        let mut sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1000.0);
+        let first = json!({"uuid": "180d", "occurrence": 0, "primary": true});
+        let second = json!({"uuid": "180a", "occurrence": 0, "primary": true});
+        sim["gatt"]["services"] = json!([second.clone(), first.clone()]);
+        let mut reordered = real.clone();
+        reordered["gatt"]["services"] = json!([first, second]);
+        let report = compare_fingerprints(&reordered, &sim, Tolerances::default());
+        let field = report
+            .fields
+            .iter()
+            .find(|field| field.field == "gatt.services")
+            .unwrap();
+        assert_eq!(field.status, CheckStatus::Pass, "detail: {}", field.detail);
     }
 
     #[test]

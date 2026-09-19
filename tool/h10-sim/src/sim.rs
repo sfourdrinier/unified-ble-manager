@@ -40,14 +40,80 @@ impl PairPolicy {
     }
 }
 
-/// ECG waveform source: `"synthetic"` or `{"file": "path"}` in profiles.
+/// ECG waveform source: `"synthetic"`, `"recorded"` or `{"file": "path"}`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub enum EcgSource {
     /// Deterministic synthetic PQRST waveform.
     #[serde(rename = "synthetic")]
     Synthetic,
+    /// The real strap recording compiled in from
+    /// `fixtures/h10-raw/ecg-E9B93D29-2026-09-19-130hz.txt`, cycling forever.
+    #[serde(rename = "recorded")]
+    Recorded,
     /// Replay a text file (one integer µV per line @130 Hz), cycling forever.
     File { file: String },
+}
+
+/// Heart-rate source: `"synthetic"` or `{"file": "path"}` in profiles.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub enum HrSource {
+    /// Synthetic beat from the configured bpm (one RR interval, Task 6 jitter).
+    #[default]
+    #[serde(rename = "synthetic")]
+    Synthetic,
+    /// Replay the `raw.hrMeasurements` packets of a committed raw capture
+    /// (`fixtures/h10-raw/*.json`: hex packets with timings), cycling forever.
+    File { file: String },
+}
+
+/// Recorded Heart Rate Measurement packets, replayed verbatim in order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HrReplay {
+    pub packets: Vec<Vec<u8>>,
+}
+
+/// Loads recorded HR packets from a raw capture file: `{raw:
+/// {hrMeasurements: [{atMs, hex}]}}`. Every packet is decoded and shape
+/// checked (flags format bit, RR tail alignment); any problem names the
+/// packet index — never a silent skip.
+pub fn load_hr_replay(path: &str) -> Result<HrReplay, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| format!("cannot read HR replay file {path}: {error}"))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| format!("HR replay file {path} is not valid JSON: {error}"))?;
+    let measurements = value
+        .get("raw")
+        .and_then(|raw| raw.get("hrMeasurements"))
+        .and_then(|list| list.as_array())
+        .ok_or_else(|| format!("HR replay file {path} is missing array \"raw.hrMeasurements\""))?;
+    if measurements.is_empty() {
+        return Err(format!("HR replay file {path} has no hrMeasurements"));
+    }
+    let mut packets = Vec::with_capacity(measurements.len());
+    for (index, measurement) in measurements.iter().enumerate() {
+        let hex = measurement
+            .get("hex")
+            .and_then(|hex| hex.as_str())
+            .ok_or_else(|| {
+                format!("HR replay file {path} packet {index}: missing string \"hex\"")
+            })?;
+        let bytes = crate::profile::decode_hex(hex)
+            .map_err(|error| format!("HR replay file {path} packet {index}: {error}"))?;
+        let tail = match bytes.first() {
+            Some(flags) if flags & 0x01 == 0 => bytes.get(2..),
+            Some(_) => bytes.get(3..),
+            None => None,
+        };
+        match tail {
+            Some(tail) if tail.len().is_multiple_of(2) => packets.push(bytes),
+            _ => {
+                return Err(format!(
+                    "HR replay file {path} packet {index}: {hex:?} is not a Heart Rate Measurement"
+                ));
+            }
+        }
+    }
+    Ok(HrReplay { packets })
 }
 
 /// One step of a scripted heart-rate curve: hold `bpm` from `at_s` on.
@@ -73,7 +139,11 @@ pub struct SimConfig {
     pub system_id_manufacturer: u64,
     /// 24-bit OUI of the System ID (0x2A23).
     pub system_id_oui: [u8; 3],
-    /// Sensor-contact state reported in the HR flags.
+    /// Whether the HR flags carry sensor-contact bits at all. The strap
+    /// reports contact not supported (`0x10`), so this defaults to false and
+    /// `contact_detected` only takes effect when it is true.
+    pub contact_supported: bool,
+    /// Sensor-contact state reported in the HR flags when supported.
     pub contact_detected: bool,
     /// Battery drain in percent per minute (0 = fixed level).
     pub drain_per_min: f64,
@@ -87,6 +157,8 @@ pub struct SimConfig {
     pub pair_policy: PairPolicy,
     /// ECG waveform source.
     pub ecg_source: EcgSource,
+    /// Heart-rate source (synthetic beat or recorded replay).
+    pub hr_source: HrSource,
     /// Scripted heart-rate curve (empty = fixed bpm).
     pub bpm_curve: Vec<BpmStep>,
     /// Profile file this config was loaded from, if any.
@@ -104,7 +176,7 @@ impl Default for SimConfig {
         Self {
             name: gatt_spec::DEFAULT_ADV_NAME.to_string(),
             bpm: 72,
-            battery_percent: 85,
+            battery_percent: 90,
             manufacturer: "Polar Electro Oy".to_string(),
             model: "H10".to_string(),
             serial: "SIM000001".to_string(),
@@ -113,18 +185,20 @@ impl Default for SimConfig {
             software: "3.2.1".to_string(),
             system_id_manufacturer: 1,
             system_id_oui: [0x6B, 0x00, 0x00],
-            contact_detected: true,
+            contact_supported: false,
+            contact_detected: false,
             drain_per_min: 0.0,
             rr_jitter_ms: 0.0,
             mfr_company: gatt_spec::POLAR_COMPANY_ID,
             mfr_payload: Vec::new(),
             pair_policy: PairPolicy::JustWorks,
-            ecg_source: EcgSource::Synthetic,
+            ecg_source: EcgSource::Recorded,
+            hr_source: HrSource::Synthetic,
             bpm_curve: Vec::new(),
             profile_path: None,
             hr_hz: 1.0,
-            ecg_frame_samples: 65,
-            ecg_frames_per_sec: 2.0,
+            ecg_frame_samples: gatt_spec::H10_ECG_SAMPLES_PER_FRAME,
+            ecg_frames_per_sec: gatt_spec::H10_ECG_FRAMES_PER_SEC,
         }
     }
 }
@@ -160,6 +234,10 @@ pub struct SimState {
     pub ecg_sample_index: u64,
     /// Running heart-rate beat index (drives the deterministic RR jitter).
     pub hr_beat_index: u64,
+    /// Recorded HR packets (None = synthetic beat).
+    pub hr_replay: Option<HrReplay>,
+    /// Next recorded HR packet to serve.
+    pub hr_replay_index: u64,
     /// Fractional battery drain accumulator (percent, Task 5).
     pub battery_carry: f64,
     /// Recorded ECG replay samples (None = synthetic waveform).
@@ -175,6 +253,8 @@ impl SimState {
             reject_next_status: None,
             ecg_sample_index: 0,
             hr_beat_index: 0,
+            hr_replay: None,
+            hr_replay_index: 0,
             battery_carry: 0.0,
             ecg_replay: None,
         }
@@ -205,19 +285,32 @@ impl SimState {
         bpm
     }
 
-    /// Current Heart Rate Measurement payload (one RR interval from the bpm).
-    /// Contact flags follow the H10: supported + detected (`0x06`), or
-    /// supported but lost (`0x04`). Advances the beat index, so each call is
-    /// the next beat.
+    /// Current Heart Rate Measurement payload. A loaded HR replay serves the
+    /// recorded packets verbatim, cycling forever; otherwise one RR interval
+    /// is synthesized from the bpm. Like the strap, contact bits are absent
+    /// (`0x10`) unless the profile declares contact supported. Advances the
+    /// beat and replay indexes, so each call is the next beat.
     pub fn hr_payload(&mut self) -> Vec<u8> {
+        if let Some(replay) = &self.hr_replay {
+            if !replay.packets.is_empty() {
+                let at = (self.hr_replay_index as usize) % replay.packets.len();
+                self.hr_replay_index = self.hr_replay_index.saturating_add(1);
+                self.hr_beat_index = self.hr_beat_index.saturating_add(1);
+                return replay.packets[at].clone();
+            }
+        }
         let beat = self.hr_beat_index;
         self.hr_beat_index = beat.saturating_add(1);
         let rr_s = Self::rr_interval_s(self.config.bpm, self.config.rr_jitter_ms, beat);
-        gatt_spec::encode_hr_measurement_with_contact(
-            self.config.bpm,
-            &[rr_s],
-            self.config.contact_detected,
-        )
+        if self.config.contact_supported {
+            gatt_spec::encode_hr_measurement_with_contact(
+                self.config.bpm,
+                &[rr_s],
+                self.config.contact_detected,
+            )
+        } else {
+            gatt_spec::encode_hr_measurement_no_contact(self.config.bpm, &[rr_s])
+        }
     }
 
     /// Bytes returned by a PMD control-point read: the feature set.
@@ -253,27 +346,28 @@ impl SimState {
         .any(|known| text.eq_ignore_ascii_case(known))
     }
 
-    /// Device Information / Battery read handler. `None` means the
-    /// characteristic does not exist on an H10 (notably PnP ID 0x2A50).
+    /// Device Information / Battery read handler. DIS strings carry the
+    /// strap's trailing NUL. `None` means the characteristic does not exist
+    /// on an H10 (notably PnP ID 0x2A50).
     pub fn static_read(&self, char_uuid16: u16) -> Option<Vec<u8>> {
         match char_uuid16 {
             x if x == gatt_spec::uuid16::MANUFACTURER_NAME => {
-                Some(self.config.manufacturer.as_bytes().to_vec())
+                Some(gatt_spec::encode_dis_string(&self.config.manufacturer))
             }
             x if x == gatt_spec::uuid16::MODEL_NUMBER => {
-                Some(self.config.model.as_bytes().to_vec())
+                Some(gatt_spec::encode_dis_string(&self.config.model))
             }
             x if x == gatt_spec::uuid16::SERIAL_NUMBER => {
-                Some(self.config.serial.as_bytes().to_vec())
+                Some(gatt_spec::encode_dis_string(&self.config.serial))
             }
             x if x == gatt_spec::uuid16::FIRMWARE_REVISION => {
-                Some(self.config.firmware.as_bytes().to_vec())
+                Some(gatt_spec::encode_dis_string(&self.config.firmware))
             }
             x if x == gatt_spec::uuid16::HARDWARE_REVISION => {
-                Some(self.config.hardware.as_bytes().to_vec())
+                Some(gatt_spec::encode_dis_string(&self.config.hardware))
             }
             x if x == gatt_spec::uuid16::SOFTWARE_REVISION => {
-                Some(self.config.software.as_bytes().to_vec())
+                Some(gatt_spec::encode_dis_string(&self.config.software))
             }
             x if x == gatt_spec::uuid16::SYSTEM_ID => Some(gatt_spec::encode_system_id(
                 self.config.system_id_manufacturer,
@@ -532,12 +626,65 @@ mod tests {
     }
 
     #[test]
-    fn contact_lost_clears_detected_bit_but_keeps_supported() {
+    fn hr_payload_reports_no_contact_like_the_strap_by_default() {
+        // All 120 raw HR packets start with 0x10 (contact not supported).
         let mut sim = state();
+        assert!(!sim.config.contact_supported);
+        let payload = sim.hr_payload();
+        assert_eq!(payload[0], 0x10);
+        assert_eq!(payload[1], 72);
+    }
+
+    #[test]
+    fn contact_simulation_needs_a_supported_profile() {
+        let mut sim = state();
+        sim.config.contact_supported = true;
         sim.config.contact_detected = true;
         assert_eq!(sim.hr_payload()[0] & 0x06, 0x06);
         sim.config.contact_detected = false;
         assert_eq!(sim.hr_payload()[0] & 0x06, 0x04);
+        sim.config.contact_supported = false;
+        sim.config.contact_detected = true;
+        assert_eq!(
+            sim.hr_payload()[0] & 0x06,
+            0x00,
+            "unsupported contact reports no contact bits even when detected"
+        );
+    }
+
+    #[test]
+    fn hr_replay_cycles_recorded_packets_verbatim() {
+        let mut sim = state();
+        sim.hr_replay = Some(HrReplay {
+            packets: vec![vec![0x10, 88, 0xBD, 0x02], vec![0x10, 87, 0xDD, 0x02]],
+        });
+        assert_eq!(sim.hr_payload(), vec![0x10, 88, 0xBD, 0x02]);
+        assert_eq!(sim.hr_payload(), vec![0x10, 87, 0xDD, 0x02]);
+        assert_eq!(
+            sim.hr_payload(),
+            vec![0x10, 88, 0xBD, 0x02],
+            "replay cycles forever"
+        );
+    }
+
+    #[test]
+    fn hr_replay_loader_decodes_the_committed_raw_capture() {
+        let replay = load_hr_replay("fixtures/h10-raw/tauri-E9B93D29-2026-09-19-raw.json")
+            .expect("committed raw capture must load");
+        assert_eq!(replay.packets.len(), 120);
+        assert_eq!(replay.packets[0], vec![0x10, 0x58, 0xBD, 0x02]);
+        assert!(
+            replay.packets.iter().all(|packet| packet[0] == 0x10),
+            "every recorded packet reports contact-not-supported with RR"
+        );
+    }
+
+    #[test]
+    fn hr_replay_loader_fails_loudly() {
+        assert!(load_hr_replay("fixtures/does-not-exist.json").is_err());
+        assert!(load_hr_replay("profiles/stock-h10.json")
+            .unwrap_err()
+            .contains("hrMeasurements"));
     }
 
     #[test]
@@ -549,11 +696,13 @@ mod tests {
     fn dis_reads_match_h10_strings_and_omit_pnp_id() {
         let sim = state();
         let text = |uuid: u16| String::from_utf8(sim.static_read(uuid).unwrap()).unwrap();
+        // Trailing NULs are what the strap sends (see the .raw fields in
+        // fixtures/h10-fingerprints).
         assert_eq!(
             text(gatt_spec::uuid16::MANUFACTURER_NAME),
-            "Polar Electro Oy"
+            "Polar Electro Oy\0"
         );
-        assert_eq!(text(gatt_spec::uuid16::MODEL_NUMBER), "H10");
+        assert_eq!(text(gatt_spec::uuid16::MODEL_NUMBER), "H10\0");
         assert!(sim.static_read(gatt_spec::uuid16::SERIAL_NUMBER).is_some());
         assert!(sim
             .static_read(gatt_spec::uuid16::FIRMWARE_REVISION)
@@ -570,7 +719,8 @@ mod tests {
         );
         assert_eq!(
             sim.static_read(gatt_spec::uuid16::BATTERY_LEVEL).unwrap(),
-            vec![85]
+            vec![90],
+            "stock charge state matches the captures (0x5a on all three hosts)"
         );
         assert_eq!(sim.static_read(0x2A50), None, "H10 omits PnP ID");
     }

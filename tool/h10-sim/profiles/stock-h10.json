@@ -3,18 +3,18 @@
     "manufacturer": "Polar Electro Oy",
     "model": "H10",
     "serial": "SIM000001",
-    "firmware": "3.2.1",
-    "hardware": "9",
-    "software": "3.2.1",
-    "system_id_manufacturer": 1,
-    "system_id_oui": [107, 0, 0]
+    "firmware": "5.0.0",
+    "hardware": "00760690.03",
+    "software": "4.2.0",
+    "system_id_manufacturer": 1099493390653,
+    "system_id_oui": [26, 158, 160]
   },
-  "battery": { "level": 85, "drain_per_min": 0.0 },
+  "battery": { "level": 90, "drain_per_min": 0.0 },
   "advertising": {
     "name": "Polar H10 SIM0001",
     "manufacturer_company": 107,
-    "manufacturer_payload_hex": ""
+    "manufacturer_payload_hex": "3f155252"
   },
-  "heart_rate": { "bpm": 72, "contact_detected": true, "rr_jitter_ms": 0.0, "bpm_curve": [] },
-  "pmd": { "pair_policy": "just-works", "ecg_source": "synthetic" }
+  "heart_rate": { "bpm": 72, "contact_supported": false, "contact_detected": false, "rr_jitter_ms": 0.0, "bpm_curve": [], "hr_source": "synthetic" },
+  "pmd": { "pair_policy": "just-works", "ecg_source": "recorded" }
 }

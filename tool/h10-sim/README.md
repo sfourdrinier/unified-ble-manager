@@ -83,21 +83,23 @@ write its own Flags byte, which follows the adapter's BR/EDR setting.
 ## Simulated GATT surface
 
 Advertised name `Polar H10 SIM<4 hex>` (default `Polar H10 SIM0001`,
-`--name` overrides), advertising Heart Rate (`180D`) and Polar (`FEEE`).
-A real H10 also advertises Polar manufacturer data (company `0x006B`); the
-peripheral APIs used here cannot emit manufacturer data (on Apple platforms
-that is an OS limitation), so the sim sends none — see fidelity gaps.
+`--name` overrides), advertising Heart Rate (`180D`) and Polar (`FEEE`),
+plus Polar manufacturer data (company `0x006B`) with the profile's payload
+on Linux — Apple exposes no manufacturer-data peripheral API (an OS
+limitation), so the bytes stay off the air there; the `advertising-started`
+log states which happened every time. See fidelity gaps for the payload
+variance.
 
 | Service | Characteristics | Properties |
 | --- | --- | --- |
-| Heart Rate `180D` | `2A37` measurement: notify ~1 Hz, flags `0x16` (uint8 bpm, contact detected, RR present), 1 RR interval | notify |
+| Heart Rate `180D` | `2A37` measurement: notify ~1 Hz, flags `0x10` (uint8 bpm, RR present, contact not supported — like the strap's 120 captured packets); contact bits only when the profile declares `contact_supported` | notify |
 | | `2A38` body sensor location: chest (`1`) | read |
-| Device Information `180A` | `2A29` manufacturer `Polar Electro Oy`, `2A24` model `H10`, `2A25` serial, `2A27` hardware, `2A26` firmware, `2A28` software, `2A23` system id (hardware before firmware, like the strap) | read |
-| Battery `180F` | `2A19` level (default 85%) | read, notify (60 s) |
+| Device Information `180A` | `2A29` manufacturer `Polar Electro Oy`, `2A24` model `H10`, `2A25` serial, `2A27` hardware, `2A26` firmware, `2A28` software, `2A23` system id (hardware before firmware, like the strap; every string NUL-terminated, like the strap) | read |
+| Battery `180F` | `2A19` level (default 90%, the captured charge state) | read, notify (60 s) |
 | Polar vendor `6217FF4B-…` | `6217FF4C-…` readable (value UNCONFIRMED, served empty) | read |
 | | `6217FF4D-…`: write-command, indications (no behaviour model: writes are refused loudly, nothing is ever indicated) | write-without-response, indicate |
-| Polar PMD `FB005C80-…` | `FB005C81` control point: read returns features (ECG + ACC, the strap's exact 15 bytes); write `0x01` get-settings / `0x02` start / `0x03` stop, each answered with an indicate `[0xF0, op, type, status, more, params…]` | read, write, indicate |
-| | `FB005C82` data: ECG frames at ~130 samples/s (`[0x00, timestampNs u64 LE, 0x00, samples…]`, signed 24-bit LE µV, deterministic synthetic PQRST) | notify |
+| Polar PMD `FB005C80-…` | `FB005C81` control point: read returns features (ECG + ACC, the strap's exact 17 bytes); write `0x01` get-settings / `0x02` start / `0x03` stop, each answered with an indicate `[0xF0, op, type, status, more, params…]` | read, write, indicate |
+| | `FB005C82` data: ECG frames, 73 samples at 130 Hz (~561.6 ms cadence, `[0x00, timestampNs u64 LE, 0x00, samples…]`, signed 24-bit LE µV, the real strap recording by default) | notify |
 | Polar `FEEE` | `FB005C51-…` (write, write-command, notify), `FB005C52-…` (notify), `FB005C53-…` (write, write-command): no behaviour model, writes refused loudly, nothing ever notified | mixed |
 
 Services, their order and the characteristic counts/properties match the
@@ -128,9 +130,9 @@ specifications ([spec index](https://www.bluetooth.com/specifications/specs/)).
 ```sh
 cd tool/h10-sim
 cargo build        # binary: target/debug/h10-sim (set CARGO_TARGET_DIR to redirect)
-cargo test         # 98 unit tests on macOS/Windows, 110 on Linux (see Tests below)
+cargo test         # 112 unit tests on macOS/Windows, 124 on Linux (see Tests below)
 node tests/xcheck/run-xcheck.cjs   # run from the repo root; see Tests below
-cargo clippy --all-targets   # must stay warning-free
+cargo clippy --all-targets -- -D warnings   # must stay warning-free
 cargo fmt --check
 ```
 
@@ -146,7 +148,9 @@ module (`src/bluer_radio.rs`) is not compiled on macOS at all, so a Linux
 
 ```sh
 ./target/debug/h10-sim [--profile profiles/low-battery-legacy.json] [--name "Polar H10 SIM0001"]
-  [--bpm 72] [--battery 85] [--pair-policy just-works] [--ecg-file ecg.txt]
+  [--bpm 72] [--battery 90] [--pair-policy just-works] [--ecg-file ecg.txt]
+  [--hr-replay fixtures/h10-raw/tauri-E9B93D29-2026-09-19-raw.json]
+  [--timing-profile fixtures/h10-fingerprints/<real>.json] [--timing-seed 7]
   [--control-bind 127.0.0.1] [--control-port 17935] [--control-token-file token.txt]
   [--driver ws://127.0.0.1:8795/host] [--linux-advertising bluez|mgmt-legacy]
 ```
@@ -164,8 +168,9 @@ Later flags win: `--profile` applies first, then `--name`/`--bpm`/`--battery`.
   kernels needs `--linux-advertising mgmt-legacy`, see below), adapter powered; build needs
   `libdbus-1-dev` (`sudo apt install libdbus-1-dev`).
 - Known identity: the default profile advertises `Polar H10 SIM0001` with
-  serial `SIM000001`, firmware 3.2.1 and System ID manufacturer 1 / OUI
-  `6B:00:00`. The radio address is the controller's own public address, not
+  serial `SIM000001`, firmware `5.0.0` / hardware `00760690.03` / software
+  `4.2.0` (the strap's revisions), battery 90% and the strap's System ID
+  (`3db9e9feff1a9ea0`). The radio address is the controller's own public address, not
   the sim's to choose — read it with `bluetoothctl show` (controller
   `90:DE:80:3B:69:78` on the reference host, `DC:56:7B:D9:E8:A4` on
   lx5090wifi) and document it beside the
@@ -298,7 +303,7 @@ printf '{"cmd":"get-state"}\n' | nc 127.0.0.1 17935
 | --- | --- |
 | `{"cmd":"set-bpm","bpm":96}` | Heart rate for HR notifies and the ECG waveform (clears a scripted curve) |
 | `{"cmd":"set-battery","level":15}` | Battery level now (0–100, notified immediately) |
-| `{"cmd":"set-contact","detected":false}` | Sensor-contact lost/detected (HR flags `0x04`/`0x06`) |
+| `{"cmd":"set-contact","detected":false}` | Sensor-contact lost/detected — recorded always, but changes the HR flags (`0x04`/`0x06`) only when the profile declares `contact_supported` (the stock strap profile does not) |
 | `{"cmd":"pair-policy","policy":"disabled"}` | Pairing policy `just-works`/`disabled` |
 | `{"cmd":"load-profile","path":"…"}` | Load a profile file live (re-advertises when advertising) |
 | `{"cmd":"set-advertising","on":false}` | Stop/start advertising |
@@ -306,7 +311,7 @@ printf '{"cmd":"get-state"}\n' | nc 127.0.0.1 17935
 | `{"cmd":"set-silent","on":true}` | Stop notifying while keeping the link up |
 | `{"cmd":"reject-next-pmd","status":3}` | Fail the next PMD command with a status code, then clear |
 | `{"cmd":"clear-pmd-fault"}` | Disarm without firing |
-| `{"cmd":"set-rates","hrHz":2.0,"ecgFramesPerSec":4.0,"ecgFrameSamples":65}` | Stream rates (`hrHz` 0.1–10, `ecgFramesPerSec` 0.5–10, samples 1–167 so a frame fits MTU 512) |
+| `{"cmd":"set-rates","hrHz":2.0,"ecgFramesPerSec":1.78,"ecgFrameSamples":73}` | Stream rates (`hrHz` 0.1–10, `ecgFramesPerSec` 0.5–10, samples 1–167 so a frame fits MTU 512; strap defaults 1 Hz / 73 samples / 130/73 fps) |
 | `{"cmd":"get-state"}` | Current state snapshot |
 | `{"cmd":"help"}` | Command list (generated from the same table the driver hello uses) |
 
@@ -339,11 +344,19 @@ Battery drain (`drain_per_min`) notifies `2A19` whenever the level changes
 (the 60 s heartbeat stays regardless). RR jitter is a deterministic sine of
 the beat index (period 10), so identical runs produce identical bytes. The
 BPM curve holds each step's bpm from its `at_s` on; an explicit `set-bpm`
-clears the curve. `--ecg-file` (or `"ecg_source": {"file": …}`) replays a
-recorded trace: text, one integer µV per line at 130 Hz, cycling forever; a
-missing file or a bad line fails startup with its line number. The H10 `2A37`
-flags carry no energy-expended bit, so energy expended is intentionally not
-simulated.
+clears the curve. Contact simulation needs `"contact_supported": true` in
+the profile's `heart_rate` section — without it the flags stay at the
+strap's `0x10`, like the real H10 ignoring contact. `--ecg-file` (or
+`"ecg_source": {"file": …}`) replays a recorded trace: text, one integer µV
+per line at 130 Hz, cycling forever; a missing file or a bad line fails
+startup with its line number. The stock ECG source is `"recorded"`: the real
+strap recording compiled in from
+`fixtures/h10-raw/ecg-E9B93D29-2026-09-19-130hz.txt` (3285 samples, ~25 s,
+cycling forever), so the default stream carries real QRS complexes from any
+directory. `--hr-replay <raw-capture.json>` (or `"hr_source": {"file": …}`)
+replays the recorded `2A37` packets verbatim instead of synthesizing one RR
+interval from the bpm. The H10 `2A37` flags carry no energy-expended bit, so
+energy expended is intentionally not simulated.
 
 ## Pairing and bonding
 
@@ -372,8 +385,8 @@ name, or a prefix ending in `*`; default `Polar H10*`):
   `set-silent` (no data, link up) and `drop-link` (BlueZ tears the link down).
 - `background start '{"device":"Polar H10 SIM0001"}'` — the background lease
   itself is the host platform's answer, as always.
-- `scan-details` — sees the sim's name, `180D`/`FEEE` service UUIDs and RSSI,
-  plus manufacturer data when the profile configures a payload (Linux only).
+- `scan-details` — sees the sim's name, `180D`/`FEEE` service UUIDs, Polar
+  manufacturer data (company `0x006B`, Linux only) and RSSI.
 
 ## Driver host (`peripheral-sim`)
 
@@ -433,21 +446,28 @@ owner with sudo, never by the script:
 
 ## Tests
 
-- `cargo test` — 98 unit tests on macOS/Windows (110 on Linux): encoders (HR
-  measurement incl. contact states, PMD ECG frames, control-point responses,
-  settings TLV, features incl. the strap's 15 bytes, system id), the synthetic
-  ECG waveform plus replay files, PMD command handling (start/stop/settings
+- `cargo test` — 112 unit tests on macOS/Windows (124 on Linux, which adds the `bluer`
+  backend tests): encoders (HR measurement with the strap's `0x10` default
+  plus explicit contact states, DIS NUL termination, PMD ECG frames,
+  control-point responses, settings TLV, features incl. the strap's 17
+  bytes, system id, 73-sample frame geometry), the synthetic ECG waveform,
+  the compiled-in strap recording plus replay files, the HR replay loader
+  against the committed raw capture, PMD command handling (start/stop/settings
   validation, repeated-start/idle-stop `ALREADY_IN_STATE`, one-shot
-  fault, op/type/status errors), profiles (stock + low-battery parsing,
-  hex, pair policy), battery drain, RR jitter and BPM curves, the control
+  fault, op/type/status errors), profiles (stock strap identity +
+  low-battery parsing, hex, pair policy, contact/HR-replay defaults),
+  battery drain, RR jitter and BPM curves, the control
   protocol (parsing/validation, token gate over an in-memory duplex,
   bind refusal), the advertisement budget (names plus manufacturer-data
   sizes), the defaulted radio-trait methods, the H10 service layout against
   the fingerprints (service order, DIS order, vendor/FEEE properties, seven
   CCCDs), the driver hello/decode shapes,
   the timing model (seeded sampling, fingerprint loading, UNCONFIRMED
-  placeholders, checked-in defaults), the fingerprint comparator
-  (synthetic real/sim pairs), the `mgmt-legacy` MGMT packets against the
+  placeholders, checked-in unconfirmed + measured profiles, ECG jitter
+  recentering), the fingerprint comparator
+  (synthetic real/sim pairs, set-based GATT, host-side availability/delivery
+  normalization), the fidelity test comparing each committed real
+  fingerprint against the in-process sim fingerprint, the `mgmt-legacy` MGMT packets against the
   kernel's `include/net/bluetooth/mgmt.h` layouts (golden `Add Advertising`
   packet, advertisement data, name scan response, connectable flag with no
   kernel-managed Flags bits, Command Complete / Status / Advertising Removed
@@ -475,12 +495,19 @@ owner with sudo, never by the script:
 
 ## Known fidelity gaps vs a real H10
 
-- Manufacturer-data payload bytes are not pinned to a real capture yet: the
-  sim emits company `0x006B` with the profile's payload (empty by default —
-  an empty profile payload stays off the air rather than claiming unknown
-  bytes), on Linux only. Apple exposes no manufacturer-data peripheral API,
-  which the `advertising-started` log states every time. `scan-details` sees
-  no `manufacturerCompanyIds` from the default profile.
+- Manufacturer-data payload bytes vary on the real strap: the three captures
+  disagree (`3f155252` Tauri, `371b6968` Android, `3b00005b` iOS — possibly a
+  per-boot token), so no fixed default can be byte-exact. The stock profile
+  replays the Tauri-observed bytes with company `0x006B` (Linux only — Apple
+  exposes no manufacturer-data peripheral API, which the
+  `advertising-started` log states every time); only the company id is
+  pinned, by the comparator and the fidelity test.
+- PMD response latency is bimodal in the captures: the early-connection
+  `pmdResponseMs` distribution sits near ~1 s on all three hosts, while the
+  fifteen later behaviour-probe round trips (all five probes × three hosts)
+  sit near ~100 ms. The timing model follows the `pmdResponseMs`
+  distribution it is built from; the steady-state fast path is documented
+  here, not modelled.
 - `drop-link` drops the link, not the peripheral: advertising and the GATT
   database stay up, so centrals see a lifecycle loss with no Service Changed
   and reconnect at once. On CoreBluetooth it cannot force-disconnect an
@@ -494,9 +521,16 @@ owner with sudo, never by the script:
   needs a documented source before implementing). The vendor `6217ff4c` value
   and the FEEE characteristics' payloads are likewise UNCONFIRMED (empty /
   refused loudly, never guessed).
-- Synthetic waveform by default (recorded replay available), synthetic serial
-  and system id, 130-sample/s ECG only (no other rates).
-- ATT MTU and connection parameters are the platform's answer, not the sim's.
+- Recorded ECG and HR replay cycle one strap session (~25 s ECG, 120 HR
+  packets); the synthetic serial stays (`SIM000001`), and 130 Hz is the only
+  rate (no other sample rates).
+- ATT MTU, connection parameters and the advertising interval are the
+  platform's answer, not the sim's. The Android capture additionally shows
+  platform-injected GAP/GATT services (`1800`/`1801`) that CoreBluetooth and
+  btleplug hide; the fidelity test strips them as central-platform surface.
+  Characteristic `availability` and battery `effectiveDelivery` likewise
+  differ by central backend, so the comparator judges the SIG flags and the
+  settled subscription facts only.
 
 ## Fidelity ground truth: capture, compare, time
 
@@ -552,14 +586,29 @@ metadata (host kind, platform, OS version, backend).
 ```
 
 The report is field-by-field JSON with `passed` plus one entry per check:
-structural parts (advertisement layout, GATT database, values modulo
+structural parts (advertisement layout incl. manufacturer company id, GATT
+database as a set — ATT order is a backend artifact, values modulo
 configured identity — serial, battery level and local-name id excluded from
 equality but still checked readable — behaviour-probe status codes) must be
 equal; timing distributions pass when
 `|sim − real| ≤ max(min_abs_ms, p50_relative × |real|)`, with the applied
-bound printed on every timing check. Tolerances are reported, never hidden.
-Exit 0 when every check passes, 1 otherwise. The comparator is unit-tested
-with synthetic fingerprints (`src/compare.rs`).
+bound printed on every timing check. Host-side observations are reported,
+never judged: characteristic `availability`, battery `effectiveDelivery` and
+MTU `effective`. Tolerances are reported, never hidden. Exit 0 when every
+check passes, 1 otherwise. The comparator is unit-tested with synthetic
+fingerprints (`src/compare.rs`). Without going over the air,
+`--emit-sim-fingerprint` prints the in-process sim fingerprint for the same
+comparison:
+
+```sh
+./target/debug/h10-sim --emit-sim-fingerprint > /tmp/sim-fp.json
+./target/debug/h10-sim --compare fixtures/h10-fingerprints/<real>.json /tmp/sim-fp.json
+```
+
+The fidelity test (`src/fidelity.rs`) runs this comparison in-process for
+every committed real fingerprint (default tolerances 0.25 / 50 ms; the
+Android capture is normalized by stripping its platform-injected `1800` /
+`1801` services first) and fails on the first gap, printing the report.
 
 ### 3. Timing model
 
@@ -574,25 +623,26 @@ same run exactly:
 h10-sim --emit-timing-defaults   # regenerate profiles/timing-default-unconfirmed.json
 ```
 
-Until the captures exist the sim runs on the documented defaults and its
-over-the-air behaviour is unchanged (zero-spread placeholders sample
-deterministically; connect/discovery/MTU latencies stay the central's own
-answers and are never synthesized).
+The sim runs on the measured strap profile by default
+(`profiles/timing-h10-measured.json`, fitted from the Tauri capture, pinned
+by test against the loader output).
+`profiles/timing-default-unconfirmed.json` keeps the original zero-spread
+placeholders for explicit opt-in; connect/discovery/MTU latencies stay the
+central's own answers and are never synthesized.
 
 ### Behaviour sources and UNCONFIRMED list
 
 | Behaviour | Source |
 | --- | --- |
-| HR flags `0x16`, RR in 1/1024 s, chest location `1` | SIG HRS 1.0 §3.3–§3.4 (`src/gatt_spec.rs`) |
-| Battery uint8 percent; DIS strings UTF-8; System ID 8 bytes | SIG BAS 1.1 §3.2; SIG DIS 1.1 (`src/gatt_spec.rs`) |
-| PMD response `[0xF0, op, type, status, more, params…]`, ECG frames `[0x00, tsNs u64 LE, 0x00, s24 LE µV]`, 130 Hz / 14 bit, settings TLV, status codes | Polar BLE SDK `BlePMDClient` / `PmdControlPointResponse` / `PmdDataFrame` / `PmdSetting` / `PmdMeasurementType` (`src/gatt_spec.rs`, `examples-shared/driver/polar-pmd.ts`) |
-| GATT database (services, order, counts, properties, DIS hardware-before-firmware order), PMD feature bytes (`0f0500…`, ECG + ACC), `ALREADY_IN_STATE` on repeated start / idle stop, indication confirmations keeping the session | h10-capture fingerprints `fixtures/h10-fingerprints/` (all three capture hosts agree) |
-| Advertisement: Flags + 16-bit UUID list in AD, name in scan response | BlueZ 5.72 `src/advertising.c` layout (`src/advertisement.rs`) |
-| HR ~1 Hz cadence, PMD response latency, ECG frame jitter, advertising interval | capture `timings.*` — **all four UNCONFIRMED** (see below) |
+| HR flags `0x10` (RR present, contact not supported), RR in 1/1024 s, chest location `1` | SIG HRS 1.0 §3.3–§3.4 + the 120 raw packets in `fixtures/h10-raw/` (`src/gatt_spec.rs`) |
+| Battery uint8 percent; DIS strings UTF-8 with trailing NUL; System ID 8 bytes | SIG BAS 1.1 §3.2; SIG DIS 1.1 + `fixtures/h10-fingerprints/` (`src/gatt_spec.rs`) |
+| PMD response `[0xF0, op, type, status, more, params…]`, ECG frames `[0x00, tsNs u64 LE, 0x00, s24 LE µV]`, 130 Hz / 14 bit, 73-sample frames, settings TLV, status codes | Polar BLE SDK `BlePMDClient` / `PmdControlPointResponse` / `PmdDataFrame` / `PmdSetting` / `PmdMeasurementType` (`src/gatt_spec.rs`, `examples-shared/driver/polar-pmd.ts`) + `fixtures/h10-fingerprints/` |
+| GATT database (services, counts, properties, DIS hardware-before-firmware order, seven CCCDs), PMD feature bytes (`0f0500…`, 17 bytes, ECG + ACC), `ALREADY_IN_STATE` on repeated start / idle stop, indication confirmations keeping the session | h10-capture fingerprints `fixtures/h10-fingerprints/` (all three capture hosts agree) |
+| Advertisement: Flags + 16-bit UUID list in AD, name in scan response, Polar company `0x006B` | BlueZ 5.72 `src/advertising.c` layout (`src/advertisement.rs`) + `fixtures/h10-fingerprints/` |
+| HR interval (p50 993 ms), PMD response (p50 994 ms), ECG frame jitter (spread 0.009 ms around the 73/130 s cadence), advertising interval (p50 1042 ms) | Tauri capture `timings.*` / `advertisement.*` — **all four CONFIRMED** in `profiles/timing-h10-measured.json` |
 
-UNCONFIRMED until a capture confirms them (all four in
-`profiles/timing-default-unconfirmed.json`):
-`hr_interval` (~1000 ms), `pmd_response` (0 ms — local answer, no documented
-value), `ecg_frame_jitter` (0 ms around 2 frames/s × 65 samples),
-`advertising_interval` (100 ms placeholder; the interval stays the platform
-radio's answer either way).
+Still UNCONFIRMED (placeholders in `profiles/timing-default-unconfirmed.json`
+for explicit opt-in; live defaults are the measured profile above): nothing
+timing-related remains — the open gaps are the vendor `6217ff4c` value, the
+FEEE payloads and ACC streaming (see fidelity gaps), which need a documented
+source before implementing.
