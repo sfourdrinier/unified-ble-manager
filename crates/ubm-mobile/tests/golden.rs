@@ -77,10 +77,21 @@ impl Recorder {
 
     /// Accumulate drained records until `want` arrived, then record them
     /// as one batch (ordinals stay strictly increasing across batches).
+    /// The golden flow is loss-free: the cumulative control-loss counter
+    /// must read zero, so the vectors pin the field without loss.
     async fn drain(&mut self, session: &ubm_mobile::MobileSession, name: &str, want: usize) {
         let records = drain_until(session, |records| records.len() >= want).await;
         assert_eq!(records.len(), want, "{name}: {records:#?}");
-        let text = json!({"more": false, "records": records}).to_string();
+        // Synchronous stretch: no task can interleave, so this drain
+        // takes nothing and only reads the cumulative counter.
+        let batch = parse(&session.drain(256, 65536));
+        assert_eq!(batch["records"], json!([]), "{name}: nothing left behind");
+        assert_eq!(
+            batch["controlLost"],
+            json!(0u64),
+            "{name}: golden flow loses nothing"
+        );
+        let text = json!({"more": false, "records": records, "controlLost": 0}).to_string();
         self.drains.push(json!({
             "name": name,
             "lastOrdinal": self.last_ordinal,

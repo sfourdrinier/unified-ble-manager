@@ -118,9 +118,12 @@ import type {
   ConnectionMaximumWriteLengthRequest,
   ConnectionWriteReadinessObservation,
   ConnectionWriteReadinessWatch,
+  EffectiveMtuMeasurement,
+  EffectiveMtuRequest,
   ReadRssiRequest,
   RssiMeasurement
 } from '../../backend-contract/connection-controls'
+import { MAXIMUM_REQUESTED_ATT_MTU, MINIMUM_ATT_MTU } from '../../backend-contract/connection-controls'
 import type { PeerAddressDescriptor } from '../../backend-contract/backend'
 import type {
   PeerSecurityEvent,
@@ -1150,6 +1153,14 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
               connection: BackendConnection<string, string>,
               request: ReadRssiRequest<string, Operation>
             ) => this.readRssi(connection, request)
+          }
+        : {}),
+      ...(this.wiring.effectiveMtu
+        ? {
+            effectiveMtu: <Operation extends string>(
+              connection: BackendConnection<string, string>,
+              request: EffectiveMtuRequest<string, Operation>
+            ) => this.effectiveMtu(connection, request)
           }
         : {}),
       ...(this.wiring.maximumWriteLength
@@ -3441,6 +3452,36 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     return this.dispatchFor(correlation, completion)
   }
 
+  private effectiveMtu<Operation extends string>(
+    connection: BackendConnection<string, string>,
+    request: EffectiveMtuRequest<string, Operation>
+  ): BackendOperationDispatch<string, EffectiveMtuMeasurement<string, Operation>> {
+    const operation = this.op('connection.effective-mtu')
+    this.assertOperational(operation)
+    const record = this.liveConnection(connection, operation)
+    const correlation = String(request.operation.correlation)
+    const completion = (async (): Promise<EffectiveMtuMeasurement<string, Operation>> => {
+      const mtu = await this.withTicket(correlation, request.operation.signal, operation, ticket =>
+        this.central.readEffectiveMtu({
+          peerId: record.nativePeerId,
+          lease: record.lease,
+          ticket,
+          ...this.budget(request.operation)
+        })
+      )
+      return Object.freeze({
+        connectionId: connection.connectionId,
+        connectionGeneration: connection.connectionGeneration,
+        attMtu: mtu,
+        payloadBytes: mtu - 3,
+        platformPduBytes: null,
+        observedAtMonotonicMs: this.now(),
+        terminal: this.succeededTerminal(request.operation.correlation)
+      })
+    })()
+    return this.dispatchFor(correlation, completion)
+  }
+
   // -- GATT ------------------------------------------------------------------
 
   private mintOccurrence(kind: string, numeral: number): string {
@@ -4543,6 +4584,7 @@ function accessRequirements(
 /** Built-in feature ids the Rust provider can wire, when the core implements them on the OS. */
 const CORE_BACKED_FEATURES = Object.freeze({
   rssi: BUILT_IN_FEATURE_IDS.connectionRssi,
+  effectiveMtu: BUILT_IN_FEATURE_IDS.connectionEffectiveMtu,
   maximumWriteLength: BUILT_IN_FEATURE_IDS.maximumWriteLength,
   addressTargeting: BUILT_IN_FEATURE_IDS.peerAddressTargeting,
   security: Object.freeze([
@@ -4556,6 +4598,7 @@ const CORE_BACKED_FEATURES = Object.freeze({
 /** Which core-backed capabilities this backend wires: the core must implement them on the OS. */
 export interface DesktopRustCoreWiring {
   readonly rssi: boolean
+  readonly effectiveMtu: boolean
   readonly maximumWriteLength: boolean
   readonly addressTargeting: boolean
   readonly security: boolean
@@ -4573,6 +4616,7 @@ export function desktopRustCoreWiring(states: readonly DesktopRustCoreCapability
   const limited = new Set(states.filter(row => row.state === 'limited').map(row => row.id))
   return Object.freeze({
     rssi: limited.has(CORE_BACKED_FEATURES.rssi),
+    effectiveMtu: limited.has(CORE_BACKED_FEATURES.effectiveMtu),
     maximumWriteLength: limited.has(CORE_BACKED_FEATURES.maximumWriteLength),
     addressTargeting: limited.has(CORE_BACKED_FEATURES.addressTargeting),
     security: CORE_BACKED_FEATURES.security.every(id => limited.has(id)),
@@ -4631,6 +4675,21 @@ export function createDesktopRustCoreFeatureRegistry(
   if (wiring.addressTargeting) {
     registrations.push(registration(BUILT_IN_FEATURE_IDS.peerAddressTargeting, 'capability.catalog-v2'))
   }
+  // Finding 217 follow-up: every desktop OS answers the effective ATT MTU
+  // it measures (macOS derives maximumWriteValueLength(.withResponse) + 3,
+  // Windows reads GattSession.MaxPduSize, Linux reads the BlueZ
+  // characteristic MTU), so the row is limited wherever the core reports
+  // it limited, with the contract's ATT MTU bounds.
+  if (wiring.effectiveMtu) {
+    registrations.push(
+      Object.freeze({
+        ...registration(BUILT_IN_FEATURE_IDS.connectionEffectiveMtu, 'connection-controls'),
+        limits: Object.freeze({
+          attMtu: Object.freeze({ minimum: MINIMUM_ATT_MTU, maximum: MAXIMUM_REQUESTED_ATT_MTU, unit: 'bytes' })
+        })
+      })
+    )
+  }
   if (wiring.security) {
     for (const id of CORE_BACKED_FEATURES.security) {
       registrations.push(registration(id, `tck.feature.security.${profile.platform}`))
@@ -4668,7 +4727,11 @@ export function createDesktopRustCoreFeatureRegistry(
     )
   }
   if (profile.platform === 'corebluetooth') {
-    registrations.push(...createCoreBluetoothUnsupportedRegistrations(DESKTOP_RUST_CORE_IMPLEMENTATION_VERSION))
+    registrations.push(
+      ...createCoreBluetoothUnsupportedRegistrations(DESKTOP_RUST_CORE_IMPLEMENTATION_VERSION, {
+        effectiveMtuWired: wiring.effectiveMtu
+      })
+    )
   }
   return createFeatureRegistry(Object.freeze(registrations))
 }

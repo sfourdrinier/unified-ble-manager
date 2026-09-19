@@ -22,8 +22,8 @@ use tokio::sync::{Notify, oneshot};
 use ubm_core::contracts::{BleErrorCode, BleErrorDomain};
 use ubm_desktop::boundary::AdapterPowerState;
 use ubm_desktop::{
-    DeliveryMode, DesktopError, ObservedDelivery, PeerSnapshot, RadioBoundary, RadioCloseFailure,
-    RadioEvent, ScanFilterSpec, ServiceSnapshot,
+    Budget, DeliveryMode, DesktopError, ObservedDelivery, OpControl, OpTicket, PeerSnapshot,
+    RadioBoundary, RadioCloseFailure, RadioEvent, ScanFilterSpec, ServiceSnapshot,
 };
 
 use crate::radio::{
@@ -137,6 +137,13 @@ struct Shared {
     drop_hook: Mutex<Option<DropHook>>,
     staged_scan: Mutex<Option<ScanRequest>>,
     staged_connect: Mutex<HashMap<String, ConnectStaging>>,
+    /// Per-peer connect sections (X-R3): at most one same-peer connect
+    /// stages, dispatches and cleans up at a time, so staging stays bound
+    /// to its operation without an operation identity on the boundary verb.
+    /// One small entry per peer ever connected, like the host's other
+    /// per-peer maps; entries are never removed because a removal racing a
+    /// new waiter would split the section in two.
+    connect_sections: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     staged_preference: Mutex<HashMap<Instance, DeliveryMode>>,
     close_failures: Mutex<Vec<RadioCloseFailure>>,
     close_error: Mutex<Option<DesktopError>>,
@@ -253,6 +260,7 @@ impl ForeignRadio {
                 drop_hook: Mutex::new(None),
                 staged_scan: Mutex::new(None),
                 staged_connect: Mutex::new(HashMap::new()),
+                connect_sections: Mutex::new(HashMap::new()),
                 staged_preference: Mutex::new(HashMap::new()),
                 close_failures: Mutex::new(Vec::new()),
                 close_error: Mutex::new(None),
@@ -404,7 +412,78 @@ impl ForeignRadio {
         *lock(&self.shared.staged_scan) = Some(scan);
     }
 
-    /// Stage the connect intent for the next connect to `peer_id`.
+    /// Enter this peer's connect section (X-R3): hold the guard across
+    /// stage, dispatch and cleanup, so a concurrent same-peer connect can
+    /// neither overwrite this operation's staging nor wipe it in its own
+    /// cleanup. The wait is cancellation- and deadline-aware like the scan
+    /// admission section: a dead op never stages. Passing the options
+    /// through the boundary instead would need an operation identity on
+    /// `RadioBoundary::connect`, which is ubm-desktop's contract.
+    pub async fn lock_connect_section(
+        &self,
+        peer_id: &str,
+        ctl: &OpControl,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>, DesktopError> {
+        fn refused(ticket: &OpTicket, budget: &Budget) -> Option<DesktopError> {
+            if ticket.is_cancel_requested() {
+                return Some(DesktopError::new(
+                    BleErrorCode::OperationAborted,
+                    BleErrorDomain::Connection,
+                    "connection.connect",
+                ));
+            }
+            if budget.is_expired() {
+                return Some(DesktopError::new(
+                    BleErrorCode::OperationTimedOut,
+                    BleErrorDomain::Connection,
+                    "connection.connect",
+                ));
+            }
+            None
+        }
+        if let Some(error) = refused(&ctl.ticket, &ctl.budget) {
+            return Err(error);
+        }
+        let section = lock(&self.shared.connect_sections)
+            .entry(peer_id.to_owned())
+            .or_default()
+            .clone();
+        let aborted = || {
+            refused(&ctl.ticket, &ctl.budget).unwrap_or_else(|| {
+                DesktopError::new(
+                    BleErrorCode::OperationAborted,
+                    BleErrorDomain::Connection,
+                    "connection.connect",
+                )
+            })
+        };
+        match ctl.budget.remaining() {
+            Some(wait) => {
+                tokio::select! {
+                    biased;
+                    () = ctl.ticket.cancelled() => Err(aborted()),
+                    () = tokio::time::sleep(wait) => Err(DesktopError::new(
+                        BleErrorCode::OperationTimedOut,
+                        BleErrorDomain::Connection,
+                        "connection.connect",
+                    )),
+                    guard = section.lock_owned() => Ok(guard),
+                }
+            }
+            None => {
+                tokio::select! {
+                    biased;
+                    () = ctl.ticket.cancelled() => Err(aborted()),
+                    guard = section.lock_owned() => Ok(guard),
+                }
+            }
+        }
+    }
+
+    /// Stage the connect intent for the next connect to `peer_id`. Only the
+    /// holder of the peer's connect section may stage: with the section
+    /// held, nothing foreign can be present, so dispatch consumes exactly
+    /// what this operation staged and cleanup removes only its own.
     pub fn stage_connect(&self, peer_id: &str, staging: ConnectStaging) {
         lock(&self.shared.staged_connect).insert(peer_id.to_owned(), staging);
     }

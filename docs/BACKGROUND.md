@@ -62,7 +62,7 @@ iOS (iPhone 16 Pro Max):
 Android (Samsung SM-A376U1):
 
 1. Kill the app process: `adb shell am kill <package>`. Never `adb shell am force-stop`: a force-stop disables presence wake.
-2. Move the strap out of range and back; Companion Device Manager binds `UbmCompanionPresenceService` on appearance.
+2. Move the strap out of range and back; Companion Device Manager binds `UbmCompanionPresenceService` on appearance, which installs the process radio owner and surfaces the associated peer as a `restored` record at once, rather than only persisting it for the next session open.
 3. Run `restoration` `reconnect` with the recorded peer id and verify the same public events as iOS.
 
 Expected on both phones: the reconnected peer id matches the recorded

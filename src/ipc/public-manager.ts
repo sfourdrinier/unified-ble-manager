@@ -559,7 +559,7 @@ class UnsupportedIpcControlIterator<Value> implements AsyncIterator<Value> {
 }
 
 function createIpcConnectionControls(
-  connection: Pick<IpcConnection, 'readRssi' | 'maximumWriteLength'>,
+  connection: Pick<IpcConnection, 'readRssi' | 'effectiveMtu' | 'maximumWriteLength'>,
   capabilities: BleCapabilities,
   generation: string
 ): BleConnectionControls {
@@ -608,19 +608,36 @@ function createIpcConnectionControls(
       throw contractError('capability.unsupported', 'connection', operation)
     })
 
-  return Object.freeze({
-    readRssi,
-    // Finding 190b: fail-closed like every desktop host, but with the
-    // snapshot's own reason (for example
-    // `effective-mtu-boundary-unavailable`), never a bare unsupported.
-    effectiveMtu: (): Promise<MtuObservation> =>
-      runIpcControl(async () => {
+  // Finding 217 follow-up: measured through the host like every desktop
+  // host (macOS derives maximumWriteValueLength(.withResponse) + 3,
+  // Windows reads GattSession.MaxPduSize, Linux reads the BlueZ
+  // characteristic MTU). A snapshot that does not report it stays
+  // fail-closed with the snapshot's own reason (for example
+  // `effective-mtu-boundary-unavailable`), never a bare unsupported.
+  const effectiveMtu = (): Promise<MtuObservation> =>
+    runIpcControl(async () => {
+      const descriptor = capabilities.get(BUILT_IN_FEATURE_IDS.connectionEffectiveMtu)
+      if (descriptor === undefined || descriptor.state !== 'limited') {
         throw ipcControlCapabilityError(
           capabilities,
           BUILT_IN_FEATURE_IDS.connectionEffectiveMtu,
           'ipc-public-manager.controls.effective-mtu'
         )
-      }),
+      }
+      const mtu = await connection.effectiveMtu()
+      const observation: MtuObservation = Object.freeze({
+        ...ipcControlMetadata(generation, descriptor, globalThis.performance.now()),
+        state: 'measured',
+        attMtu: mtu,
+        payloadBytes: mtu - 3,
+        platformPduBytes: null
+      })
+      return observation
+    })
+
+  return Object.freeze({
+    readRssi,
+    effectiveMtu,
     requestMtu: (_mtu: number, _options: OperationOptions = {}): Promise<MtuNegotiation> =>
       unsupportedPromise('ipc-public-manager.controls.request-mtu'),
     maximumWriteLength,

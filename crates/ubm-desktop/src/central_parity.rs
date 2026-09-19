@@ -909,6 +909,51 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         Self::write_maximum(&core, measured, "gatt.maximum-write-length")
     }
 
+    /// Effective ATT MTU of the live link to `peer_id`
+    /// (`connection:effective-mtu`): the ATT MTU the OS negotiated, as the
+    /// OS reports it. macOS derives
+    /// `CBPeripheral.maximumWriteValueLength(for: .withResponse) + 3` per
+    /// link (finding 217: the same derivation as the Apple React Native
+    /// route, so both hosts report the same value); Windows reads the
+    /// `GattSession.MaxPduSize` btleplug already tracks as the ATT MTU;
+    /// Linux reads the `org.bluez.GattCharacteristic1` MTU. Admitted like
+    /// [`DesktopCentral::connection_maximum_write_length`]: the lease
+    /// holder of a connected link. A radio that withholds the measurement
+    /// answers `capability.unsupported` with the reason, never a guessed
+    /// 23.
+    pub async fn read_effective_mtu(
+        &self,
+        peer_id: &str,
+        lease: &str,
+        ctl: OpControl,
+    ) -> Result<u16, DesktopError> {
+        let _settle = SettleOnDrop(&ctl.ticket);
+        self.precheck(&ctl, "connection.effective-mtu")?;
+        let window = ctl.budget.window(LIVENESS_OP);
+        let peer_key = self.known_peer_key(peer_id).await?;
+        self.require_connected_lease(&peer_key, lease, "connection.effective-mtu")
+            .await?;
+        match drive(
+            &ctl.ticket,
+            window,
+            self.inner.boundary.read_effective_mtu(peer_id),
+        )
+        .await
+        {
+            Wait::Done(outcome) => outcome,
+            Wait::Expired => Err(classify(
+                timed_out("connection.effective-mtu", window),
+                OpKind::Read,
+                true,
+            )),
+            Wait::Cancelled => Err(classify(
+                ctl.ticket.interruption("connection.effective-mtu"),
+                OpKind::Read,
+                true,
+            )),
+        }
+    }
+
     /// Lease admission shared with [`DesktopCentral::read_rssi`]: no record
     /// is `connection.not-found`, a foreign lease `ownership.denied`, a link
     /// that is not connected `connection.stale`.

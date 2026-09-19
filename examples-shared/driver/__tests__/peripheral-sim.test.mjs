@@ -22,7 +22,13 @@ const EXPECTED_COMMANDS = [
   'set-silent',
   'reject-next-pmd',
   'clear-pmd-fault',
+  'delay-responses',
+  'flap-link',
+  'interrupt-next-subscribe',
+  'stale-callback',
+  'constrain-delivery',
   'set-rates',
+  'run-record',
   'get-state',
   'help'
 ]

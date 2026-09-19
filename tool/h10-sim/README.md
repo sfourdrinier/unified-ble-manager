@@ -360,15 +360,40 @@ printf '{"cmd":"get-state"}\n' | nc 127.0.0.1 17935
 | `{"cmd":"pair-policy","policy":"disabled"}` | Pairing policy `just-works`/`disabled` |
 | `{"cmd":"load-profile","path":"…"}` | Load a profile file live (re-advertises when advertising) |
 | `{"cmd":"set-advertising","on":false}` | Stop/start advertising |
-| `{"cmd":"drop-link"}` | Halt ECG and disconnect centrals; advertising and the GATT database stay up so centrals see a lifecycle loss with no Service Changed and can reconnect at once (BlueZ `Device1.Disconnect`, counted in the reply; on CoreBluetooth a connected central stays connected — no disconnect API) |
-| `{"cmd":"set-silent","on":true}` | Stop notifying while keeping the link up |
-| `{"cmd":"reject-next-pmd","status":3}` | Fail the next PMD command with a status code, then clear |
-| `{"cmd":"clear-pmd-fault"}` | Disarm without firing |
+| `{"cmd":"drop-link"}` | [adversarial] Halt ECG and disconnect the simulator's tracked GATT clients plus any `--drop-link-allow` extras, reporting `dropped`/`skipped` per address in `state` (no targets reports the note `no simulator clients` and disconnects nothing); advertising and the GATT database stay up so centrals see a lifecycle loss with no Service Changed and can reconnect at once (BlueZ `Device1.Disconnect`; on CoreBluetooth a connected central stays connected — no disconnect API) |
+| `{"cmd":"set-silent","on":true}` | [adversarial] Stop notifying while keeping the link up |
+| `{"cmd":"reject-next-pmd","status":3}` | [adversarial] Fail the next PMD command with a status code, then clear |
+| `{"cmd":"clear-pmd-fault"}` | [adversarial] Disarm without firing |
+| `{"cmd":"delay-responses","ms":250}` | [adversarial] Add `ms` of extra PMD response latency on top of any measured latency (`0` clears) |
+| `{"cmd":"flap-link"}` | [adversarial] Drop the simulator's client links and bounce advertising so centrals run a rapid disconnect/reconnect cycle |
+| `{"cmd":"interrupt-next-subscribe"}` | [adversarial] Tear down the next notify/indicate subscription as soon as it is set up |
+| `{"cmd":"stale-callback"}` | [adversarial] Re-notify the last PMD response out of sequence (fails loudly when no PMD response has gone out yet) |
+| `{"cmd":"constrain-delivery","keepEvery":4}` | [adversarial] Deliver every `keepEvery`-th ECG frame only (`1` disables) |
 | `{"cmd":"set-rates","hrHz":2.0,"ecgFramesPerSec":1.78,"ecgFrameSamples":73}` | Stream rates (`hrHz` 0.1–10, `ecgFramesPerSec` 0.5–10, samples 1–167 so a frame fits MTU 512; strap defaults 1 Hz / 73 samples / 130/73 fps) |
+| `{"cmd":"run-record"}` | Report this run's seed/profile, `--mode` and injected fault sequence with timestamps (telemetry, available in every mode) |
 | `{"cmd":"get-state"}` | Current state snapshot |
 | `{"cmd":"help"}` | Command list (generated from the same table the driver hello uses) |
 
 Unknown commands and out-of-range values get `{"ok":false,"error":"…"}`.
+
+### Run mode
+
+`--mode faithful|adversarial` (default `faithful`) selects the run posture
+once at startup; profiles cannot change it. `faithful` reproduces the
+captured H10 behaviour and injects nothing: every command marked
+`[adversarial]` above is refused with `{"ok":false,"error":"…is an
+adversarial fault command: refused in faithful mode…"}`. `adversarial`
+additionally allows those commands to inject labelled faults. Configuration
+commands, `run-record`, `get-state` and `help` stay available in every mode.
+The acceptance suite's link-loss scenario drives `drop-link`, so it needs
+`--mode adversarial`.
+
+`run-record` reports `{"ok":true,"state":{"mode":"faithful"|"adversarial",
+"seed":<u64>,"profile":"<path or \"<builtin stock-h10>\">","name":"<device
+name>","startedAt":"<RFC 3339>","faults":[{"ts":"<RFC 3339>","fault":"<command
+name>","detail":{…}},…]}}` — one entry per fired adversarial command, in
+order, each with its own detail (e.g. `drop-link` records `dropped` and
+`targets`).
 
 ### Authentication
 

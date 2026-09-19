@@ -571,6 +571,13 @@ impl RadioBoundary for DispatchRadio {
         }
     }
 
+    async fn read_effective_mtu(&self, peer_id: &str) -> std::result::Result<u16, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.read_effective_mtu(peer_id).await,
+            Self::Synthetic(radio) => radio.read_effective_mtu(peer_id).await,
+        }
+    }
+
     async fn adapter_state(&self) -> std::result::Result<AdapterPowerState, DesktopError> {
         match self {
             Self::Radio(radio) => radio.adapter_state().await,
@@ -1896,6 +1903,8 @@ pub struct DispatchCountersInfo {
     pub notification_values: i64,
     #[napi(js_name = "readRssi")]
     pub read_rssi: i64,
+    #[napi(js_name = "readEffectiveMtu")]
+    pub read_effective_mtu: i64,
     #[napi(js_name = "adapterState")]
     pub adapter_state: i64,
     pub cancel: i64,
@@ -1921,6 +1930,7 @@ struct DispatchCounters {
     unsubscribe: AtomicU64,
     notification_values: AtomicU64,
     read_rssi: AtomicU64,
+    read_effective_mtu: AtomicU64,
     adapter_state: AtomicU64,
     cancel: AtomicU64,
     security: AtomicU64,
@@ -1950,6 +1960,7 @@ impl DispatchCounters {
             unsubscribe: read(&self.unsubscribe)?,
             notification_values: read(&self.notification_values)?,
             read_rssi: read(&self.read_rssi)?,
+            read_effective_mtu: read(&self.read_effective_mtu)?,
             adapter_state: read(&self.adapter_state)?,
             cancel: read(&self.cancel)?,
             security: read(&self.security)?,
@@ -3442,6 +3453,28 @@ impl UbmCentral {
             .map_err(fail)
     }
 
+    /// Effective ATT MTU of the live link, as the OS reports it (finding
+    /// 217 follow-up): macOS `maximumWriteValueLength(.withResponse) + 3`,
+    /// Windows `GattSession.MaxPduSize`, Linux the BlueZ characteristic
+    /// MTU. A withheld measurement is `capability.unsupported` with the
+    /// reason, never a guessed 23.
+    #[napi(catch_unwind)]
+    pub async fn read_effective_mtu(&self, options: LeaseOptions) -> Result<i32> {
+        let ctl = self
+            .control(
+                options.timeout_ms,
+                options.ticket.as_deref(),
+                "dispatch.read-effective-mtu",
+            )
+            .map_err(to_napi)?;
+        bump(&self.counters.read_effective_mtu);
+        self.central
+            .read_effective_mtu(&options.peer_id, &options.lease, ctl)
+            .await
+            .map(i32::from)
+            .map_err(fail)
+    }
+
     /// Discover the peer database; returns the registration report.
     #[napi(catch_unwind)]
     pub async fn discover(&self, options: LeaseOptions) -> Result<DiscoveryInfo> {
@@ -3984,6 +4017,26 @@ impl UbmCentral {
             ))
         })?;
         radio.set_rssi(&peer_id, rssi);
+        Ok(())
+    }
+
+    /// Stage the synthetic effective ATT MTU for one peer (synthetic only).
+    #[napi(catch_unwind)]
+    pub async fn stage_effective_mtu(&self, peer_id: String, mtu: i32) -> Result<()> {
+        let radio = self
+            .central
+            .boundary()
+            .synthetic("dispatch.stage-effective-mtu")
+            .map_err(to_napi)?;
+        let mtu = u16::try_from(mtu).map_err(|_| {
+            to_napi(DispatchError::new(
+                BleErrorCode::ArgumentInvalid.as_str(),
+                BleErrorDomain::Core.as_str(),
+                "dispatch.stage-effective-mtu",
+                "mtu out of range",
+            ))
+        })?;
+        radio.set_effective_mtu(&peer_id, mtu);
         Ok(())
     }
 
@@ -5307,6 +5360,25 @@ mod tests {
             .unblock_radio_op("read".to_owned())
             .await
             .expect("unblock");
+        central.close().await.expect("close");
+    }
+
+    #[tokio::test]
+    async fn effective_mtu_crosses_the_boundary() {
+        let central = connected_synthetic("dispatch-test-effective-mtu").await;
+        central
+            .stage_effective_mtu("peer-1".to_owned(), 515)
+            .await
+            .expect("stage mtu");
+        assert_eq!(
+            central
+                .read_effective_mtu(lease(Some(2000)))
+                .await
+                .expect("effective mtu"),
+            515
+        );
+        let counters = central.dispatch_counters().expect("counters");
+        assert_eq!(counters.read_effective_mtu, 1);
         central.close().await.expect("close");
     }
 

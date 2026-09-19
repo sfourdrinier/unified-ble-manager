@@ -244,6 +244,9 @@ describe('first-party backend standard TCK registrations', () => {
       'connection:direct',
       'gatt:descriptors',
       BUILT_IN_FEATURE_IDS.connectionRssi,
+      // finding 217 follow-up: desktop routes measure the effective ATT MTU
+      // (macOS maximumWriteValueLength + 3, WinRT MaxPduSize, BlueZ characteristic MTU).
+      BUILT_IN_FEATURE_IDS.connectionEffectiveMtu,
       'gatt:maximum-write-length',
       BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness
     ])
@@ -294,7 +297,9 @@ describe('first-party backend standard TCK registrations', () => {
         'gatt.duplicate-uuid-occurrences-route-exactly',
         'scenario.scan-connect-discover-read-notify-destroy'
       ])
-      expect(report.standard.featureSuiteIds).toEqual([securitySuite, 'tck.feature.gatt.maximum-write-length'])
+      // finding 217 follow-up: BlueZ and WinRT now measure the effective ATT MTU,
+      // so the connection-controls suite applies to them as it does on macOS.
+      expect(report.standard.featureSuiteIds).toEqual(['connection-controls', securitySuite, 'tck.feature.gatt.maximum-write-length'])
       expectEveryReceiptHolds(report)
       const security = report.standard.receipts.filter(
         receipt => receipt.scenarioId === 'security.state-pair-cancel-unpair'

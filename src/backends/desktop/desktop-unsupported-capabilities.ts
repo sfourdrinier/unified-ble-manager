@@ -63,7 +63,8 @@ function limitation(code: string, explanation: string, affectedGuarantee: string
  * backend's codes and explanations (corebluetooth-runtime-capabilities.ts).
  */
 export function createCoreBluetoothUnsupportedRegistrations(
-  implementationVersion: string
+  implementationVersion: string,
+  options: { readonly effectiveMtuWired?: boolean } = {}
 ): readonly FeatureRegistry['registrations'][number][] {
   return Object.freeze([
     unsupportedConnectionControlRegistration(
@@ -77,17 +78,24 @@ export function createCoreBluetoothUnsupportedRegistrations(
       ),
       Object.freeze({ attMtu: Object.freeze({ minimum: null, maximum: 0, unit: 'bytes' }) })
     ),
-    unsupportedConnectionControlRegistration(
-      BUILT_IN_FEATURE_IDS.connectionEffectiveMtu,
-      implementationVersion,
-      'corebluetooth-effective-mtu-unavailable-v1',
-      limitation(
-        'effective-mtu-boundary-unavailable',
-        'This CoreBluetooth boundary exposes no authoritative current ATT MTU observation.',
-        'current effective ATT MTU observation'
-      ),
-      Object.freeze({ attMtu: Object.freeze({ minimum: null, maximum: 0, unit: 'bytes' }) })
-    ),
+    // Finding 217 follow-up: the Rust core derives the effective ATT MTU
+    // per link (maximumWriteValueLength(.withResponse) + 3), so the legacy
+    // refusal is kept only where the core does not wire it.
+    ...(options.effectiveMtuWired === true
+      ? []
+      : [
+          unsupportedConnectionControlRegistration(
+            BUILT_IN_FEATURE_IDS.connectionEffectiveMtu,
+            implementationVersion,
+            'corebluetooth-effective-mtu-unavailable-v1',
+            limitation(
+              'effective-mtu-boundary-unavailable',
+              'This CoreBluetooth boundary exposes no authoritative current ATT MTU observation.',
+              'current effective ATT MTU observation'
+            ),
+            Object.freeze({ attMtu: Object.freeze({ minimum: null, maximum: 0, unit: 'bytes' }) })
+          )
+        ]),
     unsupportedConnectionControlRegistration(
       BUILT_IN_FEATURE_IDS.connectionPhy,
       implementationVersion,

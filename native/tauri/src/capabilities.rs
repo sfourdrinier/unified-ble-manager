@@ -105,13 +105,34 @@ const TAURI_LIMITED_CAPABILITIES: [(&str, &str, &str, &str); 8] = [
     ),
 ];
 
-/// Unsupported rows that still answer with the desktop core's own reason, so
-/// every desktop host reports the same words (finding 190b).
-const TAURI_UNSUPPORTED_CAPABILITIES: [(&str, &str, &str); 1] = [(
-    "connection:effective-mtu",
+/// Finding 217 follow-up: the effective ATT MTU derivation this OS answers.
+/// Desktop builds report `limited` with the derivation named; a build for
+/// any other target keeps the previous `unsupported` answer with its reason,
+/// so a platform that genuinely cannot answer still says so precisely.
+#[cfg(target_os = "macos")]
+const EFFECTIVE_MTU_STATE: (&str, &str, &str) = (
+    "limited",
+    "corebluetooth-derived-effective-mtu",
+    "The effective ATT MTU is derived per link as CBPeripheral.maximumWriteValueLength(for: .withResponse) + 3 (finding 217, the same derivation as the Apple React Native route); deterministic host evidence until physical-radio qualification.",
+);
+#[cfg(target_os = "windows")]
+const EFFECTIVE_MTU_STATE: (&str, &str, &str) = (
+    "limited",
+    "winrt-gattsession-max-pdu-size",
+    "The effective ATT MTU is the GattSession.MaxPduSize btleplug tracks from MaxPduSizeChanged; deterministic host evidence until physical-radio qualification.",
+);
+#[cfg(target_os = "linux")]
+const EFFECTIVE_MTU_STATE: (&str, &str, &str) = (
+    "limited",
+    "bluez-gatt-characteristic-mtu",
+    "The effective ATT MTU is the org.bluez.GattCharacteristic1 MTU of the link's characteristics; deterministic host evidence until physical-radio qualification.",
+);
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+const EFFECTIVE_MTU_STATE: (&str, &str, &str) = (
+    "unsupported",
     "effective-mtu-boundary-unavailable",
     "The dispatcher exposes no authoritative current ATT MTU observation; the OS-measured MTU already bounds every write through the core maximum-write-length.",
-)];
+);
 
 pub(crate) fn snapshot(backend_generation: &str) -> IpcValue {
     object([
@@ -121,20 +142,23 @@ pub(crate) fn snapshot(backend_generation: &str) -> IpcValue {
             "descriptors",
             IpcValue::Array(
                 TAURI_CAPABILITIES.iter().map(|id| {
-                    if let Some((_, scenario, code, explanation)) =
-                        TAURI_LIMITED_CAPABILITIES.iter().find(|entry| entry.0 == *id)
-                    {
-                        descriptor(id, "limited", scenario, code, explanation)
-                    } else if let Some((_, code, explanation)) =
-                        TAURI_UNSUPPORTED_CAPABILITIES.iter().find(|entry| entry.0 == *id)
-                    {
+                    if *id == "connection:effective-mtu" {
+                        let (state, code, explanation) = EFFECTIVE_MTU_STATE;
                         descriptor(
                             id,
-                            "unsupported",
-                            "capability.truth-limits-evidence-and-binding",
+                            state,
+                            if state == "limited" {
+                                "connection.rssi-and-att-mtu-capability-contract"
+                            } else {
+                                "capability.truth-limits-evidence-and-binding"
+                            },
                             code,
                             explanation,
                         )
+                    } else if let Some((_, scenario, code, explanation)) =
+                        TAURI_LIMITED_CAPABILITIES.iter().find(|entry| entry.0 == *id)
+                    {
+                        descriptor(id, "limited", scenario, code, explanation)
                     } else {
                         descriptor(
                             id,
@@ -297,8 +321,9 @@ mod tests {
     }
 
     /// Finding 190b (owner decision J): Tauri advertises max-write and
-    /// long-write like the desktop core over the same Rust core, and the
-    /// effective MTU answers unsupported with the desktop's own reason —
+    /// long-write like the desktop core over the same Rust core. Finding
+    /// 217 follow-up: the effective MTU answers `limited` with the
+    /// derivation this OS names — the desktop core's per-OS answer, so
     /// every desktop host answers the same.
     #[test]
     fn finding_190b_write_capabilities_match_the_desktop_core() {
@@ -311,12 +336,19 @@ mod tests {
             row(&snap, "gatt:long-write"),
             ("limited".to_owned(), "no-prepared-write-path".to_owned())
         );
-        assert_eq!(
-            row(&snap, "connection:effective-mtu"),
-            (
-                "unsupported".to_owned(),
-                "effective-mtu-boundary-unavailable".to_owned()
-            )
-        );
+        let (state, code) = row(&snap, "connection:effective-mtu");
+        if cfg!(target_os = "macos") {
+            assert_eq!(state, "limited");
+            assert_eq!(code, "corebluetooth-derived-effective-mtu");
+        } else if cfg!(target_os = "windows") {
+            assert_eq!(state, "limited");
+            assert_eq!(code, "winrt-gattsession-max-pdu-size");
+        } else if cfg!(target_os = "linux") {
+            assert_eq!(state, "limited");
+            assert_eq!(code, "bluez-gatt-characteristic-mtu");
+        } else {
+            assert_eq!(state, "unsupported");
+            assert_eq!(code, "effective-mtu-boundary-unavailable");
+        }
     }
 }

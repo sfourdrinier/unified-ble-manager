@@ -33,16 +33,25 @@ impl Default for Tolerances {
     }
 }
 
+/// Fingerprint schema versions this comparator understands. An unknown
+/// version fails even when both sides agree — a matching unknown is not a
+/// "missing == missing" pass.
+const SUPPORTED_FINGERPRINT_VERSIONS: &[u64] = &[1];
+
 /// One check verdict.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CheckStatus {
     Pass,
     Fail,
-    /// Not comparable (for example advertisement timings on a chooser-only
-    /// host whose scan reported `ok: false`): the reason is recorded, never
-    /// silently dropped.
+    /// Deliberately not judged (for example the MTU both platforms answered,
+    /// or a host-side delivery observation): reported, never hidden.
     Skipped,
+    /// Could not verify: unmeasured on a side, thin samples, rows without
+    /// parent paths, rotated payload bytes. "No observed mismatch" is not
+    /// "coverage complete" — an `incomplete` never fails the run but clears
+    /// [`ComparisonReport::complete`].
+    Incomplete,
 }
 
 /// One compared field.
@@ -54,10 +63,15 @@ pub struct FieldResult {
 }
 
 /// The full comparison: `passed` is true only when no check failed
-/// (skips do not fail the run, but stay visible in `fields`).
+/// (skips and incompletes do not fail the run, but stay visible in
+/// `fields`); `complete` is true only when nothing failed and nothing was
+/// left unverified — a run with no observed mismatch but `incomplete`
+/// corners reports `passed` without `complete`. Deliberate `skip`s
+/// (platform answers, never comparable by design) do not block completeness.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ComparisonReport {
     pub passed: bool,
+    pub complete: bool,
     pub tolerances: Tolerances,
     pub fields: Vec<FieldResult>,
 }
@@ -80,8 +94,12 @@ pub fn compare_fingerprints(real: &Value, sim: &Value, tolerances: Tolerances) -
     compare_behaviour(real, sim, &mut fields);
     compare_timings(real, sim, tolerances, &mut fields);
     let passed = fields.iter().all(|field| field.status != CheckStatus::Fail);
+    let complete = fields
+        .iter()
+        .all(|field| field.status != CheckStatus::Fail && field.status != CheckStatus::Incomplete);
     ComparisonReport {
         passed,
+        complete,
         tolerances,
         fields,
     }
@@ -111,12 +129,28 @@ fn skip(field: &str, detail: String) -> FieldResult {
     }
 }
 
+fn incomplete(field: &str, detail: String) -> FieldResult {
+    FieldResult {
+        field: field.to_string(),
+        status: CheckStatus::Incomplete,
+        detail,
+    }
+}
+
 fn check_version(real: &Value, sim: &Value, fields: &mut Vec<FieldResult>) {
     let real_version = real.get("version").and_then(Value::as_u64);
     let sim_version = sim.get("version").and_then(Value::as_u64);
     match (real_version, sim_version) {
-        (Some(left), Some(right)) if left == right => {
+        (Some(left), Some(right))
+            if left == right && SUPPORTED_FINGERPRINT_VERSIONS.contains(&left) =>
+        {
             fields.push(pass("version", format!("both version {left}")));
+        }
+        (Some(left), Some(right)) if left == right => {
+            fields.push(fail(
+                "version",
+                format!("matching but unsupported schema version {left}; supported: {SUPPORTED_FINGERPRINT_VERSIONS:?}"),
+            ));
         }
         _ => fields.push(fail(
             "version",
@@ -179,6 +213,65 @@ fn compare_advertisement(real: &Value, sim: &Value, fields: &mut Vec<FieldResult
                     format!("real={a:?} sim={b:?}"),
                 )),
             }
+            // Manufacturer payload bytes: entry counts and lengths are
+            // structural and fail on mismatch; bytes compare exactly when
+            // lengths agree. The strap rotates these bytes per boot (three
+            // captures of one unit gave `371b6968`/`3b00005b`/`3f155252`),
+            // so a byte difference across two captures proves nothing about
+            // the sim: it is reported (blocking `complete`) but never judged
+            // a failure. No byte position is a proven identity field, so the
+            // exclusion set stays empty until a layout source names one.
+            let payloads = |adv: &Value| {
+                adv.get("manufacturerData")
+                    .and_then(Value::as_array)
+                    .map(|entries| {
+                        entries
+                            .iter()
+                            .map(|entry| {
+                                entry
+                                    .get("data")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string()
+                            })
+                            .collect::<Vec<_>>()
+                    })
+            };
+            const MFR_IDENTITY_EXCLUSIONS: &[usize] = &[];
+            let masked = |payload: &str| {
+                payload
+                    .chars()
+                    .enumerate()
+                    .filter(|(index, _)| !MFR_IDENTITY_EXCLUSIONS.contains(index))
+                    .map(|(_, byte)| byte)
+                    .collect::<String>()
+            };
+            match (payloads(left), payloads(right)) {
+                (Some(a), Some(b))
+                    if a.iter().map(|payload| masked(payload)).collect::<Vec<_>>()
+                        == b.iter().map(|payload| masked(payload)).collect::<Vec<_>>() =>
+                {
+                    fields.push(pass(
+                        "advertisement.manufacturerPayload",
+                        format!("{a:?} (modulo {MFR_IDENTITY_EXCLUSIONS:?})"),
+                    ));
+                }
+                (Some(a), Some(b))
+                    if a.len() == b.len()
+                        && a.iter().zip(b.iter()).all(|(x, y)| x.len() == y.len()) =>
+                {
+                    fields.push(incomplete(
+                        "advertisement.manufacturerPayload",
+                        format!(
+                            "same shape, rotated bytes (per-boot token): real={a:?} sim={b:?}; compare same-boot captures with a configured sim payload for byte equality"
+                        ),
+                    ));
+                }
+                (a, b) => fields.push(fail(
+                    "advertisement.manufacturerPayload",
+                    format!("real={a:?} sim={b:?}"),
+                )),
+            }
             // Local names carry per-unit ids: both must be H10 names, the
             // exact id is configured identity, not behaviour.
             let names = (
@@ -206,10 +299,15 @@ fn compare_advertisement(real: &Value, sim: &Value, fields: &mut Vec<FieldResult
 /// characteristic properties before stringifying: it records which flags
 /// the *central backend* knows (CoreBluetooth reports several as `unknown`
 /// that btleplug reports as `known`), not what the strap declares. The ten
-/// SIG property flags themselves are compared exactly.
-fn gatt_rows(database: &Value, key: &str) -> Option<Vec<String>> {
+/// SIG property flags themselves are compared exactly. Rows carrying a
+/// `service` field compare by full parent path (`service/uuid`); rows
+/// without one compare by uuid alone, and the missing parent coverage is
+/// reported separately (never silently treated as complete).
+fn gatt_rows(database: &Value, key: &str) -> Option<(Vec<String>, bool)> {
     database.get(key).and_then(Value::as_array).map(|rows| {
-        rows.iter()
+        let mut all_parented = true;
+        let rendered: Vec<String> = rows
+            .iter()
             .map(|row| {
                 let uuid = row.get("uuid").and_then(Value::as_str).unwrap_or("?");
                 let occurrence = row.get("occurrence").and_then(Value::as_u64).unwrap_or(0);
@@ -217,9 +315,16 @@ fn gatt_rows(database: &Value, key: &str) -> Option<Vec<String>> {
                 if let Some(map) = properties.as_object_mut() {
                     map.remove("availability");
                 }
-                format!("{occurrence}:{uuid}:{properties}")
+                match row.get("service").and_then(Value::as_str) {
+                    Some(service) => format!("{service}/{uuid}:{occurrence}:{properties}"),
+                    None => {
+                        all_parented = false;
+                        format!("{uuid}:{occurrence}:{properties}")
+                    }
+                }
             })
-            .collect()
+            .collect();
+        (rendered, all_parented)
     })
 }
 
@@ -232,7 +337,7 @@ fn compare_gatt(real: &Value, sim: &Value, fields: &mut Vec<FieldResult>) {
             // numbers handles in hash order), so rows compare as sets.
             for key in ["services", "characteristics", "descriptors"] {
                 match (gatt_rows(left, key), gatt_rows(right, key)) {
-                    (Some(mut a), Some(mut b)) => {
+                    (Some((mut a, a_parented)), Some((mut b, b_parented))) => {
                         a.sort();
                         b.sort();
                         if a == b {
@@ -245,6 +350,19 @@ fn compare_gatt(real: &Value, sim: &Value, fields: &mut Vec<FieldResult>) {
                                 &format!("gatt.{key}"),
                                 format!("real={a:?} sim={b:?}"),
                             ));
+                        }
+                        if key != "services" {
+                            if a_parented && b_parented {
+                                fields.push(pass(
+                                    &format!("gatt.{key}.parents"),
+                                    "full parent paths compared".to_string(),
+                                ));
+                            } else {
+                                fields.push(incomplete(
+                                    &format!("gatt.{key}.parents"),
+                                    "fingerprint rows carry no parent service path: set comparison only".to_string(),
+                                ));
+                            }
                         }
                     }
                     (a, b) => fields.push(fail(
@@ -415,15 +533,52 @@ fn compare_behaviour(real: &Value, sim: &Value, fields: &mut Vec<FieldResult>) {
     }
 }
 
-fn distribution_p50(timings: &serde_json::Map<String, Value>, field: &str) -> Option<f64> {
+fn distribution_stat(
+    timings: &serde_json::Map<String, Value>,
+    field: &str,
+    stat: &str,
+) -> Option<f64> {
     timings
         .get(field)
-        .and_then(|dist| dist.get("p50"))
+        .and_then(|dist| dist.get(stat))
         .and_then(Value::as_f64)
+}
+
+fn distribution_n(timings: &serde_json::Map<String, Value>, field: &str) -> Option<u64> {
+    timings
+        .get(field)
+        .and_then(|dist| dist.get("n"))
+        .and_then(Value::as_u64)
 }
 
 fn single_ms(timings: &serde_json::Map<String, Value>, field: &str) -> Option<f64> {
     timings.get(field).and_then(Value::as_f64)
+}
+
+/// Compares one moment of two distributions within the tolerance rule:
+/// `|sim - real| <= max(min_abs_ms, p50_relative * |real|)`.
+fn compare_moment(
+    fields: &mut Vec<FieldResult>,
+    name: &str,
+    real: f64,
+    sim: f64,
+    tolerances: Tolerances,
+) {
+    let bound = tolerances
+        .min_abs_ms
+        .max(tolerances.p50_relative * real.abs());
+    let delta = (sim - real).abs();
+    if delta <= bound {
+        fields.push(pass(
+            name,
+            format!("real={real:.1} sim={sim:.1} delta={delta:.1} bound={bound:.1}"),
+        ));
+    } else {
+        fields.push(fail(
+            name,
+            format!("real={real:.1} sim={sim:.1} delta={delta:.1} bound={bound:.1}"),
+        ));
+    }
 }
 
 fn compare_timings(
@@ -443,34 +598,70 @@ fn compare_timings(
         ));
         return;
     };
-    // Distributions compared on p50 within tolerance.
+    // Distributions compared on sample count plus center and tails
+    // (min/p10/p50/p90/max) within tolerance. Unmeasured on either side is
+    // incomplete — never a silent pass.
     for field in [
         "hrNotificationIntervalMs",
         "pmdResponseMs",
         "ecgFrameIntervalMs",
         "advertisementIntervalMs",
     ] {
-        match (
-            distribution_p50(left, field),
-            distribution_p50(right, field),
-        ) {
-            (Some(a), Some(b)) => {
-                let bound = tolerances.min_abs_ms.max(tolerances.p50_relative * a.abs());
-                let delta = (b - a).abs();
-                if delta <= bound {
-                    fields.push(pass(
-                        &format!("timings.{field}.p50"),
-                        format!("real={a:.1} sim={b:.1} delta={delta:.1} bound={bound:.1}"),
-                    ));
-                } else {
-                    fields.push(fail(
-                        &format!("timings.{field}.p50"),
-                        format!("real={a:.1} sim={b:.1} delta={delta:.1} bound={bound:.1}"),
-                    ));
+        match (left.get(field), right.get(field)) {
+            (Some(_), Some(_)) => {
+                match (distribution_n(left, field), distribution_n(right, field)) {
+                    (Some(a), Some(b)) if a == b => {
+                        fields.push(pass(
+                            &format!("timings.{field}.n"),
+                            format!("both n={a}"),
+                        ));
+                    }
+                    (a, b) => fields.push(incomplete(
+                        &format!("timings.{field}.n"),
+                        format!(
+                            "sample counts differ (real n={a:?} sim n={b:?}): thin samples cannot confirm a distribution; moments compared anyway"
+                        ),
+                    )),
+                }
+                // Tails need two measured distributions: a point distribution
+                // (n=1, no spread — what the sim emits for unmeasured
+                // timings) has no tails to compare, so only its center is
+                // judged and the tails are incomplete. Real setup artifacts
+                // (a 0.0 first-notification min) must not fail steady state.
+                let tails = match (distribution_n(left, field), distribution_n(right, field)) {
+                    (Some(a), Some(b)) => a > 1 && b > 1,
+                    _ => false,
+                };
+                for stat in ["min", "p10", "p50", "p90", "max"] {
+                    let is_tail = stat != "p50";
+                    match (
+                        distribution_stat(left, field, stat),
+                        distribution_stat(right, field, stat),
+                    ) {
+                        (Some(a), Some(b)) if !is_tail || tails => {
+                            compare_moment(
+                                fields,
+                                &format!("timings.{field}.{stat}"),
+                                a,
+                                b,
+                                tolerances,
+                            );
+                        }
+                        (Some(_), Some(_)) => fields.push(incomplete(
+                            &format!("timings.{field}.{stat}"),
+                            "point distribution on a side: no measured tails to compare"
+                                .to_string(),
+                        )),
+                        _ => fields.push(incomplete(
+                            &format!("timings.{field}.{stat}"),
+                            "unmeasured on one side (for example scan unsupported); not comparable"
+                                .to_string(),
+                        )),
+                    }
                 }
             }
-            _ => fields.push(skip(
-                &format!("timings.{field}.p50"),
+            _ => fields.push(incomplete(
+                &format!("timings.{field}"),
                 "unmeasured on one side (for example scan unsupported); not comparable".to_string(),
             )),
         }
@@ -486,21 +677,9 @@ fn compare_timings(
     ] {
         match (single_ms(left, field), single_ms(right, field)) {
             (Some(a), Some(b)) => {
-                let bound = tolerances.min_abs_ms.max(tolerances.p50_relative * a.abs());
-                let delta = (b - a).abs();
-                if delta <= bound {
-                    fields.push(pass(
-                        &format!("timings.{field}"),
-                        format!("real={a:.1} sim={b:.1} delta={delta:.1} bound={bound:.1}"),
-                    ));
-                } else {
-                    fields.push(fail(
-                        &format!("timings.{field}"),
-                        format!("real={a:.1} sim={b:.1} delta={delta:.1} bound={bound:.1}"),
-                    ));
-                }
+                compare_moment(fields, &format!("timings.{field}"), a, b, tolerances);
             }
-            _ => fields.push(skip(
+            _ => fields.push(incomplete(
                 &format!("timings.{field}"),
                 "unmeasured on one side".to_string(),
             )),
@@ -682,5 +861,170 @@ mod tests {
         sim["version"] = json!(2);
         let report = compare_fingerprints(&real, &sim, Tolerances::default());
         assert!(!report.passed);
+    }
+
+    #[test]
+    fn unsupported_schema_version_fails_even_when_equal() {
+        // Only supported schema versions are accepted: an unknown version
+        // on both sides is a failure, never a "missing == missing" pass.
+        let mut real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
+        let mut sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1000.0);
+        real["version"] = json!(999);
+        sim["version"] = json!(999);
+        let report = compare_fingerprints(&real, &sim, Tolerances::default());
+        assert!(!report.passed, "unknown schema version must fail");
+        let field = report
+            .fields
+            .iter()
+            .find(|field| field.field == "version")
+            .unwrap();
+        assert_eq!(field.status, CheckStatus::Fail);
+    }
+
+    #[test]
+    fn unmeasured_timings_are_incomplete_not_pass() {
+        // "No observed mismatch" is not "coverage complete": an unmeasured
+        // timing is Incomplete, keeps `passed` (nothing contradicted) but
+        // clears `complete`.
+        let real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
+        let mut sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1000.0);
+        sim["timings"].as_object_mut().unwrap().remove("pmdStartMs");
+        let report = compare_fingerprints(&real, &sim, Tolerances::default());
+        assert!(report.passed, "nothing contradicted");
+        assert!(!report.complete, "coverage is not complete");
+        let field = report
+            .fields
+            .iter()
+            .find(|field| field.field == "timings.pmdStartMs")
+            .unwrap();
+        assert_eq!(field.status, CheckStatus::Incomplete);
+    }
+
+    #[test]
+    fn gatt_parents_are_compared_when_present() {
+        // Full parent paths: the same characteristic under different
+        // services is a mismatch, not a set coincidence.
+        let real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
+        let mut sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1000.0);
+        let with_parent = |service: &str| {
+            json!([
+                {"uuid": "2a37", "occurrence": 0, "service": service, "properties": {"notify": true}},
+            ])
+        };
+        let mut real = real;
+        real["gatt"]["characteristics"] = with_parent("180d");
+        sim["gatt"]["characteristics"] = with_parent("180a");
+        let report = compare_fingerprints(&real, &sim, Tolerances::default());
+        assert!(!report.passed, "different parent paths must fail");
+    }
+
+    #[test]
+    fn gatt_rows_without_parents_are_incomplete() {
+        // Rows without a parent path compare as a set (as before) but the
+        // parent coverage is Incomplete — never a silent full pass.
+        let real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
+        let sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1000.0);
+        let report = compare_fingerprints(&real, &sim, Tolerances::default());
+        assert!(report.passed);
+        assert!(!report.complete);
+        let field = report
+            .fields
+            .iter()
+            .find(|field| field.field == "gatt.characteristics.parents")
+            .unwrap();
+        assert_eq!(field.status, CheckStatus::Incomplete);
+    }
+
+    #[test]
+    fn manufacturer_payload_is_compared() {
+        // Payload lengths are structural: a length mismatch fails. Bytes are
+        // compared exactly when lengths agree.
+        let real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
+        let mut sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1000.0);
+        sim["advertisement"]["manufacturerData"] = json!([{"companyId": 107, "data": "00"}]);
+        let report = compare_fingerprints(&real, &sim, Tolerances::default());
+        let field = report
+            .fields
+            .iter()
+            .find(|field| field.field == "advertisement.manufacturerPayload")
+            .unwrap();
+        assert_eq!(field.status, CheckStatus::Fail, "detail: {}", field.detail);
+        assert!(!report.passed);
+    }
+
+    #[test]
+    fn manufacturer_payload_bytes_are_checked_when_lengths_agree() {
+        let mut real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
+        let mut sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1000.0);
+        real["advertisement"]["manufacturerData"] = json!([{"companyId": 107, "data": "aabb"}]);
+        sim["advertisement"]["manufacturerData"] = json!([{"companyId": 107, "data": "aabb"}]);
+        let report = compare_fingerprints(&real, &sim, Tolerances::default());
+        let field = report
+            .fields
+            .iter()
+            .find(|field| field.field == "advertisement.manufacturerPayload")
+            .unwrap();
+        assert_eq!(field.status, CheckStatus::Pass, "detail: {}", field.detail);
+    }
+
+    #[test]
+    fn manufacturer_payload_rotation_is_incomplete_not_fail() {
+        // Same length, different bytes: the strap rotates these bytes per
+        // boot (three captures of one unit gave three payloads), so a byte
+        // difference across two captures proves nothing about the sim. It is
+        // reported (blocking `complete`) but never judged a failure.
+        let mut real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
+        let mut sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1000.0);
+        real["advertisement"]["manufacturerData"] = json!([{"companyId": 107, "data": "aabb"}]);
+        sim["advertisement"]["manufacturerData"] = json!([{"companyId": 107, "data": "ccdd"}]);
+        let report = compare_fingerprints(&real, &sim, Tolerances::default());
+        assert!(report.passed, "rotation across boots proves nothing");
+        assert!(!report.complete);
+        let field = report
+            .fields
+            .iter()
+            .find(|field| field.field == "advertisement.manufacturerPayload")
+            .unwrap();
+        assert_eq!(
+            field.status,
+            CheckStatus::Incomplete,
+            "detail: {}",
+            field.detail
+        );
+    }
+
+    #[test]
+    fn timing_tails_are_compared_beyond_p50() {
+        // Same p50 but a far-out max: the tail check fails the field.
+        let real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
+        let mut sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1000.0);
+        sim["timings"]["hrNotificationIntervalMs"]["max"] = json!(99999.0);
+        sim["timings"]["hrNotificationIntervalMs"]["n"] = json!(60);
+        let report = compare_fingerprints(&real, &sim, Tolerances::default());
+        assert!(!report.passed);
+        let field = report
+            .fields
+            .iter()
+            .find(|field| field.field == "timings.hrNotificationIntervalMs.max")
+            .unwrap();
+        assert_eq!(field.status, CheckStatus::Fail, "detail: {}", field.detail);
+    }
+
+    #[test]
+    fn timing_sample_counts_gate_conclusiveness() {
+        // Thin samples cannot confirm a distribution: differing counts are
+        // Incomplete (reported, never judged), never a silent pass.
+        let real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
+        let mut sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1000.0);
+        sim["timings"]["hrNotificationIntervalMs"]["n"] = json!(1);
+        let report = compare_fingerprints(&real, &sim, Tolerances::default());
+        assert!(report.passed, "counts alone never fail");
+        assert!(!report.complete);
+        let field = report
+            .fields
+            .iter()
+            .find(|field| field.field == "timings.hrNotificationIntervalMs.n")
+            .unwrap();
+        assert_eq!(field.status, CheckStatus::Incomplete);
     }
 }

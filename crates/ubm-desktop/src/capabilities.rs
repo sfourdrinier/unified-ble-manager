@@ -142,6 +142,26 @@ const MACOS_WRITE_LENGTH_LIMITATION: Option<&str> = None;
 #[cfg(not(btleplug_ubm_write_length))]
 const MACOS_WRITE_LENGTH_NOTE: &str = "Unpatched btleplug 0.12: CoreBluetooth mtu() stays 23, so no measured write length exists; the vendored patch (vendor/btleplug) provides it.";
 
+/// macOS `connection:effective-mtu`: derived per link as
+/// `CBPeripheral.maximumWriteValueLength(for: .withResponse) + 3` through
+/// the vendored write-length patch (`vendor/btleplug`, UBM_PATCHES.md #1)
+/// — the same derivation, and the same limitation code, as the Apple
+/// React Native route (finding 217), so both hosts report the same value.
+/// Without the patch btleplug's CoreBluetooth `mtu()` never leaves 23
+/// and nothing measured exists.
+#[cfg(btleplug_ubm_write_length)]
+const MACOS_EFFECTIVE_MTU_VERDICT: CapabilityVerdict = CapabilityVerdict::OsAdapterProvides;
+#[cfg(btleplug_ubm_write_length)]
+const MACOS_EFFECTIVE_MTU_LIMITATION: Option<&str> = Some("corebluetooth-derived-effective-mtu");
+#[cfg(btleplug_ubm_write_length)]
+const MACOS_EFFECTIVE_MTU_NOTE: &str = "Derived per link as CBPeripheral.maximumWriteValueLength(for: .withResponse) + 3 through the vendored btleplug patch (vendor/btleplug); deterministic-only until physical-radio qualification (live-radio-qualification-pending).";
+#[cfg(not(btleplug_ubm_write_length))]
+const MACOS_EFFECTIVE_MTU_VERDICT: CapabilityVerdict = CapabilityVerdict::NarrowOsAdapterNeeded;
+#[cfg(not(btleplug_ubm_write_length))]
+const MACOS_EFFECTIVE_MTU_LIMITATION: Option<&str> = None;
+#[cfg(not(btleplug_ubm_write_length))]
+const MACOS_EFFECTIVE_MTU_NOTE: &str = "Unpatched btleplug 0.12: CoreBluetooth mtu() stays 23, so no measured ATT MTU exists; the vendored write-length patch (vendor/btleplug) provides it.";
+
 /// macOS `gatt:write-without-response-readiness`: with the vendored patch
 /// (UBM_PATCHES.md #4) the legacy readiness watch exists
 /// (`DesktopCentral::write_readiness` + `write_readiness_events`); without
@@ -321,9 +341,31 @@ pub const DESKTOP_CAPABILITIES: &[DesktopCapability] = &[
         id: "connection:effective-mtu",
         verdict: CapabilityVerdict::NarrowOsAdapterNeeded,
         scenario: "connection.rssi-and-att-mtu-capability-contract",
-        note: "The OS-measured MTU already feeds every write through mtu()-3 into the core maximum-write-length (fail-closed when unmeasured); exposing the negotiated value as a host read needs an adapter.",
+        note: "The OS-measured MTU already feeds every write through the core maximum-write-length (fail-closed when unmeasured); exposing the negotiated value as a host read is answered per OS below.",
         limitation: None,
-        per_os: &[],
+        per_os: &[
+            OsOverride {
+                os: DesktopOs::MacOs,
+                verdict: MACOS_EFFECTIVE_MTU_VERDICT,
+                limitation: MACOS_EFFECTIVE_MTU_LIMITATION,
+                note: MACOS_EFFECTIVE_MTU_NOTE,
+                needs_pairing_generation_controller: false,
+            },
+            OsOverride {
+                os: DesktopOs::Windows,
+                verdict: CapabilityVerdict::BtleplugProvides,
+                limitation: Some("winrt-gattsession-max-pdu-size"),
+                note: "btleplug 0.12's WinRT mtu() is the GattSession.MaxPduSize it tracks from MaxPduSizeChanged (winrtble/ble/device.rs), reported as the ATT MTU; deterministic-only until physical-radio qualification.",
+                needs_pairing_generation_controller: false,
+            },
+            OsOverride {
+                os: DesktopOs::Linux,
+                verdict: CapabilityVerdict::OsAdapterProvides,
+                limitation: Some("bluez-gatt-characteristic-mtu"),
+                note: "BlueZ (os::linux): the org.bluez.GattCharacteristic1 MTU of the link's characteristics; a link BlueZ withholds it on answers capability.unavailable, never a guessed 23. Deterministic-only until physical-radio qualification.",
+                needs_pairing_generation_controller: false,
+            },
+        ],
     },
     DesktopCapability {
         id: "connection:request-mtu",
@@ -920,6 +962,58 @@ mod tests {
             assert_eq!(macos.limitation, Some("deterministic-only"));
         }
         #[cfg(not(btleplug_ubm_write_readiness))]
+        {
+            assert_eq!(
+                macos.verdict,
+                super::CapabilityVerdict::NarrowOsAdapterNeeded
+            );
+            assert_eq!(macos.limitation, None);
+        }
+    }
+
+    /// Finding 217 follow-up: every desktop OS answers the effective ATT
+    /// MTU it measures — macOS derives
+    /// `maximumWriteValueLength(.withResponse) + 3` (the same derivation
+    /// as the Apple React Native route, and its limitation code), Windows
+    /// reads `GattSession.MaxPduSize`, Linux reads the
+    /// `org.bluez.GattCharacteristic1` MTU. macOS without the vendored
+    /// write-length patch stays open work, like the maximum-write-length
+    /// row. Each side is asserted under its own build configuration.
+    #[test]
+    fn effective_mtu_names_its_per_os_derivation() {
+        use super::DesktopOs;
+        let row = super::DESKTOP_CAPABILITIES
+            .iter()
+            .find(|row| row.id == "connection:effective-mtu")
+            .expect("effective-mtu row");
+        let windows = row
+            .per_os
+            .iter()
+            .find(|entry| entry.os == DesktopOs::Windows)
+            .expect("Windows effective-mtu override");
+        assert_eq!(windows.verdict, super::CapabilityVerdict::BtleplugProvides);
+        assert_eq!(windows.limitation, Some("winrt-gattsession-max-pdu-size"));
+        let linux = row
+            .per_os
+            .iter()
+            .find(|entry| entry.os == DesktopOs::Linux)
+            .expect("Linux effective-mtu override");
+        assert_eq!(linux.verdict, super::CapabilityVerdict::OsAdapterProvides);
+        assert_eq!(linux.limitation, Some("bluez-gatt-characteristic-mtu"));
+        let macos = row
+            .per_os
+            .iter()
+            .find(|entry| entry.os == DesktopOs::MacOs)
+            .expect("macOS effective-mtu override");
+        #[cfg(btleplug_ubm_write_length)]
+        {
+            assert_eq!(macos.verdict, super::CapabilityVerdict::OsAdapterProvides);
+            assert_eq!(
+                macos.limitation,
+                Some("corebluetooth-derived-effective-mtu")
+            );
+        }
+        #[cfg(not(btleplug_ubm_write_length))]
         {
             assert_eq!(
                 macos.verdict,

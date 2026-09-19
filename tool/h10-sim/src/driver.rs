@@ -357,24 +357,10 @@ async fn handle_server_text(
     }
 }
 
-/// Command name for result/error echoes (mirrors the kebab-case table).
+/// Command name for result/error echoes, reusing the kebab-case table in
+/// [`control`](crate::control) — a new command is added there, never here.
 fn control_name(command: &ControlCommand) -> String {
-    match command {
-        ControlCommand::SetBpm { .. } => "set-bpm",
-        ControlCommand::SetBattery { .. } => "set-battery",
-        ControlCommand::SetContact { .. } => "set-contact",
-        ControlCommand::PairPolicy { .. } => "pair-policy",
-        ControlCommand::LoadProfile { .. } => "load-profile",
-        ControlCommand::SetAdvertising { .. } => "set-advertising",
-        ControlCommand::DropLink => "drop-link",
-        ControlCommand::SetSilent { .. } => "set-silent",
-        ControlCommand::RejectNextPmd { .. } => "reject-next-pmd",
-        ControlCommand::ClearPmdFault => "clear-pmd-fault",
-        ControlCommand::SetRates { .. } => "set-rates",
-        ControlCommand::GetState => "get-state",
-        ControlCommand::Help => "help",
-    }
-    .to_string()
+    command.name().to_string()
 }
 
 #[cfg(test)]

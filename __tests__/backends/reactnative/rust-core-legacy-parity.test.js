@@ -86,8 +86,14 @@ afterEach(() => {
  * Deliberate 5.0 capability changes, not regressions: legacy React Native
  * reported `gatt:maximum-write-length` unavailable; 5.0 answers it from the
  * platform through the Rust owner (CHANGELOG, docs/MOBILE_RUST_WIRE.md).
+ * Finding 217 likewise answers Apple `connection:effective-mtu` per link as
+ * `maximumWriteValueLength(.withResponse) + 3` (owner modernize rule); the
+ * legacy Apple reference route keeps reporting it unsupported.
  */
-const FIVE_ZERO_STATES = Object.freeze({ 'gatt:maximum-write-length': 'limited' })
+const FIVE_ZERO_STATES = Object.freeze({
+  'gatt:maximum-write-length': 'limited',
+  'connection:effective-mtu': 'limited'
+})
 
 describe.each([
   ['android', ['discovery:continuous-scan', 'security:cancel-pairing']],
@@ -302,26 +308,24 @@ describe('Android: every registered capability executes through its wire op', ()
   })
 })
 
-describe('Apple: RSSI works; controls CoreBluetooth lacks are refused before the owner', () => {
-  test('RSSI executes; MTU/PHY/priority are unsupported with no native call', async () => {
+describe('Apple: RSSI and derived MTU work; controls CoreBluetooth lacks are refused before the owner', () => {
+  test('RSSI and effectiveMtu execute; request-MTU/PHY/priority are unsupported with no native call', async () => {
     const { native, manager, backend } = await rustManager('apple')
     const connection = await manager.connect(backend.peerIdForNativeId(DEFAULT_PEER), NO_OPTIONS)
     expect((await connection.readRssi(NO_OPTIONS)).rssi).toBe(-47)
+    // Finding 217: the owner derives the ATT MTU per link as
+    // `maximumWriteValueLength(.withResponse) + 3`; request-MTU stays refused.
+    await expect(connection.effectiveMtu()).resolves.toMatchObject({ attMtu: 515, payloadBytes: 512 })
     for (const call of [
       () => connection.requestMtu(247, NO_OPTIONS),
-      () => connection.effectiveMtu(),
       () => connection.readPhy(NO_OPTIONS),
       () => connection.requestPhy({ tx: 'le-2m' }, NO_OPTIONS),
       () => connection.requestPriority('balanced', NO_OPTIONS)
     ]) {
       expect((await failure(call())).code).toBe('capability.unsupported')
     }
-    for (const op of [
-      'connection.request-mtu',
-      'connection.effective-mtu',
-      'connection.read-phy',
-      'connection.request-priority'
-    ]) {
+    expect(native.opsInvoked('connection.effective-mtu')).toHaveLength(1)
+    for (const op of ['connection.request-mtu', 'connection.read-phy', 'connection.request-priority']) {
       expect(native.opsInvoked(op)).toHaveLength(0)
     }
     expect(backend.connections.peerFromAddress).toBeUndefined()

@@ -170,8 +170,11 @@ pub fn sim_fingerprint(config: &SimConfig, timing: &TimingProfile) -> Result<Val
     let start = [0x02, 0x00, 0x00, 0x01, 0x82, 0x00, 0x01, 0x01, 0x0E, 0x00];
     let stop = [0x03, 0x00];
     let probe = |sim: &mut SimState, op: &str, bytes: &[u8]| {
-        let status = sim
-            .handle_pmd_write(bytes)
+        let outcome = sim.handle_pmd_write(bytes);
+        // The live loop commits each decision when its indication goes out;
+        // the probe does the same before the next command arrives.
+        sim.apply_pmd_action(outcome.action);
+        let status = outcome
             .indicate
             .as_ref()
             .and_then(|answer| answer.get(3).copied());

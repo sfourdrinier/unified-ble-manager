@@ -43,6 +43,11 @@ struct Queues {
     ordinal: u64,
     /// Control records refused past the cap, reported at the next drain.
     control_lost: u64,
+    /// Every control record refused past the cap, ever. Reported in every
+    /// drain response (X-R5): a drain that keeps arriving behind data still
+    /// sees the gap within a bounded number of drains, without waiting for
+    /// the queues to empty and without disturbing record ordinals.
+    control_lost_total: u64,
 }
 
 /// A data record the session could not queue: the caller turns it into a
@@ -112,6 +117,7 @@ impl Outbox {
             let mut queues = lock(&self.queues);
             if queues.control.len() >= CONTROL_RECORD_CAP {
                 queues.control_lost += 1;
+                queues.control_lost_total += 1;
             } else {
                 queues.ordinal += 1;
                 let ordinal = queues.ordinal;
@@ -147,6 +153,48 @@ impl Outbox {
             ("class", Value::from(class.as_str())),
             ("count", Value::from(1u64)),
         ]));
+    }
+
+    /// Report `count` ingress drops at once (signal-overflow accounting),
+    /// coalescing into an undrained `ingress-drop` record of the same class
+    /// at the control tail. Past the control cap the count is still kept in
+    /// the cumulative drain counter, never silently discarded.
+    pub fn push_ingress_drop_count(&self, class: IngressClass, count: u64) {
+        if count == 0 {
+            return;
+        }
+        {
+            let mut queues = lock(&self.queues);
+            if let Some(tail) = queues.control.back_mut()
+                && tail.record.get("t").and_then(Value::as_str) == Some("ingress-drop")
+                && tail.record.get("class").and_then(Value::as_str) == Some(class.as_str())
+                && let Some(seen) = tail.record.get("count").and_then(Value::as_u64)
+                && let Value::Object(map) = &mut tail.record
+            {
+                map.insert("count".to_owned(), Value::from(seen + count));
+                drop(queues);
+                self.signal();
+                return;
+            }
+        }
+        // The common path queues one record carrying the whole count. When
+        // even that does not fit, the batch collapses into one lost-record
+        // unit: the cumulative counter still moves, so the gap is visible
+        // and the client still reconciles (exact per-class accounting is
+        // kept whenever the queue has room, which is the case the pump
+        // broadcasts into).
+        let full = lock(&self.queues).control.len() >= CONTROL_RECORD_CAP;
+        if full {
+            let mut queues = lock(&self.queues);
+            queues.control_lost += 1;
+            queues.control_lost_total += 1;
+        } else {
+            self.push_control(crate::wire::object(vec![
+                ("t", Value::from("ingress-drop")),
+                ("class", Value::from(class.as_str())),
+                ("count", Value::from(count)),
+            ]));
+        }
     }
 
     /// Queued data records (retained byte buffers).
@@ -227,9 +275,74 @@ impl Outbox {
             };
             refilled && self.armed.swap(false, Ordering::SeqCst)
         };
+        let control_lost_total = lock(&self.queues).control_lost_total;
         crate::wire::object(vec![
             ("more", Value::Bool(more)),
             ("records", Value::Array(records)),
+            ("controlLost", Value::from(control_lost_total)),
         ])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use serde_json::json;
+
+    use super::*;
+    use crate::radio::WakeSink;
+
+    struct NoWake;
+
+    impl WakeSink for NoWake {
+        fn wake(&self, _session_id: u64) {}
+    }
+
+    fn control(n: u64) -> Value {
+        crate::wire::object(vec![("t", Value::from("lifecycle")), ("n", Value::from(n))])
+    }
+
+    fn data(n: u64) -> Value {
+        crate::wire::object(vec![("t", Value::from("adv")), ("n", Value::from(n))])
+    }
+
+    /// X-R5: control loss is reported within a bounded number of drains even
+    /// while data keeps arriving — never postponed until the queues empty.
+    #[test]
+    fn control_loss_is_visible_while_data_keeps_arriving() {
+        let outbox = Outbox::new(7, Arc::new(NoWake));
+        for n in 0..(CONTROL_RECORD_CAP as u64 + 7) {
+            outbox.push_control(control(n));
+        }
+        for n in 0..50 {
+            outbox.push_data(data(n)).expect("data fits");
+        }
+        for _ in 0..5 {
+            let batch = outbox.drain(10, 65536);
+            assert_eq!(batch["controlLost"], json!(7u64));
+        }
+    }
+
+    /// The eventual in-band loss record still arrives once everything drains.
+    #[test]
+    fn control_loss_record_arrives_after_a_full_drain() {
+        let outbox = Outbox::new(7, Arc::new(NoWake));
+        for n in 0..(CONTROL_RECORD_CAP as u64 + 7) {
+            outbox.push_control(control(n));
+        }
+        let mut seen = 0u64;
+        for _ in 0..300 {
+            let batch = outbox.drain(256, 1 << 20);
+            for record in batch["records"].as_array().cloned().unwrap_or_default() {
+                if record["t"] == json!("ingress-drop") && record["class"] == json!("control") {
+                    seen = record["count"].as_u64().unwrap_or(0);
+                }
+            }
+            if batch["more"] == json!(false) {
+                break;
+            }
+        }
+        assert_eq!(seen, 7u64);
     }
 }

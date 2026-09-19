@@ -312,8 +312,12 @@ COORDINATION #3.
 
 ## Drain records
 
-`drain(maxItems, maxBytes)` answers `{more, records}`. Every record carries an
-`ordinal` that increases monotonically within the session.
+`drain(maxItems, maxBytes)` answers `{more, records, controlLost}`. Every
+record carries an `ordinal` that increases monotonically within the session.
+`controlLost` is the cumulative count of control records ever refused past
+the control queue's cap (X-R5): a running total, not a per-call delta, so a
+drain that keeps arriving behind data still exposes the gap within a bounded
+number of drains, without waiting for the queues to empty.
 
 | `t` | fields | Δ |
 |---|---|---|
@@ -344,10 +348,13 @@ The outbox has two bounded queues:
 
 ### Control-record loss
 
-A lost control record is re-read, never inferred. After an
-`ingress-drop{class:"control"}` the client calls `session.reconcile`, which
-answers every fact a control record carries from the owner's own state (the
-adapter is re-read from the platform):
+A lost control record is re-read, never inferred. The React Native provider
+watches the drain response's cumulative `controlLost` and calls
+`session.reconcile` as soon as it increases — a prompt reconcile that does not
+wait for the in-band `ingress-drop{class:"control"}` record to drain behind
+whatever data is ahead of it. `session.reconcile` answers every fact a control
+record carries from the owner's own state (the adapter is re-read from the
+platform):
 
 - `adapter`: the adapter state (as `adapter.state`).
 - `links`: every link the owner holds connected
@@ -422,6 +429,7 @@ per attachment. Tested in `crates/ubm-mobile/tests/caps.rs` and
 | Platform ingress, control facts | 512 | the new one is refused and counted |
 | Session outbox, data (`adv`, `value`) | 2048 records and 4 MiB | value stream ends `stream-end overflow`; advertisement counted |
 | Session outbox, control | 1024 records | counted; one `ingress-drop{class:"control"}`, then `session.reconcile` |
+| Host signal queue, between ingress and the pump (X-R6) | 1024 signals | current-state facts (adapter, security, restored set, scan outcome, reset, ingress-drop counts) merge per scope, latest wins; lifecycle transitions never coalesce; past the bound they are counted and the pump broadcasts the overflow, driving `session.reconcile` |
 | Args / envelope text | 1 MiB | `bytes.too-large` before parsing |
 | One operation's bytes | 512 KiB (`MAX_OPERATION_BYTES`) | `bytes.too-large` |
 | Cancellation state | the highest admission, plus pending cancels above it (at most `ADMISSION_WINDOW` apart) | see [Cancellation](#cancellation) |

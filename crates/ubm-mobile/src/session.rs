@@ -124,6 +124,26 @@ pub(crate) struct Subscription {
 }
 
 /// Session state shared with the host (routing) and the op tasks.
+/// This session's scan slot (X-R2): reserved before the first await so two
+/// concurrent starts admit exactly one. `Starting` rolls back to `Idle`
+/// when the join fails; only `Active` answers `scan.stop`. The host clears
+/// either armed state by membership when it ends the scan underneath us.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ScanSlot {
+    Idle,
+    Starting { membership: String },
+    Active { membership: String },
+}
+
+impl ScanSlot {
+    fn membership(&self) -> Option<&str> {
+        match self {
+            ScanSlot::Idle => None,
+            ScanSlot::Starting { membership } | ScanSlot::Active { membership } => Some(membership),
+        }
+    }
+}
+
 pub(crate) struct SessionState {
     pub id: u64,
     pub outbox: Outbox,
@@ -141,7 +161,7 @@ pub(crate) struct SessionState {
     /// adapter-loss cleanup left terminalized handles.
     reset_leases: Mutex<HashMap<String, String>>,
     reset_subscriptions: Mutex<HashMap<String, Subscription>>,
-    scan: Mutex<Option<String>>,
+    scan: Mutex<ScanSlot>,
     scan_ordinal: AtomicU64,
     pub background_scope: BackgroundScope,
     closing: AtomicBool,
@@ -165,7 +185,7 @@ impl SessionState {
             subscriptions: Mutex::new(HashMap::new()),
             reset_leases: Mutex::new(HashMap::new()),
             reset_subscriptions: Mutex::new(HashMap::new()),
-            scan: Mutex::new(None),
+            scan: Mutex::new(ScanSlot::Idle),
             scan_ordinal: AtomicU64::new(0),
             background_scope,
             closing: AtomicBool::new(false),
@@ -175,8 +195,8 @@ impl SessionState {
     /// The host ended this session's scan membership.
     pub(crate) fn clear_scan(&self, membership: &str) {
         let mut scan = lock(&self.scan);
-        if scan.as_deref() == Some(membership) {
-            *scan = None;
+        if scan.membership() == Some(membership) {
+            *scan = ScanSlot::Idle;
         }
     }
 
@@ -1247,26 +1267,69 @@ impl MobileSession {
                 device_addresses,
                 android,
             } => {
-                if lock(&self.state.scan).is_some() {
-                    return Err(error(
-                        BleErrorCode::ScanAlreadyActive,
-                        BleErrorDomain::Scan,
-                        "scan.start",
-                    ));
-                }
-                let ordinal = self.state.scan_ordinal.fetch_add(1, Ordering::Relaxed) + 1;
-                let membership = format!("s{}-scan-{ordinal}", self.state.id);
+                // Reserve the slot before the first await (X-R2): a second
+                // concurrent start sees `Starting` and is refused, instead
+                // of both joining and the loser orphaning the winner.
+                let membership = {
+                    let mut slot = lock(&self.state.scan);
+                    if *slot != ScanSlot::Idle {
+                        return Err(error(
+                            BleErrorCode::ScanAlreadyActive,
+                            BleErrorDomain::Scan,
+                            "scan.start",
+                        ));
+                    }
+                    let ordinal = self.state.scan_ordinal.fetch_add(1, Ordering::Relaxed) + 1;
+                    let membership = format!("s{}-scan-{ordinal}", self.state.id);
+                    *slot = ScanSlot::Starting {
+                        membership: membership.clone(),
+                    };
+                    membership
+                };
                 let member = ScanMember {
                     membership: membership.clone(),
                     service_uuids,
                     device_addresses,
                 };
-                host.join_scan(self.state.id, member, android, ctl).await?;
-                *lock(&self.state.scan) = Some(membership.clone());
+                if let Err(error) = host.join_scan(self.state.id, member, android, ctl).await {
+                    let mut slot = lock(&self.state.scan);
+                    if slot.membership() == Some(membership.as_str()) {
+                        *slot = ScanSlot::Idle;
+                    }
+                    return Err(error);
+                }
+                {
+                    // Bind the comparison first: the borrow of the slot must
+                    // not live across the `leave_scan` await below.
+                    let ours = lock(&self.state.scan).membership() == Some(membership.as_str());
+                    if ours {
+                        *lock(&self.state.scan) = ScanSlot::Active {
+                            membership: membership.clone(),
+                        };
+                    } else {
+                        // The host ended our membership while we were
+                        // joining (adapter loss, shutdown): release what the
+                        // join admitted instead of reporting a live scan.
+                        let _ = host.leave_scan(self.state.id, OpControl::unbounded()).await;
+                        return Err(error(
+                            BleErrorCode::ScanStartFailed,
+                            BleErrorDomain::Scan,
+                            "scan.start",
+                        )
+                        .with_detail("the host ended the scan while it was starting"));
+                    }
+                }
                 Ok(object(vec![("operationId", Value::from(membership))]))
             }
             Body::ScanStop(membership) => {
-                if lock(&self.state.scan).as_deref() != Some(membership.as_str()) {
+                // Only an `Active` membership stops: a `Starting` one is
+                // still inside its start (stop after it completes), and any
+                // other value was never ours.
+                let ours = {
+                    let slot = lock(&self.state.scan);
+                    matches!(&*slot, ScanSlot::Active { membership: current } if current == &membership)
+                };
+                if !ours {
                     return Err(error(
                         BleErrorCode::LifecycleInvalidState,
                         BleErrorDomain::Scan,
@@ -1400,9 +1463,16 @@ impl MobileSession {
                     ));
                 }
                 let core_lease = self.state.core_name(&lease);
+                // The peer's connect section (X-R3): stage, dispatch and
+                // cleanup run under mutual exclusion, so a concurrent
+                // same-peer connect can neither overwrite this staging nor
+                // wipe it in its own cleanup. A dead op never stages: the
+                // wait is cancellation- and deadline-aware.
+                let section = host.radio.lock_connect_section(&peer_id, &ctl).await?;
                 host.radio.stage_connect(&peer_id, staging);
                 let connected = central.connect(&peer_id, &core_lease, ctl).await;
                 host.radio.clear_staging(Some(&peer_id), None, false);
+                drop(section);
                 let handle = connected?;
                 let generation = handle.connection_generation.ok_or_else(|| {
                     error(
@@ -2040,7 +2110,7 @@ impl MobileSession {
             .values()
             .map(|subscription| subscription.scope.clone())
             .collect();
-        let scanning = usize::from(lock(&own.scan).is_some());
+        let scanning = usize::from(lock(&own.scan).membership().is_some());
         let own_progress = progress_of(own);
         let claimed = lock(&host.restoration_claims)
             .values()
@@ -2288,7 +2358,7 @@ impl MobileSession {
                 ])
             })
             .collect();
-        let scan = lock(&self.state.scan).clone();
+        let scan = lock(&self.state.scan).membership().map(str::to_owned);
         Ok(object(vec![
             ("adapter", adapter),
             ("links", Value::Array(links)),
@@ -2326,7 +2396,7 @@ impl MobileSession {
             idle.await;
         }
         let mut failures = Vec::new();
-        let membership = lock(&self.state.scan).clone();
+        let membership = lock(&self.state.scan).membership().map(str::to_owned);
         if let Some(membership) = membership {
             match host.leave_scan(self.state.id, OpControl::unbounded()).await {
                 Ok(()) => self.state.clear_scan(&membership),

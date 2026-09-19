@@ -582,7 +582,10 @@ async fn wake_fires_once_per_armed_period() {
     let records = drain_until(&session, |r| of_type(r, "adv").len() == 20).await;
     assert_eq!(records.len(), 20);
     let empty = parse(&session.drain(256, 65536));
-    assert_eq!(empty, json!({"more": false, "records": []}));
+    assert_eq!(
+        empty,
+        json!({"more": false, "records": [], "controlLost": 0})
+    );
     host.ingest(polar_advertisement());
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(
@@ -2899,7 +2902,9 @@ async fn expired_connect_budget_frees_the_peer_for_retry() {
     let hold_first = std::sync::Arc::new(AtomicBool::new(false));
     let hold = std::sync::Arc::clone(&hold_first);
     let radio = Scripted::new(Box::new(move |request| match request {
-        ubm_mobile::RadioRequest::Connect { .. } if !hold.swap(true, Ordering::SeqCst) => Reply::Hold,
+        ubm_mobile::RadioRequest::Connect { .. } if !hold.swap(true, Ordering::SeqCst) => {
+            Reply::Hold
+        }
         other => polar_responder(other),
     }));
     let (host, _) = open(&radio, MobilePlatform::Android).await;
@@ -2907,7 +2912,8 @@ async fn expired_connect_budget_frees_the_peer_for_retry() {
     ok(&call(
         &session,
         "scan.start",
-        &json!({"serviceUuids": ["180D"], "duplicatePolicy": "all", "operationId": "scan-1"}).to_string(),
+        &json!({"serviceUuids": ["180D"], "duplicatePolicy": "all", "operationId": "scan-1"})
+            .to_string(),
     )
     .await);
     assert_eq!(host.ingest(polar_advertisement()), IngressStatus::Accepted);
@@ -2923,13 +2929,23 @@ async fn expired_connect_budget_frees_the_peer_for_retry() {
     .await
     .expect("the owner answers a budgeted connect");
     let (error, _) = failure(&expired);
-    assert_eq!(error["code"], "connection.failed", "the peer did not answer");
-    assert_eq!(radio.held_of(RequestKind::Connect).len(), 1, "the radio never answered");
+    assert_eq!(
+        error["code"], "connection.failed",
+        "the peer did not answer"
+    );
+    assert_eq!(
+        radio.held_of(RequestKind::Connect).len(),
+        1,
+        "the radio never answered"
+    );
     let retry = ok(&call(
         &session,
         "connection.connect",
         &json!({"peerId": POLAR, "lease": "lease-2", "operationId": "connect-2"}).to_string(),
     )
     .await);
-    assert!(retry["connectionGeneration"].is_string(), "retry is admitted");
+    assert!(
+        retry["connectionGeneration"].is_string(),
+        "retry is admitted"
+    );
 }

@@ -17,6 +17,9 @@ import { LinkLossScenario } from './scenarios/link-loss.ts'
 import { MtuScenario } from './scenarios/mtu.ts'
 import { RestorationScenario } from './scenarios/restoration.ts'
 import { ScanDetailsScenario } from './scenarios/scan-details.ts'
+import { W6SharedScanScenario } from './scenarios/w6-shared-scan.ts'
+import { W6GenerationFenceScenario } from './scenarios/w6-generation-fence.ts'
+import { W6SlowDrainScenario } from './scenarios/w6-slow-drain.ts'
 
 /** Scenario ids in registry order; identical on every host. */
 export const SCENARIO_IDS = [
@@ -29,7 +32,10 @@ export const SCENARIO_IDS = [
   'background',
   'restoration',
   'h10-capture',
-  'live-dashboard'
+  'live-dashboard',
+  'w6-shared-scan',
+  'w6-generation-fence',
+  'w6-slow-drain'
 ] as const
 
 export function createScenarioRegistry(host: DriverHost): ScenarioRegistry {
@@ -43,7 +49,10 @@ export function createScenarioRegistry(host: DriverHost): ScenarioRegistry {
     new BackgroundScenario(host),
     new RestorationScenario(host),
     new H10CaptureScenario(host),
-    new LiveDashboardScenario(host)
+    new LiveDashboardScenario(host),
+    new W6SharedScanScenario(host),
+    new W6GenerationFenceScenario(host),
+    new W6SlowDrainScenario(host)
   ])
 }
 

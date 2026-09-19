@@ -640,6 +640,73 @@ previousAttachmentId, attachmentId, attachment}}`. The renderer/webview
 
 ### Fixed
 
+- **Desktop hosts report the effective ATT MTU (finding 217 follow-up).**
+  `connection:effective-mtu` is `limited` (was `capability.unsupported`) on
+  every desktop host: macOS derives it per link as
+  `CBPeripheral.maximumWriteValueLength(for: .withResponse) + 3`
+  (`corebluetooth-derived-effective-mtu`, same as iPhone/tvOS), Windows reads
+  `GattSession.MaxPduSize` (`winrt-gattsession-max-pdu-size`), Linux reads
+  the `org.bluez.GattCharacteristic1` MTU (`bluez-gatt-characteristic-mtu`;
+  withheld links answer `capability.unavailable`). Wired as
+  `DesktopCentral::read_effective_mtu` through N-API `readEffectiveMtu`, the
+  Tauri `connection.effective-mtu` command, and the renderer IPC route;
+  unpatched macOS or genuinely answerless platforms keep
+  `capability.unsupported` with reason. Pinned by
+  `crates/ubm-desktop/tests/effective_mtu.rs`, per-OS capability tests,
+  NAPI/Tauri dispatch tests, and the desktop/Tauri suites.
+- **iPhone and tvOS report the effective ATT MTU (finding 217).**
+  `connection:effective-mtu` on the React Native Rust-core route is now
+  `limited` (was `capability.unsupported`), derived per link as
+  `CBPeripheral.maximumWriteValueLength(for: .withResponse) + 3`, so
+  `connection.controls.effectiveMtu()` measures instead of refusing, naming
+  the derivation `corebluetooth-derived-effective-mtu` alongside
+  `live-radio-qualification-pending`. `connection:request-mtu` stays
+  unsupported, and the legacy Apple reference route keeps its frozen
+  refusal. Pinned by `rust-core-public-link-controls.test.js` and the parity
+  update.
+- **The H10 simulator matches real strap behaviour end to end (finding 216;
+  review X-S1–X-S5, X-CI1).** ECG timestamps default to the Polar epoch
+  (`--clock unsynchronized` selects the old boot-relative clock); `drop-link`
+  disconnects the simulator's tracked GATT clients plus any
+  `--drop-link-allow` extras, reporting results per address (with no targets
+  it reports `no simulator clients`); the control port binds before the
+  simulator reports ready, accepts lines up to 8 KiB, and enforces a 5 s
+  auth deadline; `set-rates` applies atomically; PMD notification latency is
+  measured off the event loop and now commits at indication send, so no
+  frames go out before a `START`/`STOP` response and a central that
+  vanishes mid-stream leaves nothing stuck; live profile edits are
+  transactional with rollback on failure; and `compare` reports `complete`
+  separately from `passed`. CI's sim-fixture freshness check now also
+  ignores `osVersion`, not just `platform`. A new `--mode
+faithful|adversarial` run posture (default `faithful`) gates fault
+  injection: the adversarial-only commands `delay-responses`, `flap-link`,
+  `interrupt-next-subscribe`, `stale-callback` and `constrain-delivery` are
+  refused loudly outside `--mode adversarial`, and `run-record` reports the
+  run's seed/profile/mode and injected fault sequence with timestamps. The
+  acceptance suite's link-loss scenario needs `--mode adversarial`.
+- **Android presence cold start resumes the authorized known-peer workflow
+  (issue #212).** A Companion Device Manager appearance with no live session
+  used to stop at persistence: the process radio owner was never installed,
+  so nothing was ingested or delivered. `UbmCompanionPresenceService` now
+  installs the owner on appearance and delivers the associated peer as a
+  `restored` record at once, persisting only what no owner takes for
+  exactly-once drain at the next session open. There is still no scan, no
+  connect, no resubscribe and no headless JS here: the app reconnects
+  through the ordinary `when-available` connect.
+- **Mobile scan admission honours cancellation and the deadline, and a
+  review wave of related races close (X-R1, X-R2, X-R3, X-R5, X-R6).** A
+  queued scan start now checks the caller's `AbortSignal` and deadline
+  before it is admitted, and a dead radio start releases the OS scan
+  instead of leaving it running. A concurrent scan start in the same
+  session is refused `scan.already-active` instead of racing past a stale
+  reservation. Same-peer connect staging is now serialized per operation,
+  so a second connect for a peer already staging cannot interleave with its
+  cleanup. The Rust-core drain response now carries a cumulative
+  `controlLost` count, and a control loss triggers a prompt
+  `session.reconcile` in the React Native provider instead of waiting for
+  the in-band record to drain behind other data. Host signals are bounded
+  to 1024 with per-scope latest-wins coalescing; lifecycle events are never
+  coalesced, and overflow reconciles the same way.
 - **Tauri `find()` no longer fails `stream.overflow` on a scan-start burst
   (finding 213).** Desktop scans re-report every known peripheral when they
   start. On Tauri the IPC path filtered after buffering, so about 50 nearby
@@ -1579,6 +1646,12 @@ lease, with_response, ctl)` answers without discovery.
 
 ### Added
 
+- Deterministic reliability acceptance (W6): shared-scan cancel/join,
+  same-peer intent race, disconnect-during-subscribe fencing,
+  generation-fenced reconnect, bounded slow-drain, and a 200-cycle
+  ownership soak across deterministic, RN android/apple, and desktop
+  synthetic legs; a React Native throughput benchmark (1/3/6 streams).
+  Deterministic-only evidence, no radio proof.
 - The example Expo app opts into restoration so the `restoration` scenario
   can be tested physically: the plugin option for iOS
   `restoreIdentifierKey` and Android companion presence in

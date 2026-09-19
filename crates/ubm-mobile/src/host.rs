@@ -26,8 +26,9 @@ use tokio::sync::Notify;
 use ubm_core::central::{Central, ConnectionState, PathSelector, canonical_uuid};
 use ubm_core::contracts::{AttachmentTuple, BleErrorCode, BleErrorDomain, CoreError, OperationId};
 use ubm_desktop::{
-    CentralProfile, CentralSignal, DesktopCentral, DesktopError, InstanceKey, LifecycleEvent,
-    LifecycleKind, NotificationPoll, OpControl, PeerRecord, PeerSnapshot, RadioEvent,
+    Budget, CentralProfile, CentralSignal, DesktopCentral, DesktopError, InstanceKey,
+    LifecycleEvent, LifecycleKind, NotificationPoll, OpControl, OpTicket, PeerRecord, PeerSnapshot,
+    RadioEvent,
 };
 
 use crate::drain::Outbox;
@@ -122,7 +123,28 @@ enum HostSignal {
     ScanFailed(String),
     Security(String, SecurityState),
     Restored(Vec<RestoredPeer>),
-    IngressDrop(IngressClass),
+    IngressDrop(IngressClass, u64),
+}
+
+/// Bound for queued host signals (X-R6). Value and advertisement markers
+/// are deduplicated by scope, and every other current-state fact merges per
+/// scope below, so a stalled pump plus a burst retains a bounded prefix.
+/// What the bound refuses is counted in `signal_lost` / `overflow_drops`
+/// and broadcast by the pump — never silently discarded.
+const SIGNALS_CAP: usize = 1024;
+
+const INGRESS_CLASSES: [IngressClass; 3] = [
+    IngressClass::Advertisement,
+    IngressClass::Notification,
+    IngressClass::Control,
+];
+
+const fn ingress_index(class: IngressClass) -> usize {
+    match class {
+        IngressClass::Advertisement => 0,
+        IngressClass::Notification => 1,
+        IngressClass::Control => 2,
+    }
 }
 
 #[derive(Default)]
@@ -131,11 +153,23 @@ struct SignalState {
     dirty: HashSet<InstanceKey>,
     advertisements_pending: bool,
     closed: bool,
+    /// Non-coalescible signals refused past the bound (lifecycle
+    /// transitions, and current-state facts with no queued marker to merge
+    /// into). The pump broadcasts one control ingress-drop per session for
+    /// these, which drives `session.reconcile` from retained owner truth.
+    signal_lost: u64,
+    /// Ingress-drop counts that arrived while the queue was full, per
+    /// class. The pump broadcasts them class-accurately to every session.
+    overflow_drops: [u64; 3],
 }
 
 /// Ordered signal queue between the central (and ingress) and the pump.
 /// Value and advertisement signals coalesce per scope: the pump polls the
 /// core's bounded queues, so one pending marker per scope is enough.
+/// Current-state facts (adapter, security, restored set, scan outcome,
+/// reset, ingress-drop counts) merge per scope too: only the latest is
+/// ever queued. Lifecycle transitions never coalesce — past the bound
+/// they are counted and reconciled.
 #[derive(Default)]
 struct Signals {
     state: Mutex<SignalState>,
@@ -143,29 +177,165 @@ struct Signals {
 }
 
 impl Signals {
+    /// Queue one signal, unless it merges into a queued one. A closed queue
+    /// refuses everything (host teardown); a full queue refuses only what
+    /// cannot merge, counting it for the pump's overflow broadcast.
     fn push(&self, signal: HostSignal) {
         {
             let mut state = lock(&self.state);
             if state.closed {
                 return;
             }
-            match &signal {
+            match signal {
                 HostSignal::Value(scope) => {
                     if !state.dirty.insert(scope.clone()) {
                         return;
                     }
+                    // A new scope marker always queues, past the cap if it
+                    // must: dropping it would leave the scope dirty with no
+                    // marker, stalling its values until the core queue
+                    // fills. Growth needs distinct scopes with queued
+                    // values, which the core bounds independently.
+                    state.queue.push_back(HostSignal::Value(scope));
                 }
                 HostSignal::Advertisements => {
                     if state.advertisements_pending {
                         return;
                     }
                     state.advertisements_pending = true;
+                    state.queue.push_back(HostSignal::Advertisements);
                 }
-                _ => {}
+                HostSignal::Adapter(snapshot, updated_at, attachment) => {
+                    let signal = HostSignal::Adapter(snapshot, updated_at, attachment);
+                    if let Some(slot) = state
+                        .queue
+                        .iter_mut()
+                        .find(|queued| matches!(queued, HostSignal::Adapter(..)))
+                    {
+                        // The latest platform snapshot wins: an adapter
+                        // record carries current state, not an event.
+                        *slot = signal;
+                    } else {
+                        Self::push_bounded(&mut state, signal);
+                    }
+                }
+                HostSignal::AdapterReset(attachment, ended_scan) => {
+                    let mut merged = false;
+                    for queued in state.queue.iter_mut() {
+                        if let HostSignal::AdapterReset(current, ended) = queued {
+                            *current = attachment.clone();
+                            *ended |= ended_scan;
+                            merged = true;
+                            break;
+                        }
+                    }
+                    if !merged {
+                        Self::push_bounded(
+                            &mut state,
+                            HostSignal::AdapterReset(attachment, ended_scan),
+                        );
+                    }
+                }
+                HostSignal::ScanFailed(detail) => {
+                    let mut merged = false;
+                    for queued in state.queue.iter_mut() {
+                        if let HostSignal::ScanFailed(current) = queued {
+                            *current = detail.clone();
+                            merged = true;
+                            break;
+                        }
+                    }
+                    if !merged {
+                        Self::push_bounded(&mut state, HostSignal::ScanFailed(detail));
+                    }
+                }
+                HostSignal::Security(peer_id, observed) => {
+                    let mut merged = false;
+                    for queued in state.queue.iter_mut() {
+                        if let HostSignal::Security(existing, current) = queued
+                            && *existing == peer_id
+                        {
+                            *current = observed.clone();
+                            merged = true;
+                            break;
+                        }
+                    }
+                    if !merged {
+                        Self::push_bounded(&mut state, HostSignal::Security(peer_id, observed));
+                    }
+                }
+                HostSignal::Restored(peers) => {
+                    let mut merged = false;
+                    for queued in state.queue.iter_mut() {
+                        if let HostSignal::Restored(current) = queued {
+                            *current = peers.clone();
+                            merged = true;
+                            break;
+                        }
+                    }
+                    if !merged {
+                        Self::push_bounded(&mut state, HostSignal::Restored(peers));
+                    }
+                }
+                HostSignal::IngressDrop(class, count) => {
+                    let mut merged = false;
+                    for queued in state.queue.iter_mut() {
+                        if let HostSignal::IngressDrop(existing, total) = queued
+                            && *existing == class
+                        {
+                            *total += count;
+                            merged = true;
+                            break;
+                        }
+                    }
+                    if !merged {
+                        Self::push_countable(&mut state, class, count);
+                    }
+                }
+                HostSignal::Lifecycle(event) => {
+                    if state.queue.len() >= SIGNALS_CAP {
+                        state.signal_lost += 1;
+                    } else {
+                        state.queue.push_back(HostSignal::Lifecycle(event));
+                    }
+                }
             }
-            state.queue.push_back(signal);
         }
         self.notify.notify_one();
+    }
+
+    /// Queue a current-state fact, or count it when the queue is full. A
+    /// counted fact is re-readable: the pump's overflow broadcast drives
+    /// `session.reconcile`, which answers every such fact from retained
+    /// owner truth (adapter snapshot, security table, restored set, scan
+    /// memberships).
+    fn push_bounded(state: &mut SignalState, signal: HostSignal) {
+        if state.queue.len() >= SIGNALS_CAP {
+            state.signal_lost += 1;
+        } else {
+            state.queue.push_back(signal);
+        }
+    }
+
+    /// Queue an ingress-drop marker, merging per class. A marker that finds
+    /// no room keeps its count in the per-class overflow tally, which the
+    /// pump broadcasts class-accurately.
+    fn push_countable(state: &mut SignalState, class: IngressClass, count: u64) {
+        if state.queue.len() >= SIGNALS_CAP {
+            state.overflow_drops[ingress_index(class)] += count;
+        } else {
+            state.queue.push_back(HostSignal::IngressDrop(class, count));
+        }
+    }
+
+    /// Take accumulated overflow for the pump to broadcast. Counts reset:
+    /// every lost signal is reported exactly once, to every session.
+    fn take_overflow(&self) -> (u64, [u64; 3]) {
+        let mut state = lock(&self.state);
+        (
+            std::mem::take(&mut state.signal_lost),
+            std::mem::take(&mut state.overflow_drops),
+        )
     }
 
     fn pop(&self) -> Option<HostSignal> {
@@ -611,9 +781,9 @@ impl HostInner {
                 ]);
                 self.broadcast(&record);
             }
-            HostSignal::IngressDrop(class) => {
+            HostSignal::IngressDrop(class, count) => {
                 for session in self.session_list() {
-                    session.outbox.push_ingress_drop(class);
+                    session.outbox.push_ingress_drop_count(class, count);
                 }
             }
         }
@@ -914,6 +1084,82 @@ impl HostInner {
         self.end_scan_members(members, "source-failed");
     }
 
+    /// The op is dead: cancelled, or past its caller budget. Cancellation
+    /// reports `operation.aborted`; an expired budget reports
+    /// `operation.timed-out` with no backstop detail (the caller set it).
+    fn scan_not_alive(ctl: &OpControl) -> Option<DesktopError> {
+        Self::scan_not_alive_parts(&ctl.ticket, &ctl.budget)
+    }
+
+    fn scan_not_alive_parts(ticket: &OpTicket, budget: &Budget) -> Option<DesktopError> {
+        if ticket.is_cancel_requested() {
+            return Some(DesktopError::new(
+                BleErrorCode::OperationAborted,
+                BleErrorDomain::Scan,
+                "scan.start",
+            ));
+        }
+        if budget.is_expired() {
+            return Some(DesktopError::new(
+                BleErrorCode::OperationTimedOut,
+                BleErrorDomain::Scan,
+                "scan.start",
+            ));
+        }
+        None
+    }
+
+    /// Acquire the shared-scan admission section in a cancellation- and
+    /// deadline-aware way (X-R1): an op cancelled or expired while queued on
+    /// the scan mutex never takes a membership. The checks run again inside
+    /// the section, so the no-radio fast path cannot admit a dead op
+    /// either. This is deliberately not a timeout around the whole
+    /// mutation: abandoning the join after the widen restart stopped the
+    /// previous physical scan would orphan every member.
+    async fn lock_scan_share(
+        &self,
+        ctl: &OpControl,
+    ) -> Result<tokio::sync::MutexGuard<'_, ScanShare>, DesktopError> {
+        if let Some(error) = Self::scan_not_alive(ctl) {
+            return Err(error);
+        }
+        let guard = match ctl.budget.remaining() {
+            Some(wait) => {
+                tokio::select! {
+                    biased;
+                    () = ctl.ticket.cancelled() => return Err(Self::scan_not_alive(ctl)
+                        .unwrap_or_else(|| DesktopError::new(
+                            BleErrorCode::OperationAborted,
+                            BleErrorDomain::Scan,
+                            "scan.start",
+                        ))),
+                    () = tokio::time::sleep(wait) => return Err(DesktopError::new(
+                        BleErrorCode::OperationTimedOut,
+                        BleErrorDomain::Scan,
+                        "scan.start",
+                    )),
+                    guard = self.scan.lock() => guard,
+                }
+            }
+            None => {
+                tokio::select! {
+                    biased;
+                    () = ctl.ticket.cancelled() => return Err(Self::scan_not_alive(ctl)
+                        .unwrap_or_else(|| DesktopError::new(
+                            BleErrorCode::OperationAborted,
+                            BleErrorDomain::Scan,
+                            "scan.start",
+                        ))),
+                    guard = self.scan.lock() => guard,
+                }
+            }
+        };
+        if let Some(error) = Self::scan_not_alive(ctl) {
+            return Err(error);
+        }
+        Ok(guard)
+    }
+
     /// Start, join or widen the shared physical scan for one member.
     pub(crate) async fn join_scan(
         &self,
@@ -922,7 +1168,7 @@ impl HostInner {
         android: Option<AndroidScanOptions>,
         ctl: OpControl,
     ) -> Result<(), DesktopError> {
-        let mut share = self.scan.lock().await;
+        let mut share = self.lock_scan_share(&ctl).await?;
         let mut wanted = {
             let members = lock(&self.scan_members);
             let everyone: Vec<&ScanMember> = members
@@ -949,6 +1195,11 @@ impl HostInner {
             if covers(&physical.request.service_uuids, &member.service_uuids)
                 && covers(&physical.request.device_addresses, &member.device_addresses)
             {
+                // No radio call below would notice a dead op: re-check the
+                // ticket and the deadline before taking the membership.
+                if let Some(error) = Self::scan_not_alive(&ctl) {
+                    return Err(error);
+                }
                 lock(&self.scan_members).insert(session_id, member);
                 return Ok(());
             }
@@ -969,6 +1220,10 @@ impl HostInner {
         sort_dedup(&mut wanted.device_addresses);
         self.radio.stage_scan(wanted.clone());
         let filter: Vec<&str> = wanted.service_uuids.iter().map(String::as_str).collect();
+        // `ctl` moves into the start call; keep the liveness witnesses for
+        // the post-call membership check below.
+        let ticket = ctl.ticket.clone();
+        let budget = ctl.budget;
         let started = self
             .central
             .start_scan(&format!("ubm-mobile-scan-{session_id}"), &filter, ctl)
@@ -976,6 +1231,18 @@ impl HostInner {
         self.radio.clear_staging(None, None, true);
         match started {
             Ok(session) => {
+                // The radio call took a while: a queued cancel or an
+                // expired budget must not take a membership for a dead op.
+                if let Some(error) = Self::scan_not_alive_parts(&ticket, &budget) {
+                    let operation = session.operation_id().clone();
+                    share.physical = None;
+                    drop(share);
+                    let _ = self
+                        .central
+                        .stop_scan(&operation, OpControl::unbounded())
+                        .await;
+                    return Err(error);
+                }
                 share.physical = Some(PhysicalScan {
                     operation: session.operation_id().clone(),
                     request: wanted,
@@ -1153,6 +1420,30 @@ async fn pump(host: Weak<HostInner>, signals: Arc<Signals>) {
             };
             host.handle(signal).await;
         }
+        // Overflow is never silently discarded (X-R6): a lost lifecycle or
+        // current-state fact becomes one control ingress-drop per session,
+        // which drives `session.reconcile` from retained owner truth; lost
+        // ingress drops keep their class so drop accounting stays exact.
+        let (lost, drops) = signals.take_overflow();
+        if lost > 0 || drops != [0, 0, 0] {
+            let Some(host) = host.upgrade() else {
+                return;
+            };
+            let sessions = host.session_list();
+            if lost > 0 {
+                for session in &sessions {
+                    session.outbox.push_ingress_drop(IngressClass::Control);
+                }
+            }
+            for (index, class) in INGRESS_CLASSES.iter().enumerate() {
+                let count = drops[index];
+                if count > 0 {
+                    for session in &sessions {
+                        session.outbox.push_ingress_drop_count(*class, count);
+                    }
+                }
+            }
+        }
         if signals.is_closed() {
             return;
         }
@@ -1210,7 +1501,7 @@ impl MobileHost {
         });
         let drop_signals = Arc::clone(&signals);
         radio.set_drop_hook(Arc::new(move |class| {
-            drop_signals.push(HostSignal::IngressDrop(class));
+            drop_signals.push(HostSignal::IngressDrop(class, 1));
         }));
         let profile = CentralProfile {
             identity: Arc::new(MobileIdentity::new(options.platform)),
@@ -1650,3 +1941,99 @@ trait ThenSend: std::future::Future + Sized {
 }
 
 impl<F: std::future::Future> ThenSend for F {}
+
+#[cfg(test)]
+mod signal_tests {
+    use super::*;
+    use crate::radio::{AuthenticationState, EncryptionState, SecureConnectionsState};
+
+    fn lifecycle(sequence: u64) -> HostSignal {
+        HostSignal::Lifecycle(LifecycleEvent {
+            sequence,
+            peer_id: "AA:BB:CC:DD:EE:FF".to_owned(),
+            peer_key: "key".to_owned(),
+            connection_generation: None,
+            database_generation: None,
+            kind: LifecycleKind::LinkLost,
+        })
+    }
+
+    fn security(peer: &str, bonded: BondState) -> HostSignal {
+        HostSignal::Security(
+            peer.to_owned(),
+            SecurityState {
+                bond: bonded,
+                encryption: EncryptionState::Unknown,
+                authentication: AuthenticationState::Unknown,
+                secure_connections: SecureConnectionsState::Unknown,
+                pairing_possible: None,
+            },
+        )
+    }
+
+    fn scope(peer: &str) -> InstanceKey {
+        (peer.to_owned(), "180d".to_owned(), 0, "2a37".to_owned(), 0)
+    }
+
+    /// X-R6: a stalled pump (no pops) plus a burst stays bounded, and every
+    /// refused signal is counted exactly once.
+    #[test]
+    fn signal_burst_is_bounded() {
+        let signals = Signals::default();
+        for sequence in 0..5000 {
+            signals.push(lifecycle(sequence));
+        }
+        let mut drained = 0u64;
+        while signals.pop().is_some() {
+            drained += 1;
+        }
+        let (lost, drops) = signals.take_overflow();
+        assert!(
+            drained <= SIGNALS_CAP as u64,
+            "bounded retention, got {drained}"
+        );
+        assert_eq!(drained + lost, 5000, "exact accounting");
+        assert_eq!(drops, [0, 0, 0]);
+    }
+
+    /// Current-state facts merge per scope: the latest wins, queued once.
+    #[test]
+    fn countable_classes_coalesce_per_scope() {
+        let signals = Signals::default();
+        signals.push(security("peer-a", BondState::NotBonded));
+        signals.push(security("peer-a", BondState::Bonded));
+        signals.push(security("peer-b", BondState::Bonded));
+        signals.push(HostSignal::ScanFailed("one".to_owned()));
+        signals.push(HostSignal::ScanFailed("two".to_owned()));
+        signals.push(HostSignal::IngressDrop(IngressClass::Control, 2));
+        signals.push(HostSignal::IngressDrop(IngressClass::Control, 3));
+        signals.push(HostSignal::IngressDrop(IngressClass::Advertisement, 1));
+        signals.push(HostSignal::Value(scope("peer-a")));
+        signals.push(HostSignal::Value(scope("peer-a")));
+        signals.push(HostSignal::Value(scope("peer-b")));
+
+        let mut seen = Vec::new();
+        while let Some(signal) = signals.pop() {
+            seen.push(signal);
+        }
+        // Two peers' security (latest per peer), one scan failure
+        // (latest), two ingress-drop markers (merged per class), two value
+        // markers (one per scope).
+        assert_eq!(seen.len(), 7);
+        let security_a = seen
+            .iter()
+            .find(|signal| matches!(signal, HostSignal::Security(peer, _) if peer == "peer-a"))
+            .expect("peer-a security");
+        assert!(matches!(
+            security_a,
+            HostSignal::Security(_, state) if state.bond == BondState::Bonded
+        ));
+        let control = seen
+            .iter()
+            .find(|signal| matches!(signal, HostSignal::IngressDrop(class, _) if *class == IngressClass::Control))
+            .expect("control marker");
+        assert!(matches!(control, HostSignal::IngressDrop(_, 5)));
+        let (lost, drops) = signals.take_overflow();
+        assert_eq!((lost, drops), (0, [0, 0, 0]));
+    }
+}

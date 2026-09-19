@@ -333,6 +333,14 @@ export interface DesktopRustCoreCentral {
   ): Promise<'released' | 'already-released'>
   readRssi(options: { readonly peerId: string; readonly lease: string } & DesktopRustCoreControl): Promise<number>
   /**
+   * Effective ATT MTU of the live link, as the OS reports it (finding 217
+   * follow-up): macOS `maximumWriteValueLength(.withResponse) + 3`, Windows
+   * `GattSession.MaxPduSize`, Linux the BlueZ characteristic MTU.
+   */
+  readEffectiveMtu(
+    options: { readonly peerId: string; readonly lease: string } & DesktopRustCoreControl
+  ): Promise<number>
+  /**
    * Registers the whole snapshot or rejects with a typed error: a malformed
    * platform UUID is `protocol.malformed` (`discovery.snapshot.uuid`), a
    * database past the ATT handle space `capability.limited`

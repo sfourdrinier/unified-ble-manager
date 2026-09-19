@@ -642,6 +642,30 @@ describe('connected RSSI (parity row connection.rssi)', () => {
   })
 })
 
+describe('effective ATT MTU (finding 217 follow-up: every desktop OS answers)', () => {
+  test.each(PLATFORMS)('%s registers connection:effective-mtu limited and measures it through the core', async platform => {
+    await withBackend(platform, async ({ backend, stage }) => {
+      expect(backend.features.registrations.map(registration => registration.id)).toContain(
+        BUILT_IN_FEATURE_IDS.connectionEffectiveMtu
+      )
+      const row = backend.features.registrations.find(entry => entry.id === BUILT_IN_FEATURE_IDS.connectionEffectiveMtu)
+      expect(row).toMatchObject({
+        state: 'limited',
+        limits: { attMtu: { minimum: 23, maximum: 517, unit: 'bytes' } }
+      })
+      const { lease } = await connectAndDiscover(backend, stage)
+      await stage.stageEffectiveMtu('peer-1', 515)
+      const measurement = await backend.connections.effectiveMtu(lease.connection, {
+        operation: { signal: null, deadline: null, correlation: 'corr-mtu' }
+      }).completion
+      expect(measurement.attMtu).toBe(515)
+      expect(measurement.payloadBytes).toBe(512)
+      expect(measurement.platformPduBytes).toBeNull()
+      expect(backend.dispatchCounters().readEffectiveMtu).toBe(1)
+    })
+  })
+})
+
 describe('adapter enumeration and selection (parity row adapter.enumerate-select)', () => {
   test('each OS adapter is listed; the selected label reaches the core open', async () => {
     const harness = realBinding('winrt')
@@ -726,16 +750,16 @@ describe('legacy public ids (LEGACY-AUDIT-1 #67)', () => {
 })
 
 describe('unsupported rows keep their legacy reasons (LEGACY-AUDIT-1 #66)', () => {
-  test('CoreBluetooth request-mtu, effective-mtu and phy are unsupported with the legacy codes', async () => {
+  test('CoreBluetooth request-mtu and phy stay unsupported with the legacy codes (effective-mtu is limited: finding 217 follow-up)', async () => {
     await withBackend('corebluetooth', async ({ backend }) => {
       const byId = new Map(backend.features.registrations.map(entry => [entry.id, entry]))
       for (const [id, code] of [
         [BUILT_IN_FEATURE_IDS.connectionRequestMtu, 'corebluetooth-auto-negotiated-mtu'],
-        [BUILT_IN_FEATURE_IDS.connectionEffectiveMtu, 'effective-mtu-boundary-unavailable'],
         [BUILT_IN_FEATURE_IDS.connectionPhy, 'corebluetooth-phy-runtime-unavailable']
       ]) {
         expect(byId.get(id)).toMatchObject({ state: 'unsupported', limitations: [expect.objectContaining({ code })] })
       }
+      expect(byId.get(BUILT_IN_FEATURE_IDS.connectionEffectiveMtu)).toMatchObject({ state: 'limited' })
     })
   })
 

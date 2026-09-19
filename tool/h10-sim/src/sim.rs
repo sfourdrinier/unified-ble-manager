@@ -4,8 +4,12 @@
 //! transports bytes. That keeps every behaviour below unit-testable without
 //! Bluetooth hardware.
 
+use std::time::Instant;
+
+use chrono::{SecondsFormat, Utc};
 use serde::Deserialize;
 
+use crate::control::RunMode;
 use crate::gatt_spec;
 
 /// Pairing/bonding policy of the simulated strap.
@@ -37,6 +41,54 @@ impl PairPolicy {
             Self::JustWorks => "just-works",
             Self::Disabled => "disabled",
         }
+    }
+}
+
+/// Device clock for ECG frame timestamps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceClock {
+    /// Polar epoch: nanoseconds since 2000-01-01T00:00:00Z, like the strap.
+    PolarEpoch,
+    /// Explicitly unsynchronised: nanoseconds since simulator boot, with no
+    /// wall-clock anchor.
+    Unsynchronized,
+}
+
+impl DeviceClock {
+    /// Parses a CLI value; anything else is a loud error.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        match text.to_ascii_lowercase().as_str() {
+            "polar-epoch" => Ok(Self::PolarEpoch),
+            "unsynchronized" => Ok(Self::Unsynchronized),
+            _ => Err(format!(
+                "clock must be polar-epoch or unsynchronized, got {text:?}"
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PolarEpoch => "polar-epoch",
+            Self::Unsynchronized => "unsynchronized",
+        }
+    }
+}
+
+/// Nanoseconds between the Unix epoch (1970-01-01) and the Polar epoch
+/// (2000-01-01T00:00:00Z): 946684800 seconds.
+pub const POLAR_EPOCH_OFFSET_NS: u64 = 946_684_800_000_000_000;
+
+/// ECG frame timestamp in nanoseconds for the frame whose last sample is
+/// `last_sample_index` (samples counted from boot at 130 Hz). A Polar-epoch
+/// clock anchors boot in device time; an unsynchronised clock counts from
+/// boot with no wall-clock component.
+pub fn device_timestamp_ns(clock: DeviceClock, boot_unix_ns: u64, last_sample_index: u64) -> u64 {
+    let since_boot_ns = last_sample_index.saturating_mul(1_000_000_000) / 130;
+    match clock {
+        DeviceClock::Unsynchronized => since_boot_ns,
+        DeviceClock::PolarEpoch => boot_unix_ns
+            .saturating_sub(POLAR_EPOCH_OFFSET_NS)
+            .saturating_add(since_boot_ns),
     }
 }
 
@@ -169,6 +221,14 @@ pub struct SimConfig {
     pub ecg_frame_samples: usize,
     /// ECG frames per second (samples/s ≈ frames × samples).
     pub ecg_frames_per_sec: f64,
+    /// Device clock for ECG timestamps (default: the strap's Polar epoch).
+    pub clock: DeviceClock,
+    /// Extra Bluetooth addresses `drop-link` disconnects on top of the
+    /// tracked GATT clients (centrals whose addresses touched this
+    /// peripheral's GATT application). Only listed addresses and tracked
+    /// clients are ever touched — the adapter's other devices never are.
+    /// The other isolation option is a dedicated adapter; see the README.
+    pub drop_link_allowlist: Vec<String>,
 }
 
 impl Default for SimConfig {
@@ -199,6 +259,8 @@ impl Default for SimConfig {
             hr_hz: 1.0,
             ecg_frame_samples: gatt_spec::H10_ECG_SAMPLES_PER_FRAME,
             ecg_frames_per_sec: gatt_spec::H10_ECG_FRAMES_PER_SEC,
+            clock: DeviceClock::PolarEpoch,
+            drop_link_allowlist: Vec::new(),
         }
     }
 }
@@ -217,6 +279,17 @@ pub enum PmdAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PmdWriteOutcome {
     pub indicate: Option<Vec<u8>>,
+    pub action: PmdAction,
+}
+
+/// A PMD indication waiting out its measured response latency: the ATT
+/// write was already answered, and the tick loop sends this when due — so a
+/// measured latency never blocks the event loop.
+#[derive(Debug, Clone)]
+pub struct PendingIndication {
+    pub due: Instant,
+    pub response: Vec<u8>,
+    /// Streaming action committed when the indication actually goes out.
     pub action: PmdAction,
 }
 
@@ -242,6 +315,47 @@ pub struct SimState {
     pub battery_carry: f64,
     /// Recorded ECG replay samples (None = synthetic waveform).
     pub ecg_replay: Option<Vec<i32>>,
+    /// PMD indications whose measured latency has not expired yet.
+    pub pending_indications: Vec<PendingIndication>,
+    /// Run posture (`--mode`; profiles cannot change it).
+    pub run_mode: RunMode,
+    /// Timing seed for this run (`--timing-seed`; same seed replays a run).
+    pub run_seed: u64,
+    /// When the run started (RFC3339 UTC), for the run record.
+    pub run_started_at: String,
+    /// Injected fault sequence with timestamps; `run-record` reports it.
+    pub faults: Vec<FaultEntry>,
+    /// Extra PMD response latency in ms (adversarial `delay-responses`;
+    /// 0 = off, on top of any measured latency).
+    pub response_delay_ms: u64,
+    /// Armed by adversarial `interrupt-next-subscribe`: the next
+    /// subscription setup is torn down as soon as it completes.
+    pub interrupt_next_subscribe: bool,
+    /// Deliver every n-th ECG frame only (adversarial
+    /// `constrain-delivery`; 1 = every frame).
+    pub delivery_keep_every: u64,
+    /// Sequence number of the next deliverable ECG frame (shed accounting).
+    pub delivery_seq: u64,
+    /// Last PMD response bytes sent (adversarial `stale-callback` replays
+    /// them out of sequence).
+    pub last_pmd_response: Option<Vec<u8>>,
+}
+
+/// One injected fault with its timestamp: the labelled sequence
+/// `run-record` reports. Never silent — every adversarial command that
+/// fires appends exactly one entry.
+#[derive(Debug, Clone)]
+pub struct FaultEntry {
+    pub ts: String,
+    pub fault: String,
+    pub detail: serde_json::Value,
+}
+
+/// Whether ECG frame `seq` goes out under `keep_every` shedding: the first
+/// frame of each group is kept, the rest are shed with a loud log line.
+/// `keep_every <= 1` disables shedding. Pure so tests pin it exactly.
+pub fn should_deliver(seq: u64, keep_every: u64) -> bool {
+    keep_every <= 1 || seq.is_multiple_of(keep_every)
 }
 
 impl SimState {
@@ -257,7 +371,43 @@ impl SimState {
             hr_replay_index: 0,
             battery_carry: 0.0,
             ecg_replay: None,
+            pending_indications: Vec::new(),
+            run_mode: RunMode::Faithful,
+            run_seed: 0,
+            run_started_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+            faults: Vec::new(),
+            response_delay_ms: 0,
+            interrupt_next_subscribe: false,
+            delivery_keep_every: 1,
+            delivery_seq: 0,
+            last_pmd_response: None,
         }
+    }
+
+    /// Records one injected fault with its timestamp. Every adversarial
+    /// command that fires calls this exactly once — the labelled sequence
+    /// [`Self::run_record`] reports.
+    pub fn record_fault(&mut self, fault: &str, detail: serde_json::Value) {
+        self.faults.push(FaultEntry {
+            ts: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+            fault: fault.to_string(),
+            detail,
+        });
+    }
+
+    /// This run's seed/profile, mode and injected fault sequence with
+    /// timestamps — the `run-record` answer.
+    pub fn run_record(&self) -> serde_json::Value {
+        serde_json::json!({
+            "mode": self.run_mode.as_str(),
+            "seed": self.run_seed,
+            "profile": self.config.profile_path.clone().unwrap_or_else(|| "<builtin stock-h10>".to_string()),
+            "name": self.config.name,
+            "startedAt": self.run_started_at,
+            "faults": self.faults.iter().map(|entry| {
+                serde_json::json!({"ts": entry.ts, "fault": entry.fault, "detail": entry.detail})
+            }).collect::<Vec<_>>(),
+        })
     }
 
     /// RR interval for one beat: the base `60/bpm` plus the configured
@@ -424,10 +574,22 @@ impl SimState {
             "ecgFramesPerSec": self.config.ecg_frames_per_sec,
             "ecgFrameSamples": self.config.ecg_frame_samples,
             "ecgSampleIndex": self.ecg_sample_index,
+            "clock": self.config.clock.as_str(),
+            "dropLinkAllowlist": self.config.drop_link_allowlist,
+            "mode": self.run_mode.as_str(),
+            "responseDelayMs": self.response_delay_ms,
+            "deliveryKeepEvery": self.delivery_keep_every,
+            "faults": self.faults.len(),
         })
     }
 
     /// Handles a PMD control-point write, returning the indicate payload.
+    /// Decides a PMD control-point write: response bytes plus the streaming
+    /// action. Decide-only for streaming state — the action commits via
+    /// [`Self::apply_pmd_action`] when the indication actually goes out, so
+    /// frames never precede the START/STOP response the central waits for,
+    /// and a central that vanishes mid-latency leaves no stuck stream
+    /// behind. (Takes `&mut` only to consume a pending injected fault.)
     pub fn handle_pmd_write(&mut self, bytes: &[u8]) -> PmdWriteOutcome {
         let Some(&op) = bytes.first() else {
             return PmdWriteOutcome {
@@ -486,10 +648,7 @@ impl SimState {
                     return answer(gatt_spec::PMD_STATUS_ALREADY_IN_STATE, &[], PmdAction::None);
                 }
                 match validate_start_settings(&bytes[2..]) {
-                    Ok(()) => {
-                        self.ecg_streaming = true;
-                        answer(gatt_spec::PMD_STATUS_SUCCESS, &[], PmdAction::StartEcg)
-                    }
+                    Ok(()) => answer(gatt_spec::PMD_STATUS_SUCCESS, &[], PmdAction::StartEcg),
                     Err(status) => answer(status, &[], PmdAction::None),
                 }
             }
@@ -498,10 +657,19 @@ impl SimState {
                 if !self.ecg_streaming {
                     return answer(gatt_spec::PMD_STATUS_ALREADY_IN_STATE, &[], PmdAction::None);
                 }
-                self.ecg_streaming = false;
                 answer(gatt_spec::PMD_STATUS_SUCCESS, &[], PmdAction::StopEcg)
             }
             _ => unreachable!("op validity is checked above"),
+        }
+    }
+
+    /// Commits a decided PMD action: call when the indication actually goes
+    /// out (inline answer or deferred drain), never at write time.
+    pub fn apply_pmd_action(&mut self, action: PmdAction) {
+        match action {
+            PmdAction::StartEcg => self.ecg_streaming = true,
+            PmdAction::StopEcg => self.ecg_streaming = false,
+            PmdAction::None => {}
         }
     }
 }
@@ -559,6 +727,88 @@ mod tests {
 
     fn state() -> SimState {
         SimState::new(SimConfig::default())
+    }
+
+    #[test]
+    fn run_record_reports_mode_seed_profile_and_faults() {
+        let mut sim = state();
+        assert_eq!(sim.run_mode, crate::control::RunMode::Faithful);
+        sim.run_mode = crate::control::RunMode::Adversarial;
+        sim.run_seed = 7;
+        sim.record_fault(
+            "drop-link",
+            serde_json::json!({"dropped": ["AA:AA:AA:AA:AA:AA"]}),
+        );
+        let record = sim.run_record();
+        assert_eq!(record["mode"], serde_json::json!("adversarial"));
+        assert_eq!(record["seed"], serde_json::json!(7));
+        assert!(record["profile"].is_string(), "profile must be named");
+        assert!(record["startedAt"].is_string(), "start must be timestamped");
+        let faults = record["faults"].as_array().expect("faults must be a list");
+        assert_eq!(faults.len(), 1);
+        assert_eq!(faults[0]["fault"], serde_json::json!("drop-link"));
+        assert!(faults[0]["ts"].is_string(), "faults must be timestamped");
+    }
+
+    #[test]
+    fn delivery_shed_keeps_every_nth_frame() {
+        assert!(super::should_deliver(0, 1));
+        assert!(super::should_deliver(3, 1));
+        assert!(super::should_deliver(0, 4));
+        assert!(!super::should_deliver(1, 4));
+        assert!(!super::should_deliver(7, 4));
+        assert!(super::should_deliver(8, 4));
+    }
+
+    #[test]
+    fn ecg_timestamps_use_the_polar_epoch() {
+        // Booted half a second after 2000-01-01: the frame ending at sample
+        // 130 (one second of 130 Hz ECG) stamps 1.5 s in Polar-epoch
+        // nanoseconds — never a Unix-epoch value like the old wall clock.
+        let boot_unix_ns = super::POLAR_EPOCH_OFFSET_NS + 500_000_000;
+        assert_eq!(
+            super::device_timestamp_ns(super::DeviceClock::PolarEpoch, boot_unix_ns, 130),
+            1_500_000_000
+        );
+    }
+
+    #[test]
+    fn unsynchronised_clock_counts_from_boot() {
+        // Explicitly unsynchronised: the wall clock never enters the stamp.
+        assert_eq!(
+            super::device_timestamp_ns(super::DeviceClock::Unsynchronized, 9_999_999_999, 130),
+            1_000_000_000
+        );
+    }
+
+    #[test]
+    fn polar_epoch_frame_encodes_exact_bytes() {
+        // One second after the Polar epoch, one zero sample: the full frame
+        // is pinned byte for byte.
+        let timestamp_ns = super::device_timestamp_ns(
+            super::DeviceClock::PolarEpoch,
+            super::POLAR_EPOCH_OFFSET_NS,
+            130,
+        );
+        assert_eq!(timestamp_ns, 1_000_000_000);
+        let frame = gatt_spec::encode_ecg_frame(timestamp_ns, &[0]);
+        assert_eq!(
+            frame,
+            vec![0x00, 0x00, 0xCA, 0x9A, 0x3B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+        );
+    }
+
+    #[test]
+    fn device_clock_parses_explicitly() {
+        assert_eq!(
+            super::DeviceClock::parse("polar-epoch"),
+            Ok(super::DeviceClock::PolarEpoch)
+        );
+        assert_eq!(
+            super::DeviceClock::parse("unsynchronized"),
+            Ok(super::DeviceClock::Unsynchronized)
+        );
+        assert!(super::DeviceClock::parse("unix").is_err());
     }
 
     #[test]
@@ -746,6 +996,9 @@ mod tests {
         let outcome =
             sim.handle_pmd_write(&[0x02, 0x00, 0x00, 0x01, 0x82, 0x00, 0x01, 0x01, 0x0E, 0x00]);
         assert_eq!(outcome.action, PmdAction::StartEcg);
+        // Two-phase commit: the decision alone starts nothing.
+        assert!(!sim.ecg_streaming);
+        sim.apply_pmd_action(outcome.action);
         assert_eq!(
             outcome.indicate,
             Some(gatt_spec::encode_pmd_response(
@@ -757,6 +1010,28 @@ mod tests {
             ))
         );
         assert!(sim.ecg_streaming);
+    }
+
+    #[test]
+    fn pmd_streaming_commits_at_indication_not_at_write() {
+        // Two-phase commit: the write only decides (bytes + action); the
+        // stream starts when the indication actually goes out. Frames must
+        // never precede the START response the SDK waits for.
+        let mut sim = state();
+        let outcome =
+            sim.handle_pmd_write(&[0x02, 0x00, 0x00, 0x01, 0x82, 0x00, 0x01, 0x01, 0x0E, 0x00]);
+        assert_eq!(outcome.action, PmdAction::StartEcg);
+        assert!(
+            !sim.ecg_streaming,
+            "the write decides; the indication commits"
+        );
+        sim.apply_pmd_action(outcome.action);
+        assert!(sim.ecg_streaming, "committed when indicated");
+        let stop = sim.handle_pmd_write(&[0x03, 0x00]);
+        assert_eq!(stop.action, PmdAction::StopEcg);
+        assert!(sim.ecg_streaming, "stop also commits at indication");
+        sim.apply_pmd_action(stop.action);
+        assert!(!sim.ecg_streaming);
     }
 
     #[test]
@@ -816,6 +1091,8 @@ mod tests {
         let start = [0x02, 0x00, 0x00, 0x01, 0x82, 0x00, 0x01, 0x01, 0x0E, 0x00];
         let first = sim.handle_pmd_write(&start);
         assert_eq!(first.action, PmdAction::StartEcg);
+        assert!(!sim.ecg_streaming, "uncommitted decision starts nothing");
+        sim.apply_pmd_action(first.action);
         assert!(sim.ecg_streaming);
         let repeated = sim.handle_pmd_write(&start);
         assert_eq!(repeated.action, PmdAction::None, "no second start emitted");
@@ -826,6 +1103,8 @@ mod tests {
         assert!(sim.ecg_streaming, "the stream keeps running");
         let stop = sim.handle_pmd_write(&[0x03, 0x00]);
         assert_eq!(stop.action, PmdAction::StopEcg);
+        assert!(sim.ecg_streaming, "stop commits at indication");
+        sim.apply_pmd_action(stop.action);
         assert!(!sim.ecg_streaming);
         let idle_stop = sim.handle_pmd_write(&[0x03, 0x00]);
         assert_eq!(idle_stop.action, PmdAction::None);

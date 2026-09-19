@@ -62,7 +62,7 @@ capability truth matches this report row for row.
 | `peer:system-connected` | peer.system-connected | Adopting OS-connected peripherals. |
 | `peer:bonded` | peer.bonded | OS bond-store readout. |
 | `connection:when-available` | connection.when-available | Deferred auto-connect / reconnect daemon path. |
-| `connection:effective-mtu` | connection.rssi-and-att-mtu-capability-contract | The OS-measured MTU already feeds every write through `mtu()-3` into the core maximum-write-length (fail-closed when unmeasured); exposing the negotiated value as a host read needs an adapter. |
+| `connection:effective-mtu` | connection.rssi-and-att-mtu-capability-contract | The OS-measured MTU already feeds every write through the core maximum-write-length (fail-closed when unmeasured); the negotiated value is exposed per OS as `DesktopCentral::read_effective_mtu` (lease holder, connected link, bounded by the budget; see Per-OS verdicts). |
 | `connection:request-mtu` | connection.mtu-request | OS MTU-request control path. |
 | `connection:priority` | connection.priority | OS connection-priority control. |
 | `connection:parameters` | connection.parameters | OS connection-parameter update. |
@@ -110,6 +110,9 @@ available here (provenance per row).
 |---|---|---|---|---|
 | `connection:rssi` | windows | unsupported | — | btleplug's WinRT `read_rssi` is the last advertisement's RSSI, not a link measurement; legacy WinRT had none. |
 | `connection:rssi` | linux | unsupported | — | btleplug's BlueZ `read_rssi` is the discovery-time `Device1.RSSI`; BlueZ has no connected RSSI; legacy BlueZ had none. |
+| `connection:effective-mtu` | macos | os-adapter-provides | corebluetooth-derived-effective-mtu | Derived per link as `CBPeripheral.maximumWriteValueLength(for: .withResponse) + 3` through vendored btleplug patch 1 (`vendor/btleplug/UBM_PATCHES.md`): the same derivation as the Apple React Native route (finding 217). Unsupported in a workspace linking crates.io btleplug. |
+| `connection:effective-mtu` | windows | btleplug-provides | winrt-gattsession-max-pdu-size | btleplug's WinRT `mtu()` is the `GattSession.MaxPduSize` it tracks from `MaxPduSizeChanged` (`winrtble/ble/device.rs`), reported as the ATT MTU. |
+| `connection:effective-mtu` | linux | os-adapter-provides | bluez-gatt-characteristic-mtu | The `org.bluez.GattCharacteristic1` MTU of the link's characteristics (`os::linux`); a link BlueZ withholds it on answers `capability.unavailable`, never a guessed 23. |
 | `security:state` | linux | os-adapter-provides | os-adapter-compile-verified | `Device1.Paired`/`Bonded` (Bonded wins where BlueZ has it); `pairingPossible` reported unknown (BlueZ has no such fact). |
 | `security:state` | windows | os-adapter-provides | os-adapter-compile-verified | `DeviceInformationPairing.IsPaired`/`CanPair`. |
 | `security:pair` | linux | os-adapter-provides | os-adapter-compile-verified | `Device1.Pair` through a just-works `Agent1` (`NoInputNoOutput`), registered only when pairing is requested. |

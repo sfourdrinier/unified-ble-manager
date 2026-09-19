@@ -33,6 +33,8 @@ pub enum FaultOp {
     AdapterName,
     /// Connected RSSI read (`read_rssi()` fails or holds).
     Rssi,
+    /// Effective ATT MTU read (`read_effective_mtu()` fails or holds).
+    EffectiveMtu,
     /// Adapter power-state read (`adapter_state()` fails or holds).
     AdapterState,
     /// Adapter authorization read (`adapter_authorization()` fails or holds).
@@ -973,6 +975,23 @@ pub trait RadioBoundary: Send + Sync + 'static {
         let _ = peer_id;
         async { Err(unsupported("peer.rssi", "this radio cannot measure RSSI")) }
     }
+    /// Effective ATT MTU of the live link to `peer_id`, as the OS reports
+    /// it (macOS: `maximumWriteValueLength(.withResponse) + 3`; Windows:
+    /// `GattSession.MaxPduSize`; Linux: the `org.bluez.GattCharacteristic1`
+    /// MTU). A radio that withholds it answers `capability.unsupported`
+    /// with the reason, never a guessed 23.
+    fn read_effective_mtu<'a>(
+        &'a self,
+        peer_id: &'a str,
+    ) -> impl Future<Output = Result<u16, DesktopError>> + Send + 'a {
+        let _ = peer_id;
+        async {
+            Err(unsupported(
+                "connection.effective-mtu",
+                "this radio reports no effective ATT MTU",
+            ))
+        }
+    }
     /// Current adapter power state. A radio that cannot read it answers
     /// `capability.unsupported`.
     fn adapter_state(
@@ -1259,6 +1278,8 @@ struct FakeInner {
     delivery_requests: Vec<Option<DeliveryMode>>,
     /// Scripted connected RSSI per peer (unset: unmeasured).
     rssi: HashMap<String, i16>,
+    /// Scripted effective ATT MTU per peer (unset: the OS withholds it).
+    effective_mtu: HashMap<String, u16>,
     /// Scripted adapter power state (unset: unreadable).
     adapter_state: Option<AdapterPowerState>,
     /// Scripted observation overriding the default for the next enables
@@ -1329,6 +1350,7 @@ impl FakeRadio {
                 enable_epochs: Vec::new(),
                 delivery_requests: Vec::new(),
                 rssi: HashMap::new(),
+                effective_mtu: HashMap::new(),
                 adapter_state: None,
                 scripted_delivery: None,
                 gates: HashMap::new(),
@@ -1517,6 +1539,16 @@ impl FakeRadio {
             .expect("fake radio state")
             .rssi
             .insert(peer_id.to_owned(), rssi);
+    }
+
+    /// Script the effective ATT MTU `read_effective_mtu` reports for
+    /// `peer_id`. Unset means the OS withholds it.
+    pub fn set_effective_mtu(&self, peer_id: &str, mtu: u16) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .effective_mtu
+            .insert(peer_id.to_owned(), mtu);
     }
 
     /// Script the adapter power state `adapter_state` reports.
@@ -2200,6 +2232,35 @@ impl RadioBoundary for FakeRadio {
             .get(peer_id)
             .copied();
         scripted.ok_or_else(|| unsupported("peer.rssi", "no RSSI measured for this peer"))
+    }
+
+    async fn read_effective_mtu(&self, peer_id: &str) -> Result<u16, DesktopError> {
+        self.record("read_effective_mtu");
+        if let Some(ScriptedFault { detail, platform }) = self.take_fault(FaultOp::EffectiveMtu) {
+            return Err(scripted(
+                DesktopError::new(
+                    ubm_core::contracts::BleErrorCode::PlatformFailure,
+                    ubm_core::contracts::BleErrorDomain::Connection,
+                    "connection.effective-mtu",
+                )
+                .with_detail(detail),
+                platform,
+            ));
+        }
+        self.gate(FaultOp::EffectiveMtu).await;
+        let scripted = self
+            .state
+            .lock()
+            .expect("fake radio state")
+            .effective_mtu
+            .get(peer_id)
+            .copied();
+        scripted.ok_or_else(|| {
+            unsupported(
+                "connection.effective-mtu",
+                "no effective ATT MTU measured for this peer",
+            )
+        })
     }
 
     async fn adapter_state(&self) -> Result<AdapterPowerState, DesktopError> {

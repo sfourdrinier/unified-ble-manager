@@ -95,8 +95,10 @@ const ARG_SCHEMAS = Object.freeze({
 /** crates/ubm-mobile `ADMISSION_WINDOW`. */
 const ADMISSION_WINDOW = 65536
 
+// `connection.effective-mtu` is answered on Apple (finding 217): the Swift
+// adapter reports `maximumWriteValueLength(.withResponse) + 3` per link.
+// `connection.request-mtu` stays refused: CoreBluetooth has no request API.
 const APPLE_UNSUPPORTED = new Set([
-  'connection.effective-mtu',
   'connection.request-mtu',
   'connection.request-priority',
   'connection.read-phy',
@@ -354,6 +356,7 @@ class DeterministicRustCoreNative {
       outbox: [],
       armed: true,
       ordinal: 0,
+      controlLostTotal: 0,
       disposed: false,
       closed: false,
       scans: new Map(),
@@ -455,7 +458,11 @@ class DeterministicRustCoreNative {
     const session = this.session(sessionId)
     const records = session.outbox.splice(0, maxItems)
     if (session.outbox.length === 0) session.armed = true
-    const text = JSON.stringify({ more: session.outbox.length > 0, records })
+    const text = JSON.stringify({
+      more: session.outbox.length > 0,
+      records,
+      controlLost: session.controlLostTotal
+    })
     if (this.drainResolution === 'native-task') await new Promise(resolve => setImmediate(resolve))
     return text
   }
@@ -642,6 +649,9 @@ class DeterministicRustCoreNative {
     } finally {
       const lost = this.controlLost
       this.controlLost = null
+      // Every live session refused the same broadcast control records:
+      // the cumulative counter moves per session, like the owner's.
+      for (const session of this.liveSessions()) session.controlLostTotal += lost
       if (lost > 0) this.ingressDrop('control', lost)
     }
   }
@@ -1058,7 +1068,11 @@ class DeterministicRustCoreNative {
         return { rssi: -47 }
       case 'connection.effective-mtu':
         this.lease(session, args)
-        // Android reports no MTU until `onMtuChanged` (native `readEffectiveMtu`).
+        // Apple derives the ATT MTU per link as
+        // `maximumWriteValueLength(.withResponse) + 3` (frozen wire rule,
+        // ios/UnifiedBleRustRadioAdapter.swift); Android reports no MTU
+        // until `onMtuChanged` (native `readEffectiveMtu`).
+        if (apple) return { mtu: 512 + 3 }
         return { mtu: this.negotiatedMtu.get(args.peerId) ?? null }
       case 'connection.request-mtu': {
         this.lease(session, args)

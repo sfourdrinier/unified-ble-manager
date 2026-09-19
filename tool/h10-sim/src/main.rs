@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use radio::{
     adv_service_uuids, h10_services, short_of, PeripheralRadio, PlatformRadio, RadioEvent,
+    SendOutcome,
 };
 use serde_json::json;
 use sim::{PmdAction, SimConfig, SimState};
@@ -45,6 +46,14 @@ fn usage() -> String {
          \x20 --pair-policy <policy> Pairing policy: just-works (default) or disabled\n\
          \x20 --bpm <bpm>            Heart rate in bpm (overrides the profile)\n\
          \x20 --battery <percent>    Battery level percent (overrides the profile)\n\
+         \x20 --clock <mode>         ECG timestamp clock: polar-epoch (default, like the strap)\n\
+         \x20                        or unsynchronized (boot-relative, no wall clock)\n\
+         \x20 --mode <mode>          Run posture: faithful (default, reproduces the captured\n\
+         \x20                        H10 behaviour, injects nothing) or adversarial (allows labelled\n\
+         \x20                        fault injection through explicit control commands)\n\
+         \x20 --drop-link-allow <addr>  Extra Bluetooth address drop-link disconnects on top of\n\
+         \x20                        the tracked GATT clients (repeatable; only listed addresses\n\
+         \x20                        and tracked clients are ever touched)\n\
          \x20 --ecg-file <path>      Replay recorded ECG (text, one integer µV per line @130 Hz)\n\
          \x20 --hr-replay <path>     Replay recorded HR packets (a raw capture JSON: raw.hrMeasurements)\n\
          \x20 --driver <url>        Join the test driver as a peripheral-sim host (ws://host:port/path)\n\
@@ -147,6 +156,7 @@ fn main() -> ExitCode {
     let mut emit_sim_fingerprint = false;
     let mut timing_profile_path: Option<String> = None;
     let mut timing_seed: u64 = 0;
+    let mut run_mode = control::RunMode::default();
     let mut compare_paths: Option<(String, String)> = None;
     let mut tolerance_p50 = compare::Tolerances::default().p50_relative;
     let mut tolerance_ms = compare::Tolerances::default().min_abs_ms;
@@ -193,6 +203,18 @@ fn main() -> ExitCode {
                     if config.battery_percent > 100 {
                         return Err("--battery must be 0-100".to_string());
                     }
+                }
+                "--clock" => {
+                    config.clock = sim::DeviceClock::parse(&value(&mut args, "--clock")?)?;
+                }
+                "--mode" => {
+                    run_mode = control::RunMode::parse(&value(&mut args, "--mode")?)?;
+                }
+                "--drop-link-allow" => {
+                    let address = value(&mut args, "--drop-link-allow")?;
+                    radio::parse_bt_address(&address)
+                        .map_err(|error| format!("--drop-link-allow {address:?}: {error}"))?;
+                    config.drop_link_allowlist.push(address);
                 }
                 "--ecg-file" => {
                     let file = value(&mut args, "--ecg-file")?;
@@ -381,6 +403,7 @@ fn main() -> ExitCode {
             driver_url,
             timing_profile,
             linux_advertising,
+            run_mode,
         )
     }
 }
@@ -392,6 +415,9 @@ fn load_startup_profile(config: &mut SimConfig, path: &str) -> Result<(), String
     config.apply_profile(path, &profile)
 }
 
+/// Startup plumbing: every run input arrives here explicitly rather than
+/// through globals, so the argument count stays honest about it.
+#[allow(clippy::too_many_arguments)]
 fn run(
     config: SimConfig,
     control_bind: String,
@@ -400,6 +426,7 @@ fn run(
     driver_url: Option<String>,
     timing_profile: timing::TimingProfile,
     linux_advertising: LinuxAdvertising,
+    run_mode: control::RunMode,
 ) -> ExitCode {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -419,6 +446,7 @@ fn run(
         driver_url,
         timing_profile,
         linux_advertising,
+        run_mode,
     )) {
         Ok(()) => ExitCode::SUCCESS,
         Err(fatal) => {
@@ -526,6 +554,8 @@ fn load_hr_replay(source: &sim::HrSource) -> Result<Option<sim::HrReplay>, Strin
     }
 }
 
+/// Startup plumbing, like [`run`]: explicit run inputs, not globals.
+#[allow(clippy::too_many_arguments)]
 async fn serve(
     config: SimConfig,
     control_bind: String,
@@ -534,9 +564,18 @@ async fn serve(
     driver_url: Option<String>,
     timing_profile: timing::TimingProfile,
     linux_advertising: LinuxAdvertising,
+    run_mode: control::RunMode,
 ) -> Result<(), Fatal> {
     let mut log = EventLog::new();
     let mut sim = SimState::new(config);
+    // The run posture is a startup decision, never a profile field: a
+    // profile load cannot smuggle a faithful run into adversarial mode.
+    sim.run_mode = run_mode;
+    sim.run_seed = timing_profile.seed;
+    log.log(
+        "run-mode",
+        json!({"mode": run_mode.as_str(), "seed": timing_profile.seed}),
+    );
     sim.ecg_replay = load_ecg_replay(&sim.config.ecg_source)?;
     sim.hr_replay = load_hr_replay(&sim.config.hr_source)?;
     let mut timing = timing::TimingRuntime::new(timing_profile);
@@ -574,16 +613,20 @@ async fn serve(
     }
 
     let (control_tx, mut control_rx) = mpsc::channel::<ControlRequest>(64);
-    let control_server = tokio::spawn(control::serve(
-        control_bind.clone(),
-        control_port,
-        control_token.clone(),
-        control_tx.clone(),
-    ));
+    // Bind before declaring readiness: `control-listening` is logged only
+    // after the socket is bound, never on a spawn that may still fail.
+    let control_listener = control::listen(&control_bind, control_port, control_token.as_deref())
+        .await
+        .map_err(Fatal::from)?;
     log.log(
         "control-listening",
         json!({"bind": control_bind, "port": control_port, "auth": control_token.is_some()}),
     );
+    let control_server = tokio::spawn(control::serve_listener(
+        control_listener,
+        control_token.clone(),
+        control_tx.clone(),
+    ));
 
     if let Some(url) = driver_url {
         let (event_tx, event_rx) = mpsc::channel::<serde_json::Value>(256);
@@ -652,6 +695,7 @@ async fn serve(
                     next_battery = now + Duration::from_secs(60);
                     send_battery(&mut radio, &sim, &mut log).await;
                 }
+                drain_indications(&mut radio, &mut sim, &mut log).await;
             }
             Some(event) = radio_rx.recv() => {
                 handle_radio(event, &mut radio, &mut sim, &mut timing, &mut log, boot_epoch_ns).await;
@@ -750,15 +794,27 @@ async fn send_hr(radio: &mut PlatformRadio, sim: &mut SimState, log: &mut EventL
     }
     let payload = sim.hr_payload();
     let uuid = advertisement::short_uuid(gatt_spec::uuid16::HEART_RATE_MEASUREMENT);
-    match radio.notify(uuid, payload.clone()).await {
-        // With no subscriber there is no delivery to report; a dead session
-        // is loud below.
-        Ok(true) => log.log("hr-notify", json!({"bpm": sim.config.bpm})),
-        Ok(false) => {}
-        Err(error) => log.log(
-            "radio-error",
-            json!({"op": "hr-notify", "error": error.to_string()}),
-        ),
+    let outcome = radio.notify(uuid, payload.clone()).await;
+    report_stream_notify(log, "hr-notify", outcome, json!({"bpm": sim.config.bpm}));
+}
+
+/// Reports one inline notify outcome for a stream tick. `OsAccepted` and
+/// `Queued` log the frame line (a queued frame settles later; only a failed
+/// settle is logged again, loudly). `NotSubscribed` is the normal
+/// no-central case — no line, never an error. `Failed` is always loud.
+fn report_stream_notify(
+    log: &mut EventLog,
+    op: &str,
+    outcome: Result<SendOutcome, crate::radio::RadioError>,
+    detail: serde_json::Value,
+) {
+    match outcome {
+        Ok(SendOutcome::OsAccepted | SendOutcome::Queued) => log.log(op, detail),
+        Ok(SendOutcome::NotSubscribed) => {}
+        Ok(SendOutcome::Failed(reason)) => {
+            log.log("radio-error", json!({"op": op, "error": reason}))
+        }
+        Err(error) => log.log("radio-error", json!({"op": op, "error": error.to_string()})),
     }
 }
 
@@ -768,19 +824,13 @@ async fn send_battery(radio: &mut PlatformRadio, sim: &SimState, log: &mut Event
     }
     let payload = gatt_spec::encode_battery_level(sim.config.battery_percent);
     let uuid = advertisement::short_uuid(gatt_spec::uuid16::BATTERY_LEVEL);
-    match radio.notify(uuid, payload).await {
-        Ok(true) => log.log(
-            "battery-notify",
-            json!({"percent": sim.config.battery_percent}),
-        ),
-        Ok(false) => {}
-        Err(error) => {
-            log.log(
-                "radio-error",
-                json!({"op": "battery-notify", "error": error.to_string()}),
-            );
-        }
-    }
+    let outcome = radio.notify(uuid, payload).await;
+    report_stream_notify(
+        log,
+        "battery-notify",
+        outcome,
+        json!({"percent": sim.config.battery_percent}),
+    );
 }
 
 async fn send_ecg(
@@ -795,29 +845,38 @@ async fn send_ecg(
     if !sim.ecg_streaming || sim.silent {
         return;
     }
+    // Adversarial constrained delivery: shed frames with a loud line each.
+    // The sample index above still advances, so the timeline never jumps.
+    let seq = sim.delivery_seq;
+    sim.delivery_seq = sim.delivery_seq.saturating_add(1);
+    if !sim::should_deliver(seq, sim.delivery_keep_every) {
+        log.log(
+            "ecg-frame-shed",
+            json!({"seq": seq, "keepEvery": sim.delivery_keep_every}),
+        );
+        return;
+    }
     let mut samples = Vec::with_capacity(count);
     match &sim.ecg_replay {
         Some(recorded) => ecg::replay_samples(recorded, index, count, &mut samples),
         None => ecg::ecg_frame_samples(index, count, f64::from(sim.config.bpm), &mut samples),
     }
-    let timestamp_ns = boot_epoch_ns.saturating_add(
-        index
-            .saturating_add(count as u64)
-            .saturating_mul(1_000_000_000)
-            / 130,
+    // Device time, not Unix time: the strap stamps Polar-epoch nanoseconds
+    // (or boot-relative time in explicitly unsynchronised mode).
+    let timestamp_ns = sim::device_timestamp_ns(
+        sim.config.clock,
+        boot_epoch_ns,
+        index.saturating_add(count as u64),
     );
     let frame = gatt_spec::encode_ecg_frame(timestamp_ns, &samples);
     let uuid = Uuid::parse_str(gatt_spec::pmd::DATA).unwrap_or_else(|_| Uuid::nil());
-    match radio.notify(uuid, frame.clone()).await {
-        Ok(true) => log.log(
-            "ecg-notify",
-            json!({"samples": samples.len(), "bytes": frame.len(), "timestampNs": timestamp_ns.to_string()}),
-        ),
-        Ok(false) => {}
-        Err(error) => {
-            log.log("radio-error", json!({"op": "ecg-notify", "error": error.to_string()}));
-        }
-    }
+    let outcome = radio.notify(uuid, frame.clone()).await;
+    report_stream_notify(
+        log,
+        "ecg-notify",
+        outcome,
+        json!({"samples": samples.len(), "bytes": frame.len(), "timestampNs": timestamp_ns.to_string()}),
+    );
 }
 
 fn slice_at(value: &[u8], offset: u64) -> Option<Vec<u8>> {
@@ -850,6 +909,32 @@ async fn handle_radio(
                 },
                 json!({"service": service, "characteristic": characteristic}),
             );
+            // Adversarial interrupted setup: an armed fault tears the new
+            // session down immediately, so the central's subscribe completes
+            // but no stream ever delivers on it. The fault is recorded here,
+            // when it manifests — not when it was armed.
+            if subscribed && sim.interrupt_next_subscribe {
+                sim.interrupt_next_subscribe = false;
+                let uuid = Uuid::parse_str(&characteristic).unwrap_or_else(|_| Uuid::nil());
+                match radio.drop_subscription(uuid).await {
+                    Ok(torn) => {
+                        sim.record_fault(
+                            "interrupt-next-subscribe",
+                            json!({"characteristic": characteristic, "torn": torn}),
+                        );
+                        log.log(
+                            "subscribe-interrupted",
+                            json!({"service": service, "characteristic": characteristic, "torn": torn}),
+                        );
+                    }
+                    Err(error) => {
+                        log.log(
+                            "radio-error",
+                            json!({"op": "interrupt-next-subscribe", "error": error.to_string()}),
+                        );
+                    }
+                }
+            }
         }
         RadioEvent::IndicationConfirmed {
             service,
@@ -874,6 +959,27 @@ async fn handle_radio(
             );
             let _ = reply.send(answer);
         }
+        RadioEvent::NotifySettled {
+            service,
+            characteristic,
+            outcome,
+        } => match outcome {
+            // Accepted frames were logged with full detail when queued; only
+            // failures speak again, loudly.
+            SendOutcome::OsAccepted | SendOutcome::Queued => {}
+            SendOutcome::NotSubscribed => {
+                log.log(
+                    "radio-error",
+                    json!({"op": "notify-settled", "service": service, "characteristic": characteristic, "error": "session ended before delivery"}),
+                );
+            }
+            SendOutcome::Failed(reason) => {
+                log.log(
+                    "radio-error",
+                    json!({"op": "notify-settled", "service": service, "characteristic": characteristic, "error": reason}),
+                );
+            }
+        },
         RadioEvent::Write {
             service,
             characteristic,
@@ -941,38 +1047,65 @@ async fn write_request(
     match outcome.indicate {
         Some(response) => {
             let status = response.get(3).copied().unwrap_or(0xFF);
-            // The measured PMD response latency, once a capture confirmed
-            // it; immediate by default so behaviour is unchanged.
-            timing.pmd_response_delay().await;
-            // Awaited: a lost indication surfaces here instead of timing out
+            log.log(
+                "pmd-command",
+                json!({"op": value.first().copied().unwrap_or(0xFF), "status": status, "action": format!("{:?}", outcome.action)}),
+            );
+            // Remember the response bytes: adversarial `stale-callback`
+            // replays them out of sequence.
+            sim.last_pmd_response = Some(response.clone());
+            // A measured response latency defers the indication to the tick
+            // loop; the ATT write is answered now, so the loop never sleeps.
+            // Immediate by default, so behaviour is unchanged. The
+            // adversarial `delay-responses` fault adds its extra latency on
+            // top through the same deferred path — still off the loop.
+            // Either way the streaming action commits only when the
+            // indication actually goes out — never frames before the
+            // START/STOP response.
+            let measured_ms = timing.sample_pmd_response_ms();
+            let injected_ms = sim.response_delay_ms;
+            if measured_ms.is_some() || injected_ms > 0 {
+                let total_ms = measured_ms.unwrap_or(0.0) + injected_ms as f64;
+                sim.pending_indications.push(sim::PendingIndication {
+                    due: Instant::now() + Duration::from_secs_f64(total_ms / 1000.0),
+                    response,
+                    action: outcome.action,
+                });
+                log.log(
+                    "pmd-indicate-deferred",
+                    json!({"delayMs": total_ms, "injectedMs": injected_ms}),
+                );
+                return true;
+            }
+            // Inline: a lost indication surfaces here instead of timing out
             // the central 5 s later.
             match radio.notify(control_point, response.clone()).await {
-                Ok(true) => {}
-                Ok(false) => {
+                Ok(SendOutcome::OsAccepted | SendOutcome::Queued) => {
+                    commit_pmd_action(sim, log, outcome.action);
+                    true
+                }
+                Ok(SendOutcome::NotSubscribed) => {
                     log.log(
                         "radio-error",
                         json!({"op": "pmd-indicate", "error": "no live indication session"}),
                     );
-                    return false;
+                    false
+                }
+                Ok(SendOutcome::Failed(reason)) => {
+                    log.log(
+                        "radio-error",
+                        json!({"op": "pmd-indicate", "error": reason}),
+                    );
+                    false
                 }
                 Err(error) => {
                     log.log(
                         "radio-error",
                         json!({"op": "pmd-indicate", "error": error.to_string()}),
                     );
-                    return false;
+                    false
                 }
             }
-            log.log(
-                "pmd-command",
-                json!({"op": value.first().copied().unwrap_or(0xFF), "status": status, "action": format!("{:?}", outcome.action)}),
-            );
-            match outcome.action {
-                PmdAction::StartEcg => log.log_simple("ecg-started"),
-                PmdAction::StopEcg => log.log_simple("ecg-stopped"),
-                PmdAction::None => {}
-            }
-            true
         }
         None => {
             log.log(
@@ -981,6 +1114,48 @@ async fn write_request(
             );
             false
         }
+    }
+}
+
+/// Commits a decided PMD action at indication time, announcing stream
+/// transitions the moment they become visible over the air.
+fn commit_pmd_action(sim: &mut SimState, log: &mut EventLog, action: PmdAction) {
+    sim.apply_pmd_action(action);
+    match action {
+        PmdAction::StartEcg => log.log_simple("ecg-started"),
+        PmdAction::StopEcg => log.log_simple("ecg-stopped"),
+        PmdAction::None => {}
+    }
+}
+
+/// Sends PMD indications whose latency expired. The streaming action commits
+/// only when the indication actually goes out; a central that vanished
+/// mid-latency drops the indication loudly and leaves no stuck stream.
+async fn drain_indications(radio: &mut PlatformRadio, sim: &mut SimState, log: &mut EventLog) {
+    let now = Instant::now();
+    let mut index = 0;
+    while index < sim.pending_indications.len() {
+        if sim.pending_indications[index].due > now {
+            index += 1;
+            continue;
+        }
+        let indication = sim.pending_indications.remove(index);
+        let control_point =
+            Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap_or_else(|_| Uuid::nil());
+        let outcome = radio.notify(control_point, indication.response).await;
+        match &outcome {
+            Ok(SendOutcome::OsAccepted | SendOutcome::Queued) => {
+                commit_pmd_action(sim, log, indication.action);
+            }
+            Ok(SendOutcome::NotSubscribed) => {
+                log.log(
+                    "pmd-indicate-dropped",
+                    json!({"reason": "central left before the deferred indication went out; action not committed"}),
+                );
+            }
+            _ => {}
+        }
+        report_stream_notify(log, "pmd-indicate", outcome, json!({"deferred": true}));
     }
 }
 
@@ -995,6 +1170,17 @@ async fn handle_control(
         "control-command",
         json!({"command": format!("{command:?}")}),
     );
+    // Faithful mode reproduces the captured strap and injects nothing: an
+    // adversarial fault command is refused loudly here, before it can touch
+    // any state — never a silent no-op.
+    if let Err(error) = control::check_mode(sim.run_mode, &command) {
+        log.log(
+            "control-refused",
+            json!({"command": command.name(), "mode": sim.run_mode.as_str()}),
+        );
+        let _ = reply.send(ControlReply::failed(error));
+        return;
+    }
     let answer = match command {
         ControlCommand::SetBpm { bpm } => {
             sim.config.bpm = bpm;
@@ -1010,11 +1196,56 @@ async fn handle_control(
             Ok(reply) => reply,
             Err(error) => ControlReply::failed(error),
         },
+        ControlCommand::FlapLink => match flap_link(radio, sim, log).await {
+            Ok(reply) => reply,
+            Err(error) => ControlReply::failed(error),
+        },
         ControlCommand::SetSilent { on } => {
             sim.silent = on;
+            sim.record_fault("set-silent", json!({"on": on}));
             log.log("silent", json!({"on": on}));
             ControlReply::ok()
         }
+        ControlCommand::DelayResponses { ms } => {
+            if ms > 10_000 {
+                ControlReply::failed(format!("delay-responses ms {ms} is out of range 0..=10000"))
+            } else {
+                sim.response_delay_ms = ms;
+                sim.record_fault("delay-responses", json!({"ms": ms}));
+                log.log("response-delay", json!({"ms": ms}));
+                ControlReply::ok()
+            }
+        }
+        ControlCommand::InterruptNextSubscribe => {
+            // Armed here (logged); the fault itself is recorded when the
+            // next subscription fires it — one record entry per manifested
+            // fault.
+            sim.interrupt_next_subscribe = true;
+            log.log("subscribe-interrupt-armed", json!({}));
+            ControlReply::ok()
+        }
+        ControlCommand::StaleCallback => match stale_callback(radio, sim, log).await {
+            Ok(reply) => reply,
+            Err(error) => ControlReply::failed(error),
+        },
+        ControlCommand::ConstrainDelivery { keep_every } => {
+            if !(1..=1000).contains(&keep_every) {
+                ControlReply::failed(format!(
+                    "constrain-delivery keepEvery {keep_every} is out of range 1..=1000"
+                ))
+            } else {
+                sim.delivery_keep_every = keep_every;
+                sim.record_fault("constrain-delivery", json!({"keepEvery": keep_every}));
+                log.log("delivery-constrained", json!({"keepEvery": keep_every}));
+                ControlReply::ok()
+            }
+        }
+        ControlCommand::RunRecord => ControlReply {
+            ok: true,
+            error: None,
+            note: None,
+            state: Some(sim.run_record()),
+        },
         ControlCommand::SetBattery { level } => {
             if level > 100 {
                 ControlReply::failed(format!("battery level {level} is out of range 0..=100"))
@@ -1043,11 +1274,14 @@ async fn handle_control(
         }
         ControlCommand::RejectNextPmd { status } => {
             sim.reject_next_status = Some(status);
+            sim.record_fault("reject-next-pmd", json!({"status": status}));
             log.log("pmd-fault-armed", json!({"status": status}));
             ControlReply::ok()
         }
         ControlCommand::ClearPmdFault => {
             sim.reject_next_status = None;
+            sim.record_fault("clear-pmd-fault", json!({}));
+            log.log("pmd-fault-cleared", json!({}));
             ControlReply::ok()
         }
         ControlCommand::SetRates {
@@ -1079,10 +1313,12 @@ async fn handle_control(
     let _ = reply.send(answer);
 }
 
-/// Loads a profile file onto the live sim. A bad path keeps the old profile
-/// and answers `{"ok":false}` — never a silent partial swap. When the radio
-/// is advertising, the advertisement is re-registered so the new name takes
-/// effect over the air.
+/// Loads a profile file onto the live sim, transactionally: the old config
+/// and replays are snapshotted first, and a radio failure after the swap
+/// rolls everything back and reports the degraded state — never a new config
+/// on a failed radio. A bad path or replay file keeps the old profile and
+/// answers `{"ok":false}`. When the radio is advertising, the advertisement
+/// is re-registered so the new name takes effect over the air.
 async fn load_profile_into(
     sim: &mut SimState,
     radio: &mut PlatformRadio,
@@ -1094,22 +1330,38 @@ async fn load_profile_into(
     // the old profile instead of a half-applied one.
     let replay = load_ecg_replay(&loaded.pmd.ecg_source)?;
     let hr_replay = load_hr_replay(&loaded.heart_rate.hr_source)?;
+    let old_config = sim.config.clone();
+    let old_ecg_replay = sim.ecg_replay.clone();
+    let old_hr_replay = sim.hr_replay.clone();
+    let old_hr_replay_index = sim.hr_replay_index;
+    let old_pending = sim.pending_indications.clone();
     sim.config.apply_profile(path, &loaded)?;
     sim.ecg_replay = replay;
     sim.hr_replay = hr_replay;
     sim.hr_replay_index = 0;
+    sim.pending_indications.clear();
     log.log("profile-loaded", json!({"path": path}));
-    match radio.is_advertising().await {
-        Ok(true) => {
-            start_advertising(radio, sim, log).await?;
-        }
-        Ok(false) => {}
+    let radio_outcome = match radio.is_advertising().await {
+        Ok(true) => start_advertising(radio, sim, log).await,
+        Ok(false) => Ok(()),
         Err(error) => {
             log.log(
                 "radio-error",
                 json!({"op": "is-advertising", "error": error.to_string()}),
             );
+            Ok(())
         }
+    };
+    if let Err(error) = radio_outcome {
+        // The new config is already swapped in: roll it back so the sim
+        // never runs a profile its radio rejected, and say so loudly.
+        sim.config = old_config;
+        sim.ecg_replay = old_ecg_replay;
+        sim.hr_replay = old_hr_replay;
+        sim.hr_replay_index = old_hr_replay_index;
+        sim.pending_indications = old_pending;
+        log.log("profile-rolled-back", json!({"path": path, "error": error}));
+        return Err(error);
     }
     Ok(())
 }
@@ -1134,6 +1386,58 @@ async fn set_advertising(
     }
 }
 
+/// Builds the drop-link note and state from the tracked clients, the
+/// allowlist, the disconnect report and the connected strangers. Pure so
+/// the report wording is pinned by tests without a radio.
+fn summarize_drop(
+    clients: &[String],
+    allowlist: &[String],
+    report: &radio::DisconnectReport,
+    connected: &[String],
+) -> (String, serde_json::Value) {
+    let targets = radio::drop_targets(clients, allowlist);
+    let mut skipped = report.skipped.clone();
+    for stranger in radio::non_client_skips(connected, &targets) {
+        skipped.push(radio::DisconnectSkip {
+            address: stranger,
+            reason: radio::SKIP_NOT_CLIENT.to_string(),
+        });
+    }
+    let state = json!({
+        "clients": clients,
+        "allowlisted": allowlist.len(),
+        "targets": targets,
+        "dropped": report.dropped,
+        "skipped": skipped,
+    });
+    let note = if targets.is_empty() {
+        "ECG halted; no simulator clients observed and no drop-link allowlist \
+         is configured (--drop-link-allow), so no central was disconnected — \
+         streams stop but any peer stays connected. Advertising and the GATT \
+         database are unchanged"
+            .to_string()
+    } else {
+        let mut note = format!(
+            "ECG halted, {} of {} target(s) disconnected",
+            report.dropped.len(),
+            targets.len(),
+        );
+        if !report.dropped.is_empty() {
+            note.push_str(&format!(" ({})", report.dropped.join(", ")));
+        }
+        for skip in &skipped {
+            note.push_str(&format!("; {} skipped: {}", skip.address, skip.reason));
+        }
+        note.push_str(
+            "; advertising and the GATT database are unchanged (BlueZ \
+             disconnects via Device1.Disconnect; on CoreBluetooth an \
+             already-connected central stays connected until it disconnects)",
+        );
+        note
+    };
+    (note, state)
+}
+
 async fn drop_link(
     radio: &mut PlatformRadio,
     sim: &mut SimState,
@@ -1144,18 +1448,148 @@ async fn drop_link(
     // lifecycle loss (peer-link-loss) with no Service Changed, and can
     // reconnect immediately — like walking back into range of a real H10.
     sim.ecg_streaming = false;
-    // Genuine disconnect where the backend has the API: BlueZ drops every
-    // connected central via Device1.Disconnect (counted below). CoreBluetooth
-    // has no force-disconnect API, so a connected central stays up there.
-    let dropped = radio
-        .disconnect_centrals()
+    // Only the sim's own clients go: centrals whose addresses touched this
+    // peripheral's GATT application, plus the explicit `--drop-link-allow`
+    // extras. The adapter's other devices are never disturbed; the other
+    // isolation option is a dedicated adapter. CoreBluetooth has no
+    // force-disconnect API, so a connected central stays up there either way.
+    let clients = radio.simulator_clients();
+    let allowlist = sim.config.drop_link_allowlist.clone();
+    let targets = radio::drop_targets(&clients, &allowlist);
+    let report = radio
+        .disconnect_centrals(&targets)
         .await
         .map_err(|error| error.to_string())?;
-    log.log("link-dropped", json!({"disconnected": dropped}));
+    // Connected devices that are neither clients nor allowlisted stay up;
+    // the report names each one with its reason instead of silently
+    // leaving it out. An enumeration failure degrades that part loudly —
+    // the drops above already happened and are reported regardless.
+    let connected = match radio.connected_devices().await {
+        Ok(connected) => connected,
+        Err(error) => {
+            log.log(
+                "radio-error",
+                json!({"op": "connected-devices", "error": error.to_string()}),
+            );
+            Vec::new()
+        }
+    };
+    let (note, state) = summarize_drop(&clients, &allowlist, &report, &connected);
+    sim.record_fault(
+        "drop-link",
+        json!({"dropped": report.dropped, "targets": targets}),
+    );
+    log.log(
+        "link-dropped",
+        json!({
+            "disconnected": report.dropped.len(),
+            "clients": clients,
+            "allowlisted": allowlist.len(),
+            "skipped": state["skipped"],
+        }),
+    );
+    Ok(ControlReply {
+        ok: true,
+        error: None,
+        note: Some(note),
+        state: Some(state),
+    })
+}
+
+/// Adversarial rapid reconnect: drops the client links like drop-link, then
+/// bounces advertising (stop + start) so centrals run a full
+/// disconnect/reconnect cycle instead of resuming on the live advertisement.
+async fn flap_link(
+    radio: &mut PlatformRadio,
+    sim: &mut SimState,
+    log: &mut EventLog,
+) -> Result<ControlReply, String> {
+    let mut reply = drop_link(radio, sim, log).await?;
+    radio
+        .stop_advertising()
+        .await
+        .map_err(|error| error.to_string())?;
+    log.log_simple("advertising-bounced");
+    start_advertising(radio, sim, log).await?;
+    sim.record_fault("flap-link", json!({}));
+    log.log("link-flapped", json!({}));
+    if let Some(note) = reply.note.take() {
+        reply.note = Some(format!("{note}; advertising bounced for a rapid reconnect"));
+    }
+    Ok(reply)
+}
+
+/// Adversarial stale callback: re-notifies the last PMD response out of
+/// sequence. Refuses loudly when no PMD response has gone out yet — there
+/// is nothing stale to replay, and silence would lie about it.
+async fn stale_callback(
+    radio: &mut PlatformRadio,
+    sim: &mut SimState,
+    log: &mut EventLog,
+) -> Result<ControlReply, String> {
+    let Some(response) = sim.last_pmd_response.clone() else {
+        return Err("stale-callback refused: no PMD response has gone out yet".to_string());
+    };
+    let control_point =
+        Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap_or_else(|_| Uuid::nil());
+    let outcome = radio.notify(control_point, response.clone()).await;
+    let accepted = matches!(
+        &outcome,
+        Ok(SendOutcome::OsAccepted) | Ok(SendOutcome::Queued)
+    );
+    sim.record_fault(
+        "stale-callback",
+        json!({"bytes": response.len(), "accepted": accepted}),
+    );
+    log.log(
+        "stale-callback",
+        json!({"bytes": response.len(), "accepted": accepted}),
+    );
+    report_stream_notify(
+        log,
+        "stale-callback-notify",
+        outcome,
+        json!({"bytes": response.len()}),
+    );
     Ok(ControlReply::ok_note(format!(
-        "ECG halted, {dropped} central(s) disconnected; advertising and the \
-         GATT database are unchanged (BlueZ disconnects via \
-         Device1.Disconnect; on CoreBluetooth an already-connected central \
-         stays connected until it disconnects)"
+        "replayed the last PMD response ({} bytes) out of sequence; delivery {}",
+        response.len(),
+        if accepted { "accepted" } else { "failed" },
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drop_summary_with_no_targets_says_no_simulator_clients() {
+        let report = radio::DisconnectReport::new();
+        let (note, state) = summarize_drop(&[], &[], &report, &[]);
+        assert!(
+            note.contains("no simulator clients"),
+            "empty targets must never read as a silent success: {note}"
+        );
+        assert_eq!(state["dropped"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn drop_summary_names_dropped_and_skip_reasons() {
+        let mut report = radio::DisconnectReport::new();
+        report.add_dropped("AA:AA:AA:AA:AA:AA".to_string());
+        report.skip(
+            "BB:BB:BB:BB:BB:BB".to_string(),
+            radio::SKIP_NOT_CONNECTED.to_string(),
+        );
+        report.skip(
+            "CC:CC:CC:CC:CC:CC".to_string(),
+            radio::SKIP_NOT_CLIENT.to_string(),
+        );
+        let clients = ["AA:AA:AA:AA:AA:AA".to_string()];
+        let allowlist = ["BB:BB:BB:BB:BB:BB".to_string()];
+        let (note, state) = summarize_drop(&clients, &allowlist, &report, &[]);
+        assert!(note.contains("AA:AA:AA:AA:AA:AA"), "{note}");
+        assert_eq!(state["dropped"], serde_json::json!(["AA:AA:AA:AA:AA:AA"]));
+        assert_eq!(state["skipped"].as_array().unwrap().len(), 2);
+    }
 }

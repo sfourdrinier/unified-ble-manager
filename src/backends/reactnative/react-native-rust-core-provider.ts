@@ -743,7 +743,8 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         : undefined
     this.router = new RustCoreDrainRouter(session, {
       deliver: record => this.deliver(record),
-      failed: error => this.drainFailed(error)
+      failed: error => this.drainFailed(error),
+      noteControlLoss: total => this.noteControlLoss(total)
     })
     const plan = platform === 'android' ? diagnosticReactNativeAndroidScanPlan : diagnosticReactNativeAppleScanPlan
     this.adapter = Object.freeze({
@@ -2998,6 +2999,30 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
    * in its drop accounting (an upper bound, never silence). A dropped control
    * record is re-read from the owner.
    */
+  /** The last control-loss total acted on (X-R5; monotonic per session). */
+  private lastControlLostTotal = 0
+
+  /**
+   * The owner's cumulative control-loss counter moved (X-R5): control
+   * records were refused behind queued data, so the gap is reported
+   * promptly instead of waiting for the queues to empty. The in-band
+   * `ingress-drop` record for the same loss still arrives later and
+   * reconciles again (one re-read runs at a time); both warnings describe
+   * the same class of fact and neither is inferred.
+   */
+  private noteControlLoss(total: number): void {
+    if (total <= this.lastControlLostTotal) return
+    const count = total - this.lastControlLostTotal
+    this.lastControlLostTotal = total
+    this.reconcileControlLoss()
+    this.emitEvent({
+      kind: 'diagnostic-warning',
+      code: 'native-ingress-drop',
+      message: `The Rust owner dropped ${count} control record(s) at a full queue`,
+      detail: Object.freeze({ class: 'control', count })
+    })
+  }
+
   private onIngressDrop(record: Extract<WireDrainRecord, { t: 'ingress-drop' }>): void {
     if (record.class === 'advertisement') {
       for (const group of this.scanGroups.values()) {

@@ -39,6 +39,13 @@ export interface RustCoreDrainSink {
   deliver(record: WireDrainRecord): void
   /** The session can no longer be drained; `error` is what the owner reported. */
   failed(error: unknown): void
+  /**
+   * The owner's cumulative control-loss counter increased (X-R5): control
+   * facts were refused behind queued data. Called at most once per
+   * increase, with the new total. Optional: sinks that only read records
+   * ignore it.
+   */
+  noteControlLoss?(total: number): void
 }
 
 /** Records a stream reader consumes: one per native→JS task. */
@@ -51,6 +58,8 @@ export class RustCoreDrainRouter {
   private readonly backlog: WireDrainRecord[] = []
   private draining: Promise<void> | null = null
   private again = false
+  /** The last control-loss total reported to the sink (monotonic per session). */
+  private lastControlLost = 0
   private stopped = false
   /** Stop requested: drain what the owner still holds, then end. */
   private stopping = false
@@ -112,6 +121,10 @@ export class RustCoreDrainRouter {
           )
           this.backlog.push(...batch.records)
           more = batch.more
+          if (batch.controlLost > this.lastControlLost) {
+            this.lastControlLost = batch.controlLost
+            this.sink.noteControlLoss?.(batch.controlLost)
+          }
           this.deliverPass()
         }
       } while (this.again && !this.stopped)

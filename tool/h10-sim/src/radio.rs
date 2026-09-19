@@ -107,6 +107,301 @@ pub enum RadioEvent {
         value: Vec<u8>,
         reply: oneshot::Sender<bool>,
     },
+    /// A queued send settled in the pump: delivery accepted by the OS or
+    /// failed loudly with the reason. Constructed only by backends with an
+    /// asynchronous send pump (Linux); direct backends answer inline.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    NotifySettled {
+        service: String,
+        characteristic: String,
+        outcome: SendOutcome,
+    },
+}
+
+/// What one `notify` call did — explicit, never inferred from what was asked.
+/// A signal requests; the result reports what happened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendOutcome {
+    /// No live subscription session: the normal stream-tick case, never an
+    /// error — and never reported as a delivery either.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    NotSubscribed,
+    /// Accepted into the bounded ordered pump; a `NotifySettled` event
+    /// follows with the delivery answer.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Queued,
+    /// The OS took the value (direct backends answer inline).
+    OsAccepted,
+    /// The value was dropped, with the reason. Never silent.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Failed(String),
+}
+
+/// One entry in the bounded ordered send pump.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub struct QueuedSend {
+    pub service: String,
+    pub characteristic: Uuid,
+    pub generation: u64,
+    pub value: Vec<u8>,
+}
+
+/// How many sends the pump holds before `notify` fails loudly instead of
+/// growing memory. Stream ticks at ECG rates drain in milliseconds; a full
+/// queue means the link is dead, and saying so beats buffering forever.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub const SEND_QUEUE_CAPACITY: usize = 128;
+
+/// Bounded FIFO of [`QueuedSend`]: push fails with the returned send when
+/// full (the caller reports it loudly), pop delivers in arrival order. Pure
+/// so it is unit-testable without a radio.
+#[derive(Debug)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub struct SendQueue {
+    queue: std::collections::VecDeque<QueuedSend>,
+    capacity: usize,
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+impl SendQueue {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            queue: std::collections::VecDeque::new(),
+            capacity,
+        }
+    }
+
+    /// Enqueues a send, or hands it back when the queue is full.
+    pub fn push(&mut self, send: QueuedSend) -> Result<(), QueuedSend> {
+        if self.queue.len() >= self.capacity {
+            return Err(send);
+        }
+        self.queue.push_back(send);
+        Ok(())
+    }
+
+    /// Dequeues the oldest send, in arrival order.
+    pub fn pop(&mut self) -> Option<QueuedSend> {
+        self.queue.pop_front()
+    }
+
+    /// Queue depth (test introspection; the pump drains via [`Self::pop`]).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+}
+
+/// Generation-aware subscription registry: every subscribe bumps an
+/// ever-increasing generation, so a stale session ending late can never
+/// remove a newer session's writer. Pure so it is unit-testable.
+#[derive(Debug, Default)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub struct SubscriptionLedger {
+    generations: std::collections::HashMap<Uuid, u64>,
+    live: std::collections::HashMap<Uuid, u64>,
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+impl SubscriptionLedger {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records a new subscription session, returning its generation. The
+    /// writer must be installed before readiness is announced.
+    pub fn subscribe(&mut self, characteristic: Uuid) -> u64 {
+        let generation = self.generations.get(&characteristic).copied().unwrap_or(0);
+        self.generations
+            .insert(characteristic, generation.wrapping_add(1));
+        self.live.insert(characteristic, generation);
+        generation
+    }
+
+    /// Whether the characteristic is currently subscribed.
+    pub fn is_subscribed(&self, characteristic: Uuid) -> bool {
+        self.live.contains_key(&characteristic)
+    }
+
+    /// The live generation, if subscribed.
+    pub fn current(&self, characteristic: Uuid) -> Option<u64> {
+        self.live.get(&characteristic).copied()
+    }
+
+    /// Whether `generation` is still the live session.
+    pub fn is_current(&self, characteristic: Uuid, generation: u64) -> bool {
+        self.live.get(&characteristic).copied() == Some(generation)
+    }
+
+    /// Ends the session only when `generation` is still live: returns whether
+    /// anything was removed, so a stale cleanup removes nothing.
+    pub fn unsubscribe(&mut self, characteristic: Uuid, generation: u64) -> bool {
+        if self.is_current(characteristic, generation) {
+            self.live.remove(&characteristic);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Parses a Bluetooth address (`AA:BB:CC:DD:EE:FF`, case-insensitive) into
+/// octets. Fail-closed: anything else is a loud error, never a guess.
+pub fn parse_bt_address(text: &str) -> Result<[u8; 6], String> {
+    let parts: Vec<&str> = text.split(':').collect();
+    if parts.len() != 6 {
+        return Err(format!(
+            "{text:?} is not a Bluetooth address (want AA:BB:CC:DD:EE:FF)"
+        ));
+    }
+    let mut octets = [0u8; 6];
+    for (index, part) in parts.iter().enumerate() {
+        if part.len() != 2 {
+            return Err(format!(
+                "{text:?} is not a Bluetooth address (want AA:BB:CC:DD:EE:FF)"
+            ));
+        }
+        octets[index] = u8::from_str_radix(part, 16)
+            .map_err(|_| format!("{text:?} is not a Bluetooth address (want AA:BB:CC:DD:EE:FF)"))?;
+    }
+    Ok(octets)
+}
+
+/// Canonical Bluetooth address text (`AA:BB:CC:DD:EE:FF`, uppercase).
+/// Fail-closed exactly like [`parse_bt_address`].
+pub fn normalize_bt_address(text: &str) -> Result<String, String> {
+    let octets = parse_bt_address(text)?;
+    Ok(format!(
+        "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+        octets[0], octets[1], octets[2], octets[3], octets[4], octets[5]
+    ))
+}
+
+/// Addresses that interacted with this peripheral's GATT application during
+/// the current connection: every read, write and notify-subscribe carries
+/// the central's address, so drop-link can name exactly the sim's own
+/// clients instead of guessing from adapter connections. Entries are
+/// removed when the address is observed disconnected — never immortal.
+/// Pure so it is unit-testable without a radio. Populated only by the
+/// Linux backend (the only one whose GATT requests carry addresses), so
+/// other platforms allow the dead code rather than tracking nothing.
+#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+#[derive(Debug, Default)]
+pub struct GattClientSet {
+    addresses: std::collections::BTreeSet<String>,
+}
+
+#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+impl GattClientSet {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records an interaction; false when the address is malformed (the
+    /// caller reports it loudly — never a silent skip).
+    pub fn insert(&mut self, address: &str) -> bool {
+        match normalize_bt_address(address) {
+            Ok(canonical) => {
+                self.addresses.insert(canonical);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Removes an address observed disconnected; whether anything was there.
+    pub fn remove(&mut self, address: &str) -> bool {
+        match normalize_bt_address(address) {
+            Ok(canonical) => self.addresses.remove(&canonical),
+            Err(_) => false,
+        }
+    }
+
+    /// Set state (test introspection; the drop path prunes via
+    /// [`Self::remove`]).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn is_empty(&self) -> bool {
+        self.addresses.is_empty()
+    }
+
+    /// Sorted snapshot for reports and drop targets.
+    pub fn snapshot(&self) -> Vec<String> {
+        self.addresses.iter().cloned().collect()
+    }
+}
+
+/// Drop targets: tracked simulator clients plus the explicit allowlist,
+/// normalized, deduplicated and sorted. Malformed entries are left out —
+/// the caller reports them as skips, never disconnects them, never silent.
+pub fn drop_targets(clients: &[String], allowlist: &[String]) -> Vec<String> {
+    let mut targets = std::collections::BTreeSet::new();
+    for address in clients.iter().chain(allowlist.iter()) {
+        if let Ok(canonical) = normalize_bt_address(address) {
+            targets.insert(canonical);
+        }
+    }
+    targets.into_iter().collect()
+}
+
+/// Connected devices that are neither tracked clients nor allowlisted: they
+/// stay connected, and the drop report names each one with its reason.
+pub fn non_client_skips(connected: &[String], targets: &[String]) -> Vec<String> {
+    let targets: std::collections::BTreeSet<&str> = targets.iter().map(String::as_str).collect();
+    connected
+        .iter()
+        .filter(|address| !targets.contains(address.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// Why a connected device was skipped by drop-link — one vocabulary on
+/// every backend. Emitted only where disconnects happen (Linux today).
+#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+pub const SKIP_NOT_CONNECTED: &str = "not connected";
+pub const SKIP_NOT_CLIENT: &str = "not a simulator client";
+
+/// One address drop-link did not disconnect, with the reason. Never silent.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct DisconnectSkip {
+    pub address: String,
+    pub reason: String,
+}
+
+/// What one drop-link did, per address: dropped, or skipped with the
+/// reason. A signal requests; this result reports what happened.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct DisconnectReport {
+    pub dropped: Vec<String>,
+    pub skipped: Vec<DisconnectSkip>,
+}
+
+impl DisconnectReport {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+    pub fn add_dropped(&mut self, address: String) {
+        self.dropped.push(address);
+    }
+
+    pub fn skip(&mut self, address: String, reason: String) {
+        self.skipped.push(DisconnectSkip { address, reason });
+    }
+
+    /// A failed disconnect lands in the report (callers also log it, as
+    /// before) — never a silent drop of the failure. Linux-only today (the
+    /// only backend with a disconnect API), like the pump types below.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn skip_failed(&mut self, address: String, message: String) {
+        self.skip(address, format!("disconnect failed: {message}"));
+    }
 }
 
 /// Characteristic properties the simulator needs. Every backend maps these
@@ -156,12 +451,17 @@ pub trait PeripheralRadio: Send {
     async fn start_advertising(&mut self, name: &str, uuids: &[Uuid]) -> Result<(), RadioError>;
     async fn stop_advertising(&mut self) -> Result<(), RadioError>;
     async fn add_service(&mut self, service: &ServiceSpec) -> Result<(), RadioError>;
-    /// Sends a notification/indication to subscribed centrals. Returns whether
-    /// the value reached at least one live subscription session: `Ok(false)`
-    /// is the normal "nobody subscribed" case (stream ticks skip their log
-    /// line rather than reporting a notify that never happened), never an
-    /// error. A dead session is an `Err` — never a silent drop.
-    async fn notify(&mut self, characteristic: Uuid, value: Vec<u8>) -> Result<bool, RadioError>;
+    /// Sends a notification/indication to subscribed centrals, reporting
+    /// exactly what happened: `NotSubscribed` is the normal stream-tick case
+    /// (never an error, never reported as a delivery), `Queued` means the
+    /// bounded ordered pump holds the value (a `NotifySettled` event follows),
+    /// `OsAccepted` means the OS took it inline, and `Failed` carries the
+    /// reason. A dead session is a `Failed` — never a silent drop.
+    async fn notify(
+        &mut self,
+        characteristic: Uuid,
+        value: Vec<u8>,
+    ) -> Result<SendOutcome, RadioError>;
     /// Stages manufacturer data for the next advertisement. Default: no-op
     /// (Apple exposes no manufacturer-data peripheral API).
     async fn set_adv_manufacturer_data(
@@ -175,10 +475,38 @@ pub trait PeripheralRadio: Send {
     fn supports_manufacturer_data(&self) -> bool {
         false
     }
-    /// Disconnects connected centrals, returning how many links were dropped.
-    /// Default: no-op (no disconnect API on that backend).
-    async fn disconnect_centrals(&mut self) -> Result<usize, RadioError> {
-        Ok(0)
+    /// Addresses that interacted with this peripheral's GATT application
+    /// during the current connection (reads, writes, notify-subscribes all
+    /// carry the central's address). Default: none — a backend whose events
+    /// carry no central address cannot attribute, and says so by answering
+    /// empty rather than guessing.
+    fn simulator_clients(&self) -> Vec<String> {
+        Vec::new()
+    }
+    /// Currently-connected adapter devices as canonical address text.
+    /// Default: unknown — this backend cannot enumerate, so the drop report
+    /// names no strangers rather than guessing. Never a fabricated list.
+    async fn connected_devices(&mut self) -> Result<Vec<String>, RadioError> {
+        Ok(Vec::new())
+    }
+    /// Disconnects exactly `targets` — tracked simulator clients plus the
+    /// explicit allowlist, unioned by the caller — and reports per address
+    /// what happened: dropped, or skipped with the reason (not connected,
+    /// disconnect failed). Only addresses in `targets` are ever touched.
+    /// Default: no disconnect API on that backend — an empty report, never a
+    /// fabricated drop.
+    async fn disconnect_centrals(
+        &mut self,
+        _targets: &[String],
+    ) -> Result<DisconnectReport, RadioError> {
+        Ok(DisconnectReport::new())
+    }
+    /// Tears down the live subscription session for one characteristic, so
+    /// the next send on it fails loudly instead of going out (adversarial
+    /// interrupted-setup). True when a live session was torn down. Default:
+    /// unsupported — false, never a fabricated teardown.
+    async fn drop_subscription(&mut self, _characteristic: Uuid) -> Result<bool, RadioError> {
+        Ok(false)
     }
     /// Which path carries the advertisement and what it holds, for the log.
     /// Default: nothing beyond the platform backend itself.
@@ -476,13 +804,17 @@ impl PeripheralRadio for CrateRadio {
             .map_err(|error| RadioError(error.to_string()))
     }
 
-    async fn notify(&mut self, characteristic: Uuid, value: Vec<u8>) -> Result<bool, RadioError> {
+    async fn notify(
+        &mut self,
+        characteristic: Uuid,
+        value: Vec<u8>,
+    ) -> Result<SendOutcome, RadioError> {
         // CoreBluetooth stages the value in the backend even with no live
         // subscriber, so delivery is always "accepted" here.
         self.inner
             .update_characteristic(characteristic, value)
             .await
-            .map(|()| true)
+            .map(|()| SendOutcome::OsAccepted)
             .map_err(|error| RadioError(error.to_string()))
     }
 }
@@ -600,8 +932,8 @@ mod tests {
             &mut self,
             _characteristic: Uuid,
             _value: Vec<u8>,
-        ) -> Result<bool, RadioError> {
-            Ok(true)
+        ) -> Result<SendOutcome, RadioError> {
+            Ok(SendOutcome::OsAccepted)
         }
     }
 
@@ -702,8 +1034,174 @@ mod tests {
             !radio.supports_manufacturer_data(),
             "a backend without the OS API must say so"
         );
-        assert_eq!(radio.disconnect_centrals().await.unwrap(), 0);
+        let report = radio.disconnect_centrals(&[]).await.unwrap();
+        assert!(
+            report.dropped.is_empty() && report.skipped.is_empty(),
+            "a backend without the OS API reports nothing dropped, never a fabricated drop"
+        );
+        assert!(
+            radio.simulator_clients().is_empty(),
+            "no attribution without central addresses"
+        );
+        assert_eq!(
+            radio.connected_devices().await.unwrap(),
+            Vec::<String>::new()
+        );
         assert_eq!(radio.advertising_detail(), None);
         assert!(!radio.advertising_unavailable());
+    }
+
+    #[test]
+    fn bt_addresses_normalize_to_uppercase_canonical() {
+        assert_eq!(
+            super::normalize_bt_address("aa:bb:cc:dd:ee:ff"),
+            Ok("AA:BB:CC:DD:EE:FF".to_string())
+        );
+        assert_eq!(
+            super::normalize_bt_address("AA:BB:CC:DD:EE:FF"),
+            Ok("AA:BB:CC:DD:EE:FF".to_string())
+        );
+        assert!(super::normalize_bt_address("not-an-address").is_err());
+        assert!(super::normalize_bt_address("AA:BB:CC:DD:EE").is_err());
+    }
+
+    #[test]
+    fn gatt_client_set_dedupes_and_prunes() {
+        use super::GattClientSet;
+        let mut set = GattClientSet::new();
+        assert!(set.is_empty());
+        assert!(set.insert("aa:bb:cc:dd:ee:ff"));
+        assert!(set.insert("AA:BB:CC:DD:EE:FF"));
+        assert!(!set.insert("bogus"));
+        assert_eq!(set.snapshot(), vec!["AA:BB:CC:DD:EE:FF".to_string()]);
+        assert!(set.remove("AA:bb:CC:dd:EE:ff"));
+        assert!(set.is_empty());
+        assert!(!set.remove("11:22:33:44:55:66"));
+    }
+
+    #[test]
+    fn drop_targets_union_clients_and_allowlist_sorted() {
+        use super::drop_targets;
+        let targets = drop_targets(
+            &["BB:BB:BB:BB:BB:BB".to_string()],
+            &[
+                "aa:aa:aa:aa:aa:aa".to_string(),
+                "BB:BB:BB:BB:BB:BB".to_string(),
+                "bogus".to_string(),
+            ],
+        );
+        assert_eq!(
+            targets,
+            vec![
+                "AA:AA:AA:AA:AA:AA".to_string(),
+                "BB:BB:BB:BB:BB:BB".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn non_client_skips_name_connected_strangers_only() {
+        use super::non_client_skips;
+        let skips = non_client_skips(
+            &[
+                "AA:AA:AA:AA:AA:AA".to_string(),
+                "CC:CC:CC:CC:CC:CC".to_string(),
+            ],
+            &["AA:AA:AA:AA:AA:AA".to_string()],
+        );
+        assert_eq!(skips, vec!["CC:CC:CC:CC:CC:CC".to_string()]);
+    }
+
+    #[test]
+    fn disconnect_report_carries_dropped_and_skip_reasons() {
+        use super::{DisconnectReport, SKIP_NOT_CLIENT, SKIP_NOT_CONNECTED};
+        let mut report = DisconnectReport::new();
+        assert!(report.dropped.is_empty() && report.skipped.is_empty());
+        report.add_dropped("AA:AA:AA:AA:AA:AA".to_string());
+        report.skip(
+            "BB:BB:BB:BB:BB:BB".to_string(),
+            SKIP_NOT_CONNECTED.to_string(),
+        );
+        report.skip("CC:CC:CC:CC:CC:CC".to_string(), SKIP_NOT_CLIENT.to_string());
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["dropped"], serde_json::json!(["AA:AA:AA:AA:AA:AA"]));
+        assert_eq!(
+            json["skipped"][0]["address"],
+            serde_json::json!("BB:BB:BB:BB:BB:BB")
+        );
+        assert_eq!(
+            json["skipped"][0]["reason"],
+            serde_json::json!(SKIP_NOT_CONNECTED)
+        );
+    }
+
+    #[test]
+    fn bt_addresses_parse_strictly() {
+        assert_eq!(
+            super::parse_bt_address("AA:BB:CC:DD:EE:FF"),
+            Ok([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF])
+        );
+        assert_eq!(
+            super::parse_bt_address("aa:bb:cc:dd:ee:ff"),
+            Ok([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF])
+        );
+        assert!(super::parse_bt_address("not-an-address").is_err());
+        assert!(super::parse_bt_address("AA:BB:CC:DD:EE").is_err());
+        assert!(super::parse_bt_address("AA:BB:CC:DD:EE:FG").is_err());
+        assert!(super::parse_bt_address("AA:BB:CC:DD:EE:FFF").is_err());
+        assert!(super::parse_bt_address("").is_err());
+    }
+
+    #[test]
+    fn ledger_replaces_stale_generations() {
+        use super::SubscriptionLedger;
+        let uuid = Uuid::nil();
+        let mut ledger = SubscriptionLedger::new();
+        assert!(!ledger.is_subscribed(uuid));
+        let first = ledger.subscribe(uuid);
+        assert!(ledger.is_subscribed(uuid));
+        assert_eq!(ledger.current(uuid), Some(first));
+        // A resubscribe supersedes the old session: the old generation is
+        // stale, and its late cleanup must remove nothing.
+        let second = ledger.subscribe(uuid);
+        assert_ne!(first, second, "generations never repeat");
+        assert!(!ledger.is_current(uuid, first));
+        assert!(ledger.is_current(uuid, second));
+        assert!(
+            !ledger.unsubscribe(uuid, first),
+            "stale cleanup removes nothing"
+        );
+        assert!(
+            ledger.is_subscribed(uuid),
+            "live session survives stale cleanup"
+        );
+        assert!(ledger.unsubscribe(uuid, second));
+        assert!(!ledger.is_subscribed(uuid));
+        // Generations keep increasing even across unsubscribe gaps.
+        let third = ledger.subscribe(uuid);
+        assert_ne!(second, third);
+    }
+
+    #[test]
+    fn send_queue_is_a_bounded_fifo() {
+        use super::{QueuedSend, SendQueue};
+        let send = |n: u8| QueuedSend {
+            service: "svc".to_string(),
+            characteristic: Uuid::nil(),
+            generation: u64::from(n),
+            value: vec![n],
+        };
+        let mut queue = SendQueue::new(2);
+        assert!(queue.is_empty());
+        assert!(queue.push(send(1)).is_ok());
+        assert!(queue.push(send(2)).is_ok());
+        assert_eq!(queue.len(), 2);
+        let dropped = queue
+            .push(send(3))
+            .expect_err("full queue hands the send back");
+        assert_eq!(dropped.generation, 3, "nothing is silently dropped");
+        assert_eq!(queue.pop().expect("fifo").generation, 1);
+        assert_eq!(queue.pop().expect("fifo").generation, 2);
+        assert!(queue.pop().is_none());
     }
 }

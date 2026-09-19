@@ -1430,6 +1430,7 @@ impl BtleplugDispatcher {
                 self.unsubscribe_connection_events(caller, payload).await
             }
             "connection.rssi" => self.read_rssi(caller, payload, ctl).await,
+            "connection.effective-mtu" => self.read_effective_mtu(caller, payload, ctl).await,
             "connection.maximum-write-length" => {
                 self.maximum_write_length(caller, payload, ctl).await
             }
@@ -3493,6 +3494,29 @@ impl BtleplugDispatcher {
             .await
             .map_err(|error| DispatchError::from_core(&error))?;
         Ok(object([("rssi", number(i64::from(rssi)))]))
+    }
+
+    /// Effective ATT MTU of the link held under the caller's lease, as the
+    /// OS reports it (finding 217 follow-up): macOS derives
+    /// `maximumWriteValueLength(.withResponse) + 3`, Windows reads
+    /// `GattSession.MaxPduSize`, Linux reads the BlueZ characteristic MTU.
+    /// A withheld measurement answers `capability.unsupported` verbatim,
+    /// never a guessed 23.
+    async fn read_effective_mtu(
+        &self,
+        caller: &AuthenticatedCaller,
+        payload: BTreeMap<String, IpcValue>,
+        ctl: OpControl,
+    ) -> Result<IpcValue, DispatchError> {
+        let connection = self
+            .connection(caller, &payload, "tauri.effective-mtu")
+            .await?;
+        let authority = self.ensure_authority().await?;
+        let mtu = authority
+            .read_effective_mtu(&connection.peer_id, &connection.lease, ctl)
+            .await
+            .map_err(|error| DispatchError::from_core(&error))?;
+        Ok(object([("mtu", number(i64::from(mtu)))]))
     }
 
     /// The largest single write the OS accepts on this link for the

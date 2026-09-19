@@ -18,10 +18,13 @@ import com.sfourdrinier.unifiedblemanager.rustcore.RustCoreProcessHost
  * (AOSP `CompanionDeviceService`), so one override covers API 31+.
  *
  * The service surfaces the appearance; it never scans and never connects
- * itself. The known peer reaches the owner through [PresenceWakeCoordinator]
- * (ingested when a session lives, persisted for the next session open when
- * none does); the app reconnects directly through the ordinary
- * `when-available` connect.
+ * itself. A cold-start appearance installs the process radio owner
+ * ([RustCoreProcessHost.ensureInstalled]) before ingesting, so the known
+ * peer reaches the owner as `restored` records with no Activity and no JS
+ * session; only an appearance no owner takes stays persisted for the next
+ * session open. The app reconnects directly through the ordinary
+ * `when-available` connect — the package starts no headless JS runtime and
+ * performs no connect or resubscribe here.
  *
  * Manifest (added by the Expo config plugin whenever `background.android`
  * is configured):
@@ -80,6 +83,15 @@ open class UbmCompanionPresenceService : CompanionDeviceService() {
         associatedAddresses = { associatedAddresses(application) },
         store = store,
         nowMs = { System.currentTimeMillis() },
+        ensureOwner = {
+          try {
+            RustCoreProcessHost.shared(application).ensureInstalled()
+            true
+          } catch (error: Throwable) {
+            Log.w(TAG, "presence owner bootstrap failed: ${error.message ?: error.javaClass.simpleName}")
+            false
+          }
+        },
         ingest = { peers ->
           try {
             RustCoreProcessHost.shared(application).ingestPresenceRestored(peers)

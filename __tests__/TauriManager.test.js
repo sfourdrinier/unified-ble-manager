@@ -55,7 +55,18 @@ function capabilityDescriptor(id, scenario, state = 'limited', limitationCode = 
   }
 }
 
-function capabilitySnapshot(backendGeneration) {
+function capabilitySnapshot(
+  backendGeneration,
+  // Finding 217 follow-up: the fixture models the renegotiated native
+  // snapshot per test — unsupported with the desktop reason (a platform
+  // that genuinely cannot answer), or limited with the OS derivation.
+  effectiveMtuEntry = [
+    'connection:effective-mtu',
+    'connection.rssi-and-att-mtu-capability-contract',
+    'unsupported',
+    'effective-mtu-boundary-unavailable'
+  ]
+) {
   const entries = [
     ['discovery:continuous-scan', 'scan.owner-join-authority-and-signature'],
     ['connection:direct', 'connection.lease-joins-borrowing-transfer-and-revocation'],
@@ -66,9 +77,7 @@ function capabilitySnapshot(backendGeneration) {
     // long-write like the desktop core over the same Rust core.
     ['gatt:maximum-write-length', 'gatt.maximum-write-length'],
     ['gatt:long-write', 'gatt.long-write'],
-    // Finding 190b: the effective MTU stays unsupported, but with the
-    // desktop core's own reason instead of a bare not-implemented.
-    ['connection:effective-mtu', 'connection.rssi-and-att-mtu-capability-contract', 'unsupported', 'effective-mtu-boundary-unavailable']
+    effectiveMtuEntry
   ]
   const metadata = new Map(entries.map(([id, scenario, state = 'limited', limitationCode = null]) => [id, { scenario, state, limitationCode }]))
   return {
@@ -86,7 +95,7 @@ function capabilitySnapshot(backendGeneration) {
   }
 }
 
-function bootstrap() {
+function bootstrap(effectiveMtuEntry) {
   const backendGeneration = 'backend-generation-1'
   const attachment = {
     attachmentId: 'tauri-attachment-1',
@@ -118,7 +127,7 @@ function bootstrap() {
       traceFormat: negotiated('trace-format'),
       ipcProtocol: negotiated('ipc-protocol')
     },
-    capabilities: capabilitySnapshot(backendGeneration),
+    capabilities: capabilitySnapshot(backendGeneration, effectiveMtuEntry),
     // F01: the 5.0 lane plugin always reports its linked shared-core
     // identity; fixtures simulate the lane plugin, not a legacy host.
     core: {
@@ -218,7 +227,7 @@ describe('Tauri v2 public manager', () => {
     await manager.destroy()
   })
 
-  test('finding 190b: maximum-write-length is measured through IPC while effective MTU keeps the desktop reason', async () => {
+  test('finding 190b: maximum-write-length is measured through IPC while an unreported effective MTU keeps the desktop reason', async () => {
     const invoke = jest.fn(async (_command, args) => {
       const request = args.request
       if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
@@ -262,9 +271,10 @@ describe('Tauri v2 public manager', () => {
     const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
     const effectiveMtu = manager.capabilities.get('connection:effective-mtu')
     expect(effectiveMtu).toMatchObject({ state: 'unsupported' })
+    // Finding 217 follow-up: the renderer routes the control, so no
+    // renderer note is appended — the native reason stands alone.
     expect(effectiveMtu.limitations.map(limitation => limitation.code)).toEqual([
-      'effective-mtu-boundary-unavailable',
-      'ipc-renderer-control-unavailable'
+      'effective-mtu-boundary-unavailable'
     ])
 
     const connection = await manager.connect('polar-h10')
@@ -280,6 +290,71 @@ describe('Tauri v2 public manager', () => {
       code: 'capability.unsupported',
       platform: expect.objectContaining({ code: 'effective-mtu-boundary-unavailable' })
     })
+    await expect(connection.disconnect()).resolves.toMatchObject({ state: 'released' })
+    await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
+  })
+
+  test('finding 217 follow-up: effective MTU is measured through IPC when the native snapshot reports it limited', async () => {
+    const invoke = jest.fn(async (_command, args) => {
+      const request = args.request
+      if (request.kind === 'bootstrap')
+        return {
+          kind: 'bootstrap',
+          bootstrap: bootstrap([
+            'connection:effective-mtu',
+            'connection.rssi-and-att-mtu-capability-contract',
+            'limited',
+            'corebluetooth-derived-effective-mtu'
+          ])
+        }
+      if (request.kind === 'event.ack') return { kind: 'event.ack' }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      const { command } = request.envelope
+      if (command === 'connection.connect') {
+        return {
+          kind: 'route',
+          payload: {
+            handle: 'connection-1',
+            connectionId: 'connection-id-1',
+            ownerLeaseId: 'tauri-lease-1',
+            peerId: 'polar-h10',
+            connectionGeneration: 'generation-1'
+          }
+        }
+      }
+      if (command === 'connection.events.subscribe') {
+        return {
+          kind: 'route',
+          payload: {
+            handle: 'connection-events-ipc-1',
+            connectionId: 'connection-id-1',
+            connectionGeneration: 'generation-1',
+            eventSchemaVersion: 2
+          }
+        }
+      }
+      if (command === 'connection.events.ready') return { kind: 'route', payload: { state: 'ready' } }
+      if (command === 'connection.effective-mtu') return { kind: 'route', payload: { mtu: 515 } }
+      if (command === 'connection.events.unsubscribe' || command === 'connection.disconnect') {
+        return { kind: 'route', payload: { state: 'released', failures: [] } }
+      }
+      throw new Error(`unexpected route ${command}`)
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+    const effectiveMtu = manager.capabilities.get('connection:effective-mtu')
+    expect(effectiveMtu).toMatchObject({ state: 'limited' })
+
+    const connection = await manager.connect('polar-h10')
+    await expect(connection.controls.effectiveMtu()).resolves.toMatchObject({
+      state: 'measured',
+      attMtu: 515,
+      payloadBytes: 512,
+      platformPduBytes: null
+    })
+    expect(invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'connection.effective-mtu')).toBe(
+      true
+    )
     await expect(connection.disconnect()).resolves.toMatchObject({ state: 'released' })
     await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
   })

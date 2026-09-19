@@ -3,22 +3,22 @@
     {
       "lastOrdinal": null,
       "name": "advertisements",
-      "text": "{\"more\":false,\"records\":[{\"appearance\":833,\"connectable\":true,\"localName\":\"Polar H10 1234\",\"manufacturerData\":[{\"companyId\":107,\"payloadB64\":\"AID/\"}],\"observedAtMs\":0,\"ordinal\":1,\"overflowServiceUuids\":null,\"peerId\":\"A0:9E:1A:00:00:01\",\"rawRecordB64\":\"AgEG\",\"rssi\":-58,\"serviceData\":[{\"payloadB64\":\"\",\"uuid\":\"0000180d-0000-1000-8000-00805f9b34fb\"}],\"serviceUuids\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"solicitedServiceUuids\":[\"00001812-0000-1000-8000-00805f9b34fb\"],\"t\":\"adv\",\"txPower\":4},{\"appearance\":null,\"connectable\":null,\"localName\":null,\"manufacturerData\":null,\"observedAtMs\":0,\"ordinal\":2,\"overflowServiceUuids\":null,\"peerId\":\"A0:9E:1A:00:00:01\",\"rawRecordB64\":null,\"rssi\":null,\"serviceData\":null,\"serviceUuids\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"solicitedServiceUuids\":null,\"t\":\"adv\",\"txPower\":null}]}"
+      "text": "{\"controlLost\":0,\"more\":false,\"records\":[{\"appearance\":833,\"connectable\":true,\"localName\":\"Polar H10 1234\",\"manufacturerData\":[{\"companyId\":107,\"payloadB64\":\"AID/\"}],\"observedAtMs\":0,\"ordinal\":1,\"overflowServiceUuids\":null,\"peerId\":\"A0:9E:1A:00:00:01\",\"rawRecordB64\":\"AgEG\",\"rssi\":-58,\"serviceData\":[{\"payloadB64\":\"\",\"uuid\":\"0000180d-0000-1000-8000-00805f9b34fb\"}],\"serviceUuids\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"solicitedServiceUuids\":[\"00001812-0000-1000-8000-00805f9b34fb\"],\"t\":\"adv\",\"txPower\":4},{\"appearance\":null,\"connectable\":null,\"localName\":null,\"manufacturerData\":null,\"observedAtMs\":0,\"ordinal\":2,\"overflowServiceUuids\":null,\"peerId\":\"A0:9E:1A:00:00:01\",\"rawRecordB64\":null,\"rssi\":null,\"serviceData\":null,\"serviceUuids\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"solicitedServiceUuids\":null,\"t\":\"adv\",\"txPower\":null}]}"
     },
     {
       "lastOrdinal": 2,
       "name": "notification values",
-      "text": "{\"more\":false,\"records\":[{\"consumer\":\"hr\",\"delivery\":\"notification\",\"ordinal\":3,\"t\":\"value\",\"valueB64\":\"AFU=\"},{\"consumer\":\"hr\",\"delivery\":\"notification\",\"ordinal\":4,\"t\":\"value\",\"valueB64\":\"EFUgAw==\"}]}"
+      "text": "{\"controlLost\":0,\"more\":false,\"records\":[{\"consumer\":\"hr\",\"delivery\":\"notification\",\"ordinal\":3,\"t\":\"value\",\"valueB64\":\"AFU=\"},{\"consumer\":\"hr\",\"delivery\":\"notification\",\"ordinal\":4,\"t\":\"value\",\"valueB64\":\"EFUgAw==\"}]}"
     },
     {
       "lastOrdinal": 4,
       "name": "adapter, security, restored, ingress-drop",
-      "text": "{\"more\":false,\"records\":[{\"ordinal\":5,\"state\":{\"adapterGeneration\":\"1\",\"authorization\":\"granted\",\"availability\":\"available\",\"backendGeneration\":\"1\",\"power\":\"on\",\"safeReason\":null,\"updatedAt\":0},\"t\":\"adapter\"},{\"ordinal\":6,\"peerId\":\"A0:9E:1A:00:00:01\",\"state\":{\"authentication\":\"unknown\",\"bond\":\"bonded\",\"encryption\":\"encrypted\",\"pairingPossible\":null,\"secureConnections\":\"unsupported\"},\"t\":\"security\"},{\"ordinal\":7,\"peers\":[{\"connected\":false,\"name\":null,\"peerId\":\"C0:FF:EE:00:00:03\"}],\"t\":\"restored\"},{\"class\":\"notification\",\"count\":1,\"ordinal\":8,\"t\":\"ingress-drop\"}]}"
+      "text": "{\"controlLost\":0,\"more\":false,\"records\":[{\"ordinal\":5,\"state\":{\"adapterGeneration\":\"1\",\"authorization\":\"granted\",\"availability\":\"available\",\"backendGeneration\":\"1\",\"power\":\"on\",\"safeReason\":null,\"updatedAt\":0},\"t\":\"adapter\"},{\"ordinal\":6,\"peerId\":\"A0:9E:1A:00:00:01\",\"state\":{\"authentication\":\"unknown\",\"bond\":\"bonded\",\"encryption\":\"encrypted\",\"pairingPossible\":null,\"secureConnections\":\"unsupported\"},\"t\":\"security\"},{\"ordinal\":7,\"peers\":[{\"connected\":false,\"name\":null,\"peerId\":\"C0:FF:EE:00:00:03\"}],\"t\":\"restored\"},{\"class\":\"notification\",\"count\":1,\"ordinal\":8,\"t\":\"ingress-drop\"}]}"
     },
     {
       "lastOrdinal": 8,
       "name": "link loss",
-      "text": "{\"more\":false,\"records\":[{\"connectionGeneration\":\"cg-0\",\"databaseGeneration\":\"db-2\",\"ordinal\":9,\"peerId\":\"A0:9E:1A:00:00:01\",\"reason\":\"peer\",\"t\":\"link\"},{\"consumer\":\"hr\",\"droppedBytes\":0,\"droppedItems\":0,\"ordinal\":10,\"reason\":\"invalidated\",\"t\":\"stream-end\"}]}"
+      "text": "{\"controlLost\":0,\"more\":false,\"records\":[{\"connectionGeneration\":\"cg-0\",\"databaseGeneration\":\"db-2\",\"ordinal\":9,\"peerId\":\"A0:9E:1A:00:00:01\",\"reason\":\"peer\",\"t\":\"link\"},{\"consumer\":\"hr\",\"droppedBytes\":0,\"droppedItems\":0,\"ordinal\":10,\"reason\":\"invalidated\",\"t\":\"stream-end\"}]}"
     }
   ],
   "invokes": [

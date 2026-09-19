@@ -486,6 +486,13 @@ export type WireDrainRecord =
 export interface WireDrainBatch {
   readonly more: boolean
   readonly records: readonly WireDrainRecord[]
+  /**
+   * Cumulative control records the owner refused past its queue cap, ever
+   * (X-R5). Monotonic per session: an increase means control facts were
+   * lost behind queued data, and the client re-reads them with
+   * `session.reconcile` instead of waiting for the in-band `ingress-drop`.
+   */
+  readonly controlLost: number
 }
 
 export type WireJson = string | number | boolean | null | readonly WireJson[] | { readonly [key: string]: WireJson }
@@ -1721,15 +1728,16 @@ function drainRecordOrThrow(value: unknown, path: string): WireDrainRecord {
 }
 
 function drainBatchOrThrow(value: unknown, lastOrdinal: number | null, path: string): WireDrainBatch {
-  const fields = exactObject(value, ['more', 'records'], path)
+  const fields = exactObject(value, ['more', 'records', 'controlLost'], path)
   const more = booleanOrThrow(fields.get('more'), `${path}.more`)
   const records = arrayOf(fields.get('records'), `${path}.records`, drainRecordOrThrow)
+  const controlLost = integerOrThrow(fields.get('controlLost'), NON_NEGATIVE, `${path}.controlLost`)
   let previous = lastOrdinal
   records.forEach((record, index) => {
     if (previous !== null && record.ordinal <= previous) throw malformed(`${path}.records[${index}].ordinal`)
     previous = record.ordinal
   })
-  return Object.freeze({ more, records })
+  return Object.freeze({ more, records, controlLost })
 }
 
 /**

@@ -126,6 +126,12 @@ export const DESKTOP_RUST_CORE_PARITY: readonly DesktopRustCoreParityRow[] = Obj
     implemented('UbmCentral.readRssi -> DesktopCentral::read_rssi')
   ),
   row(
+    'connection.effective-mtu',
+    ALL,
+    'OS-measured ATT MTU (connection:effective-mtu limited): macOS maximumWriteValueLength(.withResponse) + 3 (finding 217, same as Apple RN), Windows GattSession.MaxPduSize, Linux BlueZ characteristic MTU',
+    implemented('UbmCentral.readEffectiveMtu -> DesktopCentral::read_effective_mtu')
+  ),
+  row(
     'connection.priority-parameters-reasons',
     ['bluez'],
     'priority/parameters registered unsupported with reasons',
@@ -310,7 +316,7 @@ export const DESKTOP_RUST_CORE_PARITY: readonly DesktopRustCoreParityRow[] = Obj
   row(
     'capability.unsupported-reasons',
     ['corebluetooth', 'bluez'],
-    'unsupported rows kept their limitations: CoreBluetooth request-mtu / effective-mtu / phy; BlueZ pairing-generation privilege and adapter-wide blast radius',
+    'unsupported rows kept their limitations: CoreBluetooth request-mtu / phy (effective-mtu is limited where the core wires the OS derivation); BlueZ pairing-generation privilege and adapter-wide blast radius',
     implemented(
       'createCoreBluetoothUnsupportedRegistrations + createBluezPairingGenerationRegistration (privilege note without a controller, adapter-wide note with one)'
     )

@@ -202,7 +202,10 @@ const PEER_ACQUIRING = [
   ['ecg', 'start', {}],
   ['background', 'start', { autoReconnect: false }],
   ['restoration', 'start', { autoReconnect: false }],
-  ['h10-capture', 'capture', {}]
+  ['h10-capture', 'capture', {}],
+  ['w6-shared-scan', 'start', {}],
+  ['w6-generation-fence', 'start', {}],
+  ['w6-slow-drain', 'start', {}]
 ]
 
 async function acquisitionCalls(fake, scenario, command, args) {

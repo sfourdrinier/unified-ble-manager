@@ -20,9 +20,20 @@ type ReactNativeConnectionControlPlatform = 'android' | 'apple'
  * Registers the radio-owned controls without inventing a connection identifier for feature invocation.
  * Callers dispatch a real operation through `Connection.readRssi` or `Connection.requestMtu` instead.
  */
+export interface ReactNativeConnectionControlOptions {
+  /**
+   * How the Apple route answers `connection:effective-mtu`. The Rust route
+   * derives it per link as `maximumWriteValueLength(.withResponse) + 3`
+   * (finding 217); the legacy Apple reference route keeps reporting it
+   * unsupported, matching its frozen native boundary. Android ignores this.
+   */
+  readonly appleEffectiveMtu?: 'derived' | 'unavailable'
+}
+
 export function createReactNativeConnectionControlFeatureRegistry(
   platform: ReactNativeConnectionControlPlatform,
-  implementationVersion: string
+  implementationVersion: string,
+  options: ReactNativeConnectionControlOptions = {}
 ): FeatureRegistry {
   const rssiLimitation = liveQualificationLimitation('RSSI measurement')
   const rssi = createFeatureRegistration(
@@ -75,20 +86,39 @@ export function createReactNativeConnectionControlFeatureRegistry(
             attMtu: Object.freeze({ maximum: MAXIMUM_REQUESTED_ATT_MTU, minimum: MINIMUM_ATT_MTU, unit: 'bytes' })
           })
         )
-      : createFeatureRegistration(
-          BUILT_IN_FEATURE_IDS.connectionEffectiveMtu,
-          'unsupported',
-          implementationVersion,
-          'react-native-apple-corebluetooth-effective-mtu-v1',
-          Object.freeze([
+      : options.appleEffectiveMtu === 'derived'
+        ? createFeatureRegistration(
+            BUILT_IN_FEATURE_IDS.connectionEffectiveMtu,
+            'limited',
+            implementationVersion,
+            'react-native-apple-corebluetooth-effective-mtu-v2',
+            Object.freeze([
+              Object.freeze({
+                code: 'corebluetooth-derived-effective-mtu',
+                explanation:
+                  'CoreBluetooth exposes no ATT MTU readout: the reported value is derived per link as CBPeripheral.maximumWriteValueLength(for: .withResponse) + 3, never negotiated.',
+                affectedGuarantee: 'current effective ATT MTU observation'
+              }),
+              liveQualificationLimitation('effective ATT MTU observation')
+            ]),
             Object.freeze({
-              code: 'corebluetooth-effective-mtu-unavailable',
-              explanation: 'CoreBluetooth exposes neither the current ATT MTU nor a platform PDU observation.',
-              affectedGuarantee: 'current effective ATT MTU observation'
+              attMtu: Object.freeze({ maximum: MAXIMUM_REQUESTED_ATT_MTU, minimum: MINIMUM_ATT_MTU, unit: 'bytes' })
             })
-          ]),
-          Object.freeze({ attMtu: Object.freeze({ maximum: 0, minimum: null, unit: 'bytes' }) })
-        )
+          )
+        : createFeatureRegistration(
+            BUILT_IN_FEATURE_IDS.connectionEffectiveMtu,
+            'unsupported',
+            implementationVersion,
+            'react-native-apple-corebluetooth-effective-mtu-v1',
+            Object.freeze([
+              Object.freeze({
+                code: 'corebluetooth-effective-mtu-unavailable',
+                explanation: 'CoreBluetooth exposes neither the current ATT MTU nor a platform PDU observation.',
+                affectedGuarantee: 'current effective ATT MTU observation'
+              })
+            ]),
+            Object.freeze({ attMtu: Object.freeze({ maximum: 0, minimum: null, unit: 'bytes' }) })
+          )
   const phy =
     platform === 'android'
       ? null

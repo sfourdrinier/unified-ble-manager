@@ -137,16 +137,20 @@ impl TimingRuntime {
         }
     }
 
-    /// Waits the sampled PMD response latency before indicating. Immediate
-    /// until a capture confirms `pmdResponseMs`, so default behaviour is
-    /// unchanged.
-    pub async fn pmd_response_delay(&mut self) {
+    /// Samples the PMD response latency in milliseconds: `None` means answer
+    /// inline (unconfirmed profile or a zero sample — default behaviour is
+    /// unchanged); `Some(ms)` means the indication is due that far in the
+    /// future. The caller schedules it on the tick loop; nothing here sleeps,
+    /// so a measured latency never blocks the event loop.
+    pub fn sample_pmd_response_ms(&mut self) -> Option<f64> {
         if !self.profile.pmd_response.confirmed {
-            return;
+            return None;
         }
         let ms = self.profile.pmd_response.sample_ms(&mut self.rng).max(0.0);
         if ms > 0.0 {
-            tokio::time::sleep(std::time::Duration::from_secs_f64(ms / 1000.0)).await;
+            Some(ms)
+        } else {
+            None
         }
     }
 }
@@ -408,6 +412,36 @@ mod tests {
             );
             assert_eq!(model.spread_ms, 0.0, "placeholder has no spread");
         }
+    }
+
+    #[test]
+    fn pmd_latency_samples_a_delay_without_sleeping() {
+        // Unconfirmed: answer inline, exactly like before.
+        let mut runtime = TimingRuntime::new(TimingProfile::default_unconfirmed(1));
+        assert_eq!(runtime.sample_pmd_response_ms(), None);
+        // Confirmed with a positive median: a due-in duration, never a
+        // sleep — the caller schedules it on the tick loop.
+        let mut profile = TimingProfile::default_unconfirmed(1);
+        profile.pmd_response = DelayModel {
+            median_ms: 50.0,
+            spread_ms: 0.0,
+            min_ms: 0.0,
+            confirmed: true,
+            source: "test".to_string(),
+        };
+        let mut runtime = TimingRuntime::new(profile);
+        assert_eq!(runtime.sample_pmd_response_ms(), Some(50.0));
+        // Confirmed but zero: still inline.
+        let mut profile = TimingProfile::default_unconfirmed(1);
+        profile.pmd_response = DelayModel {
+            median_ms: 0.0,
+            spread_ms: 0.0,
+            min_ms: 0.0,
+            confirmed: true,
+            source: "test".to_string(),
+        };
+        let mut runtime = TimingRuntime::new(profile);
+        assert_eq!(runtime.sample_pmd_response_ms(), None);
     }
 
     #[test]

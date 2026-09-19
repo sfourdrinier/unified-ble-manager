@@ -1119,7 +1119,6 @@ const REMOTE_SECURITY_CAPABILITY_IDS = new Set<string>([
 ])
 
 const REMOTE_RENDERER_UNSUPPORTED_CAPABILITY_IDS = new Set<string>([
-  BUILT_IN_FEATURE_IDS.connectionEffectiveMtu,
   BUILT_IN_FEATURE_IDS.connectionRequestMtu,
   BUILT_IN_FEATURE_IDS.connectionPriority,
   BUILT_IN_FEATURE_IDS.connectionPhy,
@@ -1402,6 +1401,16 @@ export class IpcConnection {
       options.signal
     )
     return requiredNumber(payload, 'rssi', 'ipc-manager.connection-rssi')
+  }
+
+  async effectiveMtu(options: IpcManagerOperationOptions = {}): Promise<number> {
+    const payload = await this.manager.route(
+      'connection.effective-mtu',
+      Object.freeze({ ...this.identityPayload(), deadline: operationDeadline(options) }),
+      null,
+      options.signal
+    )
+    return requiredNumber(payload, 'mtu', 'ipc-manager.connection-effective-mtu')
   }
 
   async maximumWriteLength(mode: 'with-response' | 'without-response' = 'with-response'): Promise<number> {

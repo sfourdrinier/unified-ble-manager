@@ -86,13 +86,22 @@ describe('React Native Rust route: public link controls', () => {
     await manager.destroy()
   })
 
-  test('apple: effectiveMtu fails closed as capability.unsupported with the CoreBluetooth reason', async () => {
+  test('apple: effectiveMtu reports maximumWriteValueLength(.withResponse)+3 as the observed ATT MTU', async () => {
     const { manager, connection } = await openConnection('apple')
-    expect(await failure(connection.controls.effectiveMtu())).toEqual({
-      name: expect.any(String),
-      code: 'capability.unsupported',
-      limitations: ['corebluetooth-effective-mtu-unavailable']
+    await expect(connection.controls.effectiveMtu()).resolves.toMatchObject({
+      state: 'measured',
+      attMtu: 515,
+      payloadBytes: 512,
+      platformPduBytes: null
     })
+    const registration = manager.attachedBackend.backend.features.registrations.find(
+      entry => entry.id === 'connection:effective-mtu'
+    )
+    expect(registration.state).toBe('limited')
+    expect(registration.limitations.map(entry => entry.code)).toEqual([
+      'corebluetooth-derived-effective-mtu',
+      'live-radio-qualification-pending'
+    ])
     await manager.destroy()
   })
 

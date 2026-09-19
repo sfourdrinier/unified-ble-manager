@@ -1772,6 +1772,37 @@ async fn pr210_32_racing_first_calls_open_exactly_one_authority() {
     assert!(Arc::ptr_eq(&first, &second), "one shared central");
 }
 
+// Finding 217 follow-up — the effective ATT MTU the OS reports crosses the
+// dispatcher: macOS derives `maximumWriteValueLength(.withResponse) + 3`,
+// Windows reads `GattSession.MaxPduSize`, Linux reads the BlueZ
+// characteristic MTU. A withheld measurement is never synthesized.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connected_effective_mtu_reads_the_live_link_through_the_core() {
+    let harness = Harness::new().await;
+    let link = harness.connect("peer-a").await;
+    let error = harness
+        .execute(
+            "connection.effective-mtu",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect_err("an unmeasured MTU is not synthesized");
+    assert_eq!(error.code, BleErrorCode::CapabilityUnsupported);
+    harness.radio().set_effective_mtu("peer-a", 515);
+    let mtu = harness
+        .execute(
+            "connection.effective-mtu",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect("the OS measurement crosses");
+    assert_eq!(field(&mtu, "mtu"), &number(515));
+}
+
 // PARITY §4 — connected RSSI works again (4.x read it through btleplug).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn connected_rssi_reads_the_live_link_through_the_core() {

@@ -205,7 +205,12 @@ export function createReactNativeRustCoreFeatureRegistry(
     'discovery:continuous-scan.invoke-without-scan'
   )
   const common = [
-    createReactNativeConnectionControlFeatureRegistry(platform, implementationVersion),
+    // Finding 217: the Rust owner answers Apple effective MTU per link as
+    // `maximumWriteValueLength(.withResponse) + 3`; the legacy Apple
+    // reference route keeps the frozen unsupported registration.
+    createReactNativeConnectionControlFeatureRegistry(platform, implementationVersion, {
+      appleEffectiveMtu: 'derived'
+    }),
     createReactNativeDescriptorFeatureRegistry(platform, implementationVersion),
     createReactNativeRestorationFeatureRegistry(platform, implementationVersion),
     createFeatureRegistry(

@@ -524,11 +524,13 @@ jobs:
         run: node tool/h10-sim/tests/xcheck/run-xcheck.cjs
 
       - name: Check driver-hello fixture is fresh
-        # The platform field differs per OS, so it is excluded from the
-        # comparison; everything else must match the binary byte for byte.
+        # The platform and osVersion fields differ per OS (both carry
+        # `std::env::consts::OS`), so both are excluded from the comparison;
+        # everything else must match the binary byte for byte. The fixture is
+        # never regenerated on one OS to satisfy the other.
         run: |
           cargo run --locked --quiet --manifest-path tool/h10-sim/Cargo.toml -- --emit-driver-hello > /tmp/h10-driver-hello.json
-          node -e "const fs = require('fs'); const norm = p => { const o = JSON.parse(fs.readFileSync(p, 'utf8')); delete o.platform; return JSON.stringify(o); }; if (norm('/tmp/h10-driver-hello.json') !== norm('tool/h10-sim/tests/driver-hello.json')) { console.error('tool/h10-sim/tests/driver-hello.json is stale: regenerate with h10-sim --emit-driver-hello'); process.exit(1); }"
+          node -e "const fs = require('fs'); const norm = p => { const o = JSON.parse(fs.readFileSync(p, 'utf8')); delete o.platform; delete o.osVersion; return JSON.stringify(o); }; if (norm('/tmp/h10-driver-hello.json') !== norm('tool/h10-sim/tests/driver-hello.json')) { console.error('tool/h10-sim/tests/driver-hello.json is stale: regenerate with h10-sim --emit-driver-hello'); process.exit(1); }"
 
       - name: Driver protocol and sequence tests
         run: node --test examples-shared/driver/__tests__/protocol.test.mjs examples-shared/driver/__tests__/peripheral-sim.test.mjs examples-shared/driver/__tests__/polar-pmd.test.mjs examples-shared/driver/server/__tests__/sequence-devices.test.mjs

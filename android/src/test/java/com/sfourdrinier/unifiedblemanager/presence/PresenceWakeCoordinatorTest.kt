@@ -13,14 +13,28 @@ class PresenceWakeCoordinatorTest {
   private val store = InMemoryPresenceStore()
   private val ingested = mutableListOf<PresenceRestoredPeer>()
   private var hostAlive = true
+  private var ownerInstalled = false
+  private val order = mutableListOf<String>()
   private val logs = mutableListOf<String>()
+  private var ingestRefused = false
+  private var ownerThrows = false
+  private var ingestThrows = false
 
   private val coordinator = PresenceWakeCoordinator(
     associatedAddresses = { setOf(peer) },
     store = store,
     nowMs = { 12345L },
-    ingest = { peers ->
+    ensureOwner = {
+      order.add("ensureOwner")
+      if (ownerThrows) throw IllegalStateException("no radio")
       if (!hostAlive) return@PresenceWakeCoordinator false
+      ownerInstalled = true
+      true
+    },
+    ingest = { peers ->
+      order.add("ingest")
+      if (ingestThrows) throw IllegalStateException("core gone")
+      if (!hostAlive || ingestRefused) return@PresenceWakeCoordinator false
       ingested.addAll(peers)
       true
     },
@@ -35,6 +49,15 @@ class PresenceWakeCoordinatorTest {
   }
 
   @Test
+  fun aColdStartAppearanceInstallsTheOwnerBeforeIngesting() {
+    coordinator.appeared(peer, null)
+    assertEquals(listOf("ensureOwner", "ingest"), order)
+    assertTrue(ownerInstalled)
+    assertEquals(listOf(PresenceRestoredPeer(peer, null, false)), ingested)
+    assertTrue(store.drainAppearances().isEmpty())
+  }
+
+  @Test
   fun anAppearanceWithNoLiveHostPersistsForTheNextSessionOpen() {
     hostAlive = false
     coordinator.appeared(peer, null)
@@ -44,8 +67,35 @@ class PresenceWakeCoordinatorTest {
   }
 
   @Test
+  fun anIngestRefusalPersistsTheAppearance() {
+    ingestRefused = true
+    coordinator.appeared(peer, null)
+    assertTrue(ingested.isEmpty())
+    assertEquals(listOf(PresenceAppearance(peer, null, 12345L)), store.drainAppearances())
+  }
+
+  @Test
+  fun aThrowingOwnerPersistsTheAppearanceAndLogs() {
+    ownerThrows = true
+    coordinator.appeared(peer, null)
+    assertTrue(ingested.isEmpty())
+    assertEquals(listOf(PresenceAppearance(peer, null, 12345L)), store.drainAppearances())
+    assertTrue(logs.isNotEmpty())
+  }
+
+  @Test
+  fun aThrowingIngestPersistsTheAppearanceAndLogs() {
+    ingestThrows = true
+    coordinator.appeared(peer, null)
+    assertTrue(ingested.isEmpty())
+    assertEquals(listOf(PresenceAppearance(peer, null, 12345L)), store.drainAppearances())
+    assertTrue(logs.isNotEmpty())
+  }
+
+  @Test
   fun anAppearanceOfAnUnassociatedPeerIsIgnoredAndLogged() {
     coordinator.appeared(stranger, null)
+    assertTrue(order.isEmpty())
     assertTrue(ingested.isEmpty())
     assertTrue(store.drainAppearances().isEmpty())
     assertTrue(logs.isNotEmpty())

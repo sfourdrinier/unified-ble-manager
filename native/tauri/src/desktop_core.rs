@@ -185,6 +185,14 @@ pub trait CoreAuthority: Send + Sync {
         lease: &'a str,
         ctl: OpControl,
     ) -> CoreFuture<'a, i16>;
+    /// Effective ATT MTU of the link held under `lease`, as the OS
+    /// reports it (finding 217 follow-up).
+    fn read_effective_mtu<'a>(
+        &'a self,
+        peer_id: &'a str,
+        lease: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, u16>;
     /// The largest single write the OS accepts on the link held under
     /// `lease`, for one write mode (the same limit a write of that mode is
     /// admitted against).
@@ -374,6 +382,17 @@ impl<B: RadioBoundary> CoreAuthority for DesktopCentral<B> {
         ctl: OpControl,
     ) -> CoreFuture<'a, i16> {
         Box::pin(DesktopCentral::read_rssi(self, peer_id, lease, ctl))
+    }
+
+    fn read_effective_mtu<'a>(
+        &'a self,
+        peer_id: &'a str,
+        lease: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, u16> {
+        Box::pin(DesktopCentral::read_effective_mtu(
+            self, peer_id, lease, ctl,
+        ))
     }
 
     fn connection_maximum_write_length<'a>(

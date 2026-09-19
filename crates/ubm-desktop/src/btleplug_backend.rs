@@ -2721,6 +2721,71 @@ impl RadioBoundary for BtleplugRadio {
             .map_err(|error| capability_error("peer.rssi", error))
     }
 
+    /// Effective ATT MTU of the live link, as the OS reports it (finding
+    /// 217 follow-up). macOS derives
+    /// `maximumWriteValueLength(.withResponse) + 3` through the vendored
+    /// write-length patch — the same derivation as the Apple React Native
+    /// route, so both hosts report the same value; without the patch
+    /// btleplug's CoreBluetooth `mtu()` never leaves 23 and nothing
+    /// measured exists. Windows reads the `GattSession.MaxPduSize`
+    /// btleplug already tracks as the ATT MTU
+    /// (`winrtble/ble/device.rs`). Linux reads the
+    /// `org.bluez.GattCharacteristic1` MTU through the BlueZ adapter; a
+    /// link BlueZ withholds it on is `capability.unavailable`, never a
+    /// guessed 23.
+    async fn read_effective_mtu(&self, peer_id: &str) -> Result<u16, DesktopError> {
+        #[cfg(target_os = "linux")]
+        {
+            let mtu = self.bluez()?.mtu(peer_id).await?;
+            mtu.ok_or_else(|| {
+                DesktopError::new(
+                    BleErrorCode::CapabilityUnavailable,
+                    BleErrorDomain::Platform,
+                    "connection.effective-mtu",
+                )
+                .with_detail("BlueZ reported no GattCharacteristic1 MTU for this link")
+            })
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let peripheral = self.peripheral_by_id(peer_id).await?;
+            Ok(peripheral.mtu())
+        }
+        #[cfg(all(target_os = "macos", btleplug_ubm_write_length))]
+        {
+            let peripheral = self.peripheral_by_id(peer_id).await?;
+            let (with_response, _) = peripheral
+                .maximum_write_value_lengths()
+                .await
+                .map_err(|error| capability_error("connection.effective-mtu", error))?;
+            if with_response == 0 {
+                return Err(DesktopError::new(
+                    BleErrorCode::CapabilityUnavailable,
+                    BleErrorDomain::Platform,
+                    "connection.effective-mtu",
+                )
+                .with_detail("CoreBluetooth reported no write limit for this link"));
+            }
+            Ok(with_response.saturating_add(3))
+        }
+        #[cfg(not(any(
+            target_os = "linux",
+            target_os = "windows",
+            all(target_os = "macos", btleplug_ubm_write_length)
+        )))]
+        {
+            let _ = peer_id;
+            Err(DesktopError::new(
+                BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability,
+                "connection.effective-mtu",
+            )
+            .with_detail(
+                "unpatched btleplug 0.12: CoreBluetooth mtu() stays 23, so no measured ATT MTU exists; the vendored write-length patch (vendor/btleplug) provides it",
+            ))
+        }
+    }
+
     /// Linux reads `Adapter1.Powered` through the BlueZ adapter: btleplug
     /// 0.12's BlueZ `adapter_state` answers `PoweredOff` when its own read
     /// fails (`bluez/adapter.rs`), which would report a failure as a fact.
