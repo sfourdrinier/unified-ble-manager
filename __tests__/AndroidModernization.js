@@ -57,7 +57,7 @@ describe('Android RN 0.86 unified protocol boundary', () => {
     expect(buildGradle).not.toContain('prefab true')
   })
 
-  test('registers only the generated protocol and Expo runtime TurboModules', () => {
+  test('registers only the generated protocol, Expo runtime, and Rust core TurboModules', () => {
     const packageJava = read('android/src/main/java/com/sfourdrinier/unifiedblemanager/BlePlxPackage.java')
     const controlJava = read(
       'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java'
@@ -70,8 +70,15 @@ describe('Android RN 0.86 unified protocol boundary', () => {
     expect(packageJava).toContain('UnifiedBleProtocolControlModule.class.getName()')
     expect(packageJava).toContain('UnifiedBleExpoRuntimeModule.NAME')
     expect(packageJava).toContain('UnifiedBleExpoRuntimeModule.class.getName()')
+    // R01 contract update (justified): `UnifiedBleRustCoreModule` is the
+    // D3(a) production session facade over the JNI cdylib (router +
+    // JVM-tested op table), registered alongside the protocol modules.
+    // Third TurboModule by design, not legacy residue.
+    expect(packageJava).toContain('import com.sfourdrinier.unifiedblemanager.rustcore.UnifiedBleRustCoreModule;')
+    expect(packageJava).toContain('if (UnifiedBleRustCoreModule.NAME.equals(name))')
+    expect(packageJava).toContain('UnifiedBleRustCoreModule.class.getName()')
     expect(packageJava).not.toMatch(/\bBlePlxModule\b|\bNativeBlePlxSpec\b/)
-    expect(packageJava.match(/moduleInfos\.put\(/g)).toHaveLength(2)
+    expect(packageJava.match(/moduleInfos\.put\(/g)).toHaveLength(3)
     expect(controlJava).toContain('extends NativeUnifiedBleProtocolControlSpec')
     expect(controlJava).toContain('public static final String NAME = "UnifiedBleProtocolControl"')
     expect(controlJava).toContain('UnifiedBleProtocolJsiBinding.install')
@@ -90,15 +97,70 @@ describe('Android RN 0.86 unified protocol boundary', () => {
       'background/ForegroundServiceControlException.java',
       'background/ForegroundServiceNotificationConfiguration.java',
       'expo/UnifiedBleExpoRuntimeModule.java',
+      // Issue #212 contract update (justified): the `presence` package is
+      // the Companion Device Manager presence endpoint (API 31+) that wakes
+      // the process for armed associated peers — observer, wake
+      // coordinator, persisted store, and the bound service. Covered by
+      // `CompanionPresenceObserverTest` and `PresenceWakeCoordinatorTest`.
+      // Current protocol graph member by design, not legacy residue.
+      'presence/CompanionPresenceObserver.kt',
+      'presence/PresenceRestoredStore.kt',
+      'presence/PresenceWakeCoordinator.kt',
+      'presence/UbmCompanionPresenceService.kt',
+      // R02 contract update (justified): `CoreCommandAuthority` is the
+      // admission table the dispatcher consults before radio execution
+      // (covered commands + scoped exceptions + core*-coded terminals),
+      // covered by `CoreCommandAuthorityTest`. Current protocol graph
+      // member by design, not legacy residue.
+      'protocol/CoreCommandAuthority.kt',
       'protocol/ProtocolCommandDecoder.kt',
       'protocol/ProtocolWireEncoder.kt',
       'protocol/UnifiedBleProtocolAndroidDispatcher.kt',
       'protocol/UnifiedBleProtocolControlModule.java',
       'protocol/UnifiedBleProtocolJsiBinding.java',
       'protocol/generated/NativeProtocolV2Schema.kt',
+      'radio/DeferredCoreShadow.kt',
+      'radio/GattCentralWire.kt',
       'radio/GattOccurrenceResolver.kt',
       'radio/OwnedAndroidLog.kt',
-      'radio/OwnedAndroidGattRadio.kt'
+      'radio/OwnedAndroidGattRadio.kt',
+      'radio/UbmGattCentralBridge.kt',
+      // F01 contract update (justified): `UbmGattCoreBinding` is the
+      // production call site that instantiates the bridge with real JNI
+      // (the gap F01 flagged) — a thin fail-closed Android adapter in the
+      // same `radio` package, covered by `UbmGattCoreBindingTest`. Current
+      // protocol graph member by design, not legacy residue.
+      'radio/UbmGattCoreBinding.kt',
+      // R01 contract update (justified): the `rustcore` package is the
+      // D3(a) production session facade (module shell + JVM-tested op
+      // router over the JNI cdylib), covered by
+      // `RustCoreSessionRouterTest`. Current protocol graph member by
+      // design, not legacy residue.
+      // R01 Phase 3 contract update (justified): `RustCoreAdapterStateReader`
+      // is the production platform read behind `adapter.state`. Current
+      // protocol graph member by design, not legacy residue.
+      // PR210-01/14/17 contract update (justified): the process-owned Rust
+      // mobile host on Android. The module shell (UnifiedBleRustCoreModule)
+      // delegates to JVM-tested RustCoreSessions; RustCoreProcessHost installs
+      // the one host; RustRadioHostAdapter serves MobileCoreBridge.RadioHost
+      // over OwnedRadioPort -> OwnedAndroidGattRadio. Covered by
+      // RustRadioHostAdapterTest, RustCoreSessionsTest, RustCoreJsonTest and
+      // OwnedRadioPortMappingTest. RustCoreAdapterStateReader and
+      // RustCoreSessionRouter are legacy, kept until Phase 4 deletion.
+      'rustcore/AndroidRadioPort.kt',
+      'rustcore/MobileCorePort.kt',
+      'rustcore/OwnedRadioPort.kt',
+      'rustcore/PlatformServicePorts.kt',
+      'rustcore/ReactCompanionChooser.kt',
+      'rustcore/RustCoreAdapterStateReader.java',
+      'rustcore/RustCoreJson.kt',
+      'rustcore/RustCorePlatformValues.kt',
+      'rustcore/RustCoreProcessHost.kt',
+      'rustcore/RustCoreRejection.kt',
+      'rustcore/RustCoreSessionRouter.java',
+      'rustcore/RustCoreSessions.kt',
+      'rustcore/RustRadioHostAdapter.kt',
+      'rustcore/UnifiedBleRustCoreModule.java'
     ].sort())
     const protocolDispatcher = read(
       'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt'

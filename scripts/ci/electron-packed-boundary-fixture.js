@@ -58,7 +58,7 @@ function createBootstrapResponse() {
         capabilitySchema: negotiated('capability-schema', 1),
         eventSchema: negotiated('event-schema', 1),
         traceFormat: negotiated('trace-format', 1),
-        ipcProtocol: negotiated('ipc-protocol', 2)
+        ipcProtocol: negotiated('ipc-protocol', 3)
       }),
       capabilities: Object.freeze({
         schemaVersion: 2,
@@ -145,7 +145,7 @@ function assertDataOnlyPreloadSurfaceMembrane() {
   )
   const proof = JSON.parse(serializedProof)
   assert.deepEqual(proof.requestKinds, ['bootstrap', 'release'], 'data-only renderer proxy limits requests to bootstrap and release')
-  assert.equal(proof.ipcProtocolVersion, 2, 'data-only renderer proxy preserves the versioned IPC handshake')
+  assert.equal(proof.ipcProtocolVersion, 3, 'data-only renderer proxy preserves the versioned IPC handshake')
   assert.equal(proof.cleanupState, 'released', 'data-only renderer proxy preserves release cleanup')
   assert.equal(proof.processType, 'undefined', 'data-only VM membrane does not expose process')
   assert.equal(proof.requireType, 'undefined', 'data-only VM membrane does not expose require')
@@ -165,9 +165,14 @@ async function main() {
     ElectronMainBleBinding: electronMain.ElectronMainBleBinding,
     ElectronMainBleRouter: electronMain.ElectronMainBleRouter,
     createElectronMainCoreBluetoothBackendProvider: electronMain.createElectronMainCoreBluetoothBackendProvider,
-    createNativeCoreBluetoothBoundary: electronMain.createNativeCoreBluetoothBoundary
+    createElectronMainWinRtBackendProvider: electronMain.createElectronMainWinRtBackendProvider,
+    createElectronMainBluezBackendProvider: electronMain.createElectronMainBluezBackendProvider,
+    createDesktopRustCoreBackendProvider: electronMain.createDesktopRustCoreBackendProvider
   })) {
     assert.equal(typeof value, 'function', `Electron main public surface must export ${name}`)
+  }
+  for (const legacy of ['createNativeCoreBluetoothBoundary', 'createNativeWinRtBoundary', 'createCoreBluetoothBackendProvider']) {
+    assert.equal(Object.hasOwn(electronMain, legacy), false, `Electron main exposes no legacy ${legacy} (PR210-02)`)
   }
   assert.equal(typeof electronRenderer.ElectronRendererBleClient, 'function', 'renderer public proxy exports its client')
   assert.equal(
@@ -184,6 +189,7 @@ async function main() {
     'ElectronMainBleBinding',
     'ElectronMainBleRouter',
     'createElectronMainCoreBluetoothBackendProvider',
+    'createDesktopRustCoreBackendProvider',
     'createNativeCoreBluetoothBoundary'
   ]) {
     assert.equal(
@@ -219,7 +225,7 @@ async function main() {
   }
   const client = new electronRenderer.ElectronRendererBleClient(rendererTransport)
   const bootstrap = await client.initialize()
-  assert.equal(bootstrap.versions.ipcProtocol.selected.value, 2, 'renderer receives the versioned IPC handshake')
+  assert.equal(bootstrap.versions.ipcProtocol.selected.value, 3, 'renderer receives the versioned IPC handshake')
   assert.deepEqual(requests.map(request => request.kind), ['bootstrap'], 'renderer proxy makes only its bootstrap IPC request')
   await client.destroy()
   assert.deepEqual(

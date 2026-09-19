@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { FlatList } from 'react-native'
 import { AppButton, AppText, ScreenDefaultContainer } from '../../../components/atoms'
-import { BleDevice } from '../../../components/molecules'
+import { BleDevice, RemoteDriverBadge } from '../../../components/molecules'
 import { useBleScreenWork } from '../../../hooks/useBleScreenWork'
 import type { MainStackParamList } from '../../../navigation/navigators'
 import { BLEService, type ExamplePeer } from '../../../services'
@@ -133,6 +133,9 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
           <AppText style={{ fontSize: 30 }}>Connecting</AppText>
         </DropDown>
       ) : null}
+      <RemoteDriverBadge />
+      <AppButton label="Test scenarios (Polar H10, ECG, scan, MTU…)" onPress={() => navigation.navigate('SCENARIOS_SCREEN')} />
+      <AppButton label="Live dashboard: Polar H10 tiles" onPress={() => navigation.navigate('LIVE_DASHBOARD_SCREEN')} />
       <AppButton label="Scan with canonical manager" onPress={() => void startScan()} />
       <AppButton label="Check Expo readiness" onPress={() => void inspectReadiness()} />
       <AppButton label="Inspect plan and diagnostics" onPress={inspectDiagnostics} />

@@ -134,7 +134,9 @@ export type {
 } from './connection-lifecycle'
 export type {
   BleErrorCode,
+  BleCommitUncertainty,
   BleErrorDomain,
+  BleRetryability,
   CleanupFailure,
   CleanupRecord,
   NormalizedBleError,
@@ -203,6 +205,8 @@ export type {
   BackendOperationDispatch,
   BackendOperationPhysicalSettlement,
   CancellationAcknowledgement,
+  CharacteristicRead,
+  CharacteristicReadResult,
   LongWriteChunkProgress,
   LongWriteNotPlannedReceipt,
   LongWritePlannedReceipt,
@@ -213,6 +217,7 @@ export type {
   OperationTerminalOutcome,
   OperationTerminalRecord,
   PublicOperationOptions,
+  ReadProvenance,
   ReadRequest,
   ReadResult,
   SubscribeRequest,
@@ -223,7 +228,12 @@ export type {
   WriteRequest,
   WriteResult
 } from './operations'
-export { createBackendOperationDispatch, createOperationSettlementCoordinator } from './operations'
+export {
+  READ_PROVENANCES,
+  createBackendOperationDispatch,
+  createOperationSettlementCoordinator,
+  isReadProvenance
+} from './operations'
 export type {
   AdapterId,
   ApplicableCompatibilityOffer,
@@ -318,8 +328,8 @@ export type {
   StreamTerminalNotice,
   StreamValue
 } from './streams'
-export type { BleRecovery, BleRecoveryDisposition, RecoveryAction } from './recovery'
-export { recoveryForCode } from './recovery'
+export type { BleRecovery, BleRecoveryDisposition, BleRecoveryInput, RecoveryAction } from './recovery'
+export { recoveryForCode, recoveryForError } from './recovery'
 export type {
   BackendScanExecutionPlan,
   BackendScanPlanner,

@@ -1,0 +1,3 @@
+# Built WASM feasibility artifacts (regenerable via run_wasm_roundtrip.sh).
+/target/
+*.wasm

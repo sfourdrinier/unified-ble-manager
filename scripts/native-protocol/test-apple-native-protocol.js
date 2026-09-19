@@ -35,6 +35,25 @@ const provenanceExecutable = path.join(temporaryDirectory, 'AppleCoreBluetoothRe
 const ingressExecutable = path.join(temporaryDirectory, 'AppleNativeIngressOrdinalHarness')
 const borrowerOwnerExecutable = path.join(temporaryDirectory, 'AppleCoreBluetoothBorrowerOwnerHarness')
 const executionExecutable = path.join(temporaryDirectory, 'AppleNativeProtocolExecutionHarness')
+const rustRadioAdapterExecutable = path.join(temporaryDirectory, 'AppleRustRadioAdapterHarness')
+const uniffiSwiftDirectory = path.join(root, 'bindings/uniffi/generated/swift')
+
+// The Apple Rust route harness links the REAL mobile host: the host-platform
+// build of the UniFFI crate, located through cargo (CARGO_TARGET_DIR aware).
+function cargoTargetDirectory() {
+  const result = childProcess.spawnSync('cargo', ['metadata', '--format-version', '1', '--no-deps', '--locked'], {
+    cwd: root,
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024
+  })
+  if (result.error) {
+    throw result.error
+  }
+  if (result.status !== 0) {
+    throw new Error(`cargo metadata failed with exit code ${String(result.status)}: ${result.stderr}`)
+  }
+  return JSON.parse(result.stdout).target_directory
+}
 const ownedRadioSources = [
   path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioSupport.swift'),
   path.join(root, 'ios/Owned/OwnedCoreBluetoothCentralDelegate.swift'),
@@ -51,7 +70,7 @@ try {
     'macosx',
     'swiftc',
     ...ownedRadioSources,
-    path.join(root, 'native/protocol/tests/AppleCoreBluetoothScanParserHarness.swift'),
+    path.join(root, 'ios/__tests__/AppleCoreBluetoothScanParserHarness.swift'),
     '-o',
     executable
   ])
@@ -61,7 +80,7 @@ try {
     'macosx',
     'swiftc',
     ...ownedRadioSources,
-    path.join(root, 'native/protocol/tests/AppleCoreBluetoothReadNotifyProvenanceHarness.swift'),
+    path.join(root, 'ios/__tests__/AppleCoreBluetoothReadNotifyProvenanceHarness.swift'),
     '-o',
     provenanceExecutable
   ])
@@ -71,7 +90,7 @@ try {
     'macosx',
     'swiftc',
     ...ownedRadioSources,
-    path.join(root, 'native/protocol/tests/AppleCoreBluetoothBorrowerOwnerHarness.swift'),
+    path.join(root, 'ios/__tests__/AppleCoreBluetoothBorrowerOwnerHarness.swift'),
     '-o',
     borrowerOwnerExecutable
   ])
@@ -87,6 +106,34 @@ try {
     ingressExecutable
   ])
   run(ingressExecutable, [])
+  run('cargo', ['build', '--locked', '-p', 'ubm5_uniffi_echo'])
+  run('xcrun', [
+    '--sdk',
+    'macosx',
+    'swiftc',
+    '-parse-as-library',
+    '-Xcc',
+    `-fmodule-map-file=${path.join(uniffiSwiftDirectory, 'ubm_echoFFI.modulemap')}`,
+    '-I',
+    uniffiSwiftDirectory,
+    path.join(uniffiSwiftDirectory, 'ubm_echo.swift'),
+    ...ownedRadioSources,
+    path.join(root, 'ios/UnifiedBleRustRadioAdapter.swift'),
+    path.join(root, 'ios/UnifiedBleRustCoreSessions.swift'),
+    path.join(root, 'ios/__tests__/AppleRustRadioAdapterHarness.swift'),
+    '-L',
+    path.join(cargoTargetDirectory(), 'debug'),
+    '-lubm5_uniffi_echo',
+    '-framework',
+    'Security',
+    '-framework',
+    'CoreBluetooth',
+    '-framework',
+    'SystemConfiguration',
+    '-o',
+    rustRadioAdapterExecutable
+  ])
+  run(rustRadioAdapterExecutable, [])
   run('xcrun', [
     '--sdk',
     'macosx',
@@ -130,7 +177,7 @@ try {
     run(executionExecutable, [])
   }
   console.log(
-    '[test-apple-native-protocol] C++ protocol tests, the Apple CoreBluetooth parser, the CoreBluetooth read/notify provenance harness, and the Apple execution CallInvoker/JSI terminal harness passed. No physical BLE radio or peripheral behavior was exercised.'
+    '[test-apple-native-protocol] C++ protocol tests, the Apple CoreBluetooth parser, the CoreBluetooth read/notify provenance harness, the Rust mobile host ↔ Swift radio adapter harness, and the Apple execution CallInvoker/JSI terminal harness passed. No physical BLE radio or peripheral behavior was exercised.'
   )
 } catch (error) {
   console.error('[test-apple-native-protocol] Apple Native Protocol executable harness failed:', error)

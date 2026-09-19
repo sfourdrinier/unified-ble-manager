@@ -14,19 +14,33 @@ public final class BlePlxForegroundServiceRecoveryReceiver extends BroadcastRece
 
   @Override
   public void onReceive(Context context, Intent intent) {
-    if (intent == null || (!Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction())
-        && !Intent.ACTION_MY_PACKAGE_REPLACED.equals(intent.getAction()))) return;
-    if (!context.getSharedPreferences("unified-ble-manager", Context.MODE_PRIVATE)
-        .getBoolean(BlePlxForegroundService.SESSION_INTENT_PREFERENCE, false)) return;
+    if (intent == null) return;
     try {
+      final boolean sessionIntentExists = context.getSharedPreferences("unified-ble-manager", Context.MODE_PRIVATE)
+          .getBoolean(BlePlxForegroundService.SESSION_INTENT_PREFERENCE, false);
       final ForegroundServiceNotificationConfiguration configuration = configuration(context);
-      if (!configuration.restartWhileSessionIntentExists()) return;
+      if (!shouldRecover(intent.getAction(), sessionIntentExists, configuration.restartWhileSessionIntentExists())) {
+        return;
+      }
       final Intent start = BlePlxForegroundService.startIntent(context, configuration);
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(start);
       else context.startService(start);
     } catch (RuntimeException error) {
       Log.e(TAG, "Connected-device foreground-service recovery failed", error);
     }
+  }
+
+  /**
+   * Pure restart decision: a recovery action (boot completed or our own
+   * package replaced) AND a persisted session intent AND a configured
+   * while-session-intent restart. Everything else fails closed (no start).
+   * Reads stay fail-closed at the call site (a missing prefs file or key
+   * yields {@code false}); this function only combines the three facts.
+   */
+  static boolean shouldRecover(String action, boolean sessionIntentExists, boolean restartConfigured) {
+    final boolean recoveryAction = Intent.ACTION_BOOT_COMPLETED.equals(action)
+        || Intent.ACTION_MY_PACKAGE_REPLACED.equals(action);
+    return recoveryAction && sessionIntentExists && restartConfigured;
   }
 
   private static ForegroundServiceNotificationConfiguration configuration(Context context) {

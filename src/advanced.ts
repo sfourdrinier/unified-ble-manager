@@ -84,6 +84,7 @@ export type {
   PortableSubscriptionOptions,
   PortableWritePolicy,
   PortableWriteReceipt,
+  PortableReadReceipt,
   PortableCleanupRecord,
   PortableCleanupFailure
 } from './manager/consumer-handles'

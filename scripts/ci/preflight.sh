@@ -96,6 +96,11 @@ run_package() {
   set -e
   pnpm test:package
   pnpm validate:evidence
+  # F9: the committed Android jniLibs travel with the push — fail here when a
+  # Rust change outruns its refresh, never in the publish gate. Only the
+  # committed artifact is checked: the gitignored Apple/desktop stagings are
+  # absent from a clean worktree by design (see docs/NATIVE_ARTIFACTS.md).
+  pnpm native:status --only android
   pnpm test:plugin
   pnpm test:native-protocol
   pnpm lint

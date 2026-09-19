@@ -1,6 +1,6 @@
 {
   "name": "unified-ble-manager",
-  "version": "4.0.28",
+  "version": "5.0.0-rc.0",
   "description": "Unified Bluetooth Low Energy manager for React Native, Electron, Tauri, Web, and desktop",
   "packageManager": "pnpm@10.14.0",
   "main": "lib/commonjs/index.js",
@@ -14,6 +14,13 @@
     "android",
     "ios",
     "native",
+    "crates",
+    "bindings",
+    "vendor",
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "scripts/release/native-build-identity.js",
     "docs",
     "CHANGELOG.md",
     "CONTRIBUTING.md",
@@ -25,6 +32,9 @@
     "SUPPORT.md",
     "SBOM.cdx.json",
     "THIRD_PARTY_LICENSES.json",
+    "LICENSE-UBM-SOURCE-AVAILABLE-1.0.md",
+    "NOTICE",
+    "UBM-CONTRIBUTION-TERMS-1.0.md",
     "plugin/build",
     "app.plugin.js",
     "*.podspec",
@@ -48,6 +58,11 @@
     "!native/**/target",
     "!native/**/obj.target",
     "!native/protocol/tests/**",
+    "!crates/**/target",
+    "!bindings/**/target",
+    "!vendor/**/target",
+    "!bindings/**/*.node",
+    "!bindings/**/jvm-classes",
     "!**/__tests__",
     "!**/__fixtures__",
     "!**/__mocks__",
@@ -57,12 +72,15 @@
   "scripts": {
     "build": "pnpm prepack",
     "test": "pnpm test:package",
-    "pretest:package": "pnpm prepack",
-    "test:package": "jest --config jest.config.js",
+    "pretest:package": "pnpm prepack && node scripts/ci/build-napi-addon.js",
+    "test:package": "jest --config jest.package.config.js",
+    "test:parity": "bindings/napi/run_napi_roundtrip.sh && jest --config jest.config.js __tests__/tck/rust-parity",
+    "contracts:test": "jest --config contracts/jest.config.cjs",
+    "contracts:typecheck": "tsc --noEmit -p contracts/tsconfig.json",
     "native-protocol:generate": "node scripts/native-protocol/generate-native-protocol.js",
     "native-protocol:check": "node scripts/native-protocol/generate-native-protocol.js --check",
     "test:native-protocol": "node scripts/native-protocol/test-native-protocol.js",
-    "test:native-protocol:android": "cd example/android && ./gradlew :unified-ble-manager:testDebugUnitTest --tests 'com.sfourdrinier.unifiedblemanager.protocol.UnifiedBleProtocolAndroidDispatcher*' --no-daemon --console=plain",
+    "test:native-protocol:android": "cd example/android && ./gradlew :unified-ble-manager:testDebugUnitTest --no-daemon --console=plain",
     "test:native-protocol:apple": "node scripts/native-protocol/test-apple-native-protocol.js",
     "test:native-protocol:winrt": "node scripts/native-protocol/test-winrt-connection-ownership.js",
     "performance:native-host": "node scripts/performance/run-native-host-benchmark.js",
@@ -73,13 +91,17 @@
     "release:artifacts:check": "node scripts/release/generate-dependency-artifacts.js --check",
     "validate:evidence": "node scripts/evidence/validate-current-evidence.js",
     "docs:backend-sdk": "node scripts/docs/generate-backend-sdk-reference.js && node scripts/docs/generate-platform-support.js",
-    "docs:check": "node scripts/docs/generate-backend-sdk-reference.js --check && node scripts/docs/generate-platform-support.js --check && node scripts/docs/check-api-reports.js && node scripts/docs/check-generated-html.js && node scripts/docs/check-docs-index.js",
+    "docs:check": "node scripts/docs/generate-backend-sdk-reference.js --check && node scripts/docs/generate-platform-support.js --check && node scripts/docs/check-api-reports.js && node scripts/docs/check-generated-html.js && node scripts/docs/check-docs-index.js && prettier --check CHANGELOG.md AGENTS.md docs/NODE.md",
     "cli": "node bin/ubm.js",
     "docs": "pnpm prepack && documentation build lib/module/index.js -o docs --config documentation.yml -f html --shallow && prettier --write docs/index.html docs/assets/anchor.js docs/assets/site.js",
     "typecheck": "tsc --noEmit -p tsconfig.build.json",
     "lint": "eslint \"src/**/*.{ts,tsx}\" \"plugin/src/**/*.{ts,tsx}\" --max-warnings 0 && pnpm typecheck",
     "prepack": "node scripts/ci/build-package.js",
     "test:g6a": "pnpm prepack && node scripts/ci/g6a-packed-consumer-proof.js",
+    "test:tck-packaging-proof": "pnpm prepack && node scripts/ci/check-tck-test-only-packaging.js",
+    "test:pack-napi-proof": "node scripts/ci/check-napi-artifact-packaging.js",
+    "test:napi-acceptance": "node scripts/ci/napi-clean-tarball-acceptance.js",
+    "test:f01-proof": "node scripts/ci/f01-packed-dispatch-proof.js",
     "verify:release": "bash scripts/verify-release.sh",
     "release": "release-it",
     "example": "pnpm --dir example",
@@ -99,11 +121,15 @@
     "build:electron:winrt": "cd native/electron/winrt && node-gyp rebuild --release",
     "native-prebuild:build": "node scripts/native-prebuilds/build.js",
     "native-prebuild:verify": "node scripts/native-prebuilds/verify.js",
+    "native:apple:prepare": "sh ios/build-rust-core.sh",
+    "native:android:prepare": "sh android/build-rust-cdylib.sh --prepare",
     "example:electron": "pnpm prepack && node example-electron/smoke.js",
     "build:example:web": "tsc --noEmit -p example-web/tsconfig.json && vite build --config example-web/vite.config.mts",
     "example:web": "pnpm prepack && vite --config example-web/vite.config.mts",
     "prepare": "pnpm clean:plugin && pnpm build:plugin && pnpm exec bob build",
-    "lint:plugin": "eslint plugin/src/*"
+    "lint:plugin": "eslint plugin/src/*",
+    "native:status": "node scripts/native/native-status.js",
+    "native:refresh": "node scripts/native/native-refresh.js"
   },
   "keywords": [
     "bluetooth",
@@ -125,7 +151,7 @@
     "url": "git+https://github.com/sfourdrinier/unified-ble-manager.git"
   },
   "author": "sfourdrinier",
-  "license": "Apache-2.0",
+  "license": "SEE LICENSE IN LICENSE-UBM-SOURCE-AVAILABLE-1.0.md",
   "bugs": {
     "url": "https://github.com/sfourdrinier/unified-ble-manager/issues"
   },
@@ -197,16 +223,12 @@
   },
   "peerDependencies": {
     "@tauri-apps/api": "^2.0.0",
-    "dbus-next": "^0.10.2",
     "expo": "^57.0.0",
     "react": "*",
     "react-native": ">=0.86.0"
   },
   "peerDependenciesMeta": {
     "expo": {
-      "optional": true
-    },
-    "dbus-next": {
       "optional": true
     },
     "react": {
@@ -232,7 +254,8 @@
     "ios": {
       "modulesProvider": {
         "UnifiedBleProtocolControl": "UnifiedBleProtocolControl",
-        "UnifiedBleExpoRuntime": "UnifiedBleExpoRuntime"
+        "UnifiedBleExpoRuntime": "UnifiedBleExpoRuntime",
+        "UnifiedBleRustCore": "UnifiedBleRustCore"
       }
     }
   },

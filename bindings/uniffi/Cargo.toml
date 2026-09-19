@@ -1,0 +1,26 @@
+[package]
+name = "ubm5_uniffi_echo"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.98.1"
+description = "UBM 5.0 FFI feasibility: UniFFI echo scaffold (trackourhealth/bun-mono#1188, FFI-NATIVE card). Echo-only stand-in; NOT BLE functionality."
+publish = false
+license-file = "../../LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
+repository = "https://github.com/sfourdrinier/unified-ble-manager"
+
+[lib]
+name = "ubm5_uniffi_echo"
+# F01 iOS lane: the pod-selected Rust core links as a staticlib slice of
+# the RustCore.xcframework (built by ios/build-rust-core.sh).
+crate-type = ["cdylib", "rlib", "staticlib"]
+
+[dependencies]
+uniffi = { version = "=0.32.1", features = ["build"] }
+ubm-core = { path = "../../crates/ubm-core" }
+ubm-fake-radio = { path = "../../crates/ubm-fake-radio" }
+# Production mobile owner (`Mobile*` UDL surface): no fake radio, no btleplug.
+ubm-mobile = { path = "../../crates/ubm-mobile" }
+ubm-desktop = { path = "../../crates/ubm-desktop", default-features = false }
+
+[build-dependencies]
+uniffi = { version = "=0.32.1", features = ["build"] }

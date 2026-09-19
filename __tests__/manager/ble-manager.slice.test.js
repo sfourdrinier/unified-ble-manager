@@ -188,9 +188,10 @@ describe('BleManager production core slice', () => {
     })
     const database = await settle(fixture.controller, connection.discover(operation()))
     const snapshot = await database.snapshot()
-    expect(snapshot.services).toHaveLength(2)
-    expect(snapshot.characteristics).toHaveLength(3)
-    expect(snapshot.descriptors).toHaveLength(1)
+    // Two battery services, then the heart-rate service of the duplicate-UUID world.
+    expect(snapshot.services).toHaveLength(3)
+    expect(snapshot.characteristics).toHaveLength(5)
+    expect(snapshot.descriptors).toHaveLength(3)
     expect(snapshot.path.databaseGeneration).toBe(database.path.databaseGeneration)
     const characteristic = snapshot.characteristics[0].path
     const descriptor = snapshot.descriptors[0].path

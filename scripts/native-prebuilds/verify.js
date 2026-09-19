@@ -27,6 +27,25 @@ function sha256(filePath) {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex')
 }
 
+/**
+ * A cargo prebuild's sidecar must exist, name this exact binary by sha256,
+ * and carry a sealed release identity for the target's Rust triple. The
+ * manifest records the sidecar hash and that identity (PR210-03/18).
+ */
+function verifiedSidecar(target, binarySha256) {
+  const sidecarFile = path.join(root, ...target.sidecarPath.split('/'))
+  if (!fs.existsSync(sidecarFile)) throw new Error(`Native prebuild sidecar missing: ${target.sidecarPath}`)
+  const sidecar = JSON.parse(fs.readFileSync(sidecarFile, 'utf8'))
+  if (sidecar.schema !== 'ubm-desktop-core-prebuild/1' || sidecar.sha256 !== binarySha256) {
+    throw new Error(`Native prebuild sidecar does not name ${target.prebuildPath} (sha256 ${binarySha256})`)
+  }
+  const identity = JSON.parse(sidecar.identity)
+  if (identity.profile !== 'release' || identity.target !== target.rustTarget || identity.sourceDigest === 'unsealed') {
+    throw new Error(`Native prebuild ${target.prebuildPath} is not a sealed release for ${target.rustTarget}`)
+  }
+  return Object.freeze({ sidecar: target.sidecarPath, sidecarSha256: sha256(sidecarFile), identity })
+}
+
 function main(argv) {
   const allowedArguments = new Set(['--require-all', '--write-manifest'])
   for (const argument of argv) {
@@ -56,6 +75,7 @@ function main(argv) {
     const filePath = path.join(root, ...target.prebuildPath.split('/'))
     const size = fs.statSync(filePath).size
     if (size === 0) throw new Error(`Native prebuild is empty: ${target.prebuildPath}`)
+    const digest = sha256(filePath)
     return Object.freeze({
       backend: target.backend,
       platform: target.platform,
@@ -63,7 +83,8 @@ function main(argv) {
       nodeApiVersion: NODE_API_VERSION,
       path: target.prebuildPath,
       bytes: size,
-      sha256: sha256(filePath)
+      sha256: digest,
+      ...(target.sidecarPath === null ? {} : verifiedSidecar(target, digest))
     })
   })
 

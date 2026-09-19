@@ -1,0 +1,10 @@
+{
+  "name": "high rate: H10 ECG 130 Hz for 30 s",
+  "defaultTimeoutMs": 60000,
+  "steps": [
+    { "run": "ecg", "command": "start", "capture": ["mtu", "features", "settings"] },
+    { "waitForEvent": "ecg", "kind": "ecg-rate", "count": 30, "since": "step", "timeoutMs": 45000 },
+    { "expectSnapshot": "ecg", "match": { "phase": "streaming", "parseFailures": 0, "samplesLastSecond": { "$gte": 100 } }, "capture": ["frames", "samples", "sensorSampleRateHz", "timestampGaps", "estimatedMissingSamples", "missingNotifications", "overflowNotices", "droppedItems", "maxFrameBytes"] },
+    { "run": "ecg", "command": "stop", "always": true, "capture": ["cleanup", "controlPoint"] }
+  ]
+}

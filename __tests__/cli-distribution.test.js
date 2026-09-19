@@ -73,7 +73,7 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
     expect(first.ok).toBe(true)
     expect(first.command).toBe('init')
     expect(fs.readFileSync(target, 'utf8')).toContain('tauri-plugin-unified-ble-manager')
-    expect(fs.readFileSync(target, 'utf8')).toMatch(/tauri-plugin-unified-ble-manager\s*=\s*"4/)
+    expect(fs.readFileSync(target, 'utf8')).toMatch(/tauri-plugin-unified-ble-manager\s*=\s*"5/)
     expect(fs.readFileSync(target, 'utf8')).not.toContain('node_modules/unified-ble-manager/native/tauri')
 
     const blocked = await runUnifiedBleCli(['init', '--host', 'tauri', '--dir', directory])
@@ -129,9 +129,9 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
         proofBoundary: 'compile-config-loadability',
         cratePublished: false,
         compatibility: expect.objectContaining({
-          npmRange: '^4.0.0',
-          crateRange: '^4.0.0',
-          ipcProtocol: 2
+          npmRange: '^5.0.0-rc.0',
+          crateRange: '^5.0.0-rc.0',
+          ipcProtocol: 4
         })
       })
     )
@@ -152,7 +152,7 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
         host: 'tauri',
         liveRadio: false,
         proofBoundary: 'compile-config-loadability',
-        ipcProtocol: 2
+        ipcProtocol: 4
       })
     )
   })
@@ -231,9 +231,10 @@ describe('PR11 Tauri crate and testkit contracts', () => {
   test('exports machine-readable npm/crate/protocol compatibility', () => {
     expect(TAURI_PLUGIN_COMPATIBILITY).toEqual(
       expect.objectContaining({
-        npmRange: expect.stringMatching(/\^4\.0\.0/),
-        crateRange: expect.stringMatching(/\^4\.0\.0/),
-        ipcProtocol: 2
+        npmRange: expect.stringMatching(/\^5\.0\.0-rc\.0/),
+        crateRange: expect.stringMatching(/\^5\.0\.0-rc\.0/),
+        ipcProtocol: 4,
+        contractRevision: require('../contracts/src/version').CONTRACT_REVISION
       })
     )
   })
@@ -253,7 +254,7 @@ describe('PR11 Tauri crate and testkit contracts', () => {
     const crateReadme = fs.readFileSync(path.join(__dirname, '../native/tauri/README.md'), 'utf8')
     const exampleReadme = fs.readFileSync(path.join(__dirname, '../example-tauri/README.md'), 'utf8')
     for (const text of [docs, crateReadme, exampleReadme]) {
-      expect(text).toContain('tauri-plugin-unified-ble-manager@4.0.0')
+      expect(text).toContain('tauri-plugin-unified-ble-manager@5.0.0-rc.0')
       expect(text).toMatch(/not (yet )?published|until the crate is (published|on crates\.io)|once the crate exists/i)
     }
   })

@@ -1,0 +1,3 @@
+# Built N-API feasibility artifact (regenerable via run_napi_roundtrip.sh).
+/target/
+*.node

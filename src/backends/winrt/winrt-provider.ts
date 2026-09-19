@@ -1,33 +1,23 @@
 // src/backends/winrt/winrt-provider.ts
 
 import { BackendContractError, contractError } from '../../backend-contract/errors'
-import { UNIFIED_BLE_IMPLEMENTATION_VERSION } from '../../implementation-version'
 import type {
   AdapterDescriptor,
   AdapterSelection,
   BackendProvider,
   HostNeutralBackendIdentity
 } from '../../backend-contract/identity'
+import { monotonicTimestamp, opaqueId } from '../../backend-contract/primitives'
 import {
-  monotonicTimestamp,
-  opaqueId,
-  version,
-  versionRange,
-  type BackendCompatibilityOffer
-} from '../../backend-contract/primitives'
+  WINRT_BACKEND_ID,
+  WINRT_IMPLEMENTATION_VERSION,
+  WINRT_PLATFORM_ID,
+  winRtCompatibility
+} from '../desktop/platform-identity'
 import { WinRtBackend } from './winrt-backend'
 import { validateWinRtAdapterRecords, type WinRtAdapterRecord, type WinRtBoundary } from './winrt-boundary'
 
-export const WINRT_BACKEND_ID = 'unified-ble:winrt'
-export const WINRT_PLATFORM_ID = 'unified-ble:windows-winrt'
-export const WINRT_IMPLEMENTATION_VERSION = UNIFIED_BLE_IMPLEMENTATION_VERSION
-
-export const winRtCompatibility: BackendCompatibilityOffer = Object.freeze({
-  backendContract: versionRange(version('backend-contract', 1), version('backend-contract', 1)),
-  capabilitySchema: versionRange(version('capability-schema', 1), version('capability-schema', 1)),
-  eventSchema: versionRange(version('event-schema', 1), version('event-schema', 1)),
-  traceFormat: versionRange(version('trace-format', 1), version('trace-format', 1))
-})
+export { WINRT_BACKEND_ID, WINRT_IMPLEMENTATION_VERSION, WINRT_PLATFORM_ID, winRtCompatibility }
 
 export interface WinRtBackendProviderOptions {
   readonly boundaryFactory: () => WinRtBoundary

@@ -6,7 +6,7 @@ Use `unified-ble-manager/web` to run the public UBM manager directly in a browse
 
 The complete runnable TypeScript/Vite application is in [`example-web/`](../example-web/).
 
-This guide targets `4.0.28`. Web Bluetooth support still depends on the browser, operating system, adapter, and peripheral. UBM reports those runtime boundaries; it does not fabricate a fallback backend.
+This guide targets `5.0.0-rc.0`. Web Bluetooth support still depends on the browser, operating system, adapter, and peripheral. UBM reports those runtime boundaries; it does not fabricate a fallback backend.
 
 ## Requirements
 
@@ -104,6 +104,8 @@ async function chooseReadAndSubscribe(): Promise<void> {
         domain: error.domain,
         operation: error.operation,
         browserCause: error.platform?.metadata.browserErrorName,
+        retryability: error.retryability,
+        commit: error.commit,
         recovery: error.recovery
       })
     }
@@ -136,6 +138,12 @@ const peer = await manager.choose({
 `optionalServices` grants later GATT access to services that were not part of the matching filter. It accepts service UUIDs, not characteristic UUIDs. Request every service the application will access, but do not request unrelated services.
 
 The chooser itself belongs to the browser. UBM cannot auto-select a new device, extend the browser’s native discovery UI, or tell whether Chrome’s `NotFoundError` came from an explicit Cancel action versus the chooser closing without a compatible selection. UBM preserves the browser cause in `error.platform` and reports the stable public code `chooser.cancelled`.
+
+## Peer names and descriptor-less characteristics
+
+Web Bluetooth exposes no advertisement payload for chooser-selected devices, so the chosen peer's `name` is the browser's `BluetoothDevice.name` verbatim — and `null` when the browser withholds it (Chrome reports it; other browsers may not). A `null` name never means "no device": the peer is still the authorized chooser selection.
+
+Discovery treats a characteristic with no descriptors as an empty descriptor list. Web Bluetooth's `getDescriptors()` rejects with `NotFoundError` in that case (seen on Chrome with the Polar H10); UBM reports the characteristic with zero descriptors instead of failing discovery. Any other descriptor error still fails discovery with its own code.
 
 ## Previously authorized devices
 
@@ -209,21 +217,28 @@ Each cleanup returns a receipt. Production applications should verify `state ===
 
 Catch `BleError` from the root package and retain its structured fields. Do not replace every failure with one generic message.
 
-| Field       | Meaning                                                                                        |
-| ----------- | ---------------------------------------------------------------------------------------------- |
-| `code`      | Stable UBM category such as `chooser.cancelled`, `operation.timed-out`, or `connection.failed` |
-| `domain`    | UBM subsystem such as `chooser`, `connection`, or `gatt`                                       |
-| `operation` | Exact operation boundary, for example `web-connection.connect`                                 |
-| `platform`  | Safe browser detail, including `browserErrorName` when Chrome supplies one                     |
-| `recovery`  | Deterministic recovery disposition and suggested actions                                       |
+| Field          | Meaning                                                                                        |
+| -------------- | ---------------------------------------------------------------------------------------------- |
+| `code`         | Stable UBM category such as `chooser.cancelled`, `operation.timed-out`, or `connection.failed` |
+| `domain`       | UBM subsystem such as `chooser`, `connection`, or `gatt`                                       |
+| `operation`    | Exact operation boundary, for example `web-connection.connect`                                 |
+| `platform`     | Safe browser detail, including `browserErrorName` when Chrome supplies one                     |
+| `retryability` | `never` or `caller-decides`: the operation's own answer about repeating it                     |
+| `commit`       | `uncertain`, `not-dispatched`, or `null`: whether the failed operation may have taken effect   |
+| `recovery`     | Recovery disposition and suggested actions, following `code`, `retryability` and `commit`      |
 
 Common boundaries:
 
 - `chooser.cancelled` + `NotFoundError`: the chooser ended without returning a compatible device;
-- `connection.failed` + `NetworkError`: Chrome selected the device but could not open GATT;
+- `connection.failed` + `NetworkError`: Chrome selected the device but could not open GATT; the link was not established, so it is `caller-decides` (5.0) and the backend never retries it;
 - `operation.timed-out` at `web-connection.connect`: the bounded native connection did not settle;
 - `gatt.not-found`: the connection opened, but a requested service or characteristic was unavailable or not granted;
-- `operation.disconnected`: the link ended during another operation.
+- `connection.lost`: the browser reported the link gone (or failed a GATT call with `NetworkError`) during another operation;
+- `operation.disconnected`: the app's own release cut another operation off;
+- `operation.reset`: Bluetooth became unavailable during another operation (the link ends `adapter-loss`, its streams `source-failed`);
+- `peer.not-found`: `connect()` named a peer the chooser never returned.
+
+These are the same names every host uses for the same event (5.0; see "One name per physical event" in [`UNIFIED_SEMANTICS.md`](UNIFIED_SEMANTICS.md)).
 
 ## Iframes and deployment
 

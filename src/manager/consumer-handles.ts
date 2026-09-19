@@ -3,7 +3,7 @@
 import type { BleErrorCode, BleErrorDomain } from '../backend-contract/errors'
 import type { ConnectionLifecycleCause } from '../backend-contract/connection-lifecycle'
 import type { OverflowPolicy } from '../backend-contract/streams'
-import type { WriteMode } from '../backend-contract/operations'
+import type { ReadProvenance, WriteMode } from '../backend-contract/operations'
 import type { DiagnosticTraceDocument } from '../diagnostics/trace-format'
 import type {
   GattAccessRequirements,
@@ -188,6 +188,19 @@ export interface PortableWriteReceipt {
   readonly commitState: 'confirmed' | 'unknown'
 }
 
+/**
+ * A characteristic read: the value and what the platform says it is.
+ * `read-response` — the platform attributed the value to this read's ATT
+ * response. `read-or-notification` — the platform reports read responses and
+ * notifications through one callback (Apple CoreBluetooth) and the
+ * characteristic could notify when the value arrived, so the value is this
+ * read's response or a notification/indication; subscribers receive it too.
+ */
+export interface PortableReadReceipt {
+  readonly value: Uint8Array
+  readonly provenance: ReadProvenance
+}
+
 export interface PortableLongWriteChunkProgress {
   readonly index: number
   readonly byteOffset: number
@@ -234,8 +247,7 @@ export interface PortableMaximumWriteLengthObservation {
 export interface PortableNotificationValue {
   /** The receiver owns an independent mutable byte copy. */
   readonly value: Uint8Array
-  readonly indication: boolean
-  readonly delivery?: 'notification' | 'indication' | 'unknown'
+  readonly delivery: 'notification' | 'indication' | 'unknown'
   readonly observedAtMonotonicMs?: number
   readonly sequence?: number
 }
@@ -349,6 +361,12 @@ export interface DiscoveredGattDatabaseHandle {
   scheduleDeadline(deadline: number, action: () => void): DeadlineHandle
   snapshot(): Promise<PortableGattDatabaseSnapshot>
   read(path: PortableCurrentCharacteristicPath, options: PortableOperationOptions): Promise<Uint8Array>
+  /**
+   * Like `read`, with the platform's provenance for the value. Optional so a
+   * handle from an implementation that predates provenance stays assignable;
+   * without it `GattCharacteristic.readReceipt()` fails `capability.unsupported`.
+   */
+  readReceipt?(path: PortableCurrentCharacteristicPath, options: PortableOperationOptions): Promise<PortableReadReceipt>
   write(
     path: PortableCurrentCharacteristicPath,
     bytes: Readonly<Uint8Array>,

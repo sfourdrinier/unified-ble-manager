@@ -27,16 +27,69 @@ import type {
   RestorationJournalRecord
 } from '../../backend-contract/restoration'
 import { normalizeRestorationBootstrapRequest } from '../../backend-contract/restoration'
-import {
-  MAXIMUM_CONTROL_RECORD_BYTES,
-  type RestorationOutcomes
-} from '../../native-protocol/generated/native-protocol-v2-schema'
-import type {
-  NativeRestorationBootstrapRequest,
-  NativeRestorationAdoptionControlResult,
-  NativeRestorationReplayRecord,
-  Spec as NativeProtocolControl
-} from '../../NativeUnifiedBleProtocolControl'
+import { MAXIMUM_CONTROL_RECORD_BYTES, type RestorationOutcomes } from './react-native-protocol-limits'
+
+/** The restoration-identity request a native host answers (`restorationId`, `generation`). */
+export interface ReactNativeRestorationBootstrapRequest {
+  readonly restorationId: string
+  readonly generation: string
+}
+
+/** A native host that answers the app-declared restoration identity. */
+export interface ReactNativeRestorationIdentitySource {
+  bootstrapRestorationIdentity(
+    request: ReactNativeRestorationBootstrapRequest
+  ): Promise<NativeRestorationBootstrapIdentity>
+}
+
+/** One adoption request against the native restoration journal. */
+export interface ReactNativeRestorationAdoptionRequestRecord {
+  readonly namespaceValue: string
+  readonly attachmentId: string
+  readonly expectedBackendInstanceId: string
+  readonly expectedEpoch: string
+  readonly nativeProtocolMinimum: number
+  readonly nativeProtocolMaximum: number
+  readonly clientId: string
+  readonly hostSessionScope: string
+}
+
+/** One replayed journal record, in the native journal's structured transport. */
+export interface ReactNativeRestorationReplayRecord {
+  readonly recordVersion: number
+  readonly namespaceValue: string
+  readonly attachmentId: string
+  readonly backendInstanceId: string
+  readonly backendGeneration: string
+  readonly adapterId: string
+  readonly adapterGeneration: string
+  readonly ordinal: number
+  readonly adoptionEpoch: string
+  readonly kind: 'adapter' | 'connection'
+  readonly peerId: string | null
+  readonly connectionId: string | null
+  readonly ownerLeaseId: string | null
+  readonly connectionGeneration: string | null
+}
+
+/** The journal's answer to one adoption request. */
+export interface ReactNativeRestorationAdoptionRecord {
+  readonly receiptId: string
+  readonly outcome: RestorationOutcomes
+  readonly boundClientId: string
+  readonly adoptionEpoch: string
+  readonly replayRecordCount: number
+  readonly records: readonly ReactNativeRestorationReplayRecord[]
+}
+
+/**
+ * The native restoration journal the coordinator adopts from: the Rust-route
+ * journal over `peers.restored` (react-native-rust-core-restoration.ts), or a
+ * legacy protocol control used as a parity reference.
+ */
+export interface ReactNativeRestorationJournal {
+  adoptRestoration(request: ReactNativeRestorationAdoptionRequestRecord): Promise<ReactNativeRestorationAdoptionRecord>
+}
 
 /**
  * Safety bound on records adopted from a native restoration journal.
@@ -48,9 +101,10 @@ import type {
  */
 const maximumRestorationRecords = 1024
 const restorationScenarioId = 'restoration.provider-journal-adoption-and-rejection'
+const presenceScenarioId = 'restoration.presence-observation-arms-known-peer'
 const activationIssuanceToken = Symbol('react-native-restoration-activation')
 
-type ReactNativeRestorationPlatform = 'android' | 'apple'
+export type ReactNativeRestorationPlatform = 'android' | 'apple'
 
 interface ActiveRestorationBinding {
   readonly activation: ReactNativeRestorationActivation
@@ -68,11 +122,11 @@ export interface ReactNativeRestorationBackendProvider extends BackendProvider<s
  * returned by the trusted native host and is validated before use.
  */
 export async function bootstrapReactNativeRestorationIdentity(
-  control: Pick<NativeProtocolControl, 'bootstrapRestorationIdentity'>,
+  control: ReactNativeRestorationIdentitySource,
   input: { readonly restorationId: string; readonly generation?: string }
 ): Promise<NativeRestorationBootstrapIdentity> {
   const normalized = normalizeRestorationBootstrapRequest(input)
-  const request: NativeRestorationBootstrapRequest = Object.freeze({
+  const request: ReactNativeRestorationBootstrapRequest = Object.freeze({
     restorationId: normalized.restorationId,
     generation: normalized.generation
   })
@@ -112,10 +166,7 @@ export class ReactNativeRestorationCoordinator implements RestorationCoordinator
   private consumed: RestorationAdoptionResult<string> | null = null
   private terminalFailure: BackendContractError | null = null
 
-  constructor(
-    private readonly control: Pick<NativeProtocolControl, 'adoptRestoration'>,
-    private readonly platform: ReactNativeRestorationPlatform
-  ) {}
+  constructor(private readonly control: ReactNativeRestorationJournal) {}
 
   activate(attachment: AttachmentRecord<string>, versions: NativeVersionAxes): ReactNativeRestorationActivation {
     if (this.activeBinding !== null || this.closing !== null) {
@@ -167,9 +218,8 @@ export class ReactNativeRestorationCoordinator implements RestorationCoordinator
     const binding = this.requireActiveBinding()
     assertClient(client)
     assertRequest(request)
-    if (this.platform === 'android') {
-      throw contractError('capability.unsupported', 'restoration', 'react-native-restoration.android-adopt')
-    }
+    // Issue #212: Android adopts the peers a Companion Device Manager
+    // presence wake restored, through the same journal path as iOS.
     const mismatch = requestMismatch(binding, request)
     if (mismatch !== null) {
       return mismatchResult(request, mismatch)
@@ -181,7 +231,7 @@ export class ReactNativeRestorationCoordinator implements RestorationCoordinator
       return alreadyConsumedResult(this.consumed)
     }
 
-    let nativeResult: NativeRestorationAdoptionControlResult
+    let nativeResult: ReactNativeRestorationAdoptionRecord
     try {
       nativeResult = await this.control.adoptRestoration({
         namespaceValue: request.namespace,
@@ -194,7 +244,12 @@ export class ReactNativeRestorationCoordinator implements RestorationCoordinator
         hostSessionScope: client.hostSessionScope
       })
     } catch (error) {
-      console.error('[ReactNativeRestorationCoordinator.adopt] Native restoration adoption failed:', error)
+      // A capability answer is the platform's reply, not a failure to
+      // diagnose: the typed rejection still reaches the caller, but it is
+      // not logged as an error. Genuine failures keep the log line below.
+      if (!(error instanceof BackendContractError) || error.normalized.code !== 'capability.unsupported') {
+        console.error('[ReactNativeRestorationCoordinator.adopt] Native restoration adoption failed:', error)
+      }
       if (error instanceof BackendContractError) {
         throw error
       }
@@ -231,13 +286,14 @@ export function createReactNativeRestorationFeatureRegistry(
   platform: ReactNativeRestorationPlatform,
   implementationVersion: string
 ): FeatureRegistry {
-  const state = platform === 'apple' ? 'limited' : 'unsupported'
   const limitation = restorationLimitation(platform)
+  const presenceState = platform === 'android' ? 'limited' : 'unsupported'
+  const presenceLimitation = presenceObservationLimitation(platform)
   return createFeatureRegistry(
     Object.freeze([
       Object.freeze({
         id: 'state:restoration-adoption',
-        state,
+        state: 'limited',
         selectedSchemaRange: versionRange(version('capability-schema', 1), version('capability-schema', 1)),
         implementationOrigin: 'backend-native',
         implementation: Object.freeze({
@@ -256,7 +312,7 @@ export function createReactNativeRestorationFeatureRegistry(
         }),
         evidence: Object.freeze({
           receiptId: `react-native-${platform}-restoration-adoption-v1:deterministic`,
-          evidenceLevel: state === 'limited' ? 'deterministic' : 'blocked',
+          evidenceLevel: 'deterministic',
           implementationVersion,
           sourceDigest: `react-native-${platform}-restoration-adoption-v1`,
           scenarioIds: Object.freeze([restorationScenarioId]),
@@ -266,6 +322,39 @@ export function createReactNativeRestorationFeatureRegistry(
         limits: Object.freeze({
           restorationRecords: Object.freeze({ maximum: maximumRestorationRecords, minimum: null, unit: 'items' }),
           restorationBytes: Object.freeze({ maximum: MAXIMUM_CONTROL_RECORD_BYTES, minimum: null, unit: 'bytes' }),
+          automaticReconnects: Object.freeze({ maximum: 0, minimum: null, unit: 'connections' }),
+          automaticSubscriptionResumptions: Object.freeze({ maximum: 0, minimum: null, unit: 'subscriptions' })
+        })
+      }),
+      Object.freeze({
+        id: 'state:presence-observation',
+        state: presenceState,
+        selectedSchemaRange: versionRange(version('capability-schema', 1), version('capability-schema', 1)),
+        implementationOrigin: 'backend-native',
+        implementation: Object.freeze({
+          async invoke(_input: SerializableRecord): Promise<SerializableRecord> {
+            throw contractError(
+              'lifecycle.invalid-state',
+              'restoration',
+              'state:presence-observation.invoke-without-manager'
+            )
+          }
+        }),
+        tck: Object.freeze({
+          suiteId: 'restoration',
+          requiredScenarioIds: Object.freeze([presenceScenarioId]),
+          contractRange: versionRange(version('capability-schema', 1), version('capability-schema', 1))
+        }),
+        evidence: Object.freeze({
+          receiptId: `react-native-${platform}-presence-observation-v1:deterministic`,
+          evidenceLevel: presenceState === 'limited' ? 'deterministic' : 'blocked',
+          implementationVersion,
+          sourceDigest: `react-native-${platform}-presence-observation-v1`,
+          scenarioIds: Object.freeze([presenceScenarioId]),
+          limitations: Object.freeze([presenceLimitation])
+        }),
+        limitations: Object.freeze([presenceLimitation]),
+        limits: Object.freeze({
           automaticReconnects: Object.freeze({ maximum: 0, minimum: null, unit: 'connections' }),
           automaticSubscriptionResumptions: Object.freeze({ maximum: 0, minimum: null, unit: 'subscriptions' })
         })
@@ -281,16 +370,34 @@ export function combineReactNativeFeatureRegistries(...registries: readonly Feat
 function restorationLimitation(platform: 'android' | 'apple'): Limitation {
   if (platform === 'android') {
     return Object.freeze({
-      code: 'android-process-restart-has-no-restored-gatt-state',
-      explanation: 'Android does not provide a native BLE restoration journal for a terminated process.',
+      code: 'android-restoration-needs-presence-observation',
+      explanation:
+        'Android has no OS restoration journal: known peers are restored through Companion Device Manager device presence (API 31+) for an armed associated peer, then claimed with the same once-per-process semantics as iOS.',
       affectedGuarantee: 'replay of state restored before JavaScript starts'
     })
   }
   return Object.freeze({
     code: 'configured-native-restoration-authority-required',
     explanation:
-      'Apple replays bounded restored state only after explicit authenticated adoption against its native authority configuration; it never reconnects or resumes subscriptions.',
+      'Apple replays bounded restored state only after explicit authenticated adoption against its native authority configuration; it never reconnects or resumes subscriptions by itself — the app reconnects known peers and replays subscriptions through the public API.',
     affectedGuarantee: 'automatic restoration of radio activity'
+  })
+}
+
+function presenceObservationLimitation(platform: 'android' | 'apple'): Limitation {
+  if (platform === 'android') {
+    return Object.freeze({
+      code: 'companion-presence-needs-api-31-and-association',
+      explanation:
+        'Device presence observation needs Android API 31+ and an associated peer (associateCompanion); the system wakes the process through the library CompanionDeviceService only for armed peers.',
+      affectedGuarantee: 'restoration of known peers after process termination'
+    })
+  }
+  return Object.freeze({
+    code: 'apple-restoration-needs-no-presence-observation',
+    explanation:
+      'CoreBluetooth delivers restoration through willRestoreState after a system relaunch; there is no presence observation to arm.',
+    affectedGuarantee: 'restoration of known peers after process termination'
   })
 }
 
@@ -377,7 +484,7 @@ function mismatchResult(
 }
 
 function decodeAdoptionResult(
-  result: NativeRestorationAdoptionControlResult,
+  result: ReactNativeRestorationAdoptionRecord,
   client: AuthenticatedRestorationClient<string>,
   request: RestorationAdoptionRequest<string>,
   binding: ActiveRestorationBinding
@@ -443,7 +550,7 @@ function decodeAdoptionResult(
   })
 }
 
-function assertNativeResultShape(result: NativeRestorationAdoptionControlResult): void {
+function assertNativeResultShape(result: ReactNativeRestorationAdoptionRecord): void {
   if (
     !Number.isSafeInteger(result.replayRecordCount) ||
     result.replayRecordCount < 0 ||
@@ -477,7 +584,7 @@ function outcomeFor(outcome: RestorationOutcomes): RestorationAdoptionResult<str
 }
 
 function decodeReplayedRecords(
-  result: NativeRestorationAdoptionControlResult,
+  result: ReactNativeRestorationAdoptionRecord,
   request: RestorationAdoptionRequest<string>,
   binding: ActiveRestorationBinding
 ): readonly RestorationJournalRecord<string>[] {
@@ -495,7 +602,7 @@ function decodeReplayedRecords(
 }
 
 function replayedRecordFromStructuredTransport(
-  record: NativeRestorationReplayRecord,
+  record: ReactNativeRestorationReplayRecord,
   request: RestorationAdoptionRequest<string>,
   binding: ActiveRestorationBinding
 ): RestorationJournalRecord<string> {
@@ -544,7 +651,10 @@ function replayedRecordFromStructuredTransport(
   })
 }
 
-function assertStructuredAttachment(record: NativeRestorationReplayRecord, expected: AttachmentRecord<string>): void {
+function assertStructuredAttachment(
+  record: ReactNativeRestorationReplayRecord,
+  expected: AttachmentRecord<string>
+): void {
   if (
     requiredNativeString(record.attachmentId, 'attachment-id') !== String(expected.attachmentId) ||
     requiredNativeString(record.backendInstanceId, 'backend-instance-id') !== String(expected.backendInstanceId) ||
@@ -578,7 +688,7 @@ function requiredNativeNullableString(value: string | null, fieldName: string): 
 }
 
 function structuredProtocolRecord(
-  record: NativeRestorationReplayRecord,
+  record: ReactNativeRestorationReplayRecord,
   peerId: string | null,
   connectionId: string | null,
   ownerLeaseId: string | null,

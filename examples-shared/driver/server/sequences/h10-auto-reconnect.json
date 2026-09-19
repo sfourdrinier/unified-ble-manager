@@ -1,0 +1,10 @@
+{
+  "name": "h10-stream with createConnectionSupervisor",
+  "defaultTimeoutMs": 60000,
+  "steps": [
+    { "run": "h10-stream", "command": "start", "args": { "autoReconnect": true }, "expect": { "ok": true, "result": { "mode": "supervised" } }, "capture": ["supervisorState"] },
+    { "waitForEvent": "h10-stream", "kind": "value", "count": 5, "timeoutMs": 30000 },
+    { "expectSnapshot": "h10-stream", "match": { "supervisorState": "connected" } },
+    { "run": "h10-stream", "command": "stop", "always": true, "capture": ["cleanup"] }
+  ]
+}

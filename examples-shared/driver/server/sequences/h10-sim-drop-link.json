@@ -1,0 +1,15 @@
+{
+  "name": "android streams from the sim while peripheral-sim drops the link, then values resume",
+  "target": ["android", "peripheral-sim"],
+  "devices": { "android": "Polar H10 SIM0001" },
+  "defaultTimeoutMs": 120000,
+  "steps": [
+    { "run": "link-loss", "command": "start", "hosts": ["android"] },
+    { "waitForEvent": "link-loss", "kind": "value", "count": 5, "hosts": ["android"] },
+    { "run": "sim-control", "command": "drop-link", "hosts": ["peripheral-sim"] },
+    { "waitForEvent": "link-loss", "kind": "outage-detected", "since": "previous-step", "hosts": ["android"] },
+    { "waitForEvent": "link-loss", "kind": "outage-recovered", "since": "previous-step", "timeoutMs": 60000, "hosts": ["android"] },
+    { "waitForEvent": "link-loss", "kind": "value", "count": 3, "since": "previous-step", "timeoutMs": 60000, "hosts": ["android"] },
+    { "run": "link-loss", "command": "stop", "always": true, "hosts": ["android"] }
+  ]
+}

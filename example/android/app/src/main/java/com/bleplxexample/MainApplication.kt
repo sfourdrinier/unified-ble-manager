@@ -16,13 +16,18 @@ class MainApplication : Application(), ReactApplication {
 
   private val packages: List<ReactPackage> = PackageList(this).packages
 
-  override val reactHost: ReactHost =
-      getDefaultReactHost(
-          applicationContext,
-          packages,
-          jsMainModulePath = "index",
-          useDevSupport = BuildConfig.DEBUG,
-      )
+  // Lazy on purpose: applicationContext is null during Application
+  // construction (mBase attaches later), so an eager initializer NPEs at
+  // instantiation — instant crash-loop on every launch. First access happens
+  // after onCreate, when the base context is attached.
+  override val reactHost: ReactHost by lazy {
+    getDefaultReactHost(
+        applicationContext,
+        packages,
+        jsMainModulePath = "index",
+        useDevSupport = BuildConfig.DEBUG,
+    )
+  }
 
   override fun onCreate() {
     super.onCreate()

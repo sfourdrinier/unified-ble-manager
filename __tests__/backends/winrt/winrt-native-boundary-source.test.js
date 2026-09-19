@@ -22,7 +22,7 @@ function section(source, start, end) {
 describe('WinRT native boundary source contract', () => {
   test('pins the private loader and Windows ABI smoke to protocol v2', () => {
     const loader = read('native/electron/winrt/index.js')
-    const nodeLoader = read('src/node-winrt.ts')
+    const nodeLoader = read('src/backends/winrt/winrt-native-boundary.ts')
     const ci = read('.github/workflows/ci.yml')
     const electronSmoke = read('scripts/ci/electron-main-smoke.js')
     const electronDocs = read('docs/ELECTRON.md')

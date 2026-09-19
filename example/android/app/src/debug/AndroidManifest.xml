@@ -3,11 +3,48 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+    <!-- U9 test scaffolding (DEBUG ONLY): the documented background
+         integration so the U9 battery can prove restart-recovery end to
+         end. Release APKs are untouched and src/main keeps the repo
+         invariant (see AndroidModernization test). exported=true exists
+         solely so the battery can start the service cross-uid; the
+         receiver still fails closed on the persisted flag (default
+         false). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:usesCleartextTraffic="true"
         tools:targetApi="28"
         tools:ignore="GoogleAppIndexingWarning">
         <activity android:name="com.facebook.react.devsupport.DevSettingsActivity" android:exported="false" />
+      <service
+        android:name="com.sfourdrinier.unifiedblemanager.BlePlxForegroundService"
+        android:foregroundServiceType="connectedDevice"
+        android:exported="true" />
+      <receiver
+        android:name="com.sfourdrinier.unifiedblemanager.background.BlePlxForegroundServiceRecoveryReceiver"
+        android:exported="true">
+        <intent-filter>
+            <action android:name="android.intent.action.BOOT_COMPLETED" />
+            <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+        </intent-filter>
+      </receiver>
+      <meta-data
+        android:name="com.sfourdrinier.unifiedblemanager.foreground-service-ownership"
+        android:value="service=1" />
+      <meta-data
+        android:name="com.sfourdrinier.unifiedblemanager.foreground-service.channel-id"
+        android:value="ubm-u9-recovery" />
+      <meta-data
+        android:name="com.sfourdrinier.unifiedblemanager.foreground-service.channel-name"
+        android:value="UBM recovery" />
+      <meta-data
+        android:name="com.sfourdrinier.unifiedblemanager.foreground-service.title"
+        android:value="UBM connected device" />
+      <meta-data
+        android:name="com.sfourdrinier.unifiedblemanager.foreground-service.restart"
+        android:value="while-session-intent-exists" />
     </application>
 </manifest>

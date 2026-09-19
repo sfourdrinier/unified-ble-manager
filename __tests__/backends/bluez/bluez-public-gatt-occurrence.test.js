@@ -182,7 +182,8 @@ function publicSourceFromBluezDatabase(database) {
     scheduleDeadline: () => ({ cancel() {} }),
     assertCurrent: () => database.assertCurrent('bluez.gatt.public-source'),
     snapshot: () => database.snapshot(),
-    read: (path, options) => database.read(path, options),
+    read: async (path, options) => (await database.read(path, options)).value,
+    readReceipt: (path, options) => database.read(path, options),
     write: (path, bytes, options) => database.write(path, bytes, options),
     maximumWriteLength: async () => ({
       maximumWriteLength: 20,
@@ -268,6 +269,17 @@ describe('BlueZ public GATT occurrences', () => {
 
     await expect(first.characteristic(characteristicUuid).read()).resolves.toEqual(new Uint8Array([12, 13]))
     await expect(second.characteristic(characteristicUuid).read()).resolves.toEqual(new Uint8Array([22, 23]))
+    // BlueZ `ReadValue` answers with the read's own response.
+    await expect(first.characteristic(characteristicUuid).readReceipt()).resolves.toEqual({
+      value: new Uint8Array([12, 13]),
+      provenance: 'read-response'
+    })
+    // A source that cannot say what a read value is reports so instead of guessing.
+    const { readReceipt: _omitted, ...withoutProvenance } = publicSourceFromBluezDatabase(database)
+    const legacy = await createPublicGattDatabase(withoutProvenance)
+    await expect(
+      legacy.service(serviceUuid, { occurrence: 0 }).characteristic(characteristicUuid).readReceipt()
+    ).rejects.toMatchObject({ code: 'capability.unsupported' })
     await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 

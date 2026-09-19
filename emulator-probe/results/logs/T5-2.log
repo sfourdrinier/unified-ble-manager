@@ -1,0 +1,5 @@
+$ pidof while backgrounded
+[exit=0]
+10899
+
+

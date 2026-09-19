@@ -134,8 +134,12 @@ function isPublicByteCapacity(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 1 && value <= MAX_PUBLIC_STREAM_BYTE_CAPACITY
 }
 
-export const STREAM_PRESET_DEFAULTS = Object.freeze({
-  scan: 'balanced' as StreamPreset,
-  notification: 'balanced' as StreamPreset,
-  indication: 'lossless-bounded' as StreamPreset
+export const STREAM_PRESET_DEFAULTS: {
+  readonly scan: StreamPreset
+  readonly notification: StreamPreset
+  readonly indication: StreamPreset
+} = Object.freeze({
+  scan: 'balanced',
+  notification: 'balanced',
+  indication: 'lossless-bounded'
 })

@@ -1,6 +1,13 @@
 // src/backends/corebluetooth/corebluetooth-read-notify-provenance.ts
 
 import { BackendContractError, contractError, type BleErrorCode } from '../../backend-contract/errors'
+import type { ReadProvenance } from '../../backend-contract/operations'
+
+/**
+ * The legacy CoreBluetooth addon refuses every read it cannot attribute (413,
+ * 414, 415), so a read it answers is the read response.
+ */
+export const LEGACY_COREBLUETOOTH_READ_PROVENANCE: ReadProvenance = 'read-response'
 
 export const COREBLUETOOTH_INDEPENDENT_READ_IOS_CODE = 1031
 export const COREBLUETOOTH_INDEPENDENT_READ_ELECTRON_CODE = 413

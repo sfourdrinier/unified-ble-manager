@@ -23,10 +23,20 @@ describe('native Node-API prebuild distribution', () => {
       { backend: 'corebluetooth', platform: 'darwin', arch: 'arm64', runner: 'macos-15' },
       { backend: 'corebluetooth', platform: 'darwin', arch: 'x64', runner: 'macos-15-intel' },
       { backend: 'winrt', platform: 'win32', arch: 'arm64', runner: 'windows-11-arm' },
-      { backend: 'winrt', platform: 'win32', arch: 'x64', runner: 'windows-2025' }
+      { backend: 'winrt', platform: 'win32', arch: 'x64', runner: 'windows-2025' },
+      { backend: 'desktop-core', platform: 'linux', arch: 'x64', runner: 'ubuntu-22.04' },
+      { backend: 'desktop-core', platform: 'linux', arch: 'arm64', runner: 'ubuntu-22.04-arm' },
+      { backend: 'desktop-core', platform: 'darwin', arch: 'arm64', runner: 'macos-15' },
+      { backend: 'desktop-core', platform: 'darwin', arch: 'x64', runner: 'macos-15-intel' },
+      { backend: 'desktop-core', platform: 'win32', arch: 'x64', runner: 'windows-2025' },
+      { backend: 'desktop-core', platform: 'win32', arch: 'arm64', runner: 'windows-11-arm' }
     ])
-    expect(new Set(NATIVE_PREBUILD_TARGETS.map(target => target.artifactName)).size).toBe(4)
-    expect(new Set(NATIVE_PREBUILD_TARGETS.map(target => target.prebuildPath)).size).toBe(4)
+    expect(new Set(NATIVE_PREBUILD_TARGETS.map(target => target.artifactName)).size).toBe(10)
+    expect(new Set(NATIVE_PREBUILD_TARGETS.map(target => target.prebuildPath)).size).toBe(10)
+    for (const target of NATIVE_PREBUILD_TARGETS.filter(entry => entry.backend === 'desktop-core')) {
+      expect(target.rustTarget).toEqual(expect.any(String))
+      expect(target.sidecarPath).toEqual(expect.any(String))
+    }
   })
 
   test('loads platform prebuilds first while preserving an explicit source-build fallback', () => {

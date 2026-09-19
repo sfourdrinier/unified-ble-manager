@@ -16,6 +16,7 @@ import type { ScanSession, Subscription } from '../manager/ble-manager'
 import type { ElectronBleIpcEvent } from './protocol'
 import { assertAdvertisementObservation, snapshotAdvertisementObservation } from './advertisement-observation'
 import type { AdvertisementObservation } from '../backend-contract/advertisement'
+import { NOTIFICATION_DELIVERIES, type NotificationValue } from '../backend-contract/gatt'
 
 /**
  * `terminalized` means main has terminalized the exact stream or made the
@@ -52,6 +53,13 @@ export interface ManagedSubscription {
 export interface RendererStreamResources {
   readonly scans: Map<string, ManagedScan>
   readonly subscriptions: Map<string, ManagedSubscription>
+  /**
+   * Handles removed after a successful release, including a source-terminal
+   * auto-removal (finding 211: link loss ends the stream before the
+   * renderer's explicit release arrives). Re-releasing one reports
+   * `released`; a handle never issued is still foreign.
+   */
+  readonly releasedHandles: Set<string>
 }
 
 export interface ElectronRendererStreamRegistryOptions {
@@ -162,6 +170,7 @@ export class ElectronRendererStreamRegistry {
       await resource.pump
     }
     resources.subscriptions.delete(handle)
+    resources.releasedHandles.add(handle)
     return { state: 'released', failures: [] }
   }
 
@@ -459,8 +468,7 @@ function snapshotStreamValue(value: unknown, now: () => number, nextSequence: ()
   if (isNotificationValue(value)) {
     return Object.freeze({
       value: ownBytes(value.value, byteLimit(value.value.byteLength)),
-      indication: value.indication === true,
-      delivery: value.indication === true ? 'indication' : 'notification',
+      delivery: value.delivery,
       observedAtMonotonicMs: now(),
       sequence: nextSequence()
     })
@@ -471,13 +479,14 @@ function snapshotStreamValue(value: unknown, now: () => number, nextSequence: ()
   throw contractError('protocol.malformed', 'ipc', 'electron-renderer-stream-registry.stream-value')
 }
 
-function isNotificationValue(value: unknown): value is { readonly value: Uint8Array; readonly indication?: boolean } {
+function isNotificationValue(value: unknown): value is NotificationValue {
   return (
     typeof value === 'object' &&
     value !== null &&
     'value' in value &&
     value.value instanceof Uint8Array &&
-    (!('indication' in value) || typeof value.indication === 'boolean')
+    'delivery' in value &&
+    NOTIFICATION_DELIVERIES.some(delivery => delivery === value.delivery)
   )
 }
 

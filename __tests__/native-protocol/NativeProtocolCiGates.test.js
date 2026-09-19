@@ -14,7 +14,7 @@ describe('Native Protocol executable CI gates', () => {
     const packageJson = JSON.parse(read('package.json'))
 
     expect(packageJson.scripts['test:native-protocol:android']).toBe(
-      "cd example/android && ./gradlew :unified-ble-manager:testDebugUnitTest --tests 'com.sfourdrinier.unifiedblemanager.protocol.UnifiedBleProtocolAndroidDispatcher*' --no-daemon --console=plain"
+      'cd example/android && ./gradlew :unified-ble-manager:testDebugUnitTest --no-daemon --console=plain'
     )
     expect(packageJson.scripts['test:native-protocol:apple']).toBe(
       'node scripts/native-protocol/test-apple-native-protocol.js'
@@ -49,5 +49,19 @@ describe('Native Protocol executable CI gates', () => {
     expect(script).toContain('AppleCoreBluetoothScanParserHarness.swift')
     expect(script).toContain('AppleCoreBluetoothReadNotifyProvenanceHarness.swift')
     expect(script).toContain('No physical BLE radio or peripheral behavior was exercised.')
+  })
+
+  it('keeps the Rust-route Apple harnesses outside the legacy native protocol tree', () => {
+    const script = read('scripts/native-protocol/test-apple-native-protocol.js')
+    for (const harness of [
+      'AppleCoreBluetoothScanParserHarness',
+      'AppleCoreBluetoothReadNotifyProvenanceHarness',
+      'AppleCoreBluetoothBorrowerOwnerHarness',
+      'AppleRustRadioAdapterHarness'
+    ]) {
+      expect(script).toContain(`'ios/__tests__/${harness}.swift'`)
+      expect(fs.existsSync(path.join(root, 'ios/__tests__', `${harness}.swift`))).toBe(true)
+      expect(fs.existsSync(path.join(root, 'native/protocol/tests', `${harness}.swift`))).toBe(false)
+    }
   })
 })

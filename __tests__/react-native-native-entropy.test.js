@@ -4,7 +4,12 @@ const path = require('path')
 const root = path.resolve(__dirname, '..')
 
 describe('React Native native entropy', () => {
-  test('TurboModule spec declares getRandomBytes', () => {
+  test('the production TurboModule spec (UnifiedBleRustCore) declares randomBytes', () => {
+    const spec = fs.readFileSync(path.join(root, 'src/NativeUnifiedBleRustCore.ts'), 'utf8')
+    expect(spec).toMatch(/randomBytes\(length: number\): Promise<string>/)
+  })
+
+  test('the legacy control spec keeps getRandomBytes until Phase 4 deletes it (reference only)', () => {
     const spec = fs.readFileSync(path.join(root, 'src/NativeUnifiedBleProtocolControl.ts'), 'utf8')
     expect(spec).toMatch(/getRandomBytes\(length: number\): Promise<number\[\]>/)
   })
@@ -32,7 +37,8 @@ describe('React Native native entropy', () => {
     const source = fs.readFileSync(path.join(root, 'src/react-native-app-manager.ts'), 'utf8')
     expect(source).toContain('createNativeRandomBytesSource')
     expect(source).toContain('normalized.randomBytes')
-    expect(source).toContain('control.getRandomBytes')
+    expect(source).toContain('binding.randomBytes')
+    expect(source).not.toContain('NativeUnifiedBleProtocolControl')
   })
 
   test('native entropy source slices a decoded CSPRNG pool', async () => {

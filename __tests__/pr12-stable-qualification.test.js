@@ -6,10 +6,10 @@ const root = path.join(__dirname, '..')
 const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf8').replace(/\r\n/g, '\n')
 const pkg = JSON.parse(read('package.json'))
 
-describe('PR12 stable 4.0.0 qualification', () => {
-  test('package identity is stable 4.0.0 without a prerelease suffix', () => {
-    expect(pkg.version).toBe('4.0.28')
-    expect(UNIFIED_BLE_IMPLEMENTATION_VERSION).toBe('4.0.28')
+describe('PR12 package identity qualification', () => {
+  test('package identity is the 5.0.0 release candidate', () => {
+    expect(pkg.version).toBe('5.0.0-rc.0')
+    expect(UNIFIED_BLE_IMPLEMENTATION_VERSION).toBe('5.0.0-rc.0')
   })
 
   test('consumer docs identify the stable source without inventing publication or backend support', () => {

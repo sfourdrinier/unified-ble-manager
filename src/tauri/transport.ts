@@ -1,6 +1,6 @@
 // src/tauri/transport.ts
 
-import { BLE_ERROR_CODES, BLE_ERROR_DOMAINS, contractError } from '../backend-contract/errors'
+import { BLE_COMMIT_UNCERTAINTIES, BLE_ERROR_CODES, BLE_ERROR_DOMAINS, contractError } from '../backend-contract/errors'
 import type {
   BleErrorCode,
   BleErrorDomain,
@@ -10,6 +10,7 @@ import type {
 } from '../backend-contract/errors'
 import type { IpcClientLeaseIdentity } from '../backend-contract/ipc'
 import type { IpcClientBootstrap } from '../ipc/protocol'
+import { relativeBudgetPayload } from '../ipc/relative-budget'
 import type { SerializableRecord, SerializableValue } from '../backend-contract/primitives'
 import {
   assertSafeSerializablePrototype,
@@ -165,7 +166,7 @@ export class TauriBleIpcTransport<Attachment extends string, Client extends stri
     const trustedRequest = this.bindTrustedScanQuery(request)
     const wireRequest =
       trustedRequest.kind === 'route'
-        ? { kind: trustedRequest.kind, envelope: trustedRequest.envelope }
+        ? { kind: trustedRequest.kind, envelope: withRelativeBudget(trustedRequest.envelope) }
         : trustedRequest
     const response = await this.invokeCore<unknown>(this.command, {
       request: encodeTauriWireValue(wireRequest),
@@ -240,6 +241,13 @@ export class TauriBleIpcTransport<Attachment extends string, Client extends stri
     if (decoded.kind === 'event.ack' || decoded.kind === 'failure') return decoded
     throw contractError('protocol.malformed', 'ipc', 'tauri.transport.acknowledge-response')
   }
+}
+
+/** Sends the caller's deadline as a relative budget the Rust plugin admits on its own clock. */
+function withRelativeBudget<Envelope extends { readonly payload?: SerializableRecord }>(envelope: Envelope) {
+  const payload = envelope.payload
+  if (payload === undefined) return envelope
+  return { ...envelope, payload: relativeBudgetPayload(payload, 'tauri.transport') }
 }
 
 /** Encodes bytes explicitly before Tauri serializes nested command arguments as JSON. */
@@ -513,6 +521,7 @@ function isBootstrap<Attachment extends string, Client extends string>(
     !isIpcVersionAxes(record.versions) ||
     !isCapabilitySnapshot(record.capabilities, wireRecord(record.attachment)?.backendGeneration) ||
     (record.discovery !== undefined && !isDiscoveryDescriptor(record.discovery)) ||
+    (record.core !== undefined && !isCoreIdentity(record.core)) ||
     !isRenderer(record.renderer) ||
     !isLease(record.rendererLease)
   ) {
@@ -527,9 +536,20 @@ function hasBootstrapKeys(record: Record<string, unknown>): boolean {
   const keys = Object.keys(record).sort()
   const required = ['attachment', 'attachmentId', 'capabilities', 'renderer', 'rendererLease', 'versions']
   const withDiscovery = [...required, 'discovery'].sort()
+  const withCore = [...required, 'core'].sort()
+  const withBoth = [...required, 'core', 'discovery'].sort()
+  const matches = (expected: string[]): boolean =>
+    keys.length === expected.length && keys.every((key, index) => key === expected[index])
+  return matches(required.sort()) || matches(withDiscovery) || matches(withCore) || matches(withBoth)
+}
+
+function isCoreIdentity(value: unknown): boolean {
+  const record = wireRecord(value)
   return (
-    (keys.length === required.length && keys.every((key, index) => key === required.sort()[index])) ||
-    (keys.length === withDiscovery.length && keys.every((key, index) => key === withDiscovery[index]))
+    record !== null &&
+    exactKeys(record, ['contractRevision', 'implementationVersion']) &&
+    nonEmptyString(record.contractRevision) &&
+    nonEmptyString(record.implementationVersion)
   )
 }
 
@@ -895,18 +915,39 @@ function isCleanupFailure(value: unknown): boolean {
 
 function isNormalizedBleError(value: unknown): value is NormalizedBleError {
   const record = wireRecord(value)
-  const retryability =
-    record?.code === 'operation.aborted' || record?.code === 'operation.timed-out' ? 'caller-decides' : 'never'
   return (
     record !== null &&
-    exactKeys(record, ['code', 'domain', 'operation', 'platform', 'retryability']) &&
+    (exactKeys(record, ['code', 'domain', 'operation', 'platform', 'retryability']) ||
+      (exactKeys(record, ['code', 'domain', 'operation', 'platform', 'retryability', 'commit']) &&
+        isNativeCommit(record.commit))) &&
     isBleErrorCode(record.code) &&
     isBleErrorDomain(record.domain) &&
     nonEmptyString(record.domain) &&
     nonEmptyString(record.operation) &&
-    record.retryability === retryability &&
+    isNativeRetryability(record.code, record.operation, record.retryability) &&
     isPlatformErrorDetail(record.platform)
   )
+}
+
+/**
+ * Retryability is the native core's answer about dispatch state, so the
+ * transport validates the vocabulary and never derives the answer from the
+ * code. An aborted or timed-out operation is `caller-decides` only when the
+ * core never dispatched it; one that may have committed at the peripheral (a
+ * dispatched write) is `never`. A connect commits nothing, so the core may
+ * answer `caller-decides` for a link the platform could not establish (owner
+ * decision, 5.0). Every other failure is `never`.
+ */
+function isNativeRetryability(code: BleErrorCode, operation: unknown, retryability: unknown): boolean {
+  if (code === 'operation.aborted' || code === 'operation.timed-out' || operation === 'connection.connect') {
+    return retryability === 'never' || retryability === 'caller-decides'
+  }
+  return retryability === 'never'
+}
+
+/** The native commit state of a failed operation (PR210-37), or null when unknown. */
+function isNativeCommit(value: unknown): boolean {
+  return value === null || BLE_COMMIT_UNCERTAINTIES.some(commit => commit === value)
 }
 
 function isBleErrorCode(value: unknown): value is BleErrorCode {
@@ -926,7 +967,24 @@ function isPlatformErrorDetail(value: unknown): value is PlatformErrorDetail | n
     nonEmptyString(record.domain) &&
     nonEmptyString(record.code) &&
     typeof record.safeMessage === 'string' &&
-    serializableRecord(record.metadata)
+    isPlatformMetadata(record.metadata)
+  )
+}
+
+/**
+ * The OS's typed facts behind a native failure (finding 116): strings, finite
+ * numbers and booleans only, as the native core types them (a WinRT
+ * `hresult` / `gattStatus`, for example). Anything else is not something the
+ * plugin sends.
+ */
+function isPlatformMetadata(value: unknown): value is SerializableRecord {
+  const record = wireRecord(value)
+  return (
+    record !== null &&
+    Object.values(record).every(
+      entry =>
+        typeof entry === 'string' || typeof entry === 'boolean' || (typeof entry === 'number' && Number.isFinite(entry))
+    )
   )
 }
 

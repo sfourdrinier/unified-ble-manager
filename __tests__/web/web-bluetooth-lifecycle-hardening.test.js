@@ -340,9 +340,28 @@ describe('Web Bluetooth lifecycle hardening', () => {
       await rejectedConnect
     }
     if (termination !== 'destroy') {
-      await expect(connect).rejects.toMatchObject({
-        normalized: { code: termination === 'abort' ? 'operation.aborted' : 'operation.timed-out' }
-      })
+      if (termination === 'deadline') {
+        // Finding 161: a dispatched connect whose deadline expires before
+        // any link came up is the peer not answering — `connection.failed`
+        // (caller-decides) with the deadline fact in `platform`, on every
+        // backend. An abort keeps `operation.aborted`.
+        await expect(connect).rejects.toMatchObject({
+          normalized: {
+            code: 'connection.failed',
+            domain: 'connection',
+            operation: 'web-connection.connect',
+            retryability: 'caller-decides',
+            platform: { domain: 'web-bluetooth', code: 'DeadlineExpired' }
+          }
+        })
+        const failure = await connect.catch(error => error)
+        expect(typeof failure.normalized.platform.metadata.deadlineMs).toBe('number')
+        expect(failure.normalized.platform.safeMessage).toMatch(/deadline expired/)
+      } else {
+        await expect(connect).rejects.toMatchObject({
+          normalized: { code: 'operation.aborted' }
+        })
+      }
     }
     testFixture.connectDeferred.resolve()
     await flushMicrotasks()

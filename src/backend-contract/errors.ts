@@ -94,12 +94,39 @@ export interface PlatformErrorDetail {
   readonly safeMessage: string
   readonly metadata: SerializableRecord
 }
+/**
+ * Whether the operation that failed may be repeated. `never` includes an
+ * operation that was dispatched and may already have committed at the
+ * peripheral; `caller-decides` means nothing was committed, so repeating it is
+ * the caller's policy.
+ */
+export type BleRetryability = 'never' | 'caller-decides'
+
+export const BLE_RETRYABILITIES: readonly BleRetryability[] = Object.freeze(['never', 'caller-decides'])
+
+/**
+ * What the operation's owner knows about whether a failed operation took
+ * effect: `not-dispatched` means nothing reached the radio; `uncertain` means
+ * it was dispatched and may already have committed at the peripheral, so the
+ * caller should read the peer's state before deciding anything. The same words
+ * cross the mobile wire.
+ */
+export type BleCommitUncertainty = 'not-dispatched' | 'uncertain'
+
+export const BLE_COMMIT_UNCERTAINTIES: readonly BleCommitUncertainty[] = Object.freeze(['not-dispatched', 'uncertain'])
+
 export interface NormalizedBleError {
   readonly code: BleErrorCode
   readonly domain: BleErrorDomain
   readonly operation: string
   readonly platform: PlatformErrorDetail | null
-  readonly retryability: 'never' | 'caller-decides'
+  readonly retryability: BleRetryability
+  /**
+   * The commit state the operation's owner reported, when it reported one;
+   * `null` when it said it does not know. Absent from errors whose owner
+   * does not state it.
+   */
+  readonly commit?: BleCommitUncertainty | null
 }
 export interface CleanupFailure {
   readonly resourceKind: string
@@ -117,6 +144,7 @@ export function serializeNormalizedError(error: NormalizedBleError): Serializabl
     domain: error.domain,
     operation: error.operation,
     retryability: error.retryability,
+    ...(error.commit === undefined ? {} : { commit: error.commit }),
     platform:
       error.platform === null
         ? null
@@ -137,6 +165,15 @@ export class BackendContractError extends Error {
     this.normalized = normalized
   }
 }
+/**
+ * Builds a normalized error whose retryability is derived from its code:
+ * `operation.aborted`, `operation.timed-out` and `stream.overflow` are
+ * `caller-decides`, every other code is `never`. That derivation is only true
+ * when the operation had no effect — it was never dispatched, or it commits
+ * nothing (a read, or an observation stream that only drops what it saw). An
+ * operation that was dispatched and may commit at the peripheral (a write)
+ * must be reported with {@link commitUncertainError} instead.
+ */
 export function contractError(
   code: BleErrorCode,
   domain: BleErrorDomain,
@@ -151,6 +188,41 @@ export function contractError(
     domain,
     operation,
     platform,
-    retryability: code === 'operation.aborted' || code === 'operation.timed-out' ? 'caller-decides' : 'never'
+    retryability: retryabilityForCode(code)
+  })
+}
+
+/**
+ * The retryability an error has when the operation that produced it reported
+ * none of its own: `caller-decides` for `operation.aborted`,
+ * `operation.timed-out` and `stream.overflow`, `never` for every other code.
+ * An overflow drops observations without committing anything at the
+ * peripheral, so repeating the scan or subscription is the caller's policy —
+ * matching the recovery catalog, which already advises retry with backoff.
+ * It is the default for an operation that had no effect, never a replacement
+ * for the operation's answer.
+ */
+export function retryabilityForCode(code: BleErrorCode): BleRetryability {
+  return code === 'operation.aborted' || code === 'operation.timed-out' || code === 'stream.overflow'
+    ? 'caller-decides'
+    : 'never'
+}
+
+/**
+ * Builds the error for an operation that was dispatched and may already have
+ * committed at the peripheral, such as a write that was aborted or timed out
+ * after it reached the radio. The commit is uncertain, so the error is never
+ * retryable: repeating the operation could apply its effect twice.
+ */
+export function commitUncertainError(
+  code: BleErrorCode,
+  domain: BleErrorDomain,
+  operation: string,
+  platform: PlatformErrorDetail | null = null
+): BackendContractError {
+  return new BackendContractError({
+    ...contractError(code, domain, operation, platform).normalized,
+    retryability: 'never',
+    commit: 'uncertain'
   })
 }

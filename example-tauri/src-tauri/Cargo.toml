@@ -10,3 +10,9 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-unified-ble-manager = { path = "../../native/tauri" }
+
+# Vendored btleplug with the UBM patches (vendor/btleplug/UBM_PATCHES.md):
+# Tauri must link the same patched copy as the root workspace.
+[patch.crates-io]
+btleplug = { path = "../../vendor/btleplug" }
+bluez-async = { path = "../../vendor/bluez-async" }

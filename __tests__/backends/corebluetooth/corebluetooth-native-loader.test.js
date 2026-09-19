@@ -21,7 +21,7 @@ function withDarwinPlatform(run) {
 function loadBoundary() {
   let createNativeCoreBluetoothBoundary
   jest.isolateModules(() => {
-    ;({ createNativeCoreBluetoothBoundary } = require('../../../src/node-corebluetooth'))
+    ;({ createNativeCoreBluetoothBoundary } = require('../../../src/backends/corebluetooth/corebluetooth-native-boundary'))
   })
   return createNativeCoreBluetoothBoundary
 }

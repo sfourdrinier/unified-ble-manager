@@ -4178,7 +4178,10 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     expect(String(snapshot.characteristics[0].path.characteristicOccurrence)).toBe('0')
     expect(String(snapshot.descriptors[0].path.descriptorUuid)).toBe(descriptorUuid)
     expect(String(snapshot.descriptors[0].path.descriptorOccurrence)).toBe('0')
-    await expect(database.read(snapshot.characteristics[0].path, operation())).resolves.toEqual(new Uint8Array([0, 0]))
+    await expect(database.read(snapshot.characteristics[0].path, operation())).resolves.toEqual({
+      value: new Uint8Array([0, 0]),
+      provenance: 'read-response'
+    })
 
     await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
     await backend.destroy()

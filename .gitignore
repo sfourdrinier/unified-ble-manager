@@ -71,6 +71,30 @@ native/tauri/Cargo.lock
 example-tauri/src-tauri/target/
 example-tauri/src-tauri/gen/
 
+# UBM 5.0 Rust workspace build trees (root workspace, crates, bindings).
+/target/
+crates/*/target/
+bindings/*/target/
+
+# HOST-ANDROID (UBM 5.0): the library's committed release prebuilts ship to
+# packed consumers (built by android/refresh-prebuilt-jniLibs.sh); only the
+# exact shipped paths are tracked, everything else under jniLibs stays out.
+android/src/main/jniLibs/*
+!android/src/main/jniLibs/build-identity.json
+!android/src/main/jniLibs/arm64-v8a/
+!android/src/main/jniLibs/x86_64/
+android/src/main/jniLibs/arm64-v8a/*
+!android/src/main/jniLibs/arm64-v8a/libubm5_jni_echo.so
+android/src/main/jniLibs/x86_64/*
+!android/src/main/jniLibs/x86_64/libubm5_jni_echo.so
+# The probe app stages its own cdylib per build: still untracked outputs.
+emulator-probe/five0/probe-app/app/src/main/jniLibs/
+# HOST-ANDROID (UBM 5.0): five0 battery raw logs are local evidence only;
+# the committed record is results-five0.json. Never commit logs/.
+emulator-probe/five0/logs/
+# U9 restart-recovery battery: same rule — results-u9.json is the record.
+emulator-probe/u9/logs/
+
 # Bundle artifact
 *.jsbundle
 /.artifacts/
@@ -90,3 +114,22 @@ example/vendor/bundle/
 example/ios/Pods/
 example/ios/build/
 example/ios/Podfile.lock
+
+# Built by ios/build-rust-core.sh (publish workflow native-rustcore job, or
+# contributors via `UBM_NATIVE_BUILD=source pnpm native:apple:prepare`);
+# never committed — the release stages the CI-built copy before pack.
+ios/RustCore/
+
+# Desktop-core prebuilds (PR210-03): built by the publish workflow (and by
+# `pnpm native-prebuild:build -- --backend desktop-core` locally); never
+# committed. The package `files` list still ships them in the tarball.
+native/desktop-core/prebuilds/
+.native-prebuild-artifact/
+/example-tauri/dist/
+/example-electron/driver/dist/
+
+# local pnpm content-addressable store (created by nested installs)
+.pnpm-store/
+
+# Kotlin compiler session cache
+.kotlin/

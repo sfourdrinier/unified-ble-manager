@@ -464,7 +464,10 @@ function emitWinRtCopiedNotification(
   copied: OwnedBytes
 ) {
   return consumer.stream.emit(
-    Object.freeze({ value: ownBytes(copied, maximumValueBytes), indication: physical.mode === 'indicate' }),
+    Object.freeze({
+      value: ownBytes(copied, maximumValueBytes),
+      delivery: physical.mode === 'indicate' ? ('indication' as const) : ('notification' as const)
+    }),
     copied.byteLength
   )
 }

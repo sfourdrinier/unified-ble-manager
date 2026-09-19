@@ -21,9 +21,11 @@ describe('Expo example cold-review regressions', () => {
     const classicPnpmConfig = fs.readFileSync(path.join(root, 'example', '.npmrc'), 'utf8')
 
     expect(expoPackage.dependencies['@expo/dom-webview']).toBe('57.0.1')
-    expect(expoPackage.dependencies.expo).toBe('~57.0.20')
-    expect(expoPackage.dependencies['expo-system-ui']).toBe('^57.0.3')
+    expect(expoPackage.dependencies.expo).toBe('~57.0.23')
+    expect(expoPackage.dependencies['expo-system-ui']).toBe('^57.0.4')
     expect(expoPackage.dependencies['react-native']).toBe('~0.86.3')
+    expect(expoPackage.dependencies['react-native-screens']).toBe('~4.26.0')
+    expect(expoPackage.dependencies['react-dom']).toBe('19.2.3')
     expect(expoPackage.devDependencies).not.toHaveProperty('@expo/config-plugins')
     expect(expoPackage.devDependencies['@react-native/babel-preset']).toBe('~0.86.3')
     expect(expoPackage.devDependencies['@react-native/metro-config']).toBe('~0.86.3')

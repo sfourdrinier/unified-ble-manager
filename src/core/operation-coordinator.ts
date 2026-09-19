@@ -1,6 +1,6 @@
 // src/core/operation-coordinator.ts
 
-import { BackendContractError, contractError } from '../backend-contract/errors'
+import { BackendContractError, commitUncertainError, contractError } from '../backend-contract/errors'
 import type { CleanupFailure, CleanupRecord, NormalizedBleError } from '../backend-contract/errors'
 import type { OperationTerminalOutcome, PublicOperationOptions } from '../backend-contract/operations'
 import type { OperationCorrelation } from '../backend-contract/primitives'
@@ -168,24 +168,18 @@ export class CoreOperationCoordinator<Attachment extends string> {
   ): Promise<CoreOperationResult<Attachment, Value>> {
     const correlation = this.options.createCorrelation()
     if (!this.admissionOpen && !allowAfterAdmissionClosed) {
-      return Promise.resolve(
-        this.failure(correlation, 'destroyed', execution.mayCommit, 'operation-coordinator.admission-closed')
-      )
+      return Promise.resolve(this.failure(correlation, 'destroyed', false, 'operation-coordinator.admission-closed'))
     }
     if (execution.options.signal?.aborted === true) {
-      return Promise.resolve(
-        this.failure(correlation, 'aborted', execution.mayCommit, 'operation-coordinator.pre-abort')
-      )
+      return Promise.resolve(this.failure(correlation, 'aborted', false, 'operation-coordinator.pre-abort'))
     }
     if (execution.options.deadline !== null && execution.options.deadline <= this.options.now()) {
-      return Promise.resolve(
-        this.failure(correlation, 'timed-out', execution.mayCommit, 'operation-coordinator.pre-deadline')
-      )
+      return Promise.resolve(this.failure(correlation, 'timed-out', false, 'operation-coordinator.pre-deadline'))
     }
     const retainedPayloadBytes = execution.retainedPayloadBytes ?? 0
     if (!Number.isSafeInteger(retainedPayloadBytes) || retainedPayloadBytes < 0) {
       return Promise.resolve(
-        this.failure(correlation, 'failed', execution.mayCommit, 'operation-coordinator.invalid-retained-payload-bytes')
+        this.failure(correlation, 'failed', false, 'operation-coordinator.invalid-retained-payload-bytes')
       )
     }
     if (execution.queueKey !== null && !this.canAdmitQueuedOperation(execution.queueKey)) {
@@ -660,12 +654,13 @@ export class CoreOperationCoordinator<Attachment extends string> {
       error instanceof BackendContractError
         ? error.normalized
         : contractError('platform.failure', 'core', 'operation-coordinator.backend-rejection').normalized
+    const mayHaveCommitted = operation.execution.mayCommit
     const result: CoreOperationFailure<Attachment> = {
       correlation: operation.correlation,
       outcome: 'failed',
       value: null,
-      error: normalized,
-      commitState: operation.execution.mayCommit ? 'unknown' : 'not-applicable'
+      error: mayHaveCommitted ? { ...normalized, retryability: 'never', commit: 'uncertain' } : normalized,
+      commitState: mayHaveCommitted ? 'unknown' : 'not-applicable'
     }
     this.settlePublic(operation, result)
     this.completeAcknowledged(operation)
@@ -904,12 +899,13 @@ export class CoreOperationCoordinator<Attachment extends string> {
     operation: string,
     code: NormalizedBleError['code'] = this.codeForOutcome(outcome)
   ): CoreOperationFailure<Attachment> {
+    const commitUncertain = mayCommit && outcome !== 'failed'
     return {
       correlation,
       outcome,
       value: null,
-      error: contractError(code, 'core', operation).normalized,
-      commitState: mayCommit && outcome !== 'failed' ? 'unknown' : 'not-applicable'
+      error: (commitUncertain ? commitUncertainError : contractError)(code, 'core', operation).normalized,
+      commitState: commitUncertain ? 'unknown' : 'not-applicable'
     }
   }
 

@@ -507,6 +507,319 @@ describe('Tauri wire codec budgets', () => {
     })
   })
 
+  // PR210-06: the webview's performance.now() epoch means nothing to the Rust
+  // dispatcher, so an absolute deadline must never cross the boundary. The
+  // transport converts it to the remaining relative budget at the last moment.
+  describe('caller budget on the wire', () => {
+    const WEBVIEW_EPOCH_SHIFT = 1e9
+
+    function routeInvoke() {
+      const requests = []
+      const invoke = jest.fn(async (_command, args) => {
+        requests.push(args.request)
+        return { kind: 'route', payload: {} }
+      })
+      return { invoke, requests }
+    }
+
+    afterEach(() => {
+      jest.restoreAllMocks()
+    })
+
+    test('replaces a finite deadline with the remaining whole-millisecond budget', async () => {
+      jest.spyOn(globalThis.performance, 'now').mockReturnValue(WEBVIEW_EPOCH_SHIFT + 1000)
+      const { invoke, requests } = routeInvoke()
+      const { TauriBleIpcTransport } = require('../src/tauri/transport')
+      const transport = new TauriBleIpcTransport({ invoke, Channel: FakeChannel })
+
+      await transport.invoke({
+        kind: 'route',
+        envelope: {
+          command: 'gatt.write',
+          payload: { handle: 'characteristic-1', deadline: WEBVIEW_EPOCH_SHIFT + 1000 + 250.9 }
+        }
+      })
+
+      expect(requests[0].envelope.payload).toEqual({ handle: 'characteristic-1', budgetMs: 250 })
+      expect(requests[0].envelope.payload).not.toHaveProperty('deadline')
+    })
+
+    test('an already-expired deadline crosses as a zero budget, never a negative one', async () => {
+      jest.spyOn(globalThis.performance, 'now').mockReturnValue(WEBVIEW_EPOCH_SHIFT + 5000)
+      const { invoke, requests } = routeInvoke()
+      const { TauriBleIpcTransport } = require('../src/tauri/transport')
+      const transport = new TauriBleIpcTransport({ invoke, Channel: FakeChannel })
+
+      await transport.invoke({
+        kind: 'route',
+        envelope: { command: 'connection.connect', payload: { deadline: WEBVIEW_EPOCH_SHIFT + 4000 } }
+      })
+
+      expect(requests[0].envelope.payload).toEqual({ budgetMs: 0 })
+    })
+
+    test('the budget is computed when the request is sent, not when it was built', async () => {
+      const now = jest.spyOn(globalThis.performance, 'now').mockReturnValue(WEBVIEW_EPOCH_SHIFT)
+      const { invoke, requests } = routeInvoke()
+      const { TauriBleIpcTransport } = require('../src/tauri/transport')
+      const transport = new TauriBleIpcTransport({ invoke, Channel: FakeChannel })
+      const request = {
+        kind: 'route',
+        envelope: { command: 'gatt.read', payload: { deadline: WEBVIEW_EPOCH_SHIFT + 1000 } }
+      }
+
+      now.mockReturnValue(WEBVIEW_EPOCH_SHIFT + 400)
+      await transport.invoke(request)
+
+      expect(requests[0].envelope.payload).toEqual({ budgetMs: 600 })
+    })
+
+    test('an absent or null deadline sends no budget and no deadline', async () => {
+      const { invoke, requests } = routeInvoke()
+      const { TauriBleIpcTransport } = require('../src/tauri/transport')
+      const transport = new TauriBleIpcTransport({ invoke, Channel: FakeChannel })
+
+      await transport.invoke({
+        kind: 'route',
+        envelope: { command: 'connection.events.ready', payload: { connectionEventsHandle: 'h', deadline: null } }
+      })
+      await transport.invoke({ kind: 'route', envelope: { command: 'adapter.state', payload: {} } })
+
+      expect(requests[0].envelope.payload).toEqual({ connectionEventsHandle: 'h' })
+      expect(requests[1].envelope.payload).toEqual({})
+    })
+
+    test('a non-finite deadline is protocol.malformed and is never sent', async () => {
+      const { invoke } = routeInvoke()
+      const { TauriBleIpcTransport } = require('../src/tauri/transport')
+      const transport = new TauriBleIpcTransport({ invoke, Channel: FakeChannel })
+
+      for (const deadline of [Number.POSITIVE_INFINITY, Number.NaN, '100']) {
+        await expect(
+          transport.invoke({ kind: 'route', envelope: { command: 'gatt.read', payload: { deadline } } })
+        ).rejects.toMatchObject({ normalized: { code: 'protocol.malformed', domain: 'ipc' } })
+      }
+      expect(invoke).not.toHaveBeenCalled()
+    })
+  })
+
+  // PR210-22: retryability is the native core's answer about dispatch state.
+  // A write that may have reached the peripheral is `never`; only an operation
+  // the core never dispatched is `caller-decides`. The transport validates the
+  // vocabulary and must not replace that answer with one derived from the code.
+  describe('native retryability', () => {
+    function failingTransport(error) {
+      const { TauriBleIpcTransport } = require('../src/tauri/transport')
+      return new TauriBleIpcTransport({
+        invoke: jest.fn(async () => ({ kind: 'failure', error })),
+        Channel: FakeChannel
+      })
+    }
+
+    const platform = { domain: 'btleplug', code: 'write-dispatched', safeMessage: 'dispatched', metadata: {} }
+
+    test.each([
+      ['operation.aborted', 'never'],
+      ['operation.aborted', 'caller-decides'],
+      ['operation.timed-out', 'never'],
+      ['operation.timed-out', 'caller-decides']
+    ])('%s with retryability %s reaches the caller unchanged', async (code, retryability) => {
+      const error = { code, domain: 'gatt', operation: 'tauri.gatt.write', platform, retryability }
+      const response = await failingTransport(error).invoke({
+        kind: 'route',
+        envelope: { command: 'gatt.write', payload: {} }
+      })
+      expect(response).toEqual({ kind: 'failure', error })
+    })
+
+    test('every other code still requires never', async () => {
+      await expect(
+        failingTransport({
+          code: 'gatt.write-failed',
+          domain: 'gatt',
+          operation: 'tauri.gatt.write',
+          platform: null,
+          retryability: 'caller-decides'
+        }).invoke({ kind: 'route', envelope: { command: 'gatt.write', payload: {} } })
+      ).rejects.toMatchObject({ normalized: { code: 'protocol.malformed' } })
+    })
+
+    // Owner decision (5.0): a connect whose link the platform could not
+    // establish is the caller's to retry; the core says so and the transport
+    // passes that answer through with the platform's detail.
+    test.each([['platform.failure'], ['connection.failed']])(
+      'a %s connect answered caller-decides reaches the caller unchanged',
+      async code => {
+        const error = {
+          code,
+          domain: code === 'platform.failure' ? 'platform' : 'connection',
+          operation: 'connection.connect',
+          platform: {
+            domain: 'bluez-dbus',
+            code: 'org.bluez.Error.Failed',
+            safeMessage: 'le-connection-abort-by-local',
+            metadata: {}
+          },
+          retryability: 'caller-decides'
+        }
+        const response = await failingTransport(error).invoke({
+          kind: 'route',
+          envelope: { command: 'connection.connect', payload: {} }
+        })
+        expect(response).toEqual({ kind: 'failure', error })
+      }
+    )
+
+    test('an unknown retryability word is rejected for aborted and timed-out too', async () => {
+      await expect(
+        failingTransport({
+          code: 'operation.aborted',
+          domain: 'gatt',
+          operation: 'tauri.gatt.write',
+          platform: null,
+          retryability: 'always'
+        }).invoke({ kind: 'route', envelope: { command: 'gatt.write', payload: {} } })
+      ).rejects.toMatchObject({ normalized: { code: 'protocol.malformed' } })
+    })
+  })
+
+  // PR210-37: the native core states the commit state of a failed operation
+  // (`not-dispatched`, `uncertain`, or null) so recovery can tell a write that
+  // may have committed from one that never reached the radio, whatever the code.
+  describe('native commit state', () => {
+    function failingTransport(error) {
+      const { TauriBleIpcTransport } = require('../src/tauri/transport')
+      return new TauriBleIpcTransport({
+        invoke: jest.fn(async () => ({ kind: 'failure', error })),
+        Channel: FakeChannel
+      })
+    }
+    const route = { kind: 'route', envelope: { command: 'gatt.write', payload: {} } }
+
+    test.each([['not-dispatched'], ['uncertain'], [null]])('commit %p reaches the caller unchanged', async commit => {
+      const error = {
+        code: 'operation.disconnected',
+        domain: 'connection',
+        operation: 'gatt.write',
+        platform: null,
+        retryability: 'never',
+        commit
+      }
+      await expect(failingTransport(error).invoke(route)).resolves.toEqual({ kind: 'failure', error })
+    })
+
+    test('an unknown commit word is malformed', async () => {
+      await expect(
+        failingTransport({
+          code: 'gatt.write-failed',
+          domain: 'gatt',
+          operation: 'gatt.write',
+          platform: null,
+          retryability: 'never',
+          commit: 'committed'
+        }).invoke(route)
+      ).rejects.toMatchObject({ normalized: { code: 'protocol.malformed' } })
+    })
+
+    test('cleanup failures may carry commit too', async () => {
+      const { TauriBleIpcTransport } = require('../src/tauri/transport')
+      const cleanup = {
+        state: 'release-failed',
+        failures: [
+          {
+            resourceKind: 'connection',
+            error: {
+              code: 'platform.failure',
+              domain: 'cleanup',
+              operation: 'tauri.release.connection',
+              platform: null,
+              retryability: 'never',
+              commit: null
+            }
+          }
+        ]
+      }
+      const transport = new TauriBleIpcTransport({
+        invoke: jest.fn(async () => ({ kind: 'release', cleanup })),
+        Channel: FakeChannel
+      })
+      await expect(
+        transport.invoke({ kind: 'release', rendererLease: { leaseId: 'l', generation: 'g' } })
+      ).resolves.toEqual({ kind: 'release', cleanup })
+    })
+  })
+
+  // Finding 116: the OS's own answer behind a native failure crosses as the
+  // same per-OS platform identity the Node desktop path reports; a failure
+  // without one keeps the Tauri 4.x `btleplug` / `native-error` shape. The
+  // metadata is typed scalars only, so anything else is malformed.
+  describe('native platform detail', () => {
+    function failingTransport(error) {
+      const { TauriBleIpcTransport } = require('../src/tauri/transport')
+      return new TauriBleIpcTransport({
+        invoke: jest.fn(async () => ({ kind: 'failure', error })),
+        Channel: FakeChannel
+      })
+    }
+    const route = { kind: 'route', envelope: { command: 'gatt.read', payload: {} } }
+    const failure = platform => ({
+      code: 'gatt.read-failed',
+      domain: 'gatt',
+      operation: 'gatt.read',
+      platform,
+      retryability: 'never',
+      commit: null
+    })
+
+    test.each([
+      [{ domain: 'corebluetooth', code: '10', safeMessage: 'The connection has timed out.', metadata: {} }],
+      [
+        {
+          domain: 'winrt',
+          code: 'gatt-protocol-error',
+          safeMessage: 'The attribute requires authentication.',
+          metadata: { hresult: -2140864509, gattStatus: 5 }
+        }
+      ],
+      [
+        {
+          domain: 'bluez-dbus',
+          code: 'org.bluez.Error.NotPermitted',
+          safeMessage: 'Read not permitted',
+          metadata: {}
+        }
+      ],
+      [{ domain: 'btleplug', code: 'native-error', safeMessage: 'peer went away', metadata: {} }]
+    ])('%o reaches the caller unchanged', async platform => {
+      await expect(failingTransport(failure(platform)).invoke(route)).resolves.toEqual({
+        kind: 'failure',
+        error: failure(platform)
+      })
+    })
+
+    test.each([
+      ['a nested metadata object', { hresult: { value: 1 } }],
+      ['a metadata array', { hresult: [1] }],
+      ['a null metadata value', { hresult: null }],
+      ['a non-finite metadata number', { hresult: Number.NaN }]
+    ])('%s is malformed', async (_case, metadata) => {
+      await expect(
+        failingTransport(failure({ domain: 'winrt', code: 'x', safeMessage: 'x', metadata })).invoke(route)
+      ).rejects.toMatchObject({ normalized: { code: 'protocol.malformed' } })
+    })
+
+    test('an empty platform domain or code is malformed', async () => {
+      for (const platform of [
+        { domain: '', code: 'x', safeMessage: 'x', metadata: {} },
+        { domain: 'winrt', code: '', safeMessage: 'x', metadata: {} }
+      ]) {
+        await expect(failingTransport(failure(platform)).invoke(route)).rejects.toMatchObject({
+          normalized: { code: 'protocol.malformed' }
+        })
+      }
+    })
+  })
+
   test('package protocol fixtures still round-trip under the declared limits', () => {
     const request = createIpcBootstrapRequest()
     const encoded = encodeTauriWireValue(request)
@@ -528,4 +841,3 @@ describe('Tauri wire codec budgets', () => {
     })
   })
 })
-

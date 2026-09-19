@@ -4,29 +4,39 @@ import type { NativeBackendIdentity } from './backend-contract/identity'
 import { contractError } from './backend-contract/errors'
 import { byteLimit, opaqueId } from './backend-contract/primitives'
 import {
-  createReactNativeAndroidBackendProvider,
   reactNativeAndroidCompatibility,
   reactNativeAndroidDefaultAdapterId,
-  type ReactNativeAndroidBackendProviderOptions
-} from './backends/reactnative/react-native-android-provider'
-import {
-  createReactNativeAppleBackendProvider,
   reactNativeAppleCompatibility,
-  reactNativeAppleDefaultAdapterId,
-  type ReactNativeAppleBackendProviderOptions
-} from './backends/reactnative/react-native-apple-provider'
-import { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS, type BleManager } from './manager/ble-manager'
+  reactNativeAppleDefaultAdapterId
+} from './backends/reactnative/react-native-platform-identity'
+import type { BleManager } from './manager/ble-manager'
+import { DEFAULT_CORE_MAXIMUM_VALUE_BYTES } from './core/unified-ble-core-helpers'
+import { CoreTraceRecorder } from './core/trace-recorder'
+import {
+  createReactNativeRustCoreBackendProvider,
+  type ReactNativeRustCoreBackend,
+  type ReactNativeRustCoreHostServices
+} from './backends/reactnative/react-native-rust-core-provider'
+import type { ReactNativeRustCoreBinding } from './backends/reactnative/react-native-rust-core'
+import { createReactNativeRustCoreBinding } from './backends/reactnative/react-native-rust-core-binding'
+import { createReactNativeRustCoreManager } from './backends/reactnative/react-native-rust-core-manager'
+import type { ReactNativeRestorationAuthority } from './backends/reactnative/react-native-rust-core-restoration'
+import { hostAndroidApiLevel } from './backends/reactnative/react-native-providers'
 import { rehydratePublicPromise } from './public/error-bridge'
-import type { Spec as NativeUnifiedBleProtocolControl } from './NativeUnifiedBleProtocolControl'
-import type { ReactNativeRestorationBackendProvider } from './backends/reactnative/react-native-restoration'
 import type { DiagnosticsOptions } from './public/host-identity'
 
 export type ReactNativeBlePlatform = 'android' | 'apple'
 
+/** Trace retention defaults (the legacy `DEFAULT_BLE_MANAGER_OPTIONS`). */
+const DEFAULT_TRACE_MAXIMUM_RECORDS = 256
+const DEFAULT_TRACE_MAXIMUM_BYTES = 512 * 1024
+
+/** Options of the removed legacy route (4.x TypeScript core over the protocol control). */
+const REMOVED_LEGACY_OPTIONS = Object.freeze(['legacyTypeScriptCore', 'control'])
+
 /** Inputs that bind one React Native application manager to one selected native adapter. */
 export interface ReactNativeBleManagerOptions {
   readonly platform: ReactNativeBlePlatform
-  readonly control: NativeUnifiedBleProtocolControl
   readonly now: () => number
   readonly clientId: string
   readonly managerId: string
@@ -35,83 +45,132 @@ export interface ReactNativeBleManagerOptions {
   readonly adapterId?: string
   readonly diagnostics?: DiagnosticsOptions
   readonly createOwnerId?: () => string
+  /**
+   * Substitute native Rust core binding. When absent (the ordinary case), the
+   * factory resolves the production `UnifiedBleRustCore` TurboModule. Every
+   * binding is identity-checked and admitted before any radio work; a missing
+   * native module rejects with `capability.unsupported`. There is no other
+   * route.
+   */
+  readonly rustCore?: ReactNativeRustCoreBinding
+  /** Android API level; absent, React Native's `Platform.Version`. */
+  readonly androidApiLevel?: number
+  /**
+   * The app-declared restoration authority (the `restorationIdentity`
+   * answer), when the app configured restoration. Adoption is refused without
+   * one, exactly as the native journal refused an unconfigured app.
+   */
+  readonly restorationAuthority?: ReactNativeRestorationAuthority
+}
+
+/** What an Expo host reaches besides the public manager. */
+export interface ReactNativeManagerHost {
+  readonly manager: BleManager<string, NativeBackendIdentity<string>>
+  readonly services: ReactNativeRustCoreHostServices
+  /** Adopts restoration with the configured authority (Expo `restoration.claim`). */
+  readonly claimRestoration: () => ReturnType<BleManager<string, NativeBackendIdentity<string>>['adoptRestoration']>
 }
 
 /**
- * Creates one owning 4.0 manager from the generated React Native protocol control.
- * The application must retain and destroy the returned manager before replacing it.
- * Apple restoration adoption additionally requires the app-owned Info.plist values
- * UnifiedBleProtocolRestorationNamespace, UnifiedBleProtocolRestorationEpoch,
- * UnifiedBleProtocolRestorationClientId, and UnifiedBleProtocolRestorationHostSessionScope.
+ * Creates one owning manager over the process-owned Rust mobile owner. The
+ * application must retain and destroy the returned manager before replacing
+ * it. Apple restoration adoption additionally requires the app-owned
+ * Info.plist values UnifiedBleProtocolRestorationNamespace,
+ * UnifiedBleProtocolRestorationEpoch, UnifiedBleProtocolRestorationClientId,
+ * and UnifiedBleProtocolRestorationHostSessionScope.
  */
 export async function createReactNativeBleManagerWithEnvironment(
   options: ReactNativeBleManagerOptions
 ): Promise<BleManager<string, NativeBackendIdentity<string>>> {
-  return rehydratePublicPromise(createReactNativeBleManagerWithEnvironmentInternal(options))
+  return rehydratePublicPromise(createReactNativeManagerHost(options).then(host => host.manager))
 }
 
-async function createReactNativeBleManagerWithEnvironmentInternal(
+/** The manager plus its session services (Expo composition). Not a public entrypoint. */
+export async function createReactNativeManagerHost(
   options: ReactNativeBleManagerOptions
-): Promise<BleManager<string, NativeBackendIdentity<string>>> {
+): Promise<ReactNativeManagerHost> {
+  for (const removed of REMOVED_LEGACY_OPTIONS) {
+    if (Object.prototype.hasOwnProperty.call(options, removed)) {
+      // 5.0 has one route: a caller still asking for the removed legacy route
+      // is told so, never silently given another one.
+      throw contractError('argument.invalid', 'core', `react-native-manager.${removed}`)
+    }
+  }
   if (options.hostSessionScope.length === 0) {
     throw contractError('argument.invalid', 'restoration', 'react-native-manager.host-session-scope')
   }
-  const expectedAdapterId =
-    options.platform === 'android' ? reactNativeAndroidDefaultAdapterId() : reactNativeAppleDefaultAdapterId()
+  const expectedAdapterId = adapterIdFor(options.platform)
   if (options.adapterId !== undefined && options.adapterId !== String(expectedAdapterId)) {
     throw contractError('adapter.unavailable', 'adapter', 'react-native-manager.adapter')
   }
-  const provider = providerFor(options)
-  const managerOptions = {
-    ...DEFAULT_BLE_MANAGER_OPTIONS,
+  // Built before any session opens, so out-of-range bounds are refused
+  // without an effect (the legacy manager's defaults: 256 records / 512 KiB).
+  const trace = new CoreTraceRecorder(
+    options.diagnostics?.traceMaximumRecords ?? DEFAULT_TRACE_MAXIMUM_RECORDS,
+    options.diagnostics?.traceMaximumBytes ?? DEFAULT_TRACE_MAXIMUM_BYTES
+  )
+  const binding = options.rustCore ?? createReactNativeRustCoreBinding({ platform: options.platform })
+  const authority = options.restorationAuthority ?? null
+  const provider = createReactNativeRustCoreBackendProvider({
+    platform: options.platform,
+    binding,
+    owner: `${options.clientId}/${options.managerId}`,
     now: options.now,
-    maximumValueBytes:
-      options.diagnostics?.maximumValueBytes === undefined
-        ? DEFAULT_BLE_MANAGER_OPTIONS.maximumValueBytes
-        : byteLimit(options.diagnostics.maximumValueBytes),
-    traceMaximumRecords: options.diagnostics?.traceMaximumRecords ?? DEFAULT_BLE_MANAGER_OPTIONS.traceMaximumRecords,
-    traceMaximumBytes: options.diagnostics?.traceMaximumBytes ?? DEFAULT_BLE_MANAGER_OPTIONS.traceMaximumBytes
-  }
+    runtime: {
+      androidApiLevel: options.platform === 'android' ? (options.androidApiLevel ?? hostAndroidApiLevel()) : null
+    },
+    restorationAuthority: () => authority,
+    trace,
+    ...(options.createOwnerId === undefined ? {} : { createOwnerId: options.createOwnerId })
+  })
+  const backend: ReactNativeRustCoreBackend = await provider.create({ selectedAdapterId: expectedAdapterId })
   const scope: `${string}:${string}` = `react-native:${options.platform}`
   const clientId = opaqueId(options.clientId, 'client', scope)
-  return createBleManagerFromProvider(
-    {
-      provider,
-      selection: { selectedAdapterId: adapterIdFor(options.platform) },
+  let manager: BleManager<string, NativeBackendIdentity<string>>
+  try {
+    manager = await createReactNativeRustCoreManager({
+      backend,
       coreCompatibility: compatibilityFor(options.platform),
-      manager: {
-        clientId,
-        managerId: opaqueId(options.managerId, 'manager', scope),
-        ownerMode: 'owning',
-        restoration: Object.freeze({
-          client: Object.freeze({ clientId, hostSessionScope: options.hostSessionScope }),
-          coordinator: provider.restoration
-        })
+      clientId,
+      managerId: opaqueId(options.managerId, 'manager', scope),
+      ownerMode: 'owning',
+      restoration: Object.freeze({
+        client: Object.freeze({ clientId, hostSessionScope: options.hostSessionScope }),
+        coordinator: provider.restoration
+      }),
+      now: options.now,
+      trace,
+      maximumValueBytes:
+        options.diagnostics?.maximumValueBytes === undefined
+          ? DEFAULT_CORE_MAXIMUM_VALUE_BYTES
+          : byteLimit(options.diagnostics.maximumValueBytes)
+    })
+  } catch (error) {
+    const cleanup = await backend.destroy()
+    if (cleanup.state !== 'released') {
+      throw new AggregateError([error, ...cleanup.failures.map(failure => failure.error)], 'react-native-manager.open')
+    }
+    throw error
+  }
+  return Object.freeze({
+    manager,
+    services: backend.hostServices,
+    claimRestoration: () => {
+      if (authority === null) {
+        throw contractError('capability.unavailable', 'restoration', 'react-native-manager.restoration.claim')
       }
-    },
-    managerOptions
-  )
-}
-
-function providerFor(options: ReactNativeBleManagerOptions): ReactNativeRestorationBackendProvider {
-  if (options.platform === 'android') {
-    return createReactNativeAndroidBackendProvider(androidProviderOptions(options))
-  }
-  return createReactNativeAppleBackendProvider(appleProviderOptions(options))
-}
-
-function androidProviderOptions(options: ReactNativeBleManagerOptions): ReactNativeAndroidBackendProviderOptions {
-  if (options.createOwnerId === undefined) {
-    return { control: options.control, now: options.now }
-  }
-  return { control: options.control, now: options.now, createOwnerId: options.createOwnerId }
-}
-
-function appleProviderOptions(options: ReactNativeBleManagerOptions): ReactNativeAppleBackendProviderOptions {
-  if (options.createOwnerId === undefined) {
-    return { control: options.control, now: options.now }
-  }
-  return { control: options.control, now: options.now, createOwnerId: options.createOwnerId }
+      const identity = manager.identity
+      return manager.adoptRestoration(
+        Object.freeze({
+          namespace: authority.namespaceValue,
+          attachmentId: identity.attachment.attachmentId,
+          expectedBackendInstanceId: identity.attachment.backendInstanceId,
+          expectedEpoch: opaqueId(authority.adoptionEpoch, 'restoration-epoch', 'react-native-restoration'),
+          expectedVersions: identity.versions
+        })
+      )
+    }
+  })
 }
 
 function adapterIdFor(platform: ReactNativeBlePlatform) {

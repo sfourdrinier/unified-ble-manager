@@ -58,9 +58,13 @@ jobs:
         run: echo "matrix=$(node scripts/native-prebuilds/print-github-matrix.js)" >> "$GITHUB_OUTPUT"
 
   # Node-API v8 is ABI-stable across the maintained Node lines and modern
-  # Electron. Build once per OS/CPU, then bundle all four binaries in npm.
+  # Electron. Build once per OS/CPU and bundle every binary in npm:
+  #   desktop-core (cargo): the shared Rust core every desktop entrypoint
+  #     loads (PR210-03), six targets, each with an identity sidecar.
+  #   corebluetooth / winrt (node-gyp): LEGACY addons, unreachable from any
+  #     public entrypoint; Phase 4 deletes these legs with native/electron/*.
   native-prebuild:
-    name: Native prebuild (${{ matrix.platform }}-${{ matrix.arch }})
+    name: Native prebuild (${{ matrix.backend }} ${{ matrix.platform }}-${{ matrix.arch }})
     needs: native-prebuild-plan
     strategy:
       fail-fast: false
@@ -71,9 +75,25 @@ jobs:
         uses: actions/checkout@v7.0.0
 
       - name: Setup Python for node-gyp
+        if: matrix.builder == 'node-gyp'
         uses: actions/setup-python@v6.0.0
         with:
           python-version: '3.12'
+
+      - name: Install libdbus for btleplug/BlueZ (Linux desktop-core)
+        if: matrix.builder == 'cargo' && runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libdbus-1-dev pkg-config
+
+      - name: Install pinned Rust + target (desktop-core)
+        if: matrix.builder == 'cargo'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PINNED_TOOLCHAIN="$(grep -E '^channel[[:space:]]*=' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/' || true)"
+          test -n "$PINNED_TOOLCHAIN" || { echo "could not parse pinned toolchain channel from rust-toolchain.toml"; exit 1; }
+          rustup toolchain install "$PINNED_TOOLCHAIN" --profile minimal --target "${{ matrix.rustTarget }}"
 
       - name: Setup JS package
         uses: ./.github/actions/setup-js-package
@@ -90,7 +110,15 @@ jobs:
 
       - name: Load the same prebuild under Electron main
         shell: bash
-        run: ./node_modules/.bin/electron scripts/ci/electron-main-smoke.js
+        env:
+          UBM_SMOKE_BACKEND: ${{ matrix.backend }}
+        run: |
+          set -euo pipefail
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            ./node_modules/.bin/electron --no-sandbox scripts/ci/electron-main-smoke.js
+          else
+            ./node_modules/.bin/electron scripts/ci/electron-main-smoke.js
+          fi
 
       - name: Upload path-preserving native prebuild
         uses: actions/upload-artifact@v7
@@ -101,9 +129,60 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # D2(iv): the npm artifact ships the CI-built RustCore XCFramework staged
+  # in ios/RustCore (prebuilt podspec mode is the default; consumers never
+  # need the Rust toolchain). macOS-only: assembly needs xcodebuild. The
+  # canonical builder is the same ios/build-rust-core.sh that source mode
+  # and apple-ci use — no second producer, no drift.
+  native-rustcore:
+    name: Native RustCore XCFramework (macOS)
+    runs-on: macos-26
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v7.0.0
+
+      - name: Select Xcode
+        uses: ./.github/actions/select-xcode
+
+      - name: Setup JS package
+        uses: ./.github/actions/setup-js-package
+        with:
+          prepack: 'false'
+          node-version: '24'
+
+      - name: Install pinned Rust + Apple targets
+        run: |
+          cargo --version
+          PINNED_TOOLCHAIN="$(grep -E '^channel[[:space:]]*=' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/' || true)"
+          test -n "$PINNED_TOOLCHAIN" || { echo "could not parse pinned toolchain channel from rust-toolchain.toml"; exit 1; }
+          rustup target add --toolchain "$PINNED_TOOLCHAIN" aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios aarch64-apple-tvos aarch64-apple-tvos-sim
+
+      - name: Build RustCore XCFramework from source
+        # Canonical builder: seals UBM_BUILD_SOURCE_DIGEST /
+        # UBM_BUILD_BINDING_SCHEMA into the staticlibs and writes
+        # ios/RustCore/build-identity.json (PR210-18).
+        run: sh ios/build-rust-core.sh
+
+      - name: Verify RustCore staging (slice set + hash chain + sources)
+        # Independent of the builder's own final check: the plutil verifier
+        # the pod phase runs, plus the Node source-digest check.
+        run: |
+          set -euo pipefail
+          sh ios/verify-rust-core.sh
+          node scripts/release/native-build-identity.js --check-apple
+
+      - name: Upload staged RustCore
+        uses: actions/upload-artifact@v7
+        with:
+          name: rustcore-xcframework
+          path: ios/RustCore
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
     name: Publish canonical package
-    needs: native-prebuild
+    needs: [native-prebuild, native-rustcore]
     runs-on: ubuntu-latest
     environment: npm
     permissions:
@@ -112,6 +191,8 @@ jobs:
     env:
       NODE_OPTIONS: --max-old-space-size=8192
       GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx6g\ -XX:MaxMetaspaceSize=1g\ -Dfile.encoding=UTF-8
+      # D2(iii): the release builds Android natives from source explicitly.
+      UBM_NATIVE_BUILD: source
 
     steps:
       - name: Checkout tag
@@ -163,8 +244,66 @@ jobs:
       - name: Verify and bind complete native prebuild matrix
         run: pnpm native-prebuild:verify --require-all --write-manifest
 
+      - name: Stage CI-built RustCore XCFramework
+        # D2(iv) pre-pack staging (T5): the macOS producer's ios/RustCore
+        # lands exactly where the prebuilt podspec mode consumes it, so the
+        # packed tarball carries the same immutable artifacts CI attested.
+        uses: actions/download-artifact@v8
+        with:
+          name: rustcore-xcframework
+          path: ios/RustCore
+
+      - name: Verify staged RustCore before pack
+        # PR210-18: the downloaded staging must hash-chain (Info.plist and
+        # every slice against build-identity.json, exact declared slice set)
+        # and its sealed sourceDigest/bindingSchema must equal the digests
+        # recomputed here from the tagged sources — a partial, substituted or
+        # stale staging fails the release, never a consumer's pod install.
+        run: node scripts/release/native-build-identity.js --check-apple
+
+      - name: Verify committed Android prebuilts match the sources
+        # PR210-18 publish gate: the committed jniLibs must hash-chain and
+        # carry the sourceDigest/bindingSchema of the tagged Rust sources.
+        # Refresh with android/refresh-prebuilt-jniLibs.sh when this fails.
+        run: node scripts/release/native-build-identity.js --check-android-prebuilts
+
+      - name: Verify every native artifact matches the sources
+        # F9: one status over the assembled tree — committed Android jniLibs,
+        # staged RustCore, and the CI-built desktop prebuild for this runner;
+        # anything else is not-applicable here, never silently skipped.
+        run: pnpm native:status
+
+      - name: Install pinned Rust
+        # ReleaseArtifacts/License suites shell to
+        # `cargo metadata --locked --offline`; cargo --version resolves
+        # rust-toolchain.toml and installs the pinned toolchain when absent.
+        run: cargo --version
+
+      - name: Warm cargo cache for offline metadata
+        run: cargo fetch --locked
+
+      - name: Install Linux build sysdeps
+        # napi -> ubm-desktop -> btleplug -> bluez-async -> libdbus-sys needs
+        # pkg-config + D-Bus headers at compile time (same subset as CI).
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libdbus-1-dev pkg-config
+
+      - name: Build NAPI dispatch addon (R03 converged path)
+        # The bluez-rust-core-routing converged-path tests require the REAL
+        # addon; build it before jest (also covers test:parity below).
+        # (pretest:package rebuilds it too — this explicit step keeps addon
+        # failures diagnosable apart from jest.)
+        run: node scripts/ci/build-napi-addon.js
+
       - name: Run package tests
         run: pnpm test:package
+
+      - name: Run Rust/JS parity proofs
+        # test:package excludes the napi-addon suites (see
+        # jest.package.config.js); the shipping gate runs them here with
+        # the addon built first — same as the rust-parity-5-0 CI job.
+        run: pnpm test:parity
 
       - name: Validate current evidence records
         run: pnpm validate:evidence
@@ -268,6 +407,19 @@ jobs:
           PUBLISH_TARBALL=".release-package/${TARBALL_NAME}"
           test -f "${PUBLISH_TARBALL}"
           echo "PUBLISH_TARBALL=${PUBLISH_TARBALL}" >> "$GITHUB_ENV"
+
+      - name: Desktop-core prebuild packaging proof (all six targets + sidecars)
+        # PR210-03: exactly the maintained prebuilds, each sidecar naming its
+        # binary's sha256 and a sealed release identity; zero bindings/**/*.node.
+        run: node scripts/ci/check-napi-artifact-packaging.js --tarball "${PUBLISH_TARBALL}" --require-all-prebuilds
+
+      - name: Clean-tarball desktop-core acceptance (linux-x64, identity + negative legs)
+        # Installs the exact publish tarball offline (pnpm store) with no Rust
+        # on PATH, loads the linux-x64 prebuild from the installed package,
+        # verifies identity, drives the synthetic radio in Rust, and proves
+        # every refusal (missing/truncated/corrupt/debug/relative) fires
+        # before any radio open. Headless runner: no real-radio leg here.
+        run: node scripts/ci/napi-clean-tarball-acceptance.js --tarball "${PUBLISH_TARBALL}" --pm pnpm --negative --receipt .release-package/napi-acceptance-linux-x64.json
 
       - name: Classify and guard canonical package release channel
         id: release_channel

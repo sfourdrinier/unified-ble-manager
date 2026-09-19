@@ -1,7 +1,7 @@
 // src/web/web-bluetooth-gatt.ts
 
 import type { BackendConnection, BackendSubscription, GattBackend } from '../backend-contract/backend'
-import { contractError } from '../backend-contract/errors'
+import { BackendContractError, contractError } from '../backend-contract/errors'
 import type { CleanupFailure, CleanupRecord } from '../backend-contract/errors'
 import type { AttachmentRecord } from '../backend-contract/identity'
 import {
@@ -19,9 +19,12 @@ import { createBackendOperationDispatch, createOperationSettlementCoordinator } 
 import type {
   BackendOperationDispatch,
   CancellationAcknowledgement,
+  CharacteristicRead,
+  CharacteristicReadResult,
   OperationOptions,
   OperationTerminalRecord,
   PublicOperationOptions,
+  ReadProvenance,
   ReadRequest,
   ReadResult,
   SubscribeRequest,
@@ -42,7 +45,12 @@ import type {
 } from './web-bluetooth-boundary'
 import { webCleanupFailure } from './web-bluetooth-errors'
 import { characteristicKey, descriptorKey, WebBackendSubscription, WebGattDatabase } from './web-bluetooth-handles'
-import type { WebConnectionRecord, WebGattDatabaseHost, WebManagedSubscription } from './web-bluetooth-handles'
+import type {
+  WebConnectionRecord,
+  WebGattDatabaseHost,
+  WebLinkEnd,
+  WebManagedSubscription
+} from './web-bluetooth-handles'
 
 export interface WebGattHost extends WebGattDatabaseHost {
   readonly attachment: AttachmentRecord<string>
@@ -68,6 +76,13 @@ export interface WebGattHost extends WebGattDatabaseHost {
 
 const RELEASED: CleanupRecord = { state: 'released', failures: [] }
 const MAXIMUM_VALUE_BYTES: ByteLimit = byteLimit(512 * 1024)
+/**
+ * Web Bluetooth's `readValue()` resolves with the value of this read's own
+ * Read Characteristic Value procedure; notifications arrive separately as
+ * `characteristicvaluechanged`. That is the platform's answer. The browser's
+ * own attribution on its host OS is not observable from the page.
+ */
+const WEB_BLUETOOTH_READ_PROVENANCE: ReadProvenance = 'read-response'
 
 export class WebBluetoothGattRuntime {
   readonly gatt: GattBackend<string>
@@ -103,7 +118,9 @@ export class WebBluetoothGattRuntime {
     return failures
   }
 
-  invalidateConnection(record: WebConnectionRecord, reason: 'connection-lost' | 'owner-released'): void {
+  invalidateConnection(record: WebConnectionRecord, end: WebLinkEnd): void {
+    // An adapter loss failed the streams at their source, as on every host.
+    const reason = end === 'adapter-loss' ? 'source-failed' : end
     for (const subscription of [...this.subscriptions.values()]) {
       if (subscription.database.record === record) {
         this.beginLogicalSubscriptionStop(subscription, reason)
@@ -127,7 +144,7 @@ export class WebBluetoothGattRuntime {
     database: WebGattDatabase,
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     options: PublicOperationOptions
-  ): Promise<OwnedBytes> {
+  ): Promise<CharacteristicRead> {
     return this.readCharacteristic(database, path, options)
   }
 
@@ -308,14 +325,27 @@ export class WebBluetoothGattRuntime {
           })
         )
         characteristicBoundaries.set(characteristicKey(path), nativeCharacteristic)
-        const nativeDescriptors = await this.host.runAbortable(
-          record,
-          options,
-          () => nativeCharacteristic.getDescriptors(),
-          'gatt.not-found',
-          'gatt',
-          'web-gatt.discover-descriptors'
-        )
+        // Web Bluetooth's getDescriptors() rejects with NotFoundError when
+        // the characteristic has no descriptors (finding 188, Polar H10 on
+        // Chrome): that is an empty descriptor list, never a discovery
+        // failure. Any other error stays an error.
+        let nativeDescriptors: readonly WebBluetoothDescriptorBoundary[]
+        try {
+          nativeDescriptors = await this.host.runAbortable(
+            record,
+            options,
+            () => nativeCharacteristic.getDescriptors(),
+            'gatt.not-found',
+            'gatt',
+            'web-gatt.discover-descriptors'
+          )
+        } catch (error) {
+          if (error instanceof BackendContractError && error.normalized.code === 'gatt.not-found') {
+            nativeDescriptors = []
+          } else {
+            throw error
+          }
+        }
         const descriptorOccurrences = new Map<string, number>()
         for (let descriptorIndex = 0; descriptorIndex < nativeDescriptors.length; descriptorIndex += 1) {
           const nativeDescriptor = nativeDescriptors[descriptorIndex]
@@ -363,7 +393,7 @@ export class WebBluetoothGattRuntime {
     database: WebGattDatabase,
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     options: PublicOperationOptions
-  ): Promise<OwnedBytes> {
+  ): Promise<CharacteristicRead> {
     const characteristic = this.requireCharacteristic(database, path, 'web-gatt.read')
     if (!characteristic.properties.read) {
       throw contractError('gatt.property-not-supported', 'gatt', 'web-gatt.read')
@@ -376,7 +406,7 @@ export class WebBluetoothGattRuntime {
       'gatt',
       'web-gatt.read'
     )
-    return ownBytes(value, MAXIMUM_VALUE_BYTES)
+    return Object.freeze({ value: ownBytes(value, MAXIMUM_VALUE_BYTES), provenance: WEB_BLUETOOTH_READ_PROVENANCE })
   }
 
   private async writeCharacteristic(
@@ -473,7 +503,17 @@ export class WebBluetoothGattRuntime {
       }
       const copied = ownBytes(value, MAXIMUM_VALUE_BYTES)
       const result = stream.emit(
-        { value: copied, indication: characteristic.properties.indicate && !characteristic.properties.notify },
+        // Web Bluetooth's startNotifications() writes the notification CCCD
+        // bit when the characteristic has the notify property, and the
+        // indication bit only otherwise (Web Bluetooth §5.6.4).
+        {
+          value: copied,
+          delivery: characteristic.properties.notify
+            ? 'notification'
+            : characteristic.properties.indicate
+              ? 'indication'
+              : 'unknown'
+        },
         copied.byteLength
       )
       if (result.terminated) {
@@ -586,7 +626,7 @@ export class WebBluetoothGattRuntime {
 
   private beginLogicalSubscriptionStop(
     managed: WebManagedSubscription,
-    reason: 'connection-lost' | 'owner-released'
+    reason: 'connection-lost' | 'owner-released' | 'source-failed'
   ): void {
     if (managed.state === 'stopped' || managed.state === 'stopping' || managed.state === 'cleanup-failed') {
       return
@@ -615,10 +655,10 @@ export class WebBluetoothGattRuntime {
   private async readResult(
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     request: ReadRequest<string, string>
-  ): Promise<ReadResult<string, string>> {
+  ): Promise<CharacteristicReadResult<string, string>> {
     const database = this.host.requireDatabase(path, 'web-gatt.read')
     return {
-      value: await this.readCharacteristic(database, path, request.operation),
+      ...(await this.readCharacteristic(database, path, request.operation)),
       terminal: terminalRecord(request.operation.correlation)
     }
   }

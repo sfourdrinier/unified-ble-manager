@@ -1,0 +1,399 @@
+{
+  "drains": [
+    {
+      "lastOrdinal": null,
+      "name": "advertisements",
+      "text": "{\"more\":false,\"records\":[{\"appearance\":833,\"connectable\":true,\"localName\":\"Polar H10 1234\",\"manufacturerData\":[{\"companyId\":107,\"payloadB64\":\"AID/\"}],\"observedAtMs\":0,\"ordinal\":1,\"overflowServiceUuids\":null,\"peerId\":\"A0:9E:1A:00:00:01\",\"rawRecordB64\":\"AgEG\",\"rssi\":-58,\"serviceData\":[{\"payloadB64\":\"\",\"uuid\":\"0000180d-0000-1000-8000-00805f9b34fb\"}],\"serviceUuids\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"solicitedServiceUuids\":[\"00001812-0000-1000-8000-00805f9b34fb\"],\"t\":\"adv\",\"txPower\":4},{\"appearance\":null,\"connectable\":null,\"localName\":null,\"manufacturerData\":null,\"observedAtMs\":0,\"ordinal\":2,\"overflowServiceUuids\":null,\"peerId\":\"A0:9E:1A:00:00:01\",\"rawRecordB64\":null,\"rssi\":null,\"serviceData\":null,\"serviceUuids\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"solicitedServiceUuids\":null,\"t\":\"adv\",\"txPower\":null}]}"
+    },
+    {
+      "lastOrdinal": 2,
+      "name": "notification values",
+      "text": "{\"more\":false,\"records\":[{\"consumer\":\"hr\",\"delivery\":\"notification\",\"ordinal\":3,\"t\":\"value\",\"valueB64\":\"AFU=\"},{\"consumer\":\"hr\",\"delivery\":\"notification\",\"ordinal\":4,\"t\":\"value\",\"valueB64\":\"EFUgAw==\"}]}"
+    },
+    {
+      "lastOrdinal": 4,
+      "name": "adapter, security, restored, ingress-drop",
+      "text": "{\"more\":false,\"records\":[{\"ordinal\":5,\"state\":{\"adapterGeneration\":\"1\",\"authorization\":\"granted\",\"availability\":\"available\",\"backendGeneration\":\"1\",\"power\":\"on\",\"safeReason\":null,\"updatedAt\":0},\"t\":\"adapter\"},{\"ordinal\":6,\"peerId\":\"A0:9E:1A:00:00:01\",\"state\":{\"authentication\":\"unknown\",\"bond\":\"bonded\",\"encryption\":\"encrypted\",\"pairingPossible\":null,\"secureConnections\":\"unsupported\"},\"t\":\"security\"},{\"ordinal\":7,\"peers\":[{\"connected\":false,\"name\":null,\"peerId\":\"C0:FF:EE:00:00:03\"}],\"t\":\"restored\"},{\"class\":\"notification\",\"count\":1,\"ordinal\":8,\"t\":\"ingress-drop\"}]}"
+    },
+    {
+      "lastOrdinal": 8,
+      "name": "link loss",
+      "text": "{\"more\":false,\"records\":[{\"connectionGeneration\":\"cg-0\",\"databaseGeneration\":\"db-2\",\"ordinal\":9,\"peerId\":\"A0:9E:1A:00:00:01\",\"reason\":\"peer\",\"t\":\"link\"},{\"consumer\":\"hr\",\"droppedBytes\":0,\"droppedItems\":0,\"ordinal\":10,\"reason\":\"invalidated\",\"t\":\"stream-end\"}]}"
+    }
+  ],
+  "invokes": [
+    {
+      "args": "{}",
+      "envelope": "{\"ok\":true,\"value\":{\"adapterGeneration\":\"1\",\"authorization\":\"granted\",\"availability\":\"available\",\"backendGeneration\":\"1\",\"power\":\"on\",\"safeReason\":null,\"updatedAt\":0}}",
+      "expect": "value",
+      "name": "adapter state",
+      "op": "adapter.state"
+    },
+    {
+      "args": "{}",
+      "envelope": "{\"ok\":true,\"value\":{\"counters\":{\"activeScanControllers\":0,\"chooserSessions\":0,\"connectionLeases\":0,\"databaseSnapshots\":0,\"dispatchedOperations\":0,\"orphanedIpcOwners\":0,\"physicalCccdEnablements\":0,\"physicalLinks\":0,\"queuedOperations\":0,\"restorationRecords\":0,\"retainedByteBuffers\":0,\"scanConsumers\":0,\"subscriptionConsumers\":0},\"native\":{\"liveOps\":0,\"pendingRadioRequests\":0},\"process\":{\"counters\":{\"activeScanControllers\":0,\"chooserSessions\":0,\"connectionLeases\":0,\"databaseSnapshots\":0,\"dispatchedOperations\":0,\"orphanedIpcOwners\":0,\"physicalCccdEnablements\":0,\"physicalLinks\":0,\"queuedOperations\":0,\"restorationRecords\":0,\"retainedByteBuffers\":0,\"scanConsumers\":0,\"subscriptionConsumers\":0},\"native\":{\"ingressDrops\":{\"advertisement\":0,\"control\":0,\"notification\":0},\"lateRadioCompletions\":0,\"liveOps\":0,\"pendingRadioRequests\":0}}}}",
+      "expect": "value",
+      "name": "counters at baseline",
+      "op": "counters.describe"
+    },
+    {
+      "args": "{\"admission\":1,\"budgetMs\":30000,\"duplicatePolicy\":\"all\",\"operationId\":\"scan-1\",\"serviceUuids\":[\"180D\"]}",
+      "envelope": "{\"ok\":true,\"value\":{\"operationId\":\"s1-scan-1\"}}",
+      "expect": "value",
+      "name": "scan start",
+      "op": "scan.start"
+    },
+    {
+      "args": "{}",
+      "envelope": "{\"ok\":true,\"value\":[{\"bond\":\"unknown\",\"connection\":\"unknown\",\"lastSeenAtMonotonicMs\":0,\"name\":\"Polar H10 1234\",\"peerId\":\"A0:9E:1A:00:00:01\",\"reachability\":\"unknown\",\"rssi\":-58,\"source\":\"scan-observed\"}]}",
+      "expect": "value",
+      "name": "known peers",
+      "op": "peers.known"
+    },
+    {
+      "args": "{\"reference\":{\"backendId\":\"rn\",\"opaqueId\":\"A0:9E:1A:00:00:01\",\"scope\":\"origin\",\"version\":1}}",
+      "envelope": "{\"ok\":true,\"value\":{\"bond\":\"unknown\",\"connection\":\"unknown\",\"lastSeenAtMonotonicMs\":0,\"name\":\"Polar H10 1234\",\"peerId\":\"A0:9E:1A:00:00:01\",\"reachability\":\"unknown\",\"rssi\":-58,\"source\":\"scan-observed\"}}",
+      "expect": "value",
+      "name": "resolve known",
+      "op": "peers.resolve"
+    },
+    {
+      "args": "{\"reference\":{\"opaqueId\":\"nobody\"}}",
+      "envelope": "{\"ok\":true,\"value\":null}",
+      "expect": "value",
+      "name": "resolve unknown",
+      "op": "peers.resolve"
+    },
+    {
+      "args": "{\"admission\":2,\"budgetMs\":10000,\"intent\":\"direct\",\"lease\":\"lease-1\",\"operationId\":\"connect-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"preferredPhy\":[\"le-2m\",\"le-1m\"],\"transport\":\"auto\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"connectionGeneration\":\"cg-0\",\"peerKey\":\"platform-guid:A0:9E:1A:00:00:01\"}}",
+      "expect": "value",
+      "name": "connect",
+      "op": "connection.connect"
+    },
+    {
+      "args": "{\"admission\":3,\"lease\":\"lease-9\",\"operationId\":\"connect-9\",\"peerId\":\"C0:FF:EE:00:01:33\"}",
+      "envelope": "{\"commit\":null,\"error\":{\"code\":\"connection.failed\",\"detail\":\"gatt-status: Android GATT connection failed with status 133 (gatt-status=133)\",\"domain\":\"connection\",\"operation\":\"connection.connect\",\"platform\":{\"code\":\"connectionFailed\",\"domain\":\"android\",\"message\":\"Android GATT connection failed with status 133\",\"metadata\":{\"androidGattStatus\":133}}},\"ok\":false,\"retryability\":\"caller-decides\"}",
+      "expect": "failure",
+      "name": "connect link not established (android gatt 133)",
+      "op": "connection.connect"
+    },
+    {
+      "args": "{\"admission\":4,\"intent\":\"when-available\",\"lease\":\"lease-2\",\"operationId\":\"connect-2\",\"peerId\":\"A0:9E:1A:00:00:01\",\"preferredPhy\":[\"le-coded\"]}",
+      "envelope": "{\"commit\":null,\"error\":{\"code\":\"capability.unsupported\",\"detail\":\"Android does not apply a connect PHY with autoConnect (when-available)\",\"domain\":\"capability\",\"operation\":\"connection.connect.preferred-phy\",\"platform\":null},\"ok\":false,\"retryability\":\"never\"}",
+      "expect": "failure",
+      "name": "connect phy with when-available",
+      "op": "connection.connect"
+    },
+    {
+      "args": "{}",
+      "envelope": "{\"ok\":true,\"value\":[{\"bond\":\"unknown\",\"connection\":\"connected\",\"lastSeenAtMonotonicMs\":0,\"name\":\"Polar H10 1234\",\"peerId\":\"A0:9E:1A:00:00:01\",\"reachability\":\"reachable\",\"rssi\":-58,\"source\":\"scan-observed\"}]}",
+      "expect": "value",
+      "name": "connected peers",
+      "op": "peers.connected"
+    },
+    {
+      "args": "{\"admission\":5,\"lease\":\"lease-1\",\"operationId\":\"discover-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"connectionGeneration\":\"cg-0\",\"databaseGeneration\":\"db-2\",\"services\":[{\"characteristics\":[{\"descriptors\":[{\"occurrence\":0,\"uuid\":\"00002902-0000-1000-8000-00805f9b34fb\"}],\"occurrence\":0,\"properties\":15,\"uuid\":\"00002a37-0000-1000-8000-00805f9b34fb\"}],\"occurrence\":0,\"uuid\":\"0000180d-0000-1000-8000-00805f9b34fb\"}]}}",
+      "expect": "value",
+      "name": "discover",
+      "op": "gatt.discover"
+    },
+    {
+      "args": "{\"admission\":6,\"operationId\":\"read-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"selector\":{\"characteristicOccurrence\":0,\"characteristicUuid\":\"2A37\",\"serviceOccurrence\":0,\"serviceUuid\":\"180D\"}}",
+      "envelope": "{\"ok\":true,\"value\":{\"provenance\":\"read-response\",\"valueB64\":\"Qg==\"}}",
+      "expect": "value",
+      "name": "read",
+      "op": "gatt.read"
+    },
+    {
+      "args": "{\"admission\":7,\"operationId\":\"rd-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"selector\":{\"characteristicOccurrence\":0,\"characteristicUuid\":\"2A37\",\"descriptorOccurrence\":0,\"descriptorUuid\":\"2902\",\"serviceOccurrence\":0,\"serviceUuid\":\"180D\"}}",
+      "envelope": "{\"ok\":true,\"value\":{\"valueB64\":\"Qg==\"}}",
+      "expect": "value",
+      "name": "read descriptor",
+      "op": "gatt.read-descriptor"
+    },
+    {
+      "args": "{\"admission\":8,\"mode\":\"with-response\",\"operationId\":\"w-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"selector\":{\"characteristicOccurrence\":0,\"characteristicUuid\":\"2A37\",\"serviceOccurrence\":0,\"serviceUuid\":\"180D\"},\"valueB64\":\"AID/\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"commitState\":\"confirmed\"}}",
+      "expect": "value",
+      "name": "write with response",
+      "op": "gatt.write"
+    },
+    {
+      "args": "{\"admission\":9,\"mode\":\"without-response\",\"operationId\":\"w-2\",\"peerId\":\"A0:9E:1A:00:00:01\",\"selector\":{\"characteristicOccurrence\":0,\"characteristicUuid\":\"2A37\",\"serviceOccurrence\":0,\"serviceUuid\":\"180D\"},\"valueB64\":\"\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"commitState\":\"unknown\"}}",
+      "expect": "value",
+      "name": "write without response",
+      "op": "gatt.write"
+    },
+    {
+      "args": "{\"admission\":10,\"mode\":\"with-response\",\"operationId\":\"w-5\",\"peerId\":\"A0:9E:1A:00:00:01\",\"selector\":{\"characteristicOccurrence\":0,\"characteristicUuid\":\"2A37\",\"serviceOccurrence\":0,\"serviceUuid\":\"180D\"},\"valueB64\":\"3Q==\"}",
+      "envelope": "{\"commit\":\"uncertain\",\"error\":{\"code\":\"platform.security\",\"detail\":\"gatt-status: GATT_INSUFFICIENT_AUTHENTICATION (gatt-status=5)\",\"domain\":\"platform\",\"operation\":\"gatt.write\",\"platform\":{\"code\":\"writeFailed\",\"domain\":\"android\",\"message\":\"GATT_INSUFFICIENT_AUTHENTICATION\",\"metadata\":{\"androidGattStatus\":5}}},\"ok\":false,\"retryability\":\"never\"}",
+      "expect": "failure",
+      "name": "write refused by the peer (android gatt status)",
+      "op": "gatt.write"
+    },
+    {
+      "args": "{\"admission\":11,\"mode\":\"with-response\",\"operationId\":\"wd-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"selector\":{\"characteristicOccurrence\":0,\"characteristicUuid\":\"2A37\",\"descriptorOccurrence\":0,\"descriptorUuid\":\"2902\",\"serviceOccurrence\":0,\"serviceUuid\":\"180D\"},\"valueB64\":\"AQA=\"}",
+      "envelope": "{\"commit\":\"not-dispatched\",\"error\":{\"code\":\"gatt.cccd-managed\",\"detail\":null,\"domain\":\"gatt\",\"operation\":\"write.cccd\",\"platform\":null},\"ok\":false,\"retryability\":\"never\"}",
+      "expect": "failure",
+      "name": "write descriptor",
+      "op": "gatt.write-descriptor"
+    },
+    {
+      "args": "{\"admission\":12,\"mode\":\"without-response\",\"operationId\":\"w-4\",\"peerId\":\"A0:9E:1A:00:00:01\",\"selector\":{\"characteristicOccurrence\":0,\"characteristicUuid\":\"2A37\",\"serviceOccurrence\":0,\"serviceUuid\":\"180D\"},\"valueB64\":\"7g==\"}",
+      "envelope": "{\"commit\":\"not-dispatched\",\"error\":{\"code\":\"platform.failure\",\"detail\":\"busy: write-without-response queue full\",\"domain\":\"platform\",\"operation\":\"gatt.write\",\"platform\":{\"code\":\"writeFailed\",\"domain\":\"android\",\"message\":\"write-without-response queue full\",\"metadata\":{}}},\"ok\":false,\"retryability\":\"caller-decides\"}",
+      "expect": "failure",
+      "name": "write refused before sending",
+      "op": "gatt.write"
+    },
+    {
+      "args": "{\"admission\":13,\"mode\":\"with-response\",\"operationId\":\"w-3\",\"peerId\":\"A0:9E:1A:00:00:01\",\"selector\":{\"characteristicOccurrence\":0,\"characteristicUuid\":\"2A37\",\"serviceOccurrence\":0,\"serviceUuid\":\"180D\"},\"valueB64\":\"AID\"}",
+      "envelope": "{\"commit\":\"not-dispatched\",\"error\":{\"code\":\"argument.invalid\",\"detail\":null,\"domain\":\"core\",\"operation\":\"ubm-mobile.wire.args.gatt.write.valueB64\",\"platform\":null},\"ok\":false,\"retryability\":\"never\"}",
+      "expect": "failure",
+      "name": "write malformed base64",
+      "op": "gatt.write"
+    },
+    {
+      "args": "{\"admission\":14,\"consumer\":\"hr\",\"deliveryMode\":\"require-notification\",\"operationId\":\"sub-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"selector\":{\"characteristicOccurrence\":0,\"characteristicUuid\":\"2A37\",\"serviceOccurrence\":0,\"serviceUuid\":\"180D\"}}",
+      "envelope": "{\"ok\":true,\"value\":{\"consumer\":\"hr\",\"delivery\":\"notification\"}}",
+      "expect": "value",
+      "name": "subscribe",
+      "op": "gatt.subscribe"
+    },
+    {
+      "args": "{}",
+      "envelope": "{\"ok\":true,\"value\":{\"adapter\":{\"adapterGeneration\":\"1\",\"authorization\":\"granted\",\"availability\":\"available\",\"backendGeneration\":\"1\",\"power\":\"on\",\"safeReason\":null,\"updatedAt\":0},\"links\":[{\"connectionGeneration\":\"cg-0\",\"databaseChange\":null,\"databaseGeneration\":\"db-2\",\"databaseState\":\"current\",\"peerId\":\"A0:9E:1A:00:00:01\",\"reason\":null,\"state\":\"connected\"}],\"restored\":[],\"scan\":\"s1-scan-1\",\"security\":[],\"subscriptions\":[{\"consumer\":\"hr\",\"state\":\"live\"}]}}",
+      "expect": "value",
+      "name": "reconcile live",
+      "op": "session.reconcile"
+    },
+    {
+      "args": "{\"admission\":15,\"lease\":\"lease-1\",\"operationId\":\"rssi-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"rssi\":-61}}",
+      "expect": "value",
+      "name": "rssi",
+      "op": "connection.rssi"
+    },
+    {
+      "args": "{\"lease\":\"lease-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"mtu\":247}}",
+      "expect": "value",
+      "name": "effective mtu",
+      "op": "connection.effective-mtu"
+    },
+    {
+      "args": "{\"admission\":16,\"lease\":\"lease-1\",\"mode\":\"without-response\",\"operationId\":\"mwl-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"maximumWriteLength\":244}}",
+      "expect": "value",
+      "name": "maximum write length",
+      "op": "connection.maximum-write-length"
+    },
+    {
+      "args": "{\"admission\":17,\"lease\":\"lease-1\",\"mtu\":247,\"operationId\":\"mtu-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"mtu\":247}}",
+      "expect": "value",
+      "name": "request mtu",
+      "op": "connection.request-mtu"
+    },
+    {
+      "args": "{\"admission\":18,\"lease\":\"lease-1\",\"operationId\":\"prio-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"priority\":\"high-throughput\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"accepted\":true}}",
+      "expect": "value",
+      "name": "request priority",
+      "op": "connection.request-priority"
+    },
+    {
+      "args": "{\"admission\":19,\"lease\":\"lease-1\",\"operationId\":\"phy-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"rx\":\"le-1m\",\"tx\":\"le-2m\"}}",
+      "expect": "value",
+      "name": "read phy",
+      "op": "connection.read-phy"
+    },
+    {
+      "args": "{\"admission\":20,\"lease\":\"lease-1\",\"operationId\":\"phy-2\",\"peerId\":\"A0:9E:1A:00:00:01\",\"rx\":\"le-2m\",\"tx\":\"le-2m\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"accepted\":true,\"observation\":{\"rx\":\"le-2m\",\"tx\":\"le-2m\"}}}",
+      "expect": "value",
+      "name": "request phy",
+      "op": "connection.request-phy"
+    },
+    {
+      "args": "{\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"authentication\":\"unknown\",\"bond\":\"not-bonded\",\"encryption\":\"not-encrypted\",\"pairingPossible\":true,\"secureConnections\":\"unknown\"}}",
+      "expect": "value",
+      "name": "security state",
+      "op": "security.state"
+    },
+    {
+      "args": "{\"admission\":21,\"operationId\":\"pair-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"transport\":\"auto\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"outcome\":\"paired\",\"state\":{\"authentication\":\"unauthenticated\",\"bond\":\"bonded\",\"encryption\":\"encrypted\",\"pairingPossible\":null,\"secureConnections\":\"yes\"}}}",
+      "expect": "value",
+      "name": "pair",
+      "op": "security.pair"
+    },
+    {
+      "args": "{\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"state\":\"requested\"}}",
+      "expect": "value",
+      "name": "cancel pairing",
+      "op": "security.cancel-pairing"
+    },
+    {
+      "args": "{\"admission\":22,\"operationId\":\"bonded-1\"}",
+      "envelope": "{\"ok\":true,\"value\":[{\"bond\":\"bonded\",\"connection\":\"unknown\",\"lastSeenAtMonotonicMs\":null,\"name\":\"Bonded Sensor\",\"peerId\":\"C0:FF:EE:00:00:02\",\"reachability\":\"unknown\",\"rssi\":null,\"source\":\"system-bonded\"}]}",
+      "expect": "value",
+      "name": "bonded peers",
+      "op": "peers.bonded"
+    },
+    {
+      "args": "{\"admission\":23,\"kind\":\"connected-device\",\"operationId\":\"bg-1\",\"reason\":\"heart rate streaming\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"leaseId\":\"fgs-lease-1\"}}",
+      "expect": "value",
+      "name": "background acquire",
+      "op": "background.acquire"
+    },
+    {
+      "args": "{\"body\":\"Polar H10\",\"leaseId\":\"fgs-lease-1\",\"title\":\"Recording\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"state\":\"updated\"}}",
+      "expect": "value",
+      "name": "background notification",
+      "op": "background.update-notification"
+    },
+    {
+      "args": "{\"leaseId\":\"fgs-lease-1\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"failures\":[],\"state\":\"released\"}}",
+      "expect": "value",
+      "name": "background release",
+      "op": "background.release"
+    },
+    {
+      "args": "{\"name\":\"Polar\",\"serviceUuid\":\"180D\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"associationId\":42,\"displayName\":\"Polar H10\",\"peerId\":\"A0:9E:1A:00:00:01\",\"source\":\"associated\"}}",
+      "expect": "value",
+      "name": "companion associate",
+      "op": "companion.associate"
+    },
+    {
+      "args": "{\"admission\":24,\"operationId\":\"presence-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"state\":\"observing\"}}",
+      "expect": "value",
+      "name": "presence observe",
+      "op": "presence.observe"
+    },
+    {
+      "args": "{\"admission\":25,\"operationId\":\"presence-2\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"state\":\"idle\"}}",
+      "expect": "value",
+      "name": "presence unobserve",
+      "op": "presence.unobserve"
+    },
+    {
+      "args": "{\"admission\":26,\"operationId\":\"never-seen\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"state\":\"cancellation-requested\"}}",
+      "expect": "value",
+      "name": "cancel before admission",
+      "op": "op.cancel"
+    },
+    {
+      "args": "{\"admission\":6,\"operationId\":\"read-1\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"state\":\"already-terminal\"}}",
+      "expect": "value",
+      "name": "cancel finished",
+      "op": "op.cancel"
+    },
+    {
+      "args": "{}",
+      "envelope": "{\"commit\":null,\"error\":{\"code\":\"argument.invalid\",\"detail\":null,\"domain\":\"core\",\"operation\":\"ubm-mobile.wire.op\",\"platform\":null},\"ok\":false,\"retryability\":\"never\"}",
+      "expect": "failure",
+      "name": "unknown op",
+      "op": "gatt.bogus"
+    },
+    {
+      "args": "{\"admission\":27,\"duplicatePolicy\":\"merged\",\"operationId\":\"scan-2\",\"serviceUuids\":[]}",
+      "envelope": "{\"commit\":null,\"error\":{\"code\":\"capability.unsupported\",\"detail\":\"the radio reports every advertisement; apply first/merged above it\",\"domain\":\"capability\",\"operation\":\"scan.start.duplicate-policy\",\"platform\":null},\"ok\":false,\"retryability\":\"never\"}",
+      "expect": "failure",
+      "name": "unsupported duplicate policy",
+      "op": "scan.start"
+    },
+    {
+      "args": "{}",
+      "envelope": "{\"ok\":true,\"value\":[{\"bond\":\"unknown\",\"connection\":\"unknown\",\"lastSeenAtMonotonicMs\":null,\"name\":null,\"peerId\":\"C0:FF:EE:00:00:03\",\"reachability\":\"unknown\",\"rssi\":null,\"source\":\"restored\"}]}",
+      "expect": "value",
+      "name": "restored peers",
+      "op": "peers.restored"
+    },
+    {
+      "args": "{\"maxPeers\":1023}",
+      "envelope": "{\"ok\":true,\"value\":{\"peers\":[{\"bond\":\"unknown\",\"connection\":\"unknown\",\"lastSeenAtMonotonicMs\":null,\"name\":null,\"peerId\":\"C0:FF:EE:00:00:03\",\"reachability\":\"unknown\",\"rssi\":null,\"source\":\"restored\"}]}}",
+      "expect": "value",
+      "name": "claim restored on android",
+      "op": "peers.claim-restored"
+    },
+    {
+      "args": "{}",
+      "envelope": "{\"ok\":true,\"value\":{\"adapter\":{\"adapterGeneration\":\"1\",\"authorization\":\"granted\",\"availability\":\"available\",\"backendGeneration\":\"1\",\"power\":\"on\",\"safeReason\":null,\"updatedAt\":0},\"links\":[{\"connectionGeneration\":\"cg-0\",\"databaseChange\":null,\"databaseGeneration\":\"db-2\",\"databaseState\":null,\"peerId\":\"A0:9E:1A:00:00:01\",\"reason\":\"peer\",\"state\":\"ended\"}],\"restored\":[{\"connected\":false,\"name\":null,\"peerId\":\"C0:FF:EE:00:00:03\"}],\"scan\":\"s1-scan-1\",\"security\":[{\"peerId\":\"A0:9E:1A:00:00:01\",\"state\":{\"authentication\":\"unknown\",\"bond\":\"bonded\",\"encryption\":\"encrypted\",\"pairingPossible\":null,\"secureConnections\":\"unsupported\"}},{\"peerId\":\"C0:FF:EE:00:00:02\",\"state\":{\"authentication\":\"unknown\",\"bond\":\"bonded\",\"encryption\":\"unknown\",\"pairingPossible\":null,\"secureConnections\":\"unknown\"}}],\"subscriptions\":[{\"consumer\":\"hr\",\"droppedBytes\":0,\"droppedItems\":0,\"reason\":\"invalidated\",\"state\":\"ended\"}]}}",
+      "expect": "value",
+      "name": "reconcile after loss",
+      "op": "session.reconcile"
+    },
+    {
+      "args": "{\"admission\":28,\"consumer\":\"hr\",\"operationId\":\"unsub-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"selector\":{\"characteristicOccurrence\":0,\"characteristicUuid\":\"2A37\",\"serviceOccurrence\":0,\"serviceUuid\":\"180D\"}}",
+      "envelope": "{\"ok\":true,\"value\":{\"physicalDisabled\":false,\"state\":\"released\"}}",
+      "expect": "value",
+      "name": "unsubscribe",
+      "op": "gatt.unsubscribe"
+    },
+    {
+      "args": "{\"operationId\":\"s1-scan-1\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"failures\":[],\"state\":\"released\"}}",
+      "expect": "value",
+      "name": "scan stop",
+      "op": "scan.stop"
+    },
+    {
+      "args": "{\"lease\":\"lease-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"failures\":[],\"state\":\"released\"}}",
+      "expect": "value",
+      "name": "disconnect after loss",
+      "op": "connection.disconnect"
+    },
+    {
+      "args": "{}",
+      "envelope": "{\"ok\":true,\"value\":{\"failures\":[],\"state\":\"released\"}}",
+      "expect": "value",
+      "name": "dispose",
+      "op": "session.dispose"
+    },
+    {
+      "args": "{\"maxPeers\":1023}",
+      "envelope": "{\"ok\":true,\"value\":{\"peers\":[{\"bond\":\"unknown\",\"connection\":\"unknown\",\"lastSeenAtMonotonicMs\":null,\"name\":\"Polar H10\",\"peerId\":\"5B7C1A2E-0000-4000-8000-000000000001\",\"reachability\":\"unknown\",\"rssi\":null,\"source\":\"restored\"}]}}",
+      "expect": "value",
+      "name": "claim restored",
+      "op": "peers.claim-restored"
+    },
+    {
+      "args": "{\"maxPeers\":1023}",
+      "envelope": "{\"ok\":true,\"value\":{\"peers\":[]}}",
+      "expect": "value",
+      "name": "claim restored again",
+      "op": "peers.claim-restored"
+    },
+    {
+      "args": "{}",
+      "envelope": "{\"ok\":true,\"value\":{\"counters\":{\"activeScanControllers\":0,\"chooserSessions\":0,\"connectionLeases\":0,\"databaseSnapshots\":0,\"dispatchedOperations\":0,\"orphanedIpcOwners\":0,\"physicalCccdEnablements\":0,\"physicalLinks\":0,\"queuedOperations\":0,\"restorationRecords\":1,\"retainedByteBuffers\":0,\"scanConsumers\":0,\"subscriptionConsumers\":0},\"native\":{\"liveOps\":0,\"pendingRadioRequests\":0},\"process\":{\"counters\":{\"activeScanControllers\":0,\"chooserSessions\":0,\"connectionLeases\":0,\"databaseSnapshots\":0,\"dispatchedOperations\":0,\"orphanedIpcOwners\":0,\"physicalCccdEnablements\":0,\"physicalLinks\":0,\"queuedOperations\":0,\"restorationRecords\":1,\"retainedByteBuffers\":0,\"scanConsumers\":0,\"subscriptionConsumers\":0},\"native\":{\"ingressDrops\":{\"advertisement\":0,\"control\":0,\"notification\":0},\"lateRadioCompletions\":0,\"liveOps\":0,\"pendingRadioRequests\":0}}}}",
+      "expect": "value",
+      "name": "counters after claim",
+      "op": "counters.describe"
+    },
+    {
+      "args": "{\"admission\":1,\"lease\":\"l\",\"operationId\":\"c\",\"peerId\":\"5B7C1A2E-0000-4000-8000-000000000001\",\"preferredPhy\":[\"le-2m\"]}",
+      "envelope": "{\"commit\":null,\"error\":{\"code\":\"capability.unsupported\",\"detail\":\"CoreBluetooth has no LE PHY control\",\"domain\":\"capability\",\"operation\":\"connection.connect.preferred-phy\",\"platform\":null},\"ok\":false,\"retryability\":\"never\"}",
+      "expect": "failure",
+      "name": "apple connect phy",
+      "op": "connection.connect"
+    }
+  ],
+  "regenerate": "UBM_MOBILE_GOLDEN_WRITE=1 cargo test -p ubm-mobile --test golden",
+  "wireRevision": "ubm-mobile-wire/1"
+}

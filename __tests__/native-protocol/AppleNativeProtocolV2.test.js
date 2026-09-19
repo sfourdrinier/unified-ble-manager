@@ -508,7 +508,10 @@ describe('Apple Native Protocol v2 radio boundary', () => {
     expect(descriptors).toContain('writeDescriptor(')
     expect(descriptors).toContain('didUpdateValueFor descriptor')
     expect(descriptors).toContain('didWriteValueFor descriptor')
-    expect(radio).toContain('"descriptors": descriptors')
+    // The discovery snapshot is a stateless projection, so it lives in support.
+    const support = read('ios/Owned/OwnedCoreBluetoothProtocolRadioSupport.swift')
+    expect(radio).toContain('OwnedCoreBluetoothProtocolRadioSupport.discoverySnapshot(')
+    expect(support).toContain('"descriptors": descriptors')
     expect(execution).toContain('if (kind == "readDescriptor")')
     expect(execution).toContain('kind == "readDescriptor" || kind == "writeDescriptor"')
     expect(execution).toContain('descriptorEndpointFor')
@@ -522,6 +525,19 @@ describe('Apple Native Protocol v2 radio boundary', () => {
 
   test('executes the Apple harness on macOS or verifies its required macOS CI route elsewhere', () => {
     if (process.platform === 'darwin') {
+      // The harness links the real Rust mobile host (UniFFI crate). A cold
+      // compile of that crate is a Rust build, not a protocol check: it gets
+      // its own bound here (CI pre-builds it, so this is a fresh-check no-op
+      // there), and the harness budget below covers only the harness itself.
+      const rustHost = childProcess.spawnSync('cargo', ['build', '--locked', '-p', 'ubm5_uniffi_echo'], {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 900_000
+      })
+      expect(rustHost.error).toBeUndefined()
+      if (rustHost.status !== 0) {
+        throw new Error(`UniFFI mobile host build failed on macOS:\n${rustHost.stderr}`)
+      }
       const execution = childProcess.spawnSync('pnpm', ['test:native-protocol:apple'], {
         cwd: root,
         encoding: 'utf8',
@@ -551,7 +567,7 @@ describe('Apple Native Protocol v2 radio boundary', () => {
     if (!appleWorkflow.includes('run: pnpm test:native-protocol:apple')) {
       throw new Error('Non-macOS routing check failed: the macOS Apple CI workflow does not require pnpm test:native-protocol:apple.')
     }
-  })
+  }, 1_200_000)
 
   test('release and destroy wait for pendingDisconnect confirmation before completing', () => {
     const radio = readAppleRadio()

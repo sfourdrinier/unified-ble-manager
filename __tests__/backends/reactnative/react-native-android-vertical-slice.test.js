@@ -1,4 +1,11 @@
 // __tests__/backends/reactnative/react-native-android-vertical-slice.test.js
+//
+// LEGACY REFERENCE SUITE (FIX-PLAN decision 12, Phase 4 deletion). It pins the
+// legacy TypeScript providers over the Native Protocol v2 JSI boundary, which
+// no public factory reaches any more; the legacy-vs-Rust parity suite
+// (rust-core-legacy-parity.test.js) opens these providers as the reference the
+// Rust route must match. The Rust-route equivalents of these journeys are in
+// rust-core-provider.test.js and rust-core-legacy-parity.test.js.
 
 const { capacity, opaqueId, version, versionRange } = require('../../../src/backend-contract/primitives')
 const { BUILT_IN_FEATURE_IDS } = require('../../../src/backend-contract/capabilities')
@@ -9,18 +16,29 @@ const { createPublicBleManager } = require('../../../src/public/ble-manager')
 const { REACT_NATIVE_ANDROID_PLATFORM_ID } = require('../../../src/backends/reactnative/react-native-android-provider')
 const {
   createReactNativeAndroidBackendProvider,
-  createReactNativeAppleBackendProvider,
-  createReactNativeBleManagerWithEnvironment
-} = require('../../../src/react-native')
+  reactNativeAndroidCompatibility,
+  reactNativeAndroidDefaultAdapterId
+} = require('../../../src/backends/reactnative/react-native-android-provider')
+const {
+  reactNativeAppleCompatibility,
+  reactNativeAppleDefaultAdapterId
+} = require('../../../src/backends/reactnative/react-native-platform-identity')
+const {
+  createReactNativeAppleLegacyBackendProvider
+} = require('../../../src/backends/reactnative/react-native-apple-provider')
 const { decodeNativeProtocolRecord, encodeNativeProtocolRecord } = require('../../../src/native-protocol/v2-codec')
 const { ReactNativeAndroidProtocolBoundary } = require('../../../src/native-protocol/rn-android-boundary')
 const { ReactNativeAppleProtocolBoundary } = require('../../../src/native-protocol/rn-apple-boundary')
 const { CoreBluetoothBackend } = require('../../../src/backends/corebluetooth/corebluetooth-backend')
 const {
-  createReactNativeAndroidFirstPartyTckRegistration,
-  createReactNativeAppleFirstPartyTckRegistration
+  createReactNativeAndroidFirstPartyTckRegistration
 } = require('../../../src/tck/first-party/react-native-tck-registration')
 const { runBackendTck } = require('../../../src/tck/runner')
+const {
+  DeterministicRustCoreNative,
+  DEFAULT_PEER
+} = require('../../../test-support/react-native/deterministic-rust-core-native')
+const { deterministicRustCoreTckBoundary } = require('../../../test-support/react-native/rust-core-harness')
 const {
   planReactNativeAndroidScan,
   planReactNativeAppleScan,
@@ -29,6 +47,40 @@ const {
   reactNativeAndroidScanPlanningContext,
   reactNativeAppleScanPlanningContext
 } = require('../../../src/backends/reactnative/react-native-scan-planner')
+
+/**
+ * The composition the removed `legacyTypeScriptCore` route performed: the
+ * legacy provider under the TypeScript manager. Reference only.
+ */
+async function createLegacyReferenceManager(options) {
+  const provider =
+    options.platform === 'android'
+      ? createReactNativeAndroidBackendProvider(options)
+      : createReactNativeAppleLegacyBackendProvider(options)
+  const scope = `react-native:${options.platform}`
+  const clientId = opaqueId(options.clientId, 'client', scope)
+  return createBleManagerFromProvider(
+    {
+      provider,
+      selection: {
+        selectedAdapterId:
+          options.platform === 'android' ? reactNativeAndroidDefaultAdapterId() : reactNativeAppleDefaultAdapterId()
+      },
+      coreCompatibility:
+        options.platform === 'android' ? reactNativeAndroidCompatibility : reactNativeAppleCompatibility,
+      manager: {
+        clientId,
+        managerId: opaqueId(options.managerId, 'manager', scope),
+        ownerMode: 'owning',
+        restoration: Object.freeze({
+          client: Object.freeze({ clientId, hostSessionScope: options.hostSessionScope }),
+          coordinator: provider.restoration
+        })
+      }
+    },
+    { ...DEFAULT_BLE_MANAGER_OPTIONS, now: options.now }
+  )
+}
 
 const serviceUuid = '0000180d-0000-1000-8000-00805f9b34fb'
 const characteristicUuid = '00002a37-0000-1000-8000-00805f9b34fb'
@@ -189,13 +241,35 @@ describe('React Native Android canonical protocol vertical slice', () => {
     const other = await fixture.manager.connect(otherPeer, { intent: 'when-available' })
     await other.release()
     await expect(fixture.manager.destroy()).resolves.toMatchObject({ state: 'released', failures: [] })
+    // Finding 194: the core cancels the backend acquisition synchronously
+    // with the abort, so native cleanup confirms before the retry lands and
+    // the quarantine-retained diagnostic no longer fires on this path. The
+    // zero-diagnostic guard pins the silence: any console output would fail
+    // the suite as an unexpected diagnostic.
     await new Promise(resolve => {
       setImmediate(resolve)
     })
-    expectConsoleInfo(
-      '[unified-ble:android-gatt.connect] Cancelled native connection cleanup is not yet confirmed; quarantine retained:',
-      'AA:BB'
+  })
+
+  test('an expired connect deadline admits a same-peer retry instead of already-owned (194)', async () => {
+    const fixture = await createAndroidPeerDirectoryFixture(
+      [{ nativePeerId: 'AA:BB', displayName: 'Heart Strap' }],
+      { holdWhenAvailableConnect: true, publicNow: Date.now, providerNow: Date.now }
     )
+    const peers = await fixture.manager.peers.bonded()
+    const [firstPeer] = peers
+    if (firstPeer === undefined) throw new Error('Expected bonded peer is missing')
+
+    // No caller signal: the deadline is the only answer, so the acquisition
+    // must be cancelled through the backend contract path, never abandoned.
+    const pending = fixture.manager.connect(firstPeer, { intent: 'when-available', timeoutMs: 20 })
+    await expect(pending).rejects.toMatchObject({ code: 'connection.failed' })
+    expect(fixture.runtime.commandKinds).toEqual(expect.arrayContaining(['connect', 'disconnect']))
+
+    fixture.runtime.holdWhenAvailableConnect = false
+    const retry = await fixture.manager.connect(firstPeer, { intent: 'when-available' })
+    await retry.release()
+    await expect(fixture.manager.destroy()).resolves.toMatchObject({ state: 'released', failures: [] })
   })
 
   test.each([
@@ -210,7 +284,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
     },
     {
       name: 'Apple',
-      createProvider: createReactNativeAppleBackendProvider,
+      createProvider: createReactNativeAppleLegacyBackendProvider,
       adapterId: 'apple-corebluetooth-default-adapter',
       ownerId: 'deterministic-react-native-apple-scan-planner',
       execution: planReactNativeAppleScan,
@@ -521,7 +595,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
     const control = new DeterministicAndroidControl()
     const runtime = new DeterministicAndroidProtocolRuntime(control)
     global.__unifiedBleNativeProtocolV2 = runtime
-    const manager = await createReactNativeBleManagerWithEnvironment({
+    const manager = await createLegacyReferenceManager({
       platform: 'android',
       control,
       now: () => 20,
@@ -537,6 +611,8 @@ describe('React Native Android canonical protocol vertical slice', () => {
       power: 'on',
       safeReason: null
     })
+    // Issue #212: the journal is asked even on Android; with nothing seeded
+    // the platform handed back nothing, which adopts as already-consumed.
     await expect(
       manager.adoptRestoration({
         namespace: 'com.example.restoration',
@@ -545,8 +621,93 @@ describe('React Native Android canonical protocol vertical slice', () => {
         expectedEpoch: opaqueId('canonical-restoration-epoch', 'restoration-epoch', 'react-native:android'),
         expectedVersions: manager.identity.versions
       })
-    ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
+    ).resolves.toMatchObject({ outcome: 'already-consumed', replayedRecords: [] })
     await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(control.closedAttachments).toHaveLength(1)
+  })
+
+  test('reaches the Apple legacy reference route through the manager with main capabilities, identity and restoration', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const manager = await createLegacyReferenceManager({
+      platform: 'apple',
+      control,
+      now: () => 20,
+      clientId: 'canonical-react-native-apple-client',
+      managerId: 'canonical-react-native-apple-manager',
+      hostSessionScope: 'canonical-host-session',
+      createOwnerId: () => 'canonical-react-native-apple-owner'
+    })
+
+    // Pinned from origin/main's Apple provider, reached there by the same manager options.
+    expect(
+      manager.features.registrations.map(registration => ({
+        id: registration.id,
+        state: registration.state,
+        evidenceLevel: registration.evidence.evidenceLevel,
+        suiteId: registration.tck.suiteId
+      }))
+    ).toEqual([
+      { id: 'connection:rssi', state: 'limited', evidenceLevel: 'deterministic', suiteId: 'connection-controls' },
+      { id: 'connection:request-mtu', state: 'unsupported', evidenceLevel: 'blocked', suiteId: 'connection-controls' },
+      {
+        id: 'connection:effective-mtu',
+        state: 'unsupported',
+        evidenceLevel: 'blocked',
+        suiteId: 'connection-controls'
+      },
+      { id: 'connection:phy', state: 'unsupported', evidenceLevel: 'blocked', suiteId: 'connection-controls' },
+      {
+        id: 'gatt:descriptor-operations',
+        state: 'limited',
+        evidenceLevel: 'deterministic',
+        suiteId: 'descriptor-operations'
+      },
+      { id: 'state:restoration-adoption', state: 'limited', evidenceLevel: 'deterministic', suiteId: 'restoration' },
+      { id: 'state:presence-observation', state: 'unsupported', evidenceLevel: 'blocked', suiteId: 'restoration' },
+      { id: 'connection:direct', state: 'limited', evidenceLevel: 'deterministic', suiteId: 'capability.catalog-v2' },
+      {
+        id: 'gatt:maximum-write-length',
+        state: 'unavailable',
+        evidenceLevel: 'blocked',
+        suiteId: 'tck.feature.gatt.maximum-write-length'
+      }
+    ])
+    expect(manager.identity).toMatchObject({
+      registeredBackendId: 'unified-ble:react-native-apple',
+      registeredPlatformId: 'unified-ble:apple-corebluetooth',
+      runtime: {
+        hostKind: 'native-mobile',
+        diagnostics: { boundary: 'react-native-apple-jsi-v1', transport: 'native-protocol-v2' }
+      }
+    })
+    await expect(manager.adapterState()).resolves.toMatchObject({
+      availability: 'available',
+      authorization: 'granted',
+      power: 'on',
+      safeReason: null
+    })
+
+    control.seedRestorationJournal()
+    await expect(
+      manager.adoptRestoration({
+        namespace: 'com.example.restoration',
+        attachmentId: manager.attachmentId,
+        expectedBackendInstanceId: manager.identity.attachment.backendInstanceId,
+        expectedEpoch: opaqueId('canonical-restoration-epoch', 'restoration-epoch', 'react-native:apple'),
+        expectedVersions: manager.identity.versions
+      })
+    ).resolves.toMatchObject({ outcome: 'adopted' })
+
+    const scan = await manager.scan(scanOptions())
+    runtime.emitAdvertisement()
+    const observation = await scan.observations[Symbol.asyncIterator]().next()
+    expect(observation).toMatchObject({ done: false, value: { kind: 'value' } })
+    await scan.stop()
+
+    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(runtime.commandKinds).toEqual(expect.arrayContaining(['scanStart', 'scanStop', 'destroy']))
     expect(control.closedAttachments).toHaveLength(1)
   })
 
@@ -608,7 +769,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
     },
     {
       name: 'Apple',
-      createProvider: createReactNativeAppleBackendProvider,
+      createProvider: createReactNativeAppleLegacyBackendProvider,
       ownerId: 'deterministic-react-native-apple-rich-advertisement'
     }
   ])('$name provider preserves every native-protocol advertisement field as detached public bytes', async fixture => {
@@ -783,7 +944,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
     },
     {
       name: 'Apple',
-      createProvider: createReactNativeAppleBackendProvider,
+      createProvider: createReactNativeAppleLegacyBackendProvider,
       displayName: 'Apple CoreBluetooth central adapter',
       ownerId: 'deterministic-react-native-apple-attachment-refresh'
     }
@@ -833,7 +994,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
     },
     {
       name: 'Apple',
-      createProvider: createReactNativeAppleBackendProvider,
+      createProvider: createReactNativeAppleLegacyBackendProvider,
       ownerId: 'deterministic-react-native-apple-unavailable-adapter'
     }
   ])('$name provider opens an unavailable adapter and preserves its reported state', async fixture => {
@@ -1282,7 +1443,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
 
   test.each([
     ['Android', createReactNativeAndroidBackendProvider, 'deterministic-react-native-android-probe-cleanup'],
-    ['Apple', createReactNativeAppleBackendProvider, 'deterministic-react-native-apple-probe-cleanup']
+    ['Apple', createReactNativeAppleLegacyBackendProvider, 'deterministic-react-native-apple-probe-cleanup']
   ])(
     '%s provider rejects adapter enumeration and retains cleanup retry ownership after release-failed destroy',
     async (_name, createProvider, ownerId) => {
@@ -1317,7 +1478,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
 
   test.each([
     ['Android', createReactNativeAndroidBackendProvider, 'deterministic-react-native-android-malformed-cleanup'],
-    ['Apple', createReactNativeAppleBackendProvider, 'deterministic-react-native-apple-malformed-cleanup']
+    ['Apple', createReactNativeAppleLegacyBackendProvider, 'deterministic-react-native-apple-malformed-cleanup']
   ])(
     '%s provider retries a released cleanup record that still reports failures',
     async (_name, createProvider, ownerId) => {
@@ -1362,7 +1523,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
 
   test.each([
     ['Android', createReactNativeAndroidBackendProvider, 'deterministic-react-native-android-probe-rejection'],
-    ['Apple', createReactNativeAppleBackendProvider, 'deterministic-react-native-apple-probe-rejection']
+    ['Apple', createReactNativeAppleLegacyBackendProvider, 'deterministic-react-native-apple-probe-rejection']
   ])(
     '%s provider rejects adapter enumeration and retains cleanup retry ownership after destroy rejection',
     async (_name, createProvider, ownerId) => {
@@ -1397,7 +1558,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
 
   test.each([
     ['Android', createReactNativeAndroidBackendProvider, 'deterministic-react-native-android-open-cleanup'],
-    ['Apple', createReactNativeAppleBackendProvider, 'deterministic-react-native-apple-open-cleanup']
+    ['Apple', createReactNativeAppleLegacyBackendProvider, 'deterministic-react-native-apple-open-cleanup']
   ])(
     '%s provider aggregates initialization and retained release-failed cleanup errors',
     async (_name, createProvider, ownerId) => {
@@ -1443,7 +1604,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
 
   test.each([
     ['Android', createReactNativeAndroidBackendProvider, 'deterministic-react-native-android-open-rejection'],
-    ['Apple', createReactNativeAppleBackendProvider, 'deterministic-react-native-apple-open-rejection']
+    ['Apple', createReactNativeAppleLegacyBackendProvider, 'deterministic-react-native-apple-open-rejection']
   ])(
     '%s provider aggregates initialization and retained rejected cleanup errors',
     async (_name, createProvider, ownerId) => {
@@ -1553,7 +1714,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
     const control = new DeterministicAndroidControl()
     const runtime = new DeterministicAndroidProtocolRuntime(control)
     global.__unifiedBleNativeProtocolV2 = runtime
-    const provider = createReactNativeAppleBackendProvider({
+    const provider = createReactNativeAppleLegacyBackendProvider({
       control,
       now: () => 20,
       createOwnerId: () => 'deterministic-react-native-apple-owner'
@@ -1668,16 +1829,17 @@ describe('React Native first-party standard TCK registrations', () => {
     }
   })
 
-  test('Android executes its deterministic provider, RSSI, and ATT-MTU suites without claiming restoration', async () => {
-    const control = new DeterministicAndroidControl()
-    const runtime = new DeterministicAndroidProtocolRuntime(control, null, false)
-    global.__unifiedBleNativeProtocolV2 = runtime
+  test('the Android first-party TCK leg runs the Rust route with its connection-control and descriptor suites', async () => {
+    const native = new DeterministicRustCoreNative({ platform: 'android' })
     let owner = 0
     const registration = createReactNativeAndroidFirstPartyTckRegistration({
-      control,
+      native,
       now: () => 20,
-      nativePeerId: peerId,
-      boundary: deterministicTckBoundary(runtime),
+      nativePeerId: DEFAULT_PEER,
+      boundary: {
+        ...deterministicRustCoreTckBoundary(native),
+        seedRestorationJournal: () => native.seedRestored([{ peerId: 'C0:FF:EE:00:00:03', connected: true }])
+      },
       createOwnerId: () => {
         owner += 1
         return `android-tck-owner-${owner}`
@@ -1689,78 +1851,36 @@ describe('React Native first-party standard TCK registrations', () => {
       baseScenarioIds: registration.suites.flatMap(suite => suite.baseScenarioIds)
     })
 
-    expect(report.featureSuiteIds).toEqual(['connection-controls', 'descriptor-operations'])
+    expect(report.featureSuiteIds).toEqual([
+      'connection-controls',
+      'descriptor-operations',
+      'restoration',
+      'tck.feature.gatt.maximum-write-length',
+      'tck.feature.security.android'
+    ])
     expect(report.receipts).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ scenarioId: 'connection.rssi-and-att-mtu-capability-contract', error: null }),
-        expect.objectContaining({ scenarioId: 'gatt.descriptor-discovery-read-write', error: null })
+        expect.objectContaining({ scenarioId: 'gatt.descriptor-discovery-read-write', error: null }),
+        expect.objectContaining({ scenarioId: 'security.state-pair-cancel-unpair', error: null })
       ])
     )
-    expect(registration.capabilityExclusions).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ featureId: 'state:restoration-adoption', state: 'unsupported' })
-      ])
-    )
+    expect(registration.capabilityExclusions).toEqual([])
+    expect(native.calls.filter(call => call[0] === 'invoke').length).toBeGreaterThan(0)
   })
 
-  test('Apple executes its deterministic provider, RSSI, restoration, and descriptor suites while excluding only MTU', async () => {
-    const control = new DeterministicAndroidControl()
-    const runtime = new DeterministicAndroidProtocolRuntime(control, null, false)
-    global.__unifiedBleNativeProtocolV2 = runtime
-    let owner = 0
-    const registration = createReactNativeAppleFirstPartyTckRegistration({
-      control,
-      now: () => 20,
-      nativePeerId: peerId,
-      boundary: {
-        ...deterministicTckBoundary(runtime),
-        seedRestorationJournal: () => control.seedRestorationJournal()
-      },
-      createOwnerId: () => {
-        owner += 1
-        return `apple-tck-owner-${owner}`
-      }
-    })
-
-    const report = await runBackendTck(registration.factory, registration.featureSuites, {
-      proofScope: 'deterministic',
-      baseScenarioIds: registration.suites.flatMap(suite => suite.baseScenarioIds)
-    })
-
-    expect(report.featureSuiteIds).toEqual(
-      expect.arrayContaining(['connection-controls', 'restoration', 'descriptor-operations'])
-    )
-    expect(report.receipts).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ scenarioId: 'restoration.provider-journal-adoption-and-rejection', error: null }),
-        expect.objectContaining({ scenarioId: 'gatt.descriptor-discovery-read-write', error: null })
-      ])
-    )
-    expect(report.featureBindings).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          featureId: 'gatt:descriptor-operations',
-          suiteId: 'descriptor-operations',
-          evidenceLevel: 'deterministic',
-          requiredScenarioIds: ['gatt.descriptor-discovery-read-write']
-        })
-      ])
-    )
-    expect(registration.capabilityExclusions).toEqual([
-      expect.objectContaining({ featureId: BUILT_IN_FEATURE_IDS.connectionRequestMtu, state: 'unsupported' })
-    ])
-    expect(runtime.descriptorCommandPaths).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          kind: 'descriptorPath',
-          fields: expect.arrayContaining([
-            expect.objectContaining({ id: 2, value: descriptorUuid }),
-            expect.objectContaining({ id: 3, value: '0' })
-          ])
-        })
-      ])
-    )
-  })
+  // R02 Apple cutover: DELETED 'Apple executes its deterministic provider,
+  // RSSI, restoration, and descriptor suites while excluding only MTU'. That
+  // deterministic Swift-boundary leg bypasses the core it would need to
+  // prove (R16 proof substitution) and cannot pass through the now
+  // core-gated provider. Re-admit an Apple TCK leg only against a production
+  // binding with the test radio below the native seam — never by injecting
+  // a replacement at the boundary under test. NOTE for the owner of
+  // src/tck/first-party/react-native-tck-registration.ts (out of this
+  // lane's ownership): createReactNativeAppleFirstPartyTckRegistration
+  // still constructs the Apple provider without a binding, so its factory
+  // now fails loudly at create() until it accepts and forwards a rustCore
+  // binding.
 })
 
 function deterministicTckBoundary(runtime) {
@@ -1777,9 +1897,12 @@ async function createAndroidPeerDirectoryFixture(bondedPeers, options = {}) {
   runtime.bondedPermissionDenied = options.bondedPermissionDenied === true
   runtime.holdWhenAvailableConnect = options.holdWhenAvailableConnect === true
   global.__unifiedBleNativeProtocolV2 = runtime
+  // The provider clock defaults to the legacy fixed value; a test exercising
+  // a caller deadline passes a live clock so backend deadline timers compute
+  // a sane delay instead of overflowing setTimeout and firing at once.
   const provider = createReactNativeAndroidBackendProvider({
     control,
-    now: () => 20,
+    now: options.providerNow ?? (() => 20),
     createOwnerId: () => 'deterministic-react-native-peer-directory-owner'
   })
   const [adapter] = await provider.listAdapters()
@@ -1796,7 +1919,10 @@ async function createAndroidPeerDirectoryFixture(bondedPeers, options = {}) {
     },
     DEFAULT_BLE_MANAGER_OPTIONS
   )
-  const manager = await createPublicBleManager(internalManager, () => 20)
+  // The public clock defaults to the legacy fixed value; a test exercising a
+  // caller deadline passes its own clock so the public deadline shares the
+  // internal manager's clock instead of arriving pre-expired.
+  const manager = await createPublicBleManager(internalManager, options.publicNow ?? (() => 20))
   return { manager, runtime }
 }
 
@@ -2087,21 +2213,17 @@ class DeterministicAndroidProtocolRuntime {
       if (this.bondedPermissionDenied) {
         this.emitFailureWithCode(command, 'permissionDenied', 'Android Bluetooth connect permission is required')
       } else {
-        this.emitResult(
-          command,
-          'bondedPeers',
-          [
-            field(
-              23,
-              this.bondedPeers.map(peer =>
-                record('bondedPeerSnapshot', [
-                  field(1, peer.nativePeerId),
-                  ...(peer.displayName === null ? [] : [field(2, peer.displayName)])
-                ])
-              )
+        this.emitResult(command, 'bondedPeers', [
+          field(
+            23,
+            this.bondedPeers.map(peer =>
+              record('bondedPeerSnapshot', [
+                field(1, peer.nativePeerId),
+                ...(peer.displayName === null ? [] : [field(2, peer.displayName)])
+              ])
             )
-          ]
-        )
+          )
+        ])
       }
       return
     }

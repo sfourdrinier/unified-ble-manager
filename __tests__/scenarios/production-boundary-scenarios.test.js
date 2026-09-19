@@ -541,7 +541,7 @@ describe('canonical manager scenarios on completed deterministic boundary bridge
       environment.webBoundary.emitNotification(new Uint8Array([21]))
       await expect(nextNotification).resolves.toMatchObject({
         done: false,
-        value: { kind: 'value', value: { value: new Uint8Array([21]), indication: false } }
+        value: { kind: 'value', value: { value: new Uint8Array([21]), delivery: 'notification' } }
       })
       await expect(subscription.remove()).resolves.toMatchObject({ state: 'released', failures: [] })
       await expect(connection.release()).resolves.toMatchObject({ state: 'released', failures: [] })

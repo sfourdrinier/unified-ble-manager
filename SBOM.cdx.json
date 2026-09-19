@@ -6,15 +6,15 @@
   "metadata": {
     "component": {
       "type": "library",
-      "bom-ref": "pkg:npm/unified-ble-manager@4.0.28",
+      "bom-ref": "pkg:npm/unified-ble-manager@5.0.0-rc.0",
       "name": "unified-ble-manager",
-      "version": "4.0.28",
+      "version": "5.0.0-rc.0",
       "licenses": [
         {
-          "expression": "Apache-2.0"
+          "expression": "LicenseRef-UBM-Source-Available-1.0"
         }
       ],
-      "purl": "pkg:npm/unified-ble-manager@4.0.28"
+      "purl": "pkg:npm/unified-ble-manager@5.0.0-rc.0"
     },
     "properties": [
       {
@@ -24,6 +24,14 @@
       {
         "name": "unified-ble-manager:dependency-scope",
         "value": "production-and-optional-runtime"
+      },
+      {
+        "name": "unified-ble-manager:cargo-lock-sha256",
+        "value": "3708483fc2b1922308085716f2b14c17cb42414791b906ffd7c45b4e008abb87"
+      },
+      {
+        "name": "unified-ble-manager:rust-dependency-scope",
+        "value": "cargo-workspace-resolved-graph"
       }
     ]
   },
@@ -425,6 +433,3700 @@
           "value": "package-metadata"
         }
       ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/aho-corasick@1.1.5",
+      "name": "aho-corasick",
+      "version": "1.1.5",
+      "licenses": [
+        {
+          "expression": "Unlicense OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/aho-corasick@1.1.5",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/anyhow@1.0.104",
+      "name": "anyhow",
+      "version": "1.0.104",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/anyhow@1.0.104",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/askama_derive@0.16.1",
+      "name": "askama_derive",
+      "version": "0.16.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/askama_derive@0.16.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/askama_macros@0.16.1",
+      "name": "askama_macros",
+      "version": "0.16.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/askama_macros@0.16.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/askama_parser@0.16.1",
+      "name": "askama_parser",
+      "version": "0.16.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/askama_parser@0.16.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/askama@0.16.1",
+      "name": "askama",
+      "version": "0.16.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/askama@0.16.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/async-broadcast@0.7.2",
+      "name": "async-broadcast",
+      "version": "0.7.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/async-broadcast@0.7.2",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/async-recursion@1.1.1",
+      "name": "async-recursion",
+      "version": "1.1.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/async-recursion@1.1.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/async-trait@0.1.92",
+      "name": "async-trait",
+      "version": "0.1.92",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/async-trait@0.1.92",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/autocfg@1.5.1",
+      "name": "autocfg",
+      "version": "1.5.1",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/autocfg@1.5.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/basic-toml@0.1.10",
+      "name": "basic-toml",
+      "version": "0.1.10",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/basic-toml@0.1.10",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/bitflags@2.13.2",
+      "name": "bitflags",
+      "version": "2.13.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/bitflags@2.13.2",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/block2@0.5.1",
+      "name": "block2",
+      "version": "0.5.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/block2@0.5.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/bluez-async@0.8.2",
+      "name": "bluez-async",
+      "version": "0.8.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/bluez-async@0.8.2",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/bluez-generated@0.4.0",
+      "name": "bluez-generated",
+      "version": "0.4.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/bluez-generated@0.4.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/btleplug@0.12.0",
+      "name": "btleplug",
+      "version": "0.12.0",
+      "licenses": [
+        {
+          "name": "NOASSERTION"
+        }
+      ],
+      "purl": "pkg:cargo/btleplug@0.12.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license-ambiguous"
+        },
+        {
+          "name": "unified-ble-manager:license-review-required",
+          "value": "true"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/bumpalo@3.20.3",
+      "name": "bumpalo",
+      "version": "3.20.3",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/bumpalo@3.20.3",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/bytes@1.12.1",
+      "name": "bytes",
+      "version": "1.12.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/bytes@1.12.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/camino@1.2.6",
+      "name": "camino",
+      "version": "1.2.6",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/camino@1.2.6",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/cargo_metadata@0.23.1",
+      "name": "cargo_metadata",
+      "version": "0.23.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/cargo_metadata@0.23.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/cargo-platform@0.3.3",
+      "name": "cargo-platform",
+      "version": "0.3.3",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/cargo-platform@0.3.3",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/cesu8@1.1.0",
+      "name": "cesu8",
+      "version": "1.1.0",
+      "licenses": [
+        {
+          "name": "NOASSERTION"
+        }
+      ],
+      "purl": "pkg:cargo/cesu8@1.1.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license-ambiguous"
+        },
+        {
+          "name": "unified-ble-manager:license-review-required",
+          "value": "true"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/cfg-if@1.0.4",
+      "name": "cfg-if",
+      "version": "1.0.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/cfg-if@1.0.4",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/combine@4.6.8",
+      "name": "combine",
+      "version": "4.6.8",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/combine@4.6.8",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/convert_case@0.6.0",
+      "name": "convert_case",
+      "version": "0.6.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/convert_case@0.6.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/crossbeam-utils@0.8.23",
+      "name": "crossbeam-utils",
+      "version": "0.8.23",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/crossbeam-utils@0.8.23",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ctor@0.2.9",
+      "name": "ctor",
+      "version": "0.2.9",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/ctor@0.2.9",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/dashmap@6.2.1",
+      "name": "dashmap",
+      "version": "6.2.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/dashmap@6.2.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/dbus-tokio@0.7.6",
+      "name": "dbus-tokio",
+      "version": "0.7.6",
+      "licenses": [
+        {
+          "name": "NOASSERTION"
+        }
+      ],
+      "purl": "pkg:cargo/dbus-tokio@0.7.6",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license-ambiguous"
+        },
+        {
+          "name": "unified-ble-manager:license-review-required",
+          "value": "true"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/dbus@0.9.12",
+      "name": "dbus",
+      "version": "0.9.12",
+      "licenses": [
+        {
+          "name": "NOASSERTION"
+        }
+      ],
+      "purl": "pkg:cargo/dbus@0.9.12",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license-ambiguous"
+        },
+        {
+          "name": "unified-ble-manager:license-review-required",
+          "value": "true"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/either@1.18.0",
+      "name": "either",
+      "version": "1.18.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/either@1.18.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/endi@1.1.1",
+      "name": "endi",
+      "version": "1.1.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/endi@1.1.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/enumflags2_derive@0.7.12",
+      "name": "enumflags2_derive",
+      "version": "0.7.12",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/enumflags2_derive@0.7.12",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/enumflags2@0.7.12",
+      "name": "enumflags2",
+      "version": "0.7.12",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/enumflags2@0.7.12",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/equivalent@1.0.2",
+      "name": "equivalent",
+      "version": "1.0.2",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/equivalent@1.0.2",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/errno@0.3.14",
+      "name": "errno",
+      "version": "0.3.14",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/errno@0.3.14",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/event-listener-strategy@0.5.4",
+      "name": "event-listener-strategy",
+      "version": "0.5.4",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/event-listener-strategy@0.5.4",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/event-listener@5.4.2",
+      "name": "event-listener",
+      "version": "5.4.2",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/event-listener@5.4.2",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/fastrand@2.5.0",
+      "name": "fastrand",
+      "version": "2.5.0",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/fastrand@2.5.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/fs-err@3.3.1",
+      "name": "fs-err",
+      "version": "3.3.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/fs-err@3.3.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/futures-channel@0.3.34",
+      "name": "futures-channel",
+      "version": "0.3.34",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/futures-channel@0.3.34",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/futures-core@0.3.34",
+      "name": "futures-core",
+      "version": "0.3.34",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/futures-core@0.3.34",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/futures-executor@0.3.34",
+      "name": "futures-executor",
+      "version": "0.3.34",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/futures-executor@0.3.34",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/futures-io@0.3.34",
+      "name": "futures-io",
+      "version": "0.3.34",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/futures-io@0.3.34",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/futures-lite@2.6.1",
+      "name": "futures-lite",
+      "version": "2.6.1",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/futures-lite@2.6.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/futures-macro@0.3.34",
+      "name": "futures-macro",
+      "version": "0.3.34",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/futures-macro@0.3.34",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/futures-sink@0.3.34",
+      "name": "futures-sink",
+      "version": "0.3.34",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/futures-sink@0.3.34",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/futures-task@0.3.34",
+      "name": "futures-task",
+      "version": "0.3.34",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/futures-task@0.3.34",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/futures-util@0.3.34",
+      "name": "futures-util",
+      "version": "0.3.34",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/futures-util@0.3.34",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/futures@0.3.34",
+      "name": "futures",
+      "version": "0.3.34",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/futures@0.3.34",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/getrandom@0.4.3",
+      "name": "getrandom",
+      "version": "0.4.3",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/getrandom@0.4.3",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/glob@0.3.4",
+      "name": "glob",
+      "version": "0.3.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/glob@0.3.4",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/goblin@0.8.2",
+      "name": "goblin",
+      "version": "0.8.2",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/goblin@0.8.2",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/hashbrown@0.14.5",
+      "name": "hashbrown",
+      "version": "0.14.5",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/hashbrown@0.14.5",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/hashbrown@0.17.1",
+      "name": "hashbrown",
+      "version": "0.17.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/hashbrown@0.17.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/heck@0.5.0",
+      "name": "heck",
+      "version": "0.5.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/heck@0.5.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/hex@0.4.3",
+      "name": "hex",
+      "version": "0.4.3",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/hex@0.4.3",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/indexmap@2.14.2",
+      "name": "indexmap",
+      "version": "2.14.2",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/indexmap@2.14.2",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/itertools@0.14.0",
+      "name": "itertools",
+      "version": "0.14.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/itertools@0.14.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/itoa@1.0.18",
+      "name": "itoa",
+      "version": "1.0.18",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/itoa@1.0.18",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/jni-macros@0.22.4",
+      "name": "jni-macros",
+      "version": "0.22.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/jni-macros@0.22.4",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/jni-sys-macros@0.4.1",
+      "name": "jni-sys-macros",
+      "version": "0.4.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/jni-sys-macros@0.4.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/jni-sys@0.3.1",
+      "name": "jni-sys",
+      "version": "0.3.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/jni-sys@0.3.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/jni-sys@0.4.1",
+      "name": "jni-sys",
+      "version": "0.4.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/jni-sys@0.4.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/jni@0.19.0",
+      "name": "jni",
+      "version": "0.19.0",
+      "licenses": [
+        {
+          "name": "NOASSERTION"
+        }
+      ],
+      "purl": "pkg:cargo/jni@0.19.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license-ambiguous"
+        },
+        {
+          "name": "unified-ble-manager:license-review-required",
+          "value": "true"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/jni@0.22.4",
+      "name": "jni",
+      "version": "0.22.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/jni@0.22.4",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/js-sys@0.3.105",
+      "name": "js-sys",
+      "version": "0.3.105",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/js-sys@0.3.105",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/libc@0.2.189",
+      "name": "libc",
+      "version": "0.2.189",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/libc@0.2.189",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/libdbus-sys@0.2.7",
+      "name": "libdbus-sys",
+      "version": "0.2.7",
+      "licenses": [
+        {
+          "name": "NOASSERTION"
+        }
+      ],
+      "purl": "pkg:cargo/libdbus-sys@0.2.7",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license-ambiguous"
+        },
+        {
+          "name": "unified-ble-manager:license-review-required",
+          "value": "true"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/libloading@0.8.9",
+      "name": "libloading",
+      "version": "0.8.9",
+      "licenses": [
+        {
+          "expression": "ISC"
+        }
+      ],
+      "purl": "pkg:cargo/libloading@0.8.9",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/linux-raw-sys@0.12.1",
+      "name": "linux-raw-sys",
+      "version": "0.12.1",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/linux-raw-sys@0.12.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/lock_api@0.4.14",
+      "name": "lock_api",
+      "version": "0.4.14",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/lock_api@0.4.14",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/log@0.4.34",
+      "name": "log",
+      "version": "0.4.34",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/log@0.4.34",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/memchr@2.8.3",
+      "name": "memchr",
+      "version": "2.8.3",
+      "licenses": [
+        {
+          "expression": "Unlicense OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/memchr@2.8.3",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/memoffset@0.9.1",
+      "name": "memoffset",
+      "version": "0.9.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/memoffset@0.9.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/minimal-lexical@0.2.1",
+      "name": "minimal-lexical",
+      "version": "0.2.1",
+      "licenses": [
+        {
+          "name": "NOASSERTION"
+        }
+      ],
+      "purl": "pkg:cargo/minimal-lexical@0.2.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license-ambiguous"
+        },
+        {
+          "name": "unified-ble-manager:license-review-required",
+          "value": "true"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/mio@1.2.3",
+      "name": "mio",
+      "version": "1.2.3",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/mio@1.2.3",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/napi-build@2.4.2",
+      "name": "napi-build",
+      "version": "2.4.2",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/napi-build@2.4.2",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/napi-derive-backend@1.0.75",
+      "name": "napi-derive-backend",
+      "version": "1.0.75",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/napi-derive-backend@1.0.75",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/napi-derive@2.16.13",
+      "name": "napi-derive",
+      "version": "2.16.13",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/napi-derive@2.16.13",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/napi-sys@2.4.0",
+      "name": "napi-sys",
+      "version": "2.4.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/napi-sys@2.4.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/napi@2.16.17",
+      "name": "napi",
+      "version": "2.16.17",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/napi@2.16.17",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/nom@7.1.3",
+      "name": "nom",
+      "version": "7.1.3",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/nom@7.1.3",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/objc-sys@0.3.5",
+      "name": "objc-sys",
+      "version": "0.3.5",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/objc-sys@0.3.5",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/objc2-core-bluetooth@0.2.2",
+      "name": "objc2-core-bluetooth",
+      "version": "0.2.2",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/objc2-core-bluetooth@0.2.2",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/objc2-encode@4.1.0",
+      "name": "objc2-encode",
+      "version": "4.1.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/objc2-encode@4.1.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/objc2-foundation@0.2.2",
+      "name": "objc2-foundation",
+      "version": "0.2.2",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/objc2-foundation@0.2.2",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/objc2@0.5.2",
+      "name": "objc2",
+      "version": "0.5.2",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/objc2@0.5.2",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/once_cell@1.21.4",
+      "name": "once_cell",
+      "version": "1.21.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/once_cell@1.21.4",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ordered-stream@0.2.0",
+      "name": "ordered-stream",
+      "version": "0.2.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/ordered-stream@0.2.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/parking_lot_core@0.9.12",
+      "name": "parking_lot_core",
+      "version": "0.9.12",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/parking_lot_core@0.9.12",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/parking@2.2.1",
+      "name": "parking",
+      "version": "2.2.1",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/parking@2.2.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/percent-encoding@2.3.2",
+      "name": "percent-encoding",
+      "version": "2.3.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/percent-encoding@2.3.2",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/pin-project-lite@0.2.17",
+      "name": "pin-project-lite",
+      "version": "0.2.17",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/pin-project-lite@0.2.17",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/pkg-config@0.3.34",
+      "name": "pkg-config",
+      "version": "0.3.34",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/pkg-config@0.3.34",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/plain@0.2.3",
+      "name": "plain",
+      "version": "0.2.3",
+      "licenses": [
+        {
+          "name": "NOASSERTION"
+        }
+      ],
+      "purl": "pkg:cargo/plain@0.2.3",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license-ambiguous"
+        },
+        {
+          "name": "unified-ble-manager:license-review-required",
+          "value": "true"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/proc-macro-crate@3.5.0",
+      "name": "proc-macro-crate",
+      "version": "3.5.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/proc-macro-crate@3.5.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/proc-macro2@1.0.107",
+      "name": "proc-macro2",
+      "version": "1.0.107",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/proc-macro2@1.0.107",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/quote@1.0.47",
+      "name": "quote",
+      "version": "1.0.47",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/quote@1.0.47",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/r-efi@6.0.0",
+      "name": "r-efi",
+      "version": "6.0.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0 OR LGPL-2.1-or-later"
+        }
+      ],
+      "purl": "pkg:cargo/r-efi@6.0.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/redox_syscall@0.5.18",
+      "name": "redox_syscall",
+      "version": "0.5.18",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/redox_syscall@0.5.18",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/regex-automata@0.4.18",
+      "name": "regex-automata",
+      "version": "0.4.18",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/regex-automata@0.4.18",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/regex-syntax@0.8.11",
+      "name": "regex-syntax",
+      "version": "0.8.11",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/regex-syntax@0.8.11",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/regex@1.13.1",
+      "name": "regex",
+      "version": "1.13.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/regex@1.13.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/rustc_version@0.4.1",
+      "name": "rustc_version",
+      "version": "0.4.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/rustc_version@0.4.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/rustc-hash@2.1.3",
+      "name": "rustc-hash",
+      "version": "2.1.3",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/rustc-hash@2.1.3",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/rustix@1.1.4",
+      "name": "rustix",
+      "version": "1.1.4",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/rustix@1.1.4",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/rustversion@1.0.23",
+      "name": "rustversion",
+      "version": "1.0.23",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/rustversion@1.0.23",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/same-file@1.0.6",
+      "name": "same-file",
+      "version": "1.0.6",
+      "licenses": [
+        {
+          "name": "NOASSERTION"
+        }
+      ],
+      "purl": "pkg:cargo/same-file@1.0.6",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license-ambiguous"
+        },
+        {
+          "name": "unified-ble-manager:license-review-required",
+          "value": "true"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/scopeguard@1.2.0",
+      "name": "scopeguard",
+      "version": "1.2.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/scopeguard@1.2.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/scroll_derive@0.12.1",
+      "name": "scroll_derive",
+      "version": "0.12.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/scroll_derive@0.12.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/scroll@0.12.0",
+      "name": "scroll",
+      "version": "0.12.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/scroll@0.12.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/semver@1.0.28",
+      "name": "semver",
+      "version": "1.0.28",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/semver@1.0.28",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/serde_core@1.0.229",
+      "name": "serde_core",
+      "version": "1.0.229",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/serde_core@1.0.229",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/serde_derive@1.0.229",
+      "name": "serde_derive",
+      "version": "1.0.229",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/serde_derive@1.0.229",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/serde_json@1.0.151",
+      "name": "serde_json",
+      "version": "1.0.151",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/serde_json@1.0.151",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/serde_repr@0.1.21",
+      "name": "serde_repr",
+      "version": "0.1.21",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/serde_repr@0.1.21",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/serde_spanned@1.1.1",
+      "name": "serde_spanned",
+      "version": "1.1.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/serde_spanned@1.1.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/serde-xml-rs@0.8.2",
+      "name": "serde-xml-rs",
+      "version": "0.8.2",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/serde-xml-rs@0.8.2",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/serde@1.0.229",
+      "name": "serde",
+      "version": "1.0.229",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/serde@1.0.229",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/signal-hook-registry@1.4.8",
+      "name": "signal-hook-registry",
+      "version": "1.4.8",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/signal-hook-registry@1.4.8",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/simd_cesu8@1.2.0",
+      "name": "simd_cesu8",
+      "version": "1.2.0",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/simd_cesu8@1.2.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/simdutf8@0.1.5",
+      "name": "simdutf8",
+      "version": "0.1.5",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/simdutf8@0.1.5",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/siphasher@1.0.3",
+      "name": "siphasher",
+      "version": "1.0.3",
+      "licenses": [
+        {
+          "name": "NOASSERTION"
+        }
+      ],
+      "purl": "pkg:cargo/siphasher@1.0.3",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license-ambiguous"
+        },
+        {
+          "name": "unified-ble-manager:license-review-required",
+          "value": "true"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/slab@0.4.12",
+      "name": "slab",
+      "version": "0.4.12",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/slab@0.4.12",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/smallvec@1.16.1",
+      "name": "smallvec",
+      "version": "1.16.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/smallvec@1.16.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/smawk@0.3.3",
+      "name": "smawk",
+      "version": "0.3.3",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/smawk@0.3.3",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/socket2@0.6.5",
+      "name": "socket2",
+      "version": "0.6.5",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/socket2@0.6.5",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/static_assertions@1.1.0",
+      "name": "static_assertions",
+      "version": "1.1.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/static_assertions@1.1.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/syn@2.0.119",
+      "name": "syn",
+      "version": "2.0.119",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/syn@2.0.119",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/syn@3.0.5",
+      "name": "syn",
+      "version": "3.0.5",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/syn@3.0.5",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/tempfile@3.27.0",
+      "name": "tempfile",
+      "version": "3.27.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/tempfile@3.27.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/textwrap@0.16.4",
+      "name": "textwrap",
+      "version": "0.16.4",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/textwrap@0.16.4",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/thiserror-impl@1.0.69",
+      "name": "thiserror-impl",
+      "version": "1.0.69",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/thiserror-impl@1.0.69",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/thiserror-impl@2.0.20",
+      "name": "thiserror-impl",
+      "version": "2.0.20",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/thiserror-impl@2.0.20",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/thiserror@1.0.69",
+      "name": "thiserror",
+      "version": "1.0.69",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/thiserror@1.0.69",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/thiserror@2.0.20",
+      "name": "thiserror",
+      "version": "2.0.20",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/thiserror@2.0.20",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/tokio-macros@2.7.2",
+      "name": "tokio-macros",
+      "version": "2.7.2",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/tokio-macros@2.7.2",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/tokio-stream@0.1.19",
+      "name": "tokio-stream",
+      "version": "0.1.19",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/tokio-stream@0.1.19",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/tokio-util@0.7.19",
+      "name": "tokio-util",
+      "version": "0.7.19",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/tokio-util@0.7.19",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/tokio@1.53.1",
+      "name": "tokio",
+      "version": "1.53.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/tokio@1.53.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/toml_datetime@1.1.1%2Bspec-1.1.0",
+      "name": "toml_datetime",
+      "version": "1.1.1+spec-1.1.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/toml_datetime@1.1.1%2Bspec-1.1.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/toml_edit@0.25.15%2Bspec-1.1.0",
+      "name": "toml_edit",
+      "version": "0.25.15+spec-1.1.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/toml_edit@0.25.15%2Bspec-1.1.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/toml_parser@1.1.3%2Bspec-1.1.0",
+      "name": "toml_parser",
+      "version": "1.1.3+spec-1.1.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/toml_parser@1.1.3%2Bspec-1.1.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/toml_writer@1.1.2%2Bspec-1.1.0",
+      "name": "toml_writer",
+      "version": "1.1.2+spec-1.1.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/toml_writer@1.1.2%2Bspec-1.1.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/toml@1.1.6%2Bspec-1.1.0",
+      "name": "toml",
+      "version": "1.1.6+spec-1.1.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/toml@1.1.6%2Bspec-1.1.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/tracing-attributes@0.1.31",
+      "name": "tracing-attributes",
+      "version": "0.1.31",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/tracing-attributes@0.1.31",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/tracing-core@0.1.36",
+      "name": "tracing-core",
+      "version": "0.1.36",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/tracing-core@0.1.36",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/tracing@0.1.44",
+      "name": "tracing",
+      "version": "0.1.44",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/tracing@0.1.44",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ubm-core@0.1.0",
+      "name": "ubm-core",
+      "version": "0.1.0",
+      "licenses": [
+        {
+          "expression": "LicenseRef-UBM-Source-Available-1.0"
+        }
+      ],
+      "purl": "pkg:cargo/ubm-core@0.1.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license-file"
+        },
+        {
+          "name": "unified-ble-manager:license-file",
+          "value": "LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ubm-desktop@0.1.0",
+      "name": "ubm-desktop",
+      "version": "0.1.0",
+      "licenses": [
+        {
+          "expression": "LicenseRef-UBM-Source-Available-1.0"
+        }
+      ],
+      "purl": "pkg:cargo/ubm-desktop@0.1.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license-file"
+        },
+        {
+          "name": "unified-ble-manager:license-file",
+          "value": "LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ubm-fake-radio@0.1.0",
+      "name": "ubm-fake-radio",
+      "version": "0.1.0",
+      "licenses": [
+        {
+          "expression": "LicenseRef-UBM-Source-Available-1.0"
+        }
+      ],
+      "purl": "pkg:cargo/ubm-fake-radio@0.1.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license-file"
+        },
+        {
+          "name": "unified-ble-manager:license-file",
+          "value": "LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ubm-mobile@0.1.0",
+      "name": "ubm-mobile",
+      "version": "0.1.0",
+      "licenses": [
+        {
+          "expression": "LicenseRef-UBM-Source-Available-1.0"
+        }
+      ],
+      "purl": "pkg:cargo/ubm-mobile@0.1.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license-file"
+        },
+        {
+          "name": "unified-ble-manager:license-file",
+          "value": "LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ubm5_jni_echo@0.1.0",
+      "name": "ubm5_jni_echo",
+      "version": "0.1.0",
+      "licenses": [
+        {
+          "expression": "LicenseRef-UBM-Source-Available-1.0"
+        }
+      ],
+      "purl": "pkg:cargo/ubm5_jni_echo@0.1.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license-file"
+        },
+        {
+          "name": "unified-ble-manager:license-file",
+          "value": "LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ubm5_napi_echo@0.1.0",
+      "name": "ubm5_napi_echo",
+      "version": "0.1.0",
+      "licenses": [
+        {
+          "expression": "LicenseRef-UBM-Source-Available-1.0"
+        }
+      ],
+      "purl": "pkg:cargo/ubm5_napi_echo@0.1.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license-file"
+        },
+        {
+          "name": "unified-ble-manager:license-file",
+          "value": "LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ubm5_uniffi_echo@0.1.0",
+      "name": "ubm5_uniffi_echo",
+      "version": "0.1.0",
+      "licenses": [
+        {
+          "expression": "LicenseRef-UBM-Source-Available-1.0"
+        }
+      ],
+      "purl": "pkg:cargo/ubm5_uniffi_echo@0.1.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license-file"
+        },
+        {
+          "name": "unified-ble-manager:license-file",
+          "value": "LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ubm5_wasm_echo@0.1.0",
+      "name": "ubm5_wasm_echo",
+      "version": "0.1.0",
+      "licenses": [
+        {
+          "expression": "LicenseRef-UBM-Source-Available-1.0"
+        }
+      ],
+      "purl": "pkg:cargo/ubm5_wasm_echo@0.1.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license-file"
+        },
+        {
+          "name": "unified-ble-manager:license-file",
+          "value": "LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/uds_windows@1.2.1",
+      "name": "uds_windows",
+      "version": "1.2.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/uds_windows@1.2.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/unicode-ident@1.0.24",
+      "name": "unicode-ident",
+      "version": "1.0.24",
+      "licenses": [
+        {
+          "expression": "(MIT OR Apache-2.0) AND Unicode-3.0"
+        }
+      ],
+      "purl": "pkg:cargo/unicode-ident@1.0.24",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/unicode-segmentation@1.13.3",
+      "name": "unicode-segmentation",
+      "version": "1.13.3",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/unicode-segmentation@1.13.3",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/unicode-width@0.2.2",
+      "name": "unicode-width",
+      "version": "0.2.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/unicode-width@0.2.2",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/uniffi_bindgen@0.32.1",
+      "name": "uniffi_bindgen",
+      "version": "0.32.1",
+      "licenses": [
+        {
+          "expression": "MPL-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/uniffi_bindgen@0.32.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/uniffi_build@0.32.1",
+      "name": "uniffi_build",
+      "version": "0.32.1",
+      "licenses": [
+        {
+          "expression": "MPL-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/uniffi_build@0.32.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/uniffi_core@0.32.1",
+      "name": "uniffi_core",
+      "version": "0.32.1",
+      "licenses": [
+        {
+          "expression": "MPL-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/uniffi_core@0.32.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/uniffi_internal_macros@0.32.1",
+      "name": "uniffi_internal_macros",
+      "version": "0.32.1",
+      "licenses": [
+        {
+          "expression": "MPL-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/uniffi_internal_macros@0.32.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/uniffi_macros@0.32.1",
+      "name": "uniffi_macros",
+      "version": "0.32.1",
+      "licenses": [
+        {
+          "expression": "MPL-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/uniffi_macros@0.32.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/uniffi_meta@0.32.1",
+      "name": "uniffi_meta",
+      "version": "0.32.1",
+      "licenses": [
+        {
+          "expression": "MPL-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/uniffi_meta@0.32.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/uniffi_pipeline@0.32.1",
+      "name": "uniffi_pipeline",
+      "version": "0.32.1",
+      "licenses": [
+        {
+          "expression": "MPL-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/uniffi_pipeline@0.32.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/uniffi_udl@0.32.1",
+      "name": "uniffi_udl",
+      "version": "0.32.1",
+      "licenses": [
+        {
+          "expression": "MPL-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/uniffi_udl@0.32.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/uniffi@0.32.1",
+      "name": "uniffi",
+      "version": "0.32.1",
+      "licenses": [
+        {
+          "expression": "MPL-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/uniffi@0.32.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/uuid@1.26.1",
+      "name": "uuid",
+      "version": "1.26.1",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/uuid@1.26.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/walkdir@2.5.0",
+      "name": "walkdir",
+      "version": "2.5.0",
+      "licenses": [
+        {
+          "name": "NOASSERTION"
+        }
+      ],
+      "purl": "pkg:cargo/walkdir@2.5.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license-ambiguous"
+        },
+        {
+          "name": "unified-ble-manager:license-review-required",
+          "value": "true"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/wasi@0.11.1%2Bwasi-snapshot-preview1",
+      "name": "wasi",
+      "version": "0.11.1+wasi-snapshot-preview1",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/wasi@0.11.1%2Bwasi-snapshot-preview1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/wasm-bindgen-macro-support@0.2.128",
+      "name": "wasm-bindgen-macro-support",
+      "version": "0.2.128",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/wasm-bindgen-macro-support@0.2.128",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/wasm-bindgen-macro@0.2.128",
+      "name": "wasm-bindgen-macro",
+      "version": "0.2.128",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/wasm-bindgen-macro@0.2.128",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/wasm-bindgen-shared@0.2.128",
+      "name": "wasm-bindgen-shared",
+      "version": "0.2.128",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/wasm-bindgen-shared@0.2.128",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/wasm-bindgen@0.2.128",
+      "name": "wasm-bindgen",
+      "version": "0.2.128",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/wasm-bindgen@0.2.128",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/weedle2@5.0.0",
+      "name": "weedle2",
+      "version": "5.0.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/weedle2@5.0.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/winapi-util@0.1.11",
+      "name": "winapi-util",
+      "version": "0.1.11",
+      "licenses": [
+        {
+          "expression": "Unlicense OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/winapi-util@0.1.11",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/windows-collections@0.3.2",
+      "name": "windows-collections",
+      "version": "0.3.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/windows-collections@0.3.2",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/windows-core@0.62.2",
+      "name": "windows-core",
+      "version": "0.62.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/windows-core@0.62.2",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/windows-future@0.3.2",
+      "name": "windows-future",
+      "version": "0.3.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/windows-future@0.3.2",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/windows-implement@0.60.2",
+      "name": "windows-implement",
+      "version": "0.60.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/windows-implement@0.60.2",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/windows-interface@0.59.3",
+      "name": "windows-interface",
+      "version": "0.59.3",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/windows-interface@0.59.3",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/windows-link@0.2.1",
+      "name": "windows-link",
+      "version": "0.2.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/windows-link@0.2.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/windows-numerics@0.3.1",
+      "name": "windows-numerics",
+      "version": "0.3.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/windows-numerics@0.3.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/windows-result@0.4.1",
+      "name": "windows-result",
+      "version": "0.4.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/windows-result@0.4.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/windows-strings@0.5.1",
+      "name": "windows-strings",
+      "version": "0.5.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/windows-strings@0.5.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/windows-sys@0.61.2",
+      "name": "windows-sys",
+      "version": "0.61.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/windows-sys@0.61.2",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/windows-threading@0.2.1",
+      "name": "windows-threading",
+      "version": "0.2.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/windows-threading@0.2.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/windows@0.62.2",
+      "name": "windows",
+      "version": "0.62.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/windows@0.62.2",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/winnow@1.0.4",
+      "name": "winnow",
+      "version": "1.0.4",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/winnow@1.0.4",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/xml@1.4.0",
+      "name": "xml",
+      "version": "1.4.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/xml@1.4.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/zbus_macros@5.19.0",
+      "name": "zbus_macros",
+      "version": "5.19.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/zbus_macros@5.19.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/zbus_names@4.3.4",
+      "name": "zbus_names",
+      "version": "4.3.4",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/zbus_names@4.3.4",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/zbus@5.19.0",
+      "name": "zbus",
+      "version": "5.19.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/zbus@5.19.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/zcheapstr@1.1.0",
+      "name": "zcheapstr",
+      "version": "1.1.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/zcheapstr@1.1.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/zmij@1.0.23",
+      "name": "zmij",
+      "version": "1.0.23",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/zmij@1.0.23",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/zvariant_derive@5.15.0",
+      "name": "zvariant_derive",
+      "version": "5.15.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/zvariant_derive@5.15.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/zvariant_utils@4.2.0",
+      "name": "zvariant_utils",
+      "version": "4.2.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/zvariant_utils@4.2.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/zvariant@5.15.0",
+      "name": "zvariant",
+      "version": "5.15.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/zvariant@5.15.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
     }
   ],
   "dependencies": [
@@ -537,7 +4239,7 @@
       "dependsOn": []
     },
     {
-      "ref": "pkg:npm/unified-ble-manager@4.0.28",
+      "ref": "pkg:npm/unified-ble-manager@5.0.0-rc.0",
       "dependsOn": [
         "pkg:npm/%40babel/runtime@7.29.7",
         "pkg:npm/node-addon-api@8.9.0",
@@ -553,6 +4255,1479 @@
     {
       "ref": "pkg:npm/yallist@5.0.0",
       "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/aho-corasick@1.1.5",
+      "dependsOn": [
+        "pkg:cargo/memchr@2.8.3"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/anyhow@1.0.104",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/askama_derive@0.16.1",
+      "dependsOn": [
+        "pkg:cargo/askama_parser@0.16.1",
+        "pkg:cargo/basic-toml@0.1.10",
+        "pkg:cargo/glob@0.3.4",
+        "pkg:cargo/memchr@2.8.3",
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/rustc-hash@2.1.3",
+        "pkg:cargo/serde@1.0.229",
+        "pkg:cargo/serde_derive@1.0.229",
+        "pkg:cargo/syn@3.0.5"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/askama_macros@0.16.1",
+      "dependsOn": [
+        "pkg:cargo/askama_derive@0.16.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/askama_parser@0.16.1",
+      "dependsOn": [
+        "pkg:cargo/rustc-hash@2.1.3",
+        "pkg:cargo/serde@1.0.229",
+        "pkg:cargo/serde_derive@1.0.229",
+        "pkg:cargo/unicode-ident@1.0.24",
+        "pkg:cargo/winnow@1.0.4"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/askama@0.16.1",
+      "dependsOn": [
+        "pkg:cargo/askama_macros@0.16.1",
+        "pkg:cargo/itoa@1.0.18",
+        "pkg:cargo/percent-encoding@2.3.2",
+        "pkg:cargo/serde@1.0.229",
+        "pkg:cargo/serde_json@1.0.151"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/async-broadcast@0.7.2",
+      "dependsOn": [
+        "pkg:cargo/event-listener-strategy@0.5.4",
+        "pkg:cargo/event-listener@5.4.2",
+        "pkg:cargo/futures-core@0.3.34",
+        "pkg:cargo/pin-project-lite@0.2.17"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/async-recursion@1.1.1",
+      "dependsOn": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/async-trait@0.1.92",
+      "dependsOn": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@3.0.5"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/autocfg@1.5.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/basic-toml@0.1.10",
+      "dependsOn": [
+        "pkg:cargo/serde@1.0.229"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/bitflags@2.13.2",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/block2@0.5.1",
+      "dependsOn": [
+        "pkg:cargo/objc2@0.5.2"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/bluez-async@0.8.2",
+      "dependsOn": [
+        "pkg:cargo/bitflags@2.13.2",
+        "pkg:cargo/bluez-generated@0.4.0",
+        "pkg:cargo/dbus-tokio@0.7.6",
+        "pkg:cargo/dbus@0.9.12",
+        "pkg:cargo/futures@0.3.34",
+        "pkg:cargo/itertools@0.14.0",
+        "pkg:cargo/log@0.4.34",
+        "pkg:cargo/serde-xml-rs@0.8.2",
+        "pkg:cargo/serde@1.0.229",
+        "pkg:cargo/thiserror@2.0.20",
+        "pkg:cargo/tokio@1.53.1",
+        "pkg:cargo/uuid@1.26.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/bluez-generated@0.4.0",
+      "dependsOn": [
+        "pkg:cargo/dbus@0.9.12"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/btleplug@0.12.0",
+      "dependsOn": [
+        "pkg:cargo/async-trait@0.1.92",
+        "pkg:cargo/bitflags@2.13.2",
+        "pkg:cargo/bluez-async@0.8.2",
+        "pkg:cargo/dashmap@6.2.1",
+        "pkg:cargo/dbus@0.9.12",
+        "pkg:cargo/futures@0.3.34",
+        "pkg:cargo/jni@0.19.0",
+        "pkg:cargo/log@0.4.34",
+        "pkg:cargo/objc2-core-bluetooth@0.2.2",
+        "pkg:cargo/objc2-foundation@0.2.2",
+        "pkg:cargo/objc2@0.5.2",
+        "pkg:cargo/once_cell@1.21.4",
+        "pkg:cargo/static_assertions@1.1.0",
+        "pkg:cargo/thiserror@2.0.20",
+        "pkg:cargo/tokio-stream@0.1.19",
+        "pkg:cargo/tokio@1.53.1",
+        "pkg:cargo/uuid@1.26.1",
+        "pkg:cargo/windows-future@0.3.2",
+        "pkg:cargo/windows@0.62.2"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/bumpalo@3.20.3",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/bytes@1.12.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/camino@1.2.6",
+      "dependsOn": [
+        "pkg:cargo/serde_core@1.0.229"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/cargo_metadata@0.23.1",
+      "dependsOn": [
+        "pkg:cargo/camino@1.2.6",
+        "pkg:cargo/cargo-platform@0.3.3",
+        "pkg:cargo/semver@1.0.28",
+        "pkg:cargo/serde@1.0.229",
+        "pkg:cargo/serde_json@1.0.151",
+        "pkg:cargo/thiserror@2.0.20"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/cargo-platform@0.3.3",
+      "dependsOn": [
+        "pkg:cargo/serde@1.0.229",
+        "pkg:cargo/serde_core@1.0.229"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/cesu8@1.1.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/cfg-if@1.0.4",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/combine@4.6.8",
+      "dependsOn": [
+        "pkg:cargo/bytes@1.12.1",
+        "pkg:cargo/memchr@2.8.3"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/convert_case@0.6.0",
+      "dependsOn": [
+        "pkg:cargo/unicode-segmentation@1.13.3"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/crossbeam-utils@0.8.23",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/ctor@0.2.9",
+      "dependsOn": [
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/dashmap@6.2.1",
+      "dependsOn": [
+        "pkg:cargo/cfg-if@1.0.4",
+        "pkg:cargo/crossbeam-utils@0.8.23",
+        "pkg:cargo/hashbrown@0.14.5",
+        "pkg:cargo/lock_api@0.4.14",
+        "pkg:cargo/once_cell@1.21.4",
+        "pkg:cargo/parking_lot_core@0.9.12"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/dbus-tokio@0.7.6",
+      "dependsOn": [
+        "pkg:cargo/dbus@0.9.12",
+        "pkg:cargo/libc@0.2.189",
+        "pkg:cargo/tokio@1.53.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/dbus@0.9.12",
+      "dependsOn": [
+        "pkg:cargo/futures-channel@0.3.34",
+        "pkg:cargo/futures-util@0.3.34",
+        "pkg:cargo/libc@0.2.189",
+        "pkg:cargo/libdbus-sys@0.2.7",
+        "pkg:cargo/windows-sys@0.61.2"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/either@1.18.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/endi@1.1.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/enumflags2_derive@0.7.12",
+      "dependsOn": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/enumflags2@0.7.12",
+      "dependsOn": [
+        "pkg:cargo/enumflags2_derive@0.7.12",
+        "pkg:cargo/serde@1.0.229"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/equivalent@1.0.2",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/errno@0.3.14",
+      "dependsOn": [
+        "pkg:cargo/libc@0.2.189",
+        "pkg:cargo/windows-sys@0.61.2"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/event-listener-strategy@0.5.4",
+      "dependsOn": [
+        "pkg:cargo/event-listener@5.4.2",
+        "pkg:cargo/pin-project-lite@0.2.17"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/event-listener@5.4.2",
+      "dependsOn": [
+        "pkg:cargo/parking@2.2.1",
+        "pkg:cargo/pin-project-lite@0.2.17"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/fastrand@2.5.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/fs-err@3.3.1",
+      "dependsOn": [
+        "pkg:cargo/autocfg@1.5.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/futures-channel@0.3.34",
+      "dependsOn": [
+        "pkg:cargo/futures-core@0.3.34",
+        "pkg:cargo/futures-sink@0.3.34"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/futures-core@0.3.34",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/futures-executor@0.3.34",
+      "dependsOn": [
+        "pkg:cargo/futures-core@0.3.34",
+        "pkg:cargo/futures-task@0.3.34",
+        "pkg:cargo/futures-util@0.3.34"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/futures-io@0.3.34",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/futures-lite@2.6.1",
+      "dependsOn": [
+        "pkg:cargo/fastrand@2.5.0",
+        "pkg:cargo/futures-core@0.3.34",
+        "pkg:cargo/futures-io@0.3.34",
+        "pkg:cargo/parking@2.2.1",
+        "pkg:cargo/pin-project-lite@0.2.17"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/futures-macro@0.3.34",
+      "dependsOn": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@3.0.5"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/futures-sink@0.3.34",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/futures-task@0.3.34",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/futures-util@0.3.34",
+      "dependsOn": [
+        "pkg:cargo/futures-channel@0.3.34",
+        "pkg:cargo/futures-core@0.3.34",
+        "pkg:cargo/futures-io@0.3.34",
+        "pkg:cargo/futures-macro@0.3.34",
+        "pkg:cargo/futures-sink@0.3.34",
+        "pkg:cargo/futures-task@0.3.34",
+        "pkg:cargo/memchr@2.8.3",
+        "pkg:cargo/pin-project-lite@0.2.17",
+        "pkg:cargo/slab@0.4.12"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/futures@0.3.34",
+      "dependsOn": [
+        "pkg:cargo/futures-channel@0.3.34",
+        "pkg:cargo/futures-core@0.3.34",
+        "pkg:cargo/futures-executor@0.3.34",
+        "pkg:cargo/futures-io@0.3.34",
+        "pkg:cargo/futures-sink@0.3.34",
+        "pkg:cargo/futures-task@0.3.34",
+        "pkg:cargo/futures-util@0.3.34"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/getrandom@0.4.3",
+      "dependsOn": [
+        "pkg:cargo/cfg-if@1.0.4",
+        "pkg:cargo/libc@0.2.189",
+        "pkg:cargo/r-efi@6.0.0"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/glob@0.3.4",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/goblin@0.8.2",
+      "dependsOn": [
+        "pkg:cargo/log@0.4.34",
+        "pkg:cargo/plain@0.2.3",
+        "pkg:cargo/scroll@0.12.0"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/hashbrown@0.14.5",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/hashbrown@0.17.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/heck@0.5.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/hex@0.4.3",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/indexmap@2.14.2",
+      "dependsOn": [
+        "pkg:cargo/equivalent@1.0.2",
+        "pkg:cargo/hashbrown@0.17.1",
+        "pkg:cargo/serde@1.0.229",
+        "pkg:cargo/serde_core@1.0.229"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/itertools@0.14.0",
+      "dependsOn": [
+        "pkg:cargo/either@1.18.0"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/itoa@1.0.18",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/jni-macros@0.22.4",
+      "dependsOn": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/rustc_version@0.4.1",
+        "pkg:cargo/simd_cesu8@1.2.0",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/jni-sys-macros@0.4.1",
+      "dependsOn": [
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/jni-sys@0.3.1",
+      "dependsOn": [
+        "pkg:cargo/jni-sys@0.4.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/jni-sys@0.4.1",
+      "dependsOn": [
+        "pkg:cargo/jni-sys-macros@0.4.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/jni@0.19.0",
+      "dependsOn": [
+        "pkg:cargo/cesu8@1.1.0",
+        "pkg:cargo/combine@4.6.8",
+        "pkg:cargo/jni-sys@0.3.1",
+        "pkg:cargo/log@0.4.34",
+        "pkg:cargo/thiserror@1.0.69",
+        "pkg:cargo/walkdir@2.5.0"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/jni@0.22.4",
+      "dependsOn": [
+        "pkg:cargo/cfg-if@1.0.4",
+        "pkg:cargo/combine@4.6.8",
+        "pkg:cargo/jni-macros@0.22.4",
+        "pkg:cargo/jni-sys@0.4.1",
+        "pkg:cargo/log@0.4.34",
+        "pkg:cargo/simd_cesu8@1.2.0",
+        "pkg:cargo/thiserror@2.0.20",
+        "pkg:cargo/walkdir@2.5.0",
+        "pkg:cargo/windows-link@0.2.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/js-sys@0.3.105",
+      "dependsOn": [
+        "pkg:cargo/cfg-if@1.0.4",
+        "pkg:cargo/futures-util@0.3.34",
+        "pkg:cargo/wasm-bindgen@0.2.128"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/libc@0.2.189",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/libdbus-sys@0.2.7",
+      "dependsOn": [
+        "pkg:cargo/pkg-config@0.3.34"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/libloading@0.8.9",
+      "dependsOn": [
+        "pkg:cargo/cfg-if@1.0.4",
+        "pkg:cargo/windows-link@0.2.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/linux-raw-sys@0.12.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/lock_api@0.4.14",
+      "dependsOn": [
+        "pkg:cargo/scopeguard@1.2.0"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/log@0.4.34",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/memchr@2.8.3",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/memoffset@0.9.1",
+      "dependsOn": [
+        "pkg:cargo/autocfg@1.5.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/minimal-lexical@0.2.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/mio@1.2.3",
+      "dependsOn": [
+        "pkg:cargo/libc@0.2.189",
+        "pkg:cargo/wasi@0.11.1%2Bwasi-snapshot-preview1",
+        "pkg:cargo/windows-sys@0.61.2"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/napi-build@2.4.2",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/napi-derive-backend@1.0.75",
+      "dependsOn": [
+        "pkg:cargo/convert_case@0.6.0",
+        "pkg:cargo/once_cell@1.21.4",
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/regex@1.13.1",
+        "pkg:cargo/semver@1.0.28",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/napi-derive@2.16.13",
+      "dependsOn": [
+        "pkg:cargo/cfg-if@1.0.4",
+        "pkg:cargo/convert_case@0.6.0",
+        "pkg:cargo/napi-derive-backend@1.0.75",
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/napi-sys@2.4.0",
+      "dependsOn": [
+        "pkg:cargo/libloading@0.8.9"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/napi@2.16.17",
+      "dependsOn": [
+        "pkg:cargo/bitflags@2.13.2",
+        "pkg:cargo/ctor@0.2.9",
+        "pkg:cargo/napi-derive@2.16.13",
+        "pkg:cargo/napi-sys@2.4.0",
+        "pkg:cargo/once_cell@1.21.4",
+        "pkg:cargo/tokio@1.53.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/nom@7.1.3",
+      "dependsOn": [
+        "pkg:cargo/memchr@2.8.3",
+        "pkg:cargo/minimal-lexical@0.2.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/objc-sys@0.3.5",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/objc2-core-bluetooth@0.2.2",
+      "dependsOn": [
+        "pkg:cargo/bitflags@2.13.2",
+        "pkg:cargo/objc2-foundation@0.2.2",
+        "pkg:cargo/objc2@0.5.2"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/objc2-encode@4.1.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/objc2-foundation@0.2.2",
+      "dependsOn": [
+        "pkg:cargo/bitflags@2.13.2",
+        "pkg:cargo/block2@0.5.1",
+        "pkg:cargo/libc@0.2.189",
+        "pkg:cargo/objc2@0.5.2"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/objc2@0.5.2",
+      "dependsOn": [
+        "pkg:cargo/objc-sys@0.3.5",
+        "pkg:cargo/objc2-encode@4.1.0"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/once_cell@1.21.4",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/ordered-stream@0.2.0",
+      "dependsOn": [
+        "pkg:cargo/futures-core@0.3.34",
+        "pkg:cargo/pin-project-lite@0.2.17"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/parking_lot_core@0.9.12",
+      "dependsOn": [
+        "pkg:cargo/cfg-if@1.0.4",
+        "pkg:cargo/libc@0.2.189",
+        "pkg:cargo/redox_syscall@0.5.18",
+        "pkg:cargo/smallvec@1.16.1",
+        "pkg:cargo/windows-link@0.2.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/parking@2.2.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/percent-encoding@2.3.2",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/pin-project-lite@0.2.17",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/pkg-config@0.3.34",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/plain@0.2.3",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/proc-macro-crate@3.5.0",
+      "dependsOn": [
+        "pkg:cargo/toml_edit@0.25.15%2Bspec-1.1.0"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/proc-macro2@1.0.107",
+      "dependsOn": [
+        "pkg:cargo/unicode-ident@1.0.24"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/quote@1.0.47",
+      "dependsOn": [
+        "pkg:cargo/proc-macro2@1.0.107"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/r-efi@6.0.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/redox_syscall@0.5.18",
+      "dependsOn": [
+        "pkg:cargo/bitflags@2.13.2"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/regex-automata@0.4.18",
+      "dependsOn": [
+        "pkg:cargo/aho-corasick@1.1.5",
+        "pkg:cargo/memchr@2.8.3",
+        "pkg:cargo/regex-syntax@0.8.11"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/regex-syntax@0.8.11",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/regex@1.13.1",
+      "dependsOn": [
+        "pkg:cargo/aho-corasick@1.1.5",
+        "pkg:cargo/memchr@2.8.3",
+        "pkg:cargo/regex-automata@0.4.18",
+        "pkg:cargo/regex-syntax@0.8.11"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/rustc_version@0.4.1",
+      "dependsOn": [
+        "pkg:cargo/semver@1.0.28"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/rustc-hash@2.1.3",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/rustix@1.1.4",
+      "dependsOn": [
+        "pkg:cargo/bitflags@2.13.2",
+        "pkg:cargo/errno@0.3.14",
+        "pkg:cargo/libc@0.2.189",
+        "pkg:cargo/linux-raw-sys@0.12.1",
+        "pkg:cargo/windows-sys@0.61.2"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/rustversion@1.0.23",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/same-file@1.0.6",
+      "dependsOn": [
+        "pkg:cargo/winapi-util@0.1.11"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/scopeguard@1.2.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/scroll_derive@0.12.1",
+      "dependsOn": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/scroll@0.12.0",
+      "dependsOn": [
+        "pkg:cargo/scroll_derive@0.12.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/semver@1.0.28",
+      "dependsOn": [
+        "pkg:cargo/serde@1.0.229",
+        "pkg:cargo/serde_core@1.0.229"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/serde_core@1.0.229",
+      "dependsOn": [
+        "pkg:cargo/serde_derive@1.0.229"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/serde_derive@1.0.229",
+      "dependsOn": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@3.0.5"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/serde_json@1.0.151",
+      "dependsOn": [
+        "pkg:cargo/itoa@1.0.18",
+        "pkg:cargo/memchr@2.8.3",
+        "pkg:cargo/serde@1.0.229",
+        "pkg:cargo/serde_core@1.0.229",
+        "pkg:cargo/zmij@1.0.23"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/serde_repr@0.1.21",
+      "dependsOn": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@3.0.5"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/serde_spanned@1.1.1",
+      "dependsOn": [
+        "pkg:cargo/serde_core@1.0.229"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/serde-xml-rs@0.8.2",
+      "dependsOn": [
+        "pkg:cargo/log@0.4.34",
+        "pkg:cargo/serde@1.0.229",
+        "pkg:cargo/thiserror@2.0.20",
+        "pkg:cargo/xml@1.4.0"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/serde@1.0.229",
+      "dependsOn": [
+        "pkg:cargo/serde_core@1.0.229",
+        "pkg:cargo/serde_derive@1.0.229"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/signal-hook-registry@1.4.8",
+      "dependsOn": [
+        "pkg:cargo/errno@0.3.14",
+        "pkg:cargo/libc@0.2.189"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/simd_cesu8@1.2.0",
+      "dependsOn": [
+        "pkg:cargo/rustc_version@0.4.1",
+        "pkg:cargo/simdutf8@0.1.5"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/simdutf8@0.1.5",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/siphasher@1.0.3",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/slab@0.4.12",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/smallvec@1.16.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/smawk@0.3.3",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/socket2@0.6.5",
+      "dependsOn": [
+        "pkg:cargo/libc@0.2.189",
+        "pkg:cargo/windows-sys@0.61.2"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/static_assertions@1.1.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/syn@2.0.119",
+      "dependsOn": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/unicode-ident@1.0.24"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/syn@3.0.5",
+      "dependsOn": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/unicode-ident@1.0.24"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/tempfile@3.27.0",
+      "dependsOn": [
+        "pkg:cargo/fastrand@2.5.0",
+        "pkg:cargo/getrandom@0.4.3",
+        "pkg:cargo/once_cell@1.21.4",
+        "pkg:cargo/rustix@1.1.4",
+        "pkg:cargo/windows-sys@0.61.2"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/textwrap@0.16.4",
+      "dependsOn": [
+        "pkg:cargo/smawk@0.3.3",
+        "pkg:cargo/unicode-width@0.2.2"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/thiserror-impl@1.0.69",
+      "dependsOn": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/thiserror-impl@2.0.20",
+      "dependsOn": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@3.0.5"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/thiserror@1.0.69",
+      "dependsOn": [
+        "pkg:cargo/thiserror-impl@1.0.69"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/thiserror@2.0.20",
+      "dependsOn": [
+        "pkg:cargo/thiserror-impl@2.0.20"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/tokio-macros@2.7.2",
+      "dependsOn": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@3.0.5"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/tokio-stream@0.1.19",
+      "dependsOn": [
+        "pkg:cargo/futures-core@0.3.34",
+        "pkg:cargo/pin-project-lite@0.2.17",
+        "pkg:cargo/tokio-util@0.7.19",
+        "pkg:cargo/tokio@1.53.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/tokio-util@0.7.19",
+      "dependsOn": [
+        "pkg:cargo/bytes@1.12.1",
+        "pkg:cargo/futures-core@0.3.34",
+        "pkg:cargo/futures-sink@0.3.34",
+        "pkg:cargo/pin-project-lite@0.2.17",
+        "pkg:cargo/tokio@1.53.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/tokio@1.53.1",
+      "dependsOn": [
+        "pkg:cargo/bytes@1.12.1",
+        "pkg:cargo/libc@0.2.189",
+        "pkg:cargo/mio@1.2.3",
+        "pkg:cargo/pin-project-lite@0.2.17",
+        "pkg:cargo/signal-hook-registry@1.4.8",
+        "pkg:cargo/socket2@0.6.5",
+        "pkg:cargo/tokio-macros@2.7.2",
+        "pkg:cargo/tracing@0.1.44",
+        "pkg:cargo/windows-sys@0.61.2"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/toml_datetime@1.1.1%2Bspec-1.1.0",
+      "dependsOn": [
+        "pkg:cargo/serde_core@1.0.229"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/toml_edit@0.25.15%2Bspec-1.1.0",
+      "dependsOn": [
+        "pkg:cargo/indexmap@2.14.2",
+        "pkg:cargo/toml_datetime@1.1.1%2Bspec-1.1.0",
+        "pkg:cargo/toml_parser@1.1.3%2Bspec-1.1.0",
+        "pkg:cargo/winnow@1.0.4"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/toml_parser@1.1.3%2Bspec-1.1.0",
+      "dependsOn": [
+        "pkg:cargo/winnow@1.0.4"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/toml_writer@1.1.2%2Bspec-1.1.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/toml@1.1.6%2Bspec-1.1.0",
+      "dependsOn": [
+        "pkg:cargo/indexmap@2.14.2",
+        "pkg:cargo/serde_core@1.0.229",
+        "pkg:cargo/serde_spanned@1.1.1",
+        "pkg:cargo/toml_datetime@1.1.1%2Bspec-1.1.0",
+        "pkg:cargo/toml_parser@1.1.3%2Bspec-1.1.0",
+        "pkg:cargo/toml_writer@1.1.2%2Bspec-1.1.0",
+        "pkg:cargo/winnow@1.0.4"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/tracing-attributes@0.1.31",
+      "dependsOn": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/tracing-core@0.1.36",
+      "dependsOn": [
+        "pkg:cargo/once_cell@1.21.4"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/tracing@0.1.44",
+      "dependsOn": [
+        "pkg:cargo/pin-project-lite@0.2.17",
+        "pkg:cargo/tracing-attributes@0.1.31",
+        "pkg:cargo/tracing-core@0.1.36"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/ubm-core@0.1.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/ubm-desktop@0.1.0",
+      "dependsOn": [
+        "pkg:cargo/btleplug@0.12.0",
+        "pkg:cargo/futures-util@0.3.34",
+        "pkg:cargo/objc2-core-bluetooth@0.2.2",
+        "pkg:cargo/objc2-foundation@0.2.2",
+        "pkg:cargo/objc2@0.5.2",
+        "pkg:cargo/serde_json@1.0.151",
+        "pkg:cargo/tokio@1.53.1",
+        "pkg:cargo/ubm-core@0.1.0",
+        "pkg:cargo/uuid@1.26.1",
+        "pkg:cargo/windows-future@0.3.2",
+        "pkg:cargo/windows@0.62.2",
+        "pkg:cargo/zbus@5.19.0"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/ubm-fake-radio@0.1.0",
+      "dependsOn": [
+        "pkg:cargo/ubm-core@0.1.0"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/ubm-mobile@0.1.0",
+      "dependsOn": [
+        "pkg:cargo/serde_json@1.0.151",
+        "pkg:cargo/tokio@1.53.1",
+        "pkg:cargo/ubm-core@0.1.0",
+        "pkg:cargo/ubm-desktop@0.1.0"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/ubm5_jni_echo@0.1.0",
+      "dependsOn": [
+        "pkg:cargo/jni@0.22.4",
+        "pkg:cargo/ubm-core@0.1.0",
+        "pkg:cargo/ubm-desktop@0.1.0",
+        "pkg:cargo/ubm-fake-radio@0.1.0",
+        "pkg:cargo/ubm-mobile@0.1.0"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/ubm5_napi_echo@0.1.0",
+      "dependsOn": [
+        "pkg:cargo/napi-build@2.4.2",
+        "pkg:cargo/napi-derive@2.16.13",
+        "pkg:cargo/napi@2.16.17",
+        "pkg:cargo/tokio@1.53.1",
+        "pkg:cargo/ubm-core@0.1.0",
+        "pkg:cargo/ubm-desktop@0.1.0",
+        "pkg:cargo/ubm-fake-radio@0.1.0"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/ubm5_uniffi_echo@0.1.0",
+      "dependsOn": [
+        "pkg:cargo/ubm-core@0.1.0",
+        "pkg:cargo/ubm-desktop@0.1.0",
+        "pkg:cargo/ubm-fake-radio@0.1.0",
+        "pkg:cargo/ubm-mobile@0.1.0",
+        "pkg:cargo/uniffi@0.32.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/ubm5_wasm_echo@0.1.0",
+      "dependsOn": [
+        "pkg:cargo/ubm-core@0.1.0",
+        "pkg:cargo/ubm-fake-radio@0.1.0"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/uds_windows@1.2.1",
+      "dependsOn": [
+        "pkg:cargo/memoffset@0.9.1",
+        "pkg:cargo/tempfile@3.27.0",
+        "pkg:cargo/windows-sys@0.61.2"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/unicode-ident@1.0.24",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/unicode-segmentation@1.13.3",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/unicode-width@0.2.2",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/uniffi_bindgen@0.32.1",
+      "dependsOn": [
+        "pkg:cargo/anyhow@1.0.104",
+        "pkg:cargo/askama@0.16.1",
+        "pkg:cargo/camino@1.2.6",
+        "pkg:cargo/cargo_metadata@0.23.1",
+        "pkg:cargo/fs-err@3.3.1",
+        "pkg:cargo/glob@0.3.4",
+        "pkg:cargo/goblin@0.8.2",
+        "pkg:cargo/heck@0.5.0",
+        "pkg:cargo/indexmap@2.14.2",
+        "pkg:cargo/once_cell@1.21.4",
+        "pkg:cargo/serde@1.0.229",
+        "pkg:cargo/tempfile@3.27.0",
+        "pkg:cargo/textwrap@0.16.4",
+        "pkg:cargo/toml@1.1.6%2Bspec-1.1.0",
+        "pkg:cargo/uniffi_internal_macros@0.32.1",
+        "pkg:cargo/uniffi_meta@0.32.1",
+        "pkg:cargo/uniffi_pipeline@0.32.1",
+        "pkg:cargo/uniffi_udl@0.32.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/uniffi_build@0.32.1",
+      "dependsOn": [
+        "pkg:cargo/anyhow@1.0.104",
+        "pkg:cargo/camino@1.2.6",
+        "pkg:cargo/uniffi_bindgen@0.32.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/uniffi_core@0.32.1",
+      "dependsOn": [
+        "pkg:cargo/anyhow@1.0.104",
+        "pkg:cargo/bytes@1.12.1",
+        "pkg:cargo/once_cell@1.21.4",
+        "pkg:cargo/static_assertions@1.1.0"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/uniffi_internal_macros@0.32.1",
+      "dependsOn": [
+        "pkg:cargo/anyhow@1.0.104",
+        "pkg:cargo/indexmap@2.14.2",
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/uniffi_macros@0.32.1",
+      "dependsOn": [
+        "pkg:cargo/camino@1.2.6",
+        "pkg:cargo/fs-err@3.3.1",
+        "pkg:cargo/once_cell@1.21.4",
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/serde@1.0.229",
+        "pkg:cargo/syn@2.0.119",
+        "pkg:cargo/toml@1.1.6%2Bspec-1.1.0",
+        "pkg:cargo/uniffi_meta@0.32.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/uniffi_meta@0.32.1",
+      "dependsOn": [
+        "pkg:cargo/anyhow@1.0.104",
+        "pkg:cargo/siphasher@1.0.3",
+        "pkg:cargo/uniffi_internal_macros@0.32.1",
+        "pkg:cargo/uniffi_pipeline@0.32.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/uniffi_pipeline@0.32.1",
+      "dependsOn": [
+        "pkg:cargo/anyhow@1.0.104",
+        "pkg:cargo/heck@0.5.0",
+        "pkg:cargo/indexmap@2.14.2",
+        "pkg:cargo/tempfile@3.27.0",
+        "pkg:cargo/uniffi_internal_macros@0.32.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/uniffi_udl@0.32.1",
+      "dependsOn": [
+        "pkg:cargo/anyhow@1.0.104",
+        "pkg:cargo/textwrap@0.16.4",
+        "pkg:cargo/uniffi_meta@0.32.1",
+        "pkg:cargo/weedle2@5.0.0"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/uniffi@0.32.1",
+      "dependsOn": [
+        "pkg:cargo/anyhow@1.0.104",
+        "pkg:cargo/cargo_metadata@0.23.1",
+        "pkg:cargo/uniffi_bindgen@0.32.1",
+        "pkg:cargo/uniffi_build@0.32.1",
+        "pkg:cargo/uniffi_core@0.32.1",
+        "pkg:cargo/uniffi_macros@0.32.1",
+        "pkg:cargo/uniffi_pipeline@0.32.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/uuid@1.26.1",
+      "dependsOn": [
+        "pkg:cargo/js-sys@0.3.105",
+        "pkg:cargo/serde_core@1.0.229",
+        "pkg:cargo/wasm-bindgen@0.2.128"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/walkdir@2.5.0",
+      "dependsOn": [
+        "pkg:cargo/same-file@1.0.6",
+        "pkg:cargo/winapi-util@0.1.11"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/wasi@0.11.1%2Bwasi-snapshot-preview1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/wasm-bindgen-macro-support@0.2.128",
+      "dependsOn": [
+        "pkg:cargo/bumpalo@3.20.3",
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@3.0.5",
+        "pkg:cargo/wasm-bindgen-shared@0.2.128"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/wasm-bindgen-macro@0.2.128",
+      "dependsOn": [
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/wasm-bindgen-macro-support@0.2.128"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/wasm-bindgen-shared@0.2.128",
+      "dependsOn": [
+        "pkg:cargo/unicode-ident@1.0.24"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/wasm-bindgen@0.2.128",
+      "dependsOn": [
+        "pkg:cargo/cfg-if@1.0.4",
+        "pkg:cargo/once_cell@1.21.4",
+        "pkg:cargo/rustversion@1.0.23",
+        "pkg:cargo/wasm-bindgen-macro@0.2.128",
+        "pkg:cargo/wasm-bindgen-shared@0.2.128"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/weedle2@5.0.0",
+      "dependsOn": [
+        "pkg:cargo/nom@7.1.3"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/winapi-util@0.1.11",
+      "dependsOn": [
+        "pkg:cargo/windows-sys@0.61.2"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/windows-collections@0.3.2",
+      "dependsOn": [
+        "pkg:cargo/windows-core@0.62.2"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/windows-core@0.62.2",
+      "dependsOn": [
+        "pkg:cargo/windows-implement@0.60.2",
+        "pkg:cargo/windows-interface@0.59.3",
+        "pkg:cargo/windows-link@0.2.1",
+        "pkg:cargo/windows-result@0.4.1",
+        "pkg:cargo/windows-strings@0.5.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/windows-future@0.3.2",
+      "dependsOn": [
+        "pkg:cargo/windows-core@0.62.2",
+        "pkg:cargo/windows-link@0.2.1",
+        "pkg:cargo/windows-threading@0.2.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/windows-implement@0.60.2",
+      "dependsOn": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/windows-interface@0.59.3",
+      "dependsOn": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/windows-link@0.2.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/windows-numerics@0.3.1",
+      "dependsOn": [
+        "pkg:cargo/windows-core@0.62.2",
+        "pkg:cargo/windows-link@0.2.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/windows-result@0.4.1",
+      "dependsOn": [
+        "pkg:cargo/windows-link@0.2.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/windows-strings@0.5.1",
+      "dependsOn": [
+        "pkg:cargo/windows-link@0.2.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/windows-sys@0.61.2",
+      "dependsOn": [
+        "pkg:cargo/windows-link@0.2.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/windows-threading@0.2.1",
+      "dependsOn": [
+        "pkg:cargo/windows-link@0.2.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/windows@0.62.2",
+      "dependsOn": [
+        "pkg:cargo/windows-collections@0.3.2",
+        "pkg:cargo/windows-core@0.62.2",
+        "pkg:cargo/windows-future@0.3.2",
+        "pkg:cargo/windows-numerics@0.3.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/winnow@1.0.4",
+      "dependsOn": [
+        "pkg:cargo/memchr@2.8.3"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/xml@1.4.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/zbus_macros@5.19.0",
+      "dependsOn": [
+        "pkg:cargo/proc-macro-crate@3.5.0",
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@3.0.5",
+        "pkg:cargo/zbus_names@4.3.4",
+        "pkg:cargo/zvariant@5.15.0",
+        "pkg:cargo/zvariant_utils@4.2.0"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/zbus_names@4.3.4",
+      "dependsOn": [
+        "pkg:cargo/serde@1.0.229",
+        "pkg:cargo/winnow@1.0.4",
+        "pkg:cargo/zvariant@5.15.0"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/zbus@5.19.0",
+      "dependsOn": [
+        "pkg:cargo/async-broadcast@0.7.2",
+        "pkg:cargo/async-recursion@1.1.1",
+        "pkg:cargo/async-trait@0.1.92",
+        "pkg:cargo/enumflags2@0.7.12",
+        "pkg:cargo/event-listener@5.4.2",
+        "pkg:cargo/futures-core@0.3.34",
+        "pkg:cargo/futures-lite@2.6.1",
+        "pkg:cargo/hex@0.4.3",
+        "pkg:cargo/libc@0.2.189",
+        "pkg:cargo/ordered-stream@0.2.0",
+        "pkg:cargo/rustix@1.1.4",
+        "pkg:cargo/serde@1.0.229",
+        "pkg:cargo/serde_repr@0.1.21",
+        "pkg:cargo/tokio@1.53.1",
+        "pkg:cargo/tracing@0.1.44",
+        "pkg:cargo/uds_windows@1.2.1",
+        "pkg:cargo/uuid@1.26.1",
+        "pkg:cargo/windows-sys@0.61.2",
+        "pkg:cargo/winnow@1.0.4",
+        "pkg:cargo/zbus_macros@5.19.0",
+        "pkg:cargo/zbus_names@4.3.4",
+        "pkg:cargo/zvariant@5.15.0"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/zcheapstr@1.1.0",
+      "dependsOn": [
+        "pkg:cargo/serde@1.0.229"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/zmij@1.0.23",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/zvariant_derive@5.15.0",
+      "dependsOn": [
+        "pkg:cargo/proc-macro-crate@3.5.0",
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@3.0.5",
+        "pkg:cargo/zvariant_utils@4.2.0"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/zvariant_utils@4.2.0",
+      "dependsOn": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/serde@1.0.229",
+        "pkg:cargo/syn@3.0.5",
+        "pkg:cargo/winnow@1.0.4"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/zvariant@5.15.0",
+      "dependsOn": [
+        "pkg:cargo/endi@1.1.1",
+        "pkg:cargo/enumflags2@0.7.12",
+        "pkg:cargo/serde@1.0.229",
+        "pkg:cargo/winnow@1.0.4",
+        "pkg:cargo/zcheapstr@1.1.0",
+        "pkg:cargo/zvariant_derive@5.15.0",
+        "pkg:cargo/zvariant_utils@4.2.0"
+      ]
     }
   ]
 }

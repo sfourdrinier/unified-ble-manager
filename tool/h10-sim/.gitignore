@@ -1,0 +1,3 @@
+target/
+tests/xcheck/dist/
+tests/xcheck/vectors.json

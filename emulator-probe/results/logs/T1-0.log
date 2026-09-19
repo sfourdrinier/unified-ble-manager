@@ -1,0 +1,6 @@
+$ adb install -r app-debug.apk
+[exit=0]
+Performing Streamed Install
+Success
+
+

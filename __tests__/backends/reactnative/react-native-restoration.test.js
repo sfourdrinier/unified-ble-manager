@@ -319,8 +319,24 @@ describe('React Native restoration provider TCK', () => {
 
     const android = createReactNativeRestorationFeatureRegistry('android', '4.0.0-test')
     expect(android.registrations.find(entry => entry.id === 'state:restoration-adoption')).toMatchObject({
+      state: 'limited',
+      evidence: { evidenceLevel: 'deterministic' },
+      limitations: [
+        expect.objectContaining({ code: 'android-restoration-needs-presence-observation' })
+      ]
+    })
+    // Issue #212: presence observation is an explicit backend capability —
+    // armed on Android, unsupported on Apple where willRestoreState delivers it.
+    expect(android.registrations.find(entry => entry.id === 'state:presence-observation')).toMatchObject({
+      state: 'limited',
+      evidence: { evidenceLevel: 'deterministic' },
+      limitations: [expect.objectContaining({ code: 'companion-presence-needs-api-31-and-association' })]
+    })
+    const apple = createReactNativeRestorationFeatureRegistry('apple', '4.0.0-test')
+    expect(apple.registrations.find(entry => entry.id === 'state:presence-observation')).toMatchObject({
       state: 'unsupported',
-      evidence: { evidenceLevel: 'blocked' }
+      evidence: { evidenceLevel: 'blocked' },
+      limitations: [expect.objectContaining({ code: 'apple-restoration-needs-no-presence-observation' })]
     })
   })
 })

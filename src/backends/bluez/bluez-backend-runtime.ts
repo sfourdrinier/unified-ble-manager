@@ -771,7 +771,12 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     }
     for (const consumer of [...physical.consumers]) {
       const owned = ownBytes(value, maximumOperationBytes)
-      const result = consumer.stream.emit({ value: owned, indication: false }, owned.byteLength, null, owned.byteLength)
+      const result = consumer.stream.emit(
+        { value: owned, delivery: 'unknown' },
+        owned.byteLength,
+        null,
+        owned.byteLength
+      )
       if (result.terminated) {
         observeBluezCleanup(
           this.removeSubscription(consumer),

@@ -153,7 +153,10 @@ async function chooseWebPeer(backend: WebBluetoothBackend, options: ChooseOption
   if (selected === null) throw contractError('protocol.violation', 'connection', 'web.choose.peer-reference')
   return snapshotBlePeer({
     id: String(selection.peerId),
-    name: null,
+    // Web Bluetooth exposes no advertisement payload for chooser devices:
+    // the browser's `BluetoothDevice.name` is the only name source, and
+    // `null` means the browser withheld it.
+    name: backend.selectedPeerName(String(selection.peerId)),
     rssi: null,
     reference: { version: 1, backendId: selected.backendId, scope: 'origin', opaqueId: selected.browserDeviceId },
     sources: ['origin-authorized'],

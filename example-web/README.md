@@ -42,3 +42,13 @@ The example is a live validation harness, but running it does not itself create 
 release evidence receipt. A public support claim additionally requires retained,
 checksum-bound logs and the exact packed artifact, browser, OS, adapter, peripheral,
 and source identity required by `evidence/v1/`.
+
+## Shared test driver
+
+`driver.html` (served by the same Vite config at
+`http://127.0.0.1:5173/driver.html`) hosts the cross-host test scenarios, so the
+control server can drive this browser the same way it drives the phones and
+desktop hosts. Web Bluetooth opens its chooser only from a user gesture, so a
+run parks in an explicit `awaiting-user-gesture` phase until someone clicks
+**Open chooser**. See [`../examples-shared/driver/README.md`](../examples-shared/driver/README.md).
+

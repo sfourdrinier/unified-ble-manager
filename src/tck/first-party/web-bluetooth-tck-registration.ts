@@ -45,7 +45,8 @@ const webProviderScenarioIds: readonly TckScenarioId[] = Object.freeze([
   'identity.adapter-selection-and-unique-instance',
   'identity.valid-all-axis-negotiation',
   'identity.version-skew-and-malformed-offers',
-  'capability.truth-limits-evidence-and-binding'
+  'capability.truth-limits-evidence-and-binding',
+  'gatt.duplicate-uuid-occurrences-route-exactly'
 ])
 
 const webChooserControllerActions: readonly TckControllerAction[] = Object.freeze([

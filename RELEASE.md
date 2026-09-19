@@ -84,7 +84,7 @@ release plan. RC2, RC3, RC4, `4.0.0-rc.4.1`, and RC5 are already immutable
 once tagged. Stable `4.0.0` through `4.0.20` are immutable. The unpublished
 `v4.0.21` tag is also immutable after its cancelled workflow. `4.0.22`,
 `4.0.23`, `4.0.24`, `4.0.25`, `4.0.26`, and `4.0.27` are immutable tagged
-history. This branch prepares `4.0.28`.
+history. `4.0.28` is immutable tagged history. This branch prepares `5.0.0-rc.0`.
 
 ```sh
 release_candidate=4.0.0-rc.N
@@ -112,13 +112,22 @@ The first stable tag `v4.0.0` is immutable published history. Do not recreate or
 git tag -a v4.0.0 -m "v4.0.0"
 ```
 
+## Releasing 5.0.0-rc.0
+
+Release `v5.0.0-rc.0` only from the exact `5.0.0` branch tip after its
+canonical CI succeeds. Verify `package.json` is `5.0.0-rc.0`, the worktree is
+clean, and release-note extraction finds `## [5.0.0-rc.0]`. Push a new
+annotated `v5.0.0-rc.0` tag with the GitHub Release marked prerelease and the
+npm dist-tag `next` (never `latest` for a 5.0 RC). The candidate must pack
+the Rust workspace sources plus the committed Android native prebuilds, and
+the F01 runtime proof must pass against the packed artifact. Follow the
+required local validation, publish workflow, and registry verification below.
+
 ## Releasing 4.0.28
 
-Release `v4.0.28` only from the exact current `main` commit after its canonical
-CI succeeds. Verify `package.json` is `4.0.28`, the worktree is clean, and
-release-note extraction finds `## [4.0.28]`. Push a new annotated `v4.0.28`
-tag; never move the immutable `v4.0.27` tag. Follow the required local validation,
-publish workflow, and registry verification below.
+`v4.0.28` is immutable tagged history. It was released only from the exact
+current `main` commit after its canonical CI succeeded. Never move the
+immutable `v4.0.28` tag.
 
 ## Releasing 4.0.27
 
@@ -496,6 +505,26 @@ git push origin v4.0.6
 
 Do not push another commit to `main` between the final verification and the tag push.
 
+## Native build identity gates (5.x)
+
+Mobile native artifacts are bound to their sources by
+`scripts/release/native-build-identity.js` (see
+`docs/5.0.0-DISTRIBUTION_CONTRACT.md` §4). Before tagging a 5.x release:
+
+- `node scripts/release/native-build-identity.js --check` passes (`prepack`
+  runs it);
+- the committed Android prebuilts were refreshed from the tagged sources with
+  `sh android/refresh-prebuilt-jniLibs.sh` (pinned toolchain, NDK 27.x) and
+  `node scripts/release/native-build-identity.js --check-android-prebuilts`
+  passes — any Rust, lockfile, toolchain or JNI declaration change since the
+  last refresh fails it.
+
+The publish workflow's macOS `native-rustcore` job builds `ios/RustCore` with
+`ios/build-rust-core.sh` and verifies it with `ios/verify-rust-core.sh` and
+`--check-apple`; the publish job re-runs `--check-apple` on the downloaded
+staging and `--check-android-prebuilts` before packing. None of these gates
+may be bypassed to make a release pass.
+
 ## What the publish workflow does
 
 For a valid version tag, `.github/workflows/publish.yml`:
@@ -508,7 +537,7 @@ For a valid version tag, `.github/workflows/publish.yml`:
 6. before any initial publication, verifies the tag commit equals the current `main` commit;
 7. validates evidence-record syntax/integrity without manufacturing support claims;
 8. runs package, plugin, lint/typecheck, generated-artifact, packed-consumer, and deterministic Electron checks;
-9. runs the required Android/Expo/native-host gates;
+9. runs the required Android/Expo/native-host gates, including the native build identity gates above;
 10. verifies package contents and generated dependency artifacts;
 11. publishes the exact prebuild-bearing tarball through npm trusted publishing with provenance;
 12. waits for the registry artifact and verifies the published tarball/digest path;

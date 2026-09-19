@@ -1,0 +1,3 @@
+{"step":"scan.start","op":"scan0","owner":"owner-a"}
+{"step":"scan.platform","op":"scan0","event":"platform-started"}
+{"step":"peer.advertise","peer":"p","domain":"platform-guid","value":"peer-1"}

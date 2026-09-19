@@ -4,13 +4,8 @@
 
 import { contractError } from '../../backend-contract/errors'
 import type { AdapterDescriptor, BackendProvider, HostNeutralBackendIdentity } from '../../backend-contract/identity'
-import {
-  monotonicTimestamp,
-  opaqueId,
-  version,
-  versionRange,
-  type BackendCompatibilityOffer
-} from '../../backend-contract/primitives'
+import { monotonicTimestamp, opaqueId } from '../../backend-contract/primitives'
+import { coreBluetoothCompatibility } from '../desktop/platform-identity'
 import { CoreBluetoothBackend } from './corebluetooth-backend'
 import type { CoreBluetoothBoundary } from './corebluetooth-boundary'
 export {
@@ -19,12 +14,7 @@ export {
   COREBLUETOOTH_PLATFORM_ID
 } from './corebluetooth-identity'
 
-export const coreBluetoothCompatibility: BackendCompatibilityOffer = Object.freeze({
-  backendContract: versionRange(version('backend-contract', 1), version('backend-contract', 1)),
-  capabilitySchema: versionRange(version('capability-schema', 1), version('capability-schema', 1)),
-  eventSchema: versionRange(version('event-schema', 1), version('event-schema', 1)),
-  traceFormat: versionRange(version('trace-format', 1), version('trace-format', 1))
-})
+export { coreBluetoothCompatibility }
 
 export interface CoreBluetoothBackendProviderOptions {
   readonly boundaryFactory: () => CoreBluetoothBoundary

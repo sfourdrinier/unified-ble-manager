@@ -363,6 +363,11 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
         } catch (error) {
           this.lastError = toBleError(error)
           if (this.stopRequested) return 'stop'
+          // The adapter is still coming back: a readiness window that ran
+          // out, or an adapter not ready yet, is waited for again. Only a
+          // refusal waiting cannot change (permission, unsupported) waits
+          // for the application (resume, reconnectNow, stop).
+          if (isAdapterReadinessPending(this.lastError)) continue
           await this.waitForWake()
           continue
         }
@@ -510,7 +515,16 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
           this.lastError = toBleError(cleanup.failures[0]?.error)
           return 'cleanup-failed'
         }
-        this.stopRequested = true
+        // One decision per event on every host (owner decision, 5.0): a
+        // link lost during setup backs off and reconnects like any other
+        // link loss; an adapter lost during setup waits for the adapter,
+        // then reconnects. Any other configure failure is the application's.
+        if (isAdapterLossDuringSetup(this.lastError)) {
+          this.attempt -= 1
+          this.waitForAdapter = true
+        } else if (this.lastError.code !== 'connection.lost') {
+          this.stopRequested = true
+        }
         return 'interrupted'
       }
     }
@@ -865,10 +879,8 @@ function cleanupFailure(resourceKind: string, error: unknown, operation: string)
           domain: publicError.domain,
           operation: publicError.operation,
           platform: publicError.platform,
-          retryability:
-            publicError.code === 'operation.aborted' || publicError.code === 'operation.timed-out'
-              ? 'caller-decides'
-              : 'never'
+          retryability: publicError.retryability,
+          ...(publicError.commit === null ? {} : { commit: publicError.commit })
         }
       : error instanceof BackendContractError
         ? (toPublicCleanupRecord({ state: 'release-failed', failures: [{ resourceKind, error: error.normalized }] })
@@ -893,6 +905,16 @@ function isAdapterWaitError(error: BleError): boolean {
   return (
     error.code === 'adapter.unavailable' || error.code === 'adapter.powered-off' || error.code === 'adapter.resetting'
   )
+}
+
+/** A readiness wait that ended before the adapter returned, but may still see it return. */
+function isAdapterReadinessPending(error: BleError): boolean {
+  return error.code === 'operation.timed-out' || isAdapterWaitError(error)
+}
+
+/** The adapter went away while `configure` was running: every host ends in-flight work `operation.reset`. */
+function isAdapterLossDuringSetup(error: BleError): boolean {
+  return error.code === 'operation.reset' || isAdapterWaitError(error)
 }
 
 function isRetryableConnectionError(error: BleError): boolean {

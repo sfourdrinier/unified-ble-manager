@@ -1,0 +1,6 @@
+$ svc bluetooth disable
+[exit=0]
+BluetoothShellCommand: Exec disable
+disable: Success
+
+

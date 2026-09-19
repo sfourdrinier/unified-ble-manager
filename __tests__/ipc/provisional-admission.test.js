@@ -1,7 +1,7 @@
 const { IpcBleManager, inspectIpcProvisionalAdmissionForTests } = require('../../src/ipc/manager')
 const { BUILT_IN_FEATURE_IDS } = require('../../src/backend-contract/capabilities')
 
-function negotiated(axis, value = axis === 'ipc-protocol' ? 2 : 1) {
+function negotiated(axis, value = axis === 'ipc-protocol' ? 4 : 1) {
   const selected = { axis, value }
   const range = { axis, minimum: selected, maximum: selected }
   return { axis, selected, localRange: range, remoteRange: range }
@@ -420,8 +420,16 @@ describe('IPC provisional admission', () => {
           now = 2_000
         }
       })
+      // Finding 161: the native answer arrived after the deadline, so no
+      // link came up in time — the peer not answering (`connection.failed`,
+      // caller-decides) with the deadline fact in `platform`. The
+      // provisional identity is still compensated with a disconnect.
       await expect(harness.ipc.connect('peer-1', { deadline: 1_500 })).rejects.toMatchObject({
-        normalized: { code: 'operation.timed-out' }
+        normalized: {
+          code: 'connection.failed',
+          retryability: 'caller-decides',
+          platform: { domain: 'ipc', code: 'deadline-expired', metadata: { deadlineMs: 500 } }
+        }
       })
       expect(harness.commands).toContain('connection.connect')
       expect(harness.commands).toContain('connection.disconnect')

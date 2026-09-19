@@ -12,9 +12,12 @@ const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf
 const packageVersion = JSON.parse(read('package.json')).version
 const stable40 = /^4\.0\.\d+$/u.test(packageVersion)
 const rcVersionMatch = /^4\.0\.0-rc\.\d+(?:\.\d+)?$/u.exec(packageVersion)
+const rc50VersionMatch = /^5\.0\.0-rc\.\d+$/u.exec(packageVersion)
 const alphaVersionMatch = /^4\.0\.0-alpha\.(\d+)$/u.exec(packageVersion)
-if (!stable40 && rcVersionMatch === null && alphaVersionMatch === null) {
-  throw new Error(`Expected a 4.0.x stable, a 4.0 RC, or a 4.0 alpha package version, received ${packageVersion}`)
+if (!stable40 && rcVersionMatch === null && rc50VersionMatch === null && alphaVersionMatch === null) {
+  throw new Error(
+    `Expected a 4.0.x stable, a 4.0 RC, a 5.0 RC, or a 4.0 alpha package version, received ${packageVersion}`
+  )
 }
 const currentAlpha = alphaVersionMatch === null ? null : Number(alphaVersionMatch[1])
 const previousAlphaVersion = currentAlpha === null ? null : `v4.0.0-alpha.${String(currentAlpha - 1)}`
@@ -59,8 +62,13 @@ const canonicalAdrDocuments = [
   'docs/ADR/2026-07-4.0-rn-restoration-bootstrap.md',
   'docs/ADR/2026-07-4.0-packaging.md',
   'docs/ADR/2026-07-4.0-open-source-governance.md',
-  'docs/ADR/2026-08-4.0-public-contract-reset.md'
+  'docs/ADR/2026-08-4.0-public-contract-reset.md',
+  'docs/ADR/2026-09-5.0-restoration-known-peer-reconnect.md'
 ]
+
+// Lane-scoped working decision records: pinned deliberately, but NOT
+// canonical product ADRs (no accepted-baseline structure required).
+const laneAdrDocuments = ['docs/ADR/2026-09-5.0-pr210-review-cutover-scope.md']
 
 const deletedTransitionalAdrs = [
   'docs/ADR/2026-07-4.0-host-and-bytes.md',
@@ -70,8 +78,8 @@ const deletedTransitionalAdrs = [
 
 describe('consumer documentation matches the published package', () => {
   test('current public documentation follows the package release channel', () => {
-    if (stable40 || rcVersionMatch) {
-      expect(packageVersion).toMatch(/^4\.0\.\d+(?:-rc\.\d+(?:\.\d+)?)?$/u)
+    if (stable40 || rcVersionMatch || rc50VersionMatch) {
+      expect(packageVersion).toMatch(/^(?:4\.0\.\d+(?:-rc\.\d+(?:\.\d+)?)?|5\.0\.0-rc\.\d+)$/u)
       return
     }
     for (const document of architectureAuthorityDocuments) {
@@ -222,10 +230,12 @@ describe('consumer documentation matches the published package', () => {
     expect(document).toContain('UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md')
   })
 
-  test('the eight canonical ADRs replace every transitional ADR path', () => {
+  test('the nine canonical ADRs plus registered lane ADRs cover every ADR path', () => {
     const adrDirectory = path.join(root, 'docs/ADR')
     const actual = fs.readdirSync(adrDirectory).sort()
-    const expected = canonicalAdrDocuments.map(relativePath => path.basename(relativePath)).sort()
+    const expected = [...canonicalAdrDocuments, ...laneAdrDocuments]
+      .map(relativePath => path.basename(relativePath))
+      .sort()
 
     expect(actual).toEqual(expected)
     deletedTransitionalAdrs.forEach(relativePath => {
@@ -241,6 +251,15 @@ describe('consumer documentation matches the published package', () => {
     expect(document).toContain('## Decision')
     expect(document).toContain('## Consequences and gates')
     expect(document).toContain('## Rejected alternatives')
+  })
+
+  test.each(laneAdrDocuments)('%s is an owner-accepted lane-scoped decision record', relativePath => {
+    const document = read(relativePath)
+
+    expect(document.split('\n')[0]).toBe(`<!-- ${relativePath} -->`)
+    expect(document).toContain('**Status:** Accepted')
+    expect(document).not.toContain('**Status:** Draft')
+    expect(document).toContain('## Mapping: PR210 review findings → decisions')
   })
 
   test('canonical ADRs record the accepted binary, restoration, and scope decisions', () => {

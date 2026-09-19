@@ -61,8 +61,12 @@ import { executePublicVerticalSlice } from './runner-public-vertical-scenario'
 import { executeSubscriptionOverflowScenario } from './runner-public-subscription-overflow-scenario'
 import { executeDiagnosticsScenario, executeLifecycleScenario } from './runner-public-lifecycle-diagnostics-scenario'
 import { executeDescriptorOperationsScenario } from './runner-public-descriptor-scenario'
+import { executeDuplicateUuidOccurrenceScenario } from './runner-public-occurrence-scenario'
+import { inspectOccurrenceIndexing, occurrenceIndexingDetail } from './runner-public-occurrence-support'
 import { executePublicWebChooserVerticalSlice } from './runner-public-web-chooser-vertical-scenario'
 import { executePublicWebUnsupportedCapabilitiesScenario } from './runner-public-web-unsupported-capabilities-scenario'
+import type { PublicManagerSeamOption } from './public-manager-seam-option'
+import { createTsReferenceManagerSeam } from './public-manager-seam'
 
 const publicScenarioId = 'manager.scan-connect-discover-read-notify-destroy'
 const publicScenarioFact = 'scan-connect-discover-read-notify-destroy-completes'
@@ -94,8 +98,18 @@ export async function executePublicTckScenario<
 >(
   _factory: BackendTckFactory<Attachment, Identity, Backend>,
   fixture: BackendTckFixture<Attachment, Identity, Backend>,
-  definition: TckScenarioDefinition
+  definition: TckScenarioDefinition,
+  seam: PublicManagerSeamOption | undefined = undefined
 ): Promise<readonly TckFact[]> {
+  if (seam !== undefined && seam.kind === 'rust-stub') {
+    throw new TckAssertionError(definition.id, 'rust-backend-unimplemented: no Rust central exists in this slice')
+  }
+  if (seam !== undefined && seam.kind === 'ts-reference') {
+    // The reference seam option observably enters the seam binding (pin check
+    // plus delegation to the runner-owned path), so this branch can never
+    // silently degrade to the default path.
+    return createTsReferenceManagerSeam().runPublicScenario(_factory, fixture, definition)
+  }
   if (definition.id === 'adapter.atomic-snapshot-and-watch') {
     return executeAdapterWatchScenario(fixture, definition)
   }
@@ -214,6 +228,9 @@ async function executeManagerScenario<
   if (definition.id === 'gatt.discovery-complete-paths-and-services-changed') {
     return executeGattDiscoveryScenario(manager, fixture, definition)
   }
+  if (definition.id === 'gatt.duplicate-uuid-occurrences-route-exactly') {
+    return executeDuplicateUuidOccurrenceScenario(manager, fixture, definition)
+  }
   if (definition.id === 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation') {
     return executeGattReadWriteScenario(manager, fixture, definition)
   }
@@ -231,6 +248,9 @@ async function executeManagerScenario<
   }
   if (definition.id === 'restoration.provider-journal-adoption-and-rejection') {
     return executeRestorationScenario(manager, fixture, definition)
+  }
+  if (definition.id === 'restoration.presence-observation-arms-known-peer') {
+    return executePresenceScenario(fixture, definition)
   }
   if (definition.id === 'subscription.enable-ready-shared-cccd-and-fanout') {
     return executeSubscriptionSharingScenario(manager, fixture, definition)
@@ -1061,66 +1081,19 @@ async function executeGattDiscoveryScenario<
   if (characteristic === undefined) {
     throw new TckAssertionError(definition.id, 'discovery returned no characteristic')
   }
-  const serviceOccurrenceKeys = connected.snapshot.services.map(candidate => String(candidate.path.serviceOccurrence))
-  const serviceParentKeys = new Set(
-    connected.snapshot.services.map(candidate =>
-      JSON.stringify([String(candidate.path.serviceOccurrence), String(candidate.path.serviceUuid)])
-    )
-  )
-  const characteristicOccurrenceKeys = connected.snapshot.characteristics.map(candidate =>
-    JSON.stringify([String(candidate.path.serviceOccurrence), String(candidate.path.characteristicOccurrence)])
-  )
-  const characteristicParents = new Set(
-    connected.snapshot.characteristics.map(candidate =>
-      JSON.stringify([
-        String(candidate.path.serviceOccurrence),
-        String(candidate.path.serviceUuid),
-        String(candidate.path.characteristicOccurrence),
-        String(candidate.path.characteristicUuid)
-      ])
-    )
-  )
-  const descriptorOccurrenceKeys = connected.snapshot.descriptors.map(candidate =>
-    JSON.stringify([
-      String(candidate.path.serviceOccurrence),
-      String(candidate.path.characteristicOccurrence),
-      String(candidate.path.descriptorOccurrence)
-    ])
-  )
+  const indexing = inspectOccurrenceIndexing(connected.snapshot)
+  const databaseGeneration = String(connected.snapshot.path.databaseGeneration)
   const completePaths =
     connected.snapshot.services.length > 0 &&
     connected.snapshot.characteristics.length > 0 &&
-    connected.snapshot.services.every(
+    indexing.pathsUnique &&
+    indexing.parentsResolve &&
+    indexing.occurrencesExact &&
+    connected.snapshot.services.every(candidate => String(candidate.path.databaseGeneration) === databaseGeneration) &&
+    [...connected.snapshot.characteristics, ...connected.snapshot.descriptors].every(
       candidate =>
-        String(candidate.path.databaseGeneration) === String(connected.snapshot.path.databaseGeneration) &&
-        String(candidate.path.serviceOccurrence).length > 0
-    ) &&
-    new Set(serviceOccurrenceKeys).size === serviceOccurrenceKeys.length &&
-    connected.snapshot.characteristics.every(
-      candidate =>
-        candidate.path.validity === 'current' &&
-        String(candidate.path.databaseGeneration) === String(connected.snapshot.path.databaseGeneration) &&
-        String(candidate.path.characteristicOccurrence).length > 0 &&
-        serviceParentKeys.has(
-          JSON.stringify([String(candidate.path.serviceOccurrence), String(candidate.path.serviceUuid)])
-        )
-    ) &&
-    new Set(characteristicOccurrenceKeys).size === characteristicOccurrenceKeys.length &&
-    connected.snapshot.descriptors.every(
-      candidate =>
-        candidate.path.validity === 'current' &&
-        String(candidate.path.databaseGeneration) === String(connected.snapshot.path.databaseGeneration) &&
-        String(candidate.path.descriptorOccurrence).length > 0 &&
-        characteristicParents.has(
-          JSON.stringify([
-            String(candidate.path.serviceOccurrence),
-            String(candidate.path.serviceUuid),
-            String(candidate.path.characteristicOccurrence),
-            String(candidate.path.characteristicUuid)
-          ])
-        )
-    ) &&
-    new Set(descriptorOccurrenceKeys).size === descriptorOccurrenceKeys.length
+        candidate.path.validity === 'current' && String(candidate.path.databaseGeneration) === databaseGeneration
+    )
   await fixture.controller.perform(
     'trigger-services-changed',
     Object.freeze({ peerId: String(connected.connection.peerId) })
@@ -1142,7 +1115,8 @@ async function executeGattDiscoveryScenario<
     fact('gatt-discovery-returns-complete-occurrence-safe-paths', completePaths, {
       serviceCount: connected.snapshot.services.length,
       characteristicCount: connected.snapshot.characteristics.length,
-      descriptorCount: connected.snapshot.descriptors.length
+      descriptorCount: connected.snapshot.descriptors.length,
+      ...occurrenceIndexingDetail(indexing)
     }),
     fact('gatt-services-changed-invalidates-database-generation', snapshotInvalidated, { snapshotInvalidated }),
     fact('gatt-stale-path-rejects-before-dispatch', staleReadRejected && staleReadDidNotDispatch, {
@@ -1315,7 +1289,7 @@ async function executeSubscriptionSharingScenario<
     'queue-operation-completion',
     Object.freeze({ stage: 'subscribe', delayMilliseconds: 10 })
   )
-  const firstPromise = connected.database.subscribe(characteristic.path, subscriptionOptions('drop-oldest', 4, 32))
+  const firstPromise = connected.database.subscribe(characteristic.path, subscriptionOptions('drop-oldest', 4, 128))
   await fixture.controller.perform('emit-notification', notificationInput(characteristic.path, new Uint8Array([1])))
   await fixture.controller.perform('advance-time', Object.freeze({ milliseconds: 10 }))
   const first = await fixture.controller.settle(firstPromise)
@@ -1323,7 +1297,7 @@ async function executeSubscriptionSharingScenario<
   const ready = await fixture.controller.settle(first.values[Symbol.asyncIterator]().next())
   const noValueBeforeReady = !ready.done && ready.value.kind === 'value' && ready.value.value.value[0] === 2
   const second = await fixture.controller.settle(
-    connected.database.subscribe(characteristic.path, subscriptionOptions('drop-oldest', 4, 32))
+    connected.database.subscribe(characteristic.path, subscriptionOptions('drop-oldest', 4, 128))
   )
   const sharedCccd =
     Number(manager.localResourceCounters().physicalCccdEnablements) === 1 &&
@@ -1734,6 +1708,28 @@ async function executeRestorationScenario<
       rejected.outcome === 'namespace-mismatch' && adopted.outcome === 'adopted',
       { rejectedOutcome: rejected.outcome, adoptedOutcome: adopted.outcome }
     )
+  ]
+}
+
+async function executePresenceScenario<
+  Attachment extends string,
+  Identity extends BackendIdentity<Attachment>,
+  Backend extends BleCentralBackend<Attachment, Identity>
+>(
+  fixture: BackendTckFixture<Attachment, Identity, Backend>,
+  definition: TckScenarioDefinition
+): Promise<readonly TckFact[]> {
+  const adapter = fixture.featureScenarioAdapters?.presence
+  if (adapter === undefined) {
+    throw new TckAssertionError(definition.id, 'fixture lacks a presence scenario adapter')
+  }
+  const observed = await fixture.controller.settle(adapter.observeKnownPeer())
+  const released = await fixture.controller.settle(adapter.unobserveKnownPeer())
+  return [
+    fact('presence-observation-arms-known-peer', observed.state === 'observing', {
+      observedState: observed.state
+    }),
+    fact('presence-unobserve-disarms-known-peer', released.state === 'idle', { releasedState: released.state })
   ]
 }
 

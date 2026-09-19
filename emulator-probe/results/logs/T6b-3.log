@@ -1,0 +1,4 @@
+$ pm grant BLUETOOTH_CONNECT (restore)
+[exit=0]
+
+

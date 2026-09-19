@@ -3,7 +3,7 @@
 name: CI
 
 # Cost policy (#20):
-# - package: every PR/main push (cheap Ubuntu)
+# - package: every PR push, plus pushes to main, release/**, and the 5.0.0 lane base (cheap Ubuntu)
 # - expo-cng-android: only when Android/native-related paths change (or manual)
 # - Apple (macOS): NOT on every PR commit. Runs on:
 #     • push to main when Apple-related paths change
@@ -19,6 +19,9 @@ on:
       # release branch accumulates several merged PRs, and the combination is
       # what ships, so the integrated branch has to be gated in its own right.
       - 'release/**'
+      # UBM 5.0 lane base: worker branches target 5.0.0 (never main), so the
+      # lane base gets the same push gating as main and release branches.
+      - '5.0.0'
   pull_request:
     branches:
       - main
@@ -27,6 +30,8 @@ on:
       # CI from it: no workflow triggers, `gh pr checks` reports nothing, and
       # the PR still shows the stale green from when it targeted main.
       - 'release/**'
+      # UBM 5.0 lane: PRs targeting the 5.0.0 base get the normal checks.
+      - '5.0.0'
     types: [opened, reopened, synchronize, ready_for_review, labeled]
   workflow_dispatch:
 
@@ -132,6 +137,43 @@ jobs:
           prepack: 'false'
           node-version: ${{ matrix.node }}
 
+      - name: Install pinned Rust
+        # ReleaseArtifacts/License suites shell to
+        # `cargo metadata --locked --offline`; cargo --version resolves
+        # rust-toolchain.toml and installs the pinned toolchain when absent.
+        run: cargo --version
+
+      - name: Warm cargo cache for offline metadata
+        # No compilation (no sysdeps needed) — populates the cargo cache so
+        # offline metadata reads succeed on a fresh runner.
+        run: cargo fetch --locked
+
+      - name: Install Linux build sysdeps
+        # napi -> ubm-desktop -> btleplug -> bluez-async -> libdbus-sys needs
+        # pkg-config + D-Bus headers at compile time (same subset as the
+        # rust-parity-5-0 job). macOS/Windows backends need no sysdeps.
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libdbus-1-dev pkg-config
+
+      - name: Build NAPI dispatch addon (R03 converged path)
+        # The bluez-rust-core-routing converged-path tests require the REAL
+        # addon (bindings/napi/ubm_echo.<platform>-<arch>.node); a fresh
+        # runner has no staged binary, so build it on every leg before jest.
+        # (pretest:package rebuilds it too — this explicit step keeps addon
+        # failures diagnosable apart from jest.)
+        run: node scripts/ci/build-napi-addon.js
+
+      - name: Build UniFFI mobile host for the Apple harness
+        # AppleNativeProtocolV2.test.js executes the Apple harness, which links
+        # the real Rust mobile host. Building it here, once, keeps the cold
+        # Rust compile out of the jest run (where it shares the runner with
+        # the whole suite); the harness's own `cargo build --locked` then only
+        # confirms it is fresh.
+        if: runner.os == 'macOS'
+        run: cargo build --locked -p ubm5_uniffi_echo
+
       - name: Run package tests
         run: pnpm test:package
 
@@ -193,7 +235,11 @@ jobs:
           pnpm run build:electron:macos
           test -f native/electron/corebluetooth/build/Release/unified_ble_corebluetooth.node
           node -e "
-            const { createNativeCoreBluetoothBoundary } = require('./lib/commonjs/node-corebluetooth');
+            const publicEntry = require('./lib/commonjs/node-corebluetooth');
+            if (typeof publicEntry.createCoreBluetoothBleManager !== 'function' || 'createNativeCoreBluetoothBoundary' in publicEntry) {
+              throw new Error('node/corebluetooth must expose the Rust-core factory and no legacy boundary');
+            }
+            const { createNativeCoreBluetoothBoundary } = require('./lib/commonjs/backends/corebluetooth/corebluetooth-native-boundary');
             const boundary = createNativeCoreBluetoothBoundary();
             const required = [
               'adapterSnapshot', 'startScan', 'stopScan', 'connect', 'disconnect',
@@ -338,6 +384,155 @@ jobs:
         if: runner.os == 'Linux' && matrix.node == '22'
         run: node scripts/ci/g6a-packed-consumer-proof.js
 
+  # UBM 5.0 contract-freeze gate (U1): strict typecheck plus the frozen
+  # contract suite. Runs on every CI invocation like `package`; see
+  # contracts/README.md and contracts/RED_BASELINE.md.
+  contracts:
+    name: UBM 5.0 contracts (tsc + jest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0
+
+      - name: Setup JS package
+        uses: ./.github/actions/setup-js-package
+        with:
+          prepack: 'false'
+          node-version: '22'
+
+      - name: Contracts typecheck
+        run: pnpm contracts:typecheck
+
+      - name: Contracts tests
+        run: pnpm contracts:test
+
+  # UBM 5.0 Rust workspace (pinned toolchain via rust-toolchain.toml).
+  # Matrix covers all three hosted OSes; formatting is Linux-only (it is
+  # platform-independent — same convention as the Tauri job).
+  rust-5-0:
+    name: Rust 5.0 workspace (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0
+
+      - name: Install pinned Rust components
+        # cargo --version resolves rust-toolchain.toml and installs the
+        # pinned toolchain when absent; components attach to it.
+        run: |
+          cargo --version
+          rustup component add rustfmt clippy
+
+      - name: Install Linux build sysdeps
+        # ubm-desktop -> btleplug -> bluez-async -> libdbus-sys needs
+        # pkg-config + D-Bus headers at compile time (same subset the
+        # Tauri job installs).
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libdbus-1-dev pkg-config
+
+      - name: Check Rust formatting (workspace scope)
+        if: runner.os == 'Linux'
+        run: cargo fmt --all -- --check
+
+      - name: Reject Rust warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Test Rust workspace
+        run: cargo test --locked
+
+  # UBM 5.0 Rust/JS parity (napi roundtrip + staged-fault proofs). Linux-only:
+  # the napi toolchain build is host-sensitive and parity is OS-independent.
+  rust-parity-5-0:
+    name: Rust 5.0 parity (napi roundtrip)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0
+
+      - name: Setup JS package
+        uses: ./.github/actions/setup-js-package
+        with:
+          prepack: 'false'
+          node-version: '22'
+
+      - name: Install pinned Rust
+        run: cargo --version
+
+      - name: Install Linux build sysdeps
+        # napi -> ubm-desktop -> btleplug -> bluez-async -> libdbus-sys needs
+        # pkg-config + D-Bus headers at compile time (same subset as rust-5-0;
+        # required since wave E wired the addon to the shared core).
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libdbus-1-dev pkg-config
+
+      - name: Rust parity proofs
+        run: pnpm test:parity
+
+  # h10-sim: the Polar H10 simulator is a first-class tool — build and
+  # unit-test it on Linux and macOS. No radio needed: unit tests, the
+  # encoder cross-check, the driver-hello fixture check and the socket-free
+  # driver suites. Kept small so the main gates stay fast.
+  h10-sim:
+    name: h10-sim (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0
+
+      - name: Install pinned Rust components
+        # cargo --version resolves rust-toolchain.toml and installs the
+        # pinned toolchain when absent; components attach to it.
+        run: |
+          cargo --version
+          rustup component add rustfmt clippy
+
+      - name: Install Linux build sysdeps
+        # bluer -> libdbus-sys needs pkg-config + D-Bus headers at compile
+        # time (same subset as rust-5-0).
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libdbus-1-dev pkg-config
+
+      - name: Setup JS package
+        uses: ./.github/actions/setup-js-package
+        with:
+          prepack: 'false'
+          node-version: '22'
+
+      - name: Check sim formatting
+        run: cargo fmt --manifest-path tool/h10-sim/Cargo.toml -- --check
+
+      - name: Reject sim warnings
+        run: cargo clippy --manifest-path tool/h10-sim/Cargo.toml --locked --all-targets -- -D warnings
+
+      - name: Test sim
+        run: cargo test --manifest-path tool/h10-sim/Cargo.toml --locked
+
+      - name: Cross-check encoders against TS parsers
+        run: node tool/h10-sim/tests/xcheck/run-xcheck.cjs
+
+      - name: Check driver-hello fixture is fresh
+        # The platform field differs per OS, so it is excluded from the
+        # comparison; everything else must match the binary byte for byte.
+        run: |
+          cargo run --locked --quiet --manifest-path tool/h10-sim/Cargo.toml -- --emit-driver-hello > /tmp/h10-driver-hello.json
+          node -e "const fs = require('fs'); const norm = p => { const o = JSON.parse(fs.readFileSync(p, 'utf8')); delete o.platform; return JSON.stringify(o); }; if (norm('/tmp/h10-driver-hello.json') !== norm('tool/h10-sim/tests/driver-hello.json')) { console.error('tool/h10-sim/tests/driver-hello.json is stale: regenerate with h10-sim --emit-driver-hello'); process.exit(1); }"
+
+      - name: Driver protocol and sequence tests
+        run: node --test examples-shared/driver/__tests__/protocol.test.mjs examples-shared/driver/__tests__/peripheral-sim.test.mjs examples-shared/driver/__tests__/polar-pmd.test.mjs examples-shared/driver/server/__tests__/sequence-devices.test.mjs
+
   changes:
     name: Detect path changes
     if: |
@@ -406,6 +601,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       NODE_OPTIONS: --max-old-space-size=8192
+      # D2(iii): CI builds the Rust cdylib from source explicitly; packed
+      # consumers get prebuilts by default without this variable.
+      UBM_NATIVE_BUILD: source
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.0
@@ -421,6 +619,25 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4.0.1
+        with:
+          # Default is 'tools platform-tools'; the obsolete `tools` package
+          # no longer exists upstream and fails install on new cmdline-tools.
+          # The NDK is pinned explicitly: AGP auto-install flaked in CI
+          # (InstallFailedException on a PR leg while the push leg passed).
+          packages: 'platform-tools ndk;27.1.12297006'
+
+      - name: Install pinned Rust + Android targets
+        # buildUbmRustCdylib compiles bindings/jni via rustup-run on the
+        # pinned toolchain (this job builds from source explicitly via
+        # UBM_NATIVE_BUILD=source). Mirrors classic-rn-android: the Expo
+        # job previously took the packed path and never needed targets.
+        # The pin is single-sourced from rust-toolchain.toml — never
+        # hardcode a version.
+        run: |
+          PINNED_TOOLCHAIN="$(grep -E '^channel[[:space:]]*=' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/' || true)"
+          test -n "$PINNED_TOOLCHAIN" || { echo "could not parse pinned toolchain channel from rust-toolchain.toml"; exit 1; }
+          cargo --version
+          rustup target add --toolchain "$PINNED_TOOLCHAIN" aarch64-linux-android x86_64-linux-android
 
       - name: Install Expo example dependencies
         run: pnpm --dir example-expo install --no-frozen-lockfile
@@ -436,6 +653,12 @@ jobs:
       - name: Run Expo Doctor
         working-directory: example-expo
         run: NODE_ENV=development npx expo-doctor
+
+      - name: Verify committed Android prebuilts match the sources
+        # F9: the Gradle build consumes the committed jniLibs; fail here —
+        # never on a stale artifact — when a Rust change outruns its refresh
+        # (android/refresh-prebuilt-jniLibs.sh, committed by the maintainer).
+        run: pnpm native:status --only android
 
       - name: Prebuild Expo native projects
         working-directory: example-expo
@@ -462,6 +685,9 @@ jobs:
       NODE_OPTIONS: --max-old-space-size=8192
       # JetifyTransform of react-android AAR OOM'd on default heap (see CI logs).
       GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx6g\ -XX:MaxMetaspaceSize=1g\ -Dfile.encoding=UTF-8
+      # D2(iii): CI builds the Rust cdylib from source explicitly; packed
+      # consumers get prebuilts by default without this variable.
+      UBM_NATIVE_BUILD: source
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.0
@@ -477,6 +703,24 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4.0.1
+        with:
+          # Default is 'tools platform-tools'; the obsolete `tools` package
+          # no longer exists upstream and fails install on new cmdline-tools.
+          # The NDK is pinned explicitly: AGP auto-install flaked in CI
+          # (InstallFailedException on a PR leg while the push leg passed).
+          packages: 'platform-tools ndk;27.1.12297006'
+
+      - name: Install pinned Rust + Android targets
+        # buildUbmRustCdylib compiles bindings/jni via rustup-run on the
+        # pinned toolchain for every ABI in android/build.gradle
+        # (ubmRustAbis: arm64-v8a + x86_64). The pin is single-sourced
+        # from rust-toolchain.toml (parsed here and by
+        # android/build-rust-cdylib.sh) — never hardcode a version.
+        run: |
+          PINNED_TOOLCHAIN="$(grep -E '^channel[[:space:]]*=' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/' || true)"
+          test -n "$PINNED_TOOLCHAIN" || { echo "could not parse pinned toolchain channel from rust-toolchain.toml"; exit 1; }
+          cargo --version
+          rustup target add --toolchain "$PINNED_TOOLCHAIN" aarch64-linux-android x86_64-linux-android
 
       - name: Install classic example dependencies
         # example/.npmrc uses node-linker=hoisted so @react-native/gradle-plugin is at

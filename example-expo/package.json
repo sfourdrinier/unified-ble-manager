@@ -4,22 +4,25 @@
   "main": "expo/AppEntry.js",
   "scripts": {
     "start": "expo start",
-    "android": "expo run:android",
-    "ios": "expo run:ios",
-    "web": "expo start --web"
+    "android": "node ../scripts/native/ensure-native.js android && expo run:android",
+    "ios": "node ../scripts/native/ensure-native.js apple && expo run:ios",
+    "web": "expo start --web",
+    "driver": "node ../examples-shared/driver/server/cli.mjs",
+    "test:driver": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test '../examples-shared/driver/__tests__/*.test.mjs' '../examples-shared/driver/server/__tests__/*.test.mjs' 'src/driver/__tests__/*.test.mjs'"
   },
   "dependencies": {
     "@expo/dom-webview": "57.0.1",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-navigation/native": "^7.0.0",
     "@react-navigation/native-stack": "^7.0.0",
-    "expo": "~57.0.20",
+    "expo": "~57.0.23",
     "expo-status-bar": "^57.0.0",
-    "expo-system-ui": "^57.0.3",
+    "expo-system-ui": "^57.0.4",
     "react": "~19.2.0",
+    "react-dom": "19.2.3",
     "react-native": "~0.86.3",
     "react-native-safe-area-context": "^5.0.0",
-    "react-native-screens": "^4.0.0",
+    "react-native-screens": "~4.26.0",
     "react-native-toast-message": "^2.1.6",
     "styled-components": "^6.0.7",
     "unified-ble-manager": "file:.."

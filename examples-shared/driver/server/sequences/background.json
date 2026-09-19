@@ -1,0 +1,13 @@
+{
+  "name": "background / locked: values while not active (human locks the phone during the sleep)",
+  "defaultTimeoutMs": 60000,
+  "steps": [
+    { "run": "background", "command": "start" },
+    { "waitForEvent": "background", "kind": "value", "count": 5 },
+    { "note": "lock the phone or background the app now; unlock after ~60 s" },
+    { "waitForEvent": "background", "kind": "app-state", "where": { "to": "active" }, "since": "step", "timeoutMs": 180000 },
+    { "sleep": 3000 },
+    { "expectSnapshot": "background", "match": { "phase": "streaming" }, "capture": ["periods", "valuesWhileNotActive", "leaseState"] },
+    { "run": "background", "command": "stop", "always": true }
+  ]
+}

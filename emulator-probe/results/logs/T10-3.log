@@ -1,0 +1,6 @@
+$ svc bluetooth enable (restore)
+[exit=0]
+BluetoothShellCommand: Exec enable
+enable: Success
+
+

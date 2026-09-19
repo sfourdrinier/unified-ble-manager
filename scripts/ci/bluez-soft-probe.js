@@ -4,7 +4,9 @@
  * Linux BlueZ L2/L3 soft-probe (R2-F038 / GAP-CI-LIN).
  *
  * Never silent-success: if the system daemon is absent, exit 0 with an explicit
- * skip message. If present, open and close the public BlueZ D-Bus boundary.
+ * skip message. If present, open and close the BlueZ D-Bus boundary. The
+ * dbus-next boundary is LEGACY and no longer exported publicly (PR210-02);
+ * this daemon-reachability probe loads its internal module until Phase 4.
  *
  * Invoked only after systemctl/dbus soft checks in ci.yml.
  */
@@ -15,7 +17,7 @@ const path = require('path')
 const root = path.resolve(__dirname, '../..')
 
 async function main() {
-  const { DbusNextBluezBoundaryFactory } = require(path.join(root, 'lib/commonjs/node-bluez'))
+  const { DbusNextBluezBoundaryFactory } = require(path.join(root, 'lib/commonjs/backends/bluez/bluez-dbus-next-boundary'))
   const factory = new DbusNextBluezBoundaryFactory()
   let boundary = null
   try {

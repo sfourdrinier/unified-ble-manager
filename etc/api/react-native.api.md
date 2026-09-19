@@ -1,38 +1,29 @@
 # API Report — unified-ble-manager/react-native
 
 ```ts
-export function createReactNativeBleManager(options?: BleManagerCreateOptions): Promise<BleManager>
+export function createReactNativeBleManager(options?: CreateReactNativeBleManagerOptions): Promise<BleManager>
 export function createReactNativeBleManagerWithEnvironment(options: ReactNativeBleManagerOptions): Promise<BleManager>
-export function getNativeUnifiedBleProtocolControl(): NativeUnifiedBleProtocolControl
+export function createReactNativeAndroidBackendProvider(options: ReactNativeAndroidBackendProviderOptions): ReactNativeRustCoreBackendProvider
+export function createReactNativeAppleBackendProvider(options: ReactNativeAppleBackendProviderOptions): ReactNativeRustCoreBackendProvider
+export function createReactNativeRustCoreBinding(options: ReactNativeRustCoreBindingOptions): ReactNativeRustCoreBinding
 export type BleManagerCreateOptions = {
   readonly instanceId?: string
   readonly adapterId?: string
   readonly diagnostics?: DiagnosticsOptions
   readonly restoration?: {
-    readonly applicationId: string
     readonly restorationId: string
     readonly generation?: string
   }
 }
-
-export type NativeProtocolHandshakeResult = {
-  readonly nativeProtocol: number
-  readonly abi: number
-  readonly backendContract: number
-  readonly capabilitySchema: number
-  readonly eventSchema: number
-  readonly traceFormat: number
-  readonly maximumControlRecordBytes: number
-  readonly maximumBinaryPayloadBytes: number
-  /** True only when the native attachment implements the Android security extension. */
-  readonly securityAvailable?: boolean
-  /** True only when the native attachment can cancel system pairing on this API level. */
-  readonly securityCancelPairingAvailable?: boolean
-}
 ```
 
-`createReactNativeBleManager()` is the application factory and does not accept
-caller-authored `clientId`, `managerId`, or `hostSessionScope`. The explicit
+Every factory runs the process-owned Rust mobile owner through the
+`UnifiedBleRustCore` TurboModule (`NativeUnifiedBleRustCore` is its codegen
+spec); there is no other route and no legacy option. `rustCore` substitutes the
+native module for tests and embedding hosts; it is identity-checked and
+admitted exactly like the production module. `createReactNativeBleManager()` is
+the application factory and does not accept caller-authored `clientId`,
+`managerId`, or `hostSessionScope`. The explicit
 `createReactNativeBleManagerWithEnvironment()` entrypoint is an injected
 host/test seam; its internal options remain separate from the application API.
 ## Verified exported symbols
@@ -40,35 +31,51 @@ host/test seam; its internal options remain separate from the application API.
 <!-- entrypoint: ./react-native; source: src/react-native.ts -->
 
 - `BleManagerCreateOptions :: { readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly randomBytes?: ((length: number) => Uint8Array<ArrayBufferLike>) | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined }`
-- `NativeAttachmentIdentity :: { attachmentId: string; backendInstanceId: string; backendGeneration: string; adapterId: string; adapterGeneration: string }`
-- `NativeProtocolHandshakeRequest :: { nativeProtocol: NativeProtocolVersionRange; abi: NativeProtocolVersionRange; controlSurface: NativeProtocolVersionRange; backendContract: NativeProtocolVersionRange; capabilitySchema: NativeProtocolVersionRange; eventSchema: NativeProtocolVersionRange; traceFormat: NativeProtocolVersionRange; attachmentId: string; backendInstanceId: string; backendGeneration: string; adapterId: string; adapterGeneration: string; ownerId: string }`
-- `NativeProtocolHandshakeResult :: { nativeProtocol: number; abi: number; controlSurface: number; backendContract: number; capabilitySchema: number; eventSchema: number; traceFormat: number; maximumControlRecordBytes: number; maximumBinaryPayloadBytes: number; phyAvailable?: boolean | undefined; securityAvailable?: boolean | undefined; securityCancelPairingAvailable?: boolean | undefined }`
-- `NativeRestorationAdoptionControlResult :: { receiptId: string; outcome: NativeRestorationOutcome; boundClientId: string; adoptionEpoch: string; replayRecordCount: number; records: NativeRestorationReplayRecord[] }`
-- `NativeRestorationReplayRecord :: { recordVersion: number; namespaceValue: string; attachmentId: string; backendInstanceId: string; backendGeneration: string; adapterId: string; adapterGeneration: string; ordinal: number; adoptionEpoch: string; kind: "adapter" | "connection"; peerId: string | null; connectionId: string | null; ownerLeaseId: string | null; connectionGeneration: string | null }`
-- `NativeUnifiedBleProtocolControl :: { handshake(request: NativeProtocolHandshakeRequest): Promise<NativeProtocolHandshakeResult>; bootstrapRestorationIdentity(request: NativeRestorationBootstrapRequest): Promise<NativeRestorationBootstrapIdentity>; acquireBackground(request: NativeBackgroundLeaseRequest): Promise<NativeBackgroundLeaseResult>; releaseBackground(request: NativeBackgroundLeaseReleaseRequest): Promise<void>; updateBackgroundNotification(request: NativeBackgroundNotificationUpdateRequest): Promise<void>; associateCompanionDevice(request: NativeCompanionAssociationRequest): Promise<NativeCompanionAssociationResult>; claimRestoration(): Promise<NativeRestorationAdoptionControlResult>; installExecutionRuntime(): Promise<void>; cancelOperation(correlation: NativeOperationCorrelation): Promise<NativeCancellationControlResult>; adoptRestoration(request: NativeRestorationAdoptionRequest): Promise<NativeRestorationAdoptionControlResult>; closeAttachment(attachment: NativeAttachmentIdentity): Promise<void>; getRandomBytes(length: number): Promise<number[]>; getConstants?: (() => {}) | undefined }`
+- `CreateReactNativeBleManagerOptions :: { readonly rustCore?: ReactNativeRustCoreBinding | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly randomBytes?: ((length: number) => Uint8Array<ArrayBufferLike>) | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined }`
+- `NativeUnifiedBleRustCore :: { openSession(owner: string, expectedWireRevision: string): Promise<string>; invoke(sessionId: string, op: string, argsJson: string): Promise<string>; drain(sessionId: string, maxItems: number, maxBytes: number): Promise<string>; closeSession(sessionId: string): Promise<void>; nativeBuildIdentity(): Promise<string>; contractRevision(): Promise<string>; wireRevision(): Promise<string>; randomBytes(length: number): Promise<string>; restorationIdentity(requestJson: string): Promise<string>; readonly onSessionWake: EventEmitter<RustCoreSessionWake>; getConstants?: (() => {}) | undefined }`
 - `REACT_NATIVE_ANDROID_BACKEND_ID :: "unified-ble:react-native-android"`
 - `REACT_NATIVE_ANDROID_DEFAULT_ADAPTER_NATIVE_ID :: "android-default-adapter"`
-- `REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION :: "4.0.28"`
+- `REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION :: "5.0.0-rc.0"`
 - `REACT_NATIVE_ANDROID_PLATFORM_ID :: "unified-ble:android-gatt"`
 - `REACT_NATIVE_APPLE_BACKEND_ID :: "unified-ble:react-native-apple"`
 - `REACT_NATIVE_APPLE_DEFAULT_ADAPTER_NATIVE_ID :: "apple-corebluetooth-default-adapter"`
-- `REACT_NATIVE_APPLE_IMPLEMENTATION_VERSION :: "4.0.28"`
+- `REACT_NATIVE_APPLE_IMPLEMENTATION_VERSION :: "5.0.0-rc.0"`
 - `REACT_NATIVE_APPLE_PLATFORM_ID :: "unified-ble:apple-corebluetooth"`
-- `ReactNativeAndroidBackendProviderOptions :: { readonly control: Spec; readonly now: () => number; readonly createOwnerId?: (() => string) | undefined }`
-- `ReactNativeAppleBackendProviderOptions :: { readonly control: Spec; readonly now: () => number; readonly createOwnerId?: (() => string) | undefined }`
-- `ReactNativeBleManagerOptions :: { readonly platform: ReactNativeBlePlatform; readonly control: Spec; readonly now: () => number; readonly clientId: string; readonly managerId: string; readonly hostSessionScope: string; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly createOwnerId?: (() => string) | undefined }`
+- `REACT_NATIVE_RUST_CORE_BACKEND_ID :: "unified-ble:react-native-rust-core"`
+- `REACT_NATIVE_RUST_CORE_IMPLEMENTATION_VERSION :: "5.0.0-rc.0"`
+- `RUST_CORE_CONTRACT_REVISION :: string`
+- `ReactNativeAndroidBackendProviderOptions :: { readonly now: () => number; readonly createOwnerId?: (() => string) | undefined; readonly rustCore?: ReactNativeRustCoreBinding | undefined; readonly androidApiLevel?: number | undefined }`
+- `ReactNativeAppleBackendProviderOptions :: { readonly now: () => number; readonly createOwnerId?: (() => string) | undefined; readonly rustCore?: ReactNativeRustCoreBinding | undefined; readonly restorationAuthority?: ReactNativeRestorationAuthority | undefined }`
+- `ReactNativeBleManagerOptions :: { readonly platform: ReactNativeBlePlatform; readonly now: () => number; readonly clientId: string; readonly managerId: string; readonly hostSessionScope: string; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly createOwnerId?: (() => string) | undefined; readonly rustCore?: ReactNativeRustCoreBinding | undefined; readonly androidApiLevel?: number | undefined; readonly restorationAuthority?: ReactNativeRestorationAuthority | undefined }`
 - `ReactNativeBlePlatform :: "android" | "apple"`
 - `ReactNativeRestorationActivation :: typeof ReactNativeRestorationActivation`
+- `ReactNativeRestorationAdoptionRecord :: { readonly receiptId: string; readonly outcome: string; readonly boundClientId: string; readonly adoptionEpoch: string; readonly replayRecordCount: number; readonly records: readonly ReactNativeRestorationReplayRecord[] }`
+- `ReactNativeRestorationAdoptionRequestRecord :: { readonly namespaceValue: string; readonly attachmentId: string; readonly expectedBackendInstanceId: string; readonly expectedEpoch: string; readonly nativeProtocolMinimum: number; readonly nativeProtocolMaximum: number; readonly clientId: string; readonly hostSessionScope: string }`
+- `ReactNativeRestorationAuthority :: { readonly namespaceValue: string; readonly adoptionEpoch: string; readonly clientId: string; readonly hostSessionScope: string }`
 - `ReactNativeRestorationBackendProvider :: { readonly restoration: ReactNativeRestorationCoordinator; readonly descriptor: ProviderDescriptor; listAdapters(): Promise<readonly AdapterDescriptor<string>[]>; create(selection: AdapterSelection<string>): Promise<BleCentralBackend<string, NativeBackendIdentity<string>>> }`
 - `ReactNativeRestorationCoordinator :: typeof ReactNativeRestorationCoordinator`
+- `ReactNativeRestorationJournal :: { adoptRestoration(request: ReactNativeRestorationAdoptionRequestRecord): Promise<ReactNativeRestorationAdoptionRecord> }`
+- `ReactNativeRestorationReplayRecord :: { readonly recordVersion: number; readonly namespaceValue: string; readonly attachmentId: string; readonly backendInstanceId: string; readonly backendGeneration: string; readonly adapterId: string; readonly adapterGeneration: string; readonly ordinal: number; readonly adoptionEpoch: string; readonly kind: "adapter" | "connection"; readonly peerId: string | null; readonly connectionId: string | null; readonly ownerLeaseId: string | null; readonly connectionGeneration: string | null }`
+- `ReactNativeRustCoreBackendProvider :: { create(selection: AdapterSelection<string>): Promise<ReactNativeRustCoreBackend>; readonly restoration: ReactNativeRestorationCoordinator; readonly descriptor: ProviderDescriptor; listAdapters(): Promise<readonly AdapterDescriptor<string>[]> }`
+- `ReactNativeRustCoreBinding :: { openSession(owner: string): Promise<ReactNativeRustCoreSession>; randomBytes(length: number): Promise<Uint8Array<ArrayBufferLike>>; restorationIdentity(request: RustCoreRestorationIdentityRequest): Promise<WireRestorationIdentity>; configuredRestorationIdentity(): Promise<WireRestorationIdentity | null> }`
+- `ReactNativeRustCoreBindingOptions :: { readonly platform: ReactNativeRustCoreBindingPlatform; readonly native?: Spec | undefined; readonly expectedIdentity?: ExpectedNativeBuildIdentity | undefined }`
+- `ReactNativeRustCoreBindingPlatform :: "android" | "apple"`
+- `ReactNativeRustCorePlatform :: "android" | "apple"`
+- `ReactNativeRustCoreProviderOptions :: { readonly platform: ReactNativeRustCorePlatform; readonly binding: ReactNativeRustCoreBinding; readonly owner: string; readonly now: () => number; readonly runtime: ReactNativeRustCoreRuntimeFacts; readonly restorationAuthority?: (() => ReactNativeRestorationAuthority | null) | undefined; readonly createOwnerId?: (() => string) | undefined; readonly trace?: CoreTraceSink | undefined }`
+- `ReactNativeRustCoreRuntimeFacts :: { readonly androidApiLevel: number | null }`
+- `ReactNativeRustCoreSession :: { readonly sessionId: string; readonly buildIdentity: NativeBuildIdentityRecord; invoke<Op extends WireOp>(op: Op, args: WireJsonObject): Promise<WireOpResults[Op]>; drain(maxItems: number, maxBytes: number): Promise<WireDrainBatch>; onWake(listener: () => void): () => void; close(): Promise<void> }`
+- `RustCoreRestorationIdentityRequest :: { readonly restorationId: string; readonly generation: string }`
+- `RustCoreSessionWake :: { sessionId: string }`
 - `combineReactNativeFeatureRegistries :: (...registries: readonly FeatureRegistry[]) => FeatureRegistry`
-- `createReactNativeAndroidBackendProvider :: (options: ReactNativeAndroidBackendProviderOptions) => ReactNativeAndroidBackendProvider`
-- `createReactNativeAppleBackendProvider :: (options: ReactNativeAppleBackendProviderOptions) => ReactNativeRestorationBackendProvider`
-- `createReactNativeBleManager :: (options?: BleManagerCreateOptions) => Promise<BleManager>`
+- `createReactNativeAndroidBackendProvider :: (options: ReactNativeAndroidBackendProviderOptions) => ReactNativeRustCoreBackendProvider`
+- `createReactNativeAppleBackendProvider :: (options: ReactNativeAppleBackendProviderOptions) => ReactNativeRustCoreBackendProvider`
+- `createReactNativeBleManager :: (options?: CreateReactNativeBleManagerOptions) => Promise<BleManager>`
 - `createReactNativeBleManagerWithEnvironment :: (options: ReactNativeBleManagerOptions) => Promise<BleManager<string, NativeBackendIdentity<string>>>`
 - `createReactNativeRestorationFeatureRegistry :: (platform: ReactNativeRestorationPlatform, implementationVersion: string) => FeatureRegistry`
-- `getNativeUnifiedBleProtocolControl :: () => Spec`
+- `createReactNativeRustCoreBackendProvider :: (options: ReactNativeRustCoreProviderOptions) => ReactNativeRustCoreBackendProvider`
+- `createReactNativeRustCoreBinding :: (options: ReactNativeRustCoreBindingOptions) => ReactNativeRustCoreBinding`
 - `reactNativeAndroidCompatibility :: NativeCompatibilityOffer`
 - `reactNativeAndroidDefaultAdapterId :: () => OpaqueId<"adapter", "react-native-android">`
 - `reactNativeAppleCompatibility :: NativeCompatibilityOffer`
 - `reactNativeAppleDefaultAdapterId :: () => OpaqueId<"adapter", "react-native-apple">`
+- `resolveReactNativeRustCoreBinding :: (candidate: unknown) => ReactNativeRustCoreBinding`

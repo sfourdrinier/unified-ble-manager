@@ -34,9 +34,14 @@ export async function executeSubscriptionOverflowScenario<
     'queue-operation-completion',
     Object.freeze({ stage: 'subscribe', delayMilliseconds: 10 })
   )
+  // Post-R12 limits: byte budgets must exceed the 64-byte control reserve
+  // (frozen validateStreamLimits fails closed with stream.quota otherwise).
+  // Pre-ready values are quarantined before admission, so the budget only
+  // needs to admit the post-ready value; drop-oldest still proves the
+  // pre-ready overflow controls without terminating the subscription.
   const preReadyProbePromise = connected.database.subscribe(
     characteristic.path,
-    subscriptionOptions('drop-oldest', 1, 8)
+    subscriptionOptions('drop-oldest', 1, 128)
   )
   await fixture.controller.perform('advance-time', Object.freeze({ milliseconds: 0 }))
   await fixture.controller.perform('emit-notification', notificationInput(characteristic.path, new Uint8Array([4])))
@@ -65,8 +70,10 @@ export async function executeSubscriptionOverflowScenario<
     'pre-ready overflow subscription'
   )
 
+  // Post-R12 limits as above; item capacity 1 still forces the item overflow
+  // with the same 1-byte values and exact terminal counts.
   const itemProbe = await fixture.controller.settle(
-    connected.database.subscribe(characteristic.path, subscriptionOptions('error', 1, 8))
+    connected.database.subscribe(characteristic.path, subscriptionOptions('error', 1, 128))
   )
   await fixture.controller.perform('emit-notification', notificationInput(characteristic.path, new Uint8Array([4])))
   await fixture.controller.perform('emit-notification', notificationInput(characteristic.path, new Uint8Array([5])))
@@ -87,13 +94,14 @@ export async function executeSubscriptionOverflowScenario<
   await fixture.controller.flush()
   const itemNoLateValue = (await fixture.controller.settle(itemIterator.next())).done === true
 
+  // Post-R12 limits as above. The byte probe shares its corpus with the
+  // deterministic-backend overflow scenario: one 128-byte value against a
+  // (4, 128) budget, so the overflow stays byte-triggered (a single item
+  // never trips the item capacity) with exact droppedItems/droppedBytes.
   const byteProbe = await fixture.controller.settle(
-    connected.database.subscribe(characteristic.path, subscriptionOptions('error', 4, 4))
+    connected.database.subscribe(characteristic.path, subscriptionOptions('error', 4, 128))
   )
-  await fixture.controller.perform(
-    'emit-notification',
-    notificationInput(characteristic.path, new Uint8Array([7, 8, 9, 10]))
-  )
+  await fixture.controller.perform('emit-notification', notificationInput(characteristic.path, new Uint8Array(128)))
   await fixture.controller.flush()
   const byteIterator = byteProbe.values[Symbol.asyncIterator]()
   const byteTerminal = await fixture.controller.settle(byteIterator.next())
@@ -103,15 +111,20 @@ export async function executeSubscriptionOverflowScenario<
     byteTerminal.value.kind === 'terminal' &&
     byteTerminal.value.reason === 'overflow' &&
     Number(byteTerminal.value.droppedItems) === 1 &&
-    Number(byteTerminal.value.droppedBytes) === 4 &&
+    Number(byteTerminal.value.droppedBytes) === 128 &&
     Number(byteTerminal.value.replacedItems) === 0 &&
     byteComplete.done === true
   assertCleanupReleased(definition, await fixture.controller.settle(byteProbe.remove()), 'byte overflow subscription')
 
+  // Post-R12 limits: the frozen byte budget tops out at MAX_STREAM_BYTE_CAPACITY
+  // (4 MiB), so the stream budget is exactly 4 MiB. Quota-overflow semantics
+  // are unchanged: the backend consults the 4 MiB aggregate quota before the
+  // stream push and trips first at the same 8th value with the same exact
+  // terminal, so the stream budget stays dead config on this path as before.
   const aggregateProbe = await fixture.controller.settle(
     connected.database.subscribe(
       characteristic.path,
-      subscriptionOptions('error', aggregateProbeValueCount + 1, 5 * 1024 * 1024)
+      subscriptionOptions('error', aggregateProbeValueCount + 1, 4 * 1024 * 1024)
     )
   )
   for (let index = 0; index < aggregateProbeValueCount; index += 1) {

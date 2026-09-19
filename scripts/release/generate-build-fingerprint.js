@@ -1,0 +1,501 @@
+#!/usr/bin/env node
+// scripts/release/generate-build-fingerprint.js
+//
+// F23: content fingerprint sealing the exact input set that produced `lib/`.
+// Replaces the consumer max-mtime freshness heuristic (one touched output
+// could mask a stale sibling): the seal records a sha256 per input file plus
+// the package/contract/native identities, and the check fails on ANY drift —
+// changed bytes, added files, removed files, tampered native binaries, or a
+// tampered seal. Mtimes are never consulted, so touching an output cannot
+// clear drift.
+//
+// Input set (fail-closed): the whole tree EXCEPT the denylist below. A
+// denylist (not an allowlist) keeps new build inputs covered by default.
+// Denylisted paths are never `lib/` inputs: build outputs, VCS/tooling
+// state, test-only material, packed-but-unbuilt documents, and dev-only
+// trees with their own builds.
+//
+// Identities sealed alongside the file map:
+//   package          name@version that produced the build (version skew fails)
+//   contractRevision C-UBM revision from crates/ubm-core/src/contracts.rs
+//   toolchain        pinned Rust channel + CI producer SDKs (Xcode/NDK,
+//                    null where unresolvable on this machine)
+//   features         enabled feature set per shipped Rust crate
+//                    (default-only when the manifest declares no [features])
+//   targets          per-artifact target triple / slice
+//   deploymentMinimum iOS/tvOS floors (podspec) + Android minSdk
+//                    (android/gradle.properties default)
+//   native.android   committed jniLibs per ABI (file, sha256, bytes)
+//   native.apple     staged RustCore XCFramework slices (file, sha256,
+//                    bytes) + LibraryIdentifiers (empty when unstaged —
+//                    the framework is macOS-built at release time)
+//   native.napi      desktop-core N-API prebuilds recorded in
+//                    native/PREBUILDS.json (empty when none are staged)
+//   sourceDigest     per binding (napi/jni/uniffi): Rust source + transitive
+//                    path-dependency digest, from native-build-identity.js
+//   bindingSchema    per binding: wrapper-side declaration digest (contract
+//                    §4, closes T1), from native-build-identity.js
+//   fingerprint      sha256 over the canonical seal (tamper-evident)
+// The per-binding digests are the same values the builders embed in each
+// binary (UBM_BUILD_SOURCE_DIGEST / UBM_BUILD_BINDING_SCHEMA) and the runtime
+// compares, so the seal and the binaries answer from one implementation.
+//
+// Usage:
+//   node scripts/release/generate-build-fingerprint.js [--check] [--root <dir>]
+// Library: { generateBuildFingerprint, writeBuildFingerprint, checkBuildFingerprint }
+
+'use strict'
+
+const crypto = require('crypto')
+const fs = require('fs')
+const path = require('path')
+
+const nativeBuildIdentity = require('./native-build-identity')
+
+const SEAL_RELATIVE = path.join('lib', 'ubm-build-fingerprint.json')
+const MAX_DRIFT_REPORT = 10
+
+// Top-level trees that never feed `prepack` (own builds, records, or test
+// fixtures). Everything else at top level is walked.
+const EXCLUDED_TOP_DIRS = new Set([
+  '__tests__', // jest suites import src/, never produce lib/
+  'test-support', // imported only by __tests__
+  'test_project', // scratch (gitignored)
+  'docs', // prose + generated site, not lib/ inputs
+  'etc', // api reports are reviewed records, not lib/ inputs
+  'evidence', // gate evidence records
+  'example', // separate package, own install
+  'example-electron', // separate package, own install
+  'example-expo', // separate package, own install
+  'example-tauri', // separate package, own install
+  'example-web', // separate package, own install
+  'fixtures', // packed-consumer fixtures, not lib/ inputs
+  'fuzz', // excluded cargo workspace member, own build
+  'integration-tests', // post-build suites
+  'lab', // scratch
+  'emulator-probe' // post-build device probes
+])
+
+// Directory names excluded at ANY depth (outputs or tooling state).
+const EXCLUDED_DIR_NAMES = new Set([
+  'node_modules',
+  'lib', // the build output itself (the seal lives here, never an input)
+  'target', // cargo outputs
+  'build', // gradle/tsc/cmake outputs (incl. plugin/build, android/build)
+  'dist', // bundler outputs
+  'coverage', // jest outputs
+  'jvm-classes', // jni test outputs
+  'Pods', // CocoaPods install output
+  '.cxx', // AGP cmake outputs
+  'prebuilds', // locally built electron prebuilds are CI-matrix outputs,
+  // verified by native-prebuild:verify, never prepack inputs
+  '__tests__' // suite trees at any depth
+])
+
+// Exact relative paths excluded (machine-local or consumer-regenerated).
+const EXCLUDED_PATHS = new Set([
+  'native/tauri/Cargo.lock', // library crate: gitignored, consumers' locks govern
+  'android/local.properties' // machine-local SDK path
+])
+
+// Packed-but-unbuilt documents: they ride the tarball byte-for-byte at
+// `pnpm pack` time, so editing one never stales `lib/`.
+const EXCLUDED_FILE_NAMES = new Set([
+  'SBOM.cdx.json',
+  'THIRD_PARTY_LICENSES.json',
+  'NOTICE',
+  'LICENSE',
+  'LICENSE-UBM-SOURCE-AVAILABLE-1.0.md',
+  'UBM-CONTRIBUTION-TERMS-1.0.md',
+  'llms.txt'
+])
+
+function isExcludedFile(relative) {
+  const base = path.posix.basename(relative)
+  if (base.startsWith('.')) return true // dotfiles: env/VCS state, never inputs
+  if (relative.startsWith('.github/')) return true // CI workflows, not lib/ inputs
+  if (EXCLUDED_PATHS.has(relative)) return true
+  if (EXCLUDED_FILE_NAMES.has(base)) return true
+  if (base.endsWith('.md')) return true // prose, never a build input
+  if (base.endsWith('.tgz')) return true // packed outputs
+  if (base.endsWith('.node')) return true // built native addons are outputs
+  if (base.endsWith('.tsbuildinfo')) return true // tsc incremental state
+  if (base.endsWith('.jsbundle')) return true // RN bundler outputs
+  if (base.endsWith('.bat')) return true // generated wrapper scripts (gitignored)
+  if (base.endsWith('.log')) return true // local logs, never inputs
+  if (/\.test\.[cm]?[jt]s$/.test(base)) return true // test-only modules
+  return false
+}
+
+function isExcludedDir(relative) {
+  const segments = relative.split('/')
+  if (segments.some(segment => segment.startsWith('.'))) return true // .git, .turbo, ...
+  if (EXCLUDED_TOP_DIRS.has(segments[0])) return true
+  return segments.some(segment => EXCLUDED_DIR_NAMES.has(segment))
+}
+
+function sha256File(absolute) {
+  return crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex')
+}
+
+function walkInputs(root) {
+  const files = {}
+  const visit = relativeDir => {
+    const absoluteDir = path.join(root, relativeDir)
+    let entries
+    try {
+      entries = fs.readdirSync(absoluteDir, { withFileTypes: true })
+    } catch (error) {
+      if (relativeDir === '' && error && error.code === 'ENOENT') {
+        throw new Error(`fingerprint root is missing: ${root}`)
+      }
+      throw error
+    }
+    for (const entry of entries) {
+      const relative = relativeDir === '' ? entry.name : `${relativeDir}/${entry.name}`
+      if (entry.isSymbolicLink()) continue // env links, never inputs
+      if (entry.isDirectory()) {
+        if (!isExcludedDir(relative)) visit(relative)
+        continue
+      }
+      if (!entry.isFile() || isExcludedFile(relative)) continue
+      files[relative] = sha256File(path.join(root, relative))
+    }
+  }
+  visit('')
+  return files
+}
+
+function readContractRevision(root) {
+  const contracts = path.join(root, 'crates', 'ubm-core', 'src', 'contracts.rs')
+  return fs.existsSync(contracts) ? nativeBuildIdentity.readContractRevision(root) : null
+}
+
+function androidNativeIdentity(root, files) {
+  const prefix = 'android/src/main/jniLibs/'
+  return Object.keys(files)
+    .filter(relative => relative.startsWith(prefix) && relative.endsWith('.so'))
+    .sort()
+    .map(relative => ({
+      abi: relative.slice(prefix.length).split('/')[0],
+      file: relative,
+      sha256: files[relative],
+      bytes: fs.statSync(path.join(root, relative)).size
+    }))
+}
+
+const ANDROID_ABI_TRIPLES = {
+  'arm64-v8a': 'aarch64-linux-android',
+  x86_64: 'x86_64-linux-android'
+}
+
+function readToolchain(root) {
+  const toolchainFile = path.join(root, 'rust-toolchain.toml')
+  let rust = null
+  if (fs.existsSync(toolchainFile)) {
+    const pin = /^channel\s*=\s*"([^"]+)"/m.exec(fs.readFileSync(toolchainFile, 'utf8'))
+    rust = pin ? pin[1] : null
+  }
+  let xcode = null
+  if (process.platform === 'darwin') {
+    try {
+      const { execFileSync } = require('node:child_process')
+      xcode = execFileSync('xcodebuild', ['-version'], { encoding: 'utf8' }).split('\n')[0].trim() || null
+    } catch {
+      xcode = null
+    }
+  }
+  let ndk = null
+  const ndkHome = process.env.ANDROID_NDK_HOME
+  if (ndkHome !== undefined && ndkHome !== '' && fs.existsSync(ndkHome)) {
+    ndk = path.basename(ndkHome)
+  } else {
+    const os = require('node:os')
+    const sdk =
+      process.env.ANDROID_HOME ?? process.env.ANDROID_SDK_ROOT ?? path.join(os.homedir(), 'Android', 'Sdk')
+    const sdkNdk = path.join(sdk, 'ndk')
+    if (fs.existsSync(sdkNdk)) {
+      const installed = fs
+        .readdirSync(sdkNdk, { withFileTypes: true })
+        .filter(entry => entry.isDirectory())
+        .map(entry => entry.name)
+        .sort()
+      ndk = installed.length > 0 ? installed[installed.length - 1] : null
+    }
+  }
+  return { rust, xcode, ndk }
+}
+
+function readCrateFeatures(root, manifestRelative) {
+  const manifestPath = path.join(root, manifestRelative)
+  if (!fs.existsSync(manifestPath)) return null
+  const manifest = fs.readFileSync(manifestPath, 'utf8')
+  const section = /^\[features\]\s*$/m.exec(manifest)
+  if (section === null) return ['default']
+  const names = []
+  const rest = manifest.slice(section.index + section[0].length).split('\n')
+  for (const line of rest) {
+    if (/^\[.*\]\s*$/.test(line)) break
+    const feature = /^\s*([A-Za-z0-9_-]+)\s*=/.exec(line)
+    if (feature !== null) names.push(feature[1])
+  }
+  return names.sort()
+}
+
+function readFeatures(root) {
+  return {
+    jni: readCrateFeatures(root, path.join('bindings', 'jni', 'Cargo.toml')),
+    uniffi: readCrateFeatures(root, path.join('bindings', 'uniffi', 'Cargo.toml'))
+  }
+}
+
+function readDeploymentMinimum(root) {
+  let ios = null
+  let tvos = null
+  const podspec = path.join(root, 'unified-ble-manager.podspec')
+  if (fs.existsSync(podspec)) {
+    const text = fs.readFileSync(podspec, 'utf8')
+    ios = /:ios\s*=>\s*"([^"]+)"/.exec(text)?.[1] ?? null
+    tvos = /:tvos\s*=>\s*"([^"]+)"/.exec(text)?.[1] ?? null
+  }
+  let androidMinSdk = null
+  const properties = path.join(root, 'android', 'gradle.properties')
+  if (fs.existsSync(properties)) {
+    const sdk = /^BlePlx_minSdkVersion\s*=\s*(\d+)\s*$/m.exec(fs.readFileSync(properties, 'utf8'))
+    androidMinSdk = sdk ? Number(sdk[1]) : null
+  }
+  return { ios, tvos, androidMinSdk }
+}
+
+function appleNativeIdentity(root, files) {
+  const prefix = 'ios/RustCore/'
+  const slices = Object.keys(files)
+    .filter(relative => relative.startsWith(prefix) && relative.endsWith('.a'))
+    .sort()
+    .map(relative => ({
+      slice: relative.slice(prefix.length).split('/')[1] ?? null,
+      file: relative,
+      sha256: files[relative],
+      bytes: fs.statSync(path.join(root, relative)).size
+    }))
+  let libraryIdentifiers = []
+  const infoPlist = path.join(root, 'ios', 'RustCore', 'RustCore.xcframework', 'Info.plist')
+  if (fs.existsSync(infoPlist)) {
+    const text = fs.readFileSync(infoPlist, 'utf8')
+    const identifiers = [...text.matchAll(/<key>LibraryIdentifier<\/key>\s*<string>([^<]+)<\/string>/g)]
+    libraryIdentifiers = identifiers.map(match => match[1]).sort()
+  }
+  return { staged: slices.length > 0, slices, libraryIdentifiers }
+}
+
+// Per-binding identity digests. A binding whose crate is absent from the
+// root seals null; a present crate with an incomplete input set throws.
+function readBindingIdentities(root) {
+  const sourceDigest = {}
+  const bindingSchema = {}
+  for (const binding of nativeBuildIdentity.BINDING_NAMES) {
+    const manifest = path.join(root, nativeBuildIdentity.BINDINGS[binding].crateDir, 'Cargo.toml')
+    if (!fs.existsSync(manifest)) {
+      sourceDigest[binding] = null
+      bindingSchema[binding] = null
+      continue
+    }
+    const computed = nativeBuildIdentity.computeBindingIdentity(root, binding)
+    sourceDigest[binding] = computed.sourceDigest
+    bindingSchema[binding] = computed.bindingSchema
+  }
+  return { sourceDigest, bindingSchema }
+}
+
+function napiNativeIdentity(root) {
+  const manifest = path.join(root, 'native', 'PREBUILDS.json')
+  if (!fs.existsSync(manifest)) return []
+  const parsed = JSON.parse(fs.readFileSync(manifest, 'utf8'))
+  const entries = Array.isArray(parsed.entries) ? parsed.entries : []
+  return entries.filter(entry => entry.backend === 'desktop-core')
+}
+
+function nativeTargets(android, apple) {
+  return {
+    android: Object.fromEntries(
+      android.map(entry => [entry.abi, ANDROID_ABI_TRIPLES[entry.abi] ?? null])
+    ),
+    apple: [...apple.libraryIdentifiers]
+  }
+}
+
+function canonicalSeal({
+  packageName,
+  packageVersion,
+  contractRevision,
+  toolchain,
+  features,
+  targets,
+  deploymentMinimum,
+  sourceDigest,
+  bindingSchema,
+  files,
+  native
+}) {
+  const sortedFiles = {}
+  for (const relative of Object.keys(files).sort()) sortedFiles[relative] = files[relative]
+  return {
+    package: { name: packageName, version: packageVersion },
+    contractRevision,
+    toolchain,
+    features,
+    targets,
+    deploymentMinimum,
+    sourceDigest,
+    bindingSchema,
+    files: sortedFiles,
+    native
+  }
+}
+
+function sealDigest(canonical) {
+  return crypto.createHash('sha256').update(JSON.stringify(canonical)).digest('hex')
+}
+
+function generateBuildFingerprint(root) {
+  const absoluteRoot = path.resolve(root)
+  const manifest = JSON.parse(fs.readFileSync(path.join(absoluteRoot, 'package.json'), 'utf8'))
+  const files = walkInputs(absoluteRoot)
+  if (Object.keys(files).length === 0) {
+    throw new Error('fingerprint refuses an empty input set: refusing a vacuous seal')
+  }
+  const android = androidNativeIdentity(absoluteRoot, files)
+  const apple = appleNativeIdentity(absoluteRoot, files)
+  const canonical = canonicalSeal({
+    packageName: manifest.name,
+    packageVersion: manifest.version,
+    contractRevision: readContractRevision(absoluteRoot),
+    toolchain: readToolchain(absoluteRoot),
+    features: readFeatures(absoluteRoot),
+    targets: nativeTargets(android, apple),
+    deploymentMinimum: readDeploymentMinimum(absoluteRoot),
+    ...readBindingIdentities(absoluteRoot),
+    files,
+    native: { android, apple, napi: napiNativeIdentity(absoluteRoot) }
+  })
+  return { ...canonical, fingerprint: sealDigest(canonical) }
+}
+
+function sealPath(root) {
+  return path.join(path.resolve(root), SEAL_RELATIVE)
+}
+
+function writeBuildFingerprint(root) {
+  const seal = generateBuildFingerprint(root)
+  const target = sealPath(root)
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  fs.writeFileSync(target, `${JSON.stringify(seal, null, 2)}\n`)
+  return target
+}
+
+function driftReport(sealed, fresh) {
+  const drifted = []
+  for (const relative of Object.keys(sealed).sort()) {
+    if (!(relative in fresh)) drifted.push(`${relative} (removed)`)
+    else if (sealed[relative] !== fresh[relative]) drifted.push(relative)
+  }
+  for (const relative of Object.keys(fresh).sort()) {
+    if (!(relative in sealed)) drifted.push(`${relative} (added)`)
+  }
+  return drifted
+}
+
+function checkBuildFingerprint(root) {
+  const absoluteRoot = path.resolve(root)
+  const target = sealPath(root)
+  if (!fs.existsSync(target)) {
+    throw new Error(
+      `Build seal is missing: ${path.relative(absoluteRoot, target)}. Rebuild the library:\n  pnpm --dir ${absoluteRoot} prepack`
+    )
+  }
+  let sealed
+  try {
+    sealed = JSON.parse(fs.readFileSync(target, 'utf8'))
+  } catch {
+    throw new Error(`Build seal is not valid JSON: ${target}. Rebuild the library:\n  pnpm --dir ${absoluteRoot} prepack`)
+  }
+  const { fingerprint, ...stored } = sealed
+  if (typeof fingerprint !== 'string' || sealDigest(stored) !== fingerprint) {
+    throw new Error(`Build seal integrity failed (tampered or truncated): ${target}. Rebuild the library:\n  pnpm --dir ${absoluteRoot} prepack`)
+  }
+  const manifest = JSON.parse(fs.readFileSync(path.join(absoluteRoot, 'package.json'), 'utf8'))
+  if (stored.package === undefined || stored.package.version !== manifest.version) {
+    throw new Error(
+      `Build seal targets ${stored.package === undefined ? 'unknown' : stored.package.version}, but the checkout is ${manifest.version}. Rebuild the library:\n  pnpm --dir ${absoluteRoot} prepack`
+    )
+  }
+  const fresh = generateBuildFingerprint(absoluteRoot)
+  const drifted = driftReport(stored.files === undefined ? {} : stored.files, fresh.files)
+  if (stored.contractRevision !== fresh.contractRevision) {
+    drifted.unshift(`contract revision ${String(stored.contractRevision)} -> ${String(fresh.contractRevision)}`)
+  }
+  // Identity drift fails closed like file drift (a seal written before an
+  // identity field existed reports it as changed: rebuild the library).
+  for (const identity of [
+    'toolchain',
+    'features',
+    'targets',
+    'deploymentMinimum',
+    'sourceDigest',
+    'bindingSchema',
+    'native'
+  ]) {
+    if (JSON.stringify(stored[identity] ?? null) !== JSON.stringify(fresh[identity])) {
+      drifted.unshift(`${identity} identity changed since the seal was written`)
+    }
+  }
+  if (drifted.length > 0) {
+    const shown = drifted.slice(0, MAX_DRIFT_REPORT).join('\n  ')
+    const more = drifted.length > MAX_DRIFT_REPORT ? `\n  ... and ${drifted.length - MAX_DRIFT_REPORT} more` : ''
+    throw new Error(
+      `Build output is stale: ${drifted.length} input(s) changed since the seal was written:\n  ${shown}${more}\nRebuild the library:\n  pnpm --dir ${absoluteRoot} prepack`
+    )
+  }
+  return true
+}
+
+function parseArguments(argv) {
+  const options = { check: false, root: path.resolve(__dirname, '..', '..') }
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index]
+    if (argument === '--check') {
+      options.check = true
+      continue
+    }
+    if (argument === '--root') {
+      const value = argv[index + 1]
+      if (value === undefined) throw new Error('--root requires a directory')
+      options.root = path.resolve(value)
+      index += 1
+      continue
+    }
+    throw new Error(`Unknown argument: ${argument}`)
+  }
+  return options
+}
+
+if (require.main === module) {
+  try {
+    const options = parseArguments(process.argv.slice(2))
+    if (options.check) {
+      checkBuildFingerprint(options.root)
+      process.stdout.write('build-fingerprint: seal is current\n')
+    } else {
+      const seal = generateBuildFingerprint(options.root)
+      const target = writeBuildFingerprint(options.root)
+      process.stdout.write(
+        `build-fingerprint: sealed ${Object.keys(seal.files).length} inputs -> ${path.relative(options.root, target)} (${seal.fingerprint.slice(0, 12)})\n`
+      )
+    }
+  } catch (error) {
+    process.stderr.write(`${error && error.message ? error.message : error}\n`)
+    process.exitCode = 1
+  }
+}
+
+module.exports = { SEAL_RELATIVE, generateBuildFingerprint, writeBuildFingerprint, checkBuildFingerprint }

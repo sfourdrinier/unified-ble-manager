@@ -207,6 +207,7 @@ describe('React Native Android security protocol boundary', () => {
   })
 
   test('rejects an already-aborted or already-expired pair before allocating native work', async () => {
+    const securityStateCall = jest.fn(async () => securityState('not-bonded'))
     const pair = jest.fn(async (_peerId, _transport, signal) => {
       await securityStateCall()
       if (signal?.aborted === true) throw contractError('operation.aborted', 'core', 'android.security.pair')

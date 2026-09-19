@@ -12,6 +12,7 @@ import com.facebook.react.module.model.ReactModuleInfo;
 import com.facebook.react.module.model.ReactModuleInfoProvider;
 import com.sfourdrinier.unifiedblemanager.expo.UnifiedBleExpoRuntimeModule;
 import com.sfourdrinier.unifiedblemanager.protocol.UnifiedBleProtocolControlModule;
+import com.sfourdrinier.unifiedblemanager.rustcore.UnifiedBleRustCoreModule;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -25,6 +26,9 @@ public class BlePlxPackage extends BaseReactPackage {
     }
     if (UnifiedBleExpoRuntimeModule.NAME.equals(name)) {
       return new UnifiedBleExpoRuntimeModule(reactContext);
+    }
+    if (UnifiedBleRustCoreModule.NAME.equals(name)) {
+      return new UnifiedBleRustCoreModule(reactContext);
     }
 
     return null;
@@ -51,6 +55,17 @@ public class BlePlxPackage extends BaseReactPackage {
         new ReactModuleInfo(
           UnifiedBleExpoRuntimeModule.NAME,
           UnifiedBleExpoRuntimeModule.class.getName(),
+          false,
+          false,
+          false,
+          true
+        )
+      );
+      moduleInfos.put(
+        UnifiedBleRustCoreModule.NAME,
+        new ReactModuleInfo(
+          UnifiedBleRustCoreModule.NAME,
+          UnifiedBleRustCoreModule.class.getName(),
           false,
           false,
           false,

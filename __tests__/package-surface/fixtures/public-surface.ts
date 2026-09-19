@@ -248,7 +248,7 @@ import {
   createReactNativeAppleBackendProvider,
   createReactNativeBleManager,
   createReactNativeBleManagerWithEnvironment,
-  getNativeUnifiedBleProtocolControl
+  createReactNativeRustCoreBinding
 } from 'unified-ble-manager/react-native'
 import type {
   ReactNativeAndroidBackendProviderOptions,
@@ -445,7 +445,7 @@ interface PeerStream<Value> extends AsyncIterable<PeerStreamItem<Value>, undefin
 interface PeerSubscriptionDeclaration {
   readonly subscriptionId: string
   readonly path: PeerCharacteristicPath
-  readonly values: PeerStream<{ readonly value: Uint8Array; readonly indication: boolean }>
+  readonly values: PeerStream<{ readonly value: Uint8Array; readonly delivery: 'notification' | 'indication' | 'unknown' }>
   remove(): Promise<PeerCleanupRecord>
 }
 
@@ -765,14 +765,14 @@ declare class PeerOneSubscription implements PeerSubscriptionDeclaration {
   private readonly peerOneSubscriptionBrand: undefined
   readonly subscriptionId: string
   readonly path: PeerCharacteristicPath
-  readonly values: PeerStream<{ readonly value: Uint8Array; readonly indication: boolean }>
+  readonly values: PeerStream<{ readonly value: Uint8Array; readonly delivery: 'notification' | 'indication' | 'unknown' }>
   remove(): Promise<PeerCleanupRecord>
 }
 declare class PeerTwoSubscription implements PeerSubscriptionDeclaration {
   private readonly peerTwoSubscriptionBrand: undefined
   readonly subscriptionId: string
   readonly path: PeerCharacteristicPath
-  readonly values: PeerStream<{ readonly value: Uint8Array; readonly indication: boolean }>
+  readonly values: PeerStream<{ readonly value: Uint8Array; readonly delivery: 'notification' | 'indication' | 'unknown' }>
   remove(): Promise<PeerCleanupRecord>
 }
 
@@ -884,7 +884,7 @@ observe(createReactNativeAndroidBackendProvider(nativeAndroidOptions))
 observe(createReactNativeAppleBackendProvider(nativeAppleOptions))
 observe(createReactNativeBleManagerWithEnvironment(nativeManagerOptions))
 observe(createReactNativeBleManager({ instanceId: 'app-instance' }))
-observe(getNativeUnifiedBleProtocolControl)
+observe(createReactNativeRustCoreBinding)
 observe(nativeWinRtOptions)
 observe(createWebBleManager())
 observe(createWebBleManagerWithEnvironment({ environment: browserWebManagerOptions }))

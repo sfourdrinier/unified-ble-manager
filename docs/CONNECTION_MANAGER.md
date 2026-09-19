@@ -82,6 +82,28 @@ async function connectWithProductPolicy(manager, peerId, signal) {
 application functions: retry budgets, user intent, session state, and medical
 workflow policy do not belong in the generic BLE package.
 
+Whatever the product policy, never repeat a failure whose `retryability` is
+`never`. An aborted or timed-out write reported that way was dispatched and may
+already have committed at the peripheral; its `recovery` advises
+`verify-state`, so read the value back before deciding anything. Only
+`caller-decides` failures are candidates for a policy retry, and never one
+whose `commit` is `uncertain`, whatever its code.
+
+A connect whose link the platform could not establish is `connection.failed`
+and `caller-decides` on every host, with the platform's own answer kept in
+`platform` (5.0; 4.x reported it `never`, and Android, iOS and BlueZ named it
+`platform.failure`). The library never retries it itself:
+
+| Host | Platform answer |
+| --- | --- |
+| Android | GATT status 133, 62 (HCI 0x3E, "connection failed to be established") or 147 (`metadata.androidGattStatus`) |
+| iOS, macOS | `CBErrorDomain` 6 (`connectionTimeout`) or 10 (`connectionFailed`) |
+| Windows | `GetGattServicesAsync` answered `Unreachable` (`{domain:"winrt", code:"gatt-status", metadata:{gattStatus:"unreachable"}}`) |
+| Linux (BlueZ) | `org.bluez.Error.Failed` (for example `le-connection-abort-by-local`) or `org.bluez.Error.ConnectionAttemptFailed` |
+| Web | `gatt.connect()` rejected with `NetworkError` |
+
+Every other connect failure stays `never`.
+
 ## Disconnects and lifecycle loss
 
 Consume the public connection lifecycle stream using bounded delivery. Adapter
@@ -122,6 +144,31 @@ for await (const item of watch.values) {
 }
 await watch.stop()
 ```
+
+The manager survives an adapter loss on every host (React Native Android and
+Apple, CoreBluetooth, WinRT, BlueZ, Electron, Tauri): every live connection ends
+`adapter-loss`, its scans and subscriptions end `source-failed`, and the
+manager binds the backend's new attachment (new backend and adapter
+generations). Peer handles stay usable; a release of anything the loss already
+ended answers `released`, and `destroy()` after a loss answers `released`. Over
+Electron and Tauri the host rebinds the renderer or webview to that attachment
+(IPC protocol 4; see [`ELECTRON.md`](ELECTRON.md) and [`TAURI.md`](TAURI.md)).
+A `createConnectionSupervisor()` waits in `waiting-for-gate` while the adapter
+is not ready and keeps waiting across readiness timeouts, however long the
+adapter stays off, then reconnects through the same manager when it returns.
+Before 5.0 an adapter loss destroyed the manager (its supervisor ended
+`lifecycle.destroyed`) and the application had to create a new one.
+
+A link lost while the supervisor's `configure` callback runs (it rejects with
+`connection.lost`, the name every host uses) is a link loss like any other:
+the supervisor releases the connection, backs off and reconnects, and
+`configure` runs again on the new generation. An adapter lost during
+`configure` (`operation.reset`) waits for the adapter, then reconnects. Any
+other `configure` failure stops the supervisor, as before, including
+`operation.disconnected` — the app's own release cut the setup off (5.0; 4.x
+stopped on every `configure` failure). The supervisor makes the same decision
+for the same event on every host; the decisions are the "Supervisor" column
+of the event table in [`UNIFIED_SEMANTICS.md`](UNIFIED_SEMANTICS.md).
 
 Do not create a second manager or reuse a connection/database from before the
 adapter loss. A backend may report a cleanup retry while native operations are

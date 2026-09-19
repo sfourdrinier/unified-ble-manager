@@ -1,0 +1,2 @@
+# Regenerable build/test output (reproduce via run_jni_roundtrip.sh).
+/target/

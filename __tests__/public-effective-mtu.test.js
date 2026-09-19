@@ -74,3 +74,92 @@ describe('public effective MTU control', () => {
     })
   })
 })
+
+/**
+ * Production connections are class instances whose methods read their own
+ * receiver (the React Native Rust connection dispatches through `this`). The
+ * public controls must invoke them as methods, never detached.
+ */
+class ReceiverBoundConnection {
+  constructor() {
+    this.connectionId = 'connection-1'
+    this.connectionGeneration = 'generation-1'
+    this.attMtu = 247
+    this.events = {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => ({ done: true, value: undefined }),
+        return: async () => ({ done: true, value: undefined })
+      })
+    }
+  }
+
+  async effectiveMtu() {
+    return {
+      connectionId: this.connectionId,
+      connectionGeneration: this.connectionGeneration,
+      attMtu: this.attMtu,
+      payloadBytes: this.attMtu - 3,
+      platformPduBytes: null,
+      observedAtMonotonicMs: 30,
+      terminal: terminal()
+    }
+  }
+
+  async writeWithoutResponseReadiness() {
+    const observation = {
+      connectionId: this.connectionId,
+      connectionGeneration: this.connectionGeneration,
+      ready: true,
+      observedAtMonotonicMs: 31,
+      ordinal: 1
+    }
+    let delivered = false
+    return {
+      events: {
+        [Symbol.asyncIterator]: () => ({
+          next: async () => {
+            if (delivered) return { done: true, value: undefined }
+            delivered = true
+            return { done: false, value: { kind: 'value', value: observation } }
+          },
+          return: async () => ({ done: true, value: undefined })
+        })
+      },
+      close: async () => ({ state: 'released', failures: [] })
+    }
+  }
+}
+
+describe('public controls invoke receiver-bound connection methods', () => {
+  function receiverBoundManager() {
+    const descriptors = new Map([
+      ['connection:direct', capability('supported')],
+      ['connection:effective-mtu', capability('limited')],
+      ['gatt:write-without-response-readiness', capability('limited')]
+    ])
+    const connection = new ReceiverBoundConnection()
+    return {
+      capability: id => descriptors.get(id) ?? null,
+      supports: id => descriptors.get(id)?.state === 'supported' || descriptors.get(id)?.state === 'limited',
+      connect: async () => connection
+    }
+  }
+
+  test('effectiveMtu answers from the connection method instead of a detached TypeError', async () => {
+    const manager = await createPublicBleManager(receiverBoundManager(), () => 100, testManagerHostOptions())
+    const connection = await manager.connect('peer-1')
+    await expect(connection.controls.effectiveMtu()).resolves.toMatchObject({
+      state: 'measured',
+      attMtu: 247,
+      payloadBytes: 244
+    })
+  })
+
+  test('writeReadiness opens the watch through the connection method', async () => {
+    const manager = await createPublicBleManager(receiverBoundManager(), () => 100, testManagerHostOptions())
+    const connection = await manager.connect('peer-1')
+    const iterator = connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toMatchObject({ done: false, value: { state: 'measured', ready: true } })
+    await iterator.return()
+  })
+})

@@ -26,6 +26,7 @@ import type {
 import { attachmentRecordsEqual } from '../backend-contract/identity'
 import type { CharacteristicPath, DescriptorPath } from '../backend-contract/gatt'
 import type {
+  CharacteristicRead,
   PublicOperationOptions,
   SubscriptionOptions,
   WritePolicy,
@@ -65,12 +66,19 @@ import type {
   WebBluetoothRequestFilter,
   WebBluetoothTimerHandle
 } from './web-bluetooth-boundary'
-import { normalizeWebBluetoothError, validateWebChooserRequest, webCleanupFailure } from './web-bluetooth-errors'
+import {
+  normalizeWebBluetoothError,
+  validateWebChooserRequest,
+  WEB_CONNECT_OPERATION,
+  WEB_LINK_END_CODES,
+  webCleanupFailure,
+  webConnectDeadlineError
+} from './web-bluetooth-errors'
 import { createWebBluetoothFeatureRegistry } from './web-feature-registry'
 import { diagnosticWebBluetoothScanPlan } from './web-bluetooth-scan-planner'
 import { WebBluetoothGattRuntime } from './web-bluetooth-gatt'
 import { WebBackendConnection, WebConnectionLease, WebGattDatabase } from './web-bluetooth-handles'
-import type { WebConnectionRecord, WebPendingConnection, WebSelectedDevice } from './web-bluetooth-handles'
+import type { WebConnectionRecord, WebLinkEnd, WebPendingConnection, WebSelectedDevice } from './web-bluetooth-handles'
 
 const WEB_ATTACHMENT = 'web-bluetooth'
 const WEB_ADAPTER_ID = opaqueId('web-bluetooth-default', 'adapter', WEB_ATTACHMENT)
@@ -149,6 +157,8 @@ export function createWebBluetoothProvider(boundary: WebBluetoothBoundary): WebB
 export interface WebAuthorizedPeer {
   readonly peerId: PeerId<string>
   readonly browserDeviceId: string
+  /** `BluetoothDevice.name`, or `null` when the browser withheld it. */
+  readonly name: string | null
   readonly connected: boolean
 }
 /** Contract-v1 Web Bluetooth backend with chooser-limited discovery semantics. */
@@ -329,6 +339,7 @@ export class WebBluetoothBackend
       return Object.freeze({
         peerId: selected.peerId,
         browserDeviceId: device.id,
+        name: device.name ?? null,
         connected: device.gatt.connected
       })
     })
@@ -375,7 +386,7 @@ export class WebBluetoothBackend
         opaqueId: record.browserDeviceId
       }),
       peerId: record.peerId,
-      name: null,
+      name: record.name,
       rssi: null,
       source: 'origin-authorized',
       state: Object.freeze({
@@ -392,6 +403,11 @@ export class WebBluetoothBackend
     return selected === undefined
       ? null
       : Object.freeze({ backendId: this.identity.registeredBackendId, browserDeviceId: selected.device.id })
+  }
+
+  /** `BluetoothDevice.name` for a chooser-selected peer, or `null` when the browser withheld it. */
+  selectedPeerName(peerId: string): string | null {
+    return this.selectedDevices.get(peerId)?.device.name ?? null
   }
 
   events(): BoundedAsyncStream<BackendEvent<string>> {
@@ -455,10 +471,7 @@ export class WebBluetoothBackend
     return this.disconnectRecord(record)
   }
 
-  async disconnectRecord(
-    record: WebConnectionRecord,
-    reason: 'connection-lost' | 'owner-released' = 'owner-released'
-  ): Promise<CleanupRecord> {
+  async disconnectRecord(record: WebConnectionRecord, reason: WebLinkEnd = 'owner-released'): Promise<CleanupRecord> {
     if (record.disconnectPromise !== null) return record.disconnectPromise
     const run = this.runDisconnectRecord(record, reason)
     record.disconnectPromise = run.then(result => {
@@ -468,10 +481,7 @@ export class WebBluetoothBackend
     return record.disconnectPromise
   }
 
-  private async runDisconnectRecord(
-    record: WebConnectionRecord,
-    reason: 'connection-lost' | 'owner-released'
-  ): Promise<CleanupRecord> {
+  private async runDisconnectRecord(record: WebConnectionRecord, reason: WebLinkEnd): Promise<CleanupRecord> {
     this.invalidateConnectionGenerations(record, reason)
     const phases: CleanupRecord[] = []
     if (!record.subscriptionReleased) {
@@ -509,7 +519,7 @@ export class WebBluetoothBackend
     database: WebGattDatabase,
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     options: PublicOperationOptions
-  ): Promise<OwnedBytes> {
+  ): Promise<CharacteristicRead> {
     this.assertAttached('web-gatt.database-read')
     return this.gattRuntime.readDirect(database, path, options)
   }
@@ -621,7 +631,7 @@ export class WebBluetoothBackend
       this.deletePendingConnectionIfOwned(pending)
     }
     for (const record of [...this.connectionsByPeer.values()]) {
-      this.disconnectRecord(record, 'connection-lost').catch(() => undefined)
+      this.disconnectRecord(record, 'adapter-loss').catch(() => undefined)
     }
     this.selectedDevices.clear()
     this.peerByBrowserDeviceId.clear()
@@ -863,15 +873,15 @@ export class WebBluetoothBackend
     peerId: PeerId<string>,
     options: PublicOperationOptions
   ): Promise<ConnectionLease<string, string, string>> {
-    this.assertAttached('web-connection.connect')
-    this.assertAbortableAdmission(options, 'connection', 'web-connection.connect')
+    this.assertAttached(WEB_CONNECT_OPERATION)
+    this.assertAbortableAdmission(options, 'connection', WEB_CONNECT_OPERATION)
     const peerKey = String(peerId)
     if (this.connectionsByPeer.has(peerKey) || this.pendingConnectionsByPeer.has(peerKey)) {
-      throw contractError('connection.already-owned', 'connection', 'web-connection.connect')
+      throw contractError('connection.already-owned', 'connection', WEB_CONNECT_OPERATION)
     }
     const selected = this.selectedDevices.get(String(peerId))
     if (selected === undefined) {
-      throw contractError('connection.not-found', 'connection', 'web-connection.connect')
+      throw contractError('peer.not-found', 'connection', WEB_CONNECT_OPERATION)
     }
     const pending: WebPendingConnection = {
       peerId,
@@ -884,7 +894,7 @@ export class WebBluetoothBackend
     }
     this.pendingConnectionsByPeer.set(peerKey, pending)
     pending.nativeConnect = Promise.resolve().then(async () => {
-      await this.assertBluetoothAvailable('web-connection.connect')
+      await this.assertBluetoothAvailable(WEB_CONNECT_OPERATION)
       await selected.device.gatt.connect()
     })
     pending.nativeConnect.then(
@@ -901,7 +911,7 @@ export class WebBluetoothBackend
         () => pending.nativeConnect,
         'connection.failed',
         'connection',
-        'web-connection.connect',
+        WEB_CONNECT_OPERATION,
         () => this.compensatePendingConnection(pending)
       )
     } catch (error) {
@@ -917,7 +927,7 @@ export class WebBluetoothBackend
     }
     if (this.pendingConnectionsByPeer.get(peerKey) !== pending || this.destroyed) {
       await this.compensatePendingConnection(pending)
-      throw contractError('operation.cancelled-by-destroy', 'connection', 'web-connection.connect')
+      throw contractError('operation.cancelled-by-destroy', 'connection', WEB_CONNECT_OPERATION)
     }
     const connectionNumber = this.nextConnection
     this.nextConnection += 1
@@ -948,6 +958,7 @@ export class WebBluetoothBackend
       disconnectWaiters: new Set(),
       database: null,
       valid: true,
+      end: null,
       subscriptionReleased: false,
       physicalReleased: false,
       disconnectPromise: null
@@ -982,40 +993,53 @@ export class WebBluetoothBackend
     }
   }
 
-  private invalidateConnectionGenerations(
-    record: WebConnectionRecord,
-    reason: 'connection-lost' | 'owner-released'
-  ): void {
+  private invalidateConnectionGenerations(record: WebConnectionRecord, reason: WebLinkEnd): void {
     if (!record.valid) {
       return
     }
     record.valid = false
-    record.connection.transition(reason === 'connection-lost' ? 'lost' : 'disconnected')
+    record.end = reason
+    record.connection.transition(reason === 'owner-released' ? 'disconnected' : 'lost')
     record.database?.invalidate()
     for (const waiter of [...record.disconnectWaiters]) {
-      waiter()
+      waiter(reason)
     }
     record.disconnectWaiters.clear()
+    if (reason === 'owner-released') return
+    const connection = {
+      attachment: this.attachmentRecord,
+      attachmentId: this.attachmentRecord.attachmentId,
+      peerId: record.peerId,
+      connectionId: record.connection.connectionId,
+      ownerLeaseId: record.leaseId,
+      connectionGeneration: record.connection.connectionGeneration
+    }
     if (reason === 'connection-lost') {
       this.emitBackendEvent({
         attachment: this.attachmentRecord,
         attachmentId: this.attachmentRecord.attachmentId,
         ingressOrdinal: this.ingressOrdinal,
         kind: 'connection-lost',
-        connection: {
-          attachment: this.attachmentRecord,
-          attachmentId: this.attachmentRecord.attachmentId,
-          peerId: record.peerId,
-          connectionId: record.connection.connectionId,
-          ownerLeaseId: record.leaseId,
-          connectionGeneration: record.connection.connectionGeneration
-        }
+        connection
       })
-      this.ingressOrdinal += 1
+    } else {
+      // Bluetooth became unavailable: the link ended with the adapter, the
+      // same lifecycle every other host reports (`adapter-loss`).
+      this.emitBackendEvent({
+        attachment: this.attachmentRecord,
+        attachmentId: this.attachmentRecord.attachmentId,
+        ingressOrdinal: this.ingressOrdinal,
+        kind: 'connection-state-changed',
+        connection,
+        previous: 'connected',
+        current: 'lost',
+        reason: 'adapter'
+      })
     }
+    this.ingressOrdinal += 1
   }
 
-  private unbindConnectionRecord(record: WebConnectionRecord, _reason: 'connection-lost' | 'owner-released'): void {
+  private unbindConnectionRecord(record: WebConnectionRecord, _reason: WebLinkEnd): void {
     record.device.removeDisconnectListener(record.disconnectListener)
     this.connectionsByPeer.delete(String(record.peerId))
     this.retainedConnections.delete(record)
@@ -1098,8 +1122,10 @@ export class WebBluetoothBackend
       const abort = () => {
         settleFailure(contractError('operation.aborted', domain, operationName))
       }
-      const disconnected = () => {
-        settleFailure(contractError('operation.disconnected', domain, operationName))
+      // One word per event (5.0): the link was lost, the app released it,
+      // or the adapter went away.
+      const disconnected = (end: WebLinkEnd) => {
+        settleFailure(contractError(WEB_LINK_END_CODES[end], 'connection', operationName))
       }
       const destroyed = () => {
         settleFailure(contractError('operation.cancelled-by-destroy', domain, operationName))
@@ -1108,10 +1134,15 @@ export class WebBluetoothBackend
       record?.disconnectWaiters.add(disconnected)
       this.destroyWaiters.add(destroyed)
       if (operation.deadline !== null) {
-        timer = this.boundary.setTimer(
-          () => settleFailure(contractError('operation.timed-out', domain, operationName)),
-          Math.max(0, Number(operation.deadline) - this.boundary.now())
-        )
+        const delayMs = Math.max(0, Number(operation.deadline) - this.boundary.now())
+        // Finding 161: a dispatched connect whose deadline expires before
+        // any link came up is the peer not answering — `connection.failed`
+        // on every backend. Every other operation keeps `operation.timed-out`.
+        const deadlineError =
+          operationName === WEB_CONNECT_OPERATION
+            ? webConnectDeadlineError(delayMs)
+            : contractError('operation.timed-out', domain, operationName)
+        timer = this.boundary.setTimer(() => settleFailure(deadlineError), delayMs)
       }
       Promise.resolve()
         .then(start)
@@ -1129,7 +1160,7 @@ export class WebBluetoothBackend
               return
             }
             if (record !== null && !record.valid) {
-              disconnected()
+              disconnected(record.end ?? 'owner-released')
               return
             }
             settled = true

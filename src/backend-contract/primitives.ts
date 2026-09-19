@@ -323,6 +323,9 @@ export function deadline(value: number): Deadline {
   return value as Deadline
 }
 export function ownBytes(bytes: BorrowedBytes, maximumBytes: ByteLimit): OwnedBytes {
+  if (!(bytes instanceof Uint8Array)) {
+    throw contractError('bytes.invalid', 'boundary', 'primitives.own-bytes')
+  }
   if (bytes.byteLength > maximumBytes) {
     throw contractError('bytes.too-large', 'boundary', 'primitives.own-bytes')
   }

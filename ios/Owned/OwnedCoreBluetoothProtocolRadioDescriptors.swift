@@ -4,7 +4,7 @@ import CoreBluetooth
 import Foundation
 
 struct OwnedCoreBluetoothDescriptorAddress: Hashable {
-  let characteristic: OwnedCoreBluetoothProtocolRadio.CharacteristicAddress
+  let characteristic: CharacteristicAddress
   let descriptorUUID: String
   let descriptorOccurrence: Int
 
