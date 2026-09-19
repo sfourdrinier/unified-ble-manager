@@ -1045,6 +1045,15 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   private adapterState: AdapterStateSnapshot<string>
   private readonly peerIdsByNativeId = new Map<string, PeerId<string>>()
   private readonly nativeIdsByPeerId = new Map<string, string>()
+  /**
+   * Acquisitions in flight per native peer (finding 194). The caller above
+   * the provider can settle its own deadline without cancelling the backend
+   * call, leaving the core's `Connecting` claim live; a newer connect for
+   * the same peer then supersedes it (cancel plus settle) so arbitration
+   * admits the retry instead of refusing `connection.already-owned`.
+   * BlueZ joins shared links and never consults this map.
+   */
+  private readonly pendingAcquisitions = new Map<string, { ticket: string; settled: Promise<void> }>()
   private readonly connectionsById = new Map<string, ConnectionRecord>()
   private readonly subscriptions = new Map<string, SubscriptionRecord>()
   private readonly databases = new Map<string, StoredCoreDatabase>()
@@ -2236,7 +2245,20 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     this.assertOperational(operation)
     const nativeFilter = this.scanFilterFor(options, operation)
     if (this.scanGroup !== null) {
-      throw contractError('scan.already-active', 'scan', operation)
+      // Finding 209: the refusal names the occupying scan (session, owner
+      // lease, state) so a scan left open — for example by an advertisement
+      // capture that returned without stopping — is diagnosable.
+      const active = this.scanGroup
+      throw contractError('scan.already-active', 'scan', operation, {
+        domain: 'desktop-rust-core',
+        code: 'scan-arbitration',
+        safeMessage: `scan ${String(active.scanSessionId)} is still active; stop it before starting a new scan`,
+        metadata: Object.freeze({
+          scanSessionId: String(active.scanSessionId),
+          ownerLeaseId: String(active.ownerLeaseId),
+          state: active.state
+        })
+      })
     }
     const ordinal = this.nextOrdinal()
     const correlation = String(this.mintedCorrelation())
@@ -3250,13 +3272,26 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       throw contractError('capability.unsupported', 'connection', `${operation}.phy`)
     }
     const nativePeerId = await this.nativeIdForConnect(peerId, options, operation)
+    await this.supersedePendingAcquisition(nativePeerId)
     this.assertLinkNotOwned(nativePeerId, operation)
     const ordinal = this.nextOrdinal()
     const lease = `${this.profile.platform}-core-lease-${ordinal}`
     const correlation = String(this.mintedCorrelation())
-    const connected = await this.withTicket(correlation, options.signal, operation, ticket =>
-      this.central.connect({ peerId: nativePeerId, lease, ticket, ...this.budget(options) })
-    )
+    const connected = await this.withTicket(correlation, options.signal, operation, ticket => {
+      const acquisition = this.central.connect({ peerId: nativePeerId, lease, ticket, ...this.budget(options) })
+      this.pendingAcquisitions.set(nativePeerId, {
+        ticket,
+        settled: acquisition.then(
+          () => undefined,
+          () => undefined
+        )
+      })
+      return acquisition.finally(() => {
+        if (this.pendingAcquisitions.get(nativePeerId)?.ticket === ticket) {
+          this.pendingAcquisitions.delete(nativePeerId)
+        }
+      })
+    })
     if (typeof connected.peerKey !== 'string' || typeof connected.connectionGeneration !== 'string') {
       throw contractError('protocol.malformed', 'core', `${operation}.shape`)
     }
@@ -3311,6 +3346,31 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
    * 4.x backends refused it. BlueZ shared the device's link between leases
    * (the dbus-next shared connection record), so it joins.
    */
+  /**
+   * Cancel this provider's in-flight acquisition for `nativePeerId`, if
+   * any, and wait for it to settle (finding 194). The superseded caller
+   * already holds its terminal answer — it moved on, which is why a newer
+   * connect is here. Cancelling reaps the core's `Connecting` claim, so
+   * the new connect arbitrates against a terminal record. Best-effort: a
+   * cancel that cannot land leaves today's arbitration answer in place,
+   * and the failure is reported on the background channel, never
+   * swallowed. A live established link is untouched: only a pending
+   * acquisition is ever superseded.
+   */
+  private async supersedePendingAcquisition(nativePeerId: string): Promise<void> {
+    if (this.profile.platform === 'bluez') return
+    const pending = this.pendingAcquisitions.get(nativePeerId)
+    if (pending === undefined) return
+    this.pendingAcquisitions.delete(nativePeerId)
+    try {
+      await this.central.cancelTicket(pending.ticket)
+    } catch (error) {
+      this.noteBackgroundFailure('connect-supersede-cancel-failed', error)
+      return
+    }
+    await pending.settled
+  }
+
   private assertLinkNotOwned(nativePeerId: string, operation: string): void {
     if (this.profile.platform === 'bluez') return
     for (const record of this.connectionsById.values()) {

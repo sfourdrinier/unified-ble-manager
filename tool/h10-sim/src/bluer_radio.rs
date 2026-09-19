@@ -25,6 +25,7 @@
 //! characteristic UUID, and refusals answer `NotSupported` exactly as before.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -47,7 +48,7 @@ use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 use super::mgmt_socket::MgmtAdvertiser;
-use crate::linux_advertising::{self, BluezRegistrationFailure};
+use crate::linux_advertising::{self, AliasRecord, BluezRegistrationFailure};
 use crate::radio::{
     short_of, CharPermission, CharProperty, CharSpec, PeripheralRadio, RadioError, RadioEvent,
     RadioReadAnswer, ServiceSpec,
@@ -64,6 +65,17 @@ struct CharNotifyHandler {
     control: CharacteristicControl,
 }
 
+/// The adapter alias this run replaced, with its record: restored on stop,
+/// and adopted by the next start when this run dies without restoring.
+struct AdapterAliasClaim {
+    /// The alias to restore (`None`: the alias already was the sim name).
+    previous: Option<String>,
+    /// The alias while running: always the advertised name.
+    current: String,
+    /// Where `previous` is recorded for the next start.
+    record: PathBuf,
+}
+
 /// [`PeripheralRadio`] implemented with `bluer` on Linux.
 pub struct BluerRadio {
     adapter: Adapter,
@@ -77,6 +89,10 @@ pub struct BluerRadio {
     /// `Some` in `--linux-advertising mgmt-legacy`: the advertisement is the
     /// sim's own MGMT instance instead of an `LEAdvertisement1` object.
     mgmt: Option<MgmtAdvertiser>,
+    /// The adapter alias claim held while advertising (`None` when no claim
+    /// is held: never started, already stopped, or the alias already was
+    /// the advertised name).
+    adapter_alias: Option<AdapterAliasClaim>,
     /// Set when bluetoothd failed with the known BlueZ/kernel mismatch.
     advertising_unavailable: bool,
     _drop_tx: oneshot::Sender<()>,
@@ -132,6 +148,7 @@ impl PeripheralRadio for BluerRadio {
             writers: Arc::new(Mutex::new(HashMap::new())),
             mfr: None,
             mgmt: None,
+            adapter_alias: None,
             advertising_unavailable: false,
             _drop_tx: drop_tx,
         })
@@ -195,13 +212,30 @@ impl PeripheralRadio for BluerRadio {
                 .map(|(company, payload)| (*company, payload.as_slice()));
             // A failed add after a fresh registration drops the application
             // again: never a half-registered peripheral.
-            if let Err(error) = tokio::task::block_in_place(|| mgmt.start(name, &uuids16, mfr)) {
-                if !had_app {
-                    self.app_handle = None;
+            match tokio::task::block_in_place(|| mgmt.start(name, &uuids16, mfr)) {
+                Ok(outcome) => {
+                    if let Some(reason) = outcome.fallback_reason {
+                        eprintln!("h10-sim: {reason}");
+                    }
                 }
-                return Err(RadioError(format!(
-                    "mgmt-legacy add advertisement: {error}"
-                )));
+                Err(error) => {
+                    if !had_app {
+                        self.app_handle = None;
+                    }
+                    return Err(RadioError(format!(
+                        "mgmt-legacy add advertisement: {error}"
+                    )));
+                }
+            }
+            if let Err(error) = self.claim_adapter_alias(name).await {
+                // The advertisement is up but the GAP name is wrong: take it
+                // back down rather than impersonate half the strap.
+                if let Some(mgmt) = self.mgmt.as_mut() {
+                    if let Err(remove) = tokio::task::block_in_place(|| mgmt.stop()) {
+                        eprintln!("h10-sim: alias claim failed ({error}); removing the advertisement failed too: {remove}");
+                    }
+                }
+                return Err(error);
             }
             return Ok(());
         }
@@ -214,6 +248,10 @@ impl PeripheralRadio for BluerRadio {
         {
             Ok(adv_handle) => {
                 self.adv_handle = Some(adv_handle);
+                if let Err(error) = self.claim_adapter_alias(name).await {
+                    self.adv_handle = None;
+                    return Err(error);
+                }
                 Ok(())
             }
             Err(error) => {
@@ -249,7 +287,9 @@ impl PeripheralRadio for BluerRadio {
             None => Ok(()),
         };
         self.adv_handle = None;
-        removed.map_err(|error| RadioError(format!("mgmt-legacy remove advertisement: {error}")))
+        removed
+            .map_err(|error| RadioError(format!("mgmt-legacy remove advertisement: {error}")))?;
+        self.restore_adapter_alias().await
     }
 
     async fn add_service(&mut self, service: &ServiceSpec) -> Result<(), RadioError> {
@@ -350,10 +390,17 @@ impl PeripheralRadio for BluerRadio {
     }
 
     fn advertising_detail(&self) -> Option<serde_json::Value> {
-        Some(match &self.mgmt {
+        let mut detail = match &self.mgmt {
             Some(mgmt) => mgmt.detail(),
             None => serde_json::json!({"backend": "bluez"}),
-        })
+        };
+        if let (Some(claim), Some(object)) = (&self.adapter_alias, detail.as_object_mut()) {
+            object.insert(
+                "adapterAlias".to_string(),
+                serde_json::json!({"previous": claim.previous, "current": claim.current}),
+            );
+        }
+        Some(detail)
     }
 
     fn advertising_unavailable(&self) -> bool {
@@ -427,6 +474,126 @@ impl BluerRadio {
             tokio::task::block_in_place(|| MgmtAdvertiser::open(index)).map_err(RadioError)?;
         self.mgmt = Some(advertiser);
         Ok(found)
+    }
+
+    /// Sets the adapter alias to the advertised name so a central that
+    /// connects reads the strap name — not the host name — from BlueZ's GAP
+    /// Device Name characteristic (`btd_adapter_get_name` prefers the stored
+    /// alias over the system name, so MGMT Set Local Name alone would not do
+    /// it). The replaced alias is recorded for the next start and restored
+    /// by [`PeripheralRadio::stop_advertising`], the panic hook, and the next
+    /// start's stale-record adoption. Needs only the D-Bus access the radio
+    /// already requires; no new privilege.
+    async fn claim_adapter_alias(&mut self, name: &str) -> Result<(), RadioError> {
+        let index = linux_advertising::hci_index(self.adapter.name()).map_err(RadioError)?;
+        let record = linux_advertising::alias_record_path(index);
+        let boot_id = linux_advertising::boot_id().map_err(RadioError)?;
+        let stale_prev = match std::fs::read_to_string(&record) {
+            Ok(text) => match AliasRecord::parse(&text) {
+                Ok(found) if found.boot_id == boot_id && found.index == index => {
+                    Some(found.prev_alias)
+                }
+                Ok(_) => {
+                    eprintln!(
+                        "h10-sim: discarding stale alias record {} from another boot or controller",
+                        record.display()
+                    );
+                    linux_advertising::remove_alias_record(&record);
+                    None
+                }
+                Err(error) => {
+                    eprintln!(
+                        "h10-sim: discarding unreadable alias record {}: {error}",
+                        record.display()
+                    );
+                    linux_advertising::remove_alias_record(&record);
+                    None
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(RadioError(format!(
+                    "read alias record {}: {error}",
+                    record.display()
+                )));
+            }
+        };
+        let current = self
+            .adapter
+            .alias()
+            .await
+            .map_err(|error| backend_error("read adapter alias", error))?;
+        let plan = linux_advertising::plan_adapter_alias(&current, name, stale_prev.as_deref());
+        if let Some(previous) = plan.restore_to.clone() {
+            std::fs::write(
+                &record,
+                AliasRecord {
+                    boot_id,
+                    index,
+                    prev_alias: previous.clone(),
+                }
+                .encode(),
+            )
+            .map_err(|error| {
+                RadioError(format!("write alias record {}: {error}", record.display()))
+            })?;
+        }
+        if current != plan.set_to {
+            if let Err(error) = self.adapter.set_alias(plan.set_to.clone()).await {
+                linux_advertising::remove_alias_record(&record);
+                return Err(backend_error("set adapter alias", error));
+            }
+        }
+        if plan.adopted_stale {
+            eprintln!(
+                "h10-sim: adapter alias on hci{index} was the leftover {current:?}; \
+                 adopted the recorded previous alias"
+            );
+        }
+        eprintln!(
+            "h10-sim: adapter alias on hci{index}: {current:?} -> {:?} \
+             (restored on stop; record at {})",
+            plan.set_to,
+            record.display()
+        );
+        linux_advertising::install_adapter_alias_panic_hook(record.clone());
+        self.adapter_alias = Some(AdapterAliasClaim {
+            previous: plan.restore_to,
+            current: plan.set_to,
+            record,
+        });
+        Ok(())
+    }
+
+    /// Restores the alias [`BluerRadio::claim_adapter_alias`] replaced.
+    /// A failed restore keeps the claim (and its record) so the next stop —
+    /// or the next start's stale-record adoption — retries it; the failure
+    /// itself is the returned error, never silent.
+    async fn restore_adapter_alias(&mut self) -> Result<(), RadioError> {
+        let Some(claim) = self.adapter_alias.take() else {
+            return Ok(());
+        };
+        let Some(previous) = claim.previous.clone() else {
+            linux_advertising::remove_alias_record(&claim.record);
+            return Ok(());
+        };
+        match self.adapter.set_alias(previous.clone()).await {
+            Ok(()) => {
+                eprintln!(
+                    "h10-sim: adapter alias restored to {previous:?} (was {:?})",
+                    claim.current
+                );
+                linux_advertising::remove_alias_record(&claim.record);
+                Ok(())
+            }
+            Err(error) => {
+                self.adapter_alias = Some(claim);
+                Err(RadioError(format!(
+                    "restore adapter alias to {previous:?}: {error} \
+                     (the alias record is kept; the next stop or start retries the restore)"
+                )))
+            }
+        }
     }
 
     /// `LEAdvertisingManager1` instance counters, read so a registration

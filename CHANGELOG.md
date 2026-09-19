@@ -627,6 +627,49 @@ previousAttachmentId, attachmentId, attachment}}`. The renderer/webview
 
 ### Fixed
 
+- **Fixed the connect deadline abandoning the backend acquisition (finding
+  194).** `UnifiedBleCore.connect` now cancels the backend acquisition through
+  the `AbortSignal` in `ConnectionOptions` when the caller's deadline expires or
+  the caller aborts. Before, it settled the caller while the backend call stayed
+  in flight with a live `Connecting` claim. A deadline expiry with no link
+  reports `connection.failed` (`caller-decides`, with the deadline fact in
+  `platform`, finding 161); a caller abort stays `operation.aborted`. A retry
+  for the same peer is admitted instead of refused `already-owned`, and destroy
+  no longer reports a settled acquisition as `connect.acquisition-pending`. The
+  React Native Rust-core provider supersedes an abandoned same-peer acquisition
+  the same way the desktop provider does.
+- **The Apple TV example build no longer ends with an empty library install.**
+  Without a TTY, pnpm's modules-purge prompt emptied `node_modules` and exited
+  0 without reinstalling, so the TV app later failed to resolve
+  `unified-ble-manager/expo`. `build-tv.sh install` now confirms the purge up
+  front and fails if the library is missing afterwards.
+- **The Tauri example driver host keeps running while its window is hidden
+  (finding 212).** macOS suspended the occluded WKWebView's page while its
+  socket still answered pings, so a backgrounded host looked connected but ran
+  no command. The example window now sets `backgroundThrottling: "disabled"`.
+- **Fixed `h10-capture` failing with `scan.already-active` on a fresh host
+  (finding 209).** The capture left its advertisement scan open (deferred to
+  teardown), and `find()` then opened a second scan, which one manager refuses.
+  The capture now stops its scan, and waits for the release, before `find()`
+  on every loop exit. `scan.already-active` refusals now name the occupying
+  scan (session, owner lease, state) on the desktop and React Native providers
+  and in the desktop central, so a scan left open is diagnosable.
+- **A connect retry after a timed-out attempt no longer fails
+  `connection.already-owned` (finding 194).** The caller above the desktop
+  backend can settle its deadline without cancelling the backend call, which
+  leaves the core's `Connecting` claim live. A newer connect for the same peer
+  now supersedes this backend's in-flight acquisition. The abandoned caller
+  ends `operation.aborted`, and arbitration admits the retry. A live
+  established link still refuses with `connection.already-owned`, and BlueZ
+  links join as before.
+- **The Electron supervisor reconnects after a drop-link (finding 211).** Main
+  removes subscriptions automatically when their source ends terminal. The
+  supervisor's explicit release after the loss was therefore denied
+  (`ownership.denied/electron-main-router.subscription-ownership`), and the
+  supervisor parked in `cleanup-failed`. Releasing an already-removed handle
+  again now reports `released`; handles that main never issued are still
+  denied. Cleanup succeeds, and the supervisor backs off and reconnects like
+  every other host.
 - **Desktop scans keep reporting known peripherals (finding 205).** A
   peripheral that had been connected stopped appearing in name-filtered scans
   on macOS: CoreBluetooth replaced the advertised name with the GAP name read

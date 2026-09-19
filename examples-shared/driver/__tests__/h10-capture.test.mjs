@@ -112,6 +112,14 @@ function makeHost(overrides = {}) {
     async discover() { calls.push('discover'); return gatt },
     async release() { calls.push('connection.release'); return { state: 'released', failures: [] } }
   }
+  // Finding 209: one manager admits one scan at a time, like every real
+  // backend. The advertisement scan stays open until its stop, so a find
+  // (which opens a second scan) is refused with scan.already-active.
+  let scanOpen = false
+  const alreadyActive = () =>
+    Object.assign(new Error('scan.already-active: scan scan-1 is still active; stop it before starting a new scan'), {
+      code: 'scan.already-active'
+    })
   const manager = {
     discovery: { kind: 'continuous-scan' },
     adapter: {
@@ -123,16 +131,27 @@ function makeHost(overrides = {}) {
       get: () => undefined,
       list: () => []
     },
-    async find() { calls.push('find'); return peer },
+    async find() {
+      calls.push('find')
+      if (scanOpen) throw alreadyActive()
+      return peer
+    },
     async choose() { return peer },
     async scan(options) {
       calls.push('scan all')
+      if (scanOpen) throw alreadyActive()
+      scanOpen = true
       return {
         plan: { queryDigest: 'digest-1' },
         state: makeStream(),
         events: makeStream(),
         observations: scanStream,
-        async stop() { scanStream.end(); return { state: 'released', failures: [] } }
+        async stop() {
+          calls.push('scan.stop')
+          scanOpen = false
+          scanStream.end()
+          return { state: 'released', failures: [] }
+        }
       }
     },
     async connect() { calls.push('connect direct'); return connection },
@@ -145,7 +164,12 @@ function makeHost(overrides = {}) {
     userGesture: null,
     createManager: async () => ({ manager, prepare: async () => {}, acquireBackgroundLease: async () => ({ state: 'x', detail: null, release: async () => null }) })
   }
-  // One scan observation + a few HR values + one ECG frame, then streams stay open.
+  // Two scan observations, then the source ends delivery while the scan
+  // session stays open (finding 209: every loop exit — stream end or the
+  // duration break — must stop the scan before find opens the next one).
+  // The end rides the fake clock so the capture observes it mid-run, like a
+  // real radio going quiet, instead of all in the first microtask drain.
+  runtime.schedule(() => scanStream.end(), 500)
   queueMicrotask(() => {
     scanStream.push({
       peer,
@@ -200,7 +224,7 @@ test('summarizeDistribution reports n/min/p10/p50/p90/max/mean/stdev', () => {
 })
 
 test('h10-capture records a versioned fingerprint through public API only', async () => {
-  const { host, hrStream, ecgStream, runtime } = makeHost()
+  const { host, calls, hrStream, ecgStream, runtime } = makeHost()
   const ecgFrame = () => {
     const bytes = new Uint8Array(13)
     bytes[0] = 0x00
@@ -219,7 +243,7 @@ test('h10-capture records a versioned fingerprint through public API only', asyn
   // The scenario waits on the fake clock; keep advancing it until the run
   // settles instead of a fixed number of turns.
   let settled = false
-  const run = scenario.dispatch('capture', { device: 'Polar H10 E997042F', scanDurationMs: 50, hrDurationMs: 100, hrMinValues: 2, ecgFrames: 1 }).then(
+  const run = scenario.dispatch('capture', { device: 'Polar H10 E997042F', scanDurationMs: 50, hrDurationMs: 2500, hrMinValues: 2, ecgFrames: 1 }).then(
     value => { settled = true; return value },
     error => { settled = true; throw error }
   )
@@ -242,6 +266,10 @@ test('h10-capture records a versioned fingerprint through public API only', asyn
   assert.ok(fingerprint.behaviour.invalidPmdCommand.errorCode !== undefined, 'invalid PMD command probed')
   assert.equal(fingerprint.host.backend, 'node/bluez')
   assert.equal(typeof fingerprint.capturedAt, 'string')
+  // Finding 209: the advertisement scan stops before find opens the second
+  // scan, so the single-scan arbitration admits it.
+  assert.ok(calls.includes('scan.stop'), `the capture scan stopped: ${JSON.stringify(calls)}`)
+  assert.ok(calls.indexOf('scan.stop') < calls.indexOf('find'), `the capture scan stops before find: ${JSON.stringify(calls)}`)
 })
 
 test('h10-capture refuses bad durations instead of silently capturing nothing', async () => {

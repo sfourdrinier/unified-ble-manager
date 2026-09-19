@@ -114,6 +114,13 @@ interface RendererResources {
   readonly operations: Map<string, ManagedOperation>
   readonly preCancelledOperations: Map<string, number>
   readonly settledOperations: Map<string, number>
+  /**
+   * Handles removed after a successful release (finding 211): the registries
+   * tombstone here on every released removal, including source-terminal
+   * auto-removals, so an explicit re-release reports `released` instead of
+   * `ownership.denied`. Dies with the scope; never consulted across leases.
+   */
+  readonly releasedHandles: Set<string>
   lifecycle: 'active' | 'releasing'
   releaseResult: Promise<CleanupRecord> | null
 }
@@ -788,7 +795,11 @@ export class ElectronMainBleRouter {
 
   private async disconnect(resources: RendererResources, payload: SerializableRecord): Promise<SerializableRecord> {
     const handle = requiredString(payload, 'connectionHandle')
-    const connection = requiredResource(resources.connections, handle, 'connection')
+    const connection = resources.connections.get(handle)
+    if (connection === undefined) {
+      if (releasedHandleTombstone(resources, handle)) return alreadyReleasedCleanup()
+      throw contractError('ownership.denied', 'ipc', 'electron-main-router.connection-ownership')
+    }
     const lifecycleCleanup = await this.releaseConnectionEventSubscriptionsForConnection(resources, handle)
     if (lifecycleCleanup.state === 'release-failed') {
       return cleanupRecord(lifecycleCleanup)
@@ -828,14 +839,22 @@ export class ElectronMainBleRouter {
     payload: SerializableRecord
   ): Promise<SerializableRecord> {
     const handle = requiredString(payload, 'connectionEventsHandle')
-    const resource = requiredResource(resources.connectionEventSubscriptions, handle, 'connection-events')
+    const resource = resources.connectionEventSubscriptions.get(handle)
+    if (resource === undefined) {
+      if (releasedHandleTombstone(resources, handle)) return alreadyReleasedCleanup()
+      throw contractError('ownership.denied', 'ipc', 'electron-main-router.connection-events-ownership')
+    }
     const cleanup = await this.connectionEvents.remove(resources, handle, resource, true)
     return cleanupRecord(cleanup)
   }
 
   private async unsubscribe(resources: RendererResources, payload: SerializableRecord): Promise<SerializableRecord> {
     const handle = requiredString(payload, 'subscriptionHandle')
-    const resource = requiredResource(resources.subscriptions, handle, 'subscription')
+    const resource = resources.subscriptions.get(handle)
+    if (resource === undefined) {
+      if (releasedHandleTombstone(resources, handle)) return alreadyReleasedCleanup()
+      throw contractError('ownership.denied', 'ipc', 'electron-main-router.subscription-ownership')
+    }
     const cleanup = await this.streams.removeSubscription(resources, handle, resource, true)
     return cleanupRecord(cleanup)
   }
@@ -1072,6 +1091,7 @@ export class ElectronMainBleRouter {
       return { state: 'release-failed', failures }
     }
     resources.connections.delete(handle)
+    resources.releasedHandles.add(handle)
     return { state: 'released', failures: [] }
   }
 
@@ -1201,6 +1221,7 @@ export class ElectronMainBleRouter {
       operations: new Map(),
       preCancelledOperations: new Map(),
       settledOperations: new Map(),
+      releasedHandles: new Set(),
       lifecycle: 'active',
       releaseResult: null
     }
@@ -1494,6 +1515,23 @@ function requiredResource<Value>(resources: Map<string, Value>, handle: string, 
     throw contractError('ownership.denied', 'ipc', `electron-main-router.${kind}-ownership`)
   }
   return resource
+}
+
+/**
+ * Finding 211: the resource is gone because main already released it — a
+ * source-terminal auto-removal (link loss ends the stream) or an earlier
+ * explicit release. Releasing it again reports `released`: the end state
+ * the caller asked for already holds. A handle main never issued is still
+ * foreign and stays `ownership.denied`, so idempotence never blesses
+ * guesses. Like `releaseDatabase`, which already answers `released` for an
+ * unknown database.
+ */
+function releasedHandleTombstone(resources: RendererResources, handle: string): boolean {
+  return resources.releasedHandles.has(handle)
+}
+
+function alreadyReleasedCleanup(): SerializableRecord {
+  return Object.freeze({ state: 'released', failures: Object.freeze([]) })
 }
 
 function characteristicKey(path: {

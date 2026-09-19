@@ -314,9 +314,15 @@ export class H10CaptureScenario extends BleScenario<H10CaptureState> {
         }
       } finally {
         stopTimer()
+        // Finding 209: one manager admits one physical scan, so whatever
+        // ends the capture loop — the duration break, the stream ending, or
+        // the timer above — stops this scan (awaiting the release) before
+        // find() opens the next scan. Stop is idempotent, so an already-run
+        // timer stop reports the same record; the ledger stop at teardown
+        // then re-reports it. A stop failure here is the run's answer, not
+        // a later scan.already-active from a scan left open.
+        await session.stop()
       }
-      // The scan stop stays owned on the run ledger; the final teardown
-      // releases it, so a scan that already stopped reports its record.
     } catch (error) {
       return { ok: false, error: toJsonValue(error), observations: 0 }
     }

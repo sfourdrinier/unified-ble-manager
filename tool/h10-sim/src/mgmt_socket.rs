@@ -65,6 +65,14 @@ impl MgmtFailure {
     }
 }
 
+/// How an extended-advertising start attempt ended: the kernel refused
+/// `0x0054` itself (fall back to legacy, loudly), or something else failed.
+#[derive(Debug)]
+enum ExtStartError {
+    Refused(String),
+    Failed(String),
+}
+
 /// An open, bound control socket.
 struct MgmtSocket {
     fd: OwnedFd,
@@ -298,12 +306,6 @@ fn record_path(index: u16) -> PathBuf {
     directory.join(format!("h10-sim-mgmt-hci{index}.instance"))
 }
 
-fn boot_id() -> Result<String, String> {
-    std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
-        .map(|text| text.trim().to_string())
-        .map_err(|error| format!("read /proc/sys/kernel/random/boot_id: {error}"))
-}
-
 /// Refuses early, with the setcap command, when `CAP_NET_ADMIN` is missing.
 pub fn require_net_admin() -> Result<(), String> {
     let status = std::fs::read_to_string("/proc/self/status")
@@ -335,6 +337,34 @@ fn failure_message(context: &str, failure: MgmtFailure) -> String {
     }
 }
 
+/// Which MGMT commands put the instance on the air.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdvMethod {
+    /// `MGMT_OP_ADD_EXT_ADV_PARAMS` (with the H10's ~1 s interval) plus
+    /// `MGMT_OP_ADD_EXT_ADV_DATA`, both exactly sized.
+    Ext,
+    /// `MGMT_OP_ADD_ADVERTISING`: the kernel refused 0x0054, reported loudly.
+    LegacyFallback,
+}
+
+impl AdvMethod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ext => "ext-0x0054-0x0055",
+            Self::LegacyFallback => "legacy-0x003e-fallback",
+        }
+    }
+}
+
+/// What `start` installed on the controller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdvStart {
+    pub instance: u8,
+    pub method: AdvMethod,
+    /// Why the legacy fallback was used (`None` on the ext path).
+    pub fallback_reason: Option<String>,
+}
+
 /// The advertising instance this sim owns on one controller.
 pub struct MgmtAdvertiser {
     socket: MgmtSocket,
@@ -343,6 +373,7 @@ pub struct MgmtAdvertiser {
     record: PathBuf,
     active: Option<u8>,
     max_instances: u8,
+    method: Option<AdvMethod>,
 }
 
 impl MgmtAdvertiser {
@@ -355,10 +386,11 @@ impl MgmtAdvertiser {
         let mut advertiser = Self {
             socket,
             index,
-            boot_id: boot_id()?,
+            boot_id: linux_advertising::boot_id()?,
             record: record_path(index),
             active: None,
             max_instances: 0,
+            method: None,
         };
         let features = advertiser.read_features()?;
         advertiser.max_instances = features.max_instances;
@@ -462,29 +494,37 @@ impl MgmtAdvertiser {
     }
 
     /// Adds the H10 advertisement on a free instance. Replaces an instance
-    /// this advertiser already holds.
+    /// this advertiser already holds. Sends the extended `0x0054` params
+    /// (with the H10's interval) plus `0x0055` data first; only when the
+    /// kernel refuses `0x0054` itself does it fall back to the legacy
+    /// `0x003E`, and that fallback is reported — in the returned
+    /// [`AdvStart`], on stderr, and in the advertising detail — never silent.
     pub fn start(
         &mut self,
         name: &str,
         uuids16: &[u16],
         mfr: Option<(u16, &[u8])>,
-    ) -> Result<u8, String> {
+    ) -> Result<AdvStart, String> {
         self.stop()?;
         let features = self.read_features()?;
         let instance = mgmt::pick_instance(&features)?;
-        let request = mgmt::h10_add_advertising(instance, name, uuids16, mfr)?;
-        let data = self
-            .command(mgmt::OP_ADD_ADVERTISING, &request.params()?)
-            .map_err(|failure| {
-                failure_message(&format!("Add Advertising instance {instance}"), failure)
-            })?;
-        let added = data.first().copied();
-        if added != Some(instance) {
-            return Err(format!(
-                "Add Advertising asked for instance {instance}, the kernel answered {added:?}"
-            ));
-        }
+        let (method, fallback_reason) = match self.start_ext(instance, name, uuids16, mfr) {
+            Ok(()) => (AdvMethod::Ext, None),
+            Err(ExtStartError::Refused(reason)) => {
+                let message = format!(
+                    "MGMT_OP_ADD_EXT_ADV_PARAMS (0x0054) refused on hci{}: {reason}; \
+                     falling back to MGMT_OP_ADD_ADVERTISING (0x003E) without an explicit \
+                     advertising interval",
+                    self.index
+                );
+                eprintln!("h10-sim: {message}");
+                self.start_legacy(instance, name, uuids16, mfr)?;
+                (AdvMethod::LegacyFallback, Some(message))
+            }
+            Err(ExtStartError::Failed(message)) => return Err(message),
+        };
         self.active = Some(instance);
+        self.method = Some(method);
         *registered() = Some(Registered {
             index: self.index,
             instance,
@@ -503,7 +543,110 @@ impl MgmtAdvertiser {
                 self.record.display()
             )
         })?;
-        Ok(instance)
+        Ok(AdvStart {
+            instance,
+            method,
+            fallback_reason,
+        })
+    }
+
+    /// Sends `0x0054` then `0x0055`. A kernel refusal of `0x0054` itself is
+    /// `Refused` (the caller falls back); anything else is `Failed`.
+    fn start_ext(
+        &mut self,
+        instance: u8,
+        name: &str,
+        uuids16: &[u16],
+        mfr: Option<(u16, &[u8])>,
+    ) -> Result<(), ExtStartError> {
+        let params = mgmt::h10_ext_adv_params(instance).map_err(ExtStartError::Failed)?;
+        match self.command(
+            mgmt::OP_ADD_EXT_ADV_PARAMS,
+            &params.params().map_err(ExtStartError::Failed)?,
+        ) {
+            Ok(data) => {
+                let reply =
+                    mgmt::parse_add_ext_adv_params_reply(&data).map_err(ExtStartError::Failed)?;
+                if reply.instance != instance {
+                    return Err(ExtStartError::Failed(format!(
+                        "Add Extended Advertising Params asked for instance {instance}, \
+                         the kernel answered {:?}",
+                        reply.instance
+                    )));
+                }
+            }
+            Err(MgmtFailure::Status { opcode, status })
+                if opcode == mgmt::OP_ADD_EXT_ADV_PARAMS =>
+            {
+                return Err(ExtStartError::Refused(format!(
+                    "{} (0x{status:02x})",
+                    mgmt::status_name(status)
+                )));
+            }
+            Err(failure) => {
+                return Err(ExtStartError::Failed(failure_message(
+                    &format!("Add Extended Advertising Params instance {instance}"),
+                    failure,
+                )));
+            }
+        }
+        let data_request =
+            mgmt::h10_ext_adv_data(instance, name, uuids16, mfr).map_err(ExtStartError::Failed)?;
+        let data = self
+            .command(
+                mgmt::OP_ADD_EXT_ADV_DATA,
+                &data_request.params().map_err(ExtStartError::Failed)?,
+            )
+            .map_err(|failure| {
+                ExtStartError::Failed(failure_message(
+                    &format!("Add Extended Advertising Data instance {instance}"),
+                    failure,
+                ))
+            })?;
+        let added = mgmt::parse_add_ext_adv_data_reply(&data).map_err(ExtStartError::Failed)?;
+        if added != instance {
+            // Params accepted but data landed elsewhere: remove the params
+            // instance best-effort so no half-configured instance is left,
+            // and report both outcomes loudly.
+            if let Err(failure) = self.command(
+                mgmt::OP_REMOVE_ADVERTISING,
+                &mgmt::remove_advertising_params(instance),
+            ) {
+                eprintln!(
+                    "h10-sim: cleanup of half-added ext instance {instance} on hci{} failed: {}",
+                    self.index,
+                    failure_message("Remove Advertising", failure),
+                );
+            }
+            return Err(ExtStartError::Failed(format!(
+                "Add Extended Advertising Data asked for instance {instance}, \
+                 the kernel answered {added}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Sends the legacy `0x003E`: no explicit interval, same payload bytes.
+    fn start_legacy(
+        &mut self,
+        instance: u8,
+        name: &str,
+        uuids16: &[u16],
+        mfr: Option<(u16, &[u8])>,
+    ) -> Result<(), String> {
+        let request = mgmt::h10_add_advertising(instance, name, uuids16, mfr)?;
+        let data = self
+            .command(mgmt::OP_ADD_ADVERTISING, &request.params()?)
+            .map_err(|failure| {
+                failure_message(&format!("Add Advertising instance {instance}"), failure)
+            })?;
+        let added = data.first().copied();
+        if added != Some(instance) {
+            return Err(format!(
+                "Add Advertising asked for instance {instance}, the kernel answered {added:?}"
+            ));
+        }
+        Ok(())
     }
 
     /// Removes the held instance. Returns the instance removed, or None when
@@ -556,6 +699,7 @@ impl MgmtAdvertiser {
             "backend": "mgmt-legacy",
             "index": self.index,
             "instance": self.active,
+            "method": self.method.map(AdvMethod::as_str),
             "maxInstances": self.max_instances,
             "record": self.record.display().to_string(),
         })

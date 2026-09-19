@@ -671,6 +671,15 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private readonly scanGroups = new Map<string, ScanGroup>()
   private readonly connectionsByKey = new Map<string, ConnectionEntry>()
   private readonly connectionsByLink = new Map<string, ConnectionEntry>()
+  /**
+   * Acquisitions in flight per native peer (finding 194). A caller above the
+   * provider can abandon a connect — no abort, no deadline — leaving the
+   * owner's `Connecting` claim live; a newer connect for the same peer then
+   * supersedes it (cancel plus settle) so arbitration admits the retry
+   * instead of refusing `connection.already-owned`. Mirrors the desktop
+   * provider's pending-acquisition supersede.
+   */
+  private readonly pendingAcquisitions = new Map<string, { operationId: string; settled: Promise<void> }>()
   private readonly retiredLinks = new Set<string>()
   private readonly databases = new Map<string, DatabaseEntry>()
   private readonly subscriptions = new Map<string, SubscriptionEntry>()
@@ -1628,6 +1637,8 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     let membership: string
     try {
       membership = (await this.invoke('scan.start', args)).operationId
+    } catch (error) {
+      throw this.describeScanRefusal(error, operation)
     } finally {
       removeAbort()
     }
@@ -1675,6 +1686,33 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     }
     await this.refreshCounters()
     return this.scanLease(group, owner)
+  }
+
+  /**
+   * Finding 209: the owner refuses a scan while one is active, and its
+   * refusal carries no identity. When this provider holds the conflicting
+   * scan(s) the error names them (session, owner lease, state) so a scan
+   * left open is diagnosable; otherwise the owner's answer stands untouched.
+   */
+  private describeScanRefusal(error: unknown, operation: string): unknown {
+    if (!(error instanceof BackendContractError)) return error
+    if (error.normalized.code !== 'scan.already-active') return error
+    const active = [...this.scanGroups.values()].filter(group => group.state !== 'released')
+    if (active.length === 0) return error
+    const sessions = active.map(group => String(group.scanSessionId))
+    return contractError('scan.already-active', 'scan', operation, {
+      domain: 'react-native-rust-core',
+      code: 'scan-arbitration',
+      safeMessage:
+        active.length === 1
+          ? `scan ${sessions.join(', ')} is still active; stop it before starting a new scan`
+          : `${active.length.toString()} scans are still active (${sessions.join(', ')}); stop them before starting a new scan`,
+      metadata: Object.freeze({
+        activeScanSessionIds: Object.freeze([...sessions]),
+        ownerLeaseIds: Object.freeze(active.map(group => String(group.ownerLeaseId))),
+        states: Object.freeze(active.map(group => group.state))
+      })
+    })
   }
 
   private reportScanCleanup(group: ScanGroup, cleanup: CleanupRecord): void {
@@ -1913,6 +1951,35 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
 
   // -- connections -------------------------------------------------------------------------------
 
+  /**
+   * Cancel this provider's in-flight acquisition for `nativePeerId`, if any,
+   * and wait for it to settle (finding 194). The superseded caller already
+   * holds its terminal answer — it moved on, which is why a newer connect is
+   * here. Cancelling reaps the owner's `Connecting` claim, so the new
+   * connect arbitrates against a terminal record. Best-effort: a cancel that
+   * cannot land leaves today's arbitration answer in place, and the failure
+   * is reported on the background channel, never swallowed. A live
+   * established link is untouched: only a pending acquisition is ever
+   * superseded. Mirrors the desktop provider's supersede.
+   */
+  private async supersedePendingAcquisition(nativePeerId: string): Promise<void> {
+    const pending = this.pendingAcquisitions.get(nativePeerId)
+    if (pending === undefined) return
+    this.pendingAcquisitions.delete(nativePeerId)
+    try {
+      await this.cancel(pending.operationId)
+    } catch (error) {
+      this.emitEvent({
+        kind: 'diagnostic-warning',
+        code: 'connect-supersede-cancel-failed',
+        message: 'Superseding a stale connect acquisition did not cancel it',
+        detail: Object.freeze({ code: normalizedFrom(error, `${SCOPE}.op.cancel`).code })
+      })
+      return
+    }
+    await pending.settled
+  }
+
   private async connect(
     peerId: PeerId<string>,
     _clientId: ClientId<string, string>,
@@ -1926,6 +1993,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       // CoreBluetooth has no autoConnect; the capability is not registered.
       throw contractError('capability.unsupported', 'connection', `${operation}.when-available`)
     }
+    await this.supersedePendingAcquisition(nativePeerId)
     const operationId = this.mintOperationId('connect')
     const ordinal = this.nextOrdinal
     this.nextOrdinal += 1
@@ -1946,7 +2014,21 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const removeAbort = this.watchAbort(options.signal, operationId, operation)
     let connected: WireOpResults['connection.connect']
     try {
-      connected = await this.invoke('connection.connect', args)
+      const acquisition = this.invoke('connection.connect', args)
+      this.pendingAcquisitions.set(nativePeerId, {
+        operationId,
+        settled: acquisition.then(
+          () => undefined,
+          () => undefined
+        )
+      })
+      try {
+        connected = await acquisition
+      } finally {
+        if (this.pendingAcquisitions.get(nativePeerId)?.operationId === operationId) {
+          this.pendingAcquisitions.delete(nativePeerId)
+        }
+      }
     } finally {
       removeAbort()
     }

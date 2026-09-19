@@ -109,4 +109,14 @@ describe('build-tv.sh finding 176', () => {
       fs.rmSync(stage, { recursive: true, force: true })
     }
   })
+
+  // Without a TTY, pnpm's "modules directory will be removed" prompt purged
+  // node_modules and exited 0 without reinstalling the library, so the TV
+  // app later failed to resolve unified-ble-manager/expo.
+  test('install never waits on the modules-purge prompt and fails if the library is missing', () => {
+    const script = fs.readFileSync(SCRIPT, 'utf8')
+    const install = script.slice(script.indexOf('cmd_install() {'), script.indexOf('cmd_verify_identity() {'))
+    expect(install).toContain('--config.confirm-modules-purge=false')
+    expect(install).toContain('node_modules/unified-ble-manager/package.json')
+  })
 })

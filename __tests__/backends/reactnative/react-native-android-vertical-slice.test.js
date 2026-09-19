@@ -241,13 +241,35 @@ describe('React Native Android canonical protocol vertical slice', () => {
     const other = await fixture.manager.connect(otherPeer, { intent: 'when-available' })
     await other.release()
     await expect(fixture.manager.destroy()).resolves.toMatchObject({ state: 'released', failures: [] })
+    // Finding 194: the core cancels the backend acquisition synchronously
+    // with the abort, so native cleanup confirms before the retry lands and
+    // the quarantine-retained diagnostic no longer fires on this path. The
+    // zero-diagnostic guard pins the silence: any console output would fail
+    // the suite as an unexpected diagnostic.
     await new Promise(resolve => {
       setImmediate(resolve)
     })
-    expectConsoleInfo(
-      '[unified-ble:android-gatt.connect] Cancelled native connection cleanup is not yet confirmed; quarantine retained:',
-      'AA:BB'
+  })
+
+  test('an expired connect deadline admits a same-peer retry instead of already-owned (194)', async () => {
+    const fixture = await createAndroidPeerDirectoryFixture(
+      [{ nativePeerId: 'AA:BB', displayName: 'Heart Strap' }],
+      { holdWhenAvailableConnect: true, publicNow: Date.now, providerNow: Date.now }
     )
+    const peers = await fixture.manager.peers.bonded()
+    const [firstPeer] = peers
+    if (firstPeer === undefined) throw new Error('Expected bonded peer is missing')
+
+    // No caller signal: the deadline is the only answer, so the acquisition
+    // must be cancelled through the backend contract path, never abandoned.
+    const pending = fixture.manager.connect(firstPeer, { intent: 'when-available', timeoutMs: 20 })
+    await expect(pending).rejects.toMatchObject({ code: 'connection.failed' })
+    expect(fixture.runtime.commandKinds).toEqual(expect.arrayContaining(['connect', 'disconnect']))
+
+    fixture.runtime.holdWhenAvailableConnect = false
+    const retry = await fixture.manager.connect(firstPeer, { intent: 'when-available' })
+    await retry.release()
+    await expect(fixture.manager.destroy()).resolves.toMatchObject({ state: 'released', failures: [] })
   })
 
   test.each([
@@ -1875,9 +1897,12 @@ async function createAndroidPeerDirectoryFixture(bondedPeers, options = {}) {
   runtime.bondedPermissionDenied = options.bondedPermissionDenied === true
   runtime.holdWhenAvailableConnect = options.holdWhenAvailableConnect === true
   global.__unifiedBleNativeProtocolV2 = runtime
+  // The provider clock defaults to the legacy fixed value; a test exercising
+  // a caller deadline passes a live clock so backend deadline timers compute
+  // a sane delay instead of overflowing setTimeout and firing at once.
   const provider = createReactNativeAndroidBackendProvider({
     control,
-    now: () => 20,
+    now: options.providerNow ?? (() => 20),
     createOwnerId: () => 'deterministic-react-native-peer-directory-owner'
   })
   const [adapter] = await provider.listAdapters()
@@ -1894,7 +1919,10 @@ async function createAndroidPeerDirectoryFixture(bondedPeers, options = {}) {
     },
     DEFAULT_BLE_MANAGER_OPTIONS
   )
-  const manager = await createPublicBleManager(internalManager, () => 20)
+  // The public clock defaults to the legacy fixed value; a test exercising a
+  // caller deadline passes its own clock so the public deadline shares the
+  // internal manager's clock instead of arriving pre-expired.
+  const manager = await createPublicBleManager(internalManager, options.publicNow ?? (() => 20))
   return { manager, runtime }
 }
 

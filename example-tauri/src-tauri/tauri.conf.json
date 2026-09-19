@@ -5,7 +5,7 @@
   "identifier": "com.unifiedblemanager.tauriproof",
   "build": { "frontendDist": "../frontend", "devUrl": "http://127.0.0.1:1420" },
   "app": {
-    "windows": [{ "label": "main", "title": "Unified BLE Tauri Proof", "width": 720, "height": 480 }],
+    "windows": [{ "label": "main", "title": "Unified BLE Tauri Proof", "width": 720, "height": 480, "backgroundThrottling": "disabled" }],
     "security": { "csp": null }
   },
   "bundle": { "active": false, "icon": ["../../docs/logo.png"] }

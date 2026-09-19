@@ -130,3 +130,6 @@ native/desktop-core/prebuilds/
 
 # local pnpm content-addressable store (created by nested installs)
 .pnpm-store/
+
+# Kotlin compiler session cache
+.kotlin/

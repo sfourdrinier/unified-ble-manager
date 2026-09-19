@@ -706,7 +706,7 @@ describe('Electron IPC hardening', () => {
       stream.close()
       return released()
     })
-    const resources = { scans: new Map(), subscriptions: new Map() }
+    const resources = { scans: new Map(), subscriptions: new Map(), releasedHandles: new Set() }
     const events = []
     const maximumMessageBytes = 4096
     let nextEvent = 1
@@ -764,7 +764,7 @@ describe('Electron IPC hardening', () => {
       stream.close()
       return released()
     })
-    const resources = { scans: new Map(), subscriptions: new Map() }
+    const resources = { scans: new Map(), subscriptions: new Map(), releasedHandles: new Set() }
     const events = []
     let nextEvent = 1
     const registry = new ElectronRendererStreamRegistry({

@@ -53,6 +53,13 @@ export interface ManagedSubscription {
 export interface RendererStreamResources {
   readonly scans: Map<string, ManagedScan>
   readonly subscriptions: Map<string, ManagedSubscription>
+  /**
+   * Handles removed after a successful release, including a source-terminal
+   * auto-removal (finding 211: link loss ends the stream before the
+   * renderer's explicit release arrives). Re-releasing one reports
+   * `released`; a handle never issued is still foreign.
+   */
+  readonly releasedHandles: Set<string>
 }
 
 export interface ElectronRendererStreamRegistryOptions {
@@ -163,6 +170,7 @@ export class ElectronRendererStreamRegistry {
       await resource.pump
     }
     resources.subscriptions.delete(handle)
+    resources.releasedHandles.add(handle)
     return { state: 'released', failures: [] }
   }
 

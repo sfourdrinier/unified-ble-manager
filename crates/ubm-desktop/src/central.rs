@@ -2246,9 +2246,25 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let id = {
             let mut core = self.inner.core.lock().await;
             let mut out = batch();
-            let id = core
-                .start_scan(&request, None, owner, now_ms(), &mut out)
-                .map_err(DesktopError::from)?;
+            let id = match core.start_scan(&request, None, owner, now_ms(), &mut out) {
+                Ok(id) => id,
+                Err(error) => {
+                    let mut failure = DesktopError::from(error);
+                    if failure.code() == BleErrorCode::ScanAlreadyActive {
+                        // Finding 209: name the occupying scan so the
+                        // refusal is diagnosable. The slot holds the scan
+                        // admitted above (core arbitration already refused
+                        // a second live scan, so the slot is the occupant).
+                        if let Some(occupant) = self.inner.scan_slot().as_ref() {
+                            failure = failure.with_detail(format!(
+                                "scan {} is still active; stop it before starting a new scan",
+                                occupant.id
+                            ));
+                        }
+                    }
+                    return Err(failure);
+                }
+            };
             publish_or_refuse(
                 &mut core,
                 &ctl.ticket,
@@ -5883,7 +5899,7 @@ mod adapter_tests {
     #[tokio::test]
     async fn second_scan_owner_is_rejected_without_radio_effect() {
         let central = open().await;
-        central
+        let first = central
             .start_scan("owner-a", &[], OpControl::budget_ms(5000))
             .await
             .expect("first");
@@ -5892,6 +5908,12 @@ mod adapter_tests {
             .await
             .expect_err("second owner rejected");
         assert_eq!(error.code_str(), "scan.already-active");
+        // Finding 209: the refusal names the occupying scan.
+        let detail = error.detail().expect("refusal names the occupant");
+        assert!(
+            detail.contains(&first.operation_id().to_string()),
+            "detail names the occupying scan, got: {detail}"
+        );
         assert_eq!(
             central
                 .boundary()

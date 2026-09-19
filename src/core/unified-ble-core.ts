@@ -95,6 +95,24 @@ const QUARANTINE_DRAIN_TIMEOUT_MS = 1_000
 // Non-cancellable backend probes remain owned until they settle. Bound their accumulation.
 const MAX_PENDING_ADAPTER_WATCH_ACQUISITIONS = 64
 
+/**
+ * Finding 161: a dispatched connect whose deadline expires before any link
+ * came up is the peer not answering — `connection.failed`
+ * (`caller-decides`) on every host, the same physical event as a
+ * controller-given-up establishment failure. The deadline fact rides in
+ * `platform`; a connect commits nothing, so the caller decides the retry. A
+ * caller-supplied AbortSignal abort stays `operation.aborted`.
+ */
+function connectDeadlineError(deadlineMs: number): BackendContractError {
+  const normalized = contractError('connection.failed', 'connection', 'connect', {
+    domain: 'core',
+    code: 'deadline-expired',
+    safeMessage: `The ${deadlineMs} ms connect deadline expired before any link came up.`,
+    metadata: Object.freeze({ deadlineMs })
+  })
+  return new BackendContractError({ ...normalized.normalized, retryability: 'caller-decides' })
+}
+
 export interface UnifiedBleCoreOptions {
   readonly now: () => number
   readonly maximumValueBytes: ByteLimit
@@ -552,6 +570,13 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     return new Promise((resolve, reject) => {
       let cancelled = false
       let deadlineHandle: CoreDeadlineHandle | null = null
+      // Finding 194: the backend contract's cancel path for a connect
+      // acquisition is the AbortSignal in ConnectionOptions. The core owns a
+      // linked controller per acquisition: caller abort and core deadline
+      // both abort it, so the backend call is cancelled instead of abandoned
+      // in flight with a live Connecting claim. A late backend settlement is
+      // still compensated below, never adopted.
+      const backendAbort = new AbortController()
       const cancel = (error: BackendContractError) => {
         if (cancelled) {
           return
@@ -559,15 +584,17 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
         cancelled = true
         deadlineHandle?.cancel()
         options.signal?.removeEventListener('abort', onAbort)
+        backendAbort.abort()
         reject(error)
       }
       const onAbort = () => cancel(contractError('operation.aborted', 'core', 'connect'))
       this.pendingConnectAcquisitions.add(cancel)
       options.signal?.addEventListener('abort', onAbort, { once: true })
       if (options.deadline !== null) {
+        const deadlineMs = Number(options.deadline)
         deadlineHandle = scheduleCoreDeadline(
-          Number(options.deadline),
-          () => cancel(contractError('operation.timed-out', 'core', 'connect')),
+          deadlineMs,
+          () => cancel(connectDeadlineError(deadlineMs)),
           this.options.timer,
           this.options.now
         )
@@ -576,7 +603,10 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
         try {
           let lease: ConnectionLease<Attachment, string, string>
           try {
-            lease = await this.backend.connections.connect(peerId, this.construction.clientId, options)
+            lease = await this.backend.connections.connect(peerId, this.construction.clientId, {
+              ...options,
+              signal: backendAbort.signal
+            })
           } catch (error) {
             throw error instanceof BackendContractError
               ? error

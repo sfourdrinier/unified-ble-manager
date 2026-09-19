@@ -186,6 +186,211 @@ pub enum StaleAction {
     DiscardRecord,
 }
 
+/// On-disk record of the adapter alias this sim replaced, so a run that died
+/// without restoring it (SIGKILL, panic before the hook ran) is still
+/// restored: the next start adopts `prev_alias` when the live alias is the
+/// leftover sim name. Valid only within the boot that wrote it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AliasRecord {
+    pub boot_id: String,
+    pub index: u16,
+    pub prev_alias: String,
+}
+
+impl AliasRecord {
+    pub fn encode(&self) -> String {
+        format!(
+            "boot_id={}\nindex={}\nprev_alias={}\n",
+            self.boot_id, self.index, self.prev_alias
+        )
+    }
+
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let field = |name: &str| {
+            text.lines()
+                .find_map(|line| line.strip_prefix(name)?.strip_prefix('='))
+                .map(str::to_string)
+                .ok_or_else(|| format!("alias record has no {name}"))
+        };
+        Ok(Self {
+            boot_id: field("boot_id")?,
+            index: field("index")?
+                .parse()
+                .map_err(|error| format!("alias record index: {error}"))?,
+            prev_alias: field("prev_alias")?,
+        })
+    }
+}
+
+/// Path of the alias record for one controller: beside the MGMT instance
+/// record, with its own name so the two lifecycles never share a file.
+pub fn alias_record_path(index: u16) -> std::path::PathBuf {
+    let directory = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    directory.join(format!("h10-sim-alias-hci{index}.instance"))
+}
+
+/// What claiming the adapter alias does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AliasPlan {
+    /// The alias to set: always the advertised name.
+    pub set_to: String,
+    /// The alias to restore at stop (`None`: it already was the sim name,
+    /// nothing to restore).
+    pub restore_to: Option<String>,
+    /// The restore target came from a stale record, not the live alias.
+    pub adopted_stale: bool,
+}
+
+/// Plans the adapter-alias claim. `stale_prev_alias` is the previous alias a
+/// same-boot record names, if any. A stale record only wins when the live
+/// alias is the leftover sim name — if someone changed the alias after the
+/// crash, the live alias is the truth.
+pub fn plan_adapter_alias(
+    current: &str,
+    sim_name: &str,
+    stale_prev_alias: Option<&str>,
+) -> AliasPlan {
+    if current == sim_name {
+        if let Some(previous) = stale_prev_alias {
+            return AliasPlan {
+                set_to: sim_name.to_string(),
+                restore_to: Some(previous.to_string()),
+                adopted_stale: true,
+            };
+        }
+        return AliasPlan {
+            set_to: sim_name.to_string(),
+            restore_to: None,
+            adopted_stale: false,
+        };
+    }
+    AliasPlan {
+        set_to: sim_name.to_string(),
+        restore_to: Some(current.to_string()),
+        adopted_stale: false,
+    }
+}
+
+/// The `bluetoothctl` invocation that restores a previous adapter alias from
+/// a synchronous context (the panic hook): `system-alias <prev>`, or
+/// `reset-alias` when the previous alias was empty (back to the system name).
+pub fn system_alias_command(prev_alias: &str) -> (String, Vec<String>) {
+    if prev_alias.is_empty() {
+        ("bluetoothctl".to_string(), vec!["reset-alias".to_string()])
+    } else {
+        (
+            "bluetoothctl".to_string(),
+            vec!["system-alias".to_string(), prev_alias.to_string()],
+        )
+    }
+}
+
+/// Restores the recorded previous alias when the main thread panics after the
+/// async radio is gone. The alias record carries everything the hook needs;
+/// a failed restore keeps the record so the next start adopts it. A panic in
+/// a side task leaves the process — and its alias — running, so it is left
+/// alone here, like the MGMT instance hook.
+pub fn install_adapter_alias_panic_hook(record: std::path::PathBuf) {
+    use std::sync::Once;
+    static HOOK: Once = Once::new();
+    HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            previous(info);
+            if std::thread::current().name() != Some("main") {
+                return;
+            }
+            restore_alias_from_record(&record);
+        }));
+    });
+}
+
+/// Reads one alias record and restores its previous alias. Loud in every
+/// outcome; returns whether the record is gone.
+fn restore_alias_from_record(record: &std::path::Path) -> bool {
+    let text = match std::fs::read_to_string(record) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return true;
+        }
+        Err(error) => {
+            eprintln!(
+                "h10-sim: panic cleanup could NOT read alias record {}: {error} \
+                 (the adapter alias is left behind; fix it with \
+                 `bluetoothctl system-alias <name>`)",
+                record.display()
+            );
+            return false;
+        }
+    };
+    let parsed = match AliasRecord::parse(&text) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            eprintln!(
+                "h10-sim: panic cleanup discards unreadable alias record {}: {error}",
+                record.display()
+            );
+            remove_alias_record(record);
+            return true;
+        }
+    };
+    let (program, args) = system_alias_command(&parsed.prev_alias);
+    match std::process::Command::new(&program).args(&args).output() {
+        Ok(output) if output.status.success() => {
+            eprintln!(
+                "h10-sim: panic cleanup restored adapter alias on hci{} to {:?}",
+                parsed.index, parsed.prev_alias
+            );
+            remove_alias_record(record);
+            true
+        }
+        Ok(output) => {
+            eprintln!(
+                "h10-sim: panic cleanup could NOT restore adapter alias on hci{} to {:?}: \
+                 {program} {} exited {}: {} (the next start adopts the record at {})",
+                parsed.index,
+                parsed.prev_alias,
+                args.join(" "),
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim(),
+                record.display()
+            );
+            false
+        }
+        Err(error) => {
+            eprintln!(
+                "h10-sim: panic cleanup could NOT run {program} to restore adapter alias on \
+                 hci{} to {:?}: {error} (the next start adopts the record at {})",
+                parsed.index,
+                parsed.prev_alias,
+                record.display()
+            );
+            false
+        }
+    }
+}
+
+/// The kernel boot id, scoping both record files to this boot: instances
+/// and aliases never survive a reboot, so neither do the records.
+pub fn boot_id() -> Result<String, String> {
+    std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .map(|text| text.trim().to_string())
+        .map_err(|error| format!("read /proc/sys/kernel/random/boot_id: {error}"))
+}
+
+pub(crate) fn remove_alias_record(path: &std::path::Path) {
+    if let Err(error) = std::fs::remove_file(path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            eprintln!(
+                "h10-sim: cannot remove alias record {}: {error}",
+                path.display()
+            );
+        }
+    }
+}
+
 pub fn stale_action(
     record: &InstanceRecord,
     boot_id: &str,
@@ -304,6 +509,71 @@ mod tests {
         assert_eq!(InstanceRecord::parse(&record.encode()), Ok(record));
         assert!(InstanceRecord::parse("boot_id=x\nindex=0\n").is_err());
         assert!(InstanceRecord::parse("boot_id=x\nindex=0\ninstance=300\n").is_err());
+    }
+
+    #[test]
+    fn alias_record_round_trips() {
+        let record = AliasRecord {
+            boot_id: "boot-a".to_string(),
+            index: 0,
+            prev_alias: "lx5090".to_string(),
+        };
+        assert_eq!(
+            record.encode(),
+            "boot_id=boot-a\nindex=0\nprev_alias=lx5090\n"
+        );
+        assert_eq!(AliasRecord::parse(&record.encode()), Ok(record));
+        assert!(AliasRecord::parse("boot_id=x\nindex=0\n").is_err());
+        assert!(AliasRecord::parse("boot_id=x\nindex=0\nprev_alias=\n").is_ok());
+    }
+
+    #[test]
+    fn alias_record_path_uses_the_runtime_dir() {
+        let path = alias_record_path(0);
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("h10-sim-alias-hci0.instance")
+        );
+    }
+
+    #[test]
+    fn alias_plan_sets_the_sim_name_and_restores_the_previous() {
+        // Normal start: alias differs, restore target is the live alias.
+        let plan = plan_adapter_alias("lx5090", "Polar H10 SIM0001", None);
+        assert_eq!(plan.set_to, "Polar H10 SIM0001");
+        assert_eq!(plan.restore_to.as_deref(), Some("lx5090"));
+        assert!(!plan.adopted_stale);
+        // Alias already the sim name, no record: nothing to restore.
+        let plan = plan_adapter_alias("Polar H10 SIM0001", "Polar H10 SIM0001", None);
+        assert_eq!(plan.set_to, "Polar H10 SIM0001");
+        assert_eq!(plan.restore_to, None);
+        assert!(!plan.adopted_stale);
+        // Leftover alias with a same-boot record: adopt the recorded
+        // original, not the leftover sim name.
+        let plan = plan_adapter_alias("Polar H10 SIM0001", "Polar H10 SIM0001", Some("lx5090"));
+        assert_eq!(plan.set_to, "Polar H10 SIM0001");
+        assert_eq!(plan.restore_to.as_deref(), Some("lx5090"));
+        assert!(plan.adopted_stale);
+        // Someone changed the alias after the crash: the live alias wins.
+        let plan = plan_adapter_alias("other-host", "Polar H10 SIM0001", Some("lx5090"));
+        assert_eq!(plan.restore_to.as_deref(), Some("other-host"));
+        assert!(!plan.adopted_stale);
+    }
+
+    #[test]
+    fn alias_restore_maps_to_bluetoothctl() {
+        assert_eq!(
+            system_alias_command("lx5090"),
+            (
+                "bluetoothctl".to_string(),
+                vec!["system-alias".to_string(), "lx5090".to_string()]
+            )
+        );
+        // An empty previous alias resets to the system name.
+        assert_eq!(
+            system_alias_command(""),
+            ("bluetoothctl".to_string(), vec!["reset-alias".to_string()])
+        );
     }
 
     #[test]

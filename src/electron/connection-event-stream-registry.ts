@@ -50,6 +50,13 @@ export interface ManagedConnectionEventSubscription {
 
 export interface RendererConnectionEventResources {
   readonly connectionEventSubscriptions: Map<string, ManagedConnectionEventSubscription>
+  /**
+   * Handles removed after a successful detach, including a lifecycle-terminal
+   * auto-detach (finding 211: link loss ends the stream before the
+   * renderer's explicit unsubscribe arrives). Re-releasing one reports
+   * `released`; a handle never issued is still foreign.
+   */
+  readonly releasedHandles: Set<string>
 }
 
 export interface ElectronConnectionEventStreamRegistryOptions {
@@ -147,6 +154,7 @@ export class ElectronConnectionEventStreamRegistry {
         if (cleanup.state === 'released') {
           this.clearRetry(resource)
           resources.connectionEventSubscriptions.delete(handle)
+          resources.releasedHandles.add(handle)
         } else {
           resource.cleanupRequested = false
           resource.cleanupResult = null

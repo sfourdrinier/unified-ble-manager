@@ -85,3 +85,29 @@ describe('finding 185: a scan lease is never left behind', () => {
     await second.manager.destroy()
   })
 })
+
+describe('finding 209: a concurrent scan is refused and names the active scan', () => {
+  test('a second scan while one is active fails scan.already-active naming the active scan session', async () => {
+    const { manager } = await openManager()
+    const first = await manager.scan(scanOptions())
+    const blocked = await manager.scan(scanOptions()).then(
+      () => {
+        throw new Error('expected the second scan to be refused')
+      },
+      error => error
+    )
+    expect(blocked.code ?? blocked.normalized?.code).toBe('scan.already-active')
+    const platform = (blocked.normalized ?? blocked).platform ?? null
+    expect(platform).not.toBeNull()
+    const metadata = platform.metadata ?? {}
+    const sessionIds = Array.isArray(metadata.activeScanSessionIds)
+      ? metadata.activeScanSessionIds
+      : [metadata.activeScanSessionId]
+    expect(sessionIds.some(session => typeof session === 'string' && session.length > 0)).toBe(true)
+    expect((await first.stop()).state).toBe('released')
+    // The sequencing the fixed h10-capture uses: stop, then the next scan.
+    const second = await manager.scan(scanOptions())
+    expect((await second.stop()).state).toBe('released')
+    await manager.destroy()
+  })
+})

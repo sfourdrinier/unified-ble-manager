@@ -30,14 +30,18 @@
 //! #define MGMT_EV_ADVERTISING_REMOVED 0x0024  // { __u8 instance; }
 //! ```
 //!
-//! Why this command and not its extended successor: bluetoothd registers
+//! Why the legacy command used to be the only path: bluetoothd registers
 //! `LEAdvertisement1` objects with `MGMT_OP_ADD_EXT_ADV_PARAMS` (0x0054) plus
 //! `MGMT_OP_ADD_EXT_ADV_DATA` (0x0055). The affected BlueZ releases size the
 //! 0x0055 parameters with `sizeof(struct mgmt_cp_add_advertising)` (11) where
 //! `struct mgmt_cp_add_ext_adv_data` is 3 bytes, so every request carries 8
 //! extra bytes, and kernels that check the length exactly answer `Invalid
-//! Parameters (0x0d)`. `MGMT_OP_ADD_ADVERTISING` carries its own correctly
-//! sized header and still drives the controller's extended advertising sets.
+//! Parameters (0x0d)`. The sim sends its own correctly sized 0x0054/0x0055
+//! pair first — which additionally carries the H10's ~1 s advertising
+//! interval, something the legacy command cannot express — and falls back to
+//! the correctly sized `MGMT_OP_ADD_ADVERTISING` (which still drives the
+//! controller's extended advertising sets) only when the kernel refuses
+//! 0x0054, reporting the fallback loudly.
 
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
@@ -47,12 +51,21 @@ use crate::advertisement;
 pub const HEADER_LEN: usize = 6;
 /// `MGMT_ADD_ADVERTISING_SIZE`: the fixed part of `mgmt_cp_add_advertising`.
 pub const ADD_ADVERTISING_FIXED_LEN: usize = 11;
+/// `MGMT_ADD_EXT_ADV_PARAMS_MIN_SIZE`: the fixed part of
+/// `mgmt_cp_add_ext_adv_params` (instance + flags + duration + timeout +
+/// min_interval + max_interval + tx_power = 1 + 4 + 2 + 2 + 4 + 4 + 1).
+pub const ADD_EXT_ADV_PARAMS_LEN: usize = 18;
+/// `MGMT_ADD_EXT_ADV_DATA_SIZE`: the fixed part of
+/// `mgmt_cp_add_ext_adv_data` (instance + adv_data_len + scan_rsp_len).
+pub const ADD_EXT_ADV_DATA_FIXED_LEN: usize = 3;
 /// Fixed part of `mgmt_rp_read_adv_features` before `instance[]`.
 pub const READ_ADV_FEATURES_FIXED_LEN: usize = 8;
 
 pub const OP_READ_ADV_FEATURES: u16 = 0x003D;
 pub const OP_ADD_ADVERTISING: u16 = 0x003E;
 pub const OP_REMOVE_ADVERTISING: u16 = 0x003F;
+pub const OP_ADD_EXT_ADV_PARAMS: u16 = 0x0054;
+pub const OP_ADD_EXT_ADV_DATA: u16 = 0x0055;
 
 pub const EV_CMD_COMPLETE: u16 = 0x0001;
 pub const EV_CMD_STATUS: u16 = 0x0002;
@@ -73,6 +86,22 @@ pub const ADV_FLAG_MANAGED_FLAGS: u32 = 1 << 3;
 /// Flags AD structure as `Invalid Parameters`.
 pub const KERNEL_MANAGED_FLAGS_MASK: u32 =
     ADV_FLAG_DISCOV | ADV_FLAG_LIMITED_DISCOV | ADV_FLAG_MANAGED_FLAGS;
+/// `MGMT_ADV_PARAM_INTERVALS`: the params command's min/max_interval fields
+/// carry the interval (without it the kernel uses its own defaults).
+pub const ADV_PARAM_INTERVALS: u32 = 1 << 14;
+/// `HCI_ADV_TX_POWER_NO_PREFERENCE` (include/net/bluetooth/hci.h): leave the
+/// controller's transmit power alone.
+pub const TX_POWER_NO_PREFERENCE: i8 = 0x7F;
+/// Smallest advertising interval the HCI command accepts, in 0.625 ms units.
+pub const ADV_INTERVAL_MIN: u32 = 0x0020;
+/// Largest advertising interval the HCI command accepts, in 0.625 ms units.
+pub const ADV_INTERVAL_MAX: u32 = 0xFF_FFFF;
+/// The H10's advertising interval in 0.625 ms HCI units: 1000 ms, from the
+/// strap captures (`fixtures/h10-fingerprints/`: advertisement
+/// `advertisementIntervalMs` p50 1004 ms on Android, 1042 ms on Tauri).
+pub const H10_ADV_INTERVAL_MIN: u32 = 1600;
+/// See [`H10_ADV_INTERVAL_MIN`]: the strap holds one interval, not a range.
+pub const H10_ADV_INTERVAL_MAX: u32 = 1600;
 
 pub const STATUS_SUCCESS: u8 = 0x00;
 pub const STATUS_PERMISSION_DENIED: u8 = 0x14;
@@ -261,6 +290,144 @@ pub fn h10_add_advertising(
         adv_data: h10_adv_data(uuids16, mfr)?,
         scan_rsp: h10_scan_rsp(name)?,
     })
+}
+
+/// `mgmt_cp_add_ext_adv_params` with the H10's interval.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddExtAdvParams {
+    pub instance: u8,
+    pub flags: u32,
+    pub duration: u16,
+    pub timeout: u16,
+    pub min_interval: u32,
+    pub max_interval: u32,
+    pub tx_power: i8,
+}
+
+impl AddExtAdvParams {
+    /// Parameter bytes, refusing combinations the kernel would reject so the
+    /// failure names its cause here instead of a bare `0x0d`.
+    pub fn params(&self) -> Result<Vec<u8>, String> {
+        if self.instance == 0 {
+            return Err("advertising instance 0 means \"all\"; instances start at 1".to_string());
+        }
+        if self.min_interval > self.max_interval {
+            return Err(format!(
+                "min_interval {} exceeds max_interval {}",
+                self.min_interval, self.max_interval
+            ));
+        }
+        if self.min_interval < ADV_INTERVAL_MIN || self.max_interval > ADV_INTERVAL_MAX {
+            return Err(format!(
+                "advertising interval {}-{} outside the HCI range 0x0020-0xffffff \
+                 (0.625 ms units)",
+                self.min_interval, self.max_interval
+            ));
+        }
+        let mut params = Vec::with_capacity(ADD_EXT_ADV_PARAMS_LEN);
+        params.push(self.instance);
+        params.extend_from_slice(&self.flags.to_le_bytes());
+        params.extend_from_slice(&self.duration.to_le_bytes());
+        params.extend_from_slice(&self.timeout.to_le_bytes());
+        params.extend_from_slice(&self.min_interval.to_le_bytes());
+        params.extend_from_slice(&self.max_interval.to_le_bytes());
+        params.push(self.tx_power as u8);
+        debug_assert_eq!(params.len(), ADD_EXT_ADV_PARAMS_LEN);
+        Ok(params)
+    }
+}
+
+/// `mgmt_cp_add_ext_adv_data` with its payloads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddExtAdvData {
+    pub instance: u8,
+    pub adv_data: Vec<u8>,
+    pub scan_rsp: Vec<u8>,
+}
+
+impl AddExtAdvData {
+    /// Parameter bytes, exactly sized: the kernel checks
+    /// `3 + adv_data_len + scan_rsp_len` against the command length, and the
+    /// payload rules are the same H10 layout as [`AddAdvertising::params`].
+    pub fn params(&self) -> Result<Vec<u8>, String> {
+        if self.instance == 0 {
+            return Err("advertising instance 0 means \"all\"; instances start at 1".to_string());
+        }
+        let adv_len = u8::try_from(self.adv_data.len())
+            .map_err(|_| format!("advertising data of {} bytes", self.adv_data.len()))?;
+        let scan_len = u8::try_from(self.scan_rsp.len())
+            .map_err(|_| format!("scan response of {} bytes", self.scan_rsp.len()))?;
+        ad_structures(&self.scan_rsp)?;
+        let mut params = Vec::with_capacity(
+            ADD_EXT_ADV_DATA_FIXED_LEN + self.adv_data.len() + self.scan_rsp.len(),
+        );
+        params.push(self.instance);
+        params.push(adv_len);
+        params.push(scan_len);
+        params.extend_from_slice(&self.adv_data);
+        params.extend_from_slice(&self.scan_rsp);
+        Ok(params)
+    }
+}
+
+/// The `MGMT_OP_ADD_EXT_ADV_PARAMS` request for the H10 layout: connectable,
+/// the strap's ~1 s interval, no duration, no timeout, no power preference.
+pub fn h10_ext_adv_params(instance: u8) -> Result<AddExtAdvParams, String> {
+    Ok(AddExtAdvParams {
+        instance,
+        flags: ADV_FLAG_CONNECTABLE | ADV_PARAM_INTERVALS,
+        duration: 0,
+        timeout: 0,
+        min_interval: H10_ADV_INTERVAL_MIN,
+        max_interval: H10_ADV_INTERVAL_MAX,
+        tx_power: TX_POWER_NO_PREFERENCE,
+    })
+}
+
+/// The `MGMT_OP_ADD_EXT_ADV_DATA` request for the H10 layout: the same
+/// advertisement and scan-response bytes [`h10_add_advertising`] sends.
+pub fn h10_ext_adv_data(
+    instance: u8,
+    name: &str,
+    uuids16: &[u16],
+    mfr: Option<(u16, &[u8])>,
+) -> Result<AddExtAdvData, String> {
+    Ok(AddExtAdvData {
+        instance,
+        adv_data: h10_adv_data(uuids16, mfr)?,
+        scan_rsp: h10_scan_rsp(name)?,
+    })
+}
+
+/// `mgmt_rp_add_ext_adv_params`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddExtAdvParamsReply {
+    pub instance: u8,
+    pub tx_power: i8,
+    pub max_adv_data_len: u8,
+    pub max_scan_rsp_len: u8,
+}
+
+pub fn parse_add_ext_adv_params_reply(data: &[u8]) -> Result<AddExtAdvParamsReply, String> {
+    if data.len() < 4 {
+        return Err(format!(
+            "Add Extended Advertising Params reply of {} bytes, needs 4",
+            data.len()
+        ));
+    }
+    Ok(AddExtAdvParamsReply {
+        instance: data[0],
+        tx_power: data[1] as i8,
+        max_adv_data_len: data[2],
+        max_scan_rsp_len: data[3],
+    })
+}
+
+/// `mgmt_rp_add_ext_adv_data`: the added instance.
+pub fn parse_add_ext_adv_data_reply(data: &[u8]) -> Result<u8, String> {
+    data.first()
+        .copied()
+        .ok_or_else(|| "Add Extended Advertising Data reply carries no instance".to_string())
 }
 
 /// A decoded MGMT event.
@@ -690,5 +857,131 @@ mod tests {
         let error = pick_instance(&features(2, &[1, 2])).unwrap_err();
         assert!(error.contains("no free advertising instance"), "{error}");
         assert!(error.contains("[1, 2]"), "{error}");
+    }
+
+    #[test]
+    fn ext_adv_params_golden_packet() {
+        // struct mgmt_cp_add_ext_adv_params (include/net/bluetooth/mgmt.h):
+        // instance u8, flags u32 LE, duration u16 LE, timeout u16 LE,
+        // min_interval u32 LE, max_interval u32 LE, tx_power s8 = 18 bytes.
+        // flags = CONNECTABLE | INTERVALS so the H10's ~1 s interval rides
+        // in the command; duration/timeout stay kernel defaults.
+        let request = h10_ext_adv_params(2).unwrap();
+        let packet = command(OP_ADD_EXT_ADV_PARAMS, 0, &request.params().unwrap()).unwrap();
+        assert_eq!(
+            packet,
+            vec![
+                0x54, 0x00, // opcode MGMT_OP_ADD_EXT_ADV_PARAMS
+                0x00, 0x00, // controller index hci0
+                0x12, 0x00, // 18 parameter bytes
+                0x02, // instance
+                0x01, 0x40, 0x00, 0x00, // flags = CONNECTABLE | INTERVALS
+                0x00, 0x00, // duration
+                0x00, 0x00, // timeout
+                0x40, 0x06, 0x00, 0x00, // min_interval = 1600 (1000 ms)
+                0x40, 0x06, 0x00, 0x00, // max_interval = 1600 (1000 ms)
+                0x7F, // tx_power = no preference
+            ]
+        );
+        assert_eq!(
+            request.params().unwrap().len(),
+            ADD_EXT_ADV_PARAMS_LEN,
+            "the kernel accepts data_len >= 18; BlueZ's +8-byte padding is what fails"
+        );
+    }
+
+    #[test]
+    fn ext_adv_params_carry_the_h10_interval() {
+        let request = h10_ext_adv_params(1).unwrap();
+        assert_eq!(request.flags & ADV_FLAG_CONNECTABLE, ADV_FLAG_CONNECTABLE);
+        assert_eq!(
+            request.flags & ADV_PARAM_INTERVALS,
+            ADV_PARAM_INTERVALS,
+            "without INTERVALS the kernel ignores the interval fields"
+        );
+        assert_eq!(request.flags & KERNEL_MANAGED_FLAGS_MASK, 0);
+        assert_eq!(
+            request.flags,
+            ADV_FLAG_CONNECTABLE | ADV_PARAM_INTERVALS,
+            "exactly these flags: no duration/timeout/tx-power bits, so the \
+             tx_power byte rides along ignored on kernel defaults"
+        );
+        assert_eq!((request.min_interval, request.max_interval), (1600, 1600));
+        assert_eq!(
+            (H10_ADV_INTERVAL_MIN, H10_ADV_INTERVAL_MAX),
+            (1600, 1600),
+            "1000 ms in 0.625 ms HCI units, from the strap captures \
+             (Android p50 1004 ms, Tauri p50 1042 ms)"
+        );
+    }
+
+    #[test]
+    fn ext_adv_params_refuse_bad_instances_and_intervals() {
+        let mut request = h10_ext_adv_params(1).unwrap();
+        request.instance = 0;
+        assert!(request
+            .params()
+            .unwrap_err()
+            .contains("instances start at 1"));
+        let mut request = h10_ext_adv_params(1).unwrap();
+        request.min_interval = 2000;
+        request.max_interval = 1600;
+        assert!(
+            request.params().unwrap_err().contains("min_interval"),
+            "min above max must fail here, not as a bare 0x0d"
+        );
+        let mut request = h10_ext_adv_params(1).unwrap();
+        request.min_interval = 0x10;
+        request.max_interval = 0x10;
+        assert!(request.params().unwrap_err().contains("0x0020"));
+    }
+
+    #[test]
+    fn ext_adv_data_golden_packet() {
+        // struct mgmt_cp_add_ext_adv_data: instance u8, adv_data_len u8,
+        // scan_rsp_len u8, data[] — 3 fixed bytes, exactly sized.
+        let request = h10_ext_adv_data(2, NAME, &UUIDS, None).unwrap();
+        let packet = command(OP_ADD_EXT_ADV_DATA, 0, &request.params().unwrap()).unwrap();
+        let mut expected = vec![
+            0x55, 0x00, // opcode MGMT_OP_ADD_EXT_ADV_DATA
+            0x00, 0x00, // controller index hci0
+            0x1F, 0x00, // 31 parameter bytes = 3 + 9 + 19
+            0x02, // instance
+            0x09, // adv_data_len
+            0x13, // scan_rsp_len
+            0x02, 0x01, 0x06, 0x05, 0x03, 0x0D, 0x18, 0xEE, 0xFE, 0x12, 0x09,
+        ];
+        expected.extend_from_slice(NAME.as_bytes());
+        assert_eq!(packet, expected);
+        assert_eq!(
+            packet.len() - HEADER_LEN,
+            ADD_EXT_ADV_DATA_FIXED_LEN + 9 + 19,
+            "exactly sized: the kernel checks 3 + adv_data_len + scan_rsp_len"
+        );
+    }
+
+    #[test]
+    fn ext_adv_data_reuses_the_h10_payload_rules() {
+        let request = h10_ext_adv_data(1, NAME, &UUIDS, None).unwrap();
+        assert_eq!(request.adv_data, h10_adv_data(&UUIDS, None).unwrap());
+        assert_eq!(request.scan_rsp, h10_scan_rsp(NAME).unwrap());
+        let staged = h10_ext_adv_data(1, NAME, &UUIDS, Some((0x006B, &[0x33, 0x1C]))).unwrap();
+        assert_eq!(
+            staged.adv_data,
+            h10_adv_data(&UUIDS, Some((0x006B, &[0x33, 0x1C]))).unwrap()
+        );
+    }
+
+    #[test]
+    fn ext_adv_replies_carry_the_instance() {
+        // mgmt_rp_add_ext_adv_params: instance, tx_power, max_adv, max_scan.
+        let reply = parse_add_ext_adv_params_reply(&[0x02, 0x7F, 0xFB, 0xFB]).unwrap();
+        assert_eq!(reply.instance, 2);
+        assert_eq!(reply.tx_power, TX_POWER_NO_PREFERENCE);
+        assert_eq!((reply.max_adv_data_len, reply.max_scan_rsp_len), (251, 251));
+        assert!(parse_add_ext_adv_params_reply(&[0x02, 0x7F]).is_err());
+        // mgmt_rp_add_ext_adv_data: instance.
+        assert_eq!(parse_add_ext_adv_data_reply(&[0x02]).unwrap(), 2);
+        assert!(parse_add_ext_adv_data_reply(&[]).is_err());
     }
 }

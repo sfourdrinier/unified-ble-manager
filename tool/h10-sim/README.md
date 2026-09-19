@@ -130,7 +130,7 @@ specifications ([spec index](https://www.bluetooth.com/specifications/specs/)).
 ```sh
 cd tool/h10-sim
 cargo build        # binary: target/debug/h10-sim (set CARGO_TARGET_DIR to redirect)
-cargo test         # 112 unit tests on macOS/Windows, 124 on Linux (see Tests below)
+cargo test         # 122 unit tests on macOS/Windows, 134 on Linux (see Tests below)
 node tests/xcheck/run-xcheck.cjs   # run from the repo root; see Tests below
 cargo clippy --all-targets -- -D warnings   # must stay warning-free
 cargo fmt --check
@@ -240,8 +240,18 @@ set `RestartPreventExitStatus=78` so systemd does not retry either.
 **`--linux-advertising mgmt-legacy`** (explicit opt-in): the GATT application
 stays on bluetoothd (via `bluer`, as before); the advertisement is added by
 the sim on a raw MGMT socket (`AF_BLUETOOTH`/`BTPROTO_HCI` bound to
-`HCI_CHANNEL_CONTROL`, `src/mgmt_socket.rs`) with `MGMT_OP_ADD_ADVERTISING`,
-the exact H10 payload above, connectable, no duration or timeout.
+`HCI_CHANNEL_CONTROL`, `src/mgmt_socket.rs`) with `MGMT_OP_ADD_EXT_ADV_PARAMS`
+(0x0054) plus `MGMT_OP_ADD_EXT_ADV_DATA` (0x0055): the exact H10 payload
+above, connectable, no duration or timeout, and the strap's ~1 s advertising
+interval (min = max = 1600 in 0.625 ms HCI units, from the strap captures'
+`advertisementIntervalMs`: p50 1004 ms on Android, 1042 ms on Tauri — the
+legacy command cannot express an interval at all). Both commands are exactly
+sized (`src/mgmt.rs`, golden-byte tests against
+`include/net/bluetooth/mgmt.h`); only when the kernel refuses 0x0054 itself
+does the sim fall back to the correctly sized `MGMT_OP_ADD_ADVERTISING`
+(0x003E), reporting the fallback on stderr, in the returned start outcome
+and in the `advertising-started` detail (`"method":
+"legacy-0x003e-fallback") — never silently.
 
 - **Privilege.** The kernel only trusts a control socket whose process holds
   `CAP_NET_ADMIN`. The sim checks `CapEff` first and, without it, exits 78
@@ -282,6 +292,49 @@ the exact H10 payload above, connectable, no duration or timeout.
 - **Residual risk.** Another MGMT client (bluetoothd, `btmgmt`) that adds an
   instance with the sim's number replaces it without an event; do not run a
   second advertiser on the same controller.
+
+### Adapter alias while running (Linux, both advertising paths)
+
+BlueZ serves its own Generic Access service beside the sim's GATT application,
+and its Device Name characteristic follows `btd_adapter_get_name`, which
+prefers the stored adapter alias over the system name (`src/adapter.c`).
+So a central that connects reads the host name (`lx5090`) — not the strap
+name — unless the sim changes it. While advertising, the sim therefore sets
+the adapter alias (`org.bluez.Adapter1.Alias` via D-Bus, through `bluer`) to
+the advertised name, and restores the previous alias afterwards. MGMT Set
+Local Name (0x000F) would not do it: it changes only the system name, which
+the stored alias shadows.
+
+- **What changes.** Exactly one D-Bus property on the advertising adapter,
+  from the previous alias to the advertised name (e.g. `lx5090` →
+  `Polar H10 SIM0001`), plus a record file
+  (`$XDG_RUNTIME_DIR/h10-sim-alias-hci0.instance`, else the temp dir) holding
+  the boot id and the previous alias. The claim and every restore are printed
+  on stderr and the claim rides in the `advertising-started` detail as
+  `"adapterAlias": {"previous": …, "current": …}`.
+- **Privilege.** None beyond what the radio already needs: the same D-Bus
+  access that registers the GATT application. The sim never escalates; a
+  D-Bus denial fails startup loudly.
+- **Blast radius.** While the sim runs, anything reading the adapter sees the
+  strap name: `bluetoothctl show` (`Alias:`), GAP Device Name reads from
+  connected centrals, other Bluetooth apps on the host. Paired-device entries
+  are untouched, and nothing persists once restored.
+- **Restore.** The previous alias is restored by `stop-advertising`
+  (`set-advertising off`, and the SIGINT/SIGTERM shutdown path, which stops
+  advertising before exiting),
+  from a main-thread panic hook (which runs `bluetoothctl system-alias
+  <previous>` — `reset-alias` when the previous alias was empty — and keeps
+  the record when that fails), and by stale-record adoption on the next start
+  (a leftover sim-name alias with a same-boot record restores the recorded
+  alias at the next stop; a record from another boot or controller is
+  discarded loudly). Verify with `bluetoothctl show` (`Alias:`) and, over the
+  air, by reading GAP Device Name after connecting.
+- **Residual risk.** A run killed with SIGKILL between the alias change and
+  the next start leaves the strap name as the adapter alias; the next start
+  adopts the record and the next stop restores it. If the record is deleted
+  by hand, the next start takes the leftover name as the previous alias and
+  restores that — check `bluetoothctl show` and fix by hand with
+  `bluetoothctl system-alias <name>`.
 
 Every GATT event (subscribe, read, write, PMD command, notify) is logged to
 stdout as one JSON object per line with `seq`, `ts` (RFC 3339 UTC) and `kind`.

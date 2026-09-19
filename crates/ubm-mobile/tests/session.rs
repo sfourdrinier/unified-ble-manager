@@ -2887,3 +2887,49 @@ async fn android_claims_presence_restored_peers_once_per_process() {
     let (error, _) = failure(&call(&second, "peers.claim-restored", "{}").await);
     assert_eq!(error["code"], "argument.invalid", "maxPeers is required");
 }
+
+/// Finding 194 (mobile owner): a connect whose budget expires while the radio
+/// holds it must not wedge its peer. The expiry reports the connection
+/// failure (finding 161: the peer did not answer), the owner's pending claim
+/// is freed, and a retry for the same peer is admitted — never
+/// `connection.already-owned`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn expired_connect_budget_frees_the_peer_for_retry() {
+    use std::sync::atomic::AtomicBool;
+    let hold_first = std::sync::Arc::new(AtomicBool::new(false));
+    let hold = std::sync::Arc::clone(&hold_first);
+    let radio = Scripted::new(Box::new(move |request| match request {
+        ubm_mobile::RadioRequest::Connect { .. } if !hold.swap(true, Ordering::SeqCst) => Reply::Hold,
+        other => polar_responder(other),
+    }));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("rn").unwrap();
+    ok(&call(
+        &session,
+        "scan.start",
+        &json!({"serviceUuids": ["180D"], "duplicatePolicy": "all", "operationId": "scan-1"}).to_string(),
+    )
+    .await);
+    assert_eq!(host.ingest(polar_advertisement()), IngressStatus::Accepted);
+    let expired = tokio::time::timeout(
+        Duration::from_secs(5),
+        call(
+            &session,
+            "connection.connect",
+            &json!({"peerId": POLAR, "lease": "lease-1", "operationId": "connect-1", "budgetMs": 50})
+                .to_string(),
+        ),
+    )
+    .await
+    .expect("the owner answers a budgeted connect");
+    let (error, _) = failure(&expired);
+    assert_eq!(error["code"], "connection.failed", "the peer did not answer");
+    assert_eq!(radio.held_of(RequestKind::Connect).len(), 1, "the radio never answered");
+    let retry = ok(&call(
+        &session,
+        "connection.connect",
+        &json!({"peerId": POLAR, "lease": "lease-2", "operationId": "connect-2"}).to_string(),
+    )
+    .await);
+    assert!(retry["connectionGeneration"].is_string(), "retry is admitted");
+}

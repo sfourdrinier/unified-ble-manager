@@ -138,7 +138,14 @@ cmd_install() {
   # Packing the unified-ble-manager file: dep enumerates the whole checkout
   # (which currently holds hundreds of thousands of build-output files), so
   # the resolver needs heap headroom. No tree state is changed by this.
-  (cd "${STAGE}" && NODE_OPTIONS=--max-old-space-size=8192 pnpm install --no-frozen-lockfile)
+  # Without a TTY pnpm's modules-purge prompt empties node_modules and exits 0
+  # without reinstalling, so the purge is confirmed up front and the library's
+  # presence is checked rather than assumed.
+  (cd "${STAGE}" && NODE_OPTIONS=--max-old-space-size=8192 pnpm install --no-frozen-lockfile --config.confirm-modules-purge=false)
+  if [ ! -f "${STAGE}/node_modules/unified-ble-manager/package.json" ]; then
+    echo "error: pnpm install left no ${STAGE}/node_modules/unified-ble-manager/package.json" >&2
+    exit 1
+  fi
 }
 
 cmd_verify_identity() {

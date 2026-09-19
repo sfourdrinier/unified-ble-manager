@@ -2,6 +2,7 @@
 #import <UIKit/UIKit.h>
 #import <ReactCommon/RCTTurboModule.h>
 #import <CommonCrypto/CommonDigest.h>
+#import <CoreBluetooth/CoreBluetooth.h>
 
 #if __has_include("BlePlx-Swift.h")
 #import "BlePlx-Swift.h"
@@ -126,8 +127,8 @@ RCT_EXPORT_MODULE(UnifiedBleExpoRuntime)
   }
 #if __has_include("BlePlx-Swift.h")
   OwnedCoreBluetoothProtocolRadio *radio = [UnifiedBleRustCoreSessions radioForPermissionPrompt];
-  [radio requestPermission:[NSNumber numberWithDouble:kApplePermissionTimeoutMs]
-                completion:^(NSDictionary *result, NSError *error) {
+  [radio requestPermissionWithTimeoutMs:[NSNumber numberWithDouble:kApplePermissionTimeoutMs]
+                              completion:^(NSDictionary *result, NSError *error) {
                   if (error != nil) {
                     reject(ApplePermissionErrorCode(error.code),
                            error.localizedDescription,
