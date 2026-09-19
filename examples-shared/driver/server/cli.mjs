@@ -44,6 +44,10 @@ const HELP = `ubm-driver — run the shared test scenarios on every connected ho
         Run a scripted test on every targeted host in parallel; prints progress and a final
         side-by-side comparison (per step, per host: outcome and the device the step reported).
         A sequence "devices" map binds each target to its own strap. Exit 1 if any host failed a step.
+  capture <target> [--device NAME] [--scan-ms N] [--hr-ms N] [--ecg-frames N] [--mtu N] [--out DIR]
+        Run h10-capture capture on every targeted host and save each fingerprint to
+        DIR/<hostId>-<serial>-<date>.json (default DIR fixtures/h10-fingerprints).
+        Exit 1 if any host failed its capture.
 
   <target> is "all", a host id from \`hosts\`, a host kind (expo | web | tauri | electron | node)
   or a platform (android | ios | macos | windows | linux).
@@ -94,6 +98,12 @@ function parseTargetList(value) {
 
 function recordConcernsTarget(record, target) {
   return matchesTarget(record, target)
+}
+
+/** Filename-safe: everything outside [A-Za-z0-9]+ becomes a single dash. */
+function sanitize(value) {
+  const cleaned = String(value).replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  return cleaned === '' ? 'unknown' : cleaned
 }
 
 async function serve(flags) {
@@ -229,6 +239,41 @@ async function main() {
       if (typeof flags.out === 'string') writeFileSync(flags.out, `${JSON.stringify(summary, null, 2)}\n`)
       process.stderr.write(`\n${formatComparison(summary)}\n`)
       process.exit(summary.hosts.every(host => host.passed) ? 0 : 1)
+      return
+    }
+    case 'capture': {
+      const [target = 'all'] = rest
+      const args = {}
+      if (typeof flags.device === 'string') args.device = flags.device
+      if (flags['scan-ms'] !== undefined) args.scanDurationMs = Number(flags['scan-ms'])
+      if (flags['hr-ms'] !== undefined) args.hrDurationMs = Number(flags['hr-ms'])
+      if (flags['ecg-frames'] !== undefined) args.ecgFrames = Number(flags['ecg-frames'])
+      if (flags.mtu !== undefined) args.mtu = Number(flags.mtu)
+      for (const [key, value] of Object.entries(args)) {
+        if (typeof value === 'number' && !Number.isFinite(value)) fail(`--${key} must be a number`)
+      }
+      const outDir = resolve(typeof flags.out === 'string' ? flags.out : 'fixtures/h10-fingerprints')
+      const timeoutMs = numberFlag(flags, 'timeout', 300_000)
+      const failed = await withClient(flags, async client => {
+        client.onRecord(record => {
+          if (recordConcernsTarget(record, target)) printLine(record)
+        })
+        const outcomes = await runOnHosts(client, { target, scenario: 'h10-capture', command: 'capture', args, timeoutMs })
+        mkdirSync(outDir, { recursive: true })
+        const written = []
+        for (const outcome of outcomes) {
+          if (!outcome.ok) continue
+          const fingerprint = outcome.result
+          const serial = fingerprint?.values?.serialNumber?.text ?? fingerprint?.device?.name ?? outcome.hostId ?? 'unknown'
+          const date = new Date().toISOString().slice(0, 10)
+          const file = join(outDir, `${sanitize(outcome.hostId ?? 'host')}-${sanitize(String(serial))}-${date}.json`)
+          writeFileSync(file, `${JSON.stringify(fingerprint, null, 2)}\n`)
+          written.push(file)
+        }
+        printLine({ type: 'capture-summary', target, args, outcomes: outcomes.map(({ result, ...rest }) => rest), written })
+        return outcomes.some(outcome => !outcome.ok)
+      }).catch(error => fail(`${error.code ?? 'error'}: ${error.message}`, 1))
+      process.exit(failed ? 1 : 0)
       return
     }
     case undefined:

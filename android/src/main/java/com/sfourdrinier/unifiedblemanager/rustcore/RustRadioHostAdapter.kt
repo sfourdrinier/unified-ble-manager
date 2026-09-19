@@ -3,6 +3,8 @@
 package com.sfourdrinier.unifiedblemanager.rustcore
 
 import com.sfourdrinier.unifiedblemanager.background.ForegroundServiceControlException
+import com.sfourdrinier.unifiedblemanager.presence.PresencePort
+import com.sfourdrinier.unifiedblemanager.presence.PresenceRestoredPeer
 import com.sfourdrinier.unifiedblemanager.radio.AndroidGattLinkLost
 import com.sfourdrinier.unifiedblemanager.radio.AndroidGattNotSubmitted
 import com.sfourdrinier.unifiedblemanager.radio.AndroidGattOperationFailure
@@ -37,6 +39,7 @@ class RustRadioHostAdapter(
   private val radio: AndroidRadioPort,
   private val background: BackgroundPort,
   private val companion: () -> CompanionPort?,
+  private val presence: () -> PresencePort?,
   private val radioExecutor: Executor,
   private val serviceExecutor: Executor,
   private val log: (String) -> Unit
@@ -452,6 +455,45 @@ class RustRadioHostAdapter(
         onFailure = { error -> fail(requestId, error) }
       )
     }
+  }
+
+  override fun observePresence(requestId: Long, peerId: String) = runService(requestId) {
+    val port = presence()
+      ?: throw RadioPortFailure(
+        RadioFailureKind.UNSUPPORTED,
+        "device presence observation is not attached on this host"
+      )
+    port.observe(peerId) { result ->
+      result.fold(
+        onSuccess = { answer(requestId, "unit") { core.completeUnit(requestId) } },
+        onFailure = { error -> fail(requestId, error) }
+      )
+    }
+  }
+
+  override fun unobservePresence(requestId: Long, peerId: String) = runService(requestId) {
+    val port = presence()
+      ?: throw RadioPortFailure(
+        RadioFailureKind.UNSUPPORTED,
+        "device presence observation is not attached on this host"
+      )
+    port.unobserve(peerId) { result ->
+      result.fold(
+        onSuccess = { answer(requestId, "unit") { core.completeUnit(requestId) } },
+        onFailure = { error -> fail(requestId, error) }
+      )
+    }
+  }
+
+  /**
+   * Ingests presence-restored peers into the live owner. Returns false when
+   * the owner refused them (the caller keeps them persisted).
+   */
+  fun ingestPresenceRestored(peers: List<PresenceRestoredPeer>): Boolean {
+    if (peers.isEmpty()) return true
+    val status = core.ingestRestored(peers)
+    recordIngress("restored", status)
+    return status == MobileCoreBridge.STATUS_ACCEPTED
   }
 
   override fun close(requestId: Long) = perform(requestId) {

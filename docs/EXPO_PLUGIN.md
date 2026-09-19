@@ -139,6 +139,30 @@ background reliability. The application must explicitly acquire and release
 the runtime background lease exposed by the host when that surface is
 available.
 
+When `background.android` is `connected-device-foreground-service`, the
+plugin also declares the library's Companion Device Manager presence
+endpoint, `com.sfourdrinier.unifiedblemanager.presence.UbmCompanionPresenceService`:
+exported, permission-gated to holders of
+`android.permission.BIND_COMPANION_DEVICE_SERVICE`, with the
+`android.companion.CompanionDeviceService` intent filter. Only the system
+can bind it; it adds no `uses-permission`. Under `background.android` mode
+`none` the plugin entry is removed again. A host-declared entry with
+different attributes is left untouched on enable and preserved on disable —
+the host owns that declaration. See `docs/BACKGROUND.md` for the
+known-peer restoration behavior it serves.
+
+### Apple TV (tvOS)
+
+TV builds are selected by the documented Expo switch `EXPO_TV=1` at prebuild
+time (with `@react-native-tvos/config-tv`); phone prebuilds are unchanged.
+tvOS has no background Bluetooth mode and no state restoration, so a TV
+prebuild never writes `bluetooth-central` to `UIBackgroundModes` nor the
+restoration id/generation keys — even when `background.ios` is configured.
+The runtime then reports both capabilities as `capability.unsupported` with
+the native reason instead of claiming something tvOS cannot honor. The
+configuration marker and the Bluetooth usage description are still written,
+so the native configuration check keeps passing.
+
 ### diagnostics
 
 nativeLogging is off, errors, or events. The normalized configuration is

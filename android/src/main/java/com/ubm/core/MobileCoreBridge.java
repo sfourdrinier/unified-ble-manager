@@ -180,6 +180,16 @@ public final class MobileCoreBridge {
         /** Answer: {@link #nativeCompleteCompanion}. */
         void associateCompanion(long requestId, String name, String serviceUuid);
 
+        /**
+         * Arms Companion Device Manager device presence for one associated
+         * peer (API 31+). Answer: {@link #nativeCompleteUnit}. Appearances
+         * arrive through {@link #nativeIngestRestored}.
+         */
+        void observePresence(long requestId, String peerId);
+
+        /** Disarms device presence for one peer (idle when none is armed). Answer: {@link #nativeCompleteUnit}. */
+        void unobservePresence(long requestId, String peerId);
+
         /** Disable every live notification. Answer: {@link #nativeCompleteClosed}. */
         void close(long requestId);
 

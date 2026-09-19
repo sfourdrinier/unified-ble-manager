@@ -87,6 +87,8 @@ const ARG_SCHEMAS = Object.freeze({
     ['body', 'budgetMs']
   ],
   'companion.associate': [[], ['name', 'serviceUuid', 'budgetMs', 'operationId']],
+  'presence.observe': [['peerId'], ['budgetMs', 'operationId']],
+  'presence.unobserve': [['peerId'], ['budgetMs', 'operationId']],
   'op.cancel': [['operationId'], []]
 })
 
@@ -99,7 +101,9 @@ const APPLE_UNSUPPORTED = new Set([
   'connection.request-priority',
   'connection.read-phy',
   'connection.request-phy',
-  'companion.associate'
+  'companion.associate',
+  'presence.observe',
+  'presence.unobserve'
 ])
 
 class WireFault extends Error {
@@ -272,6 +276,7 @@ class DeterministicRustCoreNative {
     // scope), not to a session: they outlive `session.dispose` and end with
     // `invalidate()` (87/N8, docs/MOBILE_RUST_WIRE.md).
     this.backgroundLeases = new Set()
+    this.presenceArmed = new Set()
     this.holds = new Map()
     this.liveOps = new Map()
     this.nextGeneration = 1
@@ -979,7 +984,6 @@ class DeterministicRustCoreNative {
       case 'peers.restored':
         return this.restored.map(peer => this.restoredRecord(peer))
       case 'peers.claim-restored': {
-        if (!apple) throw new WireFault('capability.unsupported', 'capability', op, 'Android has no state restoration')
         if (!Number.isSafeInteger(args.maxPeers) || args.maxPeers < 0) throw invalid('args.maxPeers')
         const unclaimed = this.restored.filter(peer => !this.restorationClaims.has(peer.peerId))
         if (unclaimed.length > args.maxPeers) {
@@ -1197,6 +1201,16 @@ class DeterministicRustCoreNative {
         return { state: 'updated' }
       case 'companion.associate':
         return { source: 'associated', associationId: 7, peerId: DEFAULT_PEER, displayName: args.name ?? null }
+      case 'presence.observe': {
+        if (apple) throw new WireFault('capability.unsupported', 'capability', op)
+        this.presenceArmed.add(args.peerId)
+        return { state: 'observing' }
+      }
+      case 'presence.unobserve': {
+        if (apple) throw new WireFault('capability.unsupported', 'capability', op)
+        this.presenceArmed.delete(args.peerId)
+        return { state: 'idle' }
+      }
       case 'op.cancel': {
         const live = this.liveOps.get(args.operationId)
         if (live !== undefined && live.session === session && live.admission === args.admission) {

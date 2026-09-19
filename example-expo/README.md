@@ -65,3 +65,62 @@ pnpm test:driver                                         # shared, server and Ex
 
 Every host's launch command, the protocol, and what each host can and cannot
 run are in [`../examples-shared/driver/README.md`](../examples-shared/driver/README.md).
+
+## Apple TV (tvOS)
+
+The same app and shared scenarios run on Apple TV from one source tree — not
+a fork. The phones keep building from the ignored `ios/` and `android/`
+directories; the TV builds from a separate generated stage, `ios-tv/`
+(gitignored like `ios/`), produced by `scripts/build-tv.sh`. That script
+never touches `ios/` or `android/`.
+
+TV dependency versions (pinned in the script):
+
+- `react-native` via `npm:react-native-tvos@0.86-stable` (resolves to
+  `0.86.3-0`), the tvOS fork release matching Expo SDK 57 / React Native
+  0.86 — the version rule in Expo's "Build Expo apps for TV" guide.
+- `@react-native-tvos/config-tv` 0.1.6 (peer `expo >= 52`), which rewrites
+  the prebuilt native project for TV when `EXPO_TV=1`.
+
+The TV variant is switchable by env: `EXPO_TV=1` only affects the staged
+prebuild (and the plugin's tvOS Info.plist handling, see
+[`../docs/EXPO_PLUGIN.md`](../docs/EXPO_PLUGIN.md)); a phone prebuild without
+it is unchanged.
+
+```sh
+bash example-expo/scripts/build-tv.sh stage      # sync sources -> ios-tv, apply TV inputs
+bash example-expo/scripts/build-tv.sh install    # pnpm install in ios-tv (needs heap: see script)
+bash example-expo/scripts/build-tv.sh prebuild   # EXPO_TV=1 expo prebuild --platform ios + pod install
+bash example-expo/scripts/build-tv.sh bundle-url # point the staged AppDelegate at the TV Metro
+bash example-expo/scripts/build-tv.sh metro      # serve the staged bundle on 192.168.68.116:8081
+DEVELOPMENT_TEAM=<team> bash example-expo/scripts/build-tv.sh build  # Debug .app, team on CLI only
+```
+
+The phone Metro stays on 8082: the staged tree resolves `react-native-tvos`,
+so it needs its own packager on 8081 (override with `TV_METRO_PORT`). The
+driver server stays shared on 8795 — the staged AppDelegate override points
+the TV bundle at `192.168.68.116:8081` (override host with `TV_LAN_HOST`),
+and the driver URL derives from that bundle host exactly like the phone
+build. Install and launch on a paired Apple TV with devicectl:
+
+```sh
+TV_DEVICE_ID=<devicectl-id> bash example-expo/scripts/build-tv.sh install-tv
+TV_DEVICE_ID=<devicectl-id> bash example-expo/scripts/build-tv.sh launch-tv
+node examples-shared/driver/server/cli.mjs hosts   # expect expo-tvos-<model>
+```
+
+`DEVELOPMENT_TEAM` is passed on the `xcodebuild` command line only and is
+never written into a file; tvOS uses the same bundle id but needs its own
+provisioning profile (automatic signing with `-allowProvisioningUpdates`
+fetches it when the Mac's Xcode account is available).
+
+The TV reports platform `tvos` (`Platform.OS` stays `'ios'` on
+react-native-tvos; `Platform.isTV` selects the label), so the driver shows a
+distinct `expo-tvos-<model>` host id. tvOS has no background Bluetooth mode
+and no state restoration: `background acquire` answers
+`capability.unsupported` and `restoration.claim()` answers
+`capability.unavailable` — the library's own answers. Scenario buttons are
+focusable for the Siri Remote with no UI fork (`TouchableOpacity` is
+TV-focusable by default). Do not run Bluetooth scenarios against hardware
+the owner has not made available: launch, driver `hosts`, and the
+`readiness` report are the no-hardware check.

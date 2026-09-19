@@ -260,6 +260,14 @@ pub enum MobileRadioRequest {
         name: Option<String>,
         service_uuid: Option<String>,
     },
+    ObservePresence {
+        id: u64,
+        peer_id: String,
+    },
+    StopPresence {
+        id: u64,
+        peer_id: String,
+    },
     Close {
         id: u64,
     },
@@ -443,6 +451,14 @@ impl From<&RadioRequest> for MobileRadioRequest {
                 id: *id,
                 name: name.clone(),
                 service_uuid: service_uuid.clone(),
+            },
+            RadioRequest::ObservePresence { id, peer_id } => Self::ObservePresence {
+                id: *id,
+                peer_id: peer_id.clone(),
+            },
+            RadioRequest::StopPresence { id, peer_id } => Self::StopPresence {
+                id: *id,
+                peer_id: peer_id.clone(),
             },
             RadioRequest::Close { id } => Self::Close { id: *id },
         }

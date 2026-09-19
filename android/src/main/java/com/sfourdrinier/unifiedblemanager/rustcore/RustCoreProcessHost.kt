@@ -6,6 +6,10 @@ import android.content.Context
 import android.util.Log
 import com.sfourdrinier.unifiedblemanager.background.AndroidConnectedDeviceForegroundServiceDriver
 import com.sfourdrinier.unifiedblemanager.background.ConnectedDeviceForegroundServiceLeaseRegistry
+import com.sfourdrinier.unifiedblemanager.presence.CompanionPresenceObserver
+import com.sfourdrinier.unifiedblemanager.presence.PresenceRestoredPeer
+import com.sfourdrinier.unifiedblemanager.presence.PresenceRestoredStore
+import com.sfourdrinier.unifiedblemanager.presence.SharedPreferencesPresenceStore
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio
 import com.ubm.core.MobileCoreBridge
 import java.util.concurrent.ConcurrentHashMap
@@ -30,6 +34,12 @@ class RustCoreProcessHost(
   @Volatile
   private var companionChooser: CompanionPort? = null
 
+  @Volatile
+  private var installedAdapter: RustRadioHostAdapter? = null
+
+  @Volatile
+  private var presenceStore: PresenceRestoredStore? = null
+
   /** Rust's single wake sink for the process. */
   val wake = MobileCoreBridge.WakeListener { sessionId ->
     val route = routes[sessionId]
@@ -46,7 +56,40 @@ class RustCoreProcessHost(
   @Synchronized
   fun ensureInstalled() {
     if (core.hostInstalled()) return
-    core.installHost(radioHost(), wake, OWNER, ADAPTER_LABEL)
+    val radio = radioHost()
+    installedAdapter = radio as? RustRadioHostAdapter
+    core.installHost(radio, wake, OWNER, ADAPTER_LABEL)
+  }
+
+  /** Presence appearance persistence (written by the presence service, drained at session open). */
+  fun attachPresenceStore(store: PresenceRestoredStore) {
+    presenceStore = store
+  }
+
+  /**
+   * Ingests presence-restored peers into the live owner. Returns false when
+   * no owner is alive to take them (the caller keeps them persisted).
+   */
+  fun ingestPresenceRestored(peers: List<PresenceRestoredPeer>): Boolean =
+    installedAdapter?.ingestPresenceRestored(peers) ?: false
+
+  /**
+   * Drains persisted presence appearances into the live owner, exactly once
+   * each; appearances the owner refused are persisted again. Returns the
+   * count ingested.
+   */
+  @Synchronized
+  fun drainPresenceAppearances(): Int {
+    val store = presenceStore ?: return 0
+    val pending = store.drainAppearances()
+    if (pending.isEmpty()) return 0
+    val peers = pending.map { PresenceRestoredPeer(it.address, null, false) }
+    return if (ingestPresenceRestored(peers)) {
+      pending.size
+    } else {
+      pending.forEach { store.saveAppearance(it.address, it.associationId, it.observedAtMs) }
+      0
+    }
   }
 
   fun route(sessionId: Long, onWake: (Long) -> Unit) {
@@ -104,6 +147,7 @@ class RustCoreProcessHost(
               )
             ),
             companion = { host.companionChooser() },
+            presence = { CompanionPresenceObserver.application(application) },
             radioExecutor = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "ubm-rust-radio") },
             serviceExecutor = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "ubm-rust-services") },
             log = ::log
@@ -111,6 +155,7 @@ class RustCoreProcessHost(
         },
         ::log
       )
+      host.attachPresenceStore(SharedPreferencesPresenceStore(application))
       shared = host
       return host
     }

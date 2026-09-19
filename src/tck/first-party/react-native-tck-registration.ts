@@ -38,6 +38,8 @@ export interface DeterministicReactNativeCharacteristicAddress {
 
 /** Controller hooks into the deterministic native module (radio events the TCK drives). */
 export interface DeterministicReactNativeTckBoundary {
+  /** Seeds the native restoration journal (issue #212); absent when the leg cannot restore. */
+  seedRestorationJournal?(): void
   emitAdvertisement(): void
   emitNotification(address: DeterministicReactNativeCharacteristicAddress, bytes: Uint8Array): void
   prepareSecurityCancellation?(): void
@@ -107,7 +109,10 @@ const descriptorOperationsFeatureSuite = Object.freeze({
 
 const restorationFeatureSuite = Object.freeze({
   suiteId: 'restoration',
-  scenarioIds: Object.freeze(['restoration.provider-journal-adoption-and-rejection'] as const)
+  scenarioIds: Object.freeze([
+    'restoration.provider-journal-adoption-and-rejection',
+    'restoration.presence-observation-arms-known-peer'
+  ] as const)
 })
 
 const androidSecurityFeatureSuite = Object.freeze({
@@ -126,12 +131,14 @@ const defaultAndroidSecurityTck: ReactNativeAndroidSecurityTckOptions = Object.f
 export function createReactNativeAndroidFirstPartyTckRegistration(
   options: ReactNativeAndroidFirstPartyTckRegistrationOptions
 ): FirstPartyBackendTckRegistration {
+  let authority: ReactNativeRestorationAuthority | null = null
   const provider = createReactNativeRustCoreBackendProvider({
     platform: 'android',
     binding: createReactNativeRustCoreBinding({ platform: 'android', native: options.native }),
     owner: 'react-native-android-tck',
     now: options.now,
     runtime: { androidApiLevel: options.androidApiLevel ?? 34 },
+    restorationAuthority: () => authority,
     ...(options.createOwnerId === undefined ? {} : { createOwnerId: options.createOwnerId })
   })
   return {
@@ -152,6 +159,34 @@ export function createReactNativeAndroidFirstPartyTckRegistration(
           controller: createReactNativeController(options.boundary, options.nativePeerId, options.now),
           featureScenarioAdapters: Object.freeze({
             connectionControls: Object.freeze({ requestedMtu: 247 }),
+            restoration: Object.freeze({
+              createCapability: (clientId: ClientId<string, string>) => {
+                authority = Object.freeze({
+                  namespaceValue: ANDROID_TCK_NAMESPACE,
+                  adoptionEpoch: ANDROID_TCK_EPOCH,
+                  clientId: String(clientId),
+                  hostSessionScope: ANDROID_TCK_HOST_SESSION
+                })
+                return Object.freeze({
+                  client: Object.freeze({ clientId, hostSessionScope: ANDROID_TCK_HOST_SESSION }),
+                  coordinator: provider.restoration
+                })
+              },
+              createRequest: (identity: NativeBackendIdentity<string>) =>
+                Object.freeze({
+                  namespace: ANDROID_TCK_NAMESPACE,
+                  attachmentId: identity.attachment.attachmentId,
+                  expectedBackendInstanceId: identity.attachment.backendInstanceId,
+                  expectedEpoch: opaqueId(ANDROID_TCK_EPOCH, 'restoration-epoch', 'tck'),
+                  expectedVersions: identity.versions
+                }),
+              seedJournal: (controller: TckScenarioController) =>
+                controller.perform('seed-restoration-journal', Object.freeze({}))
+            }),
+            presence: Object.freeze({
+              observeKnownPeer: () => backend.hostServices.observePresence({ peerId: options.nativePeerId }),
+              unobserveKnownPeer: () => backend.hostServices.unobservePresence({ peerId: options.nativePeerId })
+            }),
             security: Object.freeze({
               peerId: publicPeerId,
               ...(options.security ?? defaultAndroidSecurityTck),
@@ -172,17 +207,16 @@ export function createReactNativeAndroidFirstPartyTckRegistration(
       connectionControlsFeatureSuite,
       maximumWriteLengthFeatureSuite,
       descriptorOperationsFeatureSuite,
+      restorationFeatureSuite,
       androidSecurityFeatureSuite
     ]),
-    capabilityExclusions: Object.freeze([
-      Object.freeze({
-        featureId: 'state:restoration-adoption',
-        state: 'unsupported',
-        reason: 'Android has no native BLE restoration journal after process termination.'
-      })
-    ])
+    capabilityExclusions: Object.freeze([])
   }
 }
+
+const ANDROID_TCK_NAMESPACE = 'unified-ble.react-native.android.tck'
+const ANDROID_TCK_EPOCH = 'react-native-android-tck-restoration-epoch'
+const ANDROID_TCK_HOST_SESSION = 'react-native-android-tck-session'
 
 const APPLE_TCK_NAMESPACE = 'unified-ble.react-native.apple.tck'
 const APPLE_TCK_EPOCH = 'react-native-apple-tck-restoration-epoch'
@@ -311,7 +345,7 @@ function createReactNativeController(
         )
         return
       }
-      if (action === 'seed-restoration-journal' && isAppleRestorationBoundary(boundary)) {
+      if (action === 'seed-restoration-journal' && isRestorationCapableBoundary(boundary)) {
         requireEmptyInput(action, input)
         boundary.seedRestorationJournal()
         return
@@ -321,7 +355,7 @@ function createReactNativeController(
   })
 }
 
-function isAppleRestorationBoundary(
+function isRestorationCapableBoundary(
   boundary: DeterministicReactNativeTckBoundary
 ): boundary is DeterministicReactNativeAppleTckBoundary {
   return 'seedRestorationJournal' in boundary && typeof boundary.seedRestorationJournal === 'function'

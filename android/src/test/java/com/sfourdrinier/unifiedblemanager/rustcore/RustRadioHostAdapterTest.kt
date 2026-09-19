@@ -5,6 +5,8 @@ package com.sfourdrinier.unifiedblemanager.rustcore
 import com.sfourdrinier.unifiedblemanager.background.ForegroundServiceControlException
 import com.sfourdrinier.unifiedblemanager.radio.AndroidGattNotSubmitted
 import com.sfourdrinier.unifiedblemanager.radio.AndroidGattOperationFailure
+import com.sfourdrinier.unifiedblemanager.presence.PresencePort
+import com.sfourdrinier.unifiedblemanager.presence.PresenceRestoredPeer
 import com.ubm.core.MobileCoreBridge
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -16,10 +18,11 @@ class RustRadioHostAdapterTest {
   private val radio = FakeRadio()
   private val background = FakeBackground()
   private var chooser: CompanionPort? = null
+  private var presence: PresencePort? = null
   private val logs = mutableListOf<String>()
   private var radioExecutor: java.util.concurrent.Executor = DirectExecutor
   private val adapter by lazy {
-    RustRadioHostAdapter(core, radio, background, { chooser }, radioExecutor, DirectExecutor) { logs.add(it) }
+    RustRadioHostAdapter(core, radio, background, { chooser }, { presence }, radioExecutor, DirectExecutor) { logs.add(it) }
   }
 
   private val peer = "AA:BB:CC:DD:EE:FF"
@@ -552,6 +555,58 @@ class RustRadioHostAdapterTest {
     }
     adapter.associateCompanion(2, "Polar", HR_SERVICE)
     assertEquals(listOf("failure:1:unsupported:null", "companion:2:17:$peer:Polar H10 Polar"), core.calls)
+  }
+
+  @Test
+  fun presenceObservationArmsAndDisarmsOneAssociatedPeer() {
+    val armed = mutableListOf<String>()
+    val disarmed = mutableListOf<String>()
+    presence = object : PresencePort {
+      override fun observe(peerId: String, onResult: (Result<Unit>) -> Unit) {
+        armed.add(peerId)
+        onResult(Result.success(Unit))
+      }
+      override fun unobserve(peerId: String, onResult: (Result<Unit>) -> Unit) {
+        disarmed.add(peerId)
+        onResult(Result.success(Unit))
+      }
+    }
+    adapter.observePresence(1, peer)
+    adapter.unobservePresence(2, peer)
+    assertEquals(listOf(peer), armed)
+    assertEquals(listOf(peer), disarmed)
+    assertEquals(listOf("unit:1", "unit:2"), core.calls)
+  }
+
+  @Test
+  fun presenceWithoutAnAttachedPortIsUnsupported() {
+    adapter.observePresence(1, peer)
+    adapter.unobservePresence(2, peer)
+    assertEquals(listOf("failure:1:unsupported:null", "failure:2:unsupported:null"), core.calls)
+  }
+
+  @Test
+  fun presenceRefusalIsClassifiedNotSwallowed() {
+    presence = object : PresencePort {
+      override fun observe(peerId: String, onResult: (Result<Unit>) -> Unit) {
+        onResult(Result.failure(RadioPortFailure(RadioFailureKind.PLATFORM, "gone", nativeCode = "deviceNotAssociated")))
+      }
+      override fun unobserve(peerId: String, onResult: (Result<Unit>) -> Unit) {
+        throw RadioPortFailure(RadioFailureKind.UNSUPPORTED, "old")
+      }
+    }
+    adapter.observePresence(1, peer)
+    adapter.unobservePresence(2, peer)
+    assertEquals(listOf("failure:1:platform:null", "failure:2:unsupported:null"), core.calls)
+    assertEquals("deviceNotAssociated", core.failures.getValue(1).nativeCode)
+  }
+
+  @Test
+  fun presenceRestoredPeersAreIngestedIntoTheLiveOwner() {
+    assertTrue(adapter.ingestPresenceRestored(listOf(PresenceRestoredPeer(peer, null, false))))
+    assertEquals(listOf("restored:$peer:false"), core.calls)
+    core.ingressStatus = MobileCoreBridge.STATUS_CLOSED
+    assertTrue(!adapter.ingestPresenceRestored(listOf(PresenceRestoredPeer(peer, null, false))))
   }
 
   @Test

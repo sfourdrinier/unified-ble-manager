@@ -2773,6 +2773,10 @@ public enum MobileRadioRequest: Equatable, Hashable {
     )
     case associateCompanion(id: UInt64, name: String?, serviceUuid: String?
     )
+    case observePresence(id: UInt64, peerId: String
+    )
+    case stopPresence(id: UInt64, peerId: String
+    )
     case close(id: UInt64
     )
 
@@ -2877,7 +2881,13 @@ public struct FfiConverterTypeMobileRadioRequest: FfiConverterRustBuffer {
         case 27: return .associateCompanion(id: try FfiConverterUInt64.read(from: &buf), name: try FfiConverterOptionString.read(from: &buf), serviceUuid: try FfiConverterOptionString.read(from: &buf)
         )
         
-        case 28: return .close(id: try FfiConverterUInt64.read(from: &buf)
+        case 28: return .observePresence(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 29: return .stopPresence(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 30: return .close(id: try FfiConverterUInt64.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -3072,8 +3082,20 @@ public struct FfiConverterTypeMobileRadioRequest: FfiConverterRustBuffer {
             FfiConverterOptionString.write(serviceUuid, into: &buf)
             
         
-        case let .close(id):
+        case let .observePresence(id,peerId):
             writeInt(&buf, Int32(28))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+            
+        
+        case let .stopPresence(id,peerId):
+            writeInt(&buf, Int32(29))
+            FfiConverterUInt64.write(id, into: &buf)
+            FfiConverterString.write(peerId, into: &buf)
+            
+        
+        case let .close(id):
+            writeInt(&buf, Int32(30))
             FfiConverterUInt64.write(id, into: &buf)
             
         }

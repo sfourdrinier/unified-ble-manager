@@ -68,6 +68,7 @@ and coding agents should read [`../AGENTS.md`](../AGENTS.md) first.
 | [`ADR/2026-07-4.0-rn-restoration-bootstrap.md`](ADR/2026-07-4.0-rn-restoration-bootstrap.md) | ADR: native-owned Apple restoration bootstrap before JS manager construction | Current |
 | [`ADR/2026-08-4.0-public-contract-reset.md`](ADR/2026-08-4.0-public-contract-reset.md) | ADR: stable application boundary; supersedes RC1 provisional names | Current |
 | [`ADR/2026-09-5.0-pr210-review-cutover-scope.md`](ADR/2026-09-5.0-pr210-review-cutover-scope.md) | ADR (Draft, 5.0 lane): PR210 review cutover + distribution scope (D1/D2) | Current |
+| [`ADR/2026-09-5.0-restoration-known-peer-reconnect.md`](ADR/2026-09-5.0-restoration-known-peer-reconnect.md) | ADR: 5.0 known-peer restoration on iOS and Android (issue #212) | Current |
 
 ## Platform support, evidence, and performance
 
@@ -190,5 +191,7 @@ The `review/` directory also holds machine-readable findings data
 | [`superpowers/plans/2026-09-05-release-4.0.25-reliability.md`](superpowers/plans/2026-09-05-release-4.0.25-reliability.md) | Plan: 4.0.25 reliability fixes for BLE-01..BLE-18 | Historical |
 | [`superpowers/plans/2026-09-17-r01-binding-producer.md`](superpowers/plans/2026-09-17-r01-binding-producer.md) | Plan: R01 binding producer (Codegen spec, Kotlin/Swift facades, TS producer, emulator leg) | Historical |
 | [`superpowers/plans/2026-09-17-r01-flip.md`](superpowers/plans/2026-09-17-r01-flip.md) | Plan: R01 RN factory flip (factory default, native-owned manager, poison acceptance) | Historical |
+| [`superpowers/plans/2026-09-18-h10-sim-round2.md`](superpowers/plans/2026-09-18-h10-sim-round2.md) | Plan: h10-sim round 2 (profiles, auth, Linux fidelity, peripheral-sim driver host, sequences, CI) | Current |
+| [`superpowers/plans/2026-09-18-h10-sim-round2.md`](superpowers/plans/2026-09-18-h10-sim-round2.md) | Plan: H10 simulator full Linux fidelity + remote control (owner) | Current |
 | [`superpowers/specs/2026-07-23-ios-tvos-ci-design.md`](superpowers/specs/2026-07-23-ios-tvos-ci-design.md) | Design spec: CI iOS and tvOS compile checks | Historical |
 | [`superpowers/specs/2026-08-30-web-bluetooth-example-design.md`](superpowers/specs/2026-08-30-web-bluetooth-example-design.md) | Design spec for the Web Bluetooth TypeScript example | Historical |

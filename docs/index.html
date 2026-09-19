@@ -701,6 +701,28 @@ await manager.background.updateNotification({
               application must explicitly acquire and release the runtime background lease exposed by the host when that
               surface is available.
             </p>
+            <p>
+              When <code>background.android</code> is <code>connected-device-foreground-service</code>, the plugin also
+              declares the library's Companion Device Manager presence endpoint,
+              <code>com.sfourdrinier.unifiedblemanager.presence.UbmCompanionPresenceService</code>: exported,
+              permission-gated to holders of <code>android.permission.BIND_COMPANION_DEVICE_SERVICE</code>, with the
+              <code>android.companion.CompanionDeviceService</code> intent filter. Only the system can bind it; it adds
+              no <code>uses-permission</code>. Under <code>background.android</code> mode <code>none</code> the plugin
+              entry is removed again. A host-declared entry with different attributes is left untouched on enable and
+              preserved on disable — the host owns that declaration. See <code>docs/BACKGROUND.md</code> for the
+              known-peer restoration behavior it serves.
+            </p>
+            <h3>Apple TV (tvOS)</h3>
+            <p>
+              TV builds are selected by the documented Expo switch <code>EXPO_TV=1</code> at prebuild time (with
+              <code>@react-native-tvos/config-tv</code>); phone prebuilds are unchanged. tvOS has no background
+              Bluetooth mode and no state restoration, so a TV prebuild never writes <code>bluetooth-central</code> to
+              <code>UIBackgroundModes</code> nor the restoration id/generation keys — even when
+              <code>background.ios</code> is configured. The runtime then reports both capabilities as
+              <code>capability.unsupported</code> with the native reason instead of claiming something tvOS cannot
+              honor. The configuration marker and the Bluetooth usage description are still written, so the native
+              configuration check keeps passing.
+            </p>
             <h3>diagnostics</h3>
             <p>
               nativeLogging is off, errors, or events. The normalized configuration is deterministic and managed values

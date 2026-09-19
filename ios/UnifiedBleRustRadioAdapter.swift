@@ -389,6 +389,8 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
       finish(id, Self.unsupported("Connected-device foreground service is Android-only"))
     case .associateCompanion:
       finish(id, Self.unsupported("Companion device association is Android-only"))
+    case .observePresence, .stopPresence:
+      finish(id, Self.unsupported("Companion device presence observation is Android-only; Apple restoration arrives through willRestoreState"))
     case .close:
       close(id)
     }
@@ -845,7 +847,8 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
       let .requestMtu(id, _, _), let .readRssi(id, _), let .requestConnectionPriority(id, _, _), let .readPhy(id, _),
       let .requestPhy(id, _, _, _), let .securityState(id, _), let .createBond(id, _, _), let .cancelBond(id, _),
       let .acquireBackground(id, _, _), let .releaseBackground(id, _), let .updateBackgroundNotification(id, _, _, _),
-      let .associateCompanion(id, _, _):
+      let .associateCompanion(id, _, _),
+      let .observePresence(id, _), let .stopPresence(id, _):
       return id
     }
   }

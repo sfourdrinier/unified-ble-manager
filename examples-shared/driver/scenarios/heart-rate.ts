@@ -236,7 +236,7 @@ export abstract class HeartRateScenario<State extends HeartRateState> extends Bl
   }
 
   /** discover → subscribe 2A37 → consume; shared by the direct path and the supervisor's configure. */
-  private async configureLink(connection: BleConnection, signal: AbortSignal | undefined): Promise<GattSubscription> {
+  protected async configureLink(connection: BleConnection, signal: AbortSignal | undefined): Promise<GattSubscription> {
     this.currentConnection = connection
     const generation = connection.connectionGeneration
     this.patchHeartRate({ connectionGeneration: generation })

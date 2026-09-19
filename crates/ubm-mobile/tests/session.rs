@@ -1117,17 +1117,6 @@ async fn a_claim_over_capacity_is_refused_without_consuming() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn android_has_no_restoration_to_claim() {
-    let radio = Scripted::polar();
-    let (host, _) = open(&radio, MobilePlatform::Android).await;
-    let session = host.open_session("rn").unwrap();
-    let (error, _) = failure(&claim(&session, 1023).await);
-    assert_eq!(error["code"], "capability.unsupported");
-    let (error, _) = failure(&call(&session, "peers.claim-restored", "{}").await);
-    assert_eq!(error["code"], "argument.invalid", "maxPeers is required");
-}
-
 async fn wait_for_restored(session: &ubm_mobile::MobileSession, count: usize) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     loop {
@@ -2806,4 +2795,95 @@ async fn an_operation_cut_off_by_the_apps_release_is_operation_disconnected() {
         radio.answer(disconnect_id, RadioCompletion::Unit);
         ok(&release.await.unwrap());
     }
+}
+
+// -- issue #212: companion presence observation ------------------------------
+
+fn presence_responder(request: &ubm_mobile::RadioRequest) -> Reply {
+    match request {
+        ubm_mobile::RadioRequest::ObservePresence { .. }
+        | ubm_mobile::RadioRequest::StopPresence { .. } => Reply::Now(RadioCompletion::Unit),
+        other => polar_responder(other),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn presence_observe_arms_one_peer_and_unobserve_disarms() {
+    let radio = Scripted::new(Box::new(presence_responder));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("rn").unwrap();
+    let observing = ok(&call(
+        &session,
+        "presence.observe",
+        &json!({"peerId": POLAR, "operationId": "p1"}).to_string(),
+    )
+    .await);
+    assert_eq!(observing["state"], "observing");
+    assert_eq!(radio.count(RequestKind::ObservePresence), 1);
+    let idle = ok(&call(
+        &session,
+        "presence.unobserve",
+        &json!({"peerId": POLAR, "operationId": "p2"}).to_string(),
+    )
+    .await);
+    assert_eq!(idle["state"], "idle");
+    assert_eq!(radio.count(RequestKind::StopPresence), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn presence_observation_is_an_android_service() {
+    // Apple delivers restoration through willRestoreState; there is no
+    // presence observation to arm, so both verbs refuse before any effect.
+    let radio = Scripted::new(Box::new(presence_responder));
+    let (host, _) = open(&radio, MobilePlatform::Apple).await;
+    let session = host.open_session("rn").unwrap();
+    for (index, op) in ["presence.observe", "presence.unobserve"]
+        .iter()
+        .enumerate()
+    {
+        let (error, _) = failure(
+            &call(
+                &session,
+                op,
+                &json!({"peerId": RESTORED, "operationId": format!("apple-{index}")}).to_string(),
+            )
+            .await,
+        );
+        assert_eq!(error["code"], "capability.unsupported", "{op}");
+    }
+    assert_eq!(radio.count(RequestKind::ObservePresence), 0);
+    assert_eq!(radio.count(RequestKind::StopPresence), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn presence_arguments_are_validated_before_any_effect() {
+    let radio = Scripted::new(Box::new(presence_responder));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("rn").unwrap();
+    for op in ["presence.observe", "presence.unobserve"] {
+        let (error, _) = failure(&call(&session, op, "{}").await);
+        assert_eq!(error["code"], "argument.invalid", "{op}");
+    }
+    assert_eq!(radio.count(RequestKind::ObservePresence), 0);
+    assert_eq!(radio.count(RequestKind::StopPresence), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn android_claims_presence_restored_peers_once_per_process() {
+    // Issue #212: a presence wake surfaces the same restored peers and the
+    // same claim semantics as iOS state restoration.
+    let radio = Scripted::new(Box::new(presence_responder));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    host.ingest(restored_ingress(&[POLAR]));
+    let first = host.open_session("manager-a").unwrap();
+    let second = host.open_session("manager-b").unwrap();
+    wait_for_restored(&first, 1).await;
+
+    let claimed = ok(&claim(&second, 1023).await);
+    assert_eq!(claimed_ids(&claimed), [POLAR]);
+    assert_eq!(claimed["peers"][0]["source"], "restored");
+    assert!(claimed_ids(&ok(&claim(&first, 1023).await)).is_empty());
+    assert!(claimed_ids(&ok(&claim(&second, 1023).await)).is_empty());
+    let (error, _) = failure(&call(&second, "peers.claim-restored", "{}").await);
+    assert_eq!(error["code"], "argument.invalid", "maxPeers is required");
 }

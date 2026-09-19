@@ -10,13 +10,25 @@ import { ScenarioRegistry, type ScenarioRuntime, type StopAllReport } from './sc
 import { BackgroundScenario } from './scenarios/background.ts'
 import { DeviceInfoScenario } from './scenarios/device-info.ts'
 import { EcgScenario } from './scenarios/ecg.ts'
+import { H10CaptureScenario } from './scenarios/h10-capture.ts'
 import { H10StreamScenario } from './scenarios/heart-rate.ts'
 import { LinkLossScenario } from './scenarios/link-loss.ts'
 import { MtuScenario } from './scenarios/mtu.ts'
+import { RestorationScenario } from './scenarios/restoration.ts'
 import { ScanDetailsScenario } from './scenarios/scan-details.ts'
 
 /** Scenario ids in registry order; identical on every host. */
-export const SCENARIO_IDS = ['h10-stream', 'link-loss', 'device-info', 'mtu', 'scan-details', 'ecg', 'background'] as const
+export const SCENARIO_IDS = [
+  'h10-stream',
+  'link-loss',
+  'device-info',
+  'mtu',
+  'scan-details',
+  'ecg',
+  'background',
+  'restoration',
+  'h10-capture'
+] as const
 
 export function createScenarioRegistry(host: DriverHost): ScenarioRegistry {
   return new ScenarioRegistry([
@@ -26,7 +38,9 @@ export function createScenarioRegistry(host: DriverHost): ScenarioRegistry {
     new MtuScenario(host),
     new ScanDetailsScenario(host),
     new EcgScenario(host),
-    new BackgroundScenario(host)
+    new BackgroundScenario(host),
+    new RestorationScenario(host),
+    new H10CaptureScenario(host)
   ])
 }
 

@@ -130,6 +130,53 @@ test('background tracks the host app state and reports the library answer for th
   assert.deepEqual(scenario.snapshot().periods.map(period => period.appState), ['visible', 'hidden'])
 })
 
+test('restoration start records the known peer and reports the platform capability answers verbatim', async () => {
+  const { manager } = createFakeManager({
+    capabilities: { 'state:restoration-adoption': 'limited', 'state:presence-observation': 'unsupported' }
+  })
+  const registry = createScenarioRegistry(createFakeHost({ manager, adapterHostManager }))
+  const scenario = registry.get('restoration')
+  await registry.dispatch('restoration', 'start', { autoReconnect: false })
+  assert.equal(scenario.snapshot().knownPeerId, 'peer-h10')
+  assert.ok(eventsOf(scenario).includes('restoration-known-peer'))
+  assert.ok(eventsOf(scenario).includes('restoration-capabilities'))
+  assert.equal(scenario.snapshot().adoptionCapability, 'limited')
+  assert.equal(scenario.snapshot().presenceCapability, 'unsupported')
+  await registry.dispatch('restoration', 'stop', {})
+})
+
+test('restoration reports unregistered capabilities as unregistered instead of inventing an answer', async () => {
+  const { manager } = createFakeManager()
+  const registry = createScenarioRegistry(createFakeHost({ manager, adapterHostManager }))
+  const scenario = registry.get('restoration')
+  await registry.dispatch('restoration', 'start', { autoReconnect: false })
+  assert.equal(scenario.snapshot().adoptionCapability, 'unregistered')
+  assert.equal(scenario.snapshot().presenceCapability, 'unregistered')
+  await registry.dispatch('restoration', 'stop', {})
+})
+
+test('restoration reconnect dials the recorded peer id directly with no new scan', async () => {
+  const { manager, calls } = createFakeManager()
+  const registry = createScenarioRegistry(createFakeHost({ manager, adapterHostManager }))
+  await registry.dispatch('restoration', 'start', { autoReconnect: false })
+  await registry.dispatch('restoration', 'stop', {})
+  const finds = calls.filter(call => call.startsWith('find ')).length
+  await registry.dispatch('restoration', 'reconnect', { peerId: 'peer-h10', intent: 'when-available' })
+  assert.equal(calls.filter(call => call.startsWith('find ')).length, finds)
+  assert.ok(calls.includes('connect when-available'))
+  const scenario = registry.get('restoration')
+  assert.ok(eventsOf(scenario).includes('restoration-reconnected'))
+  assert.equal(scenario.snapshot().reconnects, 1)
+  assert.equal(scenario.snapshot().knownPeerId, 'peer-h10')
+  await registry.dispatch('restoration', 'stop', {})
+})
+
+test('restoration reconnect without a known peer is refused, never silently skipped', async () => {
+  const { manager } = createFakeManager()
+  const registry = createScenarioRegistry(createFakeHost({ manager, adapterHostManager }))
+  await assert.rejects(registry.dispatch('restoration', 'reconnect', {}), { code: 'scenario.no-known-peer' })
+})
+
 test('capabilityLease passes the library capability report on verbatim and holds nothing', async () => {
   const { manager } = createFakeManager({ capabilities: { 'background:desktop-maintain-connection': 'supported', 'web:background-operation': 'unsupported' } })
   const supported = await capabilityLease(manager, 'background:desktop-maintain-connection')
@@ -153,7 +200,9 @@ const PEER_ACQUIRING = [
   ['device-info', 'read', {}],
   ['mtu', 'probe', {}],
   ['ecg', 'start', {}],
-  ['background', 'start', { autoReconnect: false }]
+  ['background', 'start', { autoReconnect: false }],
+  ['restoration', 'start', { autoReconnect: false }],
+  ['h10-capture', 'capture', {}]
 ]
 
 async function acquisitionCalls(fake, scenario, command, args) {

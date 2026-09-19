@@ -14,7 +14,7 @@ describe('Native Protocol executable CI gates', () => {
     const packageJson = JSON.parse(read('package.json'))
 
     expect(packageJson.scripts['test:native-protocol:android']).toBe(
-      "cd example/android && ./gradlew :unified-ble-manager:testDebugUnitTest --tests 'com.sfourdrinier.unifiedblemanager.protocol.UnifiedBleProtocolAndroidDispatcher*' --no-daemon --console=plain"
+      'cd example/android && ./gradlew :unified-ble-manager:testDebugUnitTest --no-daemon --console=plain'
     )
     expect(packageJson.scripts['test:native-protocol:apple']).toBe(
       'node scripts/native-protocol/test-apple-native-protocol.js'

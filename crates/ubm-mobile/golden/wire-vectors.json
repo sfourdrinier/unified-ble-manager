@@ -275,7 +275,21 @@
       "op": "companion.associate"
     },
     {
-      "args": "{\"admission\":24,\"operationId\":\"never-seen\"}",
+      "args": "{\"admission\":24,\"operationId\":\"presence-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"state\":\"observing\"}}",
+      "expect": "value",
+      "name": "presence observe",
+      "op": "presence.observe"
+    },
+    {
+      "args": "{\"admission\":25,\"operationId\":\"presence-2\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "envelope": "{\"ok\":true,\"value\":{\"state\":\"idle\"}}",
+      "expect": "value",
+      "name": "presence unobserve",
+      "op": "presence.unobserve"
+    },
+    {
+      "args": "{\"admission\":26,\"operationId\":\"never-seen\"}",
       "envelope": "{\"ok\":true,\"value\":{\"state\":\"cancellation-requested\"}}",
       "expect": "value",
       "name": "cancel before admission",
@@ -296,7 +310,7 @@
       "op": "gatt.bogus"
     },
     {
-      "args": "{\"admission\":25,\"duplicatePolicy\":\"merged\",\"operationId\":\"scan-2\",\"serviceUuids\":[]}",
+      "args": "{\"admission\":27,\"duplicatePolicy\":\"merged\",\"operationId\":\"scan-2\",\"serviceUuids\":[]}",
       "envelope": "{\"commit\":null,\"error\":{\"code\":\"capability.unsupported\",\"detail\":\"the radio reports every advertisement; apply first/merged above it\",\"domain\":\"capability\",\"operation\":\"scan.start.duplicate-policy\",\"platform\":null},\"ok\":false,\"retryability\":\"never\"}",
       "expect": "failure",
       "name": "unsupported duplicate policy",
@@ -311,8 +325,8 @@
     },
     {
       "args": "{\"maxPeers\":1023}",
-      "envelope": "{\"commit\":null,\"error\":{\"code\":\"capability.unsupported\",\"detail\":\"Android has no state restoration\",\"domain\":\"capability\",\"operation\":\"peers.claim-restored\",\"platform\":null},\"ok\":false,\"retryability\":\"never\"}",
-      "expect": "failure",
+      "envelope": "{\"ok\":true,\"value\":{\"peers\":[{\"bond\":\"unknown\",\"connection\":\"unknown\",\"lastSeenAtMonotonicMs\":null,\"name\":null,\"peerId\":\"C0:FF:EE:00:00:03\",\"reachability\":\"unknown\",\"rssi\":null,\"source\":\"restored\"}]}}",
+      "expect": "value",
       "name": "claim restored on android",
       "op": "peers.claim-restored"
     },
@@ -324,7 +338,7 @@
       "op": "session.reconcile"
     },
     {
-      "args": "{\"admission\":26,\"consumer\":\"hr\",\"operationId\":\"unsub-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"selector\":{\"characteristicOccurrence\":0,\"characteristicUuid\":\"2A37\",\"serviceOccurrence\":0,\"serviceUuid\":\"180D\"}}",
+      "args": "{\"admission\":28,\"consumer\":\"hr\",\"operationId\":\"unsub-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"selector\":{\"characteristicOccurrence\":0,\"characteristicUuid\":\"2A37\",\"serviceOccurrence\":0,\"serviceUuid\":\"180D\"}}",
       "envelope": "{\"ok\":true,\"value\":{\"physicalDisabled\":false,\"state\":\"released\"}}",
       "expect": "value",
       "name": "unsubscribe",

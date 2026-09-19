@@ -80,7 +80,7 @@
     "native-protocol:generate": "node scripts/native-protocol/generate-native-protocol.js",
     "native-protocol:check": "node scripts/native-protocol/generate-native-protocol.js --check",
     "test:native-protocol": "node scripts/native-protocol/test-native-protocol.js",
-    "test:native-protocol:android": "cd example/android && ./gradlew :unified-ble-manager:testDebugUnitTest --tests 'com.sfourdrinier.unifiedblemanager.protocol.UnifiedBleProtocolAndroidDispatcher*' --no-daemon --console=plain",
+    "test:native-protocol:android": "cd example/android && ./gradlew :unified-ble-manager:testDebugUnitTest --no-daemon --console=plain",
     "test:native-protocol:apple": "node scripts/native-protocol/test-apple-native-protocol.js",
     "test:native-protocol:winrt": "node scripts/native-protocol/test-winrt-connection-ownership.js",
     "performance:native-host": "node scripts/performance/run-native-host-benchmark.js",

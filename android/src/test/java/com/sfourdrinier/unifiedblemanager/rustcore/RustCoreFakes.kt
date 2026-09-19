@@ -2,6 +2,7 @@
 
 package com.sfourdrinier.unifiedblemanager.rustcore
 
+import com.sfourdrinier.unifiedblemanager.presence.PresenceRestoredPeer
 import com.ubm.core.MobileCoreBridge
 import java.util.concurrent.Executor
 
@@ -119,6 +120,8 @@ class FakeCore : MobileCorePort {
   override fun ingestScanFailed(detail: String) = ingress("scan-failed:$detail")
   override fun ingestSecurity(peerId: String, security: SecurityFacts) = ingress("security-changed:$peerId:${security.bond}")
   override fun ingestDropped(ingressClass: String, detail: String) = ingress("dropped:$ingressClass")
+  override fun ingestRestored(peers: List<PresenceRestoredPeer>) =
+    ingress(peers.joinToString(",") { "restored:${it.peerId}:${it.connected}" })
 }
 
 /** Scripted OS driver: records calls; tests answer callbacks explicitly. */

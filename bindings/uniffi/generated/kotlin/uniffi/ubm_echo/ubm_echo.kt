@@ -4572,6 +4572,26 @@ sealed class MobileRadioRequest {
         companion object
     }
     
+    data class ObservePresence(
+        val `id`: kotlin.ULong, 
+        val `peerId`: kotlin.String) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class StopPresence(
+        val `id`: kotlin.ULong, 
+        val `peerId`: kotlin.String) : MobileRadioRequest()
+        
+    {
+        
+
+        companion object
+    }
+    
     data class Close(
         val `id`: kotlin.ULong) : MobileRadioRequest()
         
@@ -4727,7 +4747,15 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 FfiConverterOptionalString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 )
-            28 -> MobileRadioRequest.Close(
+            28 -> MobileRadioRequest.ObservePresence(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                )
+            29 -> MobileRadioRequest.StopPresence(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                )
+            30 -> MobileRadioRequest.Close(
                 FfiConverterULong.read(buf),
                 )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
@@ -4973,6 +5001,22 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 + FfiConverterOptionalString.allocationSize(value.`serviceUuid`)
             )
         }
+        is MobileRadioRequest.ObservePresence -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+            )
+        }
+        is MobileRadioRequest.StopPresence -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+            )
+        }
         is MobileRadioRequest.Close -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
@@ -5168,8 +5212,20 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 FfiConverterOptionalString.write(value.`serviceUuid`, buf)
                 Unit
             }
-            is MobileRadioRequest.Close -> {
+            is MobileRadioRequest.ObservePresence -> {
                 buf.putInt(28)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.StopPresence -> {
+                buf.putInt(29)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.Close -> {
+                buf.putInt(30)
                 FfiConverterULong.write(value.`id`, buf)
                 Unit
             }

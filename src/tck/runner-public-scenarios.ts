@@ -249,6 +249,9 @@ async function executeManagerScenario<
   if (definition.id === 'restoration.provider-journal-adoption-and-rejection') {
     return executeRestorationScenario(manager, fixture, definition)
   }
+  if (definition.id === 'restoration.presence-observation-arms-known-peer') {
+    return executePresenceScenario(fixture, definition)
+  }
   if (definition.id === 'subscription.enable-ready-shared-cccd-and-fanout') {
     return executeSubscriptionSharingScenario(manager, fixture, definition)
   }
@@ -1705,6 +1708,28 @@ async function executeRestorationScenario<
       rejected.outcome === 'namespace-mismatch' && adopted.outcome === 'adopted',
       { rejectedOutcome: rejected.outcome, adoptedOutcome: adopted.outcome }
     )
+  ]
+}
+
+async function executePresenceScenario<
+  Attachment extends string,
+  Identity extends BackendIdentity<Attachment>,
+  Backend extends BleCentralBackend<Attachment, Identity>
+>(
+  fixture: BackendTckFixture<Attachment, Identity, Backend>,
+  definition: TckScenarioDefinition
+): Promise<readonly TckFact[]> {
+  const adapter = fixture.featureScenarioAdapters?.presence
+  if (adapter === undefined) {
+    throw new TckAssertionError(definition.id, 'fixture lacks a presence scenario adapter')
+  }
+  const observed = await fixture.controller.settle(adapter.observeKnownPeer())
+  const released = await fixture.controller.settle(adapter.unobserveKnownPeer())
+  return [
+    fact('presence-observation-arms-known-peer', observed.state === 'observing', {
+      observedState: observed.state
+    }),
+    fact('presence-unobserve-disarms-known-peer', released.state === 'idle', { releasedState: released.state })
   ]
 }
 

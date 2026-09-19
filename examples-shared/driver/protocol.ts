@@ -9,7 +9,7 @@
 export const TEST_DRIVER_PROTOCOL = 'ubm-test-driver/1'
 
 /** Every runtime that can host the scenarios. A new host is a protocol change. */
-export const HOST_KINDS = ['expo', 'web', 'tauri', 'electron', 'node'] as const
+export const HOST_KINDS = ['expo', 'web', 'tauri', 'electron', 'node', 'peripheral-sim'] as const
 export type HostKind = (typeof HOST_KINDS)[number]
 
 export type JsonValue = null | boolean | number | string | readonly JsonValue[] | JsonObject
@@ -56,7 +56,7 @@ export type HelloMessage = {
   readonly type: 'hello'
   readonly protocol: string
   readonly host: HostKind
-  /** Operating system: android | ios | macos | windows | linux | unknown. */
+  /** Operating system: android | ios | tvos (Apple TV) | macos | windows | linux | unknown. */
   readonly platform: string
   /** The radio stack the host adapter constructed (for example `node/corebluetooth`). */
   readonly backend: string

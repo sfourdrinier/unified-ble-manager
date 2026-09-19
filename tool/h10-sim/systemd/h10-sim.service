@@ -1,0 +1,18 @@
+[Unit]
+Description=Polar H10 BLE simulator (unified-ble-manager test tool)
+Documentation=https://github.com/trackourhealth/unified-ble-manager
+After=bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+# Installed by tool/h10-sim/scripts/install-service.sh: the binary lives in
+# ~/.local/bin and the profile in ~/.config/h10-sim/profile.json. Secrets
+# (H10SIM_TOKEN) come from the EnvironmentFile, never from the unit itself.
+ExecStart=%h/.local/bin/h10-sim --profile %h/.config/h10-sim/profile.json
+EnvironmentFile=-%h/.config/h10-sim/env
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

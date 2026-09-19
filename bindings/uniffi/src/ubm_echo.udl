@@ -88,6 +88,8 @@ interface MobileRadioRequest {
     ReleaseBackground(u64 id, string lease_id);
     UpdateBackgroundNotification(u64 id, string lease_id, string title, string? body);
     AssociateCompanion(u64 id, string? name, string? service_uuid);
+    ObservePresence(u64 id, string peer_id);
+    StopPresence(u64 id, string peer_id);
     Close(u64 id);
 };
 

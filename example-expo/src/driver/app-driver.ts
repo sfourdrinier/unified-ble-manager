@@ -9,6 +9,7 @@
 /// <reference types="expo/types" />
 
 import { AppState, Platform, TurboModuleRegistry, type AppStateStatus, type TurboModule } from 'react-native'
+import { resolveExpoDriverPlatform } from './expo-driver-platform.ts'
 import { createExpoBleManager, type ExpoBleManager } from 'unified-ble-manager/expo'
 import ubmPackage from 'unified-ble-manager/package.json'
 import {
@@ -40,11 +41,19 @@ import {
 function deviceFacts(): { platform: string; model: string; osVersion: string } {
   if (Platform.OS === 'android') {
     const { Brand, Model, Release } = Platform.constants
-    return { platform: 'android', model: `${Brand} ${Model}`, osVersion: Release }
+    return {
+      platform: resolveExpoDriverPlatform('android', Platform.isTV),
+      model: `${Brand} ${Model}`,
+      osVersion: Release
+    }
   }
   if (Platform.OS === 'ios') {
     const { systemName, interfaceIdiom, osVersion } = Platform.constants
-    return { platform: 'ios', model: `${systemName} ${interfaceIdiom}`, osVersion }
+    return {
+      platform: resolveExpoDriverPlatform(Platform.OS, Platform.isTV),
+      model: `${systemName} ${interfaceIdiom}`,
+      osVersion
+    }
   }
   return { platform: Platform.OS, model: Platform.OS, osVersion: String(Platform.Version) }
 }

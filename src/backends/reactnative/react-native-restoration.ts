@@ -101,9 +101,10 @@ export interface ReactNativeRestorationJournal {
  */
 const maximumRestorationRecords = 1024
 const restorationScenarioId = 'restoration.provider-journal-adoption-and-rejection'
+const presenceScenarioId = 'restoration.presence-observation-arms-known-peer'
 const activationIssuanceToken = Symbol('react-native-restoration-activation')
 
-type ReactNativeRestorationPlatform = 'android' | 'apple'
+export type ReactNativeRestorationPlatform = 'android' | 'apple'
 
 interface ActiveRestorationBinding {
   readonly activation: ReactNativeRestorationActivation
@@ -165,10 +166,7 @@ export class ReactNativeRestorationCoordinator implements RestorationCoordinator
   private consumed: RestorationAdoptionResult<string> | null = null
   private terminalFailure: BackendContractError | null = null
 
-  constructor(
-    private readonly control: ReactNativeRestorationJournal,
-    private readonly platform: ReactNativeRestorationPlatform
-  ) {}
+  constructor(private readonly control: ReactNativeRestorationJournal) {}
 
   activate(attachment: AttachmentRecord<string>, versions: NativeVersionAxes): ReactNativeRestorationActivation {
     if (this.activeBinding !== null || this.closing !== null) {
@@ -220,9 +218,8 @@ export class ReactNativeRestorationCoordinator implements RestorationCoordinator
     const binding = this.requireActiveBinding()
     assertClient(client)
     assertRequest(request)
-    if (this.platform === 'android') {
-      throw contractError('capability.unsupported', 'restoration', 'react-native-restoration.android-adopt')
-    }
+    // Issue #212: Android adopts the peers a Companion Device Manager
+    // presence wake restored, through the same journal path as iOS.
     const mismatch = requestMismatch(binding, request)
     if (mismatch !== null) {
       return mismatchResult(request, mismatch)
@@ -247,7 +244,12 @@ export class ReactNativeRestorationCoordinator implements RestorationCoordinator
         hostSessionScope: client.hostSessionScope
       })
     } catch (error) {
-      console.error('[ReactNativeRestorationCoordinator.adopt] Native restoration adoption failed:', error)
+      // A capability answer is the platform's reply, not a failure to
+      // diagnose: the typed rejection still reaches the caller, but it is
+      // not logged as an error. Genuine failures keep the log line below.
+      if (!(error instanceof BackendContractError) || error.normalized.code !== 'capability.unsupported') {
+        console.error('[ReactNativeRestorationCoordinator.adopt] Native restoration adoption failed:', error)
+      }
       if (error instanceof BackendContractError) {
         throw error
       }
@@ -284,13 +286,14 @@ export function createReactNativeRestorationFeatureRegistry(
   platform: ReactNativeRestorationPlatform,
   implementationVersion: string
 ): FeatureRegistry {
-  const state = platform === 'apple' ? 'limited' : 'unsupported'
   const limitation = restorationLimitation(platform)
+  const presenceState = platform === 'android' ? 'limited' : 'unsupported'
+  const presenceLimitation = presenceObservationLimitation(platform)
   return createFeatureRegistry(
     Object.freeze([
       Object.freeze({
         id: 'state:restoration-adoption',
-        state,
+        state: 'limited',
         selectedSchemaRange: versionRange(version('capability-schema', 1), version('capability-schema', 1)),
         implementationOrigin: 'backend-native',
         implementation: Object.freeze({
@@ -309,7 +312,7 @@ export function createReactNativeRestorationFeatureRegistry(
         }),
         evidence: Object.freeze({
           receiptId: `react-native-${platform}-restoration-adoption-v1:deterministic`,
-          evidenceLevel: state === 'limited' ? 'deterministic' : 'blocked',
+          evidenceLevel: 'deterministic',
           implementationVersion,
           sourceDigest: `react-native-${platform}-restoration-adoption-v1`,
           scenarioIds: Object.freeze([restorationScenarioId]),
@@ -319,6 +322,39 @@ export function createReactNativeRestorationFeatureRegistry(
         limits: Object.freeze({
           restorationRecords: Object.freeze({ maximum: maximumRestorationRecords, minimum: null, unit: 'items' }),
           restorationBytes: Object.freeze({ maximum: MAXIMUM_CONTROL_RECORD_BYTES, minimum: null, unit: 'bytes' }),
+          automaticReconnects: Object.freeze({ maximum: 0, minimum: null, unit: 'connections' }),
+          automaticSubscriptionResumptions: Object.freeze({ maximum: 0, minimum: null, unit: 'subscriptions' })
+        })
+      }),
+      Object.freeze({
+        id: 'state:presence-observation',
+        state: presenceState,
+        selectedSchemaRange: versionRange(version('capability-schema', 1), version('capability-schema', 1)),
+        implementationOrigin: 'backend-native',
+        implementation: Object.freeze({
+          async invoke(_input: SerializableRecord): Promise<SerializableRecord> {
+            throw contractError(
+              'lifecycle.invalid-state',
+              'restoration',
+              'state:presence-observation.invoke-without-manager'
+            )
+          }
+        }),
+        tck: Object.freeze({
+          suiteId: 'restoration',
+          requiredScenarioIds: Object.freeze([presenceScenarioId]),
+          contractRange: versionRange(version('capability-schema', 1), version('capability-schema', 1))
+        }),
+        evidence: Object.freeze({
+          receiptId: `react-native-${platform}-presence-observation-v1:deterministic`,
+          evidenceLevel: presenceState === 'limited' ? 'deterministic' : 'blocked',
+          implementationVersion,
+          sourceDigest: `react-native-${platform}-presence-observation-v1`,
+          scenarioIds: Object.freeze([presenceScenarioId]),
+          limitations: Object.freeze([presenceLimitation])
+        }),
+        limitations: Object.freeze([presenceLimitation]),
+        limits: Object.freeze({
           automaticReconnects: Object.freeze({ maximum: 0, minimum: null, unit: 'connections' }),
           automaticSubscriptionResumptions: Object.freeze({ maximum: 0, minimum: null, unit: 'subscriptions' })
         })
@@ -334,16 +370,34 @@ export function combineReactNativeFeatureRegistries(...registries: readonly Feat
 function restorationLimitation(platform: 'android' | 'apple'): Limitation {
   if (platform === 'android') {
     return Object.freeze({
-      code: 'android-process-restart-has-no-restored-gatt-state',
-      explanation: 'Android does not provide a native BLE restoration journal for a terminated process.',
+      code: 'android-restoration-needs-presence-observation',
+      explanation:
+        'Android has no OS restoration journal: known peers are restored through Companion Device Manager device presence (API 31+) for an armed associated peer, then claimed with the same once-per-process semantics as iOS.',
       affectedGuarantee: 'replay of state restored before JavaScript starts'
     })
   }
   return Object.freeze({
     code: 'configured-native-restoration-authority-required',
     explanation:
-      'Apple replays bounded restored state only after explicit authenticated adoption against its native authority configuration; it never reconnects or resumes subscriptions.',
+      'Apple replays bounded restored state only after explicit authenticated adoption against its native authority configuration; it never reconnects or resumes subscriptions by itself — the app reconnects known peers and replays subscriptions through the public API.',
     affectedGuarantee: 'automatic restoration of radio activity'
+  })
+}
+
+function presenceObservationLimitation(platform: 'android' | 'apple'): Limitation {
+  if (platform === 'android') {
+    return Object.freeze({
+      code: 'companion-presence-needs-api-31-and-association',
+      explanation:
+        'Device presence observation needs Android API 31+ and an associated peer (associateCompanion); the system wakes the process through the library CompanionDeviceService only for armed peers.',
+      affectedGuarantee: 'restoration of known peers after process termination'
+    })
+  }
+  return Object.freeze({
+    code: 'apple-restoration-needs-no-presence-observation',
+    explanation:
+      'CoreBluetooth delivers restoration through willRestoreState after a system relaunch; there is no presence observation to arm.',
+    affectedGuarantee: 'restoration of known peers after process termination'
   })
 }
 

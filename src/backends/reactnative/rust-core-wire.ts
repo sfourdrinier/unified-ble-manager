@@ -72,6 +72,8 @@ export const WIRE_OPS = Object.freeze([
   'background.release',
   'background.update-notification',
   'companion.associate',
+  'presence.observe',
+  'presence.unobserve',
   'gatt.discover',
   'gatt.read',
   'gatt.read-descriptor',
@@ -393,6 +395,8 @@ export interface WireOpResults {
   readonly 'background.acquire': { readonly leaseId: string }
   readonly 'background.release': WireCleanupRecord
   readonly 'background.update-notification': { readonly state: 'updated' }
+  readonly 'presence.observe': { readonly state: 'observing' }
+  readonly 'presence.unobserve': { readonly state: 'idle' }
   readonly 'companion.associate': {
     readonly source: 'associated'
     readonly associationId: number
@@ -1453,6 +1457,14 @@ const OP_PARSERS: OpParsers = Object.freeze({
   'background.update-notification': (value: unknown, path: string) => {
     const fields = exactObject(value, ['state'], path)
     return Object.freeze({ state: enumOrThrow(fields.get('state'), ['updated'] as const, `${path}.state`) })
+  },
+  'presence.observe': (value: unknown, path: string) => {
+    const fields = exactObject(value, ['state'], path)
+    return Object.freeze({ state: enumOrThrow(fields.get('state'), ['observing'] as const, `${path}.state`) })
+  },
+  'presence.unobserve': (value: unknown, path: string) => {
+    const fields = exactObject(value, ['state'], path)
+    return Object.freeze({ state: enumOrThrow(fields.get('state'), ['idle'] as const, `${path}.state`) })
   },
   'companion.associate': (value: unknown, path: string) => {
     const fields = exactObject(value, ['source', 'associationId', 'peerId', 'displayName'], path)

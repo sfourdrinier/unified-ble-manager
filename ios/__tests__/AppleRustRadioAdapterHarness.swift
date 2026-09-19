@@ -536,6 +536,33 @@ final class Harness {
     _ = ok("connection.connect", ["peerId": "R", "lease": "lease-r", "operationId": "op-adopt"])
     check(driver.onQueue { self.driver.calls.contains("connect R") }, "restored peer was not adopted through connect")
 
+    // Issue #212: presence observation is Android-only. Apple refuses it
+    // before any effect; restoration arrives through willRestoreState.
+    let observePresence = invoke("presence.observe", ["peerId": "R", "operationId": "op-presence"])
+    check(errorCode(observePresence) == "capability.unsupported", "presence.observe on Apple: \(observePresence)")
+    let unobservePresence = invoke("presence.unobserve", ["peerId": "R", "operationId": "op-unpresence"])
+    check(errorCode(unobservePresence) == "capability.unsupported", "presence.unobserve on Apple: \(unobservePresence)")
+
+    // Issue #212: subscription replay on the adopted restored link.
+    let restoredSelector: [String: Any] = [
+      "serviceUuid": hrService, "serviceOccurrence": 0,
+      "characteristicUuid": hrMeasurement, "characteristicOccurrence": 0,
+    ]
+    _ = ok("gatt.discover", ["peerId": "R", "lease": "lease-r", "operationId": "op-discover-r"])
+    let replayed = ok("gatt.subscribe", [
+      "peerId": "R", "selector": restoredSelector, "consumer": "hr-restored", "operationId": "op-sub-r",
+    ]) as? [String: Any]
+    check(replayed?["delivery"] as? String == "unknown", "restored subscription delivery: \(String(describing: replayed))")
+    let restoredSubscription = driver.onQueue { self.driver.subscriptionIdentifiers.last! }
+    onRadioQueue {
+      self.adapter.protocolRadioDidReceiveNotification(restoredSubscription, value: Data([0x01, 0x02]) as NSData)
+    }
+    drainUntil("restored subscription value") { records in
+      records.contains {
+        $0["t"] as? String == "value" && $0["consumer"] as? String == "hr-restored" && $0["valueB64"] as? String == "AQI="
+      }
+    }
+
     // Adapter power loss ends the scan with a reported source failure.
     onRadioQueue {
       self.driver.snapshot = ["availability": "available", "authorization": "granted", "power": "off", "safeReason": "off"]

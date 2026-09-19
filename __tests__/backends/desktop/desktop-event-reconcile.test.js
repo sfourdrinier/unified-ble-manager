@@ -41,7 +41,17 @@ const PLATFORMS = ['bluez', 'corebluetooth', 'winrt']
  */
 async function openLaggingBackend(platform) {
   const harness = realBinding(platform)
-  const control = { armed: new Set(), swallowed: {}, pollOverride: null, lagWithoutEvents: null, holdPolls: false, wakes: 0 }
+  const control = {
+    armed: new Set(),
+    swallowed: {},
+    pollOverride: null,
+    lagWithoutEvents: null,
+    holdPolls: false,
+    wakes: 0,
+    lagWaiters: new Map(),
+    lagTaken: new Set(),
+    wakeWaiters: []
+  }
   const original = harness.binding.openSynthetic
   harness.binding.openSynthetic = async (owner, options) => {
     const central = await original(owner, options)
@@ -54,6 +64,9 @@ async function openLaggingBackend(platform) {
             Reflect.apply(value, target, [
               () => {
                 control.wakes += 1
+                const waiters = control.wakeWaiters
+                control.wakeWaiters = []
+                for (const resolve of waiters) resolve()
                 wake()
               }
             ])
@@ -76,6 +89,8 @@ async function openLaggingBackend(platform) {
           return async () => {
             if (control.lagWithoutEvents === property) {
               control.lagWithoutEvents = null
+              control.lagTaken.add(property)
+              reportLag(control, property)
               return { kind: 'lagged', missed: 1 }
             }
             if (!control.armed.has(property)) return Reflect.apply(value, target, [])
@@ -88,6 +103,7 @@ async function openLaggingBackend(platform) {
             if (missed === 0) return null
             control.armed.delete(property)
             control.swallowed[property] = (control.swallowed[property] ?? 0) + missed
+            reportLag(control, property)
             return { kind: 'lagged', missed }
           }
         }
@@ -118,23 +134,46 @@ async function withLaggingBackend(platform, run) {
   }
 }
 
-async function eventuallySwallowed(control, method, timeoutMs = 5000) {
-  const deadline = Date.now() + timeoutMs
-  while (control.armed.has(method)) {
-    if (Date.now() > deadline) throw new Error(`${method} never reported a lag`)
-    await new Promise(resolve => setTimeout(resolve, 5))
-  }
-  expect(control.swallowed[method]).toBeGreaterThan(0)
+/**
+ * Resolve every test waiting for a lag the stubbed binding just reported on
+ * `method`. The lag itself is the signal: no wall-clock deadline is involved
+ * in any wait below.
+ */
+function reportLag(control, method) {
+  const waiters = control.lagWaiters.get(method)
+  if (waiters === undefined) return
+  control.lagWaiters.delete(method)
+  for (const resolve of waiters) resolve()
 }
 
-async function eventuallyLagged(control, timeoutMs = 5000) {
-  const deadline = Date.now() + timeoutMs
-  while (control.lagWithoutEvents !== null) {
-    if (Date.now() > deadline) throw new Error('the lag was never taken')
-    await new Promise(resolve => setTimeout(resolve, 5))
+/**
+ * A promise for the next lag the stubbed binding reports on `method`.
+ * Subscribe BEFORE arming the method and triggering the core: the wrapper
+ * only reports while armed, so nothing can slip between subscribing and
+ * arming, and the test then waits exactly for the stub's own signal. The
+ * only backstop is jest's timeout, as for any hang. A lag reported by an
+ * earlier arm resolves immediately.
+ */
+function awaitLag(control, method) {
+  if (!control.armed.has(method) && ((control.swallowed[method] ?? 0) > 0 || control.lagTaken.has(method))) {
+    return Promise.resolve()
   }
-  // One more pump turn so the reconciliation it triggered has run.
-  await new Promise(resolve => setTimeout(resolve, 50))
+  return new Promise(resolve => {
+    const waiters = control.lagWaiters.get(method)
+    if (waiters === undefined) control.lagWaiters.set(method, [resolve])
+    else waiters.push(resolve)
+  })
+}
+
+/**
+ * A promise for the next event-waker call the stubbed binding observes.
+ * Subscribe BEFORE the trigger and await after it: the wake itself orders
+ * the test, not a wall-clock poll.
+ */
+function nextWake(control) {
+  return new Promise(resolve => {
+    control.wakeWaiters.push(resolve)
+  })
 }
 
 describe('lifecycle lag reconciles from the core (N5)', () => {
@@ -142,11 +181,13 @@ describe('lifecycle lag reconciles from the core (N5)', () => {
     await withLaggingBackend(platform, async ({ backend, stage, control }) => {
       const events = backend.events()[Symbol.asyncIterator]()
       const { lease } = await connectAndDiscover(backend, stage)
+      const lag = awaitLag(control, 'takeLifecycleEvent')
       control.armed.add('takeLifecycleEvent')
       await stage.stageLinkLoss('peer-1')
       const lost = await nextEvent(events, event => event.kind === 'connection-lost', 5000)
       expect(lost.connection.connectionId).toEqual(lease.connection.connectionId)
-      await eventuallySwallowed(control, 'takeLifecycleEvent')
+      await lag
+      expect(control.swallowed.takeLifecycleEvent).toBeGreaterThan(0)
     })
   })
 
@@ -154,6 +195,7 @@ describe('lifecycle lag reconciles from the core (N5)', () => {
     await withLaggingBackend(platform, async ({ backend, stage, control }) => {
       const events = backend.events()[Symbol.asyncIterator]()
       const { lease } = await connectAndDiscover(backend, stage)
+      const lag = awaitLag(control, 'takeLifecycleEvent')
       control.armed.add('takeLifecycleEvent')
       await stage.stageServicesChanged('peer-1')
       const changed = await nextEvent(
@@ -163,7 +205,8 @@ describe('lifecycle lag reconciles from the core (N5)', () => {
       )
       expect(changed.kind).toBe('database-changed')
       expect(changed.database.connectionId).toEqual(lease.connection.connectionId)
-      await eventuallySwallowed(control, 'takeLifecycleEvent')
+      await lag
+      expect(control.swallowed.takeLifecycleEvent).toBeGreaterThan(0)
     })
   })
 
@@ -174,9 +217,14 @@ describe('lifecycle lag reconciles from the core (N5)', () => {
       const otherPeer = await observePeer(backend, stage, { peerId: 'peer-2' })
       await stage.stageMtu('peer-2', 185)
       const other = await backend.connections.connect(otherPeer, 'client-2', { signal: null, deadline: null })
+      // Drain what the two connects queued through the unarmed wrapper, so
+      // the armed lag below deterministically misses only this release.
+      await backend.settleCoreEvents()
+      const lag = awaitLag(control, 'takeLifecycleEvent')
       control.armed.add('takeLifecycleEvent')
       expect(await other.release()).toEqual({ state: 'released', failures: [] })
-      await eventuallySwallowed(control, 'takeLifecycleEvent')
+      await lag
+      expect(control.swallowed.takeLifecycleEvent).toBeGreaterThan(0)
       const seen = (await drainFor(events, 300)).filter(item => item.kind === 'value').map(item => item.value.kind)
       expect(seen.filter(kind => kind === 'connection-lost' || kind === 'database-changed')).toEqual([])
       expect((await database.read(measurement.path, { signal: null, deadline: null })).value.length).toBeGreaterThan(0)
@@ -201,6 +249,7 @@ describe('adapter-reset lag reconciles from the core (N5)', () => {
         const { lease } = await connectAndDiscover(backend, stage)
         const scan = await backend.scanner.start(scanOptions(), 'client-1')
         const observations = scan.observations[Symbol.asyncIterator]()
+        const resetLag = awaitLag(control, 'takeAdapterResetEvent')
         control.armed.add('takeLifecycleEvent')
         control.armed.add('takeAdapterResetEvent')
         control.armed.add('takeScanTerminalEvent')
@@ -216,7 +265,8 @@ describe('adapter-reset lag reconciles from the core (N5)', () => {
           const next = await nextItem(events, 3000)
           if (next.kind === 'value') seen.push(next.value)
         }
-        await eventuallySwallowed(control, 'takeAdapterResetEvent')
+        await resetLag
+        expect(control.swallowed.takeAdapterResetEvent).toBeGreaterThan(0)
         seen.push(...(await drainFor(events, 200)).filter(entry => entry.kind === 'value').map(entry => entry.value))
         expect(backend.identity.attachment.backendGeneration).not.toBe(generation)
         expect(seen.map(event => event.kind)).not.toContain('connection-lost')
@@ -240,6 +290,7 @@ describe('scan-terminal lag reconciles from the core (N5)', () => {
     await withLaggingBackend(platform, async ({ backend, stage, control }) => {
       const lease = await backend.scanner.start(scanOptions(), 'client-1')
       const iterator = lease.observations[Symbol.asyncIterator]()
+      const lag = awaitLag(control, 'takeScanTerminalEvent')
       control.armed.add('takeScanTerminalEvent')
       await stage.stageScanTerminated(false, 'the OS stopped the scan')
       let item
@@ -247,7 +298,8 @@ describe('scan-terminal lag reconciles from the core (N5)', () => {
         item = await nextItem(iterator, 5000)
       } while (item.kind === 'value')
       expect(item).toMatchObject({ kind: 'terminal', reason: 'source-failed' })
-      await eventuallySwallowed(control, 'takeScanTerminalEvent')
+      await lag
+      expect(control.swallowed.takeScanTerminalEvent).toBeGreaterThan(0)
       const next = await backend.scanner.start(scanOptions(), 'client-1')
       await next.stop()
     })
@@ -257,8 +309,9 @@ describe('scan-terminal lag reconciles from the core (N5)', () => {
     await withLaggingBackend('winrt', async ({ backend, stage, control }) => {
       const lease = await backend.scanner.start(scanOptions(), 'client-1')
       const iterator = lease.observations[Symbol.asyncIterator]()
+      const lag = awaitLag(control, 'takeScanTerminalEvent')
       control.lagWithoutEvents = 'takeScanTerminalEvent'
-      await eventuallyLagged(control)
+      await lag
       await stage.stageAdvertisement({ peerId: 'peer-3', rssi: -50, localName: 'still scanning' })
       expect((await nextValue(iterator, 5000)).device.id).toBeDefined()
       await iterator.return?.()
@@ -274,6 +327,7 @@ describe('security and write-readiness lag re-read the OS state (N5)', () => {
       await stage.stageSecurity('peer-1', 'not-bonded', true)
       const watch = backend.security.watch(peerId)[Symbol.asyncIterator]()
       expect(await nextValue(watch, 5000)).toMatchObject({ kind: 'state', peerId, state: { bond: 'not-bonded' } })
+      const lag = awaitLag(control, 'takeSecurityEvent')
       control.armed.add('takeSecurityEvent')
       await stage.stagePairOutcome('peer-1', 'paired')
       await backend.security.pair(peerId, {
@@ -284,7 +338,8 @@ describe('security and write-readiness lag re-read the OS state (N5)', () => {
         ceremony: 'system'
       })
       expect(await nextValue(watch, 5000)).toMatchObject({ kind: 'state', peerId, state: { bond: 'bonded' } })
-      await eventuallySwallowed(control, 'takeSecurityEvent')
+      await lag
+      expect(control.swallowed.takeSecurityEvent).toBeGreaterThan(0)
     })
   })
 
@@ -295,10 +350,12 @@ describe('security and write-readiness lag re-read the OS state (N5)', () => {
       const watch = await backend.connections.writeWithoutResponseReadiness(lease.connection)
       const events = watch.events[Symbol.asyncIterator]()
       expect(await nextValue(events, 3000)).toMatchObject({ ready: false, ordinal: 1 })
+      const lag = awaitLag(control, 'takeWriteReadinessEvent')
       control.armed.add('takeWriteReadinessEvent')
       await stage.stageWriteReadiness('peer-1', true, true)
       expect(await nextValue(events, 5000)).toMatchObject({ ready: true, ordinal: 2 })
-      await eventuallySwallowed(control, 'takeWriteReadinessEvent')
+      await lag
+      expect(control.swallowed.takeWriteReadinessEvent).toBeGreaterThan(0)
       await watch.close()
     })
   })
@@ -402,15 +459,6 @@ describe('the addon wakes the provider instead of waiting for the next poll (LEG
 // LEGACY-AUDIT-4 R2 / finding 118: every event kind is wake-driven, not only
 // values and lifecycle; the poll interval is a safety net.
 describe('security, write-readiness and scan-end reports wake the provider (finding 118)', () => {
-  async function woke(control, before, timeoutMs = 2000) {
-    const deadline = Date.now() + timeoutMs
-    while (control.wakes === before) {
-      if (Date.now() > deadline) return false
-      await new Promise(resolve => setTimeout(resolve, 1))
-    }
-    return true
-  }
-
   test.each(['winrt', 'bluez'])('%s: a bond change wakes and reaches the security watch', async platform => {
     await withLaggingBackend(platform, async ({ backend, stage, control }) => {
       const peerId = String(await observePeer(backend, stage))
@@ -418,7 +466,7 @@ describe('security, write-readiness and scan-end reports wake the provider (find
       const watch = backend.security.watch(peerId)[Symbol.asyncIterator]()
       expect(await nextValue(watch, 5000)).toMatchObject({ state: { bond: 'not-bonded' } })
       await stage.stagePairOutcome('peer-1', 'paired')
-      const before = control.wakes
+      const woken = nextWake(control)
       await backend.security.pair(peerId, {
         signal: null,
         deadline: null,
@@ -426,7 +474,7 @@ describe('security, write-readiness and scan-end reports wake the provider (find
         protection: 'system-default',
         ceremony: 'system'
       })
-      expect(await woke(control, before)).toBe(true)
+      await woken
       expect(await nextValue(watch, 5000)).toMatchObject({ kind: 'state', state: { bond: 'bonded' } })
     })
   })
@@ -438,9 +486,9 @@ describe('security, write-readiness and scan-end reports wake the provider (find
       const watch = await backend.connections.writeWithoutResponseReadiness(lease.connection)
       const events = watch.events[Symbol.asyncIterator]()
       expect(await nextValue(events, 3000)).toMatchObject({ ready: false })
-      const before = control.wakes
+      const woken = nextWake(control)
       await stage.stageWriteReadiness('peer-1', true, true)
-      expect(await woke(control, before)).toBe(true)
+      await woken
       expect(await nextValue(events, 5000)).toMatchObject({ ready: true })
       await watch.close()
     })
@@ -450,9 +498,9 @@ describe('security, write-readiness and scan-end reports wake the provider (find
     await withLaggingBackend(platform, async ({ backend, stage, control }) => {
       const lease = await backend.scanner.start(scanOptions(), 'client-1')
       const iterator = lease.observations[Symbol.asyncIterator]()
-      const before = control.wakes
+      const woken = nextWake(control)
       await stage.stageScanTerminated(true, 'the radio was turned off')
-      expect(await woke(control, before)).toBe(true)
+      await woken
       let item
       do {
         item = await nextItem(iterator, 5000)

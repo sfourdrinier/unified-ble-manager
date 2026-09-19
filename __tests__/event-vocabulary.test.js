@@ -58,6 +58,19 @@ describe('the event vocabulary cannot drift', () => {
       }
     }
   })
+
+  test('restoration hands the same names to both phones (issue #212)', () => {
+    for (const backend of ['react-native-android', 'react-native-ios']) {
+      expect(eventNamesFor('restoration-received', backend)).toEqual({
+        error: null,
+        retryability: null,
+        lifecycle: null,
+        streamTerminal: null
+      })
+    }
+    const entry = EVENT_VOCABULARY.find(candidate => candidate.event === 'restoration-received')
+    expect(entry.supervisor).toEqual({ context: 'restore', decision: 'reconnect' })
+  })
 })
 
 function domainOf(code) {
@@ -193,6 +206,7 @@ async function observeDecision(entry, backend) {
   for (let turn = 0; turn < 100; turn += 1) {
     const state = supervisor.snapshot.state
     if (state === 'stopped' || (state === 'connected' && ble.connect.mock.calls.length >= 2)) break
+    if (entry.supervisor.context === 'restore' && state === 'connected' && ble.connect.mock.calls.length >= 1) break
     await wait()
   }
   const state = supervisor.snapshot.state
@@ -203,7 +217,9 @@ async function observeDecision(entry, backend) {
         ? waitUntilReady.mock.calls.length > 0
           ? 'wait-for-adapter'
           : 'reconnect'
-        : `unsettled:${state}`
+        : entry.supervisor.context === 'restore' && state === 'connected' && ble.connect.mock.calls.length >= 1
+          ? 'reconnect'
+          : `unsettled:${state}`
   if (state !== 'stopped') await supervisor.stop()
   return decision
 }

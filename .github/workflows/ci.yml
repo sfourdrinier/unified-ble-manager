@@ -475,6 +475,64 @@ jobs:
       - name: Rust parity proofs
         run: pnpm test:parity
 
+  # h10-sim: the Polar H10 simulator is a first-class tool — build and
+  # unit-test it on Linux and macOS. No radio needed: unit tests, the
+  # encoder cross-check, the driver-hello fixture check and the socket-free
+  # driver suites. Kept small so the main gates stay fast.
+  h10-sim:
+    name: h10-sim (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0
+
+      - name: Install pinned Rust components
+        # cargo --version resolves rust-toolchain.toml and installs the
+        # pinned toolchain when absent; components attach to it.
+        run: |
+          cargo --version
+          rustup component add rustfmt clippy
+
+      - name: Install Linux build sysdeps
+        # bluer -> libdbus-sys needs pkg-config + D-Bus headers at compile
+        # time (same subset as rust-5-0).
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libdbus-1-dev pkg-config
+
+      - name: Setup JS package
+        uses: ./.github/actions/setup-js-package
+        with:
+          prepack: 'false'
+          node-version: '22'
+
+      - name: Check sim formatting
+        run: cargo fmt --manifest-path tool/h10-sim/Cargo.toml -- --check
+
+      - name: Reject sim warnings
+        run: cargo clippy --manifest-path tool/h10-sim/Cargo.toml --locked --all-targets -- -D warnings
+
+      - name: Test sim
+        run: cargo test --manifest-path tool/h10-sim/Cargo.toml --locked
+
+      - name: Cross-check encoders against TS parsers
+        run: node tool/h10-sim/tests/xcheck/run-xcheck.cjs
+
+      - name: Check driver-hello fixture is fresh
+        # The platform field differs per OS, so it is excluded from the
+        # comparison; everything else must match the binary byte for byte.
+        run: |
+          cargo run --locked --quiet --manifest-path tool/h10-sim/Cargo.toml -- --emit-driver-hello > /tmp/h10-driver-hello.json
+          node -e "const fs = require('fs'); const norm = p => { const o = JSON.parse(fs.readFileSync(p, 'utf8')); delete o.platform; return JSON.stringify(o); }; if (norm('/tmp/h10-driver-hello.json') !== norm('tool/h10-sim/tests/driver-hello.json')) { console.error('tool/h10-sim/tests/driver-hello.json is stale: regenerate with h10-sim --emit-driver-hello'); process.exit(1); }"
+
+      - name: Driver protocol and sequence tests
+        run: node --test examples-shared/driver/__tests__/protocol.test.mjs examples-shared/driver/__tests__/peripheral-sim.test.mjs examples-shared/driver/__tests__/polar-pmd.test.mjs examples-shared/driver/server/__tests__/sequence-devices.test.mjs
+
   changes:
     name: Detect path changes
     if: |

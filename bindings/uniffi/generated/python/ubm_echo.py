@@ -4515,6 +4515,64 @@ class MobileRadioRequest:
             return True
 
     @dataclass
+    class OBSERVE_PRESENCE:
+        
+        def __init__(self, id:int, peer_id:str):
+            self.id = id
+            
+            
+            self.peer_id = peer_id
+            
+            
+            pass
+
+    
+            
+            
+    
+        def __str__(self):
+            return "MobileRadioRequest.OBSERVE_PRESENCE(id={}, peer_id={})".format(self.id, self.peer_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_OBSERVE_PRESENCE():
+                return False
+            if self.id != other.id:
+                return False
+            if self.peer_id != other.peer_id:
+                return False
+            return True
+
+    @dataclass
+    class STOP_PRESENCE:
+        
+        def __init__(self, id:int, peer_id:str):
+            self.id = id
+            
+            
+            self.peer_id = peer_id
+            
+            
+            pass
+
+    
+            
+            
+    
+        def __str__(self):
+            return "MobileRadioRequest.STOP_PRESENCE(id={}, peer_id={})".format(self.id, self.peer_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_STOP_PRESENCE():
+                return False
+            if self.id != other.id:
+                return False
+            if self.peer_id != other.peer_id:
+                return False
+            return True
+
+    @dataclass
     class CLOSE:
         
         def __init__(self, id:int):
@@ -4650,6 +4708,14 @@ class MobileRadioRequest:
         return isinstance(self, MobileRadioRequest.ASSOCIATE_COMPANION)
     def is_associate_companion(self) -> bool:
         return isinstance(self, MobileRadioRequest.ASSOCIATE_COMPANION)
+    def is_OBSERVE_PRESENCE(self) -> bool:
+        return isinstance(self, MobileRadioRequest.OBSERVE_PRESENCE)
+    def is_observe_presence(self) -> bool:
+        return isinstance(self, MobileRadioRequest.OBSERVE_PRESENCE)
+    def is_STOP_PRESENCE(self) -> bool:
+        return isinstance(self, MobileRadioRequest.STOP_PRESENCE)
+    def is_stop_presence(self) -> bool:
+        return isinstance(self, MobileRadioRequest.STOP_PRESENCE)
     def is_CLOSE(self) -> bool:
         return isinstance(self, MobileRadioRequest.CLOSE)
     def is_close(self) -> bool:
@@ -4686,6 +4752,8 @@ MobileRadioRequest.ACQUIRE_BACKGROUND = type("MobileRadioRequest.ACQUIRE_BACKGRO
 MobileRadioRequest.RELEASE_BACKGROUND = type("MobileRadioRequest.RELEASE_BACKGROUND", (MobileRadioRequest.RELEASE_BACKGROUND, MobileRadioRequest,), {})  # type: ignore
 MobileRadioRequest.UPDATE_BACKGROUND_NOTIFICATION = type("MobileRadioRequest.UPDATE_BACKGROUND_NOTIFICATION", (MobileRadioRequest.UPDATE_BACKGROUND_NOTIFICATION, MobileRadioRequest,), {})  # type: ignore
 MobileRadioRequest.ASSOCIATE_COMPANION = type("MobileRadioRequest.ASSOCIATE_COMPANION", (MobileRadioRequest.ASSOCIATE_COMPANION, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.OBSERVE_PRESENCE = type("MobileRadioRequest.OBSERVE_PRESENCE", (MobileRadioRequest.OBSERVE_PRESENCE, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.STOP_PRESENCE = type("MobileRadioRequest.STOP_PRESENCE", (MobileRadioRequest.STOP_PRESENCE, MobileRadioRequest,), {})  # type: ignore
 MobileRadioRequest.CLOSE = type("MobileRadioRequest.CLOSE", (MobileRadioRequest.CLOSE, MobileRadioRequest,), {})  # type: ignore
 
 
@@ -4853,6 +4921,16 @@ class _UniffiFfiConverterTypeMobileRadioRequest(_UniffiConverterRustBuffer):
                 _UniffiFfiConverterOptionalString.read(buf),
             )
         if variant == 28:
+            return MobileRadioRequest.OBSERVE_PRESENCE(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterString.read(buf),
+            )
+        if variant == 29:
+            return MobileRadioRequest.STOP_PRESENCE(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterString.read(buf),
+            )
+        if variant == 30:
             return MobileRadioRequest.CLOSE(
                 _UniffiFfiConverterUInt64.read(buf),
             )
@@ -4989,6 +5067,14 @@ class _UniffiFfiConverterTypeMobileRadioRequest(_UniffiConverterRustBuffer):
             _UniffiFfiConverterUInt64.check_lower(value.id)
             _UniffiFfiConverterOptionalString.check_lower(value.name)
             _UniffiFfiConverterOptionalString.check_lower(value.service_uuid)
+            return
+        if value.is_OBSERVE_PRESENCE():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterString.check_lower(value.peer_id)
+            return
+        if value.is_STOP_PRESENCE():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterString.check_lower(value.peer_id)
             return
         if value.is_CLOSE():
             _UniffiFfiConverterUInt64.check_lower(value.id)
@@ -5127,8 +5213,16 @@ class _UniffiFfiConverterTypeMobileRadioRequest(_UniffiConverterRustBuffer):
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterOptionalString.write(value.name, buf)
             _UniffiFfiConverterOptionalString.write(value.service_uuid, buf)
-        if value.is_CLOSE():
+        if value.is_OBSERVE_PRESENCE():
             buf.write_i32(28)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterString.write(value.peer_id, buf)
+        if value.is_STOP_PRESENCE():
+            buf.write_i32(29)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterString.write(value.peer_id, buf)
+        if value.is_CLOSE():
+            buf.write_i32(30)
             _UniffiFfiConverterUInt64.write(value.id, buf)
 
 

@@ -127,3 +127,6 @@ native/desktop-core/prebuilds/
 .native-prebuild-artifact/
 /example-tauri/dist/
 /example-electron/driver/dist/
+
+# local pnpm content-addressable store (created by nested installs)
+.pnpm-store/

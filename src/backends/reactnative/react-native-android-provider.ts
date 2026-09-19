@@ -85,7 +85,7 @@ export function createReactNativeAndroidBackendProvider(
   options: ReactNativeAndroidBackendProviderOptions
 ): ReactNativeAndroidBackendProvider {
   const createOwnerId = options.createOwnerId ?? allocateBoundaryOwnerId
-  const restoration = new ReactNativeRestorationCoordinator(options.control, 'android')
+  const restoration = new ReactNativeRestorationCoordinator(options.control)
   return Object.freeze({
     descriptor: Object.freeze({
       providerId: 'unified-ble:react-native-android-provider',

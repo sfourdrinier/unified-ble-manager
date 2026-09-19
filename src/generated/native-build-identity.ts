@@ -37,13 +37,13 @@ export const EXPECTED_NATIVE_BUILD_IDENTITY: ExpectedNativeBuildIdentity = Objec
       ])
     }),
     jni: Object.freeze({
-      sourceDigest: '70fe7f6402a684de9835f2903b608d8344fcbced9d0bf8093746079094c938c0',
-      bindingSchema: '5c1b27eed1731319f41b6d09a9dacde964c126b5ac3bbbea7d71a01aea951b40',
+      sourceDigest: 'd852da4a0b0fd17be612c016bbda9dbc0dae2f6df12bc3e431249cd4e1a66d84',
+      bindingSchema: 'd2f7ab2f8290c588229294598c90f615a34212b28d84bc46cab3efa5792c4d5e',
       targets: Object.freeze(['aarch64-linux-android', 'x86_64-linux-android'])
     }),
     uniffi: Object.freeze({
-      sourceDigest: '002dd498257b8d3f828ae48a7a516b66700c23429d73af2078931dae184f82a3',
-      bindingSchema: '4b8f0107b9f7b6255a0547b71d08e1ae2274351b004bba0f3f6f9f2420206757',
+      sourceDigest: '1df777d2c2d43f3789b9ce752489265aeb7ed7a15c86f5cfdea2424fabda3e93',
+      bindingSchema: 'ec63a9b26bf26d50433322489ccd7cd09b3564c30bde03fbaed325aa63f2f9bc',
       targets: Object.freeze([
         'aarch64-apple-ios',
         'aarch64-apple-ios-sim',

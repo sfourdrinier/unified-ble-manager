@@ -62,7 +62,8 @@ const canonicalAdrDocuments = [
   'docs/ADR/2026-07-4.0-rn-restoration-bootstrap.md',
   'docs/ADR/2026-07-4.0-packaging.md',
   'docs/ADR/2026-07-4.0-open-source-governance.md',
-  'docs/ADR/2026-08-4.0-public-contract-reset.md'
+  'docs/ADR/2026-08-4.0-public-contract-reset.md',
+  'docs/ADR/2026-09-5.0-restoration-known-peer-reconnect.md'
 ]
 
 // Lane-scoped working decision records: pinned deliberately, but NOT
@@ -229,7 +230,7 @@ describe('consumer documentation matches the published package', () => {
     expect(document).toContain('UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md')
   })
 
-  test('the eight canonical ADRs plus registered lane ADRs cover every ADR path', () => {
+  test('the nine canonical ADRs plus registered lane ADRs cover every ADR path', () => {
     const adrDirectory = path.join(root, 'docs/ADR')
     const actual = fs.readdirSync(adrDirectory).sort()
     const expected = [...canonicalAdrDocuments, ...laneAdrDocuments]

@@ -119,7 +119,14 @@ export interface TckIpcTransportScenarioAdapter<Attachment extends string> {
 }
 
 /** Typed deterministic-boundary inputs for feature scenarios that the standard runner observes. */
+/** Presence observation for the leg's known peer (issue #212). */
+export interface TckPresenceScenarioAdapter {
+  observeKnownPeer(): Promise<{ readonly state: 'observing' }>
+  unobserveKnownPeer(): Promise<{ readonly state: 'idle' }>
+}
+
 export interface TckFeatureScenarioAdapters<Attachment extends string, Identity extends BackendIdentity<Attachment>> {
+  readonly presence?: TckPresenceScenarioAdapter
   readonly connectionControls?: TckConnectionControlsScenarioAdapter
   readonly ipcTransport?: TckIpcTransportScenarioAdapter<Attachment>
   readonly restoration?: TckRestorationScenarioAdapter<Attachment, Identity>
@@ -202,6 +209,7 @@ export type TckScenarioId =
   | 'subscription.enable-ready-shared-cccd-and-fanout'
   | 'subscription.pre-ready-overflow-controls-and-late-quarantine'
   | 'restoration.provider-journal-adoption-and-rejection'
+  | 'restoration.presence-observation-arms-known-peer'
   | 'electron.trusted-sender-envelope-generations-and-quotas'
   | 'lifecycle.destroy-idempotency-admission-and-exact-settlement'
   | 'diagnostics.trace-redaction-and-resource-counters'
@@ -274,6 +282,8 @@ export type TckFactId =
   | 'restoration-journal-is-provider-owned-and-bounded'
   | 'restoration-adoption-is-verified-and-exactly-once'
   | 'restoration-rejection-is-non-consuming'
+  | 'presence-observation-arms-known-peer'
+  | 'presence-unobserve-disarms-known-peer'
   | 'electron-sender-and-envelope-are-validated-before-backend-work'
   | 'electron-generation-and-client-quotas-isolate-renderers'
   | 'destroy-closes-admission-and-is-idempotent'

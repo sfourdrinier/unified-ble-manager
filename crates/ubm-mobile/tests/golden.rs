@@ -162,6 +162,9 @@ fn responder(request: &RadioRequest) -> Reply {
             }])
         }
         RadioRequest::AcquireBackground { .. } => RadioCompletion::Lease("fgs-lease-1".to_owned()),
+        RadioRequest::ObservePresence { .. } | RadioRequest::StopPresence { .. } => {
+            RadioCompletion::Unit
+        }
         RadioRequest::AssociateCompanion { .. } => RadioCompletion::Companion {
             association_id: 42,
             peer_id: Some(POLAR.to_owned()),
@@ -414,6 +417,20 @@ async fn generate() -> String {
         "companion associate",
         "companion.associate",
         json!({"name": "Polar", "serviceUuid": "180D"}),
+    )
+    .await;
+    r.invoke(
+        &session,
+        "presence observe",
+        "presence.observe",
+        json!({"peerId": peer, "operationId": "presence-1"}),
+    )
+    .await;
+    r.invoke(
+        &session,
+        "presence unobserve",
+        "presence.unobserve",
+        json!({"peerId": peer, "operationId": "presence-2"}),
     )
     .await;
     r.invoke(

@@ -43,6 +43,9 @@ class RustCoreSessions(
 
   fun openSession(owner: String, expectedWireRevision: String, reply: Reply) = perform(reply, "session.open") {
     host.ensureInstalled()
+    // A presence wake with no live session persisted its peers; surface them
+    // through the same restored records and events as a live ingest.
+    host.drainPresenceAppearances()
     val record = core.openSession(owner, expectedWireRevision, backgroundScope)
     val admission = RustCoreJson.parse(record) as? Map<*, *>
     val sessionId = (admission?.get("sessionId") as? Long)

@@ -1,0 +1,1070 @@
+{
+  "generatedBy": "scripts/generate-scan-query-digest-corpus.js from src/public/scan-query.ts + src/tauri/transport.ts",
+  "format": 1,
+  "entries": [
+    {
+      "id": "exact-name-heart-rate",
+      "description": "Physical driver query: heart-rate service + exact Polar name (every filtered Tauri scan).",
+      "input": {
+        "anyOf": [
+          {
+            "services": {
+              "any": [
+                "0000180d-0000-1000-8000-00805f9b34fb"
+              ]
+            },
+            "names": {
+              "exact": [
+                "Polar H10 E997042F"
+              ]
+            }
+          }
+        ]
+      },
+      "canonical": "{\"anyOf\":[{\"services\":{\"any\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"all\":[]},\"names\":{\"exact\":[\"Polar H10 E997042F\"],\"prefixes\":[]},\"manufacturerData\":null,\"serviceData\":null,\"rssi\":null}],\"exclude\":null}",
+      "digest": "scan-query-v1:f092a59d50ed1c31",
+      "wire": {
+        "anyOf": [
+          {
+            "peers": null,
+            "services": {
+              "any": [
+                "0000180d-0000-1000-8000-00805f9b34fb"
+              ],
+              "all": []
+            },
+            "names": {
+              "exact": [
+                "Polar H10 E997042F"
+              ],
+              "prefixes": []
+            },
+            "manufacturerData": null,
+            "serviceData": null,
+            "rssi": null,
+            "connectable": null
+          }
+        ],
+        "exclude": null,
+        "digest": "scan-query-v1:f092a59d50ed1c31"
+      }
+    },
+    {
+      "id": "prefix-name-heart-rate",
+      "description": "Physical driver query: heart-rate service + Polar name prefix.",
+      "input": {
+        "anyOf": [
+          {
+            "services": {
+              "any": [
+                "0000180d-0000-1000-8000-00805f9b34fb"
+              ]
+            },
+            "names": {
+              "prefixes": [
+                "Polar H10"
+              ]
+            }
+          }
+        ]
+      },
+      "canonical": "{\"anyOf\":[{\"services\":{\"any\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"all\":[]},\"names\":{\"exact\":[],\"prefixes\":[\"Polar H10\"]},\"manufacturerData\":null,\"serviceData\":null,\"rssi\":null}],\"exclude\":null}",
+      "digest": "scan-query-v1:f73ad30f1be7d00d",
+      "wire": {
+        "anyOf": [
+          {
+            "peers": null,
+            "services": {
+              "any": [
+                "0000180d-0000-1000-8000-00805f9b34fb"
+              ],
+              "all": []
+            },
+            "names": {
+              "exact": [],
+              "prefixes": [
+                "Polar H10"
+              ]
+            },
+            "manufacturerData": null,
+            "serviceData": null,
+            "rssi": null,
+            "connectable": null
+          }
+        ],
+        "exclude": null,
+        "digest": "scan-query-v1:f73ad30f1be7d00d"
+      }
+    },
+    {
+      "id": "services-only-all",
+      "description": "Control shape already covered by the pre-existing Rust unit test (16-bit form).",
+      "input": {
+        "anyOf": [
+          {
+            "services": {
+              "all": [
+                "180d"
+              ]
+            }
+          }
+        ]
+      },
+      "canonical": "{\"anyOf\":[{\"services\":{\"any\":[],\"all\":[\"0000180d-0000-1000-8000-00805f9b34fb\"]},\"names\":null,\"manufacturerData\":null,\"serviceData\":null,\"rssi\":null}],\"exclude\":null}",
+      "digest": "scan-query-v1:41cda0453c46a50a",
+      "wire": {
+        "anyOf": [
+          {
+            "peers": null,
+            "services": {
+              "any": [],
+              "all": [
+                "0000180d-0000-1000-8000-00805f9b34fb"
+              ]
+            },
+            "names": null,
+            "manufacturerData": null,
+            "serviceData": null,
+            "rssi": null,
+            "connectable": null
+          }
+        ],
+        "exclude": null,
+        "digest": "scan-query-v1:41cda0453c46a50a"
+      }
+    },
+    {
+      "id": "services-any-multiple",
+      "description": "Several services.any entries, mixed case and short forms, unsorted input.",
+      "input": {
+        "anyOf": [
+          {
+            "services": {
+              "any": [
+                "180F",
+                "180d",
+                "1800"
+              ]
+            }
+          }
+        ]
+      },
+      "canonical": "{\"anyOf\":[{\"services\":{\"any\":[\"00001800-0000-1000-8000-00805f9b34fb\",\"0000180d-0000-1000-8000-00805f9b34fb\",\"0000180f-0000-1000-8000-00805f9b34fb\"],\"all\":[]},\"names\":null,\"manufacturerData\":null,\"serviceData\":null,\"rssi\":null}],\"exclude\":null}",
+      "digest": "scan-query-v1:35a1ee7892609f80",
+      "wire": {
+        "anyOf": [
+          {
+            "peers": null,
+            "services": {
+              "any": [
+                "00001800-0000-1000-8000-00805f9b34fb",
+                "0000180d-0000-1000-8000-00805f9b34fb",
+                "0000180f-0000-1000-8000-00805f9b34fb"
+              ],
+              "all": []
+            },
+            "names": null,
+            "manufacturerData": null,
+            "serviceData": null,
+            "rssi": null,
+            "connectable": null
+          }
+        ],
+        "exclude": null,
+        "digest": "scan-query-v1:35a1ee7892609f80"
+      }
+    },
+    {
+      "id": "uuid-case-and-short-forms",
+      "description": "Uppercase 128-bit, 32-bit, hyphenless 128-bit and 16-bit UUIDs canonicalize identically.",
+      "input": {
+        "anyOf": [
+          {
+            "services": {
+              "any": [
+                "0000180D-0000-1000-8000-00805F9B34FB",
+                "0000180f00001000800000805f9b34fb"
+              ],
+              "all": [
+                "180a",
+                "00002a37-0000-1000-8000-00805f9b34fb"
+              ]
+            }
+          }
+        ]
+      },
+      "canonical": "{\"anyOf\":[{\"services\":{\"any\":[\"0000180d-0000-1000-8000-00805f9b34fb\",\"0000180f-0000-1000-8000-00805f9b34fb\"],\"all\":[\"0000180a-0000-1000-8000-00805f9b34fb\",\"00002a37-0000-1000-8000-00805f9b34fb\"]},\"names\":null,\"manufacturerData\":null,\"serviceData\":null,\"rssi\":null}],\"exclude\":null}",
+      "digest": "scan-query-v1:7da7b9311b401f16",
+      "wire": {
+        "anyOf": [
+          {
+            "peers": null,
+            "services": {
+              "any": [
+                "0000180d-0000-1000-8000-00805f9b34fb",
+                "0000180f-0000-1000-8000-00805f9b34fb"
+              ],
+              "all": [
+                "0000180a-0000-1000-8000-00805f9b34fb",
+                "00002a37-0000-1000-8000-00805f9b34fb"
+              ]
+            },
+            "names": null,
+            "manufacturerData": null,
+            "serviceData": null,
+            "rssi": null,
+            "connectable": null
+          }
+        ],
+        "exclude": null,
+        "digest": "scan-query-v1:7da7b9311b401f16"
+      }
+    },
+    {
+      "id": "manufacturer-company-only",
+      "description": "Company id without any byte pattern (wire carries explicit nulls).",
+      "input": {
+        "anyOf": [
+          {
+            "manufacturerData": {
+              "any": [
+                {
+                  "companyId": 76
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "canonical": "{\"anyOf\":[{\"services\":null,\"names\":null,\"manufacturerData\":{\"any\":[{\"companyId\":76}],\"all\":[]},\"serviceData\":null,\"rssi\":null}],\"exclude\":null}",
+      "digest": "scan-query-v1:2baf532938e6d592",
+      "wire": {
+        "anyOf": [
+          {
+            "peers": null,
+            "services": null,
+            "names": null,
+            "manufacturerData": {
+              "any": [
+                {
+                  "companyId": 76,
+                  "dataPrefix": null,
+                  "mask": null
+                }
+              ],
+              "all": []
+            },
+            "serviceData": null,
+            "rssi": null,
+            "connectable": null
+          }
+        ],
+        "exclude": null,
+        "digest": "scan-query-v1:2baf532938e6d592"
+      }
+    },
+    {
+      "id": "manufacturer-prefix-no-mask",
+      "description": "Byte prefix without a mask (wire carries mask null).",
+      "input": {
+        "anyOf": [
+          {
+            "manufacturerData": {
+              "any": [
+                {
+                  "companyId": 76,
+                  "dataPrefix": {
+                    "$bytes": [
+                      2,
+                      21
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "canonical": "{\"anyOf\":[{\"services\":null,\"names\":null,\"manufacturerData\":{\"any\":[{\"companyId\":76,\"dataPrefix\":\"0215\"}],\"all\":[]},\"serviceData\":null,\"rssi\":null}],\"exclude\":null}",
+      "digest": "scan-query-v1:0bea97fd5d278f8c",
+      "wire": {
+        "anyOf": [
+          {
+            "peers": null,
+            "services": null,
+            "names": null,
+            "manufacturerData": {
+              "any": [
+                {
+                  "companyId": 76,
+                  "dataPrefix": {
+                    "$__unifiedBleBytesV2": [
+                      2,
+                      21
+                    ]
+                  },
+                  "mask": null
+                }
+              ],
+              "all": []
+            },
+            "serviceData": null,
+            "rssi": null,
+            "connectable": null
+          }
+        ],
+        "exclude": null,
+        "digest": "scan-query-v1:0bea97fd5d278f8c"
+      }
+    },
+    {
+      "id": "manufacturer-prefix-mask",
+      "description": "Byte prefix with a mask; all/all membership.",
+      "input": {
+        "anyOf": [
+          {
+            "manufacturerData": {
+              "all": [
+                {
+                  "companyId": 6,
+                  "dataPrefix": {
+                    "$bytes": [
+                      1,
+                      2,
+                      3
+                    ]
+                  },
+                  "mask": {
+                    "$bytes": [
+                      255,
+                      255,
+                      0
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "canonical": "{\"anyOf\":[{\"services\":null,\"names\":null,\"manufacturerData\":{\"any\":[],\"all\":[{\"companyId\":6,\"dataPrefix\":\"010203\",\"mask\":\"ffff00\"}]},\"serviceData\":null,\"rssi\":null}],\"exclude\":null}",
+      "digest": "scan-query-v1:8a9d143b7ccdaf4b",
+      "wire": {
+        "anyOf": [
+          {
+            "peers": null,
+            "services": null,
+            "names": null,
+            "manufacturerData": {
+              "any": [],
+              "all": [
+                {
+                  "companyId": 6,
+                  "dataPrefix": {
+                    "$__unifiedBleBytesV2": [
+                      1,
+                      2,
+                      3
+                    ]
+                  },
+                  "mask": {
+                    "$__unifiedBleBytesV2": [
+                      255,
+                      255,
+                      0
+                    ]
+                  }
+                }
+              ]
+            },
+            "serviceData": null,
+            "rssi": null,
+            "connectable": null
+          }
+        ],
+        "exclude": null,
+        "digest": "scan-query-v1:8a9d143b7ccdaf4b"
+      }
+    },
+    {
+      "id": "service-data-patterns",
+      "description": "Service-data any/all with short-form service UUIDs and byte patterns.",
+      "input": {
+        "anyOf": [
+          {
+            "serviceData": {
+              "any": [
+                {
+                  "service": "180d",
+                  "dataPrefix": {
+                    "$bytes": [
+                      0
+                    ]
+                  }
+                }
+              ],
+              "all": [
+                {
+                  "service": "0000180d-0000-1000-8000-00805f9b34fb",
+                  "dataPrefix": {
+                    "$bytes": [
+                      1,
+                      2
+                    ]
+                  },
+                  "mask": {
+                    "$bytes": [
+                      255,
+                      0
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "canonical": "{\"anyOf\":[{\"services\":null,\"names\":null,\"manufacturerData\":null,\"serviceData\":{\"any\":[{\"service\":\"0000180d-0000-1000-8000-00805f9b34fb\",\"dataPrefix\":\"00\"}],\"all\":[{\"service\":\"0000180d-0000-1000-8000-00805f9b34fb\",\"dataPrefix\":\"0102\",\"mask\":\"ff00\"}]},\"rssi\":null}],\"exclude\":null}",
+      "digest": "scan-query-v1:da3b8456aa7b08b2",
+      "wire": {
+        "anyOf": [
+          {
+            "peers": null,
+            "services": null,
+            "names": null,
+            "manufacturerData": null,
+            "serviceData": {
+              "any": [
+                {
+                  "service": "0000180d-0000-1000-8000-00805f9b34fb",
+                  "dataPrefix": {
+                    "$__unifiedBleBytesV2": [
+                      0
+                    ]
+                  },
+                  "mask": null
+                }
+              ],
+              "all": [
+                {
+                  "service": "0000180d-0000-1000-8000-00805f9b34fb",
+                  "dataPrefix": {
+                    "$__unifiedBleBytesV2": [
+                      1,
+                      2
+                    ]
+                  },
+                  "mask": {
+                    "$__unifiedBleBytesV2": [
+                      255,
+                      0
+                    ]
+                  }
+                }
+              ]
+            },
+            "rssi": null,
+            "connectable": null
+          }
+        ],
+        "exclude": null,
+        "digest": "scan-query-v1:da3b8456aa7b08b2"
+      }
+    },
+    {
+      "id": "exclude-clause",
+      "description": "Positive clause plus an exclusion clause.",
+      "input": {
+        "anyOf": [
+          {
+            "services": {
+              "any": [
+                "0000180d-0000-1000-8000-00805f9b34fb"
+              ]
+            }
+          }
+        ],
+        "exclude": [
+          {
+            "names": {
+              "prefixes": [
+                "Band"
+              ]
+            }
+          }
+        ]
+      },
+      "canonical": "{\"anyOf\":[{\"services\":{\"any\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"all\":[]},\"names\":null,\"manufacturerData\":null,\"serviceData\":null,\"rssi\":null}],\"exclude\":[{\"services\":null,\"names\":{\"exact\":[],\"prefixes\":[\"Band\"]},\"manufacturerData\":null,\"serviceData\":null,\"rssi\":null}]}",
+      "digest": "scan-query-v1:b9a34d76002327d6",
+      "wire": {
+        "anyOf": [
+          {
+            "peers": null,
+            "services": {
+              "any": [
+                "0000180d-0000-1000-8000-00805f9b34fb"
+              ],
+              "all": []
+            },
+            "names": null,
+            "manufacturerData": null,
+            "serviceData": null,
+            "rssi": null,
+            "connectable": null
+          }
+        ],
+        "exclude": [
+          {
+            "peers": null,
+            "services": null,
+            "names": {
+              "exact": [],
+              "prefixes": [
+                "Band"
+              ]
+            },
+            "manufacturerData": null,
+            "serviceData": null,
+            "rssi": null,
+            "connectable": null
+          }
+        ],
+        "digest": "scan-query-v1:b9a34d76002327d6"
+      }
+    },
+    {
+      "id": "multiple-anyof-clauses",
+      "description": "Two anyOf clauses given in reverse canonical order (normalizer sorts).",
+      "input": {
+        "anyOf": [
+          {
+            "names": {
+              "exact": [
+                "Zebra"
+              ]
+            }
+          },
+          {
+            "names": {
+              "exact": [
+                "Apple"
+              ]
+            }
+          }
+        ]
+      },
+      "canonical": "{\"anyOf\":[{\"services\":null,\"names\":{\"exact\":[\"Apple\"],\"prefixes\":[]},\"manufacturerData\":null,\"serviceData\":null,\"rssi\":null},{\"services\":null,\"names\":{\"exact\":[\"Zebra\"],\"prefixes\":[]},\"manufacturerData\":null,\"serviceData\":null,\"rssi\":null}],\"exclude\":null}",
+      "digest": "scan-query-v1:4fed4a48f965253b",
+      "wire": {
+        "anyOf": [
+          {
+            "peers": null,
+            "services": null,
+            "names": {
+              "exact": [
+                "Apple"
+              ],
+              "prefixes": []
+            },
+            "manufacturerData": null,
+            "serviceData": null,
+            "rssi": null,
+            "connectable": null
+          },
+          {
+            "peers": null,
+            "services": null,
+            "names": {
+              "exact": [
+                "Zebra"
+              ],
+              "prefixes": []
+            },
+            "manufacturerData": null,
+            "serviceData": null,
+            "rssi": null,
+            "connectable": null
+          }
+        ],
+        "exclude": null,
+        "digest": "scan-query-v1:4fed4a48f965253b"
+      }
+    },
+    {
+      "id": "unicode-names",
+      "description": "Non-ASCII exact names and prefixes: accents, CJK, emoji.",
+      "input": {
+        "anyOf": [
+          {
+            "names": {
+              "exact": [
+                "Polaire H10",
+                "心率带 01",
+                "Polar H10 💓"
+              ],
+              "prefixes": [
+                "Préfixe-",
+                "💓"
+              ]
+            }
+          }
+        ]
+      },
+      "canonical": "{\"anyOf\":[{\"services\":null,\"names\":{\"exact\":[\"Polaire H10\",\"Polar H10 💓\",\"心率带 01\"],\"prefixes\":[\"Préfixe-\",\"💓\"]},\"manufacturerData\":null,\"serviceData\":null,\"rssi\":null}],\"exclude\":null}",
+      "digest": "scan-query-v1:45cccd8b88696422",
+      "wire": {
+        "anyOf": [
+          {
+            "peers": null,
+            "services": null,
+            "names": {
+              "exact": [
+                "Polaire H10",
+                "Polar H10 💓",
+                "心率带 01"
+              ],
+              "prefixes": [
+                "Préfixe-",
+                "💓"
+              ]
+            },
+            "manufacturerData": null,
+            "serviceData": null,
+            "rssi": null,
+            "connectable": null
+          }
+        ],
+        "exclude": null,
+        "digest": "scan-query-v1:45cccd8b88696422"
+      }
+    },
+    {
+      "id": "name-escaping",
+      "description": "Names with quotes, backslashes and control characters exercise JSON string escaping parity.",
+      "input": {
+        "anyOf": [
+          {
+            "names": {
+              "exact": [
+                "Quoted \"Name\" \\ test",
+                "Tab\there"
+              ],
+              "prefixes": [
+                "Back\\"
+              ]
+            }
+          }
+        ]
+      },
+      "canonical": "{\"anyOf\":[{\"services\":null,\"names\":{\"exact\":[\"Quoted \\\"Name\\\" \\\\ test\",\"Tab\\there\"],\"prefixes\":[\"Back\\\\\"]},\"manufacturerData\":null,\"serviceData\":null,\"rssi\":null}],\"exclude\":null}",
+      "digest": "scan-query-v1:fbb6d7076d524796",
+      "wire": {
+        "anyOf": [
+          {
+            "peers": null,
+            "services": null,
+            "names": {
+              "exact": [
+                "Quoted \"Name\" \\ test",
+                "Tab\there"
+              ],
+              "prefixes": [
+                "Back\\"
+              ]
+            },
+            "manufacturerData": null,
+            "serviceData": null,
+            "rssi": null,
+            "connectable": null
+          }
+        ],
+        "exclude": null,
+        "digest": "scan-query-v1:fbb6d7076d524796"
+      }
+    },
+    {
+      "id": "radio-addresses",
+      "description": "Lowercase and dash-separated addresses canonicalize to uppercase colons.",
+      "input": {
+        "anyOf": [
+          {
+            "addresses": [
+              "aa:bb:cc:dd:ee:ff",
+              "AA-BB-CC-DD-EE-00"
+            ]
+          }
+        ]
+      },
+      "canonical": "{\"anyOf\":[{\"addresses\":[\"AA:BB:CC:DD:EE:00\",\"AA:BB:CC:DD:EE:FF\"],\"services\":null,\"names\":null,\"manufacturerData\":null,\"serviceData\":null,\"rssi\":null}],\"exclude\":null}",
+      "digest": "scan-query-v1:3c2b6cd95eda7d85",
+      "wire": {
+        "anyOf": [
+          {
+            "peers": null,
+            "addresses": [
+              "AA:BB:CC:DD:EE:00",
+              "AA:BB:CC:DD:EE:FF"
+            ],
+            "services": null,
+            "names": null,
+            "manufacturerData": null,
+            "serviceData": null,
+            "rssi": null,
+            "connectable": null
+          }
+        ],
+        "exclude": null,
+        "digest": "scan-query-v1:3c2b6cd95eda7d85"
+      }
+    },
+    {
+      "id": "rssi-minimum-only",
+      "description": "RSSI lower bound only (wire carries maximum null).",
+      "input": {
+        "anyOf": [
+          {
+            "services": {
+              "any": [
+                "0000180d-0000-1000-8000-00805f9b34fb"
+              ]
+            },
+            "rssi": {
+              "minimum": -70
+            }
+          }
+        ]
+      },
+      "canonical": "{\"anyOf\":[{\"services\":{\"any\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"all\":[]},\"names\":null,\"manufacturerData\":null,\"serviceData\":null,\"rssi\":{\"minimum\":-70}}],\"exclude\":null}",
+      "digest": "scan-query-v1:0e237fb113b8225f",
+      "wire": {
+        "anyOf": [
+          {
+            "peers": null,
+            "services": {
+              "any": [
+                "0000180d-0000-1000-8000-00805f9b34fb"
+              ],
+              "all": []
+            },
+            "names": null,
+            "manufacturerData": null,
+            "serviceData": null,
+            "rssi": {
+              "minimum": -70,
+              "maximum": null
+            },
+            "connectable": null
+          }
+        ],
+        "exclude": null,
+        "digest": "scan-query-v1:0e237fb113b8225f"
+      }
+    },
+    {
+      "id": "rssi-maximum-only",
+      "description": "RSSI upper bound only.",
+      "input": {
+        "anyOf": [
+          {
+            "services": {
+              "any": [
+                "0000180d-0000-1000-8000-00805f9b34fb"
+              ]
+            },
+            "rssi": {
+              "maximum": -30
+            }
+          }
+        ]
+      },
+      "canonical": "{\"anyOf\":[{\"services\":{\"any\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"all\":[]},\"names\":null,\"manufacturerData\":null,\"serviceData\":null,\"rssi\":{\"maximum\":-30}}],\"exclude\":null}",
+      "digest": "scan-query-v1:86c560beabcd02d1",
+      "wire": {
+        "anyOf": [
+          {
+            "peers": null,
+            "services": {
+              "any": [
+                "0000180d-0000-1000-8000-00805f9b34fb"
+              ],
+              "all": []
+            },
+            "names": null,
+            "manufacturerData": null,
+            "serviceData": null,
+            "rssi": {
+              "minimum": null,
+              "maximum": -30
+            },
+            "connectable": null
+          }
+        ],
+        "exclude": null,
+        "digest": "scan-query-v1:86c560beabcd02d1"
+      }
+    },
+    {
+      "id": "rssi-range",
+      "description": "RSSI closed range.",
+      "input": {
+        "anyOf": [
+          {
+            "rssi": {
+              "minimum": -80,
+              "maximum": -40
+            }
+          }
+        ]
+      },
+      "canonical": "{\"anyOf\":[{\"services\":null,\"names\":null,\"manufacturerData\":null,\"serviceData\":null,\"rssi\":{\"minimum\":-80,\"maximum\":-40}}],\"exclude\":null}",
+      "digest": "scan-query-v1:9f6013a33e407fbc",
+      "wire": {
+        "anyOf": [
+          {
+            "peers": null,
+            "services": null,
+            "names": null,
+            "manufacturerData": null,
+            "serviceData": null,
+            "rssi": {
+              "minimum": -80,
+              "maximum": -40
+            },
+            "connectable": null
+          }
+        ],
+        "exclude": null,
+        "digest": "scan-query-v1:9f6013a33e407fbc"
+      }
+    },
+    {
+      "id": "connectable-flags",
+      "description": "Connectable true in one clause, false in another.",
+      "input": {
+        "anyOf": [
+          {
+            "services": {
+              "any": [
+                "0000180d-0000-1000-8000-00805f9b34fb"
+              ]
+            },
+            "connectable": true
+          },
+          {
+            "connectable": false
+          }
+        ]
+      },
+      "canonical": "{\"anyOf\":[{\"services\":null,\"names\":null,\"manufacturerData\":null,\"serviceData\":null,\"rssi\":null,\"connectable\":false},{\"services\":{\"any\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"all\":[]},\"names\":null,\"manufacturerData\":null,\"serviceData\":null,\"rssi\":null,\"connectable\":true}],\"exclude\":null}",
+      "digest": "scan-query-v1:028f576d729493b5",
+      "wire": {
+        "anyOf": [
+          {
+            "peers": null,
+            "services": null,
+            "names": null,
+            "manufacturerData": null,
+            "serviceData": null,
+            "rssi": null,
+            "connectable": false
+          },
+          {
+            "peers": null,
+            "services": {
+              "any": [
+                "0000180d-0000-1000-8000-00805f9b34fb"
+              ],
+              "all": []
+            },
+            "names": null,
+            "manufacturerData": null,
+            "serviceData": null,
+            "rssi": null,
+            "connectable": true
+          }
+        ],
+        "exclude": null,
+        "digest": "scan-query-v1:028f576d729493b5"
+      }
+    },
+    {
+      "id": "peer-references",
+      "description": "Durable peer reference clause.",
+      "input": {
+        "anyOf": [
+          {
+            "peers": [
+              {
+                "version": 1,
+                "backendId": "unified-ble:corebluetooth",
+                "scope": "system",
+                "opaqueId": "peer-1"
+              }
+            ]
+          }
+        ]
+      },
+      "canonical": "{\"anyOf\":[{\"peers\":[{\"version\":1,\"backendId\":\"unified-ble:corebluetooth\",\"scope\":\"system\",\"opaqueId\":\"peer-1\"}],\"services\":null,\"names\":null,\"manufacturerData\":null,\"serviceData\":null,\"rssi\":null}],\"exclude\":null}",
+      "digest": "scan-query-v1:f523bd11f9855894",
+      "wire": {
+        "anyOf": [
+          {
+            "peers": [
+              {
+                "version": 1,
+                "backendId": "unified-ble:corebluetooth",
+                "scope": "system",
+                "opaqueId": "peer-1"
+              }
+            ],
+            "services": null,
+            "names": null,
+            "manufacturerData": null,
+            "serviceData": null,
+            "rssi": null,
+            "connectable": null
+          }
+        ],
+        "exclude": null,
+        "digest": "scan-query-v1:f523bd11f9855894"
+      }
+    },
+    {
+      "id": "unfiltered",
+      "description": "Empty public query: unfiltered scan (the one shape that worked on hardware).",
+      "input": {},
+      "canonical": "{\"anyOf\":null,\"exclude\":null}",
+      "digest": "scan-query-v1:1820a704cc811a0a",
+      "wire": {
+        "anyOf": null,
+        "exclude": null,
+        "digest": "scan-query-v1:1820a704cc811a0a"
+      }
+    },
+    {
+      "id": "kitchen-sink",
+      "description": "Every field in one clause plus an exclusion, exercising key order and nulls.",
+      "input": {
+        "anyOf": [
+          {
+            "services": {
+              "any": [
+                "0000180d-0000-1000-8000-00805f9b34fb"
+              ],
+              "all": [
+                "180f"
+              ]
+            },
+            "names": {
+              "exact": [
+                "Polar H10 E997042F"
+              ],
+              "prefixes": [
+                "Polar"
+              ]
+            },
+            "manufacturerData": {
+              "any": [
+                {
+                  "companyId": 76
+                }
+              ]
+            },
+            "serviceData": {
+              "any": [
+                {
+                  "service": "180d",
+                  "dataPrefix": {
+                    "$bytes": [
+                      9
+                    ]
+                  }
+                }
+              ]
+            },
+            "rssi": {
+              "minimum": -80
+            },
+            "connectable": true
+          }
+        ],
+        "exclude": [
+          {
+            "addresses": [
+              "11:22:33:44:55:66"
+            ]
+          }
+        ]
+      },
+      "canonical": "{\"anyOf\":[{\"services\":{\"any\":[\"0000180d-0000-1000-8000-00805f9b34fb\"],\"all\":[\"0000180f-0000-1000-8000-00805f9b34fb\"]},\"names\":{\"exact\":[\"Polar H10 E997042F\"],\"prefixes\":[\"Polar\"]},\"manufacturerData\":{\"any\":[{\"companyId\":76}],\"all\":[]},\"serviceData\":{\"any\":[{\"service\":\"0000180d-0000-1000-8000-00805f9b34fb\",\"dataPrefix\":\"09\"}],\"all\":[]},\"rssi\":{\"minimum\":-80},\"connectable\":true}],\"exclude\":[{\"addresses\":[\"11:22:33:44:55:66\"],\"services\":null,\"names\":null,\"manufacturerData\":null,\"serviceData\":null,\"rssi\":null}]}",
+      "digest": "scan-query-v1:58da375754002821",
+      "wire": {
+        "anyOf": [
+          {
+            "peers": null,
+            "services": {
+              "any": [
+                "0000180d-0000-1000-8000-00805f9b34fb"
+              ],
+              "all": [
+                "0000180f-0000-1000-8000-00805f9b34fb"
+              ]
+            },
+            "names": {
+              "exact": [
+                "Polar H10 E997042F"
+              ],
+              "prefixes": [
+                "Polar"
+              ]
+            },
+            "manufacturerData": {
+              "any": [
+                {
+                  "companyId": 76,
+                  "dataPrefix": null,
+                  "mask": null
+                }
+              ],
+              "all": []
+            },
+            "serviceData": {
+              "any": [
+                {
+                  "service": "0000180d-0000-1000-8000-00805f9b34fb",
+                  "dataPrefix": {
+                    "$__unifiedBleBytesV2": [
+                      9
+                    ]
+                  },
+                  "mask": null
+                }
+              ],
+              "all": []
+            },
+            "rssi": {
+              "minimum": -80,
+              "maximum": null
+            },
+            "connectable": true
+          }
+        ],
+        "exclude": [
+          {
+            "peers": null,
+            "addresses": [
+              "11:22:33:44:55:66"
+            ],
+            "services": null,
+            "names": null,
+            "manufacturerData": null,
+            "serviceData": null,
+            "rssi": null,
+            "connectable": null
+          }
+        ],
+        "digest": "scan-query-v1:58da375754002821"
+      }
+    }
+  ]
+}

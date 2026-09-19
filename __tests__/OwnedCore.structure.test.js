@@ -44,6 +44,16 @@ describe('Unified Android native protocol structure', () => {
       'background/ForegroundServiceControlException.java',
       'background/ForegroundServiceNotificationConfiguration.java',
       'expo/UnifiedBleExpoRuntimeModule.java',
+      // Issue #212 contract update (justified): the `presence` package is
+      // the Companion Device Manager presence endpoint (API 31+) that wakes
+      // the process for armed associated peers — observer, wake
+      // coordinator, persisted store, and the bound service. Covered by
+      // `CompanionPresenceObserverTest` and `PresenceWakeCoordinatorTest`.
+      // Boundary member by design, not legacy residue.
+      'presence/CompanionPresenceObserver.kt',
+      'presence/PresenceRestoredStore.kt',
+      'presence/PresenceWakeCoordinator.kt',
+      'presence/UbmCompanionPresenceService.kt',
       // R02 contract update (justified): `CoreCommandAuthority` is the
       // admission table the dispatcher consults before radio execution
       // (covered commands + scoped exceptions + core*-coded terminals),

@@ -2,6 +2,7 @@
 
 package com.sfourdrinier.unifiedblemanager.rustcore
 
+import com.sfourdrinier.unifiedblemanager.presence.PresenceRestoredPeer
 import com.ubm.core.MobileCoreBridge
 
 /**
@@ -51,6 +52,7 @@ interface MobileCorePort {
   fun ingestNotification(instance: CharacteristicInstance, epoch: Long, value: ByteArray): Int
   fun ingestAdapterState(state: AdapterFacts): Int
   fun ingestScanFailed(detail: String): Int
+  fun ingestRestored(peers: List<PresenceRestoredPeer>): Int
   fun ingestSecurity(peerId: String, security: SecurityFacts): Int
   fun ingestDropped(ingressClass: String, detail: String): Int
 }
@@ -187,6 +189,13 @@ object JniMobileCorePort : MobileCorePort {
     MobileCoreBridge.nativeIngestAdapterState(state.availability, state.authorization, state.power, state.safeReason)
 
   override fun ingestScanFailed(detail: String): Int = MobileCoreBridge.nativeIngestScanFailed(detail)
+
+  override fun ingestRestored(peers: List<PresenceRestoredPeer>): Int =
+    MobileCoreBridge.nativeIngestRestored(
+      peers.map { it.peerId }.toTypedArray(),
+      peers.map { it.name }.toTypedArray(),
+      peers.map { it.connected }.toBooleanArray()
+    )
 
   override fun ingestSecurity(peerId: String, security: SecurityFacts): Int =
     MobileCoreBridge.nativeIngestSecurity(

@@ -97,6 +97,29 @@ test('without devices every host keeps the default device and nothing is injecte
   })
 })
 
+test('h10-sim-drop-link.json pairs the android DUT with the peripheral-sim fault host', () => {
+  const spec = validateSequence(JSON.parse(readFileSync(new URL('../sequences/h10-sim-drop-link.json', import.meta.url), 'utf8')))
+  assert.deepEqual(spec.target, ['android', 'peripheral-sim'])
+  assert.deepEqual(spec.devices, { android: 'Polar H10 SIM0001' })
+  const drop = spec.steps.find(step => step.run === 'sim-control')
+  assert.equal(drop.command, 'drop-link')
+  assert.deepEqual(drop.hosts, ['peripheral-sim'])
+  for (const step of spec.steps.filter(step => step.run === 'link-loss')) {
+    assert.deepEqual(step.hosts, ['android'], 'sim-control steps never run on the DUT and link-loss never runs on the sim')
+  }
+  const kinds = spec.steps.map(step => step.waitForEvent === 'link-loss' ? step.kind : null).filter(Boolean)
+  assert.ok(kinds.includes('outage-detected') && kinds.includes('outage-recovered'), 'lifecycle loss plus reconnect plus resumed values')
+})
+
+test('h10-sim-ecg-fault.json injects reject-next-pmd then expects the rejected start', () => {
+  const spec = validateSequence(JSON.parse(readFileSync(new URL('../sequences/h10-sim-ecg-fault.json', import.meta.url), 'utf8')))
+  const fault = spec.steps.find(step => step.run === 'sim-control')
+  assert.equal(fault.command, 'reject-next-pmd')
+  assert.deepEqual(fault.args, { status: 3 })
+  const start = spec.steps.find(step => step.run === 'ecg')
+  assert.deepEqual(start.expect, { ok: false, error: { code: 'pmd.request-rejected' } })
+})
+
 test('parallel-two-straps.json binds one strap per host and runs the core scenarios', () => {
   const spec = validateSequence(JSON.parse(readFileSync(new URL('../sequences/parallel-two-straps.json', import.meta.url), 'utf8')))
   assert.deepEqual(Object.values(spec.devices).sort(), [STRAP_A, STRAP_B])

@@ -31,6 +31,7 @@ platform label, the WebSocket, the app-state source and driver-URL discovery:
 | Host | Adapter | Manager | App state | WebSocket | Driver URL |
 | --- | --- | --- | --- | --- | --- |
 | Expo | `example-expo/src/driver/app-driver.ts` | `createExpoBleManager` + readiness/permission | React Native `AppState` | RN `WebSocket` | Metro bundle host, or `EXPO_PUBLIC_UBM_DRIVER_URL` |
+| Expo (Apple TV) | same adapter (`platform: tvos`, `backend: expo/tvos`) | same                                                                                  | React Native `AppState` | RN `WebSocket`   | TV Metro bundle host, or `EXPO_PUBLIC_UBM_DRIVER_URL` |
 | Web | `example-web/src/driver.ts` | `createWebBleManager` | page visibility | browser | page host, or `?driver=` |
 | Tauri | `example-tauri/src/driver.ts` | `createTauriBleManager` (Tauri IPC) | page visibility | browser | local server, or `?driver=` |
 | Electron | `example-electron/driver/` | main: desktop provider + router/binding; renderer: `createElectronRendererBleManager` | page visibility | browser | local server, or `--driver-url` |
@@ -40,7 +41,7 @@ platform label, the WebSocket, the app-state source and driver-URL discovery:
 
 JSON text frames only. A host connects to `ws://<server>:8795/host` and sends
 `hello`: `protocol`, `host` (`expo` | `web` | `tauri` | `electron` | `node`),
-`platform` (`android` | `ios` | `macos` | `windows` | `linux` | `unknown`),
+`platform` (`android` | `ios` | `tvos` | `macos` | `windows` | `linux` | `unknown`),
 `backend` (the stack the adapter built, for example `node/corebluetooth`),
 `model`, `osVersion`, `appBuild` and `scenarios`. Every command in `scenarios`
 says whether it acquires a peer and takes the `device` argument
@@ -97,6 +98,23 @@ checked after the pick. The acquired peer is reported everywhere as
 `h10-stream`/`link-loss`/`background` `start` add `peer`; `device-info read`
 returns `{peer, reads}`, `mtu probe` `{peer, probes}` and `ecg start`
 `{peer, mtu, features, settings}`. `stop` takes no arguments.
+
+### No strap? Use the H10 simulator
+
+[`tool/h10-sim`](../../tool/h10-sim/README.md) is a Rust BLE peripheral
+that impersonates a Polar H10 (HR + Battery + Device Information + PMD ECG),
+with a JSON-lines TCP control port for faults (`set-bpm`, `set-silent`,
+`drop-link`, `reject-next-pmd`). Point any scenario at it with the `device`
+argument, e.g. `h10-stream start '{"device":"Polar H10 SIM0001"}'`.
+
+The sim can also join the driver itself as host kind `peripheral-sim`
+(`h10-sim --driver ws://host:8795/host`), exposing its controls as the
+`sim-control` scenario. Combined sequences target the DUT and the sim
+together: `server/sequences/h10-sim-drop-link.json` (android streams while
+peripheral-sim drops the link, then values resume) and
+`server/sequences/h10-sim-ecg-fault.json` (injected `reject-next-pmd`, then
+the DUT's `ecg start` reports `pmd.request-rejected`). Old servers fail
+closed on the new kind — they refuse its hello under `ubm-test-driver/1`.
 
 ### Connect: one explicit retry for a transient failure
 
@@ -173,6 +191,46 @@ anything runs, rather than letting it take whichever strap it finds first.
 `ecg` and `link-loss` on an Android and an iOS host at once, one strap each;
 edit its `devices` keys for other hosts.
 
+### Capturing H10 fingerprints (`h10-capture`)
+
+The `h10-capture` scenario records a versioned JSON fingerprint of a strap
+through the public API only: advertisement fields plus advertising interval
+and RSSI stats, the full GATT database, every readable value, timing
+distributions, behaviour probes and host metadata
+(see [`tool/h10-sim`](../../tool/h10-sim/README.md) for the schema and the
+equivalence check). The `capture` CLI command runs it on every targeted host
+and saves each fingerprint:
+
+```sh
+node examples-shared/driver/server/cli.mjs capture android --device "Polar H10 E997042F"
+node examples-shared/driver/server/cli.mjs capture all --device "Polar H10 E9B93D29" --out /tmp/h10
+node examples-shared/driver/server/cli.mjs capture tauri --scan-ms 10000 --hr-ms 60000 --ecg-frames 30 --mtu 517
+```
+
+Files land in `fixtures/h10-fingerprints/<hostId>-<serial>-<date>.json`
+(`--out` overrides the directory). A capture takes just over a minute with
+defaults (10 s scan + 60 s HR stream + 30 ECG frames). The HR window must stay
+at `--hr-ms 60000` or above on real straps; shorter windows are for the sim
+and unit tests only.
+
+Tonight's captures (server on the Mac, all hosts joined — check with `hosts`):
+
+```sh
+node examples-shared/driver/server/cli.mjs hosts
+# Samsung (Expo Android) — strap E997042F, then strap E9B93D29:
+node examples-shared/driver/server/cli.mjs capture <expo-android-host-id> --device "Polar H10 E997042F"
+node examples-shared/driver/server/cli.mjs capture <expo-android-host-id> --device "Polar H10 E9B93D29"
+# iPhone (Expo iOS) — strap E997042F, then strap E9B93D29:
+node examples-shared/driver/server/cli.mjs capture <expo-ios-host-id> --device "Polar H10 E997042F"
+node examples-shared/driver/server/cli.mjs capture <expo-ios-host-id> --device "Polar H10 E9B93D29"
+# macOS Tauri host — strap E997042F, then strap E9B93D29:
+node examples-shared/driver/server/cli.mjs capture <tauri-macos-host-id> --device "Polar H10 E997042F"
+node examples-shared/driver/server/cli.mjs capture <tauri-macos-host-id> --device "Polar H10 E9B93D29"
+```
+
+Use the exact host ids from `hosts` (for example
+`expo-android-google-pixel-9`). Six files, one per host per strap.
+
 ## Launching each host
 
 Every host below except Expo runs from the repository root after `pnpm prepack`,
@@ -191,6 +249,20 @@ Development builds connect to `ws://<Metro host>:8795/host` on launch. The badge
 on the **Test scenarios** screens shows the connection. Set
 `EXPO_PUBLIC_UBM_DRIVER_URL=ws://<mac>:8795/host` (or `off`) to override. Metro
 resolves the shared folder through `example-expo/metro.config.js`.
+
+#### Apple TV (tvOS)
+
+The same app and scenarios run on Apple TV from a generated stage,
+`example-expo/ios-tv`, built with `EXPO_TV=1` (see
+[`example-expo/README.md`](../../example-expo/README.md)). The phones keep
+building from `example-expo/ios` and `example-expo/android`; the TV never
+touches those directories. react-native-tvos keeps `Platform.OS === 'ios'`
+and signals TV through `Platform.isTV`, so the adapter reports platform
+`tvos` and backend `expo/tvos`: the control server sees a distinct host id
+(`expo-tvos-<model>`) and `run tvos …` targets it. Scenario buttons are the
+same `TouchableOpacity` controls, which the TV focus engine makes focusable
+for the Siri Remote — no TV-only UI fork. The driver server stays shared on
+port 8795; only Metro moves (the TV stage serves its own bundle).
 
 ### Web (Chrome / Chromium)
 
@@ -260,6 +332,16 @@ to expect. They are not hardware evidence.
 | `scan-details` | runs | runs | `scan()` refuses: Web Bluetooth has no continuous scan (`web:continuous-scan` unsupported) | runs |
 | `ecg` | runs | reads the PMD control point while it is notifying, which exercises the library's read-while-notifying path | runs after the chooser click (PMD is in `optionalServices`) | runs |
 | `background` | Expo lease API; app state from `AppState` | same | lease: `web:background-operation` descriptor (unsupported); app state from page visibility | lease: `background:desktop-maintain-connection` descriptor (registered on WinRT only); Tauri/Electron use page visibility; Node reports `untracked` (a CLI has no app lifecycle), so `sequences/background.json` cannot pass there |
+
+On Apple TV (`platform: tvos`) every scenario runs the same code as on the
+iPhone, with two platform answers: tvOS has no background Bluetooth mode, so
+`background acquire` answers `capability.unsupported` (the same refusal the
+native Apple radio gives on iOS), and state restoration is unconfigured (the
+TV prebuild writes no restoration keys), so `restoration.claim()` answers
+`capability.unavailable`. Both are the library's own answers, never skips. Do not run
+Bluetooth scenarios against hardware the owner has not made available; a
+launch plus driver `hosts` plus the `readiness` report is the no-hardware
+check.
 
 ## Tests and type checks
 

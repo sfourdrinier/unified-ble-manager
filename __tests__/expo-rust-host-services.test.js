@@ -159,6 +159,53 @@ describe('Expo host services on the Rust session', () => {
     await manager.destroy()
   })
 
+  test('observes and unobserves one known peer through device presence (issue #212)', async () => {
+    const { native, manager } = await expoManager()
+    await expect(manager.presence.observe({ peerId: DEFAULT_PEER })).resolves.toEqual({ state: 'observing' })
+    await expect(manager.presence.unobserve({ peerId: DEFAULT_PEER })).resolves.toEqual({ state: 'idle' })
+    expect(native.opsInvoked('presence.observe')[0]).toMatchObject({ peerId: DEFAULT_PEER })
+    expect(native.opsInvoked('presence.unobserve')[0]).toMatchObject({ peerId: DEFAULT_PEER })
+    await manager.destroy()
+  })
+
+  test('presence observation is unsupported on Apple with the owner reason, and needs a known peer', async () => {
+    const { manager } = await expoManager('apple')
+    await expect(manager.presence.observe({ peerId: 'C0FFEE00-0000-4000-8000-000000000001' })).rejects.toMatchObject(
+      {
+        constructor: BleError,
+        code: 'capability.unsupported',
+        operation: 'expo.presence.observe'
+      }
+    )
+    await expect(manager.presence.unobserve({ peerId: 'C0FFEE00-0000-4000-8000-000000000001' })).rejects.toMatchObject(
+      {
+        constructor: BleError,
+        code: 'capability.unsupported',
+        operation: 'expo.presence.unobserve'
+      }
+    )
+    await manager.destroy()
+
+    const android = await expoManager()
+    await expect(android.manager.presence.observe({})).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'argument.invalid',
+      operation: 'expo.presence.observe'
+    })
+    expect(android.native.opsInvoked('presence.observe')).toHaveLength(0)
+    await android.manager.destroy()
+  })
+
+  test('a malformed presence answer is protocol.malformed at the Expo boundary', async () => {
+    const { native, manager } = await expoManager()
+    native.hold('presence.observe')
+    const pending = manager.presence.observe({ peerId: DEFAULT_PEER })
+    for (let turn = 0; turn < 20; turn += 1) await Promise.resolve()
+    native.release('presence.observe', { state: 'idle' })
+    await expect(pending).rejects.toMatchObject({ code: 'protocol.malformed', operation: 'expo.presence.observe' })
+    await manager.destroy()
+  })
+
   test('a malformed owner answer is protocol.malformed at the Expo boundary', async () => {
     const { native, manager } = await expoManager()
     native.hold('background.acquire')

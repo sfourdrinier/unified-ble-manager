@@ -29,8 +29,8 @@ export const VOCABULARY_BACKENDS = Object.freeze([
 ] as const)
 export type VocabularyBackend = (typeof VOCABULARY_BACKENDS)[number]
 
-/** Where the supervisor meets the event: a connect attempt, `configure`, or the lifecycle of a live link. */
-export type SupervisorContext = 'connect' | 'configure' | 'lifecycle'
+/** Where the supervisor meets the event: a connect attempt, `configure`, the lifecycle of a live link, or a restored peer. */
+export type SupervisorContext = 'connect' | 'configure' | 'lifecycle' | 'restore'
 
 /** What `createConnectionSupervisor` does about the event, on every host. */
 export type SupervisorDecision = 'reconnect' | 'wait-for-adapter' | 'stop'
@@ -170,6 +170,31 @@ export const EVENT_VOCABULARY: readonly PhysicalEventEntry[] = Object.freeze([
     names: names({ error: 'operation.aborted', retryability: 'caller-decides' }),
     supervisor: { context: 'configure', decision: 'stop' },
     differs: {}
+  },
+  {
+    event: 'restoration-received',
+    description:
+      'The OS handed back known peers after the app was gone: iOS relaunched the app on a BLE event and delivered restored peripherals through `willRestoreState`; Android woke the process through Companion Device Manager device presence (API 31+) for an armed associated peer. The library surfaces the same restored peer records on both phones (`peers.restored`, `restoration-received`, `restoration.claim()`). No operation failed and no link transitioned yet — the app reconnects through the public `connect` (Android `when-available`, a restored iOS link the OS still holds completing at once) and replays subscriptions through `subscribe`. Presence observation below API 31 has no wake; it reports `capability.unsupported`.',
+    names: names({}),
+    supervisor: { context: 'restore', decision: 'reconnect' },
+    differs: {
+      'desktop-macos': {
+        names: {},
+        why: 'macOS has no OS restoration journal for a terminated app and no presence wake; the event never fires and presence observation reports `capability.unsupported` with a reason.'
+      },
+      'desktop-windows': {
+        names: {},
+        why: 'Windows has no OS restoration journal for a terminated app and no presence wake; the event never fires and presence observation reports `capability.unsupported` with a reason.'
+      },
+      'desktop-linux': {
+        names: {},
+        why: 'Linux has no OS restoration journal for a terminated app and no presence wake; the event never fires and presence observation reports `capability.unsupported` with a reason.'
+      },
+      web: {
+        names: {},
+        why: 'Web Bluetooth has no background relaunch or presence wake; the event never fires and restoration reports `capability.unsupported` with a reason.'
+      }
+    }
   }
 ] satisfies readonly PhysicalEventEntry[])
 

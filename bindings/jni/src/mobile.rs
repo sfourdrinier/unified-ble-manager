@@ -364,6 +364,12 @@ pub fn request_call(request: &RadioRequest) -> (&'static str, Vec<Arg>) {
             "associateCompanion",
             vec![rid, Arg::Str(name.clone()), Arg::Str(service_uuid.clone())],
         ),
+        RadioRequest::ObservePresence { peer_id, .. } => {
+            ("observePresence", vec![rid, text(peer_id)])
+        }
+        RadioRequest::StopPresence { peer_id, .. } => {
+            ("unobservePresence", vec![rid, text(peer_id)])
+        }
         RadioRequest::Close { .. } => ("close", vec![rid]),
     }
 }
@@ -1675,6 +1681,18 @@ mod tests {
             args[3],
             Arg::Strings(vec!["le-2m".to_owned(), "le-coded".to_owned()])
         );
+        let (method, args) = request_call(&RadioRequest::ObservePresence {
+            id: 11,
+            peer_id: "AA:BB:CC:DD:EE:FF".to_owned(),
+        });
+        assert_eq!(method, "observePresence");
+        assert_eq!(signature(&args), "(JLjava/lang/String;)V");
+        let (method, args) = request_call(&RadioRequest::StopPresence {
+            id: 12,
+            peer_id: "AA:BB:CC:DD:EE:FF".to_owned(),
+        });
+        assert_eq!(method, "unobservePresence");
+        assert_eq!(signature(&args), "(JLjava/lang/String;)V");
     }
 
     #[test]

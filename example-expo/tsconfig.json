@@ -3,5 +3,6 @@
   "compilerOptions": {
     "strict": true,
     "allowImportingTsExtensions": true
-  }
+  },
+  "exclude": ["ios-tv"]
 }

@@ -75,6 +75,18 @@ export interface ExpoCompanionAssociationResult {
   readonly displayName: string | null
 }
 
+export interface ExpoPresenceObservationRequest {
+  readonly peerId: string
+}
+
+export interface ExpoPresenceObservationResult {
+  readonly state: 'observing'
+}
+
+export interface ExpoPresenceReleaseResult {
+  readonly state: 'idle'
+}
+
 export interface ExpoRestoredRecord {
   readonly kind: 'adapter' | 'connection'
   readonly ordinal: number
@@ -108,6 +120,10 @@ export interface ExpoBleManager extends BleManager {
   }
   readonly restoration: {
     readonly claim: () => Promise<ExpoRestorationClaimResult>
+  }
+  readonly presence: {
+    readonly observe: (request: ExpoPresenceObservationRequest) => Promise<ExpoPresenceObservationResult>
+    readonly unobserve: (request: ExpoPresenceObservationRequest) => Promise<ExpoPresenceReleaseResult>
   }
 }
 
@@ -437,6 +453,10 @@ function withExpoRuntime(
     }),
     restoration: Object.freeze({
       claim: () => claimExpoRestoration(host)
+    }),
+    presence: Object.freeze({
+      observe: (request: ExpoPresenceObservationRequest) => observeExpoPresence(request, host),
+      unobserve: (request: ExpoPresenceObservationRequest) => unobserveExpoPresence(request, host)
     })
   })
 }
@@ -597,6 +617,50 @@ async function associateExpoCompanionDevice(
     throwUnavailableOwnerError(error, 'expo.association.associate')
   }
   return parseExpoAssociationResult(result)
+}
+
+function expoPresencePeerId(request: ExpoPresenceObservationRequest, operation: string): string {
+  if (!isRecord(request) || typeof request.peerId !== 'string' || request.peerId.length === 0) {
+    throwExpoRuntimeError('argument.invalid', operation, 'A known peer id is required to observe its presence.')
+  }
+  return request.peerId
+}
+
+async function observeExpoPresence(
+  request: ExpoPresenceObservationRequest,
+  host: ReactNativeManagerHost
+): Promise<ExpoPresenceObservationResult> {
+  const operation = 'expo.presence.observe'
+  const peerId = expoPresencePeerId(request, operation)
+  let result: unknown
+  try {
+    result = await host.services.observePresence({ peerId })
+  } catch (error) {
+    // Presence is new in 5.0 with no legacy Expo code to preserve: the
+    // owner's answer keeps its code (capability.unsupported on Apple, with
+    // the platform reason), never a wrapped fake.
+    throwOwnerError(error, operation)
+  }
+  const record = expoRecord(result, 'expo.presence.result')
+  if (record.state !== 'observing') throwExpoMalformedResult('expo.presence.result')
+  return Object.freeze({ state: 'observing' })
+}
+
+async function unobserveExpoPresence(
+  request: ExpoPresenceObservationRequest,
+  host: ReactNativeManagerHost
+): Promise<ExpoPresenceReleaseResult> {
+  const operation = 'expo.presence.unobserve'
+  const peerId = expoPresencePeerId(request, operation)
+  let result: unknown
+  try {
+    result = await host.services.unobservePresence({ peerId })
+  } catch (error) {
+    throwOwnerError(error, operation)
+  }
+  const record = expoRecord(result, 'expo.presence.result')
+  if (record.state !== 'idle') throwExpoMalformedResult('expo.presence.result')
+  return Object.freeze({ state: 'idle' })
 }
 
 async function claimExpoRestoration(host: ReactNativeManagerHost): Promise<ExpoRestorationClaimResult> {

@@ -64,7 +64,11 @@ describe('first-party deterministic backend TCK registry', () => {
         native: androidNative,
         now: () => 20,
         nativePeerId: RUST_CORE_PEER_ID,
-        boundary: deterministicRustCoreTckBoundary(androidNative),
+        boundary: {
+          ...deterministicRustCoreTckBoundary(androidNative),
+          seedRestorationJournal: () =>
+            androidNative.seedRestored([{ peerId: 'C0:FF:EE:00:00:03', connected: true }])
+        },
         security: {
           customCeremonySupported: false,
           supportsAlreadyUnpaired: false,
@@ -113,7 +117,7 @@ describe('first-party deterministic backend TCK registry', () => {
       {
         backendId: 'unified-ble:react-native-android',
         prepare: () => undefined,
-        exclusions: ['state:restoration-adoption']
+        exclusions: []
       },
       {
         backendId: 'unified-ble:react-native-apple',
@@ -232,7 +236,10 @@ describe('first-party deterministic backend TCK registry', () => {
       native,
       now: () => 20,
       nativePeerId: RUST_CORE_PEER_ID,
-      boundary: deterministicRustCoreTckBoundary(native),
+      boundary: {
+        ...deterministicRustCoreTckBoundary(native),
+        seedRestorationJournal: () => native.seedRestored([{ peerId: 'C0:FF:EE:00:00:03', connected: true }])
+      },
       security: {
         customCeremonySupported: false,
         supportsAlreadyUnpaired: false,

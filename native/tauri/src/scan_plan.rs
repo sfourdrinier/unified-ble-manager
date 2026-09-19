@@ -13,6 +13,12 @@ const MAX_DIAGNOSTIC_LIMITATIONS: usize = 32;
 pub(crate) struct DecodedScanQuery {
     pub(crate) wire: IpcValue,
     pub(crate) digest: String,
+    /// Canonical JSON the digest was computed over. The TypeScript normalizer
+    /// owns this form; the shared corpus pins it byte-identically. Only the
+    /// corpus test reads it today: it is contract observability for a
+    /// fail-closed boundary, not hot-path data.
+    #[allow(dead_code)]
+    pub(crate) canonical: String,
     predicates: Vec<Predicate>,
     native_predicates: Vec<Predicate>,
     unavailable: Vec<Predicate>,
@@ -22,6 +28,7 @@ pub(crate) struct DecodedScanQuery {
 #[derive(Clone, Debug)]
 struct Clause {
     peers: Option<Vec<PeerReference>>,
+    addresses: Option<Vec<String>>,
     services: Option<UuidField>,
     names: Option<NameField>,
     manufacturer_data: Option<DataField<ManufacturerPattern>>,
@@ -123,6 +130,7 @@ pub(crate) fn decode_normalized_scan_query(value: &IpcValue) -> Result<DecodedSc
     Ok(DecodedScanQuery {
         wire,
         digest,
+        canonical,
         predicates,
         native_predicates,
         unavailable,
@@ -237,6 +245,10 @@ fn parse_clause_list(
 
 fn parse_clause(value: &IpcValue) -> Result<Clause, String> {
     let clause = object_ref(value, "normalized scan clause")?;
+    // `addresses` is optional on the wire: a pre-addresses encoder omits the
+    // key, and the TypeScript encoder still omits it when the clause targets
+    // no address. An absent key with an address-covering digest fails closed
+    // on the digest check below.
     exact_keys(
         clause,
         &[
@@ -247,10 +259,11 @@ fn parse_clause(value: &IpcValue) -> Result<Clause, String> {
             "serviceData",
             "rssi",
         ],
-        &["connectable"],
+        &["addresses", "connectable"],
         "normalized scan clause",
     )?;
     let peers = parse_peers(clause.get("peers"))?;
+    let addresses = parse_addresses(clause.get("addresses"))?;
     let services = parse_uuid_field(clause.get("services"), "services")?;
     let names = parse_name_field(clause.get("names"))?;
     let manufacturer_data = parse_data_field(clause.get("manufacturerData"), false)?;
@@ -263,6 +276,7 @@ fn parse_clause(value: &IpcValue) -> Result<Clause, String> {
         Some(_) => return Err("normalized scan clause connectable is invalid".to_owned()),
     };
     if peers.is_none()
+        && addresses.is_none()
         && services.is_none()
         && names.is_none()
         && manufacturer_data.is_none()
@@ -274,6 +288,7 @@ fn parse_clause(value: &IpcValue) -> Result<Clause, String> {
     }
     Ok(Clause {
         peers,
+        addresses,
         services,
         names,
         manufacturer_data,
@@ -281,6 +296,58 @@ fn parse_clause(value: &IpcValue) -> Result<Clause, String> {
         rssi,
         connectable,
     })
+}
+
+fn parse_addresses(value: Option<&IpcValue>) -> Result<Option<Vec<String>>, String> {
+    match value {
+        None | Some(IpcValue::Null) => Ok(None),
+        Some(IpcValue::Array(values)) => {
+            let mut addresses = values
+                .iter()
+                .map(|value| match value {
+                    IpcValue::String(value) if !value.is_empty() => canonical_ble_address(value)
+                        .ok_or_else(|| {
+                            "normalized scan clause addresses address is invalid".to_owned()
+                        }),
+                    _ => Err("normalized scan clause addresses address is invalid".to_owned()),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            addresses.sort();
+            addresses.dedup();
+            if addresses.is_empty() {
+                return Err("normalized scan clause addresses must not be empty".to_owned());
+            }
+            Ok(Some(addresses))
+        }
+        _ => Err("normalized scan clause addresses is invalid".to_owned()),
+    }
+}
+
+/// Canonical radio address: six hexadecimal octets, uppercase, colon
+/// separated. Accepts `:` or `-` separators in any case, mirroring
+/// `canonicalBleAddress` in `src/backend-contract/primitives.ts`.
+fn canonical_ble_address(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 17 {
+        return None;
+    }
+    let mut canonical = String::with_capacity(17);
+    for octet_index in 0..6_usize {
+        if octet_index > 0 {
+            let separator = bytes[octet_index * 3 - 1];
+            if separator != b':' && separator != b'-' {
+                return None;
+            }
+            canonical.push(':');
+        }
+        let octet = &bytes[octet_index * 3..octet_index * 3 + 2];
+        if !octet.iter().all(|byte| byte.is_ascii_hexdigit()) {
+            return None;
+        }
+        canonical.push(octet[0].to_ascii_uppercase() as char);
+        canonical.push(octet[1].to_ascii_uppercase() as char);
+    }
+    Some(canonical)
 }
 
 fn parse_peers(value: Option<&IpcValue>) -> Result<Option<Vec<PeerReference>>, String> {
@@ -522,13 +589,15 @@ fn parse_bytes_and_mask(
     pattern: &BTreeMap<String, IpcValue>,
     operation: &str,
 ) -> Result<BytePair, String> {
+    // The TypeScript encoder sends an explicit null for an absent prefix or
+    // mask, so null reads as absent here exactly as a missing key does.
     let data_prefix = match pattern.get("dataPrefix") {
-        None => None,
+        None | Some(IpcValue::Null) => None,
         Some(IpcValue::Bytes(value)) if !value.is_empty() => Some(value.clone()),
         _ => return Err(format!("{operation} dataPrefix is invalid")),
     };
     let mask = match pattern.get("mask") {
-        None => None,
+        None | Some(IpcValue::Null) => None,
         Some(IpcValue::Bytes(value))
             if data_prefix
                 .as_ref()
@@ -568,7 +637,9 @@ fn parse_rssi(value: Option<&IpcValue>) -> Result<Option<RssiField>, String> {
 
 fn optional_number(value: Option<&IpcValue>, operation: &str) -> Result<Option<Number>, String> {
     match value {
-        None => Ok(None),
+        // The TypeScript encoder sends an explicit null for the missing side
+        // of a one-sided RSSI bound, so null reads as absent here.
+        None | Some(IpcValue::Null) => Ok(None),
         Some(IpcValue::Number(value)) if value.as_f64().is_some_and(f64::is_finite) => {
             Ok(Some(value.clone()))
         }
@@ -654,6 +725,14 @@ fn describe_clause_set(
                 clause_set,
                 clause_index,
                 field: "peers",
+                operator: "equals",
+            });
+        }
+        if clause.addresses.is_some() {
+            predicates.push(Predicate {
+                clause_set,
+                clause_index,
+                field: "addresses",
                 operator: "equals",
             });
         }
@@ -748,6 +827,10 @@ fn clause_list_wire(clauses: Option<&[Clause]>) -> IpcValue {
 }
 
 fn clause_wire(clause: &Clause) -> IpcValue {
+    // Byte-identical to `encodeIpcScanQuery` in `src/ipc/scan-planning.ts`:
+    // explicit nulls everywhere except `addresses`, which is omitted when the
+    // clause targets no address. The TypeScript plan decoder requires this
+    // exact key set.
     let mut entries = vec![
         (
             "peers",
@@ -788,6 +871,20 @@ fn clause_wire(clause: &Clause) -> IpcValue {
             clause.rssi.as_ref().map_or(IpcValue::Null, rssi_wire),
         ),
     ];
+    if let Some(addresses) = &clause.addresses {
+        entries.insert(
+            1,
+            (
+                "addresses",
+                IpcValue::Array(
+                    addresses
+                        .iter()
+                        .map(|address| string(address.as_str()))
+                        .collect(),
+                ),
+            ),
+        );
+    }
     entries.push((
         "connectable",
         clause.connectable.map_or(IpcValue::Null, IpcValue::Bool),
@@ -881,39 +978,57 @@ trait PatternWire {
 
 impl PatternWire for ManufacturerPattern {
     fn wire(&self) -> IpcValue {
-        let mut entries = vec![("companyId", IpcValue::Number(Number::from(self.company_id)))];
-        if let Some(prefix) = &self.data_prefix {
-            entries.push(("dataPrefix", IpcValue::Bytes(prefix.clone())));
-        }
-        if let Some(mask) = &self.mask {
-            entries.push(("mask", IpcValue::Bytes(mask.clone())));
-        }
-        ipc_object(entries)
+        ipc_object([
+            ("companyId", IpcValue::Number(Number::from(self.company_id))),
+            (
+                "dataPrefix",
+                self.data_prefix
+                    .clone()
+                    .map_or(IpcValue::Null, IpcValue::Bytes),
+            ),
+            (
+                "mask",
+                self.mask.clone().map_or(IpcValue::Null, IpcValue::Bytes),
+            ),
+        ])
     }
 }
 
 impl PatternWire for ServicePattern {
     fn wire(&self) -> IpcValue {
-        let mut entries = vec![("service", string(self.service.as_str()))];
-        if let Some(prefix) = &self.data_prefix {
-            entries.push(("dataPrefix", IpcValue::Bytes(prefix.clone())));
-        }
-        if let Some(mask) = &self.mask {
-            entries.push(("mask", IpcValue::Bytes(mask.clone())));
-        }
-        ipc_object(entries)
+        ipc_object([
+            ("service", string(self.service.as_str())),
+            (
+                "dataPrefix",
+                self.data_prefix
+                    .clone()
+                    .map_or(IpcValue::Null, IpcValue::Bytes),
+            ),
+            (
+                "mask",
+                self.mask.clone().map_or(IpcValue::Null, IpcValue::Bytes),
+            ),
+        ])
     }
 }
 
 fn rssi_wire(field: &RssiField) -> IpcValue {
-    let mut entries = Vec::new();
-    if let Some(minimum) = &field.minimum {
-        entries.push(("minimum", IpcValue::Number(minimum.clone())));
-    }
-    if let Some(maximum) = &field.maximum {
-        entries.push(("maximum", IpcValue::Number(maximum.clone())));
-    }
-    ipc_object(entries)
+    ipc_object([
+        (
+            "minimum",
+            field
+                .minimum
+                .clone()
+                .map_or(IpcValue::Null, IpcValue::Number),
+        ),
+        (
+            "maximum",
+            field
+                .maximum
+                .clone()
+                .map_or(IpcValue::Null, IpcValue::Number),
+        ),
+    ])
 }
 
 fn predicate_wire(predicate: &Predicate) -> IpcValue {
@@ -952,6 +1067,10 @@ fn canonical_clause_list_json(clauses: Option<&[Clause]>) -> String {
     )
 }
 
+/// Canonical clause JSON, byte-identical to the TypeScript contract owner
+/// (`canonicalScanQueryJson` in `src/backend-contract/scan-query.ts`): null
+/// `peers`/`addresses` are dropped, every other null field is kept, `undefined`
+/// is never present, and keys stay in normalized insertion order.
 fn clause_canonical_json(clause: &Clause) -> String {
     let mut output = String::from("{");
     let mut first = true;
@@ -970,38 +1089,75 @@ fn clause_canonical_json(clause: &Clause) -> String {
             )),
         );
     }
+    if let Some(addresses) = &clause.addresses {
+        push_json_field(
+            &mut output,
+            &mut first,
+            "addresses",
+            Some(format!(
+                "[{}]",
+                addresses
+                    .iter()
+                    .map(|address| json_string(address))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )),
+        );
+    }
     push_json_field(
         &mut output,
         &mut first,
         "services",
-        clause.services.as_ref().map(uuid_field_canonical_json),
+        Some(
+            clause
+                .services
+                .as_ref()
+                .map_or_else(|| "null".to_owned(), uuid_field_canonical_json),
+        ),
     );
     push_json_field(
         &mut output,
         &mut first,
         "names",
-        clause.names.as_ref().map(name_field_canonical_json),
+        Some(
+            clause
+                .names
+                .as_ref()
+                .map_or_else(|| "null".to_owned(), name_field_canonical_json),
+        ),
     );
     push_json_field(
         &mut output,
         &mut first,
         "manufacturerData",
-        clause
-            .manufacturer_data
-            .as_ref()
-            .map(data_field_canonical_json),
+        Some(
+            clause
+                .manufacturer_data
+                .as_ref()
+                .map_or_else(|| "null".to_owned(), data_field_canonical_json),
+        ),
     );
     push_json_field(
         &mut output,
         &mut first,
         "serviceData",
-        clause.service_data.as_ref().map(data_field_canonical_json),
+        Some(
+            clause
+                .service_data
+                .as_ref()
+                .map_or_else(|| "null".to_owned(), data_field_canonical_json),
+        ),
     );
     push_json_field(
         &mut output,
         &mut first,
         "rssi",
-        clause.rssi.as_ref().map(rssi_canonical_json),
+        Some(
+            clause
+                .rssi
+                .as_ref()
+                .map_or_else(|| "null".to_owned(), rssi_canonical_json),
+        ),
     );
     if let Some(connectable) = clause.connectable {
         push_json_field(
@@ -1121,11 +1277,26 @@ fn scan_query_digest(canonical: &str) -> String {
     format!("scan-query-v1:{hash:016x}")
 }
 
+/// Canonical UUID, mirroring `canonicalUuid` in
+/// `src/backend-contract/primitives.ts`: strip every hyphen, lowercase, then
+/// expand 16-/32-bit forms or rehyphenate the 128-bit form.
 fn canonical_uuid(value: &str) -> Option<String> {
-    let expanded = match value.len() {
-        4 => format!("0000{value}-0000-1000-8000-00805f9b34fb"),
-        8 => format!("{value}-0000-1000-8000-00805f9b34fb"),
-        _ => value.to_owned(),
+    let compact = value.replace('-', "").to_lowercase();
+    if compact.is_empty() || !compact.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let expanded = match compact.len() {
+        4 => format!("0000{compact}-0000-1000-8000-00805f9b34fb"),
+        8 => format!("{compact}-0000-1000-8000-00805f9b34fb"),
+        32 => format!(
+            "{}-{}-{}-{}-{}",
+            &compact[0..8],
+            &compact[8..12],
+            &compact[12..16],
+            &compact[16..20],
+            &compact[20..32]
+        ),
+        _ => return None,
     };
     Uuid::parse_str(&expanded)
         .ok()
@@ -1241,6 +1412,7 @@ mod tests {
     fn canonical_service_query_digest() -> String {
         let clause = Clause {
             peers: None,
+            addresses: None,
             services: Some(UuidField {
                 any: Vec::new(),
                 all: vec!["0000180d-0000-1000-8000-00805f9b34fb".to_owned()],
@@ -1286,5 +1458,60 @@ mod tests {
             Some(&string(decoded.digest.as_str()))
         );
         assert!(fields.contains_key("residual"));
+    }
+
+    /// End to end at the IPC boundary: every corpus entry is the exact JSON
+    /// the webview's `invoke` delivers for a public `find()`/`scan()` query
+    /// (public `normalizeScanQuery` → `encodeTauriScanQuery` →
+    /// `encodeTauriWireValue`, see `__tests__/fixtures/scan-query-digests.json`
+    /// and `scripts/generate-scan-query-digest-corpus.js`). The Rust decoder
+    /// must accept each entry and reproduce the TypeScript canonical JSON and
+    /// digest byte-identically — including the name-filtered driver queries
+    /// that failed on hardware with `protocol.malformed` at `tauri.scan-query`.
+    #[test]
+    fn ts_corpus_queries_decode_with_identical_canonical_json_and_digest() {
+        let corpus = include_str!("../../../__tests__/fixtures/scan-query-digests.json");
+        let corpus: serde_json::Value =
+            serde_json::from_str(corpus).expect("scan-query digest corpus must parse");
+        let entries = corpus
+            .get("entries")
+            .and_then(|value| value.as_array())
+            .expect("scan-query digest corpus must hold entries");
+        assert!(
+            !entries.is_empty(),
+            "scan-query digest corpus must not be empty"
+        );
+        for entry in entries {
+            let id = entry
+                .get("id")
+                .and_then(|value| value.as_str())
+                .unwrap_or("<missing id>");
+            let expected_canonical = entry
+                .get("canonical")
+                .and_then(|value| value.as_str())
+                .unwrap_or_else(|| panic!("{id}: corpus entry must record canonical JSON"));
+            let expected_digest = entry
+                .get("digest")
+                .and_then(|value| value.as_str())
+                .unwrap_or_else(|| panic!("{id}: corpus entry must record a digest"));
+            let wire_json = entry
+                .get("wire")
+                .unwrap_or_else(|| panic!("{id}: corpus entry must record the Tauri wire query"));
+            let wire = IpcValue::from_wire(wire_json.clone())
+                .unwrap_or_else(|error| panic!("{id}: Tauri wire value must decode: {error}"));
+            let decoded = decode_normalized_scan_query(&wire).unwrap_or_else(|error| {
+                panic!("{id}: Rust decoder must accept the TypeScript contract query: {error}")
+            });
+            assert_eq!(decoded.digest, expected_digest, "{id}: digest");
+            assert_eq!(
+                decoded.canonical, expected_canonical,
+                "{id}: canonical JSON"
+            );
+            assert_eq!(
+                decoded.wire.into_wire(),
+                *wire_json,
+                "{id}: decoded query must round-trip to the wire value"
+            );
+        }
     }
 }

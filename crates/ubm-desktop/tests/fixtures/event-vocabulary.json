@@ -562,5 +562,43 @@
       "lifecycle": null,
       "streamTerminal": null
     }
+  },
+  "restoration-received": {
+    "react-native-android": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "react-native-ios": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "desktop-macos": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "desktop-windows": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "desktop-linux": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "web": {
+      "error": null,
+      "retryability": null,
+      "lifecycle": null,
+      "streamTerminal": null
+    }
   }
 }

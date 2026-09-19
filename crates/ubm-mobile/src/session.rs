@@ -81,6 +81,8 @@ pub const OPS: &[&str] = &[
     "background.release",
     "background.update-notification",
     "companion.associate",
+    "presence.observe",
+    "presence.unobserve",
     "op.cancel",
     "session.reconcile",
     "session.dispose",
@@ -687,12 +689,9 @@ impl MobileSession {
             "peers.claim-restored" => {
                 args.exact(&["maxPeers"], &[])?;
                 let max_peers = args.integer("maxPeers", wire::MAX_SAFE_INTEGER)?;
-                if !apple {
-                    return Err(unsupported(
-                        "peers.claim-restored",
-                        "Android has no state restoration",
-                    ));
-                }
+                // Issue #212: Android claims the peers a Companion Device
+                // Manager presence wake restored, with the same once-per-process
+                // semantics as iOS state restoration.
                 (Body::ClaimRestored(max_peers), None, Budget::unbounded())
             }
             "peers.bonded" => {
@@ -1144,6 +1143,24 @@ impl MobileSession {
                     Self::operation_id(args)?,
                     budget(args, received)?,
                 )
+            }
+            "presence.observe" | "presence.unobserve" => {
+                args.exact(&["peerId"], &["budgetMs", "operationId"])?;
+                if apple {
+                    return Err(unsupported(
+                        op,
+                        "CoreBluetooth delivers restoration through willRestoreState; there is no presence observation to arm",
+                    ));
+                }
+                let body = match op {
+                    "presence.observe" => Body::PresenceObserve {
+                        peer_id: args.string("peerId")?,
+                    },
+                    _ => Body::PresenceUnobserve {
+                        peer_id: args.string("peerId")?,
+                    },
+                };
+                (body, Self::operation_id(args)?, budget(args, received)?)
             }
             "op.cancel" => {
                 args.exact(&["operationId"], &[])?;
@@ -1729,6 +1746,32 @@ impl MobileSession {
                         ]))
                     }
                     _ => Err(protocol("companion.associate")),
+                }
+            }
+            Body::PresenceObserve { peer_id } => {
+                match awaited(
+                    &ctl,
+                    "presence.observe",
+                    host.radio
+                        .call(|id| RadioRequest::ObservePresence { id, peer_id }),
+                )
+                .await?
+                {
+                    RadioCompletion::Unit => Ok(object(vec![("state", Value::from("observing"))])),
+                    _ => Err(protocol("presence.observe")),
+                }
+            }
+            Body::PresenceUnobserve { peer_id } => {
+                match awaited(
+                    &ctl,
+                    "presence.unobserve",
+                    host.radio
+                        .call(|id| RadioRequest::StopPresence { id, peer_id }),
+                )
+                .await?
+                {
+                    RadioCompletion::Unit => Ok(object(vec![("state", Value::from("idle"))])),
+                    _ => Err(protocol("presence.unobserve")),
                 }
             }
             Body::Reconcile => self.reconcile(&ctl).await,
@@ -2484,6 +2527,12 @@ enum Body {
     CompanionAssociate {
         name: Option<String>,
         service_uuid: Option<String>,
+    },
+    PresenceObserve {
+        peer_id: String,
+    },
+    PresenceUnobserve {
+        peer_id: String,
     },
     Cancel {
         operation_id: String,

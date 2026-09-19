@@ -71,7 +71,7 @@ test('the protocol is host-neutral and versioned: ubm-test-driver/1', () => {
 test('app decode fails closed on an unknown host kind or a hello without backend', () => {
   const base = { type: 'hello', protocol: TEST_DRIVER_PROTOCOL, host: 'expo', platform: 'ios', backend: 'expo/ios', model: 'm', osVersion: '1', appBuild: {}, scenarios: [] }
   assert.equal(decodeAppMessage(JSON.stringify(base)).ok, true)
-  for (const host of ['web', 'tauri', 'electron', 'node']) assert.equal(decodeAppMessage(JSON.stringify({ ...base, host })).ok, true)
+  for (const host of ['web', 'tauri', 'electron', 'node', 'peripheral-sim']) assert.equal(decodeAppMessage(JSON.stringify({ ...base, host })).ok, true)
   assert.equal(decodeAppMessage(JSON.stringify({ ...base, host: 'toaster' })).error.code, 'protocol.invalid-message')
   const { backend: _backend, ...withoutBackend } = base
   assert.equal(decodeAppMessage(JSON.stringify(withoutBackend)).error.code, 'protocol.invalid-message')

@@ -305,6 +305,7 @@ export function createReactNativeRustCoreBackendProvider(
   const createOwnerId = options.createOwnerId ?? allocateOwnerId
   const journalHost: { backend: ReactNativeRustCoreBackend | null } = { backend: null }
   const journal = new RustCoreRestorationJournal({
+    platform: options.platform,
     authority: options.restorationAuthority ?? (() => null),
     attachment: () => journalHost.backend?.identity.attachment ?? null,
     claimRestoredPeers: (maxPeers: number) => {
@@ -315,7 +316,7 @@ export function createReactNativeRustCoreBackendProvider(
       return backend.claimRestoredPeers(maxPeers)
     }
   })
-  const restoration = new ReactNativeRestorationCoordinator(journal, options.platform)
+  const restoration = new ReactNativeRestorationCoordinator(journal)
   return Object.freeze({
     descriptor: Object.freeze({
       providerId: 'unified-ble:react-native-rust-core-provider',
@@ -833,6 +834,8 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       }) => this.updateBackgroundNotification(request),
       associateCompanion: (request: { readonly name?: string; readonly serviceUuid?: string }) =>
         this.associateCompanion(request),
+      observePresence: (request: { readonly peerId: string }) => this.observePresence(request),
+      unobservePresence: (request: { readonly peerId: string }) => this.unobservePresence(request),
       counters: () => this.describeCounters()
     })
   }
@@ -1548,9 +1551,8 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private async restoredPeers(options: BackendPeerQuery): Promise<readonly BackendPeerRecord<string>[]> {
     const operation = `${SCOPE}.peers.restored`
     this.assertPeerQuery(options, operation)
-    if (this.platform === 'android') {
-      throw contractError('capability.unsupported', 'restoration', operation)
-    }
+    // Issue #212: Android lists the peers a Companion Device Manager presence
+    // wake restored through the same records as iOS state restoration.
     const records = (await this.invoke('peers.restored', {})).map(record =>
       this.peerRecord(record, this.originReference(record.peerId))
     )
@@ -3106,6 +3108,22 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       operationId: this.mintOperationId('companion')
     })
   }
+
+  private observePresence(request: { readonly peerId: string }): Promise<WireOpResults['presence.observe']> {
+    this.assertOperational(`${SCOPE}.presence.observe`)
+    return this.invoke('presence.observe', {
+      peerId: String(request.peerId),
+      operationId: this.mintOperationId('presence')
+    })
+  }
+
+  private unobservePresence(request: { readonly peerId: string }): Promise<WireOpResults['presence.unobserve']> {
+    this.assertOperational(`${SCOPE}.presence.unobserve`)
+    return this.invoke('presence.unobserve', {
+      peerId: String(request.peerId),
+      operationId: this.mintOperationId('presence')
+    })
+  }
 }
 
 /** Session services the Expo layer reaches through a Rust-core manager. */
@@ -3125,6 +3143,8 @@ export interface ReactNativeRustCoreHostServices {
     readonly peerId: string | null
     readonly displayName: string | null
   }>
+  observePresence(request: { readonly peerId: string }): Promise<{ readonly state: 'observing' }>
+  unobservePresence(request: { readonly peerId: string }): Promise<{ readonly state: 'idle' }>
   counters(): Promise<WireCounters>
 }
 

@@ -41,6 +41,7 @@ class RustRadioHostAdapterLinkLossTest {
     OwnedRadioPort(radio) { },
     FakeBackground(),
     { null },
+    { null },
     DirectExecutor,
     DirectExecutor
   ) { }

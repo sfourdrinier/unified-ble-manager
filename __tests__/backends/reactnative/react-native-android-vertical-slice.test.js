@@ -589,6 +589,8 @@ describe('React Native Android canonical protocol vertical slice', () => {
       power: 'on',
       safeReason: null
     })
+    // Issue #212: the journal is asked even on Android; with nothing seeded
+    // the platform handed back nothing, which adopts as already-consumed.
     await expect(
       manager.adoptRestoration({
         namespace: 'com.example.restoration',
@@ -597,7 +599,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
         expectedEpoch: opaqueId('canonical-restoration-epoch', 'restoration-epoch', 'react-native:android'),
         expectedVersions: manager.identity.versions
       })
-    ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
+    ).resolves.toMatchObject({ outcome: 'already-consumed', replayedRecords: [] })
     await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
     expect(control.closedAttachments).toHaveLength(1)
   })
@@ -641,6 +643,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
         suiteId: 'descriptor-operations'
       },
       { id: 'state:restoration-adoption', state: 'limited', evidenceLevel: 'deterministic', suiteId: 'restoration' },
+      { id: 'state:presence-observation', state: 'unsupported', evidenceLevel: 'blocked', suiteId: 'restoration' },
       { id: 'connection:direct', state: 'limited', evidenceLevel: 'deterministic', suiteId: 'capability.catalog-v2' },
       {
         id: 'gatt:maximum-write-length',
@@ -1811,7 +1814,10 @@ describe('React Native first-party standard TCK registrations', () => {
       native,
       now: () => 20,
       nativePeerId: DEFAULT_PEER,
-      boundary: deterministicRustCoreTckBoundary(native),
+      boundary: {
+        ...deterministicRustCoreTckBoundary(native),
+        seedRestorationJournal: () => native.seedRestored([{ peerId: 'C0:FF:EE:00:00:03', connected: true }])
+      },
       createOwnerId: () => {
         owner += 1
         return `android-tck-owner-${owner}`
@@ -1826,6 +1832,7 @@ describe('React Native first-party standard TCK registrations', () => {
     expect(report.featureSuiteIds).toEqual([
       'connection-controls',
       'descriptor-operations',
+      'restoration',
       'tck.feature.gatt.maximum-write-length',
       'tck.feature.security.android'
     ])
@@ -1836,11 +1843,7 @@ describe('React Native first-party standard TCK registrations', () => {
         expect.objectContaining({ scenarioId: 'security.state-pair-cancel-unpair', error: null })
       ])
     )
-    expect(registration.capabilityExclusions).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ featureId: 'state:restoration-adoption', state: 'unsupported' })
-      ])
-    )
+    expect(registration.capabilityExclusions).toEqual([])
     expect(native.calls.filter(call => call[0] === 'invoke').length).toBeGreaterThan(0)
   })
 

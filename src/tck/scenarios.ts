@@ -193,6 +193,12 @@ export const baseTckScenarios: readonly TckScenarioDefinition[] = [
     requiredControllerActions: ['seed-restoration-journal']
   },
   {
+    id: 'restoration.presence-observation-arms-known-peer',
+    execution: 'feature',
+    requiredFacts: ['presence-observation-arms-known-peer', 'presence-unobserve-disarms-known-peer'],
+    requiredControllerActions: []
+  },
+  {
     id: 'electron.trusted-sender-envelope-generations-and-quotas',
     execution: 'feature',
     requiredFacts: [

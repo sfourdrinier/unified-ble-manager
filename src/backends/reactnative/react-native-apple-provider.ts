@@ -91,7 +91,7 @@ export function createReactNativeAppleLegacyBackendProvider(
   options: ReactNativeAppleLegacyBackendProviderOptions
 ): ReactNativeRestorationBackendProvider {
   const createOwnerId = options.createOwnerId ?? allocateBoundaryOwnerId
-  const restoration = new ReactNativeRestorationCoordinator(options.control, 'apple')
+  const restoration = new ReactNativeRestorationCoordinator(options.control)
   return Object.freeze({
     descriptor: reactNativeAppleProviderDescriptor,
     restoration,

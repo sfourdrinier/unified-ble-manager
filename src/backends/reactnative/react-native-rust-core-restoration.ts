@@ -20,6 +20,7 @@ import type {
   ReactNativeRestorationAdoptionRecord,
   ReactNativeRestorationAdoptionRequestRecord,
   ReactNativeRestorationJournal,
+  ReactNativeRestorationPlatform,
   ReactNativeRestorationReplayRecord
 } from './react-native-restoration'
 import type { WirePeerRecord } from './rust-core-wire'
@@ -41,6 +42,8 @@ export interface ReactNativeRestorationAuthority {
 }
 
 export interface RustCoreRestorationJournalOptions {
+  /** Target mobile platform: Android has no OS restoration journal. */
+  readonly platform: ReactNativeRestorationPlatform
   /** The authority, or `null` when the app configured none. */
   readonly authority: () => ReactNativeRestorationAuthority | null
   /** The attachment the journal belongs to (the open backend). */
@@ -99,6 +102,21 @@ export class RustCoreRestorationJournal implements ReactNativeRestorationJournal
   ): Promise<ReactNativeRestorationAdoptionRecord> {
     const attachment = this.options.attachment()
     const authority = this.options.authority()
+    if (authority === null && this.options.platform === 'android') {
+      // Legacy rule preserved: Android has no OS restoration journal, so
+      // without a configured restoration source the platform cannot answer.
+      // Known peers are restored through Companion Device Manager presence
+      // (API 31+) for an armed associated peer and claimed with the same
+      // once-per-process semantics as iOS; that wake-fed path authenticates
+      // against its own source, never against this refusal.
+      throw contractError('capability.unsupported', 'restoration', 'react-native-rust-core.restoration.adopt', {
+        domain: 'react-native-rust-core',
+        code: 'androidRestorationNeedsPresenceWake',
+        safeMessage:
+          'Android restores known peers only through Companion Device Manager presence for an armed associated peer; no restoration source is configured.',
+        metadata: Object.freeze({})
+      })
+    }
     if (
       attachment === null ||
       !validInteger(request.nativeProtocolMinimum) ||

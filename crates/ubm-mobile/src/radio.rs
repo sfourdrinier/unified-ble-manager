@@ -618,6 +618,8 @@ pub enum RequestKind {
     ReleaseBackground,
     UpdateBackgroundNotification,
     AssociateCompanion,
+    ObservePresence,
+    StopPresence,
     Close,
 }
 
@@ -653,6 +655,8 @@ impl RequestKind {
             Self::ReleaseBackground => "background.release",
             Self::UpdateBackgroundNotification => "background.update-notification",
             Self::AssociateCompanion => "companion.associate",
+            Self::ObservePresence => "presence.observe",
+            Self::StopPresence => "presence.unobserve",
             Self::Close => "radio.close",
         }
     }
@@ -687,7 +691,9 @@ impl RequestKind {
             | Self::AcquireBackground
             | Self::ReleaseBackground
             | Self::UpdateBackgroundNotification
-            | Self::AssociateCompanion => "platformFailure",
+            | Self::AssociateCompanion
+            | Self::ObservePresence
+            | Self::StopPresence => "platformFailure",
         }
     }
 
@@ -722,7 +728,9 @@ impl RequestKind {
             | Self::AcquireBackground
             | Self::ReleaseBackground
             | Self::UpdateBackgroundNotification
-            | Self::AssociateCompanion => "platformFailure",
+            | Self::AssociateCompanion
+            | Self::ObservePresence
+            | Self::StopPresence => "platformFailure",
         }
     }
 
@@ -757,6 +765,8 @@ impl RequestKind {
             Self::ReleaseBackground => "release-background",
             Self::UpdateBackgroundNotification => "update-background-notification",
             Self::AssociateCompanion => "associate-companion",
+            Self::ObservePresence => "observe-presence",
+            Self::StopPresence => "unobserve-presence",
             Self::Close => "close",
         }
     }
@@ -902,6 +912,13 @@ pub enum RadioRequest {
         name: Option<String>,
         service_uuid: Option<String>,
     },
+    /// Arms Companion Device Manager device presence for one associated peer
+    /// (Android API 31+; the session refuses it on Apple).
+    /// → [`RadioCompletion::Unit`].
+    ObservePresence { id: RequestId, peer_id: String },
+    /// Disarms device presence for one peer (idle when none is armed).
+    /// → [`RadioCompletion::Unit`].
+    StopPresence { id: RequestId, peer_id: String },
     /// Teardown: disable every live notification this radio enabled.
     /// → [`RadioCompletion::Closed`] naming every scope that did not
     /// release (empty = all released).
@@ -939,6 +956,8 @@ impl RadioRequest {
             | Self::ReleaseBackground { id, .. }
             | Self::UpdateBackgroundNotification { id, .. }
             | Self::AssociateCompanion { id, .. }
+            | Self::ObservePresence { id, .. }
+            | Self::StopPresence { id, .. }
             | Self::Close { id } => *id,
         }
     }
@@ -973,6 +992,8 @@ impl RadioRequest {
             Self::ReleaseBackground { .. } => RequestKind::ReleaseBackground,
             Self::UpdateBackgroundNotification { .. } => RequestKind::UpdateBackgroundNotification,
             Self::AssociateCompanion { .. } => RequestKind::AssociateCompanion,
+            Self::ObservePresence { .. } => RequestKind::ObservePresence,
+            Self::StopPresence { .. } => RequestKind::StopPresence,
             Self::Close { .. } => RequestKind::Close,
         }
     }
@@ -1043,6 +1064,8 @@ impl RadioCompletion {
                         | K::CancelBond
                         | K::ReleaseBackground
                         | K::UpdateBackgroundNotification
+                        | K::ObservePresence
+                        | K::StopPresence
                 )
                 | (Self::Lease(_), K::AcquireBackground)
                 | (Self::Companion { .. }, K::AssociateCompanion)
