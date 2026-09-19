@@ -257,12 +257,15 @@ async function scenarioSharedScan(ctx) {
 
 // ------------------------------------------------- S2: same-peer intent race
 //
-// The physical connect uses the admitted operation's exact options: concurrent
-// same-peer connects never produce two radio links, the racer's options never
-// steer or cancel the admitted attempt, and every loser reports an explicit
-// fate. Intents are capability-gated: where `connection:when-available` is
-// unsupported the refusal itself must be explicit (`capability.unsupported`
-// with nothing acquired), and the race runs direct-vs-direct.
+// The canonical same-peer answer (W7/G6, UNIFIED_SEMANTICS §3/§8, Android
+// reference) is JOIN: concurrent same-peer connects never produce two radio
+// links — the second leases the peer's link with an independent generation —
+// the racer's options never steer or cancel the admitted attempt, and every
+// loser reports an explicit fate. A physical link is per peer (W7/G2): one
+// link, two leases. Intents are capability-gated: where
+// `connection:when-available` is unsupported the refusal itself must be
+// explicit (`capability.unsupported` with nothing acquired, and supports()
+// must agree — W7/G4), and the race runs direct-vs-direct.
 
 function withHangGuard(promise, label) {
   let timer = null
@@ -283,7 +286,7 @@ function withHangGuard(promise, label) {
 
 // Bounded post-reconnect value read. Prompt legs resolve in milliseconds; a
 // null return means delivery never arrived within the bound and the caller
-// must record an explicit skip, never treat silence as success.
+// must fail the assertion, never treat silence as success.
 async function readValueBounded(iterator, controller, boundMs = 10000) {
   return settleBounded(controller, iterator.next(), boundMs)
 }
@@ -309,14 +312,6 @@ async function settleBounded(controller, promise, boundMs = 10000) {
   } finally {
     if (timer !== null) clearTimeout(timer)
   }
-}
-
-function postReconnectSkip(reason) {
-  return (
-    `post-reconnect notification delivery is not observed on this leg within the 10s bound (${reason}); ` +
-    'the fence itself (generations, stale paths, terminals, clean re-admission) is still asserted; ' +
-    'see receipt Unresolved for the desktop synthetic-leg defect probe'
-  )
 }
 
 async function scenarioConcurrentConnect(ctx) {
@@ -385,6 +380,8 @@ async function scenarioConcurrentConnect(ctx) {
     ? `joined:${String(sequentialRacer.value.connectionGeneration)}`
     : `rejected:${errorCode(sequentialRacer.error)}`
   detail.linksAfterSequential = physicalLinks()
+  // Both leases are live here: one physical link (G2), two leases (G6 join).
+  detail.leasesWhileJoined = snapshotCounters(fixture.backend).connectionLeases
   let sequentialJoinUsable = null
   if (sequentialRacer.ok) {
     const database = await controller.settle(sequentialRacer.value.discover(support.operationOptions))
@@ -399,17 +396,15 @@ async function scenarioConcurrentConnect(ctx) {
   detail.admittedGenerationStable = String(admitted.connectionGeneration) === detail.admittedGeneration
   await controller.settle(admitted.release())
   detail.linksAfterSequentialRelease = physicalLinks()
-  detail.sequentialCounting =
-    detail.linksAfterSequential === 1
-      ? 'peer-counted'
-      : 'lease-counted-join (physicalLinks counts leases here; see receipt Unresolved)'
+  // G6/G2 (W7): the canonical same-peer answer is JOIN — the racer leases the
+  // peer's link with an independent generation (never already-owned) — and a
+  // physical link is per peer: one link, two leases.
   const sequentialOk =
     detail.linksAfterAdmitted === 1 &&
-    detail.linksAfterSequential >= 1 &&
-    detail.linksAfterSequential <= 2 &&
-    (sequentialRacer.ok
-      ? sequentialJoinUsable === true
-      : errorCode(sequentialRacer.error) === 'connection.already-owned') &&
+    detail.linksAfterSequential === 1 &&
+    detail.leasesWhileJoined === 2 &&
+    sequentialRacer.ok === true &&
+    sequentialJoinUsable === true &&
     detail.admittedUsable === true &&
     detail.admittedGenerationStable === true &&
     detail.linksAfterSequentialRelease === 0
@@ -470,20 +465,23 @@ async function scenarioConcurrentConnect(ctx) {
     (admittedRaceLive && racerRaceLive) ||
     (admittedRaceLive && !racerRaceLive && errorCode(racerRace.error) !== null) ||
     (!admittedRaceLive && racerRaceLive && errorCode(admittedRaceOutcome.error) !== null)
-  detail.raceCounting =
-    detail.linksAfterRace === 1 ? 'peer-counted' : 'lease-counted-join (physicalLinks counts leases here; see receipt Unresolved)'
+  // Whatever wins, the peer holds one physical link (G2); a joined racer must
+  // carry a distinct generation (G6). The expired-deadline racer may instead
+  // refuse explicitly — that fate is asserted by loserExplicit.
   const raceOk =
     (admittedRaceLive || racerRaceLive) &&
-    detail.linksAfterRace >= 1 &&
-    detail.linksAfterRace <= 2 &&
+    detail.linksAfterRace === 1 &&
     generationsDistinct &&
     loserExplicit &&
     (admittedRaceLive ? admittedRaceUsable === true : true) &&
     detail.linksAfterRaceRelease === 0
 
-  const probeOk = whenAvailableSupported
-    ? detail.linksAfterProbeRelease === 0
-    : detail.unsupportedProbeAcquiredNothing === true
+  // G4 (W7): the capability answer must match the behaviour probe on every leg.
+  detail.supportsMatchesBehaviour = manager.supports('connection:when-available') === whenAvailableSupported
+  const probeOk =
+    (whenAvailableSupported
+      ? detail.linksAfterProbeRelease === 0
+      : detail.unsupportedProbeAcquiredNothing === true) && detail.supportsMatchesBehaviour === true
   const holds = probeOk && sequentialOk && raceOk
   return { holds, skips, detail: { ...detail, probeOk, sequentialOk, raceOk } }
 }
@@ -532,13 +530,11 @@ async function scenarioDisconnectDuringSubscribe(ctx) {
       'emit-notification',
       support.notificationInput(reconnected.snapshot.characteristics[0].path, new Uint8Array([7]))
     )
+    // G1 (W7): post-reconnect delivery holds on every leg, synthetic desktop
+    // legs included — the staged value must arrive on the resubscription.
     const item = await readValueBounded(next.values[Symbol.asyncIterator](), controller)
-    if (item === null) {
-      skips.push(postReconnectSkip('settled resubscribe'))
-      detail.resubscribedValue = 'not-observed'
-    } else {
-      detail.resubscribedValue = !item.done && item.value.kind === 'value' ? [...item.value.value.value][0] ?? null : null
-    }
+    detail.resubscribedValue =
+      item !== null && !item.done && item.value.kind === 'value' ? [...item.value.value.value][0] ?? null : null
     detail.generationsDiffer =
       String(reconnected.connection.connectionGeneration) !== String(connection.connectionGeneration)
     await controller.settle(next.remove())
@@ -546,7 +542,7 @@ async function scenarioDisconnectDuringSubscribe(ctx) {
     const holds =
       detail.settledTerminalKind === 'terminal' &&
       detail.settledCompletes === true &&
-      (detail.resubscribedValue === 7 || detail.resubscribedValue === 'not-observed') &&
+      detail.resubscribedValue === 7 &&
       detail.generationsDiffer === true &&
       zeroSubscriptions()
     return { holds, skips, detail: { ...detail, orphanFree: zeroSubscriptions() } }
@@ -596,13 +592,10 @@ async function scenarioDisconnectDuringSubscribe(ctx) {
     next.database.subscribe(nextCharacteristic.path, support.subscriptionOptions('drop-oldest', 4, 4096))
   )
   await controller.perform('emit-notification', support.notificationInput(nextCharacteristic.path, new Uint8Array([9])))
+  // G1 (W7): the mid-flight resubscription delivers on every leg.
   const item = await readValueBounded(nextSubscription.values[Symbol.asyncIterator](), controller)
-  if (item === null) {
-    skips.push(postReconnectSkip('mid-flight resubscribe'))
-    detail.nextValue = 'not-observed'
-  } else {
-    detail.nextValue = !item.done && item.value.kind === 'value' ? [...item.value.value.value][0] ?? null : null
-  }
+  detail.nextValue =
+    item !== null && !item.done && item.value.kind === 'value' ? [...item.value.value.value][0] ?? null : null
   await controller.settle(nextSubscription.remove())
   await controller.settle(next.connection.release())
 
@@ -613,7 +606,7 @@ async function scenarioDisconnectDuringSubscribe(ctx) {
     detail.staleSubscribeRejected === true &&
     detail.noOrphanAfterPmdRace === true &&
     detail.generationsDiffer === true &&
-    (detail.nextValue === 9 || detail.nextValue === 'not-observed') &&
+    detail.nextValue === 9 &&
     zeroSubscriptions()
   return { holds, skips, detail: { ...detail, orphanFree: zeroSubscriptions() } }
 }
@@ -670,13 +663,12 @@ async function scenarioGenerationFence(ctx) {
   detail.oldIteratorReason = oldItem.done ? null : oldItem.value.reason ?? null
   detail.oldNeverReceivesNewValue =
     oldItem.done || oldItem.value.kind !== 'value' || [...(oldItem.value.value.value ?? [])][0] !== 11
+  // G1 (W7): the fenced resubscription delivers on every leg.
   const newItem = await settleBounded(controller, secondNext)
-  if (newItem === null) {
-    skips.push(postReconnectSkip('fenced resubscribe'))
-    detail.newValue = 'not-observed'
-  } else {
-    detail.newValue = !newItem.done && newItem.value.kind === 'value' ? [...newItem.value.value.value][0] ?? null : null
-  }
+  detail.newValue =
+    newItem !== null && !newItem.done && newItem.value.kind === 'value'
+      ? [...newItem.value.value.value][0] ?? null
+      : null
   const staleReadRejected = await support.rejectsWithCode(
     first.database.read(firstCharacteristic.path, support.operationOptions),
     'gatt.stale-handle'
@@ -701,7 +693,7 @@ async function scenarioGenerationFence(ctx) {
     detail.generationsDiffer === true &&
     detail.oldNeverReceivesNewValue === true &&
     (detail.oldIteratorKind === 'terminal' || detail.oldIteratorKind === 'done') &&
-    (detail.newValue === 11 || detail.newValue === 'not-observed') &&
+    detail.newValue === 11 &&
     detail.staleReadRejected === true &&
     (delayedRead === null || detail.delayedOldReadSettled === 'rejected')
   return { holds, skips, detail }
@@ -738,14 +730,14 @@ async function scenarioSlowDrain(ctx) {
   await flood(emitted)
   detail.backendRetainedDuringFlood = Number(fixture.backend.resourceCounters().retainedByteBuffers)
   detail.managerRetainedDuringFlood = Number(manager.localResourceCounters().retainedByteBuffers)
-  // Drain to quiescence: loss accounting may arrive as several notices, so
-  // every item is collected (bounded pulls, 5s of silence means drained) and
-  // conservation is asserted over the whole multiset, never over one notice.
+  // Drain to quiescence: loss accounting arrives as cumulative restatements
+  // (one notice is the degenerate single-restatement case), so every item is
+  // collected (bounded pulls, 5s of silence means drained) and conservation
+  // is asserted against the final cumulative notice, never over one notice.
   const iterator = subscription.values[Symbol.asyncIterator]()
   let valueCount = 0
-  let droppedItems = 0
-  let droppedBytes = 0
-  let overflowNotices = 0
+  const noticeItems = []
+  const noticeBytes = []
   let quiescent = false
   for (let pull = 0; pull < 40 && !quiescent; pull += 1) {
     const item = await settleBounded(controller, iterator.next(), 5000)
@@ -756,20 +748,19 @@ async function scenarioSlowDrain(ctx) {
     if (item.value.kind === 'value') {
       valueCount += 1
     } else if (item.value.kind === 'overflow') {
-      overflowNotices += 1
-      droppedItems += Number(item.value.droppedItems)
-      droppedBytes += Number(item.value.droppedBytes)
-      detail.lastNoticeDroppedItems = Number(item.value.droppedItems)
-      detail.lastNoticeDroppedBytes = Number(item.value.droppedBytes)
+      noticeItems.push(Number(item.value.droppedItems))
+      noticeBytes.push(Number(item.value.droppedBytes))
     } else if (item.value.kind === 'terminal') {
       detail.unexpectedTerminal = item.value.reason
       break
     }
   }
   detail.valueCount = valueCount
-  detail.overflowNotices = overflowNotices
-  detail.droppedItems = droppedItems
-  detail.droppedBytes = droppedBytes
+  detail.overflowNotices = noticeItems.length
+  detail.noticeItems = noticeItems
+  detail.noticeBytes = noticeBytes
+  detail.lastNoticeDroppedItems = noticeItems.length > 0 ? noticeItems[noticeItems.length - 1] : null
+  detail.lastNoticeDroppedBytes = noticeBytes.length > 0 ? noticeBytes[noticeBytes.length - 1] : null
   detail.quiescent = quiescent
   detail.postDrainRetained = Number(manager.localResourceCounters().retainedByteBuffers)
 
@@ -808,14 +799,21 @@ async function scenarioSlowDrain(ctx) {
   // explicitly dropped, or still retained — nothing vanishes silently. The
   // window stays bounded throughout (retention never exceeds one window plus
   // control slack) and ends drained.
+  //
+  // G3 (W7): the single canonical shape is the cumulative restatement
+  // (UNIFIED_SEMANTICS §11) — notices are non-decreasing cumulative-so-far
+  // counts and the last one states the whole gap. Delivery batching may
+  // coalesce them into one notice (deterministic) or restate them across
+  // drain turns (incremental radios); both satisfy the same rule.
   const gap = emitted - valueCount - detail.postDrainRetained
-  const incrementalShape = droppedItems === gap && droppedBytes === gap
-  const cumulativeShape =
-    detail.lastNoticeDroppedItems === gap && detail.lastNoticeDroppedBytes === gap && overflowNotices > 1
-  detail.accountingShape = incrementalShape ? 'incremental' : cumulativeShape ? 'cumulative-restatement' : 'none'
-  const conserved = valueCount + droppedItems + detail.postDrainRetained === emitted || cumulativeShape
+  const nonDecreasing = series => series.every((count, index) => index === 0 || count >= series[index - 1])
+  const restatementsMonotonic = nonDecreasing(noticeItems) && nonDecreasing(noticeBytes)
+  const lastStatesGap =
+    detail.lastNoticeDroppedItems === gap && detail.lastNoticeDroppedBytes === gap
+  detail.accountingShape = 'cumulative-restatement'
+  const conserved = valueCount + (detail.lastNoticeDroppedItems ?? -1) + detail.postDrainRetained === emitted
   const bounded = detail.managerRetainedDuringFlood <= 8 && detail.postDrainRetained <= 4
-  const lossAccounted = overflowNotices >= 1 && (incrementalShape || cumulativeShape)
+  const lossAccounted = noticeItems.length >= 1 && restatementsMonotonic && lastStatesGap
   const memoryBounded = detail.managerRetainedDuringFlood <= 8
   const lifecyclePrompt = terminalFound && pullsToTerminal <= 8
   const holds = conserved && bounded && lossAccounted && memoryBounded && lifecyclePrompt
@@ -842,12 +840,9 @@ async function scenarioOwnershipSoak(ctx) {
   }
 
   let cyclesClean = true
-  // Value delivery after resubscribe is broken on the desktop synthetic legs
-  // (first subscription delivers; later ones never do — see receipt
-  // Unresolved). The soak's mandate is ownership/counter return, so the read
-  // is attempted with a bound: the first unobserved delivery records one
-  // explicit skip and later cycles skip the read instead of stalling 200×.
-  let deliveryObserved = null
+  // G1 (W7): post-reconnect delivery holds on every leg, so every soak cycle
+  // reads its staged value with a bound — a missing delivery fails the cycle,
+  // never records a skip.
   for (let cycle = 0; cycle < SOAK_CYCLES; cycle += 1) {
     const ids = createAttachmentBoundIdFactory({
       attachmentId: ctx.attached.attachment.attachment.attachmentId,
@@ -877,34 +872,12 @@ async function scenarioOwnershipSoak(ctx) {
     const subscription = await controller.settle(
       database.subscribe(snapshot.characteristics[0].path, support.subscriptionOptions('drop-oldest', 4, 4096))
     )
-    let valueOk = false
-    if (deliveryObserved !== false) {
-      await controller.perform(
-        'emit-notification',
-        support.notificationInput(snapshot.characteristics[0].path, new Uint8Array([cycle & 0xff]))
-      )
-      const item = await settleBounded(controller, subscription.values[Symbol.asyncIterator]().next(), 5000)
-      valueOk = item !== null && !item.done && item.value.kind === 'value'
-      if (valueOk) {
-        deliveryObserved = true
-      } else {
-        // The read is corroboration, not the soak mandate: the first
-        // unobserved delivery records one explicit skip and later cycles skip
-        // the read. Any demotion stays visible via the skip and the flag.
-        valueOk = 'not-observed'
-        if (deliveryObserved !== false) {
-          deliveryObserved = false
-          detail.deliveryAfterResubscribe = 'not-observed'
-          skips.push(
-            'soak value reads need post-resubscribe delivery, which this leg stops providing after the first ' +
-              'subscription (enable stays effective, staged values never arrive); ownership and counter return ' +
-              'are still asserted every cycle; see receipt Unresolved for the defect probe'
-          )
-        }
-      }
-    } else {
-      valueOk = 'not-observed'
-    }
+    await controller.perform(
+      'emit-notification',
+      support.notificationInput(snapshot.characteristics[0].path, new Uint8Array([cycle & 0xff]))
+    )
+    const item = await settleBounded(controller, subscription.values[Symbol.asyncIterator]().next(), 5000)
+    const valueOk = item !== null && !item.done && item.value.kind === 'value'
     const removeCleanup = await controller.settle(subscription.remove())
     const releaseCleanup = await controller.settle(connection.release())
     const destroyCleanup = await controller.settle(created.destroy())

@@ -472,10 +472,12 @@ describe('BleManager production core slice', () => {
     await expect(borrower.scan(scanOptions())).rejects.toMatchObject({ normalized: { code: 'scan.already-active' } })
 
     const peerId = opaqueId('deterministic-peer', 'peer', 'deterministic')
-    await settle(fixture.controller, owner.connect(peerId, operation()))
-    await expect(borrower.connect(peerId, operation())).rejects.toMatchObject({
-      normalized: { code: 'connection.already-owned' }
-    })
+    const ownerConnection = await settle(fixture.controller, owner.connect(peerId, operation()))
+    // Canonical same-peer answer (W7/G6): the borrower joins the peer's link
+    // with an independent generation, then releases its own lease.
+    const borrowerConnection = await settle(fixture.controller, borrower.connect(peerId, operation()))
+    expect(String(borrowerConnection.connectionGeneration)).not.toBe(String(ownerConnection.connectionGeneration))
+    await settle(fixture.controller, borrowerConnection.release())
 
     await settle(fixture.controller, owner.destroy())
     expect(owner.state).toBe('destroyed')

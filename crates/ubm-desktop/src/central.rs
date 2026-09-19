@@ -2105,8 +2105,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
 
     /// Current subscription epoch for a radio peer (F10): the generation
     /// a forwarder installed now would capture. Fresh peers start at 0;
-    /// every routing invalidation bumps it.
-    async fn routing_epoch(&self, peer_id: &str) -> u64 {
+    /// every routing invalidation bumps it. Synthetic staging defaults an
+    /// omitted epoch to this value, so a staged live value delivers after
+    /// reconnects while an explicitly stale epoch still drops (G1/W7).
+    pub async fn routing_epoch(&self, peer_id: &str) -> u64 {
         *self
             .inner
             .epochs

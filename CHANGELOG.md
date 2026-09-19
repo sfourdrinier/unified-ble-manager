@@ -6,6 +6,22 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ### Changed
 
+- **Same-peer connects join on every backend (W7/G6).** A second connect to a
+  connected peer leases the peer's link with an independent generation instead
+  of failing `connection.already-owned` (`docs/UNIFIED_SEMANTICS.md` §§3 and 8;
+  Android is the reference). `physicalLinks` counts peers: one link, N leases.
+  The TCK pins are updated.
+- **`when-available` refusal matches the capability (W7/G4).** A backend
+  without presence semantics refuses `connection:connect` with intent
+  `when-available` as `capability.unsupported`, and
+  `supports('connection:when-available')` agrees on every leg.
+- **Overflow notices are cumulative restatements (W7/G3).** Every
+  `stream.overflow` states the cumulative-so-far `droppedItems` and
+  `droppedBytes`, non-decreasing, with the last one stating the gap.
+  Single-notice and multi-notice backends satisfy the same rule.
+- **Electron answers `connection.effective-mtu` (W7).** The main router serves
+  the renderer's MTU observation like the Tauri route.
+
 - **Precompiled Rust artifacts now have a managed lifecycle (F9).** Every
   Rust change used to stale up to three precompiled artifacts, each found
   late and by hand; now `pnpm native:status` reports each one as `fresh`,
@@ -639,6 +655,17 @@ previousAttachmentId, attachmentId, attachment}}`. The renderer/webview
   Android prebuilts predate sealing and must be refreshed before release.
 
 ### Fixed
+
+- **Synthetic staging defaults to the live routing epoch (W7/G1).** A staged
+  notification or loss with no epoch now delivers after a reconnect; an
+  explicit stale epoch is still dropped. Real-radio forwarding is unchanged.
+- **The React Native drain benchmark runs in plain node (W8/G5).** The
+  wake-to-drain stall outside jest was a harness module-resolution artifact,
+  not a pump race: `scripts/performance/w6-rn-throughput.js` measures
+  in-process with the f01 loader pattern, and the jest leg runs the same
+  implementation. Interleaving regression coverage lives in
+  `rust-core-drain-no-lost-wake.test.js`. Deterministic-harness evidence only,
+  never radio proof.
 
 - **Desktop hosts report the effective ATT MTU (finding 217 follow-up).**
   `connection:effective-mtu` is `limited` (was `capability.unsupported`) on

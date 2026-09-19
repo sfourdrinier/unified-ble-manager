@@ -900,10 +900,12 @@ async function executeManagerOwnershipScenario<
 ): Promise<readonly TckFact[]> {
   const borrower = await createBorrowingManager(owner, authority, fixture, definition, 'borrower')
   const connection = await connectToDeterministicPeer(owner, fixture, definition)
-  const borrowerDenied = await rejectsWithCode(
-    borrower.connect(connection.peerId, operationOptions),
-    'connection.already-owned'
-  )
+  // Same-peer join (UNIFIED_SEMANTICS §3/§8, Android reference): the borrower
+  // leases the peer's link with an independent generation; releasing it and
+  // destroying the borrower leaves the owner's lease untouched.
+  const borrowerConnection = await fixture.controller.settle(borrower.connect(connection.peerId, operationOptions))
+  const borrowerJoined = String(borrowerConnection.connectionGeneration) !== String(connection.connectionGeneration)
+  await fixture.controller.settle(borrowerConnection.release())
   const borrowerCleanup = await fixture.controller.settle(borrower.destroy())
   assertCleanupReleased(definition, borrowerCleanup, 'borrowing manager')
   const database = await fixture.controller.settle(connection.discover(operationOptions))
@@ -1002,8 +1004,8 @@ async function executeManagerOwnershipScenario<
     throw new AggregateError(transferCleanupErrors, `${definition.id}: ownership cleanup failed`)
   }
   return [
-    fact('connection-leases-are-owner-scoped', borrowerDenied && ownerConnectionRetained, {
-      borrowerDenied,
+    fact('connection-leases-are-owner-scoped', borrowerJoined && ownerConnectionRetained, {
+      borrowerJoined,
       ownerConnectionRetained
     }),
     fact(
@@ -1053,15 +1055,16 @@ async function executeConnectionArbitrationScenario<
     { ...DEFAULT_BLE_MANAGER_OPTIONS, now: () => fixture.controller.now() }
   )
   const connection = await connectToDeterministicPeer(owner, fixture, definition)
-  const secondRejected = await rejectsWithCode(
-    second.connect(connection.peerId, operationOptions),
-    'connection.already-owned'
-  )
+  // Same-peer join (UNIFIED_SEMANTICS §3/§8, Android reference): the second
+  // manager leases the peer's link with an independent generation.
+  const secondConnection = await fixture.controller.settle(second.connect(connection.peerId, operationOptions))
+  const secondJoined = String(secondConnection.connectionGeneration) !== String(connection.connectionGeneration)
+  assertCleanupReleased(definition, await fixture.controller.settle(secondConnection.release()), 'second connection')
   assertCleanupReleased(definition, await fixture.controller.settle(second.destroy()), 'second manager')
   assertCleanupReleased(definition, await fixture.controller.settle(connection.release()), 'owner connection')
   return [
-    fact('connection-second-client-arbitrates-without-stealing-link', secondRejected && owner.state === 'ready', {
-      secondRejected,
+    fact('connection-second-client-arbitrates-without-stealing-link', secondJoined && owner.state === 'ready', {
+      secondJoined,
       ownerReady: owner.state === 'ready'
     })
   ]

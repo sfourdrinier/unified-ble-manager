@@ -273,14 +273,39 @@ async function connectionArbitration(fixture: DeterministicBackendFixture): Prom
   const first = fixture.backend.connections.connect(peerId(), clientId('connection-owner'), noOperationOptions())
   fixture.controller.clock.runUntilIdle()
   const ownerLease = await first
-  const secondRejected = await rejectsWithCode(
-    fixture.backend.connections.connect(peerId(), clientId('connection-second-client'), noOperationOptions()),
-    'connection.already-owned'
+  // Same-peer join (UNIFIED_SEMANTICS §3/§8, Android reference): the second
+  // client leases the peer's link with an independent generation instead of
+  // failing `connection.already-owned`.
+  const second = fixture.backend.connections.connect(
+    peerId(),
+    clientId('connection-second-client'),
+    noOperationOptions()
   )
+  fixture.controller.clock.runUntilIdle()
+  const joinedLease = await second
+  const generationsDistinct =
+    String(joinedLease.connection.connectionGeneration) !== String(ownerLease.connection.connectionGeneration)
+  const counters = fixture.backend.resourceCounters()
+  const onePhysicalLink = Number(counters.physicalLinks) === 1
+  const twoLeases = Number(counters.connectionLeases) === 2
+  const releaseSecond = joinedLease.release()
+  fixture.controller.clock.runUntilIdle()
+  await releaseSecond
   const release = ownerLease.release()
   fixture.controller.clock.runUntilIdle()
   await release
-  return [fact('connection-second-client-arbitrates-without-stealing-link', secondRejected, { secondRejected })]
+  const drained = fixture.backend.resourceCounters()
+  const countersDrained = Number(drained.physicalLinks) === 0 && Number(drained.connectionLeases) === 0
+  const joined = generationsDistinct && onePhysicalLink && twoLeases && countersDrained
+  return [
+    fact('connection-second-client-arbitrates-without-stealing-link', joined, {
+      joined,
+      generationsDistinct,
+      onePhysicalLink,
+      twoLeases,
+      countersDrained
+    })
+  ]
 }
 
 async function gattDiscovery(fixture: DeterministicBackendFixture): Promise<readonly FactObservation[]> {

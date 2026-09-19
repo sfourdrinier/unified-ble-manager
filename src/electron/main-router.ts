@@ -418,6 +418,8 @@ export class ElectronMainBleRouter {
         response = await this.adapterState(controller)
       } else if (envelope.command === 'connection.rssi') {
         response = await this.readRssi(resources, envelope.payload, controller)
+      } else if (envelope.command === 'connection.effective-mtu') {
+        response = await this.effectiveMtu(resources, envelope.payload, controller)
       } else if (envelope.command === 'connection.maximum-write-length') {
         response = await this.maximumWriteLength(resources, envelope.payload, controller)
       } else if (envelope.command === 'connection.disconnect') {
@@ -609,6 +611,25 @@ export class ElectronMainBleRouter {
     )
     const result = await connection.readRssi(operationOptions(payload, controller))
     return Object.freeze({ rssi: result.rssi })
+  }
+
+  private async effectiveMtu(
+    resources: RendererResources,
+    payload: SerializableRecord,
+    _controller: AbortController
+  ): Promise<SerializableRecord> {
+    const connection = requiredResource(
+      resources.connections,
+      requiredString(payload, 'connectionHandle'),
+      'connection'
+    )
+    // The main-side measurement carries the ATT MTU; the renderer builds its
+    // MtuObservation (payloadBytes = mtu - 3) exactly like the Tauri route.
+    // An unmeasured snapshot stays fail-closed upstream with its own reason,
+    // so a null here would be a backend contract violation, surfaced by the
+    // renderer's required-number check rather than a silent null.
+    const result = await connection.effectiveMtu()
+    return Object.freeze({ mtu: result.attMtu })
   }
 
   private async discover(

@@ -29,7 +29,7 @@ type DeterministicManager = BleManager<string, HostNeutralBackendIdentity<string
 type DeterministicAuthority = ManagerOwnershipAuthority<string>
 type OwnerScopedProof = SerializableRecord & {
   readonly ownerConnectionRetained: boolean
-  readonly borrowerDenied: boolean
+  readonly borrowerJoined: boolean
   readonly borrowerReleased: boolean
   readonly ownerRemainedReady: boolean
   readonly ownerOperationRetained: boolean
@@ -56,7 +56,7 @@ export async function deterministicManagerOwnershipFacts(): Promise<readonly Tck
   const transfer = await proveAuthenticatedTransfer()
   const revocation = await proveSettledBorrowerRevocation()
   return [
-    fact('connection-leases-are-owner-scoped', sharing.ownerConnectionRetained && sharing.borrowerDenied, sharing),
+    fact('connection-leases-are-owner-scoped', sharing.ownerConnectionRetained && sharing.borrowerJoined, sharing),
     fact(
       'connection-borrowing-cannot-destroy-or-cancel-owner-work',
       sharing.borrowerReleased &&
@@ -84,11 +84,13 @@ async function proveOwnerScopedBorrowing(): Promise<OwnerScopedProof> {
   const borrower = await createBorrowingManager(context.attachedBackend, context.authority, 2)
   try {
     const firstConnection = await settle(context.fixture, owner.connect(peerId(), operationOptions()))
-    const borrowerDenied = await settlesWithCode(
-      context.fixture,
-      borrower.connect(peerId(), operationOptions()),
-      'connection.already-owned'
-    )
+    // Same-peer join (UNIFIED_SEMANTICS §3/§8, Android reference): the
+    // borrower leases the peer's link with an independent generation;
+    // destroying the borrower releases only its own lease.
+    const borrowerConnection = await settle(context.fixture, borrower.connect(peerId(), operationOptions()))
+    const borrowerJoined =
+      String(borrowerConnection.connectionGeneration) !== String(firstConnection.connectionGeneration)
+    await settle(context.fixture, borrowerConnection.release())
     const borrowerCleanup = await settle(context.fixture, borrower.destroy())
     const ownerRemainedReady = owner.state === 'ready'
     const ownerConnectionRetained = Number(context.fixture.backend.resourceCounters().connectionLeases) === 1
@@ -100,7 +102,7 @@ async function proveOwnerScopedBorrowing(): Promise<OwnerScopedProof> {
     const ownerCleanup = await settle(context.fixture, owner.destroy())
     return {
       ownerConnectionRetained,
-      borrowerDenied,
+      borrowerJoined,
       borrowerReleased: borrowerCleanup.state === 'released',
       ownerRemainedReady,
       ownerOperationRetained,

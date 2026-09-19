@@ -2169,8 +2169,10 @@ fn staged_services(services: &[StageService]) -> Vec<ServiceSnapshot> {
         .collect()
 }
 
-/// Synthetic notification staging. `epoch` defaults to the fresh-routing
-/// epoch 0 (F10); pass an explicit epoch only to stage stale routing.
+/// Synthetic notification staging. An omitted `epoch` stages a live value
+/// under the peer's current routing epoch, so it delivers to the live
+/// subscription even after reconnects; pass an explicit epoch only to stage
+/// stale routing (F10: a mismatched epoch still drops).
 #[napi(object)]
 pub struct StageNotificationInput {
     #[napi(js_name = "peerId")]
@@ -2187,7 +2189,9 @@ pub struct StageNotificationInput {
     pub value: Buffer,
 }
 
-/// One characteristic instance of a synthetic peer.
+/// One characteristic instance of a synthetic peer. An omitted `epoch` stages
+/// live loss under the peer's current routing epoch; pass an explicit epoch
+/// only to stage stale loss (F10).
 #[napi(object)]
 pub struct StageNotificationTarget {
     #[napi(js_name = "peerId")]
@@ -2200,6 +2204,7 @@ pub struct StageNotificationTarget {
     pub characteristic_uuid: String,
     #[napi(js_name = "characteristicOccurrence")]
     pub characteristic_occurrence: Option<u32>,
+    pub epoch: Option<u32>,
 }
 
 /// One GATT access the synthetic radio received, addressed to its exact
@@ -3903,13 +3908,17 @@ impl UbmCentral {
             .boundary()
             .synthetic("dispatch.stage-notification")
             .map_err(to_napi)?;
+        let epoch = match input.epoch {
+            Some(staged) => u64::from(staged),
+            None => self.central.routing_epoch(&input.peer_id).await,
+        };
         radio.push_event(RadioEvent::Notification {
             peer_id: input.peer_id,
             service_uuid: input.service_uuid,
             service_occurrence: u64::from(input.service_occurrence.unwrap_or(0)),
             characteristic_uuid: input.characteristic_uuid,
             characteristic_occurrence: u64::from(input.characteristic_occurrence.unwrap_or(0)),
-            epoch: u64::from(input.epoch.unwrap_or(0)),
+            epoch,
             value: input.value.as_ref().to_vec(),
         });
         Ok(())
@@ -3929,13 +3938,17 @@ impl UbmCentral {
             .boundary()
             .synthetic("dispatch.stage-notifications-lost")
             .map_err(to_napi)?;
+        let epoch = match input.epoch {
+            Some(staged) => u64::from(staged),
+            None => self.central.routing_epoch(&input.peer_id).await,
+        };
         radio.push_event(RadioEvent::NotificationsLost {
             peer_id: input.peer_id,
             service_uuid: input.service_uuid,
             service_occurrence: u64::from(input.service_occurrence.unwrap_or(0)),
             characteristic_uuid: input.characteristic_uuid,
             characteristic_occurrence: u64::from(input.characteristic_occurrence.unwrap_or(0)),
-            epoch: 0,
+            epoch,
             lost: u64::from(lost),
         });
         Ok(())

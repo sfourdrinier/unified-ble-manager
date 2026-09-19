@@ -1,7 +1,7 @@
 // src/backends/bluez/bluez-connection-runtime.ts
 
 import type { OwnerScanOptions } from '../../backend-contract/advertisement'
-import type { PeerAddressDescriptor } from '../../backend-contract/backend'
+import type { ConnectionOptions, PeerAddressDescriptor } from '../../backend-contract/backend'
 import {
   BackendContractError,
   contractError,
@@ -55,10 +55,13 @@ export async function connectBluezConnection(
   runtime: BluezBackendRuntime,
   peerId: PeerId<string>,
   clientId: ClientId<string, string>,
-  options: PublicOperationOptions
+  options: ConnectionOptions
 ): Promise<BluezConnectionLease> {
   runtime.assertUsable('bluez.connect')
   assertConnectAdmission(runtime, options)
+  if (options.intent === 'when-available') {
+    throw contractError('capability.unsupported', 'connection', 'bluez.connect.when-available')
+  }
   const devicePath = runtime.devicePathForPeer(peerId)
   if (!devicePath.startsWith(`${String(runtime.selectedAdapter.adapterId)}/`)) {
     throw contractError('connection.not-found', 'connection', 'bluez.connect')

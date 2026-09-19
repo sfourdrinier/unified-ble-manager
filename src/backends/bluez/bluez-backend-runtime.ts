@@ -4,6 +4,7 @@ import type {
   AdapterBackend,
   BackendEvent,
   ConnectionBackend,
+  ConnectionOptions,
   GattBackend,
   PeerAddressDescriptor,
   ResourceCounters,
@@ -649,7 +650,7 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
   private async connect(
     peerId: PeerId<string>,
     clientId: ClientId<string, string>,
-    options: PublicOperationOptions
+    options: ConnectionOptions
   ): Promise<BluezConnectionLease> {
     return connectBluezConnection(this, peerId, clientId, options)
   }

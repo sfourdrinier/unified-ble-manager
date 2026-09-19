@@ -107,9 +107,12 @@ describe('finding 194: a stale connect acquisition never wedges its peer', () =>
       const peerA = await observePeer(first.backend, first.stage)
       const peerB = await observePeer(second.backend, second.stage)
       const leaseA = await first.backend.connections.connect(peerA, 'client-a', { signal: null, deadline: null })
-      await expect(
-        first.backend.connections.connect(peerA, 'client-a2', { signal: null, deadline: null })
-      ).rejects.toMatchObject({ normalized: { code: 'connection.already-owned' } })
+      // Canonical same-peer answer (W7/G6): the second client joins the
+      // peer's link with an independent generation instead of failing
+      // `connection.already-owned`; releasing it leaves the owner's lease live.
+      const leaseA2 = await first.backend.connections.connect(peerA, 'client-a2', { signal: null, deadline: null })
+      expect(String(leaseA2.connection.connectionGeneration)).not.toBe(String(leaseA.connection.connectionGeneration))
+      await leaseA2.release()
       await leaseA.release()
       // A second manager over its own central is unaffected by the first.
       const leaseB = await second.backend.connections.connect(peerB, 'client-b', { signal: null, deadline: null })

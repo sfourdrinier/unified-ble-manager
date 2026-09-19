@@ -1375,13 +1375,16 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     const scanConsumers = this.scanGroup?.consumers.size ?? 0
     const liveConnections = [...this.connectionsById.values()].filter(
       record => record.state === 'connected' || record.state === 'disconnecting'
-    ).length
+    )
+    // A physical link is per peer: several leases may share one peer's link,
+    // so the counter counts distinct peers, never leases.
+    const linkedPeers = new Set(liveConnections.map(record => record.nativePeerId))
     return Object.freeze({
       activeScanControllers: resourceCount(this.scanGroup === null ? 0 : 1),
       scanConsumers: resourceCount(scanConsumers),
       chooserSessions: resourceCount(0),
-      connectionLeases: resourceCount(liveConnections),
-      physicalLinks: resourceCount(liveConnections),
+      connectionLeases: resourceCount(liveConnections.length),
+      physicalLinks: resourceCount(linkedPeers.size),
       databaseSnapshots: resourceCount(this.databases.size),
       physicalCccdEnablements: resourceCount(this.subscriptions.size),
       subscriptionConsumers: resourceCount(this.subscriptions.size),
@@ -2115,15 +2118,20 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     })
   }
 
-  private connectionFor(event: DesktopRustCoreLifecycleEvent): ConnectionRecord | null {
+  /**
+   * Every live record of the event's link: leases share one native link, so
+   * a link-level event reaches each lease's record, never just the first.
+   */
+  private connectionFor(event: DesktopRustCoreLifecycleEvent): ConnectionRecord[] {
+    const matched: ConnectionRecord[] = []
     for (const record of this.connectionsById.values()) {
       if (record.nativePeerId !== event.peerId) continue
       if (record.state !== 'connected' && record.state !== 'disconnecting') continue
       if (typeof event.connectionGeneration === 'string' && event.connectionGeneration !== record.coreGeneration)
         continue
-      return record
+      matched.push(record)
     }
-    return null
+    return matched
   }
 
   /**
@@ -2142,40 +2150,44 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       this.failCoreEventSource('lifecycle-events-closed')
       return
     }
-    const record = this.connectionFor(event)
-    if (record === null) return
+    const records = this.connectionFor(event)
+    if (records.length === 0) return
     if (event.kind === 'adapter-lost') {
-      this.applyAdapterLostLink(record)
+      for (const record of records) this.applyAdapterLostLink(record)
       return
     }
     if (event.kind === 'services-changed') {
-      this.invalidateConnectionState(record, 'service-changed')
-      for (const databaseId of [...record.databases]) {
-        const database = this.databases.get(databaseId)
-        this.databases.delete(databaseId)
-        record.databases.delete(databaseId)
-        if (database === undefined) continue
-        this.emitEvent({
-          kind: 'database-changed',
-          attachment: this.attachment,
-          attachmentId: this.attachment.attachmentId,
-          ingressOrdinal: this.nextEventOrdinal(),
-          database: database.base
-        })
+      for (const record of records) {
+        this.invalidateConnectionState(record, 'service-changed')
+        for (const databaseId of [...record.databases]) {
+          const database = this.databases.get(databaseId)
+          this.databases.delete(databaseId)
+          record.databases.delete(databaseId)
+          if (database === undefined) continue
+          this.emitEvent({
+            kind: 'database-changed',
+            attachment: this.attachment,
+            attachmentId: this.attachment.attachmentId,
+            ingressOrdinal: this.nextEventOrdinal(),
+            database: database.base
+          })
+        }
       }
       return
     }
     const requested = event.kind === 'released' && event.requested === true
-    record.state = requested ? 'disconnected' : 'lost'
-    this.invalidateConnectionState(record, 'connection-lost')
-    if (requested) return
-    this.emitEvent({
-      kind: 'connection-lost',
-      attachment: this.attachment,
-      attachmentId: this.attachment.attachmentId,
-      ingressOrdinal: this.nextEventOrdinal(),
-      connection: record.path
-    })
+    for (const record of records) {
+      record.state = requested ? 'disconnected' : 'lost'
+      this.invalidateConnectionState(record, 'connection-lost')
+      if (requested) continue
+      this.emitEvent({
+        kind: 'connection-lost',
+        attachment: this.attachment,
+        attachmentId: this.attachment.attachmentId,
+        ingressOrdinal: this.nextEventOrdinal(),
+        connection: record.path
+      })
+    }
   }
 
   private invalidateConnectionState(record: ConnectionRecord, reason: 'connection-lost' | 'service-changed'): void {
@@ -3284,7 +3296,14 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     }
     const nativePeerId = await this.nativeIdForConnect(peerId, options, operation)
     await this.supersedePendingAcquisition(nativePeerId)
-    this.assertLinkNotOwned(nativePeerId, operation)
+    // Same-peer join (UNIFIED_SEMANTICS §3/§8, Android reference): a live
+    // link is leased, never re-dialled — the second lease shares the peer's
+    // native link with an independent generation. Only a peer with no live
+    // link reaches the radio.
+    const shared = this.liveSharedLink(nativePeerId)
+    if (shared !== null) {
+      return this.joinSharedLink(peerId, shared)
+    }
     const ordinal = this.nextOrdinal()
     const lease = `${this.profile.platform}-core-lease-${ordinal}`
     const correlation = String(this.mintedCorrelation())
@@ -3352,11 +3371,73 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   }
 
   /**
-   * CoreBluetooth and WinRT own one link per peer: a second connect while
-   * it is live is `connection.already-owned` before any dispatch, as the
-   * 4.x backends refused it. BlueZ shared the device's link between leases
-   * (the dbus-next shared connection record), so it joins.
+   * One live native link per peer, shared by leases (UNIFIED_SEMANTICS §3/§8,
+   * Android reference). A connect joins the peer's `connected` link with an
+   * independent generation instead of re-dialling the radio; a peer whose
+   * links are all tearing down arbitrates `connection.already-owned` until
+   * the teardown completes, and the next connect dials a fresh link.
    */
+  private liveSharedLink(nativePeerId: string): ConnectionRecord | null {
+    for (const record of this.connectionsById.values()) {
+      if (record.nativePeerId !== nativePeerId) continue
+      if (record.state === 'connected') return record
+    }
+    return null
+  }
+
+  private liveLinkHolders(nativePeerId: string, except: ConnectionRecord | null): ConnectionRecord[] {
+    return [...this.connectionsById.values()].filter(
+      record =>
+        record !== except &&
+        record.nativePeerId === nativePeerId &&
+        (record.state === 'connected' || record.state === 'disconnecting')
+    )
+  }
+
+  private joinSharedLink(peerId: PeerId<string>, shared: ConnectionRecord): ConnectionLease<string, string, string> {
+    const platform = this.profile.platform
+    const scope = `${platform}-rust-core`
+    const linkOrdinal = this.nextConnection
+    this.nextConnection += 1
+    const connectionId = this.identifiers.connectionId(`${platform}-connection-${linkOrdinal}`)
+    const leaseId = this.identifiers.leaseId(`${platform}-connection-lease-${linkOrdinal}`)
+    const connectionGeneration = opaqueId(
+      LEGACY_DESKTOP_NAMES[platform].connectionGeneration(linkOrdinal),
+      'connection-generation',
+      scope
+    )
+    const path: ConnectionPath<string, string> = Object.freeze({
+      attachment: this.attachment,
+      attachmentId: this.attachment.attachmentId,
+      peerId,
+      connectionId,
+      ownerLeaseId: leaseId,
+      connectionGeneration
+    })
+    const record: ConnectionRecord = {
+      nativePeerId: shared.nativePeerId,
+      lease: shared.lease,
+      coreGeneration: shared.coreGeneration,
+      path,
+      state: 'connected',
+      databases: new Set(),
+      subscriptions: new Set(),
+      nextDatabase: 1
+    }
+    this.connectionsById.set(String(connectionId), record)
+    const release = (): Promise<CleanupRecord> => this.disconnectConnection(record)
+    const connection: BackendConnection<string, string> = Object.freeze({
+      attachment: this.attachment,
+      attachmentId: this.attachment.attachmentId,
+      peerId,
+      connectionId,
+      connectionGeneration,
+      state: 'connected',
+      disconnect: release
+    })
+    return Object.freeze({ leaseId, connection, release })
+  }
+
   /**
    * Cancel this provider's in-flight acquisition for `nativePeerId`, if
    * any, and wait for it to settle (finding 194). The superseded caller
@@ -3382,25 +3463,25 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     await pending.settled
   }
 
-  private assertLinkNotOwned(nativePeerId: string, operation: string): void {
-    if (this.profile.platform === 'bluez') return
-    for (const record of this.connectionsById.values()) {
-      if (record.nativePeerId !== nativePeerId) continue
-      if (record.state === 'connected' || record.state === 'disconnecting') {
-        throw contractError('connection.already-owned', 'connection', `${operation}.owner`)
-      }
-    }
-  }
-
   /**
-   * Release through the core: only the OS answer releases the link. A
-   * failed or timed-out release keeps the link `disconnecting` in the core
-   * and reports `release-failed`; a retry drives the radio again, and a link
-   * that already ended answers `already-released` without a radio call.
+   * Release through the core: only the OS answer releases the link. A lease
+   * that shares its peer's link with other live leases ends locally without
+   * radio work; the final holder drives the radio. A failed or timed-out
+   * release keeps the link `disconnecting` in the core and reports
+   * `release-failed`; a retry drives the radio again, and a link that
+   * already ended answers `already-released` without a radio call.
    */
   private async disconnectConnection(record: ConnectionRecord): Promise<CleanupRecord> {
     const operation = this.op('connection.disconnect')
+    if (record.state !== 'connected' && record.state !== 'disconnecting') {
+      return Object.freeze({ state: 'released', failures: Object.freeze([]) })
+    }
     if (record.state === 'connected') record.state = 'disconnecting'
+    if (this.liveLinkHolders(record.nativePeerId, record).length > 0) {
+      record.state = 'disconnected'
+      this.invalidateConnectionState(record, 'connection-lost')
+      return Object.freeze({ state: 'released', failures: Object.freeze([]) })
+    }
     try {
       await this.central.disconnect({ peerId: record.nativePeerId, lease: record.lease })
     } catch (error) {

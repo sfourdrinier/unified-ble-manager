@@ -887,7 +887,7 @@ class DeterministicRustCoreNative {
   resourceCounters(sessions) {
     let scans = 0
     let leases = 0
-    let links = 0
+    const linkedPeers = new Set()
     let databases = 0
     let consumers = 0
     const cccds = new Set()
@@ -896,7 +896,8 @@ class DeterministicRustCoreNative {
       scans += session.scans.size
       leases += session.leases.size
       for (const lease of session.leases.values()) {
-        if (lease.connected) links += 1
+        // A physical link is per peer: several leases may share one link.
+        if (lease.connected) linkedPeers.add(lease.peerId)
         if (lease.databaseGeneration !== undefined) databases += 1
       }
       consumers += session.consumers.size
@@ -913,7 +914,7 @@ class DeterministicRustCoreNative {
         scanConsumers: scans,
         chooserSessions: 0,
         connectionLeases: leases,
-        physicalLinks: links,
+        physicalLinks: linkedPeers.size,
         databaseSnapshots: databases,
         physicalCccdEnablements: cccds.size,
         subscriptionConsumers: consumers,

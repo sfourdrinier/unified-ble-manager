@@ -9,6 +9,7 @@ import type {
   BleCentralBackend,
   ConnectionBackend,
   ConnectionLease,
+  ConnectionOptions,
   GattBackend,
   ResourceCounters,
   ScanLease,
@@ -40,7 +41,7 @@ import type {
   AttachmentRecord,
   HostNeutralBackendIdentity
 } from '../../backend-contract/identity'
-import type { BackendOperationDispatch, PublicOperationOptions } from '../../backend-contract/operations'
+import type { BackendOperationDispatch } from '../../backend-contract/operations'
 import {
   capacity,
   canonicalUuid,
@@ -1129,11 +1130,14 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
   private async connect(
     peerId: PeerId<string>,
     _clientId: ClientId<string, string>,
-    options: PublicOperationOptions
+    options: ConnectionOptions
   ): Promise<ConnectionLease<string, string, string>> {
     this.assertUsable('winrt.connect')
     assertWinRtAdapterReady(this.adapterStateSnapshot, 'winrt.connect')
     assertWinRtOperationAdmission(options, this.now, 'winrt.connect')
+    if (options.intent === 'when-available') {
+      throw contractError('capability.unsupported', 'connection', 'winrt.connect.when-available')
+    }
     const nativePeerId = this.nativeIdsByPeerId.get(String(peerId))
     if (nativePeerId === undefined) {
       throw contractError('connection.not-found', 'connection', 'winrt.connect.peer')
