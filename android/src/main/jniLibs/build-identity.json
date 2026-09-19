@@ -1,27 +1,26 @@
 {
   "schema": "ubm-android-jnilibs-identity/1",
   "binding": "jni",
-  "contractRevision": null,
-  "sourceDigest": null,
-  "bindingSchema": null,
-  "provenance": "migrated from build-identity.txt; built before identity sealing (source-sha=c03b0ad20a6477fc85acf54a2d7afef110d08566, source-describe=v4.0.28-146-gc03b0ad2-dirty), so no source digest can be claimed. The publish gate (native-build-identity.js --check-android-prebuilts) fails until android/refresh-prebuilt-jniLibs.sh rebuilds them.",
+  "contractRevision": "C-UBM.0.1.2-DRAFT",
+  "sourceDigest": "70fe7f6402a684de9835f2903b608d8344fcbced9d0bf8093746079094c938c0",
+  "bindingSchema": "5c1b27eed1731319f41b6d09a9dacde964c126b5ac3bbbea7d71a01aea951b40",
   "profile": "release",
   "toolchain": "1.98.1 (rustc 1.98.1 (48a229cea 2026-09-01))",
-  "ndk": "27.1.12297006",
+  "ndk": "27.1.12297006 (ANDROID_NDK_HOME)",
   "abis": [
     {
       "abi": "arm64-v8a",
       "target": "aarch64-linux-android",
       "file": "libubm5_jni_echo.so",
-      "sha256": "7088141a0a0ef84dd42a0f393d372362cdb415ab92cc0a5a467688ec4b4048c7",
-      "bytes": 1387456
+      "sha256": "3d6d8b524c1d05ac3347d8d79254bf748a1f984211729a007e590854dafb14f1",
+      "bytes": 4702992
     },
     {
       "abi": "x86_64",
       "target": "x86_64-linux-android",
       "file": "libubm5_jni_echo.so",
-      "sha256": "ddc937e560a274b77805f9d696d95dc2daa313b085afa9bcaccce57d49f4813e",
-      "bytes": 1376536
+      "sha256": "90dc3d27d201318b566453ec04982f97a7e700ed4b968c0586747ce7064008cd",
+      "bytes": 4825576
     }
   ]
 }

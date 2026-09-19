@@ -71,7 +71,8 @@ import {
   validateWebChooserRequest,
   WEB_CONNECT_OPERATION,
   WEB_LINK_END_CODES,
-  webCleanupFailure
+  webCleanupFailure,
+  webConnectDeadlineError
 } from './web-bluetooth-errors'
 import { createWebBluetoothFeatureRegistry } from './web-feature-registry'
 import { diagnosticWebBluetoothScanPlan } from './web-bluetooth-scan-planner'
@@ -1125,10 +1126,15 @@ export class WebBluetoothBackend
       record?.disconnectWaiters.add(disconnected)
       this.destroyWaiters.add(destroyed)
       if (operation.deadline !== null) {
-        timer = this.boundary.setTimer(
-          () => settleFailure(contractError('operation.timed-out', domain, operationName)),
-          Math.max(0, Number(operation.deadline) - this.boundary.now())
-        )
+        const delayMs = Math.max(0, Number(operation.deadline) - this.boundary.now())
+        // Finding 161: a dispatched connect whose deadline expires before
+        // any link came up is the peer not answering — `connection.failed`
+        // on every backend. Every other operation keeps `operation.timed-out`.
+        const deadlineError =
+          operationName === WEB_CONNECT_OPERATION
+            ? webConnectDeadlineError(delayMs)
+            : contractError('operation.timed-out', domain, operationName)
+        timer = this.boundary.setTimer(() => settleFailure(deadlineError), delayMs)
       }
       Promise.resolve()
         .then(start)

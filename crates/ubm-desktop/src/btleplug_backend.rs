@@ -333,19 +333,21 @@ pub(crate) trait WithOs {
 }
 
 impl WithOs for DesktopError {
-    /// A BlueZ D-Bus failure takes the legacy BlueZ identity
-    /// (`platform.failure`, platform domain: `normalizeBluezFailure`
-    /// answered it for every D-Bus method error); every other platform
-    /// answer rides the error without changing its identity.
+    /// The platform's answer rides the error without changing its identity:
+    /// every operation keeps its own name (one vocabulary on every OS, owner
+    /// decision 5.0). A genuine link loss, security refusal or transient
+    /// connect is renamed by the central's classify chain
+    /// (`classify_link_loss`, `classify_security`, `classify_connect_failure`
+    /// plus `classify_establishment`), never here. This supersedes finding
+    /// 124's legacy BlueZ identity (`normalizeBluezFailure` answered every
+    /// D-Bus method error as `platform.failure`): the `bluez-dbus` answer is
+    /// kept in `platform`, with `org.bluez.Error.Failed` when D-Bus gave no
+    /// name.
     fn with_os(self, cause: &btleplug::Error) -> Self {
-        // Finding 124: on BlueZ every failure, D-Bus or not, is the legacy
-        // BlueZ identity (`normalizeBluezFailure`): `platform.failure` with
-        // a `bluez-dbus` answer, `org.bluez.Error.Failed` when D-Bus gave
-        // no name.
         // btleplug's own `NotConnected` is its answer where the OS gave none
-        // (on BlueZ it keeps the legacy `org.bluez.Error.Failed`, message
-        // `Not connected`): the link is gone (owner decision, 5.0; see
-        // `classify_link_loss`).
+        // (on BlueZ the synthesized detail keeps the legacy
+        // `org.bluez.Error.Failed`, message `Not connected`): the link is
+        // gone (owner decision, 5.0; see `classify_link_loss`).
         let not_connected = (!cfg!(target_os = "linux")
             && matches!(cause, btleplug::Error::NotConnected))
         .then(|| {
@@ -361,20 +363,7 @@ impl WithOs for DesktopError {
         let Some(platform) = platform else {
             return self;
         };
-        let error = if platform.domain == "bluez-dbus" {
-            let mut legacy = DesktopError::new(
-                BleErrorCode::PlatformFailure,
-                BleErrorDomain::Platform,
-                self.operation(),
-            );
-            if let Some(detail) = self.detail() {
-                legacy = legacy.with_detail(detail.to_owned());
-            }
-            legacy
-        } else {
-            self
-        };
-        error.with_platform(platform)
+        self.with_platform(platform)
     }
 }
 
@@ -3652,22 +3641,18 @@ mod tests {
         for (platform, expected) in cases {
             let cause = btleplug::Error::Platform(platform);
             let error = crate::errors::DesktopError::read_failed(cause.to_string()).with_os(&cause);
-            // BlueZ keeps its legacy identity: every D-Bus method error was
-            // `platform.failure`; the other hosts keep the GATT code.
-            let code = if expected.domain == "bluez-dbus" {
-                "platform.failure"
-            } else {
-                "gatt.read-failed"
-            };
-            assert_eq!(error.code_str(), code);
+            // One vocabulary on every OS: the read keeps its own name, the
+            // platform's answer (BlueZ included) riding in `platform`.
+            assert_eq!(error.code_str(), "gatt.read-failed");
             assert_eq!(error.operation(), "gatt.read");
             assert_eq!(error.platform(), Some(&expected));
         }
         let local = btleplug::Error::RuntimeError("local".to_owned());
         let error = crate::errors::DesktopError::read_failed(local.to_string()).with_os(&local);
         if cfg!(target_os = "linux") {
-            // Finding 124: every BlueZ failure takes the legacy identity.
-            assert_eq!(error.code_str(), "platform.failure");
+            // On BlueZ the synthesized answer rides the error without
+            // renaming it: the read keeps its own name.
+            assert_eq!(error.code_str(), "gatt.read-failed");
             assert_eq!(
                 error.platform(),
                 Some(
@@ -3682,6 +3667,58 @@ mod tests {
                 "a local failure has no platform answer"
             );
         }
+    }
+
+    /// One vocabulary on every OS: a BlueZ `Failed` answer for a GATT or
+    /// connect operation keeps the operation's own name, the platform's
+    /// answer riding in `platform` — exactly as on macOS and Windows. Only
+    /// a genuine link loss, security refusal or transient connect is
+    /// renamed, by the central's classify chain, never here.
+    #[test]
+    fn a_bluez_failed_answer_keeps_the_operation_name_on_every_os() {
+        use super::WithOs;
+        use crate::errors::{DesktopError, PlatformDetail};
+        let failed = || {
+            btleplug::Error::Platform(btleplug::PlatformError::bluez_dbus(
+                Some("org.bluez.Error.Failed"),
+                Some("Failed to start notify"),
+            ))
+        };
+        let expected = PlatformDetail::new("bluez-dbus", "org.bluez.Error.Failed")
+            .with_message("Failed to start notify");
+        let subscribe = DesktopError::subscribe_failed(failed().to_string()).with_os(&failed());
+        assert_eq!(subscribe.code_str(), "gatt.subscribe-failed");
+        assert_eq!(subscribe.operation(), "gatt.subscribe");
+        assert_eq!(subscribe.platform(), Some(&expected));
+        let read = DesktopError::read_failed(failed().to_string()).with_os(&failed());
+        assert_eq!(read.code_str(), "gatt.read-failed");
+        assert_eq!(read.operation(), "gatt.read");
+        assert_eq!(read.platform(), Some(&expected));
+        let write = DesktopError::write_failed(failed().to_string()).with_os(&failed());
+        assert_eq!(write.code_str(), "gatt.write-failed");
+        assert_eq!(write.operation(), "gatt.write");
+        assert_eq!(write.platform(), Some(&expected));
+        let connect = DesktopError::connection_failed(failed().to_string()).with_os(&failed());
+        assert_eq!(connect.code_str(), "connection.failed");
+        assert_eq!(connect.operation(), "connection.connect");
+        assert_eq!(connect.platform(), Some(&expected));
+    }
+
+    /// The same rule for a failure with no platform answer (no D-Bus
+    /// name): the operation keeps its own name on every OS. On Linux the
+    /// BlueZ answer is synthesized without renaming.
+    #[test]
+    fn a_failure_without_a_platform_answer_keeps_the_operation_name_on_every_os() {
+        use super::WithOs;
+        use crate::errors::DesktopError;
+        let cause = btleplug::Error::NotSupported("no cccd".to_owned());
+        let error = DesktopError::subscribe_failed(cause.to_string()).with_os(&cause);
+        assert_eq!(
+            error.code_str(),
+            "gatt.subscribe-failed",
+            "no platform answer, no second opinion"
+        );
+        assert_eq!(error.operation(), "gatt.subscribe");
     }
 
     /// Owner decision (5.0): every desktop radio's link-loss answer is one
@@ -4270,6 +4307,7 @@ mod tests {
                     "advertisement-reports",
                     "bluez-device-changes",
                     "disconnect-lifecycle",
+                    "winrt-att-error",
                 ],
             "DEP_BTLEPLUG_UBM_PATCHES missing: the vendored btleplug is not linked"
         );
@@ -4280,17 +4318,12 @@ mod tests {
         let listing: Result<Vec<String>, btleplug::Error> =
             Err(btleplug::Error::RuntimeError("dbus gone".to_owned()));
         let error = find_peer(listing, "peer-1", String::clone).expect_err("listing failed");
-        // Finding 124: on BlueZ every failure takes the legacy BlueZ
-        // identity (`normalizeBluezFailure`); elsewhere the listing failure
-        // is the adapter's. Neither is a miss.
-        let expected = if cfg!(target_os = "linux") {
-            "platform.failure"
-        } else {
-            "adapter.unavailable"
-        };
+        // One vocabulary on every OS: a listing failure is the adapter's
+        // (`adapter.unavailable`), BlueZ included — the BlueZ answer rides
+        // in `platform`. Neither is a miss.
         assert_eq!(
             error.code_str(),
-            expected,
+            "adapter.unavailable",
             "a listing failure is not a miss"
         );
         if cfg!(target_os = "linux") {

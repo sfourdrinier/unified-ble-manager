@@ -329,24 +329,13 @@ export interface DesktopRustCoreProviderOptions {
   /** `node` for Node hosts, `desktop-native` for Electron main. */
   readonly hostKind?: 'node' | 'desktop-native'
   /**
-   * Radio selection. `production` (default) executes the btleplug radio and
-   * fails loudly with `adapter.unavailable` where no adapter exists — it
-   * never falls back to synthetic. `synthetic` is the hardware-free leg and
-   * must be requested explicitly (tests); the public factories never select it.
-   */
-  readonly radio?: DesktopRustCoreRadio
-  /**
-   * Injected core entry (tests). Absent, the provider loads the packaged
-   * addon on first use and verifies its build identity before any radio
-   * call; there is no TypeScript fallback.
+   * Injected core entry (tests and embedding hosts). Absent, the provider
+   * loads the packaged addon on first use and verifies its build identity
+   * before any radio call; there is no TypeScript fallback.
    */
   readonly binding?: DesktopRustCoreBinding
-  /** Resolves the packaged binding; defaults to `src/desktop-core-addon.ts`. */
-  readonly loadBinding?: (profile: DesktopRustCoreProfile) => Promise<DesktopRustCoreBinding>
   /** Optional deterministic owner identity factory for controlled tests. */
   readonly createOwnerId?: () => string
-  /** Test seam for the pre-load platform guard; defaults to `process.platform`. */
-  readonly hostPlatform?: string
   /** BlueZ only: the D-Bus bus (the legacy `busKind`); `system` by default. */
   readonly bluezBus?: DesktopRustCoreBluezBus
   /**
@@ -356,6 +345,26 @@ export interface DesktopRustCoreProviderOptions {
    * the core restores it afterwards.
    */
   readonly pairingGeneration?: DesktopRustCoreGenerationController
+}
+
+/**
+ * Test-only seams for the shared-core desktop provider (owner decision L).
+ * Reachable only through `createTestDesktopRustCoreBackendProvider`, which
+ * `unified-ble-manager/testing` re-exports. Production entrypoints never
+ * accept these keys: the production factory refuses them fail-closed.
+ */
+export interface DesktopRustCoreTestProviderOptions extends DesktopRustCoreProviderOptions {
+  /**
+   * Radio selection. `production` (default) executes the btleplug radio and
+   * fails loudly with `adapter.unavailable` where no adapter exists — it
+   * never falls back to synthetic. `synthetic` is the hardware-free leg for
+   * deterministic suites; the public factories never select it.
+   */
+  readonly radio?: DesktopRustCoreRadio
+  /** Resolves the packaged binding; defaults to `src/desktop-core-addon.ts`. */
+  readonly loadBinding?: (profile: DesktopRustCoreProfile) => Promise<DesktopRustCoreBinding>
+  /** Test seam for the pre-load platform guard; defaults to `process.platform`. */
+  readonly hostPlatform?: string
   /**
    * Test seam for the CoreBluetooth first-usable-state bound; the legacy
    * fixed 10 s (`ADAPTER_INITIALIZATION_TIMEOUT_MS`) otherwise.
@@ -383,13 +392,65 @@ interface ListedAdapter {
   readonly descriptor: AdapterDescriptor<string>
 }
 
+/** Production option keys that must never carry a test seam value. */
+const DESKTOP_RUST_CORE_TEST_SEAM_KEYS: readonly string[] = Object.freeze([
+  'radio',
+  'loadBinding',
+  'hostPlatform',
+  'firstStateTimeoutMs'
+])
+
+/**
+ * Fail-closed seam guard: a test seam passed to the production factory is
+ * refused before anything loads, so a suite that meant to use `/testing`
+ * can never silently run the production path (or vice versa).
+ */
+function assertNoDesktopRustCoreTestSeams(options: DesktopRustCoreProviderOptions): void {
+  const profile = DESKTOP_RUST_CORE_PROFILES[options.platform]
+  for (const key of DESKTOP_RUST_CORE_TEST_SEAM_KEYS) {
+    if (Reflect.get(options, key) !== undefined) {
+      throw contractError(
+        'argument.invalid',
+        'core',
+        desktopRustCoreOperation(profile.operationPrefix, 'test-seam-option'),
+        {
+          domain: 'desktop-rust-core',
+          code: 'test-seam-option',
+          safeMessage: `option ${key} is test-only: use the unified-ble-manager/testing factory`,
+          metadata: Object.freeze({ option: key })
+        }
+      )
+    }
+  }
+}
+
 /**
  * Creates the shared-core desktop provider for one platform. The platform
  * guard runs here, before anything loads; the addon itself loads lazily on
  * the first `listAdapters`/`create`, where its build identity is checked.
+ * Test seams are refused (see `DesktopRustCoreTestProviderOptions`).
  */
 export function createDesktopRustCoreBackendProvider(
   options: DesktopRustCoreProviderOptions
+): BackendProvider<string, HostNeutralBackendIdentity<string>> {
+  assertNoDesktopRustCoreTestSeams(options)
+  return createDesktopRustCoreBackendProviderWithTestOptions(options)
+}
+
+/**
+ * Test-only factory for the shared-core desktop provider: the production
+ * factory plus the `/testing` seams (synthetic radio, binding loader,
+ * platform guard and first-state bound overrides). Re-exported from
+ * `unified-ble-manager/testing`; never from a production entrypoint.
+ */
+export function createTestDesktopRustCoreBackendProvider(
+  options: DesktopRustCoreTestProviderOptions
+): BackendProvider<string, HostNeutralBackendIdentity<string>> {
+  return createDesktopRustCoreBackendProviderWithTestOptions(options)
+}
+
+function createDesktopRustCoreBackendProviderWithTestOptions(
+  options: DesktopRustCoreTestProviderOptions
 ): BackendProvider<string, HostNeutralBackendIdentity<string>> {
   const profile = DESKTOP_RUST_CORE_PROFILES[options.platform]
   if (options.owner.length === 0) {
@@ -1552,8 +1613,14 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     return Object.freeze({ correlation, outcome: 'succeeded', cause: null })
   }
 
-  private mintedCorrelation(kind: string): OperationCorrelation<string, string> {
-    return this.identifiers.operationCorrelation(`${this.profile.platform}-core-${kind}-${this.nextOrdinal()}`)
+  /**
+   * A provider-minted operation correlation, in the legacy shape
+   * `operation-{n}` (the core's `CoreOperationCoordinator` mints the same
+   * shape for caller-driven operations): the kind of operation is carried
+   * by the operation id, never the correlation.
+   */
+  private mintedCorrelation(): OperationCorrelation<string, string> {
+    return this.identifiers.operationCorrelation(`operation-${this.nextOrdinal()}`)
   }
 
   // -- adapter -------------------------------------------------------------
@@ -2172,7 +2239,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       throw contractError('scan.already-active', 'scan', operation)
     }
     const ordinal = this.nextOrdinal()
-    const correlation = String(this.mintedCorrelation('scan'))
+    const correlation = String(this.mintedCorrelation())
     const started = await this.withTicket(correlation, options.signal, operation, ticket =>
       this.central.startScan({
         owner: `${this.owner}/scan-${ordinal}`,
@@ -2567,7 +2634,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     const operation = this.op('gatt.write-readiness')
     this.assertOperational(operation)
     const record = this.liveConnection(connection, operation)
-    const correlation = String(this.mintedCorrelation('write-readiness'))
+    const correlation = String(this.mintedCorrelation())
     const stream = new CoreBoundedStream<ConnectionWriteReadinessObservation<string>>(
       { itemCapacity: capacity(64), byteCapacity: capacity(16 * 1024), reservedControlCapacity: capacity(1) },
       // F1: the legacy watch dropped the oldest observation on overflow.
@@ -2937,17 +3004,19 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     const known = this.nativeIdsByPeerId.get(String(peerId))
     if (known !== undefined) return known
     const pending = this.pendingAddresses.get(String(peerId))
-    // W-R3: a never-observed peer is `connection.not-found`, as every
-    // legacy backend reported it — under the connect op on BlueZ, with the
-    // `.peer` segment on CoreBluetooth and WinRT.
+    // W-R3: a never-observed peer is `peer.not-found` on every backend
+    // (event `peer-not-found`); the legacy `connection.not-found` /
+    // `winrt.connect.peer` identity is gone. The op keeps its legacy
+    // shape — the connect op on BlueZ, with the `.peer` segment on
+    // CoreBluetooth and WinRT.
     if (pending === undefined) {
       throw contractError(
-        'connection.not-found',
+        'peer.not-found',
         'connection',
         this.profile.platform === 'bluez' ? operation : `${operation}.peer`
       )
     }
-    const correlation = String(this.mintedCorrelation('resolve-address'))
+    const correlation = String(this.mintedCorrelation())
     const nativePeerId = await this.withTicket(
       correlation,
       options.signal,
@@ -3002,7 +3071,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       state: async (peerId: string, options: PublicOperationOptions): Promise<PeerSecurityState> => {
         this.assertOperational(operation('state'))
         const nativePeerId = this.nativePeerForSecurity(peerId, operation('state'))
-        const correlation = String(this.mintedCorrelation('security-state'))
+        const correlation = String(this.mintedCorrelation())
         const state = await this.withTicket(correlation, options.signal, operation('state'), ticket =>
           this.central.securityState({ peerId: nativePeerId, ticket, ...this.budget(options) })
         )
@@ -3051,7 +3120,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
           options.secureConnections === undefined || options.secureConnections === 'prefer'
             ? {}
             : { secureConnections: options.secureConnections }
-        const correlation = String(this.mintedCorrelation('pair'))
+        const correlation = String(this.mintedCorrelation())
         const outcome = await this.withTicket(correlation, options.signal, operation('pair'), ticket =>
           this.central.pair({ peerId: nativePeerId, ticket, ...secureConnections, ...this.budget(options) })
         )
@@ -3060,7 +3129,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       cancelPairing: async (peerId: string, options: PublicOperationOptions): Promise<SecurityCancelPairingResult> => {
         this.assertOperational(operation('cancel-pairing'))
         const nativePeerId = this.nativePeerForSecurity(peerId, operation('cancel-pairing'))
-        const correlation = String(this.mintedCorrelation('cancel-pairing'))
+        const correlation = String(this.mintedCorrelation())
         const answer = await this.withTicket(correlation, options.signal, operation('cancel-pairing'), ticket =>
           this.central.cancelPairing({ peerId: nativePeerId, ticket, ...this.budget(options) })
         )
@@ -3070,7 +3139,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       unpair: async (peerId: string, options: PublicOperationOptions): Promise<SecurityUnpairResult> => {
         this.assertOperational(operation('unpair'))
         const nativePeerId = this.nativePeerForSecurity(peerId, operation('unpair'))
-        const correlation = String(this.mintedCorrelation('unpair'))
+        const correlation = String(this.mintedCorrelation())
         const outcome = await this.withTicket(correlation, options.signal, operation('unpair'), ticket =>
           this.central.unpair({ peerId: nativePeerId, ticket, ...this.budget(options) })
         )
@@ -3184,7 +3253,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     this.assertLinkNotOwned(nativePeerId, operation)
     const ordinal = this.nextOrdinal()
     const lease = `${this.profile.platform}-core-lease-${ordinal}`
-    const correlation = String(this.mintedCorrelation('connect'))
+    const correlation = String(this.mintedCorrelation())
     const connected = await this.withTicket(correlation, options.signal, operation, ticket =>
       this.central.connect({ peerId: nativePeerId, lease, ticket, ...this.budget(options) })
     )
@@ -3380,7 +3449,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     if (record === undefined || record.state !== 'connected') {
       throw contractError('gatt.stale-handle', 'gatt', `${operation}.lease`)
     }
-    const correlation = String(this.mintedCorrelation('discover'))
+    const correlation = String(this.mintedCorrelation())
     // The core registers the whole snapshot or rejects with a typed error
     // (a malformed platform UUID, a database past the ATT handle space);
     // a partial snapshot never becomes current.
@@ -3431,7 +3500,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
             operation: {
               signal: readOptions.signal,
               deadline: readOptions.deadline,
-              correlation: this.mintedCorrelation('gdb-read')
+              correlation: this.mintedCorrelation()
             }
           },
           'gatt.database-read'
@@ -3449,7 +3518,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
             operation: {
               signal: writeOptions.signal,
               deadline: writeOptions.deadline,
-              correlation: this.mintedCorrelation('gdb-write')
+              correlation: this.mintedCorrelation()
             },
             bytes: value,
             mode: writeOptions.mode
@@ -3467,7 +3536,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
               operation: {
                 signal: readOptions.signal,
                 deadline: readOptions.deadline,
-                correlation: this.mintedCorrelation('gdb-read-desc')
+                correlation: this.mintedCorrelation()
               }
             },
             'gatt.database-read-descriptor'
@@ -3484,7 +3553,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
             operation: {
               signal: writeOptions.signal,
               deadline: writeOptions.deadline,
-              correlation: this.mintedCorrelation('gdb-write-desc')
+              correlation: this.mintedCorrelation()
             },
             bytes: value,
             mode: writeOptions.mode
@@ -3641,7 +3710,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         operation: {
           signal: options.signal,
           deadline: options.deadline,
-          correlation: this.mintedCorrelation('gdb-subscribe')
+          correlation: this.mintedCorrelation()
         },
         options
       },
@@ -3655,7 +3724,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         await this.unsubscribe(subscription, {
           signal: null,
           deadline: null,
-          correlation: this.mintedCorrelation('gdb-unsubscribe')
+          correlation: this.mintedCorrelation()
         }).completion
         return Object.freeze({ state: 'released', failures: Object.freeze([]) })
       }

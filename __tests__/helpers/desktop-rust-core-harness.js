@@ -14,7 +14,7 @@ const path = require('node:path')
 const { bindDesktopCore } = require('../../src/desktop-core-addon')
 const {
   DESKTOP_RUST_CORE_PROFILES,
-  createDesktopRustCoreBackendProvider
+  createTestDesktopRustCoreBackendProvider
 } = require('../../src/backends/desktop/desktop-rust-core-provider')
 const { capacity } = require('../../src/backend-contract/primitives')
 
@@ -100,7 +100,7 @@ function realBinding(platform) {
 
 async function openBackend(platform, options = {}) {
   const harness = realBinding(platform)
-  const provider = createDesktopRustCoreBackendProvider({
+  const provider = createTestDesktopRustCoreBackendProvider({
     platform,
     owner: options.owner ?? `desktop-test-${platform}`,
     now: () => performance.now(),
@@ -127,7 +127,7 @@ async function openStagedBackend(platform, stageBeforeOpen, options = {}) {
     await stageBeforeOpen(harness.opened[harness.opened.length - 1])
     return central
   }
-  const provider = createDesktopRustCoreBackendProvider({
+  const provider = createTestDesktopRustCoreBackendProvider({
     platform,
     owner: options.owner ?? `staged-${platform}`,
     now: () => performance.now(),

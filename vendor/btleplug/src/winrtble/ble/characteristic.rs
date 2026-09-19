@@ -131,15 +131,47 @@ impl BLECharacteristic {
     ) -> Result<()> {
         let writer = DataWriter::new()?;
         writer.WriteBytes(data)?;
-        let operation =
-            characteristic.WriteValueWithOptionAsync(&writer.DetachBuffer()?, write_type.into())?;
+        if write_type == WriteType::WithoutResponse {
+            // An ATT Write Command has no response, so no ATT error can
+            // come back: only the transport status is reported.
+            let operation = {
+                // `IBuffer` is not `Send`: the buffer drops before the
+                // await, so the future stays `Send`.
+                let buffer = writer.DetachBuffer()?;
+                characteristic.WriteValueWithOptionAsync(&buffer, write_type.into())?
+            };
+            let status = operation.into_future().await?;
+            if status == GattCommunicationStatus::Success {
+                return Ok(());
+            }
+            return Err(utils::gatt_status_error(
+                "Gatt characteristic write",
+                status,
+                None,
+            ));
+        }
+        // UBM patch (UBM_PATCHES.md #20): a with-response write goes
+        // through the result-returning call (the same ATT Write Request on
+        // the wire), so a `ProtocolError` status carries the ATT error
+        // byte and the host can tell a security refusal apart. The buffer
+        // drops before the await, so the future stays `Send`.
+        let operation = {
+            let buffer = writer.DetachBuffer()?;
+            characteristic.WriteValueWithResultAndOptionAsync(&buffer, write_type.into())?
+        };
         let result = operation.into_future().await?;
-        if result == GattCommunicationStatus::Success {
+        let status = result.Status()?;
+        if status == GattCommunicationStatus::Success {
             Ok(())
         } else {
+            let mut att = None;
+            if status == GattCommunicationStatus::ProtocolError {
+                att = utils::protocol_att_error(result.ProtocolError());
+            }
             Err(utils::gatt_status_error(
                 "Gatt characteristic write",
-                result,
+                status,
+                att,
             ))
         }
     }
@@ -158,7 +190,18 @@ impl BLECharacteristic {
             reader.ReadBytes(&mut input[0..len])?;
             Ok(input)
         } else {
-            Err(utils::gatt_status_error("Gatt characteristic read", status))
+            // UBM patch (UBM_PATCHES.md #20): a `ProtocolError` status
+            // carries the ATT error byte, so the host can tell a security
+            // refusal from any other protocol error.
+            let mut att = None;
+            if status == GattCommunicationStatus::ProtocolError {
+                att = utils::protocol_att_error(result.ProtocolError());
+            }
+            Err(utils::gatt_status_error(
+                "Gatt characteristic read",
+                status,
+                att,
+            ))
         }
     }
 
@@ -177,7 +220,9 @@ impl BLECharacteristic {
         if status == GattCommunicationStatus::Success {
             Ok(())
         } else {
-            Err(utils::gatt_status_error(operation, status))
+            // The CCCD call returns no result object, so no ATT error byte
+            // is available here; the status alone is reported.
+            Err(utils::gatt_status_error(operation, status, None))
         }
     }
 

@@ -14,7 +14,7 @@ const {
   realBinding,
   scanOptions
 } = require('../../helpers/desktop-rust-core-harness')
-const { createDesktopRustCoreBackendProvider } = require('../../../src/backends/desktop/desktop-rust-core-provider')
+const { createTestDesktopRustCoreBackendProvider } = require('../../../src/backends/desktop/desktop-rust-core-provider')
 
 jest.setTimeout(30000)
 
@@ -75,7 +75,7 @@ async function openInjectingBackend(platform, control) {
       }
     })
   }
-  const provider = createDesktopRustCoreBackendProvider({
+  const provider = createTestDesktopRustCoreBackendProvider({
     platform,
     owner: `freshness-${platform}`,
     now: () => performance.now(),

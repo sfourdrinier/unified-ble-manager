@@ -59,8 +59,10 @@ impl Os {
     fn security(self) -> PlatformDetail {
         match self {
             Self::Mac => corebluetooth("CBATTErrorDomain", "5"),
-            // WinRT carries no ATT error through the radio.
-            Self::Windows => winrt("protocol-error"),
+            // WinRT reads the ATT error byte from the GATT result object
+            // (vendored patch `winrt-att-error`).
+            Self::Windows => winrt("protocol-error")
+                .with_metadata("attError", PlatformValue::Text("5".to_owned())),
             Self::Linux => PlatformDetail::new("bluez-dbus", "org.bluez.Error.NotAuthorized"),
         }
     }

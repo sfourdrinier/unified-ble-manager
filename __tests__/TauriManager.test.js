@@ -921,8 +921,18 @@ describe('Tauri v2 public manager', () => {
 
       // Only now can the deadline expire, and only against a dispatched
       // operation - so a routed cancellation is a guarantee, not a race.
+      // Finding 161: a dispatched connect whose deadline expires before any
+      // link came up is the peer not answering - `connection.failed`
+      // (caller-decides) on every backend, never `operation.timed-out`.
       jest.advanceTimersByTime(2)
-      await expect(connecting).rejects.toMatchObject({ code: 'operation.timed-out' })
+      await expect(connecting).rejects.toMatchObject({
+        code: 'connection.failed',
+        retryability: 'caller-decides',
+        platform: { domain: 'ipc', code: 'deadline-expired' }
+      })
+      await expect(connecting.catch(error => error)).resolves.toMatchObject({
+        platform: { metadata: { deadlineMs: 1 } }
+      })
       await cancelSeen
     } finally {
       jest.useRealTimers()

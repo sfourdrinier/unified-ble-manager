@@ -24,7 +24,7 @@ const {
   HRM_MEASUREMENT,
   HRM_SERVICE
 } = require('../../helpers/desktop-rust-core-harness')
-const { createDesktopRustCoreBackendProvider } = require('../../../src/backends/desktop/desktop-rust-core-provider')
+const { createTestDesktopRustCoreBackendProvider } = require('../../../src/backends/desktop/desktop-rust-core-provider')
 
 jest.setTimeout(30000)
 
@@ -122,7 +122,7 @@ async function publicManager(platform) {
 async function openBackend(platform) {
   const harness = realBinding(platform)
   const control = interpose(harness)
-  const provider = createDesktopRustCoreBackendProvider({
+  const provider = createTestDesktopRustCoreBackendProvider({
     platform,
     owner: `diagnostics-${platform}`,
     now: () => performance.now(),

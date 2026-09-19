@@ -17,7 +17,7 @@ const {
   scanOptions,
   subscribeOptions
 } = require('../../helpers/desktop-rust-core-harness')
-const { createDesktopRustCoreBackendProvider } = require('../../../src/backends/desktop/desktop-rust-core-provider')
+const { createTestDesktopRustCoreBackendProvider } = require('../../../src/backends/desktop/desktop-rust-core-provider')
 
 jest.setTimeout(30000)
 
@@ -197,7 +197,7 @@ describe('admission errors (LEGACY-AUDIT-1 #58)', () => {
 
 describe('CoreBluetooth first usable state (LEGACY-AUDIT-1 #59)', () => {
   function provider(harness, firstStateTimeoutMs) {
-    return createDesktopRustCoreBackendProvider({
+    return createTestDesktopRustCoreBackendProvider({
       platform: 'corebluetooth',
       owner: 'first-state',
       now: () => performance.now(),
@@ -244,7 +244,7 @@ describe('CoreBluetooth first usable state (LEGACY-AUDIT-1 #59)', () => {
 
   test.each(['bluez', 'winrt'])('%s does not wait (legacy had no first-state wait)', async platform => {
     const harness = realBinding(platform)
-    const adapters = await createDesktopRustCoreBackendProvider({
+    const adapters = await createTestDesktopRustCoreBackendProvider({
       platform,
       owner: 'no-wait',
       now: () => performance.now(),

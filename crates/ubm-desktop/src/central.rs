@@ -2650,6 +2650,15 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 .map_err(DesktopError::from)?;
             id
         };
+        // Finding 161: the bound the attempt runs under, for the deadline
+        // fact when it expires before any link came up. A connect without
+        // a caller budget waits as long as the OS does, so an expiry always
+        // had a caller deadline.
+        let budget_ms = ctl
+            .budget
+            .remaining()
+            .map(|left| u64::try_from(left.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or(0);
         let mut drop_guard = CancelOnDrop::armed(
             self,
             operation.clone(),
@@ -2739,8 +2748,13 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 Err(error)
             }
             Wait::Expired => {
-                // Deadline won before the radio answered: mark loss, settle
-                // as timeout, and clean the half-open link outside the lock.
+                // Finding 161: the deadline expired before any link came
+                // up — the same physical event as the controller giving up,
+                // one name (`connection.failed`) on every host. Mark loss,
+                // settle the core op, clean the half-open link outside the
+                // lock, and report the deadline fact. A caller-supplied
+                // abort still reports `operation.aborted` (only a timed-out
+                // connect is renamed).
                 {
                     let mut core = self.inner.core.lock().await;
                     let mut out = batch();
@@ -2752,7 +2766,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     .await;
                 self.compensate_half_open(peer_id, &peer_key, BleErrorCode::OperationTimedOut)
                     .await;
-                Err(error)
+                Err(error.classify_connect_deadline(budget_ms))
             }
             Wait::Cancelled => {
                 {
@@ -5987,6 +6001,46 @@ mod adapter_tests {
     /// `operation.timed-out` from its own answer — no post-timeout link
     /// probe — and keeps the release `Disconnecting` with the caller's lease.
     /// The OS finishing the release later arrives as a radio event, becomes
+    /// Finding 161: a connect whose deadline expires before any link came
+    /// up is `connection.failed` (caller-decides) on every host — the same
+    /// physical event as the controller giving up (Android GATT 133/147),
+    /// which CoreBluetooth, btleplug and Web never report on their own.
+    /// The deadline fact rides in `platform`. A caller-supplied AbortSignal
+    /// abort stays `operation.aborted`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_connect_deadline_without_a_link_is_connection_failed() {
+        let central = open().await;
+        central.boundary().block_op(FaultOp::Connect);
+        let error = central
+            .connect("peer-161", "lease-a", OpControl::budget_ms(50))
+            .await
+            .expect_err("no link came up before the deadline");
+        assert_eq!(error.code_str(), "connection.failed");
+        assert_eq!(
+            error.retryability(),
+            crate::errors::Retryability::CallerDecides
+        );
+        assert_eq!(error.operation(), "connection.connect");
+        let platform = error.platform().expect("the deadline fact rides the error");
+        assert_eq!(platform.domain, "core");
+        assert_eq!(platform.code, "deadline-expired");
+        assert!(
+            platform
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("deadline")),
+            "the deadline fact is kept"
+        );
+        assert!(
+            matches!(
+                platform.metadata.get("deadlineMs"),
+                Some(crate::errors::PlatformValue::Int(ms)) if *ms > 0
+            ),
+            "the bound rides the error"
+        );
+        central.boundary().unblock_op(FaultOp::Connect);
+    }
+
     /// a `Released { requested: true }` lifecycle event, and a retry answers
     /// `AlreadyReleased` without another radio call.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

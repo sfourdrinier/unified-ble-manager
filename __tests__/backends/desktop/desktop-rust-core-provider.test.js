@@ -10,7 +10,7 @@
 const {
   DESKTOP_RUST_CORE_PROFILES,
   assertDesktopRustCorePlatform,
-  createDesktopRustCoreBackendProvider
+  createTestDesktopRustCoreBackendProvider
 } = require('../../../src/backends/desktop/desktop-rust-core-provider')
 const {
   cleanupRecordFromCloseReport,
@@ -71,7 +71,7 @@ describe('profiles and the pre-load platform guard (PR210-02, PR210-29)', () => 
     const foreign = platform === 'bluez' ? 'darwin' : 'linux'
     let thrown = null
     try {
-      createDesktopRustCoreBackendProvider({
+      createTestDesktopRustCoreBackendProvider({
         platform,
         owner: 'guard',
         now: () => 1,
@@ -116,7 +116,7 @@ describe('profiles and the pre-load platform guard (PR210-02, PR210-29)', () => 
   })
 
   test('a missing packaged core fails loudly with the loader cause, never a fallback', async () => {
-    const provider = createDesktopRustCoreBackendProvider({
+    const provider = createTestDesktopRustCoreBackendProvider({
       platform: 'bluez',
       owner: 'missing',
       now: () => 1,
@@ -248,6 +248,28 @@ describe('real addon, synthetic radio: every verb executes Rust', () => {
     })
   })
 
+  test.each(PLATFORMS)('%s: provider-minted operation correlations keep the legacy operation-{n} shape (D7)', async platform => {
+    await withBackend(platform, async ({ backend, stage }) => {
+      const { database, measurement } = await connectAndDiscover(backend, stage)
+      // The database handle mints the write's correlation (gdb-write): it
+      // must read `operation-{n}` as the legacy core's did, never a
+      // host-scoped `{platform}-core-{kind}-{n}` label.
+      const first = await database.write(measurement.path, new Uint8Array([0x02]), {
+        signal: null,
+        deadline: null,
+        mode: 'without-response'
+      })
+      const second = await database.write(measurement.path, new Uint8Array([0x03]), {
+        signal: null,
+        deadline: null,
+        mode: 'without-response'
+      })
+      const correlations = [first, second].map(receipt => String(receipt.terminal.correlation))
+      for (const correlation of correlations) expect(correlation).toMatch(/^operation-\d+$/)
+      expect(new Set(correlations).size).toBe(2)
+    })
+  })
+
   test('descriptors read and write through the core', async () => {
     await withBackend('winrt', async ({ backend, stage }) => {
       const { database, snapshot } = await connectAndDiscover(backend, stage)
@@ -309,9 +331,18 @@ describe('real addon, synthetic radio: every verb executes Rust', () => {
       const peerId = await observePeer(backend, stage)
       await stage.blockRadioOp('connect')
       try {
+        // Finding 161: the deadline expired before any link came up — the
+        // peer did not answer — so the core reports `connection.failed`
+        // (caller-decides) with the deadline fact, on every backend.
         await expect(
           backend.connections.connect(peerId, 'client-1', { signal: null, deadline: performance.now() + 250 })
-        ).rejects.toMatchObject({ normalized: { code: 'operation.timed-out' } })
+        ).rejects.toMatchObject({
+          normalized: {
+            code: 'connection.failed',
+            retryability: 'caller-decides',
+            platform: { domain: 'core', code: 'deadline-expired' }
+          }
+        })
       } finally {
         await stage.unblockRadioOp('connect')
       }
@@ -518,7 +549,7 @@ describe('lifecycle and adapter events (parity rows connection.lost-event, datab
       await harness.opened[harness.opened.length - 1].stageAdapterState('powered-on')
       return central
     }
-    const provider = createDesktopRustCoreBackendProvider({
+    const provider = createTestDesktopRustCoreBackendProvider({
       platform: 'bluez',
       owner: 'adapter-power',
       now: () => performance.now(),
@@ -619,7 +650,7 @@ describe('adapter enumeration and selection (parity row adapter.enumerate-select
       { index: 1, label: 'adapter-b', error: null },
       { index: 2, label: null, error: 'adapter.unavailable|adapter|adapter.info|never|||busy' }
     ]
-    const provider = createDesktopRustCoreBackendProvider({
+    const provider = createTestDesktopRustCoreBackendProvider({
       platform: 'winrt',
       owner: 'adapters',
       now: () => performance.now(),
@@ -650,7 +681,7 @@ describe('legacy public ids (LEGACY-AUDIT-1 #67)', () => {
     const harness = realBinding(platform)
     let current = listings[0]
     harness.binding.listAdapters = async () => current
-    const provider = createDesktopRustCoreBackendProvider({
+    const provider = createTestDesktopRustCoreBackendProvider({
       platform,
       owner: `ids-${platform}`,
       now: () => performance.now(),
@@ -940,7 +971,7 @@ describe('parity rows closed by the core OS adapters (PARITY-INVENTORY §1–3)'
       await stageBeforeOpen(harness.opened[harness.opened.length - 1])
       return central
     }
-    const provider = createDesktopRustCoreBackendProvider({
+    const provider = createTestDesktopRustCoreBackendProvider({
       platform,
       owner: `staged-${platform}`,
       now: () => performance.now(),
@@ -1054,7 +1085,7 @@ describe('parity rows closed by the core OS adapters (PARITY-INVENTORY §1–3)'
       { index: 0, label: 'adapter-default', error: null, default: true, deployment: 'unpackaged' },
       { index: 1, label: 'adapter-other', error: null, default: false, deployment: 'unpackaged' }
     ]
-    const provider = createDesktopRustCoreBackendProvider({
+    const provider = createTestDesktopRustCoreBackendProvider({
       platform: 'winrt',
       owner: 'winrt-select',
       now: () => performance.now(),
@@ -1132,6 +1163,26 @@ describe('parity rows closed by the core OS adapters (PARITY-INVENTORY §1–3)'
     })
   })
 
+  test.each(['winrt', 'bluez'])(
+    '%s: an unreported advertisement field is absent, as legacy mapped it (F8)',
+    async platform => {
+      await withBackend(platform, async ({ backend, stage }) => {
+        const lease = await backend.scanner.start(scanOptions(), 'client-1')
+        const iterator = lease.observations[Symbol.asyncIterator]()
+        try {
+          // No overflow UUIDs on the air: CoreBluetooth would report the
+          // same gap `unavailable`; WinRT and BlueZ report it `absent`.
+          await stage.stageAdvertisement({ peerId: 'peer-absent', localName: 'Absent' })
+          const observation = await nextValue(iterator, 5000)
+          expect(observation.overflowServiceUuids.state).toBe('absent')
+        } finally {
+          await iterator.return?.()
+          await lease.stop()
+        }
+      })
+    }
+  )
+
   test.each(['winrt', 'bluez'])('%s security: state, pair, watch, cancel, unpair through the core', async platform => {
     await withBackend(platform, async ({ backend, stage }) => {
       expect(backend.security).toBeDefined()
@@ -1201,7 +1252,7 @@ describe('parity rows closed by the core OS adapters (PARITY-INVENTORY §1–3)'
       }
     }
     const harness = realBinding('bluez')
-    const provider = createDesktopRustCoreBackendProvider({
+    const provider = createTestDesktopRustCoreBackendProvider({
       platform: 'bluez',
       owner: 'pairing-generation',
       now: () => performance.now(),
@@ -1593,9 +1644,11 @@ describe('public errors report the 4.x operation id of each host', () => {
     })
   })
 
-  test.each(PLATFORMS)('%s: connect on a never-observed peer is connection.not-found (W-R3)', async platform => {
+  test.each(PLATFORMS)('%s: connect on a never-observed peer is peer.not-found (W-R3)', async platform => {
     await withBackend(platform, async ({ backend }) => {
-      // No scan, no staging: this peer was never observed.
+      // No scan, no staging: this peer was never observed. One vocabulary
+      // (event `peer-not-found`): every backend reports `peer.not-found`,
+      // never the legacy `connection.not-found` / `winrt.connect.peer`.
       const failure = await backend.connections
         .connect('peer-never-observed', 'client-1', { signal: null, deadline: null })
         .then(
@@ -1603,7 +1656,7 @@ describe('public errors report the 4.x operation id of each host', () => {
           error => error.normalized
         )
       expect(failure).toMatchObject({
-        code: 'connection.not-found',
+        code: 'peer.not-found',
         domain: 'connection',
         // BlueZ reports the connect op; CoreBluetooth and WinRT the `.peer` segment.
         operation: platform === 'bluez' ? 'bluez.connect' : `${PREFIX[platform]}.connect.peer`
@@ -1624,7 +1677,7 @@ describe('public errors report the 4.x operation id of each host', () => {
 
   test.each(PLATFORMS)('%s: provider and loader ids', async platform => {
     const harness = realBinding(platform)
-    const provider = createDesktopRustCoreBackendProvider({
+    const provider = createTestDesktopRustCoreBackendProvider({
       platform,
       owner: 'legacy-ids',
       now: () => 1,
@@ -1637,7 +1690,7 @@ describe('public errors report the 4.x operation id of each host', () => {
     )
     let guard = null
     try {
-      createDesktopRustCoreBackendProvider({
+      createTestDesktopRustCoreBackendProvider({
         platform,
         owner: 'x',
         now: () => 1,

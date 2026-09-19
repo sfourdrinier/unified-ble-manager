@@ -53,5 +53,3 @@ export type {
   DesktopRustCoreTicketCancel,
   DesktopRustCoreWireError
 } from './backends/desktop/desktop-rust-core-binding'
-export { DESKTOP_RUST_CORE_PARITY } from './backends/desktop/desktop-rust-core-parity'
-export type { DesktopRustCoreParityRow } from './backends/desktop/desktop-rust-core-parity'

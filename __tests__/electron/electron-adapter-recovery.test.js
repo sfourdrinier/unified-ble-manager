@@ -12,7 +12,7 @@ const h = require('../helpers/desktop-rust-core-harness')
 const { ElectronMainBleBinding, ElectronMainBleRouter } = require('../../src/electron-main')
 const { createElectronRendererBleManager } = require('../../src/electron-renderer')
 const {
-  createDesktopRustCoreBackendProvider,
+  createTestDesktopRustCoreBackendProvider,
   DESKTOP_RUST_CORE_PROFILES
 } = require('../../src/backends/desktop/desktop-rust-core-provider')
 const { createNodeBleManagerFromProvider } = require('../../src/node-host-manager')
@@ -71,7 +71,7 @@ function createRendererPort(binding) {
 
 async function open(platform) {
   const harness = h.realBinding(platform)
-  const provider = createDesktopRustCoreBackendProvider({
+  const provider = createTestDesktopRustCoreBackendProvider({
     platform,
     owner: `electron-recovery-${platform}`,
     now: () => performance.now(),

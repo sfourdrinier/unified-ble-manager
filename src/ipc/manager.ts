@@ -392,13 +392,18 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     if (typeof peerId !== 'string' || peerId.length === 0) {
       throw contractError('argument.invalid', 'connection', 'ipc-manager.connect.peer-id')
     }
+    const startedAt = globalThis.performance?.now() ?? null
     const deadline = operationDeadline(options)
     const payload = await this.route('connection.connect', Object.freeze({ peerId, deadline }), null, options.signal)
-    if (deadline !== null && deadline <= globalThis.performance.now()) {
+    // The native answer arrived but the deadline had already passed (a
+    // clamped timer, typically): no link came up in time, so the attempt is
+    // the peer not answering (`connection.failed`, finding 161), and the
+    // provisional identity is compensated like any other failed admission.
+    if (deadline !== null && startedAt !== null && deadline <= globalThis.performance.now()) {
       const expired = decodeProvisionalConnectIdentity(payload)
       await this.compensateFailedConnect(
         expired,
-        contractError('operation.timed-out', 'ipc', 'ipc-manager.connection.connect')
+        ipcConnectDeadlineError('ipc-manager.connection.connect', Math.max(0, deadline - startedAt))
       )
     }
     const provisional = decodeProvisionalConnectIdentity(payload)
@@ -500,11 +505,15 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       controller.abort()
     }
     signal?.addEventListener('abort', forwardAbort, { once: true })
+    const startedAt = globalThis.performance.now()
     let timedOut = false
-    const timer = globalThis.setTimeout(() => {
-      timedOut = true
-      controller.abort()
-    }, deadline - globalThis.performance.now())
+    const timer = globalThis.setTimeout(
+      () => {
+        timedOut = true
+        controller.abort()
+      },
+      Math.max(0, deadline - startedAt)
+    )
     try {
       const receipt = await this.client.request({ command, payload, binaryPayload, signal: controller.signal })
       return receipt.payload
@@ -512,13 +521,18 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       // The deadline, not the caller, aborted the request, so the native
       // abort is reported as the expiry it was. Only the code changes: the
       // native answer about retryability (a dispatched write is `never`) and
-      // its platform detail are the operation's own and are kept.
+      // its platform detail are the operation's own and are kept — except a
+      // dispatched connect, whose deadline expiring before any link came up
+      // is the peer not answering (`connection.failed`, finding 161).
       if (
         timedOut &&
         !callerAborted &&
         error instanceof BackendContractError &&
         error.normalized.code === 'operation.aborted'
       ) {
+        if (command === 'connection.connect') {
+          throw ipcConnectDeadlineError(`ipc-manager.${command}`, Math.max(0, deadline - startedAt))
+        }
         throw new BackendContractError({ ...error.normalized, code: 'operation.timed-out' })
       }
       throw error
@@ -2169,6 +2183,25 @@ function operationDeadline(options: IpcManagerOperationOptions): number | null {
     throw contractError('capability.unavailable', 'ipc', 'ipc-manager.monotonic-clock')
   }
   return globalThis.performance.now() + options.timeoutMs
+}
+
+/**
+ * Finding 161: a dispatched connect whose deadline expires before any link
+ * came up is the peer not answering — `connection.failed`
+ * (`caller-decides`) on every backend, the same physical event as a
+ * controller-given-up establishment failure. The deadline fact rides in
+ * `platform`; a connect commits nothing, so the caller decides the retry.
+ * Every other operation keeps `operation.timed-out`, and a caller-supplied
+ * AbortSignal abort stays `operation.aborted`.
+ */
+function ipcConnectDeadlineError(operation: string, deadlineMs: number): BackendContractError {
+  const normalized = contractError('connection.failed', 'ipc', operation, {
+    domain: 'ipc',
+    code: 'deadline-expired',
+    safeMessage: `The ${deadlineMs} ms connect deadline expired before any link came up.`,
+    metadata: Object.freeze({ deadlineMs })
+  })
+  return new BackendContractError({ ...normalized.normalized, retryability: 'caller-decides' })
 }
 
 function isCleanupRecord(value: unknown): value is CleanupRecord {

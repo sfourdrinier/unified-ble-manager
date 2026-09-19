@@ -54,6 +54,16 @@ pub fn hresult_code(hresult: i32) -> String {
     format!("0x{:08X}", hresult as u32)
 }
 
+/// UBM patch (UBM_PATCHES.md #20): the ATT error byte of a
+/// `GattCommunicationStatus::ProtocolError` as platform metadata: the key
+/// the host's security mapping reads, and the byte as decimal text (the
+/// same base the host's ATT code table uses). The radio attaches it for
+/// every protocol error it can read one for, security or not — deciding
+/// is the host's job.
+pub fn att_error_metadata(byte: u8) -> (&'static str, String) {
+    ("attError", byte.to_string())
+}
+
 /// UBM patch (UBM_PATCHES.md #17): one advertisement data section as
 /// service data: the service UUID as a 128-bit value (16- and 32-bit UUIDs
 /// on the Bluetooth base UUID) and the payload. `None` for a section that
@@ -99,8 +109,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        gatt_status_code, gatt_status_name, hresult_code, index_unique, require_gatt_success,
-        service_data_section,
+        att_error_metadata, gatt_status_code, gatt_status_name, hresult_code, index_unique,
+        require_gatt_success, service_data_section,
     };
 
     #[test]
@@ -139,6 +149,18 @@ mod tests {
     fn a_repeated_handle_is_refused_not_overwritten() {
         let repeated = index_unique([((0x2a37_u16, 0x000e_u64), 1), ((0x2a37_u16, 0x000e_u64), 2)]);
         assert_eq!(repeated, Err((0x2a37, 0x000e)));
+    }
+
+    /// UBM patch #20: the ATT error byte rides the platform detail as
+    /// decimal text under `attError`, so the host can tell a security
+    /// refusal (5, 8, 12, 15) from any other protocol error.
+    #[test]
+    fn the_att_error_byte_rides_the_platform_detail_as_decimal_text() {
+        assert_eq!(att_error_metadata(5), ("attError", "5".to_owned()));
+        assert_eq!(att_error_metadata(8), ("attError", "8".to_owned()));
+        assert_eq!(att_error_metadata(12), ("attError", "12".to_owned()));
+        assert_eq!(att_error_metadata(15), ("attError", "15".to_owned()));
+        assert_eq!(att_error_metadata(3), ("attError", "3".to_owned()));
     }
 
     /// UBM patch #15: the legacy WinRT addon's identities.

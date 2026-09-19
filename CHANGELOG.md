@@ -6,6 +6,31 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ### Changed
 
+- **Departure from 4.x — the React Native diagnostics and adapter limitation
+  wording stays truthful to the Rust route (finding 159).** The 4.x providers
+  reported the JSI protocol boundary on Android and Apple, with transport
+  `native-protocol-v2` and a limitation naming the canonical JSI protocol
+  boundary as the adapter's exposure. The 5.0 Rust route reports what it
+  actually uses — boundary `ubm-mobile-wire/1`, transport `native-core-session` —
+  and the limitation `The process-owned Rust mobile owner schedules every radio operation; this backend holds no TypeScript radio policy`. The wording differs
+  from legacy on purpose: repeating the 4.x words would describe a transport
+  that no longer exists on this route. Adapter display names are unchanged.
+
+- **Removed the `dbus-next` peer dependency (finding 101).** No production
+  entrypoint loads `dbus-next`: the BlueZ path executes the shared Rust core
+  and the D-Bus boundary module stays only as an unreachable parity reference
+  until Phase 4 deletion. Consumers no longer install it; it remains a
+  development dependency until the reference and its tests are deleted.
+
+- **Desktop test seams moved to `unified-ble-manager/testing` (finding 100,
+  owner decision L).** The production desktop factory
+  `createDesktopRustCoreBackendProvider` no longer accepts `radio`,
+  `loadBinding`, `hostPlatform` or `firstStateTimeoutMs` (passing one is
+  `argument.invalid` before anything loads), and the desktop entrypoints no
+  longer export `DESKTOP_RUST_CORE_PARITY`. Deterministic suites use
+  `createTestDesktopRustCoreBackendProvider` and `DESKTOP_RUST_CORE_PARITY`
+  from `unified-ble-manager/testing`, which serve the synthetic radio.
+
 - **Departure from 4.x — a connect whose link the platform could not
   establish is `caller-decides` on every host.** A physical Android run
   (Samsung, Polar H10) failed `mtu` twice with GATT status 133 reported
@@ -21,14 +46,14 @@ All notable changes to `unified-ble-manager` are documented here.
   `gatt.connect()` rejected with `NetworkError`. Every other connect
   failure stays `never`. Before and after:
 
-  | Backend | Platform answer | 4.x / rc.0 | 5.0 |
-  | --- | --- | --- | --- |
-  | React Native Android | `androidGattStatus` 133 / 62 / 147 | `platform.failure`, `never` | `connection.failed`, `caller-decides` |
-  | React Native iOS | `CBErrorDomain` 6 / 10 | `platform.failure`, `never` | `connection.failed`, `caller-decides` |
-  | Node/Electron/Tauri macOS | `corebluetooth` 6 / 10 | `connection.failed`, `never` (the `NSError` was dropped) | `connection.failed`, `caller-decides` |
-  | Node/Electron/Tauri Windows | `gatt-status` `unreachable` | `connection.failed`, `never` (no platform answer) | `connection.failed`, `caller-decides` |
-  | Node/Electron/Tauri Linux | `bluez-dbus` `Failed` / `ConnectionAttemptFailed` | `platform.failure`, `never` | `connection.failed`, `caller-decides` |
-  | Web | `NetworkError` | `connection.failed`, `never` | `connection.failed`, `caller-decides` |
+  | Backend                     | Platform answer                                   | 4.x / rc.0                                               | 5.0                                   |
+  | --------------------------- | ------------------------------------------------- | -------------------------------------------------------- | ------------------------------------- |
+  | React Native Android        | `androidGattStatus` 133 / 62 / 147                | `platform.failure`, `never`                              | `connection.failed`, `caller-decides` |
+  | React Native iOS            | `CBErrorDomain` 6 / 10                            | `platform.failure`, `never`                              | `connection.failed`, `caller-decides` |
+  | Node/Electron/Tauri macOS   | `corebluetooth` 6 / 10                            | `connection.failed`, `never` (the `NSError` was dropped) | `connection.failed`, `caller-decides` |
+  | Node/Electron/Tauri Windows | `gatt-status` `unreachable`                       | `connection.failed`, `never` (no platform answer)        | `connection.failed`, `caller-decides` |
+  | Node/Electron/Tauri Linux   | `bluez-dbus` `Failed` / `ConnectionAttemptFailed` | `platform.failure`, `never`                              | `connection.failed`, `caller-decides` |
+  | Web                         | `NetworkError`                                    | `connection.failed`, `never`                             | `connection.failed`, `caller-decides` |
 
   Wire and native changes:
   - every `ubm-mobile-wire/1` failure envelope carries the owner's
@@ -40,8 +65,8 @@ All notable changes to `unified-ble-manager` are documented here.
   - vendored btleplug patch 15: CoreBluetooth `didFailToConnect` keeps its
     `NSError`, and a WinRT connect answered `Unreachable` keeps that answer;
   - the Tauri transport accepts `caller-decides` on `connection.connect`.
-  Native rebuilds: the iOS app (`RustCore.xcframework`), the Android app
-  (`jniLibs`), the Node N-API addon and the Tauri plugin.
+    Native rebuilds: the iOS app (`RustCore.xcframework`), the Android app
+    (`jniLibs`), the Node N-API addon and the Tauri plugin.
 
 - **Departure from 4.x — one name per physical event on every host
   (reverses finding 132's Apple rule).** The same event now carries the same
@@ -55,19 +80,19 @@ All notable changes to `unified-ble-manager` are documented here.
   `crates/ubm-desktop/tests/event_vocabulary.rs` and
   `crates/ubm-mobile/tests/event_vocabulary.rs`. Before and after:
 
-  | Event | Backend | 4.x / rc.0 | 5.0 |
-  | --- | --- | --- | --- |
-  | Link lost during an operation | RN iOS | `platform.failure` (finding 132) | `connection.lost` |
-  | | macOS / Windows / Linux | the operation's code (`gatt.read-failed`, `platform.failure`, `gatt.discovery-required`), `operation.disconnected` for a late read, or `operation.timed-out` when CoreBluetooth never answered | `connection.lost`, at once |
-  | | Web | `operation.disconnected` (and `NetworkError` → `operation.disconnected`) | `connection.lost` |
-  | App release cuts an operation off | RN Android / iOS | `connection.lost` / `platform.failure` | `operation.disconnected` |
-  | | Web | `operation.disconnected` | unchanged |
-  | Adapter lost during an operation | Web | `operation.disconnected`; lifecycle `peer-link-loss`, stream `connection-lost` | `operation.reset`; lifecycle `adapter-loss`, stream `source-failed` |
-  | Connect not established | RN Android / iOS, Linux | `platform.failure` | `connection.failed` (and `caller-decides`, above) |
-  | Peer never observed | Web | `connection.not-found` | `peer.not-found` |
-  | Authentication / encryption refused | RN Android / iOS, Linux | `platform.failure` | `platform.security` (recovery: pair) |
-  | | macOS | `gatt.read-failed` / `gatt.write-failed` | `platform.security` |
-  | | Windows | `gatt.read-failed` / `gatt.write-failed` | unchanged: WinRT gives no ATT error through the radio |
+  | Event                               | Backend                 | 4.x / rc.0                                                                                                                                                                                     | 5.0                                                                 |
+  | ----------------------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+  | Link lost during an operation       | RN iOS                  | `platform.failure` (finding 132)                                                                                                                                                               | `connection.lost`                                                   |
+  |                                     | macOS / Windows / Linux | the operation's code (`gatt.read-failed`, `platform.failure`, `gatt.discovery-required`), `operation.disconnected` for a late read, or `operation.timed-out` when CoreBluetooth never answered | `connection.lost`, at once                                          |
+  |                                     | Web                     | `operation.disconnected` (and `NetworkError` → `operation.disconnected`)                                                                                                                       | `connection.lost`                                                   |
+  | App release cuts an operation off   | RN Android / iOS        | `connection.lost` / `platform.failure`                                                                                                                                                         | `operation.disconnected`                                            |
+  |                                     | Web                     | `operation.disconnected`                                                                                                                                                                       | unchanged                                                           |
+  | Adapter lost during an operation    | Web                     | `operation.disconnected`; lifecycle `peer-link-loss`, stream `connection-lost`                                                                                                                 | `operation.reset`; lifecycle `adapter-loss`, stream `source-failed` |
+  | Connect not established             | RN Android / iOS, Linux | `platform.failure`                                                                                                                                                                             | `connection.failed` (and `caller-decides`, above)                   |
+  | Peer never observed                 | Web                     | `connection.not-found`                                                                                                                                                                         | `peer.not-found`                                                    |
+  | Authentication / encryption refused | RN Android / iOS, Linux | `platform.failure`                                                                                                                                                                             | `platform.security` (recovery: pair)                                |
+  |                                     | macOS                   | `gatt.read-failed` / `gatt.write-failed`                                                                                                                                                       | `platform.security`                                                 |
+  |                                     | Windows                 | `gatt.read-failed` / `gatt.write-failed`                                                                                                                                                       | unchanged: WinRT gives no ATT error through the radio               |
 
   Mechanics:
   - one rule set in `crates/ubm-desktop/src/errors.rs`, applied by the
@@ -92,8 +117,8 @@ All notable changes to `unified-ble-manager` are documented here.
     Android and stopped on iOS;
   - Web ends an operation with the link's own reason
     (`WEB_LINK_END_CODES`) and reports an adapter loss as `adapter-loss`.
-  `crates/ubm-mobile/golden/wire-vectors.json` regenerated. Native rebuilds:
-  both mobile `RustCore` builds, the Node N-API addon and the Tauri plugin.
+    `crates/ubm-mobile/golden/wire-vectors.json` regenerated. Native rebuilds:
+    both mobile `RustCore` builds, the Node N-API addon and the Tauri plugin.
 
 - **Departure from 4.x — a connection supervisor reconnects when the link
   drops during `configure`.** The same run lost the link (status 22) while
@@ -150,11 +175,11 @@ All notable changes to `unified-ble-manager` are documented here.
     `UbmCentral.read` resolves `{ value, provenance }`; the Electron and
     Tauri `gatt.read` IPC answer carries `provenance`, and a renderer
     `readReceipt()` against a host that omits it fails `protocol.malformed`.
-  The legacy Native Protocol v2 path and the legacy Electron CoreBluetooth
-  addon, both unreachable from every package export, keep refusing: their
-  wires cannot carry a provenance. Native rebuilds: the iOS app (Swift radio
-  and `RustCore.xcframework`), the Android app (`jniLibs` for
-  `nativeCompleteRead`) and the Node N-API addon.
+    The legacy Native Protocol v2 path and the legacy Electron CoreBluetooth
+    addon, both unreachable from every package export, keep refusing: their
+    wires cannot carry a provenance. Native rebuilds: the iOS app (Swift radio
+    and `RustCore.xcframework`), the Android app (`jniLibs` for
+    `nativeCompleteRead`) and the Node N-API addon.
 
 - **Departure from 4.x — a manager survives an adapter loss on every host,
   and a supervised connection reconnects when the adapter returns.** A
@@ -200,7 +225,7 @@ All notable changes to `unified-ble-manager` are documented here.
   the platform's own answer through the Rust owner (new wire op
   `connection.maximum-write-length`, `docs/MOBILE_RUST_WIRE.md`) instead of
   `capability.unavailable`. iPhone reports `CBPeripheral
-  .maximumWriteValueLength(for:)` per type. Android reports 512 with response
+.maximumWriteValueLength(for:)` per type. Android reports 512 with response
   (the stack performs the prepared/long write; `BluetoothGatt` refuses more
   from API 33) and MTU − 3 without response, from the MTU `onMtuChanged`
   reported, or 20 (ATT default MTU 23) before any exchange. The capability is
@@ -301,7 +326,7 @@ adapter`) and public resource names (`corebluetooth-peer-{gen}-{n}`,
     `capability.limited` / `gatt` / `discovery.database-bound`;
   - a discovery without a core lease is `argument.invalid` / `core` /
     `path.owner`.
-  The legacy backends also failed a malformed UUID whole.
+    The legacy backends also failed a malformed UUID whole.
 - The desktop first-party TCK legs take the `already-paired` answer for a
   bonded peer from the core's synthetic radio. The harness no longer
   fabricates it (finding 91).
@@ -373,8 +398,8 @@ adapter`) and public resource names (`corebluetooth-peer-{gen}-{n}`,
   provider operation to its id.
 - Desktop core errors carry the OS's own answer as the 4.x platform identity
   again (LEGACY-AUDIT-4 B2): CoreBluetooth `{domain:'corebluetooth',
-  code:<NSError code>}`, WinRT `{domain:'winrt', code, metadata:{hresult,
-  gattStatus}}`, BlueZ `{domain:'bluez-dbus', code:<D-Bus error name>}`. The
+code:<NSError code>}`, WinRT `{domain:'winrt', code, metadata:{hresult,
+gattStatus}}`, BlueZ `{domain:'bluez-dbus', code:<D-Bus error name>}`. The
   N-API error wire is now `ubm-napi-error/3`, with a platform JSON field.
 - A malformed desktop notification value ends that subscription's stream
   `source-failed` with `protocol.malformed`, as React Native does, instead of
@@ -394,7 +419,7 @@ adapter`) and public resource names (`corebluetooth-peer-{gen}-{n}`,
   (never a renderer or webview) rebinds every active lease to the backend's new
   attachment and announces it on the reserved `attachment` stream as
   `{kind: 'value', value: {kind: 'backend-restarted', schemaVersion: 1,
-  previousAttachmentId, attachmentId, attachment}}`. The renderer/webview
+previousAttachmentId, attachmentId, attachment}}`. The renderer/webview
   client adopts only an announcement for its own lease that names the
   attachment it holds, on the same backend instance, and refuses and reports
   anything else. Until the announcement, and for the replaced attachment
@@ -498,7 +523,8 @@ adapter`) and public resource names (`corebluetooth-peer-{gen}-{n}`,
   when adapters are added or removed.
   The legacy sources stay in the repository, unexported, until the Rust path
   is verified end to end. Legacy parity is tracked row by row in
-  `DESKTOP_RUST_CORE_PARITY` (docs/NODE.md). Every row is implemented,
+  `DESKTOP_RUST_CORE_PARITY` (`unified-ble-manager/testing`; docs/NODE.md).
+  Every row is implemented,
   including the macOS write-without-response readiness watch, the Windows
   scan-terminated event, session-bus adapter listing on Linux, and the
   LEGACY-AUDIT-1 rows (adapter loss, admission, first-state wait, states,
@@ -583,6 +609,72 @@ adapter`) and public resource names (`corebluetooth-peer-{gen}-{n}`,
 
 ### Fixed
 
+- **Departure from 4.x — a BlueZ failure keeps the operation's own name
+  (Linux gate).** The legacy BlueZ route answered every D-Bus method error
+  as `platform.failure` (`normalizeBluezFailure`), so on Linux a refused
+  subscribe/read/write/discover or a failed adapter listing lost its own
+  code. The Rust core now attaches the `bluez-dbus` answer in `platform`
+  without renaming: GATT verbs keep `gatt.read-failed` /
+  `gatt.write-failed` / `gatt.subscribe-failed`, discovery keeps its code,
+  a listing failure is `adapter.unavailable`, and a connect keeps
+  `connection.failed`. A genuine link loss (`NotConnected`, `Failed` "Not
+  connected"), security refusal or transient establishment failure is still
+  renamed by the central's classify chain, on every OS. Pinned by
+  OS-independent mapping tests in `crates/ubm-desktop`
+  (`a_bluez_failed_answer_keeps_the_operation_name_on_every_os`).
+
+- **Departure from 4.x — a dispatched connect whose deadline expires before
+  any link came up is `connection.failed` on every backend (finding
+  161).** The same physical event ("the peer did not answer the connection
+  attempt") carried two names: `connection.failed` where the controller
+  gives up (Android GATT 133/147) but `operation.timed-out` where the stack
+  never fails a pending connect on its own (CoreBluetooth, btleplug,
+  Web), so a supervised reconnect reported different codes per host. Both
+  observations now report `connection.failed` (`caller-decides`, never
+  retried by the library), with the deadline fact in the error `platform`
+  detail (`core` / `deadline-expired` with `deadlineMs` on native,
+  `web-bluetooth` / `DeadlineExpired` on Web, `ipc` / `deadline-expired`
+  with `deadlineMs` where the shared IPC deadline wins the race against the
+  native core on Tauri and Electron renderer). A caller-supplied AbortSignal
+  abort stays `operation.aborted`; timeouts on other operations stay
+  `operation.timed-out`. New vocabulary row `connect-deadline-expired`
+  (`src/backend-contract/event-vocabulary.ts`, `docs/UNIFIED_SEMANTICS.md`,
+  Rust fixture regenerated), covered on all six backends by
+  `__tests__/event-vocabulary.test.js` and by central/Web mapping tests, and
+  on the TS-enforced side by `__tests__/ConnectDeadlineVocabulary.test.js`
+  (Tauri, Electron renderer and Web connect deadlines, plus abort and
+  other-operation negative legs).
+
+- **Example driver link-loss outage completes whichever event carries the
+  reconnect generation first (finding 162).** The outage matched the
+  reconnect only on the supervisor `connected` event, so when the first
+  value with the new generation arrived first (observed on Android),
+  the record closed with `reconnectMs` / `firstValueAfterReconnectMs`
+  permanently null. The scenario now records the reconnect on the
+  supervisor `connected` event, the lifecycle `connected` transition, or
+  the first value with the new generation — whichever arrives first (a
+  value-observed reconnect fills `reconnectMs` from the value time with
+  `firstValueAfterReconnectMs` 0) — and a late duplicate loss for a
+  superseded generation no longer opens a ghost outage. Covered by
+  `__tests__/driver/link-loss-outage.test.js`.
+
+- **Committed Android prebuilts rebuilt from the current Rust sources
+  (finding 157).** `android/src/main/jniLibs` shipped echo/gatt-only
+  binaries with none of the `MobileCoreBridge` entrypoints the Kotlin side
+  calls, so opening a session from the prebuilt failed with
+  `UnsatisfiedLinkError`. Both ABIs (`arm64-v8a`, `x86_64`) are rebuilt via
+  `android/refresh-prebuilt-jniLibs.sh` with a sealed `build-identity.json`,
+  and `__tests__/AndroidPrebuilds.test.js` now seals every Kotlin-declared
+  JNI symbol per `.so` plus `native-build-identity
+--check-android-prebuilts`.
+
+- **A throwing drain sink ends the router instead of escaping as an
+  unhandled rejection.** A `deliver` throw is a fatal delivery defect that
+  ends the router, but it escaped from the `wake()` path (which owns no
+  await) as observable noise on React Native. The router now stops at the
+  second throw, reports the defect once through `sink.failed`, and `stop()`
+  resolves.
+
 - **A link lost during service discovery is `connection.lost` on
   Android, and an unrequested disconnect is a loss.** Android's driver
   answered discovery with a Boolean, so the link loss that failed a pending
@@ -649,8 +741,16 @@ adapter`) and public resource names (`corebluetooth-peer-{gen}-{n}`,
   - WinRT: a without-response descriptor write fails closed with
     `gatt.write-failed`/`winrt.gatt.write-descriptor`; an unknown adapter
     id is `adapter.unavailable`; connect on a never-observed peer is
-    `connection.not-found` (`winrt.connect.peer`, `direct-gatt.connect.peer`,
-    `bluez.connect`).
+    `peer.not-found` on every desktop backend — renamed from the legacy
+    `connection.not-found` (`winrt.connect.peer`,
+    `direct-gatt.connect.peer`, `bluez.connect` keep their shape) — and a
+    peer refusal for lack of authentication, authorization or encryption
+    is `platform.security`: the vendored radio now reads the ATT error
+    byte from `GattReadResult`/`GattWriteResult` (`attError` in the
+    platform detail, patch 20), so Windows matches every other host.
+    Other ATT errors keep `gatt.read-failed`/`gatt.write-failed` with the
+    byte in the detail; a without-response or CCCD write, whose WinRT call
+    returns no result object, keeps its GATT code.
   - CoreBluetooth: the readiness watch drops the oldest observation on
     overflow, reprobes every 100 ms while unready (bounded by the caller's
     deadline/signal), and buffers pre-probe reports for replay; the
@@ -663,6 +763,16 @@ adapter`) and public resource names (`corebluetooth-peer-{gen}-{n}`,
     `argument.invalid`; backend-event and adapter-state streams keep their
     64/64KiB/1 and 16/16KiB/1 quotas; and the readiness capability row no
     longer claims btleplug provides it on unpatched builds.
+
+- **Desktop provider-minted operation correlations read `operation-{n}`
+  again (D7).** The desktop Rust provider labelled the operations it mints
+  itself (scan, connect, discover, GATT verbs on database handles, …)
+  `{platform}-core-{kind}-{n}`, while the legacy core mints
+  `operation-{n}` for the same receipts and dispatch handles. Both now
+  read `operation-{n}`, numbered from the provider's per-backend counter.
+  Pinned by `provider-minted operation correlations keep the legacy
+operation-{n} shape (D7)` in
+  `__tests__/backends/desktop/desktop-rust-core-provider.test.js`.
 
 - **`connection.controls.effectiveMtu()` no longer throws a raw
   `TypeError`.** The public controls read the connection's `effectiveMtu`

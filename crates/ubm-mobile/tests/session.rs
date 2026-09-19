@@ -2128,16 +2128,23 @@ async fn a_connect_with_a_budget_ends_at_that_budget() {
     let (host, _) = open(&radio, MobilePlatform::Android).await;
     let session = host.open_session("rn").unwrap();
     let started = tokio::time::Instant::now();
-    let (error, _) = failure(
-        &call(
-            &session,
-            "connection.connect",
-            &json!({"peerId": POLAR, "lease": "l", "operationId": "c", "budgetMs": 500_000})
-                .to_string(),
-        )
-        .await,
-    );
-    assert_eq!(error["code"], "operation.timed-out");
+    let text = call(
+        &session,
+        "connection.connect",
+        &json!({"peerId": POLAR, "lease": "l", "operationId": "c", "budgetMs": 500_000})
+            .to_string(),
+    )
+    .await;
+    let envelope = parse(&text);
+    assert_eq!(envelope["ok"], false);
+    // Finding 161: the deadline expired before any link came up — the peer
+    // did not answer — so the budgeted connect reports `connection.failed`
+    // (caller-decides) with the deadline fact, on every host.
+    let (error, _) = failure(&text);
+    assert_eq!(error["code"], "connection.failed");
+    assert_eq!(envelope["retryability"], "caller-decides");
+    assert_eq!(error["platform"]["domain"], "core");
+    assert_eq!(error["platform"]["code"], "deadline-expired");
     assert_eq!(started.elapsed(), Duration::from_millis(500_000));
 }
 

@@ -308,3 +308,19 @@ describe('React Native Rust core provider lifecycle (R07–R13)', () => {
     expect((await rejection(dispatch.completion)).normalized.code).toBe('operation.aborted')
   })
 })
+
+describe('PR210-76 the trace seam is the public CoreTraceSink interface', () => {
+  test('a caller-supplied sink object (not the internal recorder class) receives dispatch and outcome records', async () => {
+    const records = []
+    const harness = rustCoreHarness({ platform: 'android' })
+    const backend = await providerFor(harness, { trace: { record: input => records.push(input) } }).create({
+      selectedAdapterId: reactNativeAndroidDefaultAdapterId()
+    })
+    const { lease } = await connected(backend)
+    await lease.release()
+    expect(records.length).toBeGreaterThan(0)
+    expect(records.map(record => record.transition)).toEqual(expect.arrayContaining(['dispatched', 'succeeded']))
+    expect(records.every(record => typeof record.operation === 'string')).toBe(true)
+    await backend.destroy()
+  })
+})

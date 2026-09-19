@@ -4,12 +4,14 @@
 //! (`DEP_BTLEPLUG_UBM_PATCHES`). The attribute-instance, adapter-state,
 //! scan-policy, WinRT, stream-lag, passive-scan, name-pattern,
 //! event-capacity, read/notify, platform-error, WinRT service-filter,
-//! advertisement-report and BlueZ device-change patches (#6-#18) are
+//! advertisement-report, BlueZ device-change, disconnect-lifecycle and
+//! WinRT ATT-error patches (#6-#20) are
 //! required: without them same-UUID GATT attributes collapse,
 //! adapter loss states are unreadable, scan duplicates ignore the caller,
-//! WinRT scans actively and BlueZ discovery ignores the name prefix, so a
-//! build that links crates.io btleplug fails here with the reason instead
-//! of compiling a degraded radio. The
+//! WinRT scans actively, BlueZ discovery ignores the name prefix and
+//! Windows security refusals are indistinguishable from other protocol
+//! errors, so a build that links crates.io btleplug fails here with the
+//! reason instead of compiling a degraded radio. The
 //! earlier patches keep their cfg gates.
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(btleplug_ubm_write_length)");
@@ -70,4 +72,5 @@ const REQUIRED_PATCHES: &[&str] = &[
     "advertisement-reports",
     "bluez-device-changes",
     "disconnect-lifecycle",
+    "winrt-att-error",
 ];

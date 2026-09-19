@@ -105,61 +105,91 @@ export class LinkLossScenario extends HeartRateScenario<LinkLossState> {
   }
 
   protected override onLifecycle(event: BleConnectionEvent): void {
-    if (event.current === 'disconnected' || event.current === 'lost') this.openOutage(`lifecycle ${event.current} (${event.cause})`)
+    if (event.current === 'connected') {
+      this.noteReconnect(event.connectionGeneration, this.snapshot().supervisorAttempt, this.runtime.now())
+    } else if (event.current === 'disconnected' || event.current === 'lost') {
+      this.openOutage(`lifecycle ${event.current} (${event.cause})`, event.connectionGeneration)
+    }
   }
 
   protected override onLifecycleEnded(connectionGeneration: string, error: unknown): void {
     if (error !== null && connectionGeneration === this.snapshot().connectionGeneration) {
-      this.openOutage(`lifecycle stream ended: ${describeError(error).code}`)
+      this.openOutage(`lifecycle stream ended: ${describeError(error).code}`, connectionGeneration)
     }
   }
 
   protected override onSupervisor(event: ConnectionSupervisorEvent<SupervisedLink>): void {
     if ((event.state === 'disconnecting' || event.state === 'backoff') && this.snapshot().valueCount > 0) {
-      this.openOutage(`supervisor ${event.state}`)
+      this.openOutage(`supervisor ${event.state}`, event.connectionGeneration)
     }
-    const outage = this.snapshot().openOutage
-    if (event.state === 'connected' && outage !== null && outage.reconnectedAtMs === null && event.connectionGeneration !== outage.generationBefore) {
-      const reconnectedAtMs = this.runtime.now()
-      this.patchLinkLoss({
-        openOutage: {
-          ...outage,
-          reconnectedAtMs,
-          generationAfter: event.connectionGeneration,
-          reconnectMs: reconnectedAtMs - outage.lostAtMs,
-          supervisorAttempt: event.attempt
-        }
-      })
-      this.emit('reconnected', { index: outage.index, reconnectMs: reconnectedAtMs - outage.lostAtMs, attempt: event.attempt })
+    if (event.state === 'connected' && event.connectionGeneration !== null) {
+      this.noteReconnect(event.connectionGeneration, event.attempt, this.runtime.now())
     }
   }
 
   protected override onHeartRateValue(observation: HeartRateValueObservation): void {
     const outage = this.snapshot().openOutage
     if (outage !== null && observation.connectionGeneration !== outage.generationBefore) {
-      const closed: Outage = {
-        ...outage,
-        generationAfter: outage.generationAfter ?? observation.connectionGeneration,
-        firstValueAtMs: observation.atMs,
-        firstValueAfterReconnectMs: outage.reconnectedAtMs === null ? null : observation.atMs - outage.reconnectedAtMs,
-        outageMs: observation.atMs - outage.lostAtMs
+      // Finding 162: the first value with the new generation can arrive
+      // before any `connected` observation does. The value itself is then
+      // the reconnect observation, so the record fills from it instead of
+      // staying null forever.
+      if (outage.reconnectedAtMs === null) {
+        this.noteReconnect(observation.connectionGeneration, outage.supervisorAttempt, observation.atMs)
       }
-      this.patchLinkLoss({ openOutage: null, outages: appendRecent(this.snapshot().outages, closed) })
-      this.emit('outage-recovered', outageJson(closed))
+      const filled = this.snapshot().openOutage
+      if (filled !== null) {
+        const closed: Outage = {
+          ...filled,
+          generationAfter: filled.generationAfter ?? observation.connectionGeneration,
+          firstValueAtMs: observation.atMs,
+          firstValueAfterReconnectMs:
+            filled.reconnectedAtMs === null ? null : observation.atMs - filled.reconnectedAtMs,
+          outageMs: observation.atMs - filled.lostAtMs
+        }
+        this.patchLinkLoss({ openOutage: null, outages: appendRecent(this.snapshot().outages, closed) })
+        this.emit('outage-recovered', outageJson(closed))
+      }
     }
     this.patchLinkLoss({ lastValueAtMs: observation.atMs })
   }
 
-  /** Opens at most one outage per connection generation, from whichever signal arrives first. */
-  private openOutage(detectedVia: string): void {
+  /**
+   * Finding 162: record the reconnect the first time the new generation is
+   * observed — on the supervisor `connected` event, the lifecycle
+   * `connected` transition, or the first value with the new generation,
+   * whichever arrives first. A reconnect observed only via its first value
+   * fills `reconnectMs` from that value (`firstValueAfterReconnectMs` 0):
+   * the link is provably back, and the value time is the tightest known
+   * upper bound of the reconnect instant.
+   */
+  private noteReconnect(generationAfter: string, attempt: number, reconnectedAtMs: number): boolean {
+    const outage = this.snapshot().openOutage
+    if (outage === null || outage.reconnectedAtMs !== null || generationAfter === outage.generationBefore) return false
+    const reconnectMs = reconnectedAtMs - outage.lostAtMs
+    this.patchLinkLoss({
+      openOutage: { ...outage, reconnectedAtMs, generationAfter, reconnectMs, supervisorAttempt: attempt }
+    })
+    this.emit('reconnected', { index: outage.index, reconnectMs, attempt })
+    return true
+  }
+
+  /**
+   * Opens at most one outage per connection generation, from whichever signal
+   * arrives first. The losing generation comes from the detecting event: a
+   * late or duplicate signal for a superseded generation matches the
+   * completed outage for that generation instead of opening a ghost outage
+   * under the current one (finding 162).
+   */
+  private openOutage(detectedVia: string, generation: string | null = null): void {
     const state = this.snapshot()
-    const generation = state.connectionGeneration
-    if (!this.isRunning() || generation === null || state.openOutage !== null) return
-    if (state.outages.some(outage => outage.generationBefore === generation)) return
+    const losing = generation ?? state.connectionGeneration
+    if (!this.isRunning() || losing === null || state.openOutage !== null) return
+    if (state.outages.some(outage => outage.generationBefore === losing)) return
     const lostAtMs = this.runtime.now()
     const outage: Outage = {
       index: state.outages.length + 1,
-      generationBefore: generation,
+      generationBefore: losing,
       detectedVia,
       lostAtMs,
       lastValueBeforeLossAtMs: state.lastValueAtMs,

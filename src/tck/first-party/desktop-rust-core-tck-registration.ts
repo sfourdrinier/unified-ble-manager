@@ -1,7 +1,7 @@
 // src/tck/first-party/desktop-rust-core-tck-registration.ts
 //
 // The desktop first-party TCK legs run the Rust route (LEGACY-AUDIT-2 N3):
-// the production desktop provider (`createDesktopRustCoreBackendProvider`)
+// the `/testing` desktop provider (`createTestDesktopRustCoreBackendProvider`)
 // over the identity-verified N-API addon, on the addon's own deterministic
 // synthetic radio. Every verb executes `DesktopCentral` in Rust; this module
 // only stages the radio world (advertisements, the GATT database, OS events)
@@ -11,7 +11,7 @@
 import { contractError } from '../../backend-contract/errors'
 import { capacity, opaqueId, type SerializableRecord } from '../../backend-contract/primitives'
 import {
-  createDesktopRustCoreBackendProvider,
+  createTestDesktopRustCoreBackendProvider,
   DESKTOP_RUST_CORE_PROFILES,
   DesktopRustCoreBackend,
   desktopRustCoreAdapterId,
@@ -426,7 +426,7 @@ function createDesktopRustCoreTckRegistration(
       opened.push(leg.opened)
       return leg.central
     })
-  const provider = createDesktopRustCoreBackendProvider({
+  const provider = createTestDesktopRustCoreBackendProvider({
     platform: shape.platform,
     owner: `${shape.platform}-rust-core-tck`,
     now: options.now,

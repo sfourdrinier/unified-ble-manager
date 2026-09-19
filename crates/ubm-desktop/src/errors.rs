@@ -164,11 +164,12 @@ const COREBLUETOOTH_SECURITY_CODES: [&str; 2] = ["14", "15"];
 ///   15 (mobile `{domain:<NSError domain>}`, desktop
 ///   `{domain:"corebluetooth", metadata:{nsErrorDomain}}`);
 /// - BlueZ: `org.bluez.Error.NotAuthorized`, `AuthenticationFailed`, or
-///   `NotPermitted` with the message `Not paired`.
-///
-/// WinRT's `GattCommunicationStatus` `ProtocolError` does not carry the ATT
-/// error through the radio, so a Windows refusal cannot be told apart and
-/// keeps its GATT code.
+///   `NotPermitted` with the message `Not paired`;
+/// - WinRT: `gatt-status` `protocol-error` with the ATT error byte the
+///   vendored radio read from `GattReadResult` / `GattWriteResult`
+///   (`attError` metadata) 5, 8, 12 or 15. A `protocol-error` without the
+///   byte (a write path whose WinRT call returns no result object) cannot
+///   be told apart and keeps its GATT code.
 #[must_use]
 pub fn is_security_answer(platform: &PlatformDetail) -> bool {
     let text = |key: &str| match platform.metadata.get(key) {
@@ -195,6 +196,11 @@ pub fn is_security_answer(platform: &PlatformDetail) -> bool {
                 "org.bluez.Error.NotAuthorized" | "org.bluez.Error.AuthenticationFailed"
             ) || (platform.code == "org.bluez.Error.NotPermitted"
                 && platform.message.as_deref() == Some("Not paired"))
+        }
+        "winrt" => {
+            platform.code == "gatt-status"
+                && text("gattStatus") == Some("protocol-error")
+                && text("attError").is_some_and(|byte| ATT_SECURITY_CODES.contains(&byte))
         }
         _ => false,
     }
@@ -327,6 +333,37 @@ impl DesktopError {
             self.domain = BleErrorDomain::Connection;
         }
         self
+    }
+
+    /// Owner decision (5.0, finding 161): a connect whose deadline expired
+    /// before any link came up is `connection.failed` on every host — the
+    /// same physical event as the controller giving up (Android GATT
+    /// 133/147), which CoreBluetooth, btleplug and Web never report on
+    /// their own. The deadline fact rides in `platform` (`core` /
+    /// `deadline-expired`, the bound in `deadlineMs`); repeating the
+    /// attempt is the caller's policy (`caller-decides`), and the library
+    /// never retries it itself. Only a timed-out connect is renamed: a
+    /// caller-supplied AbortSignal abort stays `operation.aborted`, and
+    /// any other code — or a timeout on any other operation — is
+    /// unchanged.
+    #[must_use]
+    pub fn classify_connect_deadline(mut self, deadline_ms: u64) -> Self {
+        if self.operation != "connection.connect" || self.code != BleErrorCode::OperationTimedOut {
+            return self;
+        }
+        self.code = BleErrorCode::ConnectionFailed;
+        self.domain = BleErrorDomain::Connection;
+        let message =
+            format!("the {deadline_ms} ms connect deadline expired before any link came up");
+        self.with_platform(
+            PlatformDetail::new("core", "deadline-expired")
+                .with_message(message)
+                .with_metadata(
+                    "deadlineMs",
+                    PlatformValue::Int(i64::try_from(deadline_ms).unwrap_or(i64::MAX)),
+                ),
+        )
+        .with_outcome(None, Retryability::CallerDecides)
     }
 
     /// Owner decision (5.0): a link operation the peer refused for lack of
@@ -854,6 +891,17 @@ mod tests {
                 PlatformValue::Text("CBATTErrorDomain".to_owned()),
             )
         };
+        // WinRT reads the ATT error byte from `GattReadResult` /
+        // `GattWriteResult` (`attError` metadata, vendored patch 20): a
+        // security refusal maps like every other host.
+        let winrt_att = |byte: &str| {
+            PlatformDetail::new("winrt", "gatt-status")
+                .with_metadata(
+                    "gattStatus",
+                    PlatformValue::Text("protocol-error".to_owned()),
+                )
+                .with_metadata("attError", PlatformValue::Text(byte.to_owned()))
+        };
         let security = [
             android(5),
             android(8),
@@ -870,6 +918,10 @@ mod tests {
             PlatformDetail::new("bluez-dbus", "org.bluez.Error.NotPermitted")
                 .with_message("Not paired"),
             PlatformDetail::new("bluez-dbus", "org.bluez.Error.AuthenticationFailed"),
+            winrt_att("5"),
+            winrt_att("8"),
+            winrt_att("12"),
+            winrt_att("15"),
         ];
         let other = [
             android(3),
@@ -882,6 +934,8 @@ mod tests {
                 "gattStatus",
                 PlatformValue::Text("protocol-error".to_owned()),
             ),
+            winrt_att("3"),
+            winrt_att("13"),
         ];
         for platform in &security {
             let error = DesktopError::read_failed("refused")
@@ -956,6 +1010,60 @@ mod tests {
         )
         .classify_connect_failure();
         assert_eq!(read.code(), BleErrorCode::PlatformFailure, "connect only");
+    }
+
+    /// Owner decision (5.0, finding 161): a connect whose deadline expired
+    /// before any link came up is `connection.failed` (caller-decides)
+    /// with the deadline fact in `platform`. An abort and any other
+    /// operation keep their names.
+    #[test]
+    fn a_connect_deadline_without_a_link_is_connection_failed() {
+        use super::{PlatformValue, Retryability};
+        let expired = DesktopError::new(
+            BleErrorCode::OperationTimedOut,
+            BleErrorDomain::Connection,
+            "connection.connect",
+        )
+        .classify_connect_deadline(20_000);
+        assert_eq!(expired.code(), BleErrorCode::ConnectionFailed);
+        assert_eq!(expired.domain(), BleErrorDomain::Connection);
+        assert_eq!(expired.operation(), "connection.connect");
+        assert_eq!(expired.retryability(), Retryability::CallerDecides);
+        let platform = expired
+            .platform()
+            .expect("the deadline fact rides the error");
+        assert_eq!(platform.domain, "core");
+        assert_eq!(platform.code, "deadline-expired");
+        assert!(
+            platform
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("20000")),
+            "the bound is kept"
+        );
+        assert_eq!(
+            platform.metadata.get("deadlineMs"),
+            Some(&PlatformValue::Int(20_000))
+        );
+        let aborted =
+            DesktopError::cancelled("connection.connect").classify_connect_deadline(20_000);
+        assert_eq!(
+            aborted.code(),
+            BleErrorCode::OperationAborted,
+            "a caller abort stays aborted"
+        );
+        let read = DesktopError::new(
+            BleErrorCode::OperationTimedOut,
+            BleErrorDomain::Connection,
+            "gatt.read",
+        )
+        .classify_connect_deadline(20_000);
+        assert_eq!(
+            read.code(),
+            BleErrorCode::OperationTimedOut,
+            "other operations keep their timeout"
+        );
+        assert!(read.platform().is_none(), "no fact is invented");
     }
 
     #[test]

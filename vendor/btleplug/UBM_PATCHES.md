@@ -27,7 +27,7 @@ copy's unit tests, including the patch tests below).
 direct dependents read as `DEP_BTLEPLUG_UBM_PATCHES`.
 `crates/ubm-desktop/build.rs` turns the list into `cfg(btleplug_ubm_*)`
 flags for patches 1-5 and republishes it for diagnostics
-(`btleplug_backend::vendored_btleplug_patches()`). Patches 6-18 are
+(`btleplug_backend::vendored_btleplug_patches()`). Patches 6-20 are
 required: the production radio does not build against a btleplug without
 them (the build fails naming the missing patches), because without them
 same-UUID attributes collapse, adapter loss states are unreadable, scan
@@ -37,7 +37,8 @@ the caller's name prefix, 16-slot broadcasts lose events below the
 legacy backends' queues, a CoreBluetooth notification silently becomes a
 read result, platform failures lose their identity, WinRT scans without the legacy OS
 service filter, sightings are lost or carry another advertisement's
-data, and a BlueZ name-only change is invisible.
+data, a BlueZ name-only change is invisible, and Windows security
+refusals are indistinguishable from other protocol errors.
 
 The crate-level usage example in `src/lib.rs` (a `no_run` doctest) cycles
 fixed colours instead of using `rand`, so it compiles without upstream's
@@ -962,3 +963,80 @@ once on every `Device1` `PropertiesChanged` signal
   - on macOS: disconnect during discovery and during a descriptor read;
   - on Linux: connect to an already-connected device, disconnect
     confirmation (gone object and 1 s bound).
+
+## Patch 20: `winrt-att-error`
+
+**Problem.** `GattReadResult` and `GattWriteResult` expose the ATT error
+byte (`ProtocolError()`), but `read_value` / `write_value` only inspected
+`Status()` and collapsed every failure into `gatt_status_error`. An ATT
+0x05 (insufficient authentication), 0x08 (insufficient authorization),
+0x0C (insufficient encryption key size) or 0x0F (insufficient encryption)
+refusal on Windows could therefore never become `platform.security`,
+while every other host maps those bytes there (finding 156). The
+`security-refused` `differs` entry for `desktop-windows` in
+`src/backend-contract/event-vocabulary.ts` was a false platform claim: a
+fixable bug, not a genuine limit.
+
+**Change.**
+- `src/winrtble/gatt_model.rs` (std only): new `att_error_metadata`,
+  the ATT error byte as platform metadata — key `attError`, the byte as
+  decimal text (the base the host's ATT code table uses). The radio
+  attaches it for every protocol error it can read one for; deciding
+  security is the host's job (`crates/ubm-desktop/src/errors.rs`
+  `is_security_answer`).
+- `src/winrtble/utils.rs`: new `protocol_att_error` (the byte of a
+  result object, `None` when the platform reports none — never fails)
+  and `gatt_status_error` takes the optional byte, attaching it beside
+  the legacy `gattStatus` code.
+- `src/winrtble/ble/characteristic.rs`:
+  - `read_value` reads `ProtocolError()` when the status is
+    `ProtocolError`.
+  - `write_value` with response goes through
+    `WriteValueWithResultAndOptionAsync` — the same ATT Write Request on
+    the wire as `WriteValueWithOptionAsync`, but returning a
+    `GattWriteResult` — and reads its `ProtocolError()` on a
+    `ProtocolError` status. A write without response stays on
+    `WriteValueWithOptionAsync`: an ATT Write Command has no response,
+    so no ATT error can come back.
+  - `write_client_configuration` keeps the status-only error: the CCCD
+    call returns no result object.
+- `src/winrtble/ble/descriptor.rs`: `read_value` as above;
+  `write_value` goes through `WriteValueWithResultAsync` (a descriptor
+  write is always an ATT Write Request, so the wire bytes are
+  unchanged). `ble/device.rs` discovery/connect callers pass no byte
+  (those queries return no result object).
+- `build.rs` lists `winrt-att-error`; it joins the required set the
+  production radio refuses to build without.
+- ubm-desktop `is_security_answer` answers a WinRT `gatt-status`
+  `protocol-error` with `attError` 5, 8, 12 or 15, so the central's
+  `classify_security` reports `platform.security` like every other
+  host. A `protocol-error` without the byte keeps its GATT code, as do
+  other ATT errors (with the byte in the detail).
+- The `desktop-windows` `differs` entry for `security-refused` is
+  removed from `src/backend-contract/event-vocabulary.ts`; the fixture
+  and the `UNIFIED_SEMANTICS.md` table are regenerated. Residual,
+  by-design status-only path: a without-response write or CCCD write
+  that the peer refuses for lack of security still reports its GATT
+  code on Windows (no ATT error exists on that wire path).
+
+**Tests.**
+- `gatt_model.rs`
+  `the_att_error_byte_rides_the_platform_detail_as_decimal_text` (runs
+  on every host through
+  `crates/ubm-desktop/tests/winrt_gatt_model.rs`): the key and the
+  decimal format the host mapping reads.
+- ubm-desktop
+  `errors::tests::an_authentication_or_encryption_refusal_is_platform_security`:
+  WinRT `protocol-error` with `attError` 5/8/12/15 is
+  `platform.security`; without the byte, or with another byte, it keeps
+  `gatt.read-failed`.
+- `crates/ubm-desktop/tests/event_vocabulary.rs`: the Windows
+  security-refusal answer now carries `attError: 5` and observes
+  `platform.security`, as the regenerated fixture names.
+- The WinRT calls are type-checked only
+  (`cargo check -p btleplug --target x86_64-pc-windows-msvc`).
+- Windows host check, not yet run: read from (and write with response
+  to) a characteristic that requires pairing while unpaired — the
+  operation reports `platform.security` with `attError` 5 or 15 in the
+  platform detail; an unpaired write without response and a CCCD write
+  keep their GATT code.

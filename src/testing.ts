@@ -44,6 +44,10 @@ export {
   createCoreBluetoothFirstPartyTckRegistration,
   createWinRtFirstPartyTckRegistration
 } from './tck/first-party/desktop-rust-core-tck-registration'
+export { createTestDesktopRustCoreBackendProvider } from './backends/desktop/desktop-rust-core-provider'
+export type { DesktopRustCoreTestProviderOptions } from './backends/desktop/desktop-rust-core-provider'
+export { DESKTOP_RUST_CORE_PARITY } from './backends/desktop/desktop-rust-core-parity'
+export type { DesktopRustCoreParityRow } from './backends/desktop/desktop-rust-core-parity'
 export {
   createReactNativeAndroidFirstPartyTckRegistration,
   createReactNativeAppleFirstPartyTckRegistration

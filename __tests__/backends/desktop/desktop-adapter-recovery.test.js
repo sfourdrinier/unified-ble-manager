@@ -10,7 +10,7 @@
 
 const h = require('../../helpers/desktop-rust-core-harness')
 const {
-  createDesktopRustCoreBackendProvider,
+  createTestDesktopRustCoreBackendProvider,
   DESKTOP_RUST_CORE_PROFILES
 } = require('../../../src/backends/desktop/desktop-rust-core-provider')
 const { createNodeBleManagerFromProvider } = require('../../../src/node-host-manager')
@@ -35,7 +35,7 @@ async function eventually(what, predicate, timeoutMs = 8000) {
 async function open(platform) {
   const clock = { offset: 0, now: () => performance.now() + clock.offset }
   const harness = h.realBinding(platform)
-  const provider = createDesktopRustCoreBackendProvider({
+  const provider = createTestDesktopRustCoreBackendProvider({
     platform,
     owner: `recovery-${platform}`,
     now: () => performance.now(),

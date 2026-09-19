@@ -98,10 +98,24 @@ describe('no public entrypoint reaches a legacy desktop backend', () => {
   test.each(['node-bluez', 'node-corebluetooth', 'node-winrt', 'electron-main'])('%s exports none of them', module => {
     const exported = Object.keys(load(module))
     expect(exported.filter(name => LEGACY_EXPORTS.includes(name))).toEqual([])
-    expect(exported).toEqual(
-      expect.arrayContaining(['createDesktopRustCoreBackendProvider', 'DESKTOP_RUST_CORE_PARITY'])
-    )
+    // D5/decision L: the production surface keeps the production factory;
+    // the parity table and the seam-accepting factory live in /testing only.
+    expect(exported).toEqual(expect.arrayContaining(['createDesktopRustCoreBackendProvider']))
+    expect(exported).not.toContain('DESKTOP_RUST_CORE_PARITY')
+    expect(exported).not.toContain('createTestDesktopRustCoreBackendProvider')
   })
+
+  test.each(['node-bluez', 'node-corebluetooth', 'node-winrt', 'electron-main'])(
+    '%s keeps test seams in /testing only',
+    module => {
+      expect(Object.keys(load(module))).not.toEqual(
+        expect.arrayContaining(['radio', 'loadBinding', 'hostPlatform', 'firstStateTimeoutMs', 'openSynthetic'])
+      )
+      const testing = require('../../../src/testing')
+      expect(typeof testing.createTestDesktopRustCoreBackendProvider).toBe('function')
+      expect(Array.isArray(testing.DESKTOP_RUST_CORE_PARITY)).toBe(true)
+    }
+  )
 
   test.each([
     ['node-corebluetooth', 'COREBLUETOOTH_BACKEND_ID', 'corebluetooth'],
@@ -222,8 +236,9 @@ describe('BlueZ bus choice (PR210-20)', () => {
       // The vendored btleplug reaches BlueZ on the session bus (patch
       // `bluez-session-bus`), so the listing is that bus's answer: its
       // adapters, or — where no session bus or no BlueZ on it is reachable,
-      // as on a headless runner — the BlueZ D-Bus failure itself (finding
-      // 124), never the system bus's adapters in its place.
+      // as on a headless runner — the adapter's own failure with the BlueZ
+      // D-Bus answer in `platform` (one vocabulary: the listing keeps its
+      // own name), never the system bus's adapters in its place.
       const outcome = await binding.listAdapters('session').then(
         adapters => ({ adapters }),
         error => ({ error: error.normalized })
@@ -231,7 +246,7 @@ describe('BlueZ bus choice (PR210-20)', () => {
       if (outcome.adapters !== undefined) {
         expect(outcome.adapters).toEqual(expect.any(Array))
       } else {
-        expect(outcome.error).toMatchObject({ code: 'platform.failure', platform: { domain: 'bluez-dbus' } })
+        expect(outcome.error).toMatchObject({ code: 'adapter.unavailable', platform: { domain: 'bluez-dbus' } })
       }
     } else {
       await expect(binding.listAdapters('session')).rejects.toMatchObject({
@@ -269,10 +284,10 @@ describe('option audit: every rejected option fails with zero core dispatch', ()
   }
 
   test('BlueZ-only options on another platform are invalid before anything loads', () => {
-    const { createDesktopRustCoreBackendProvider } = require('../../../src/backends/desktop/desktop-rust-core-provider')
+    const { createTestDesktopRustCoreBackendProvider } = require('../../../src/backends/desktop/desktop-rust-core-provider')
     const loadBinding = jest.fn()
     expect(() =>
-      createDesktopRustCoreBackendProvider({
+      createTestDesktopRustCoreBackendProvider({
         platform: 'winrt',
         owner: 'audit',
         now: () => 1,
@@ -368,8 +383,8 @@ describe('option audit: every rejected option fails with zero core dispatch', ()
 
   test('an unknown adapter id', async () => {
     const harness = realBinding('winrt')
-    const { createDesktopRustCoreBackendProvider } = require('../../../src/backends/desktop/desktop-rust-core-provider')
-    const provider = createDesktopRustCoreBackendProvider({
+    const { createTestDesktopRustCoreBackendProvider } = require('../../../src/backends/desktop/desktop-rust-core-provider')
+    const provider = createTestDesktopRustCoreBackendProvider({
       platform: 'winrt',
       owner: 'audit',
       now: () => 1,

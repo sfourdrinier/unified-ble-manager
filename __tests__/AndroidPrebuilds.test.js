@@ -107,3 +107,137 @@ describe('committed Android prebuilts (F01)', () => {
     )
   })
 })
+
+describe('committed Android prebuilts seal (D1 / finding 157)', () => {
+  const { execFileSync } = require('child_process')
+
+  const bridgeFile = path.join(root, 'android', 'src', 'main', 'java', 'com', 'ubm', 'core', 'MobileCoreBridge.java')
+  const JNI_PREFIX = 'Java_com_ubm_core_MobileCoreBridge_'
+
+  /** Every JNI entrypoint the Kotlin side declares (single-owned by the Rust cdylib). */
+  function kotlinDeclaredSymbols() {
+    const source = fs.readFileSync(bridgeFile, 'utf8')
+    const names = new Set()
+    for (const match of source.matchAll(/public static native \S+ (\w+)\(/g)) {
+      names.add(`${JNI_PREFIX}${match[1]}`)
+    }
+    expect(names.size).toBeGreaterThan(0)
+    return names
+  }
+
+  /**
+   * Defined dynamic symbols of an .so, read straight from its ELF dynamic
+   * segment (PT_DYNAMIC → DT_SYMTAB/DT_STRTAB with the DT_HASH or DT_GNU_HASH
+   * symbol count). Pure JS so the seal runs in every gate with no NDK; the
+   * reader was cross-validated byte-for-byte against NDK llvm-nm
+   * (`llvm-nm -D --defined-only`) on both shipped ABIs.
+   */
+  function definedDynamicSymbols(filePath) {
+    const bytes = fs.readFileSync(filePath)
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    const magic = [0x7f, 0x45, 0x4c, 0x46]
+    for (let i = 0; i < magic.length; i += 1) {
+      if (view.getUint8(i) !== magic[i]) throw new Error(`${filePath}: not an ELF file`)
+    }
+    if (view.getUint8(4) !== 2) throw new Error(`${filePath}: not 64-bit ELF`)
+    if (view.getUint8(5) !== 1) throw new Error(`${filePath}: not little-endian ELF`)
+    const phoff = Number(view.getBigUint64(32, true))
+    const phentsize = view.getUint16(54, true)
+    const phnum = view.getUint16(56, true)
+    const loads = []
+    let dynamic = null
+    for (let i = 0; i < phnum; i += 1) {
+      const base = phoff + i * phentsize
+      const type = view.getUint32(base, true)
+      const offset = Number(view.getBigUint64(base + 8, true))
+      const vaddr = Number(view.getBigUint64(base + 16, true))
+      const filesz = Number(view.getBigUint64(base + 32, true))
+      if (type === 1) loads.push({ offset, vaddr, filesz })
+      if (type === 2) dynamic = { offset, filesz }
+    }
+    if (dynamic === null) throw new Error(`${filePath}: no PT_DYNAMIC segment`)
+    const toOffset = address => {
+      for (const segment of loads) {
+        if (address >= segment.vaddr && address < segment.vaddr + segment.filesz) {
+          return address - segment.vaddr + segment.offset
+        }
+      }
+      throw new Error(`${filePath}: dynamic address ${address.toString(16)} not mapped`)
+    }
+    let strtab = 0
+    let strsz = 0
+    let symtab = 0
+    let hash = 0
+    let gnuHash = 0
+    for (let off = dynamic.offset; ; off += 16) {
+      const tag = Number(view.getBigInt64(off, true))
+      const value = Number(view.getBigUint64(off + 8, true))
+      if (tag === 0) break
+      if (tag === 5) strtab = value
+      else if (tag === 10) strsz = value
+      else if (tag === 6) symtab = value
+      else if (tag === 4) hash = value
+      else if (tag === 0x6ffffef5) gnuHash = value
+      if (off > dynamic.offset + dynamic.filesz) throw new Error(`${filePath}: dynamic section overrun`)
+    }
+    if (strtab === 0 || symtab === 0 || (hash === 0 && gnuHash === 0)) {
+      throw new Error(`${filePath}: dynamic symbol tables missing`)
+    }
+    let symbolCount = 0
+    if (hash !== 0) {
+      symbolCount = view.getUint32(toOffset(hash) + 4, true)
+    } else {
+      const base = toOffset(gnuHash)
+      const nbuckets = view.getUint32(base, true)
+      const symoffset = view.getUint32(base + 4, true)
+      const bloomSize = view.getUint32(base + 8, true)
+      const buckets = base + 16 + bloomSize * 8
+      const chain = buckets + nbuckets * 4
+      let highest = symoffset
+      for (let bucket = 0; bucket < nbuckets; bucket += 1) {
+        let symbol = view.getUint32(buckets + bucket * 4, true)
+        if (symbol === 0) continue
+        for (;;) {
+          if (symbol > highest) highest = symbol
+          const word = view.getUint32(chain + (symbol - symoffset) * 4, true)
+          if ((word & 1) !== 0) break
+          symbol += 1
+        }
+      }
+      symbolCount = highest + 1
+    }
+    const readCString = off => {
+      let end = off
+      while (bytes[end] !== 0) end += 1
+      return Buffer.from(bytes.subarray(off, end)).toString('utf8')
+    }
+    const names = new Set()
+    const symOff = toOffset(symtab)
+    const strOff = toOffset(strtab)
+    for (let i = 0; i < symbolCount; i += 1) {
+      const base = symOff + i * 24
+      const nameOff = view.getUint32(base, true)
+      const section = view.getUint16(base + 6, true)
+      if (section !== 0 && nameOff < strsz) names.add(readCString(strOff + nameOff))
+    }
+    return names
+  }
+
+  test('every MobileCoreBridge JNI symbol the Kotlin side declares exists in each committed .so', () => {
+    const declared = kotlinDeclaredSymbols()
+    expect(declared.size).toBeGreaterThan(10)
+    for (const entry of identityEntries().abis) {
+      const symbols = definedDynamicSymbols(path.join(prebuiltDir, entry.abi, entry.file))
+      const missing = [...declared].filter(name => !symbols.has(name))
+      expect(missing).toEqual([])
+    }
+  })
+
+  test('native-build-identity --check-android-prebuilts passes for the committed prebuilts', () => {
+    execFileSync(
+      process.execPath,
+      [path.join(root, 'scripts', 'release', 'native-build-identity.js'), '--root', root, '--check-android-prebuilts'],
+      { stdio: 'pipe' }
+    )
+  })
+})

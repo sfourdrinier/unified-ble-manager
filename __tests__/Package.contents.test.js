@@ -106,18 +106,20 @@ describe('published package contains the files and scripts it claims', () => {
   test('packs and browser-bundles a Web-only public consumer without host dependencies', () => {
     const packInstallSmokeSource = fs.readFileSync(path.join(root, 'scripts', 'ci', 'pack-install-smoke.js'), 'utf8')
 
+    // D3/finding 101: dbus-next ships to no consumer; the legacy D-Bus
+    // boundary is an unreachable parity reference until Phase 4 deletion.
     expect(packageJson.peerDependencies).toMatchObject({
-      'dbus-next': '^0.10.2',
       expo: '^57.0.0',
       react: '*',
       'react-native': '>=0.86.0'
     })
+    expect(packageJson.peerDependencies).not.toHaveProperty('dbus-next')
     expect(packageJson.peerDependenciesMeta).toMatchObject({
-      'dbus-next': { optional: true },
       expo: { optional: true },
       react: { optional: true },
       'react-native': { optional: true }
     })
+    expect(packageJson.peerDependenciesMeta).not.toHaveProperty('dbus-next')
     expect(packageJson.optionalDependencies).toMatchObject({
       'node-addon-api': '8.9.0',
       'node-gyp': '12.4.0'

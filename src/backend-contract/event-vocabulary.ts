@@ -134,6 +134,14 @@ export const EVENT_VOCABULARY: readonly PhysicalEventEntry[] = Object.freeze([
     differs: {}
   },
   {
+    event: 'connect-deadline-expired',
+    description:
+      'The dispatched connect deadline expired before any link came up: the peer did not answer the attempt within the bound. The controller giving up (Android GATT 133/62/147) is the same physical event under another observation — CoreBluetooth never fails a pending connect on its own, nor do btleplug and Web report the expiry, so the deadline is their only answer. Nothing was committed; the library never retries it itself. A caller-supplied AbortSignal abort stays `operation.aborted`. The deadline fact rides in the error platform detail.',
+    names: names({ error: 'connection.failed', retryability: 'caller-decides' }),
+    supervisor: { context: 'connect', decision: 'reconnect' },
+    differs: {}
+  },
+  {
     event: 'peer-not-found',
     description: 'The peer was never observed (or chosen, on Web), so there is nothing to connect to.',
     names: names({ error: 'peer.not-found', retryability: 'never' }),
@@ -146,16 +154,12 @@ export const EVENT_VOCABULARY: readonly PhysicalEventEntry[] = Object.freeze([
       'The peer refused an operation for lack of authentication, authorization or encryption (ATT 0x05/0x08/0x0C/0x0F, Android 137, CoreBluetooth peerRemovedPairingInformation/encryptionTimedOut, BlueZ NotAuthorized/"Not paired", Web SecurityError). Recovery: pair or repair.',
     names: names({ error: 'platform.security', retryability: 'never' }),
     supervisor: { context: 'configure', decision: 'stop' },
-    differs: {
-      'desktop-windows': {
-        names: { error: 'gatt.read-failed' },
-        why: 'WinRT reports GattCommunicationStatus ProtocolError without the ATT error through the radio, so an authentication refusal cannot be told from any other protocol error; the platform detail says protocol-error (writes report gatt.write-failed).'
-      }
-    }
+    differs: {}
   },
   {
     event: 'operation-timed-out',
-    description: "The operation's deadline expired before the platform answered.",
+    description:
+      "The operation's deadline expired before the platform answered — except a dispatched connect, whose deadline expiring before any link came up is `connect-deadline-expired` (one name for the peer not answering).",
     names: names({ error: 'operation.timed-out', retryability: 'caller-decides' }),
     supervisor: { context: 'configure', decision: 'stop' },
     differs: {}

@@ -20,6 +20,7 @@ use windows::{
         GattCharacteristicProperties, GattClientCharacteristicConfigurationDescriptorValue,
         GattCommunicationStatus,
     },
+    Foundation::IReference,
     Storage::Streams::{DataReader, IBuffer},
 };
 
@@ -132,22 +133,39 @@ mod tests {
     }
 }
 
-/// UBM patch (UBM_PATCHES.md #15): a non-success `GattCommunicationStatus`
-/// as the platform's answer, the legacy addon's `{code:"gatt-status",
-/// gattStatus}` identity.
+/// UBM patch (UBM_PATCHES.md #20): the ATT error byte of a
+/// `GattCommunicationStatus::ProtocolError` as reported by
+/// `GattReadResult` / `GattWriteResult` `ProtocolError()`. `None` when the
+/// call returned no result object (writes without response, CCCD writes,
+/// discovery and connect queries) or the platform reported no byte. Never
+/// fails: an unreadable byte is no byte.
+pub fn protocol_att_error(result: windows::core::Result<IReference<u8>>) -> Option<u8> {
+    result.ok().and_then(|reference| reference.Value().ok())
+}
+
+/// UBM patch (UBM_PATCHES.md #15, #20): a non-success
+/// `GattCommunicationStatus` as the platform's answer, the legacy addon's
+/// `{code:"gatt-status", gattStatus}` identity, plus the ATT error byte
+/// (`attError` metadata) when the result object carried one — so the host
+/// can tell a security refusal from any other protocol error. Other ATT
+/// errors keep this name, with the byte in the detail.
 pub fn gatt_status_error(
     stage: &str,
     status: windows::Devices::Bluetooth::GenericAttributeProfile::GattCommunicationStatus,
+    att_error: Option<u8>,
 ) -> crate::Error {
-    crate::Error::Platform(
-        crate::PlatformError::new(
-            "winrt",
-            "gatt-status",
-            format!("{stage} failed with GattCommunicationStatus {:?}", status),
-        )
-        .with(
-            "gattStatus",
-            crate::winrtble::gatt_model::gatt_status_code(status.0),
-        ),
+    let mut platform = crate::PlatformError::new(
+        "winrt",
+        "gatt-status",
+        format!("{stage} failed with GattCommunicationStatus {:?}", status),
     )
+    .with(
+        "gattStatus",
+        crate::winrtble::gatt_model::gatt_status_code(status.0),
+    );
+    if let Some(byte) = att_error {
+        let (key, value) = crate::winrtble::gatt_model::att_error_metadata(byte);
+        platform = platform.with(key, value);
+    }
+    crate::Error::Platform(platform)
 }

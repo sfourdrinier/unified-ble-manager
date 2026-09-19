@@ -268,4 +268,42 @@ describe('the drain router at teardown', () => {
     await router.stop()
     expect(delivered).toEqual([7])
   })
+
+  test('a throwing sink ends the router, reports failed exactly once, and leaves no unhandled rejection', async () => {
+    const { session } = ownerOutbox([
+      { t: 'value', ordinal: 0 },
+      { t: 'value', ordinal: 1 }
+    ])
+    const failures = []
+    const rejections = []
+    const onUnhandled = reason => rejections.push(reason)
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const router = new RustCoreDrainRouter(session, {
+        deliver: () => {
+          throw new Error('boom-delivery')
+        },
+        failed: error => {
+          failures.push(error)
+        }
+      })
+      router.start()
+      await until(() => failures.length > 0, 'the sink failure report')
+      // The wake path owns no await: flushing host tasks must not surface
+      // the delivery defect as an unhandled rejection.
+      for (let turn = 0; turn < 20; turn += 1) {
+        await new Promise(resolve => setImmediate(resolve))
+      }
+      expect(rejections).toEqual([])
+      await router.stop()
+      expect(failures).toHaveLength(1)
+      expect(failures[0].message).toBe('boom-delivery')
+      for (let turn = 0; turn < 20; turn += 1) {
+        await new Promise(resolve => setImmediate(resolve))
+      }
+      expect(rejections).toEqual([])
+    } finally {
+      process.removeListener('unhandledRejection', onUnhandled)
+    }
+  })
 })

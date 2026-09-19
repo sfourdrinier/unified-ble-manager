@@ -560,7 +560,12 @@ not establish (Android GATT 133/62/147, CoreBluetooth `connectionTimeout`/
 `connectionFailed`, WinRT `Unreachable`, BlueZ `Failed`/
 `ConnectionAttemptFailed`, Web `NetworkError`) is `caller-decides` on every
 backend with the platform's answer kept; no backend retries it itself (see
-[`CONNECTION_MANAGER.md`](CONNECTION_MANAGER.md)). An aborted or timed-out operation that
+[`CONNECTION_MANAGER.md`](CONNECTION_MANAGER.md)). The same name covers a
+dispatched connect whose deadline expired before any link came up — the peer
+did not answer the attempt within the bound, which CoreBluetooth, btleplug and
+Web never report on their own, so the deadline is their only answer. The
+deadline fact rides in the error platform detail; a caller-supplied AbortSignal
+abort stays `operation.aborted`. An aborted or timed-out operation that
 was dispatched and may already have committed at the peripheral (a write, a
 descriptor write) is `never`, with commit state `unknown`. The public
 `BleError` carries the same `retryability`, and its `recovery` follows it: an
@@ -662,9 +667,10 @@ table (`crates/ubm-desktop/tests/fixtures/event-vocabulary.json`).
 | `adapter-loss`: Bluetooth was turned off, reset, removed or revoked while a link was up. | — | — | `lost` / `adapter-loss` | `source-failed` | lifecycle → wait-for-adapter | none |
 | `adapter-loss-during-operation`: The adapter went away while an operation was pending. | `operation.reset` | `never` | `lost` / `adapter-loss` | `source-failed` | configure → wait-for-adapter | none |
 | `connect-not-established`: The platform could not establish the link (Android GATT 133/62/147, CoreBluetooth connectionFailed/connectionTimeout, WinRT Unreachable, BlueZ Failed/ConnectionAttemptFailed, Web NetworkError). Nothing was committed; the library never retries it itself. | `connection.failed` | `caller-decides` | — | — | connect → reconnect | none |
+| `connect-deadline-expired`: The dispatched connect deadline expired before any link came up: the peer did not answer the attempt within the bound. The controller giving up (Android GATT 133/62/147) is the same physical event under another observation — CoreBluetooth never fails a pending connect on its own, nor do btleplug and Web report the expiry, so the deadline is their only answer. Nothing was committed; the library never retries it itself. A caller-supplied AbortSignal abort stays `operation.aborted`. The deadline fact rides in the error platform detail. | `connection.failed` | `caller-decides` | — | — | connect → reconnect | none |
 | `peer-not-found`: The peer was never observed (or chosen, on Web), so there is nothing to connect to. | `peer.not-found` | `never` | — | — | connect → stop | none |
-| `security-refused`: The peer refused an operation for lack of authentication, authorization or encryption (ATT 0x05/0x08/0x0C/0x0F, Android 137, CoreBluetooth peerRemovedPairingInformation/encryptionTimedOut, BlueZ NotAuthorized/"Not paired", Web SecurityError). Recovery: pair or repair. | `platform.security` | `never` | — | — | configure → stop | desktop-windows: error `gatt.read-failed` — WinRT reports GattCommunicationStatus ProtocolError without the ATT error through the radio, so an authentication refusal cannot be told from any other protocol error; the platform detail says protocol-error (writes report gatt.write-failed). |
-| `operation-timed-out`: The operation's deadline expired before the platform answered. | `operation.timed-out` | `caller-decides` | — | — | configure → stop | none |
+| `security-refused`: The peer refused an operation for lack of authentication, authorization or encryption (ATT 0x05/0x08/0x0C/0x0F, Android 137, CoreBluetooth peerRemovedPairingInformation/encryptionTimedOut, BlueZ NotAuthorized/"Not paired", Web SecurityError). Recovery: pair or repair. | `platform.security` | `never` | — | — | configure → stop | none |
+| `operation-timed-out`: The operation's deadline expired before the platform answered — except a dispatched connect, whose deadline expiring before any link came up is `connect-deadline-expired` (one name for the peer not answering). | `operation.timed-out` | `caller-decides` | — | — | configure → stop | none |
 | `operation-cancelled`: The caller aborted the operation before the platform answered. | `operation.aborted` | `caller-decides` | — | — | configure → stop | none |
 <!-- EVENT-VOCABULARY:END -->
 

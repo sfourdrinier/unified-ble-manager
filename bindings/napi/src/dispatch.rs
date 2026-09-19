@@ -5003,8 +5003,17 @@ mod tests {
             Err(error) => error,
             Ok(_) => panic!("blocked connect must time out"),
         };
+        // Finding 161: a connect whose deadline expires before any link came
+        // up is `connection.failed` (caller-decides) on every host.
         assert!(
-            error.reason.starts_with("operation.timed-out|"),
+            error
+                .reason
+                .starts_with("connection.failed|connection|connection.connect|caller-decides|"),
+            "{}",
+            error.reason
+        );
+        assert!(
+            error.reason.contains("\"code\":\"deadline-expired\""),
             "{}",
             error.reason
         );

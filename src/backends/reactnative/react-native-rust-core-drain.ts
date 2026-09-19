@@ -120,12 +120,18 @@ export class RustCoreDrainRouter {
       this.removeWake?.()
       this.removeWake = null
       // Records already taken are facts the owner reported: they are
-      // delivered before every stream ends with the failure.
+      // delivered before every stream ends with the failure. A sink whose
+      // deliver keeps throwing cannot take them; the defect is reported once
+      // through failed() below, so the flush stops at the second throw
+      // instead of rejecting (the wake path owns no await, and an escaping
+      // rejection would be unhandled noise on React Native).
       try {
         while (this.backlog.length > 0) this.deliverPass()
-      } finally {
-        this.sink.failed(error)
+      } catch {
+        // The delivery defect is reported once via failed(); nothing else
+        // can take the undelivered records.
       }
+      this.sink.failed(error)
     }
   }
 

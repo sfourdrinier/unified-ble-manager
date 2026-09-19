@@ -37,8 +37,10 @@ fn discovery_status(
 ) -> Result<()> {
     let status = status?;
     // UBM patch (UBM_PATCHES.md #15): the status as the platform's answer.
+    // Discovery queries return no result object, so no ATT error byte is
+    // available here.
     require_gatt_success(stage, status.0)
-        .map_err(|_| crate::winrtble::utils::gatt_status_error(stage, status))
+        .map_err(|_| crate::winrtble::utils::gatt_status_error(stage, status, None))
 }
 
 pub type ConnectedEventHandler = Box<dyn Fn(bool) + Send>;
@@ -131,7 +133,7 @@ impl BLEDevice {
         // reach is the platform's answer (`gatt-status` `unreachable`), so
         // the host can tell a link that was not established from a refusal.
         if status == GattCommunicationStatus::Unreachable {
-            return Err(utils::gatt_status_error("connect", status));
+            return Err(utils::gatt_status_error("connect", status, None));
         }
         utils::to_error(status)
     }

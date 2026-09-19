@@ -33,7 +33,6 @@ const requiredPackedOptionalHostDependencies = Object.freeze({
   'node-gyp': '12.4.0'
 })
 const requiredPackedOptionalPeerHostDependencies = Object.freeze({
-  'dbus-next': '^0.10.2',
   expo: '^57.0.0'
 })
 const browserBundleForbiddenHostDependencies = Object.freeze([

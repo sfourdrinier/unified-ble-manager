@@ -84,7 +84,7 @@ export function normalizeStagedLines(lines: readonly string[]): string[] {
       seen.push(match)
       return `@op${seen.length - 1}`
     })
-    return stableStringify(JSON.parse(mapped) as unknown)
+    return stableStringify(JSON.parse(mapped))
   })
 }
 

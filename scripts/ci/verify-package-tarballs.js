@@ -84,7 +84,6 @@ const publishedOptionalHostDependencies = Object.freeze({
 })
 
 const publishedOptionalPeerHostDependencies = Object.freeze({
-  'dbus-next': '^0.10.2',
   expo: '^57.0.0'
 })
 

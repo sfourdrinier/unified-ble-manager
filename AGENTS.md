@@ -1,11 +1,11 @@
-# AGENTS.md — Unified BLE Manager 4.x
+# AGENTS.md — Unified BLE Manager 5.x
 
 The single source of agent guidance for this repository. `CLAUDE.md` imports
 this file and holds no content of its own, so the two cannot drift apart.
 
 ## What this repository is
 
-The canonical home of `unified-ble-manager` 4.x: a host-neutral Bluetooth Low
+The canonical home of `unified-ble-manager` 5.x: a host-neutral Bluetooth Low
 Energy central/GATT package for React Native, Web, Electron, and Node/desktop
 hosts. `sfourdrinier/react-native-ble-plx` is historical and owns the 3.x line;
 never reintroduce its public contract here, and never infer 4.x behaviour from
@@ -92,7 +92,7 @@ a radio**. Consumers use explicit host entrypoints:
 Profile exports are documented in `README.md` and
 `docs/PROFILES_AND_COMMANDS.md`.
 
-## 4.x contract invariants
+## 5.x contract invariants
 
 Preserve these unless the user explicitly requests a versioned contract change:
 
@@ -159,7 +159,7 @@ Renderer reload/rebind is an ownership and security boundary.
 **Node desktop**: first-party CoreBluetooth, WinRT and BlueZ backends.
 CoreBluetooth/WinRT addons are built for the exact Node/Electron ABI and
 architecture that loads them. BlueZ is isolated behind its explicit entrypoint
-and optional `dbus-next` dependency.
+and needs no `dbus-next` on the production path.
 
 ## Evidence and support
 

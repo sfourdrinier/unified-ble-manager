@@ -74,12 +74,29 @@ impl BLEDescriptor {
     pub async fn write_value(descriptor: &GattDescriptor, data: &[u8]) -> Result<()> {
         let writer = DataWriter::new()?;
         writer.WriteBytes(data)?;
-        let operation = descriptor.WriteValueAsync(&writer.DetachBuffer()?)?;
+        // UBM patch (UBM_PATCHES.md #20): a descriptor write is always an
+        // ATT Write Request, so the result-returning call sends the same
+        // bytes on the wire and additionally reports the ATT error byte of
+        // a `ProtocolError` status. The buffer drops before the await
+        // (`IBuffer` is not `Send`), so the future stays `Send`.
+        let operation = {
+            let buffer = writer.DetachBuffer()?;
+            descriptor.WriteValueWithResultAsync(&buffer)?
+        };
         let result = operation.into_future().await?;
-        if result == GattCommunicationStatus::Success {
+        let status = result.Status()?;
+        if status == GattCommunicationStatus::Success {
             Ok(())
         } else {
-            Err(utils::gatt_status_error("Gatt descriptor write", result))
+            let mut att = None;
+            if status == GattCommunicationStatus::ProtocolError {
+                att = utils::protocol_att_error(result.ProtocolError());
+            }
+            Err(utils::gatt_status_error(
+                "Gatt descriptor write",
+                status,
+                att,
+            ))
         }
     }
 
@@ -97,7 +114,18 @@ impl BLEDescriptor {
             reader.ReadBytes(&mut input[0..len])?;
             Ok(input)
         } else {
-            Err(utils::gatt_status_error("Gatt descriptor read", status))
+            // UBM patch (UBM_PATCHES.md #20): a `ProtocolError` status
+            // carries the ATT error byte, so the host can tell a security
+            // refusal from any other protocol error.
+            let mut att = None;
+            if status == GattCommunicationStatus::ProtocolError {
+                att = utils::protocol_att_error(result.ProtocolError());
+            }
+            Err(utils::gatt_status_error(
+                "Gatt descriptor read",
+                status,
+                att,
+            ))
         }
     }
 }

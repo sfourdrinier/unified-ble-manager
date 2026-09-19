@@ -12,11 +12,12 @@ import type { BackendIdentity } from '../backend-contract/identity'
 /** Fail-closed marker: fault/time hooks run only when this global is armed in tests. */
 export const TCK_TEST_ONLY_MARKER = '__UBM_TCK_TEST_ONLY__' as const
 
-type MarkerHolder = Record<string, unknown>
+function readTestOnlyMarker(holder: object): unknown {
+  return Reflect.get(holder, TCK_TEST_ONLY_MARKER)
+}
 
 function markerArmed(): boolean {
-  const holder = globalThis as unknown as MarkerHolder
-  return holder[TCK_TEST_ONLY_MARKER] === true
+  return readTestOnlyMarker(globalThis) === true
 }
 
 function isProductionContext(): boolean {

@@ -4,13 +4,13 @@
 
 The root import does not open an adapter. Pick the entrypoint for your OS:
 
-| Import                                   | Host    | Radio underneath                        |
-| ---------------------------------------- | ------- | --------------------------------------- |
-| `unified-ble-manager/node/corebluetooth` | macOS   | shared Rust core over CoreBluetooth     |
-| `unified-ble-manager/node/winrt`         | Windows | shared Rust core over WinRT             |
-| `unified-ble-manager/node/bluez`         | Linux   | shared Rust core over BlueZ             |
+| Import                                   | Host    | Radio underneath                    |
+| ---------------------------------------- | ------- | ----------------------------------- |
+| `unified-ble-manager/node/corebluetooth` | macOS   | shared Rust core over CoreBluetooth |
+| `unified-ble-manager/node/winrt`         | Windows | shared Rust core over WinRT         |
+| `unified-ble-manager/node/bluez`         | Linux   | shared Rust core over BlueZ         |
 
-All three execute one shared Rust core (`DesktopCentral` in `crates/ubm-desktop`, btleplug plus narrow OS adapters) through one N-API addon. This source targets `5.0.0-rc.0`. Tagged releases ship the addon prebuilt for `linux-x64`, `linux-arm64`, `darwin-arm64`, `darwin-x64`, `win32-x64` and `win32-arm64`, under `native/desktop-core/prebuilds/<platform>-<arch>/`. A normal install compiles nothing and needs no Rust toolchain. The app no longer needs `dbus-next` on Linux.
+All three execute one shared Rust core (`DesktopCentral` in `crates/ubm-desktop`, btleplug plus narrow OS adapters) through one N-API addon. This source targets `5.0.0`. Tagged releases ship the addon prebuilt for `linux-x64`, `linux-arm64`, `darwin-arm64`, `darwin-x64`, `win32-x64` and `win32-arm64`, under `native/desktop-core/prebuilds/<platform>-<arch>/`. A normal install compiles nothing and needs no Rust toolchain. The app no longer needs `dbus-next` on Linux.
 
 Runtime requirements:
 
@@ -38,14 +38,14 @@ On `SIGINT`/`SIGTERM`, await `manager.destroy()`. Then scan/connect/GATT with th
 
 The addon is found only from the installed package's own location: never through the process cwd, never from another platform's or architecture's binary, and never through a TypeScript fallback. Before any radio call, the host checks the binary's `nativeBuildIdentity()` against the identity the package was sealed with: contract revision, source digest, binding schema, target, and release profile.
 
-| Cause | Error |
-| --- | --- |
-| No prebuild for this platform/arch/libc | `capability.unavailable` · `<host>.native-boundary.load` · `no-prebuilt-for-target` |
-| The OS refused to load the file | `capability.unavailable` · `<host>.native-boundary.load` · `load-failed` (dlopen text kept) |
-| File does not match its identity sidecar, or the sidecar is missing | `protocol.incompatible` · `<host>.native-boundary.version` |
-| Binary identity differs from the package | `protocol.incompatible` · `<host>.native-boundary.version` (the differing fields are named) |
-| `UBM_NAPI_ADDON` is not an absolute path | `argument.invalid` · `<host>.native-boundary.load` |
-| Factory called on the wrong OS | `capability.unavailable` · `<host>.native-boundary.load` · `{linux,macos,windows}-required` |
+| Cause                                                               | Error                                                                                       |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| No prebuild for this platform/arch/libc                             | `capability.unavailable` · `<host>.native-boundary.load` · `no-prebuilt-for-target`         |
+| The OS refused to load the file                                     | `capability.unavailable` · `<host>.native-boundary.load` · `load-failed` (dlopen text kept) |
+| File does not match its identity sidecar, or the sidecar is missing | `protocol.incompatible` · `<host>.native-boundary.version`                                  |
+| Binary identity differs from the package                            | `protocol.incompatible` · `<host>.native-boundary.version` (the differing fields are named) |
+| `UBM_NAPI_ADDON` is not an absolute path                            | `argument.invalid` · `<host>.native-boundary.load`                                          |
+| Factory called on the wrong OS                                      | `capability.unavailable` · `<host>.native-boundary.load` · `{linux,macos,windows}-required` |
 
 `<host>` is the 4.x operation prefix of each OS: `direct-gatt` (CoreBluetooth), `winrt` or `bluez`.
 
@@ -95,26 +95,26 @@ A core error that carries the OS's own answer reports it as the 4.x platform ide
 
 Each option below is rejected before any core call. A test per row asserts that no dispatch reaches the core (`__tests__/backends/desktop/desktop-factories.test.js`).
 
-| Option | Behaviour |
-| --- | --- |
-| Scan query / filters | Required service UUIDs go to the OS scan filter (`scanner.plan`). A caller's `localNamePrefix` also goes to the OS: BlueZ receives it as the `SetDiscoveryFilter` `Pattern`, as the 4.x dbus-next backend sent it; CoreBluetooth and WinRT have no OS name filter. `Pattern` also matches an address prefix, so the OS only narrows. Name-prefix, manufacturer and address predicates always match in software as the final filter. |
-| Scan `duplicatePolicy` | Carried to the OS scan: `all` asks for every advertisement; `first` and `merged` ask the OS to filter repeats (BlueZ `DuplicateData: false`, CoreBluetooth `AllowDuplicates: NO`). `first` also delivers one sighting per peer per consumer. `merged` is the default of `scanForServices` / `scanUntil`. |
-| Scan `platform` options | `capability.unsupported` (not registered) |
-| Scan share / join | One core scan fanned out to joined leases. A forged token is `ownership.denied`. |
-| `deliveryMode` `require-*` | Checked against the characteristic's properties before any dispatch (`gatt.property-not-supported`). The delivery a value reports is what the core observed. |
-| Write without response | Resolves `commitState: 'unknown'` (never `confirmed`) |
-| Descriptor write without response | `capability.unsupported`, as the legacy WinRT addon answered: descriptors are written with a response |
-| Connection `intent: 'when-available'`, `preferredPhy` | `capability.unsupported` |
-| Connection `transport` other than `le`/`auto` | `argument.invalid` |
-| `bluezBus` / `pairingGeneration` on a non-BlueZ provider | `argument.invalid` |
-| Unknown `busKind` (BlueZ) | `argument.invalid` |
-| `restoration` | refused by the Node host |
+| Option                                                   | Behaviour                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Scan query / filters                                     | Required service UUIDs go to the OS scan filter (`scanner.plan`). A caller's `localNamePrefix` also goes to the OS: BlueZ receives it as the `SetDiscoveryFilter` `Pattern`, as the 4.x dbus-next backend sent it; CoreBluetooth and WinRT have no OS name filter. `Pattern` also matches an address prefix, so the OS only narrows. Name-prefix, manufacturer and address predicates always match in software as the final filter. |
+| Scan `duplicatePolicy`                                   | Carried to the OS scan: `all` asks for every advertisement; `first` and `merged` ask the OS to filter repeats (BlueZ `DuplicateData: false`, CoreBluetooth `AllowDuplicates: NO`). `first` also delivers one sighting per peer per consumer. `merged` is the default of `scanForServices` / `scanUntil`.                                                                                                                            |
+| Scan `platform` options                                  | `capability.unsupported` (not registered)                                                                                                                                                                                                                                                                                                                                                                                           |
+| Scan share / join                                        | One core scan fanned out to joined leases. A forged token is `ownership.denied`.                                                                                                                                                                                                                                                                                                                                                    |
+| `deliveryMode` `require-*`                               | Checked against the characteristic's properties before any dispatch (`gatt.property-not-supported`). The delivery a value reports is what the core observed.                                                                                                                                                                                                                                                                        |
+| Write without response                                   | Resolves `commitState: 'unknown'` (never `confirmed`)                                                                                                                                                                                                                                                                                                                                                                               |
+| Descriptor write without response                        | `capability.unsupported`, as the legacy WinRT addon answered: descriptors are written with a response                                                                                                                                                                                                                                                                                                                               |
+| Connection `intent: 'when-available'`, `preferredPhy`    | `capability.unsupported`                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Connection `transport` other than `le`/`auto`            | `argument.invalid`                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `bluezBus` / `pairingGeneration` on a non-BlueZ provider | `argument.invalid`                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Unknown `busKind` (BlueZ)                                | `argument.invalid`                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `restoration`                                            | refused by the Node host                                                                                                                                                                                                                                                                                                                                                                                                            |
 
 Cancellation: an aborted `AbortSignal` cancels exactly the in-flight core operation, through a ticket the host mints before the call. An abort before admission ends the operation with `operation.aborted` and no radio call. A caller deadline crosses to the core as a relative budget. Without one, the core's named liveness backstops apply.
 
 ### Parity with the 4.x desktop backends
 
-Every capability the TypeScript CoreBluetooth, WinRT and dbus-next BlueZ backends offered is tracked in `DESKTOP_RUST_CORE_PARITY`, which every desktop entrypoint exports. A capability is registered only when the loaded core implements it on this OS (`UbmCentral.capabilityStates`) and this provider wires it.
+Every capability the TypeScript CoreBluetooth, WinRT and dbus-next BlueZ backends offered is tracked in `DESKTOP_RUST_CORE_PARITY`, which `unified-ble-manager/testing` exports (no production entrypoint exports it). A capability is registered only when the loaded core implements it on this OS (`UbmCentral.capabilityStates`) and this provider wires it.
 
 **Implemented on the Rust path:**
 
@@ -192,13 +192,13 @@ import { createDbusNextBluezBackendProvider } from 'unified-ble-manager/node/blu
 const provider = createDbusNextBluezBackendProvider({ busKind: 'system', now })
 ```
 
-The name `createDbusNextBluezBackendProvider` is historical: it returns the shared Rust core provider, and no dbus-next transport is involved. All three are `createDesktopRustCoreBackendProvider({ platform, owner, now })` underneath, which every desktop entrypoint also exports.
+The name `createDbusNextBluezBackendProvider` is historical: it returns the shared Rust core provider, and no dbus-next transport is involved. All three are `createDesktopRustCoreBackendProvider({ platform, owner, now })` underneath, which every desktop entrypoint also exports. Deterministic suites use `createTestDesktopRustCoreBackendProvider` from `unified-ble-manager/testing` instead, which additionally accepts the synthetic radio and the binding, platform and first-state-timeout seams.
 
 Then scan and GATT through the same `BleManager` as React Native. Await `manager.destroy()` when the process session ends. Its cleanup record reports every release failure the core recorded.
 
 ## Verification
 
-Hardware-free (any host): `pnpm test:package` drives the provider through the real addon on its deterministic synthetic radio. Every verb executes in Rust. The first-party TCK legs that `unified-ble-manager/testing` exports (`createCoreBluetoothFirstPartyTckRegistration`, `createBluezFirstPartyTckRegistration`, `createWinRtFirstPartyTckRegistration`) run the same way: the production provider over the addon's synthetic radio, never a production open. They are deterministic proof only.
+Hardware-free (any host): `pnpm test:package` drives the provider through the real addon on its deterministic synthetic radio. Every verb executes in Rust. The first-party TCK legs that `unified-ble-manager/testing` exports (`createCoreBluetoothFirstPartyTckRegistration`, `createBluezFirstPartyTckRegistration`, `createWinRtFirstPartyTckRegistration`) run the same way: the `/testing` provider (`createTestDesktopRustCoreBackendProvider`) over the addon's synthetic radio, never a production open. They are deterministic proof only.
 
 Clean packed consumer, run from the checkout:
 

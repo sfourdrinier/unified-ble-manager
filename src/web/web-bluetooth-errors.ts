@@ -42,6 +42,26 @@ function isTransientEstablishmentFailure(name: string, context: WebErrorContext)
 export const WEB_CONNECT_OPERATION = 'web-connection.connect'
 
 /**
+ * Finding 161: a dispatched connect whose deadline expires before any link
+ * came up is the peer not answering — `connection.failed`
+ * (`caller-decides`) on every backend, the same physical event as Android
+ * GATT 133/147, which the browser never reports on its own. The deadline
+ * fact rides in `platform`. Every other operation keeps
+ * `operation.timed-out`, and a caller-supplied AbortSignal abort stays
+ * `operation.aborted`.
+ */
+export function webConnectDeadlineError(deadlineMs: number): BackendContractError {
+  const safeMessage = `The ${deadlineMs} ms connect deadline expired before any link came up.`
+  const normalized = contractError('connection.failed', 'connection', WEB_CONNECT_OPERATION, {
+    domain: 'web-bluetooth',
+    code: 'DeadlineExpired',
+    safeMessage,
+    metadata: { deadlineMs }
+  })
+  return new BackendContractError({ ...normalized.normalized, retryability: 'caller-decides' })
+}
+
+/**
  * The error an operation in flight reports when its link ends, one word per
  * event on every host (5.0): the browser reported the link gone
  * (`connection.lost`), the app released it (`operation.disconnected`), or

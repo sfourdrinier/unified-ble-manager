@@ -373,6 +373,44 @@
       "streamTerminal": null
     }
   },
+  "connect-deadline-expired": {
+    "react-native-android": {
+      "error": "connection.failed",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "react-native-ios": {
+      "error": "connection.failed",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "desktop-macos": {
+      "error": "connection.failed",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "desktop-windows": {
+      "error": "connection.failed",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "desktop-linux": {
+      "error": "connection.failed",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    },
+    "web": {
+      "error": "connection.failed",
+      "retryability": "caller-decides",
+      "lifecycle": null,
+      "streamTerminal": null
+    }
+  },
   "peer-not-found": {
     "react-native-android": {
       "error": "peer.not-found",
@@ -431,7 +469,7 @@
       "streamTerminal": null
     },
     "desktop-windows": {
-      "error": "gatt.read-failed",
+      "error": "platform.security",
       "retryability": "never",
       "lifecycle": null,
       "streamTerminal": null

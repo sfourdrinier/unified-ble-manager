@@ -70,7 +70,6 @@ export function createDesktopCoreProvider(
     owner: options.owner ?? profile.defaultOwner,
     now: options.now,
     hostKind,
-    radio: 'production',
     ...(options.binding === undefined ? {} : { binding: options.binding }),
     ...(bluez.bluezBus === undefined ? {} : { bluezBus: bluez.bluezBus }),
     ...(bluez.pairingGeneration === undefined ? {} : { pairingGeneration: bluez.pairingGeneration })
