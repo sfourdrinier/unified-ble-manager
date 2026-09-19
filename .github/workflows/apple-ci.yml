@@ -125,11 +125,13 @@ jobs:
       - name: Prepare RustCore from source (before the example copies the package)
         # example-expo depends on `file:..`: pnpm copies the package files at
         # install time and Expo autolinking compiles the pod from that copy,
-        # so ios/RustCore must be staged BEFORE the install (PR210-19 explicit
-        # source mode; CocoaPods never runs prepare_command for :path pods).
+        # so ios/RustCore must be staged BEFORE the install. F9: refresh the
+        # canonical builder only when the staging is stale (a no-op when
+        # fresh); PR210-19 explicit source mode still applies downstream
+        # (CocoaPods never runs prepare_command for :path pods).
         env:
           UBM_NATIVE_BUILD: source
-        run: pnpm native:apple:prepare
+        run: pnpm native:refresh --only apple
 
       - name: Install Expo example dependencies
         run: pnpm --dir example-expo install --no-frozen-lockfile

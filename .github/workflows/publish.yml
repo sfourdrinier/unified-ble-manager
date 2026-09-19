@@ -267,6 +267,12 @@ jobs:
         # Refresh with android/refresh-prebuilt-jniLibs.sh when this fails.
         run: node scripts/release/native-build-identity.js --check-android-prebuilts
 
+      - name: Verify every native artifact matches the sources
+        # F9: one status over the assembled tree — committed Android jniLibs,
+        # staged RustCore, and the CI-built desktop prebuild for this runner;
+        # anything else is not-applicable here, never silently skipped.
+        run: pnpm native:status
+
       - name: Install pinned Rust
         # ReleaseArtifacts/License suites shell to
         # `cargo metadata --locked --offline`; cargo --version resolves

@@ -46,7 +46,7 @@ test('CI stages ios/RustCore before an example installs the package copy that Co
   // (The classic example autolinks the repository root directly.)
   const apple = fs.readFileSync(path.join(root, '.github', 'workflows', 'apple-ci.yml'), 'utf8')
   const expoJob = apple.slice(apple.indexOf('  ios-expo:'), apple.indexOf('  tvos-library:'))
-  const prepare = expoJob.indexOf('pnpm native:apple:prepare')
+  const prepare = expoJob.indexOf('pnpm native:refresh --only apple')
   const install = expoJob.indexOf('pnpm --dir example-expo install')
   expect(prepare).toBeGreaterThan(-1)
   expect(install).toBeGreaterThan(prepare)

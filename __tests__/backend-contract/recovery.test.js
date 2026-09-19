@@ -70,6 +70,23 @@ describe('recovery follows the reported retryability', () => {
       actions: [{ kind: 'retry', afterMs: null }]
     })
   })
+
+  // F8: a stream overflow commits nothing at the peripheral — repeating the
+  // scan or subscription is the caller's policy — so its retryability agrees
+  // with its catalog advice (retry with backoff), instead of claiming `never`
+  // while advising a retry.
+  test('stream.overflow retryability and recovery agree', () => {
+    const { retryabilityForCode } = require('../../src/backend-contract/errors')
+    const { recoveryForError } = require('../../src/backend-contract/recovery')
+    expect(retryabilityForCode('stream.overflow')).toBe('caller-decides')
+    expect(recoveryForCode('stream.overflow', 'recovery.test')).toEqual({
+      disposition: 'retry-with-backoff',
+      actions: [{ kind: 'retry', afterMs: null }]
+    })
+    expect(
+      recoveryForError({ code: 'stream.overflow', operation: 'recovery.test', retryability: 'caller-decides' })
+    ).toEqual(recoveryForCode('stream.overflow', 'recovery.test'))
+  })
 })
 
 // PR210-42: the operation's owner reports `commit`. An `uncertain` commit
@@ -109,12 +126,13 @@ describe('recovery follows the reported commit state', () => {
   })
 
   test('not-dispatched keeps the catalog advice', () => {
+    const { retryabilityForCode } = require('../../src/backend-contract/errors')
     for (const code of BLE_ERROR_CODES) {
       expect(
         recoveryForError({
           code,
           operation: 'recovery.test',
-          retryability: code === 'operation.aborted' || code === 'operation.timed-out' ? 'caller-decides' : 'never',
+          retryability: retryabilityForCode(code),
           commit: 'not-dispatched'
         })
       ).toEqual(recoveryForCode(code, 'recovery.test'))

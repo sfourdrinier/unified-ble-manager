@@ -12,7 +12,7 @@ const {
   inspectPublicScanFingerprintAccountingForTests
 } = require('../src/public/ble-manager')
 const { CoreBoundedStream } = require('../src/core/bounded-stream')
-const { capacity } = require('../src/backend-contract/primitives')
+const { capacity, resourceCount } = require('../src/backend-contract/primitives')
 const { createDeterministicTestBleManager } = require('../src/testing/deterministic/deterministic-test-manager')
 const { deterministicScenarioAdvertisement } = require('../src/testing/scenarios/manager-scenario-executor')
 
@@ -2236,5 +2236,78 @@ describe('public scan presence eviction completeness', () => {
       )
     ).toBe(true)
     await closePresenceScan(fixture)
+  })
+})
+
+// F8 (Tauri find() fails stream.overflow within 100 ms): a scan-start burst
+// of cached peripherals collapses into the capacity-1 'latest' find budget
+// before the reader runs (Tauri IPC pending replay + live burst; the desktop
+// N-API path filters per-consumer before bounding, so it never sees this).
+// A drop-policy overflow notice is loss accounting, not session failure — the
+// in-process scan pump already keeps scanning on it — so find skips it and
+// waits for the 1 Hz match. Only an error-policy overflow fail-closes.
+describe('F8 find survives a scan-start burst against a capacity-1 stream', () => {
+  function burstAdvertisement(peerId, localName) {
+    return {
+      peerId,
+      localName,
+      rssi: -60,
+      txPowerLevel: null,
+      serviceUuids: [],
+      manufacturerData: [],
+      serviceData: []
+    }
+  }
+
+  function burstScan(filtered) {
+    return {
+      observations: filtered,
+      stop: async () => ({ state: 'released', failures: [] })
+    }
+  }
+
+  test('find skips a drop-policy overflow notice and returns a later match', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(1), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const filtered = filterScanObservations(
+      source,
+      normalizeScanQuery({ anyOf: [{ names: { prefixes: ['Target'] } }] }),
+      'coalesced'
+    )
+    source.emit(burstAdvertisement('cached-1', 'Cached One'), 32)
+    source.emit(burstAdvertisement('cached-2', 'Cached Two'), 32)
+    source.emit(burstAdvertisement('target', 'Target Device'), 32)
+    await expect(findPeerInScan(burstScan(filtered), 'first')).resolves.toMatchObject({ id: 'target' })
+    await filtered.close()
+  })
+
+  test('find still fail-closes an error-policy overflow with a truthful error', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(1), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const filtered = filterScanObservations(source, normalizeScanQuery(), 'coalesced')
+    source.observeSourceOverflow({
+      kind: 'overflow',
+      policy: 'error',
+      droppedItems: resourceCount(2),
+      droppedBytes: resourceCount(64),
+      replacedItems: resourceCount(0)
+    })
+    source.emit(burstAdvertisement('late', 'Late'), 32)
+    const error = await findPeerInScan(burstScan(filtered), 'first').then(
+      () => null,
+      failure => failure
+    )
+    expect(error).not.toBeNull()
+    expect(error.code).toBe('stream.overflow')
+    expect(error.retryability).toBe('caller-decides')
+    expect(error.recovery).toEqual({ disposition: 'retry-with-backoff', actions: [{ kind: 'retry', afterMs: null }] })
+    expect(error.platform).toMatchObject({
+      metadata: { policy: 'error', droppedItems: 2, droppedBytes: 64, itemCapacity: 1 }
+    })
+    await filtered.close()
   })
 })

@@ -255,6 +255,10 @@ cmd_build() {
     echo "error: DEVELOPMENT_TEAM is required (passed on the command line only)" >&2
     exit 1
   fi
+  # F9: Apple RustCore is gitignored — refresh it (a no-op when fresh)
+  # before the TV link. A failed refresh aborts the build; never link a
+  # stale core. UBM_NATIVE_REFRESH=off switches to check-only.
+  node "${ROOT}/scripts/native/ensure-native.js" apple || exit 1
   local scheme
   scheme="$(xcode_scheme)"
   echo "building scheme ${scheme} for Apple TV"

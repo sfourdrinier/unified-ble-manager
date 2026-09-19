@@ -240,15 +240,23 @@ async function main() {
   const disabled = await central.unsubscribe({ peerId: 'peer-1', selector: selector(), consumer: 'app' });
   assert.equal(disabled, true, 'last consumer disables the physical CCCD');
 
-  // Timeout owns the caller outcome: a parked radio connect settles
-  // operation.timed-out (F03), never hangs, never returns late success.
+  // Timeout owns the caller outcome: a parked radio connect whose deadline
+  // expires before any link settles connection.failed with the core's
+  // deadline-expired fact (finding 161), never hangs, never returns late
+  // success.
   await central.stageAdvertisement({ peerId: 'peer-2', rssi: -70 });
   await central.blockRadioOp('connect');
-  await rejectsWith(
+  await assert.rejects(
     central.connect({ peerId: 'peer-2', lease: 'lease-a', timeoutMs: 300 }),
-    'operation.timed-out',
-    'connection',
-    'blocked connect times out'
+    err => {
+      const got = codeOf(err);
+      return (
+        got.code === 'connection.failed' &&
+        got.domain === 'connection' &&
+        /"domain":"core","code":"deadline-expired"/.test(String(err.message))
+      );
+    },
+    'blocked connect: expected connection.failed|connection with core/deadline-expired'
   );
   await central.unblockRadioOp('connect');
 

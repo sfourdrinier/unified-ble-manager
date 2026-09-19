@@ -57,11 +57,15 @@ pnpm install --frozen-lockfile
 pnpm validate:evidence
 pnpm test:package
 pnpm test:plugin
+pnpm native:status
 pnpm lint
 pnpm prepack
 pnpm release:artifacts:check
 node scripts/ci/pack-install-smoke.js
 ```
+
+Precompiled Rust artifacts are never rebuilt by hand: consumers refresh what
+they consume themselves; see `docs/NATIVE_ARTIFACTS.md`.
 
 Before pushing, `scripts/ci/preflight.sh` runs the Linux-reproducible CI jobs
 against a clean detached worktree outside the working tree — the same thing

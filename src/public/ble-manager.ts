@@ -573,18 +573,36 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
       stream.closeWithReason(this.terminal.reason)
     }
     const iterator = stream[Symbol.asyncIterator]()
+    const delivery = this.delivery
     return {
       next: async () => {
-        const item = await iterator.next()
-        if (item.done) return { done: true, value: undefined }
-        if (item.value.kind === 'value') return { done: false, value: item.value.value }
-        if (item.value.kind === 'overflow') {
-          throw rehydratePublicError(contractError('stream.overflow', 'scan', 'public-scan.events'))
+        while (true) {
+          const item = await iterator.next()
+          if (item.done) return { done: true, value: undefined }
+          if (item.value.kind === 'value') return { done: false, value: item.value.value }
+          if (item.value.kind === 'overflow') {
+            // F8: a drop-policy notice is loss accounting, not session
+            // failure — skip it and keep delivering, as the observation pump
+            // does. Only an error-policy overflow fail-closes the events.
+            if (item.value.policy !== 'error') continue
+            throw rehydratePublicError(scanStreamOverflowError('public-scan.events', item.value, delivery))
+          }
+          if (item.value.reason === 'overflow') {
+            throw rehydratePublicError(
+              scanStreamOverflowError(
+                'public-scan.events',
+                {
+                  policy: delivery.overflowPolicy,
+                  droppedItems: Number(item.value.droppedItems),
+                  droppedBytes: Number(item.value.droppedBytes),
+                  replacedItems: Number(item.value.replacedItems)
+                },
+                delivery
+              )
+            )
+          }
+          return { done: true, value: undefined }
         }
-        if (item.value.reason === 'overflow') {
-          throw rehydratePublicError(contractError('stream.overflow', 'scan', 'public-scan.events'))
-        }
-        return { done: true, value: undefined }
       },
       return: async () => {
         this.subscribers.delete(stream)
@@ -2828,6 +2846,40 @@ function assertChooseUuid(value: unknown): void {
   }
 }
 
+/**
+ * F8: a scan observation overflow names what overflowed — the drop policy,
+ * the accounted loss, and the budget that was exceeded — instead of a bare
+ * code with null platform detail. Retryability comes from the code
+ * (`caller-decides`: observations commit nothing, so repeating the scan is
+ * the caller's policy) and the catalog already advises retry with backoff.
+ */
+function scanStreamOverflowError(
+  operation: string,
+  notice: {
+    readonly policy: string
+    readonly droppedItems: number
+    readonly droppedBytes: number
+    readonly replacedItems: number
+  },
+  budget: { readonly itemCapacity: number; readonly byteCapacity: number }
+): BackendContractError {
+  return contractError('stream.overflow', 'scan', operation, {
+    domain: 'scan',
+    code: 'scan-observation-overflow',
+    safeMessage:
+      `The scan observation stream overflowed its ${String(budget.itemCapacity)}-item budget ` +
+      `under ${notice.policy} and dropped ${String(notice.droppedItems)} observations.`,
+    metadata: Object.freeze({
+      policy: notice.policy,
+      droppedItems: notice.droppedItems,
+      droppedBytes: notice.droppedBytes,
+      replacedItems: notice.replacedItems,
+      itemCapacity: budget.itemCapacity,
+      byteCapacity: budget.byteCapacity
+    })
+  })
+}
+
 export async function findPeerInScan(
   scan: ScanSession,
   select: FindOptions['select'],
@@ -2854,7 +2906,15 @@ export async function findPeerInScan(
       throw rehydratePublicError(contractError('stream.closed', 'scan', 'public-ble-manager.find'))
     }
     if (item.value.kind === 'overflow') {
-      throw rehydratePublicError(contractError('stream.overflow', 'scan', 'public-ble-manager.find'))
+      // F8: a drop-policy notice is loss accounting, not session failure (the
+      // desktop N-API path filters per-consumer before bounding, so a burst of
+      // non-matching cached peripherals never reaches its capacity-1 stream).
+      // Skip it and wait for the match; only an error-policy overflow
+      // fail-closes the find.
+      if (item.value.policy !== 'error') continue
+      throw rehydratePublicError(
+        scanStreamOverflowError('public-ble-manager.find', item.value, scan.observations.limits)
+      )
     }
     const peer = peerFromPublicObservation(item.value.value)
     if (select === undefined || select === 'first' || select(peer)) return peer

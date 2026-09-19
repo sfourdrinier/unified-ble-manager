@@ -6,6 +6,19 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ### Changed
 
+- **Precompiled Rust artifacts now have a managed lifecycle (F9).** Every
+  Rust change used to stale up to three precompiled artifacts, each found
+  late and by hand; now `pnpm native:status` reports each one as `fresh`,
+  `stale`, `missing` or `not-applicable` with its staged and current digests
+  and its exact refresh command, and `pnpm native:refresh [--only
+android,apple,desktop]` rebuilds only what is stale with the canonical
+  builders. Every consumer refreshes what it needs itself before it builds
+  or launches — `hosts.sh up` (desktop N-API for electron/node), `build-tv.sh
+build` and the phone Expo builds (Apple RustCore / Android jniLibs) — and
+  aborts on a stale artifact; `UBM_NATIVE_REFRESH=off` switches to
+  check-only. The committed Android `jniLibs` refresh the same way and stay a
+  visible git diff. See `docs/NATIVE_ARTIFACTS.md`.
+
 - **Departure from 4.x — Apple `permissions.request` presents the system
   Bluetooth prompt (finding 179).** The 4.x Expo bridge refused with
   `capability.unsupported` (`unsupportedPermissionPrompt`) while readiness
@@ -627,6 +640,15 @@ previousAttachmentId, attachmentId, attachment}}`. The renderer/webview
 
 ### Fixed
 
+- **Tauri `find()` no longer fails `stream.overflow` on a scan-start burst
+  (finding 213).** Desktop scans re-report every known peripheral when they
+  start. On Tauri the IPC path filtered after buffering, so about 50 nearby
+  devices overflowed `find()`'s one-item budget within 100 ms. A drop-policy
+  overflow notice is now loss accounting in `find()` and `scan.events`, as it
+  already was in the in-process scan pump; only an error-policy overflow fails
+  closed. `stream.overflow` is now `caller-decides`, which agrees with its
+  retry-with-backoff recovery. Scan overflow errors name the drop policy, the
+  dropped counts and the stream budget in `platform`.
 - **Fixed the connect deadline abandoning the backend acquisition (finding
   194).** `UnifiedBleCore.connect` now cancels the backend acquisition through
   the `AbortSignal` in `ConnectionOptions` when the caller's deadline expires or

@@ -127,7 +127,9 @@
     "build:example:web": "tsc --noEmit -p example-web/tsconfig.json && vite build --config example-web/vite.config.mts",
     "example:web": "pnpm prepack && vite --config example-web/vite.config.mts",
     "prepare": "pnpm clean:plugin && pnpm build:plugin && pnpm exec bob build",
-    "lint:plugin": "eslint plugin/src/*"
+    "lint:plugin": "eslint plugin/src/*",
+    "native:status": "node scripts/native/native-status.js",
+    "native:refresh": "node scripts/native/native-refresh.js"
   },
   "keywords": [
     "bluetooth",

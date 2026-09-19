@@ -116,6 +116,13 @@ up() {
     echo "$host has unmanaged processes ($strays); run '$0 down $host' first" >&2
     return 1
   fi
+  # F9: the desktop N-API prebuild is gitignored — refresh it (a no-op when
+  # fresh) before electron/node launch. Tauri compiles its plugin inside its
+  # own app build, so only electron/node refresh here. A failed refresh
+  # aborts the launch; UBM_NATIVE_REFRESH=off switches to check-only.
+  if [ "$host" = electron ] || [ "$host" = node ]; then
+    node "$ROOT/scripts/native/ensure-native.js" desktop || return 1
+  fi
   if [ "${UBM_HOSTS_DIRECT:-}" = 1 ]; then
     spawn "$host"
   else

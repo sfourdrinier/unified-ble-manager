@@ -81,6 +81,7 @@ and coding agents should read [`../AGENTS.md`](../AGENTS.md) first.
 | [`PERFORMANCE.md`](PERFORMANCE.md) | Performance and resource verification harness and its evidence limits | Current |
 | [`evidence/react-native-apple-physical-device-readiness.md`](evidence/react-native-apple-physical-device-readiness.md) | What is proven before Apple hardware exists; what a live-radio receipt adds | Current |
 | [`platforms/META_QUEST_4.1_SCOPE.md`](platforms/META_QUEST_4.1_SCOPE.md) | Maintainer decision deferring Meta Quest support to 4.1 | Current |
+| [`NATIVE_ARTIFACTS.md`](NATIVE_ARTIFACTS.md) | Precompiled Rust artifact lifecycle: status, one-command refresh, and where the checks run | Current |
 
 ## Policy, security, and process
 

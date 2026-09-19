@@ -654,6 +654,12 @@ jobs:
         working-directory: example-expo
         run: NODE_ENV=development npx expo-doctor
 
+      - name: Verify committed Android prebuilts match the sources
+        # F9: the Gradle build consumes the committed jniLibs; fail here —
+        # never on a stale artifact — when a Rust change outruns its refresh
+        # (android/refresh-prebuilt-jniLibs.sh, committed by the maintainer).
+        run: pnpm native:status --only android
+
       - name: Prebuild Expo native projects
         working-directory: example-expo
         run: NODE_ENV=development npx expo prebuild --clean --no-install

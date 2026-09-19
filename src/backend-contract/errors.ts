@@ -167,9 +167,10 @@ export class BackendContractError extends Error {
 }
 /**
  * Builds a normalized error whose retryability is derived from its code:
- * `operation.aborted` and `operation.timed-out` are `caller-decides`, every
- * other code is `never`. That derivation is only true when the operation had
- * no effect — it was never dispatched, or it commits nothing (a read). An
+ * `operation.aborted`, `operation.timed-out` and `stream.overflow` are
+ * `caller-decides`, every other code is `never`. That derivation is only true
+ * when the operation had no effect — it was never dispatched, or it commits
+ * nothing (a read, or an observation stream that only drops what it saw). An
  * operation that was dispatched and may commit at the peripheral (a write)
  * must be reported with {@link commitUncertainError} instead.
  */
@@ -193,12 +194,18 @@ export function contractError(
 
 /**
  * The retryability an error has when the operation that produced it reported
- * none of its own: `caller-decides` for `operation.aborted` and
- * `operation.timed-out`, `never` for every other code. It is the default for an
- * operation that had no effect, never a replacement for the operation's answer.
+ * none of its own: `caller-decides` for `operation.aborted`,
+ * `operation.timed-out` and `stream.overflow`, `never` for every other code.
+ * An overflow drops observations without committing anything at the
+ * peripheral, so repeating the scan or subscription is the caller's policy —
+ * matching the recovery catalog, which already advises retry with backoff.
+ * It is the default for an operation that had no effect, never a replacement
+ * for the operation's answer.
  */
 export function retryabilityForCode(code: BleErrorCode): BleRetryability {
-  return code === 'operation.aborted' || code === 'operation.timed-out' ? 'caller-decides' : 'never'
+  return code === 'operation.aborted' || code === 'operation.timed-out' || code === 'stream.overflow'
+    ? 'caller-decides'
+    : 'never'
 }
 
 /**
