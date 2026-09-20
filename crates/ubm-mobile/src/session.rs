@@ -19,7 +19,7 @@
 use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
@@ -144,8 +144,16 @@ impl ScanSlot {
     }
 }
 
+/// Process-monotonic session-instance mint: [`MobileSession::instance_key`]
+/// must never repeat for a new session, which a pointer address cannot
+/// promise once the allocation is freed (the allocator hands it back and a
+/// new session inherits the dead one's client state).
+static NEXT_INSTANCE: AtomicUsize = AtomicUsize::new(1);
+
 pub(crate) struct SessionState {
     pub id: u64,
+    /// Process-unique instance identity, shared by clones, never reused.
+    pub instance: usize,
     pub outbox: Outbox,
     ops: Mutex<OpTable>,
     idle: Notify,
@@ -171,6 +179,7 @@ impl SessionState {
     pub(crate) fn new(id: u64, outbox: Outbox, background_scope: BackgroundScope) -> Self {
         Self {
             id,
+            instance: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
             outbox,
             ops: Mutex::new(OpTable {
                 live: HashMap::new(),
@@ -531,10 +540,12 @@ impl MobileSession {
     }
 
     /// Identity of this session object across hosts (session ids restart
-    /// per host): clones share it. For clients keeping per-session state.
+    /// per host): clones share it, and it is never reused after the session
+    /// dies, so clients keeping per-session state cannot inherit a dead
+    /// session's state when the allocator recycles the address.
     #[must_use]
     pub fn instance_key(&self) -> usize {
-        Arc::as_ptr(&self.state) as usize
+        self.state.instance
     }
 
     /// Take queued records (see [`crate::drain`]).
@@ -902,7 +913,9 @@ impl MobileSession {
             | "connection.request-phy"
             | "connection.maximum-write-length" => {
                 let (required, optional): (&[&str], &[&str]) = match op {
-                    "connection.effective-mtu" => (&["peerId", "lease"], &[]),
+                    "connection.effective-mtu" => {
+                        (&["peerId", "lease", "operationId"], &["budgetMs"])
+                    }
                     "connection.request-mtu" => {
                         (&["peerId", "lease", "mtu", "operationId"], &["budgetMs"])
                     }
@@ -2226,6 +2239,7 @@ impl MobileSession {
                     ("control", Value::from(radio.control_drops)),
                 ]),
             ),
+            ("connectSections", Value::from(radio.connect_sections)),
             ("liveOps", count(live_ops)),
         ]);
         Ok(object(vec![

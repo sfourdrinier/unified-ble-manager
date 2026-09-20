@@ -6,7 +6,7 @@
 
 const { ElectronMainBleBinding, ElectronMainBleRouter } = require('../../src/electron-main')
 const { createElectronRendererBleManager } = require('../../src/electron-renderer')
-const { BackendContractError } = require('../../src/backend-contract/errors')
+const { BackendContractError, contractError } = require('../../src/backend-contract/errors')
 const { IPC_CLIENT_COMPATIBILITY_OFFER } = require('../../src/ipc/protocol')
 const { monotonicTimestamp, opaqueId, version, versionRange } = require('../../src/backend-contract/primitives')
 const { BUILT_IN_FEATURE_CATALOG } = require('../../src/backend-contract/capabilities')
@@ -204,6 +204,104 @@ test('renderer observes the main-side effective MTU like the Tauri route', async
     payloadBytes: 182
   })
   expect(effectiveMtu).toHaveBeenCalledTimes(1)
+})
+
+function mtuConnection(peer, effectiveMtu) {
+  return {
+    peerId: peer,
+    connectionId: `connection-${peer}`,
+    connectionGeneration: `connection-generation-${peer}`,
+    ownerLeaseId: `owner-lease-${peer}`,
+    discover: jest.fn(),
+    disconnect: jest.fn(async () => ({ state: 'released', failures: [] })),
+    events: {
+      [Symbol.asyncIterator]: () => ({
+        next: () => new Promise(() => {}),
+        return: async () => ({ done: true, value: undefined })
+      })
+    },
+    readRssi: jest.fn(async () => ({ rssi: -42 })),
+    effectiveMtu
+  }
+}
+
+async function connectPeer(current, sender, bootstrapValue, ordinal, peer) {
+  const connected = await current.port.handler(
+    { sender },
+    routeEnvelope(current, bootstrapValue, ordinal, 'connection.connect', { peerId: peer, deadline: null })
+  )
+  expect(connected.kind).toBe('route')
+  return connected.payload.handle
+}
+
+test('effective-mtu forwards the renderer deadline and abort signal', async () => {
+  const seen = []
+  const effectiveMtu = jest.fn(async options => {
+    seen.push(options)
+    return { attMtu: 185, payloadBytes: 182, platformPduBytes: null }
+  })
+  const current = createMainFixture({
+    connect: jest.fn(async () => mtuConnection('peer-mtu-deadline', effectiveMtu)),
+    monotonicNow: () => 1000
+  })
+  const sender = createSender('client-mtu-deadline', 'window-mtu-deadline', 'session-mtu-deadline')
+  const bootstrapValue = await bootstrap(current, sender)
+  const connectionHandle = await connectPeer(current, sender, bootstrapValue, 1, 'peer-mtu-deadline')
+  // The renderer speaks a relative budget on its own clock; main admits it
+  // against the main clock and forwards the resulting absolute deadline.
+  const response = await current.port.handler(
+    { sender },
+    routeEnvelope(current, bootstrapValue, 2, 'connection.effective-mtu', {
+      connectionHandle,
+      budgetMs: 500
+    })
+  )
+  expect(response.kind).toBe('route')
+  expect(effectiveMtu).toHaveBeenCalledTimes(1)
+  expect(seen[0].deadline).toBe(1500)
+  expect(seen[0].signal).toBeInstanceOf(AbortSignal)
+})
+
+test('effective-mtu propagates renderer abort to the connection', async () => {
+  let captured
+  const effectiveMtu = jest.fn(
+    options =>
+      new Promise((resolve, reject) => {
+        captured = options
+        // What a real connection reports when its operation signal fires.
+        options.signal.addEventListener('abort', () =>
+          reject(
+            new BackendContractError(
+              contractError('operation.aborted', 'connection', 'test-effective-mtu-abort').normalized
+            )
+          )
+        )
+      })
+  )
+  const current = createMainFixture({
+    connect: jest.fn(async () => mtuConnection('peer-mtu-abort', effectiveMtu))
+  })
+  const sender = createSender('client-mtu-abort', 'window-mtu-abort', 'session-mtu-abort')
+  const bootstrapValue = await bootstrap(current, sender)
+  const connectionHandle = await connectPeer(current, sender, bootstrapValue, 1, 'peer-mtu-abort')
+  const mtuRequest = routeEnvelope(current, bootstrapValue, 2, 'connection.effective-mtu', {
+    connectionHandle,
+    deadline: null
+  })
+  const pending = current.port.handler({ sender }, mtuRequest)
+  for (let flush = 0; flush < 5; flush += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise(resolve => setImmediate(resolve))
+  }
+  const cancelled = await current.port.handler(
+    { sender },
+    routeEnvelope(current, bootstrapValue, 3, 'operation.cancel', {
+      targetCorrelation: String(mtuRequest.envelope.correlation)
+    })
+  )
+  expect(cancelled).toMatchObject({ kind: 'route', payload: { state: 'cancellation-requested' } })
+  await expect(pending).resolves.toMatchObject({ kind: 'failure', error: { code: 'operation.aborted' } })
+  expect(captured.signal.aborted).toBe(true)
 })
 
 test('effective-mtu on an unknown handle fails closed instead of answering', async () => {

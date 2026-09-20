@@ -262,7 +262,7 @@ spec.
 | op | args (`?` optional) | ok `value` | Δ vs spec §2 |
 |---|---|---|---|
 | `adapter.state` | `{}` | `{availability,authorization,power,safeReason,updatedAt,backendGeneration,adapterGeneration}`, read from the platform (`AdapterState` request). Generations are the core attachment's, named by the owner's [identity](#identity): `"1"` at open, as legacy React Native reported them. | — |
-| `counters.describe` | `{}` | `{counters:{13 keys},native:{pendingRadioRequests,liveOps},process:{counters:{13 keys},native:{pendingRadioRequests,lateRadioCompletions,ingressDrops:{advertisement,notification,control},liveOps}}}`. `counters`/`native` describe this session; `process` describes the whole owner. Answered after `session.dispose` too. | see [Counters](#counters) |
+| `counters.describe` | `{}` | `{counters:{13 keys},native:{pendingRadioRequests,liveOps},process:{counters:{13 keys},native:{pendingRadioRequests,lateRadioCompletions,ingressDrops:{advertisement,notification,control},liveOps,connectSections}}}`. `counters`/`native` describe this session; `process` describes the whole owner. Answered after `session.dispose` too. | see [Counters](#counters) |
 | `scan.start` | `{serviceUuids[],duplicatePolicy:"all",operationId,deviceAddresses?[],platform?{mode?,callbackType?,legacy?,phy?,reportDelayMs?},budgetMs?}` (`phy`/`reportDelayMs` → `capability.unsupported` `scan.start.platform-options` before any effect, as legacy) | `{operationId}`, the session's **membership** id (`s{n}-scan-{k}`) | `timeoutMs` → `budgetMs` (start budget). Adds `deviceAddresses` and Android `platform`: on Apple either one is `capability.unsupported`. `callbackType:"match-lost"` is `capability.unsupported`. `duplicatePolicy` other than `all` is `capability.unsupported` (first/merged are applied above the radio). |
 | `scan.stop` | `{operationId,budgetMs?}` | cleanup record. A stop failure keeps the membership (retry). | unknown id → `lifecycle.invalid-state` (detail `scan-not-active`; the contract has no `scan.not-active` code) |
 | `peers.resolve` | `{reference:{opaqueId,version?,backendId?,scope?}}` | peer record \| `null` | — |
@@ -273,7 +273,7 @@ spec.
 | `connection.connect` | `{peerId,lease,operationId,budgetMs?,intent?:"direct"\|"when-available",transport?:"auto"\|"le",preferredPhy?:["le-1m"\|"le-2m"\|"le-coded"]}` | `{peerKey,connectionGeneration}` | `when-available` = Android `autoConnect`; Apple → unsupported. `preferredPhy` (PR210-54): on Android the link is established on those PHYs (`connectGatt(…, TRANSPORT_LE, phyMask)`, API 26+); it is refused with `capability.unsupported` (`connection.connect.preferred-phy`) before any effect on Apple, with `when-available` (Android ignores the connect PHY with `autoConnect`), and when the link is already up. The radio refuses API < 26 the same way. |
 | `connection.disconnect` | `{peerId,lease,budgetMs?,operationId?}` | cleanup record. A failure answers `release-failed` and keeps the lease for retry. A lease an adapter loss ended answers `released` once, as legacy's adapter-loss cleanup left it. | — |
 | `connection.rssi` | `{peerId,lease,operationId,budgetMs?}` | `{rssi}` (core-admitted: foreign lease → `ownership.denied`) | **new** |
-| `connection.effective-mtu` | `{peerId,lease}` | `{mtu\|null}` (Android) | **new**, Apple → unsupported |
+| `connection.effective-mtu` | `{peerId,lease,operationId,budgetMs?}` | `{mtu\|null}` (Android) | **new**, Apple → unsupported |
 | `connection.request-mtu` | `{peerId,lease,mtu:0..517,operationId,budgetMs?}` (below 23 goes to the platform, which refuses it: `platform.failure` `requestMtuFailed`, as legacy) | `{mtu}` | **new**, Apple → unsupported |
 | `connection.request-priority` | `{peerId,lease,priority:"low-power"\|"balanced"\|"high-throughput",operationId,budgetMs?}` | `{accepted}` (dispatch acceptance only) | **new**, Apple → unsupported |
 | `connection.read-phy` | `{peerId,lease,operationId,budgetMs?}` | `{tx,rx}` | **new**, Apple → unsupported |
@@ -491,6 +491,8 @@ counters did (PR210-53). The whole owner is reported separately, under
   also counts completions with the wrong shape), `ingressDrops` per class,
   and `liveOps`. Late completions and ingress drops are radio facts that no
   single session owns.
+- `connectSections`: live entries of the per-peer connect-section table
+  (never removed; a soak can prove no growth from garbage peer ids).
 
 A disposed session still answers `counters.describe`. After a clean dispose it
 reports nothing held.

@@ -332,8 +332,16 @@ mod tests {
         assert_eq!(fingerprint["gatt"]["descriptorCount"], 7);
     }
 
+    /// Structural fidelity only: no checked field disagreed (`passed`).
+    /// This is partial by construction and cannot measure over-the-air
+    /// timing — the in-process fingerprint carries point distributions
+    /// (`n:1`, not measurements) and omits central-side latencies, so the
+    /// comparison always keeps `Incomplete` corners (see
+    /// `in_process_fingerprint_comparison_is_incomplete_not_qualified`).
+    /// Over-the-air equivalence needs a real capture compared against a
+    /// real simulator run with `passed && complete` (`--qualify-ota`).
     #[test]
-    fn sim_fingerprint_matches_the_tauri_capture() {
+    fn structural_fidelity_has_no_mismatches_vs_tauri_capture() {
         let real = load_fixture("tauri-macos-unknown-engine-E9B93D29-2026-09-19.json");
         let sim = stock_sim_fingerprint();
         let report = compare_fingerprints(&real, &sim, Tolerances::default());
@@ -344,8 +352,10 @@ mod tests {
         );
     }
 
+    /// Structural fidelity only: partial, cannot measure over-the-air
+    /// timing (see `structural_fidelity_has_no_mismatches_vs_tauri_capture`).
     #[test]
-    fn sim_fingerprint_matches_the_ios_capture() {
+    fn structural_fidelity_has_no_mismatches_vs_ios_capture() {
         let real = load_fixture("expo-ios-ios-phone-E9B93D29-2026-09-19.json");
         let sim = stock_sim_fingerprint();
         let report = compare_fingerprints(&real, &sim, Tolerances::default());
@@ -356,8 +366,10 @@ mod tests {
         );
     }
 
+    /// Structural fidelity only: partial, cannot measure over-the-air
+    /// timing (see `structural_fidelity_has_no_mismatches_vs_tauri_capture`).
     #[test]
-    fn sim_fingerprint_matches_the_android_capture_modulo_platform_services() {
+    fn structural_fidelity_has_no_mismatches_vs_android_capture_modulo_platform_services() {
         let mut real = load_fixture("expo-android-samsung-sm-a376u1-2-E9B93D29-2026-09-19.json");
         strip_android_platform_services(&mut real);
         let sim = stock_sim_fingerprint();
@@ -367,5 +379,48 @@ mod tests {
             "fidelity gap vs Android capture: {}",
             serde_json::to_string_pretty(&report).unwrap_or_default()
         );
+    }
+
+    /// The in-process fingerprint path is structural evidence only and can
+    /// never qualify as over-the-air equivalence: point distributions and
+    /// omitted central-side timings always leave `Incomplete` corners. If
+    /// this test ever fails because the comparison became complete, promote
+    /// the path — rename the structural tests and point qualification at
+    /// it. Until then, OTA qualification is a real strap capture compared
+    /// against a real simulator run (`h10-sim --qualify-ota`), which
+    /// requires `passed && complete`.
+    #[test]
+    fn in_process_fingerprint_comparison_is_incomplete_not_qualified() {
+        let mut android = load_fixture("expo-android-samsung-sm-a376u1-2-E9B93D29-2026-09-19.json");
+        strip_android_platform_services(&mut android);
+        let cases = [
+            (
+                "tauri",
+                load_fixture("tauri-macos-unknown-engine-E9B93D29-2026-09-19.json"),
+            ),
+            (
+                "ios",
+                load_fixture("expo-ios-ios-phone-E9B93D29-2026-09-19.json"),
+            ),
+            ("android", android),
+        ];
+        for (name, real) in &cases {
+            let sim = stock_sim_fingerprint();
+            let report = compare_fingerprints(real, &sim, Tolerances::default());
+            assert!(
+                report.passed,
+                "in-process structural regression vs {name} capture: {}",
+                serde_json::to_string_pretty(&report).unwrap_or_default()
+            );
+            assert!(
+                !report.complete,
+                "in-process path became complete vs {name}: promote it to the OTA \
+                 qualification path instead of asserting passed alone"
+            );
+            assert!(
+                crate::compare::qualify_ota(&report).is_err(),
+                "in-process path must never qualify as OTA vs {name}"
+            );
+        }
     }
 }

@@ -54,7 +54,7 @@ const ARG_SCHEMAS = Object.freeze({
     ['peerId', 'lease'],
     ['budgetMs', 'operationId']
   ],
-  'connection.effective-mtu': [['peerId', 'lease'], []],
+  'connection.effective-mtu': [['peerId', 'lease', 'operationId'], ['budgetMs']],
   'connection.request-mtu': [['peerId', 'lease', 'mtu', 'operationId'], ['budgetMs']],
   'connection.request-priority': [['peerId', 'lease', 'priority', 'operationId'], ['budgetMs']],
   'connection.request-phy': [
@@ -942,6 +942,7 @@ class DeterministicRustCoreNative {
           pendingRadioRequests: owner.held,
           lateRadioCompletions: 0,
           ingressDrops: { advertisement: 0, notification: 0, control: 0 },
+          connectSections: 0,
           liveOps: owner.held
         }
       }

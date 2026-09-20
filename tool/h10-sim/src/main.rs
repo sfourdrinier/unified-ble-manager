@@ -67,7 +67,9 @@ fn usage() -> String {
          \x20 --timing-seed <u64>    Seed for semi-random timing sampling (default 0; same seed replays a run)\n\
          \x20 --emit-timing-defaults  Print the UNCONFIRMED default timing profile as JSON and exit (no radio)\n\
          \x20 --emit-sim-fingerprint  Print the in-process sim fingerprint as JSON and exit (no radio)\n\
-         \x20 --compare <real.json> <sim.json>  Compare fingerprints field by field, print the report and exit (no radio)\n\
+         \x20 --compare <real.json> <sim.json>  Compare fingerprints field by field, print the report and exit (no radio); exit 0 needs passed AND complete\n\
+         \x20 --allow-incomplete      With --compare, exit 0 on passed even when coverage is incomplete\n\
+         \x20 --qualify-ota <real.json> <sim-run.json>  OTA qualification: real strap capture vs real simulator run (no radio); exit 0 needs passed AND complete (--allow-incomplete never applies)\n\
          \x20 --tolerance-p50 <f>    Relative p50 tolerance for timing checks (default 0.25)\n\
          \x20 --tolerance-ms <f>     Absolute floor in ms for timing checks (default 50)\n\
          \x20 --help                Print this help\n\
@@ -92,10 +94,13 @@ fn load_timing_profile(path: &str, seed: u64) -> Result<timing::TimingProfile, S
     timing::TimingProfile::from_fingerprint_json(&text, seed)
 }
 
-/// Compares a real-strap fingerprint against a simulator fingerprint and
-/// prints the field-by-field report as JSON. Exits 0 when every check
-/// passed, 1 otherwise.
-fn run_compare(real_path: &str, sim_path: &str, tolerances: compare::Tolerances) -> ExitCode {
+/// Loads two `h10-capture` fingerprints and compares them. A bad path or
+/// bad file is a loud failure — never an assumption.
+fn load_comparison(
+    real_path: &str,
+    sim_path: &str,
+    tolerances: compare::Tolerances,
+) -> Result<compare::ComparisonReport, String> {
     let read = |path: &str| {
         std::fs::read_to_string(path)
             .map_err(|error| format!("cannot read {path}: {error}"))
@@ -103,30 +108,114 @@ fn run_compare(real_path: &str, sim_path: &str, tolerances: compare::Tolerances)
                 serde_json::from_str(&text).map_err(|error| format!("cannot parse {path}: {error}"))
             })
     };
-    let report = (|| -> Result<compare::ComparisonReport, String> {
-        let real: serde_json::Value = read(real_path)?;
-        let sim: serde_json::Value = read(sim_path)?;
-        Ok(compare::compare_fingerprints(&real, &sim, tolerances))
-    })();
-    match report {
+    let real: serde_json::Value = read(real_path)?;
+    let sim: serde_json::Value = read(sim_path)?;
+    Ok(compare::compare_fingerprints(&real, &sim, tolerances))
+}
+
+/// Prints the field-by-field report as JSON. An encoding failure is a loud
+/// failure, never a missing report.
+fn print_comparison_report(report: &compare::ComparisonReport) -> Result<(), String> {
+    match serde_json::to_string_pretty(report) {
+        Ok(json) => {
+            println!("{json}");
+            Ok(())
+        }
+        Err(error) => Err(format!("cannot encode comparison report: {error}")),
+    }
+}
+
+/// Names the unverified fields on stderr. Incomplete corners are reported
+/// either way, so the gap is never silent.
+fn report_incomplete_fields(report: &compare::ComparisonReport) {
+    if !report.complete {
+        let incomplete: Vec<&str> = report
+            .fields
+            .iter()
+            .filter(|field| field.status == compare::CheckStatus::Incomplete)
+            .map(|field| field.field.as_str())
+            .collect();
+        eprintln!(
+            "h10-sim: comparison incomplete, unverified fields: {}",
+            incomplete.join(", ")
+        );
+    }
+}
+
+/// Compares a real-strap fingerprint against a simulator fingerprint and
+/// prints the field-by-field report as JSON. Exits 0 only when every check
+/// passed AND coverage is complete; 1 otherwise. A run with `passed` but
+/// `complete:false` (unverified corners: rotated payload bytes, rows without
+/// parent paths, thin samples) must never read as qualified — pass
+/// `--allow-incomplete` to accept that explicitly. Incomplete field names go
+/// to stderr either way, so the gap is never silent.
+fn run_compare(
+    real_path: &str,
+    sim_path: &str,
+    tolerances: compare::Tolerances,
+    allow_incomplete: bool,
+) -> ExitCode {
+    match load_comparison(real_path, sim_path, tolerances) {
         Ok(report) => {
-            match serde_json::to_string_pretty(&report) {
-                Ok(json) => println!("{json}"),
-                Err(error) => {
-                    eprintln!("h10-sim: cannot encode comparison report: {error}");
-                    return ExitCode::FAILURE;
-                }
+            if let Err(message) = print_comparison_report(&report) {
+                eprintln!("h10-sim: {message}");
+                return ExitCode::FAILURE;
             }
-            if report.passed {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::from(1)
+            report_incomplete_fields(&report);
+            compare_exit_code(&report, allow_incomplete)
+        }
+        Err(message) => {
+            eprintln!("h10-sim: {message}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// Over-the-air qualification: a real strap capture compared against a real
+/// simulator run (both produced by the same `h10-capture` scenario over the
+/// air). Exits 0 only when every check passed AND coverage is complete;
+/// 1 otherwise, with the failed or unverified field names on stderr.
+/// `--allow-incomplete` never applies here — qualification is `passed &&
+/// complete`, full stop. The in-process `--emit-sim-fingerprint` document
+/// is structural evidence only and cannot qualify. Both capture paths are
+/// required: the argument parser rejects a missing path loudly (exit 2),
+/// so this entry point never runs without captures and never silently
+/// skips.
+fn run_qualify_ota(
+    real_path: &str,
+    sim_run_path: &str,
+    tolerances: compare::Tolerances,
+) -> ExitCode {
+    match load_comparison(real_path, sim_run_path, tolerances) {
+        Ok(report) => {
+            if let Err(message) = print_comparison_report(&report) {
+                eprintln!("h10-sim: {message}");
+                return ExitCode::FAILURE;
+            }
+            report_incomplete_fields(&report);
+            match compare::qualify_ota(&report) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(refusal) => {
+                    eprintln!("h10-sim: {refusal}");
+                    ExitCode::from(1)
+                }
             }
         }
         Err(message) => {
             eprintln!("h10-sim: {message}");
             ExitCode::from(2)
         }
+    }
+}
+
+/// Exit code for a comparison report: 0 only when every check passed AND
+/// coverage is complete, unless `--allow-incomplete` explicitly accepts a
+/// passed-but-incomplete run. Pure so the qualification gate is unit-pinned.
+fn compare_exit_code(report: &compare::ComparisonReport, allow_incomplete: bool) -> ExitCode {
+    if report.passed && (report.complete || allow_incomplete) {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
     }
 }
 
@@ -158,6 +247,8 @@ fn main() -> ExitCode {
     let mut timing_seed: u64 = 0;
     let mut run_mode = control::RunMode::default();
     let mut compare_paths: Option<(String, String)> = None;
+    let mut qualify_paths: Option<(String, String)> = None;
+    let mut allow_incomplete = false;
     let mut tolerance_p50 = compare::Tolerances::default().p50_relative;
     let mut tolerance_ms = compare::Tolerances::default().min_abs_ms;
     let mut linux_advertising = LinuxAdvertising::default();
@@ -252,6 +343,12 @@ fn main() -> ExitCode {
                     let sim = value(&mut args, "--compare")?;
                     compare_paths = Some((real, sim));
                 }
+                "--qualify-ota" => {
+                    let real = value(&mut args, "--qualify-ota")?;
+                    let sim_run = value(&mut args, "--qualify-ota")?;
+                    qualify_paths = Some((real, sim_run));
+                }
+                "--allow-incomplete" => allow_incomplete = true,
                 "--tolerance-p50" => {
                     tolerance_p50 = value(&mut args, "--tolerance-p50")?
                         .parse::<f64>()
@@ -331,6 +428,16 @@ fn main() -> ExitCode {
             }
         }
     }
+    if let Some((real, sim_run)) = qualify_paths {
+        return run_qualify_ota(
+            &real,
+            &sim_run,
+            compare::Tolerances {
+                p50_relative: tolerance_p50,
+                min_abs_ms: tolerance_ms,
+            },
+        );
+    }
     if let Some((real, sim)) = compare_paths {
         return run_compare(
             &real,
@@ -339,6 +446,7 @@ fn main() -> ExitCode {
                 p50_relative: tolerance_p50,
                 min_abs_ms: tolerance_ms,
             },
+            allow_incomplete,
         );
     }
     // Timing runs on the measured strap profile by default; an explicit
@@ -799,9 +907,10 @@ async fn send_hr(radio: &mut PlatformRadio, sim: &mut SimState, log: &mut EventL
 }
 
 /// Reports one inline notify outcome for a stream tick. `OsAccepted` and
-/// `Queued` log the frame line (a queued frame settles later; only a failed
-/// settle is logged again, loudly). `NotSubscribed` is the normal
-/// no-central case — no line, never an error. `Failed` is always loud.
+/// `Queued` log the frame line (a queued frame settles later with its own
+/// `notify-settled` line; the queued line is the request, the settled line
+/// the answer). `NotSubscribed` is the normal no-central case — no line,
+/// never an error. `Failed` is always loud.
 fn report_stream_notify(
     log: &mut EventLog,
     op: &str,
@@ -862,11 +971,12 @@ async fn send_ecg(
         None => ecg::ecg_frame_samples(index, count, f64::from(sim.config.bpm), &mut samples),
     }
     // Device time, not Unix time: the strap stamps Polar-epoch nanoseconds
-    // (or boot-relative time in explicitly unsynchronised mode).
+    // (or boot-relative time in explicitly unsynchronised mode) of the
+    // frame's last sample.
     let timestamp_ns = sim::device_timestamp_ns(
         sim.config.clock,
         boot_epoch_ns,
-        index.saturating_add(count as u64),
+        ecg_frame_last_sample_index(index, count),
     );
     let frame = gatt_spec::encode_ecg_frame(timestamp_ns, &samples);
     let uuid = Uuid::parse_str(gatt_spec::pmd::DATA).unwrap_or_else(|_| Uuid::nil());
@@ -877,6 +987,45 @@ async fn send_ecg(
         outcome,
         json!({"samples": samples.len(), "bytes": frame.len(), "timestampNs": timestamp_ns.to_string()}),
     );
+}
+
+/// Log line for one settled send. Every settle outcome is logged: a queued
+/// frame's `ecg-notify` line is a request, and its `notify-settled` line is
+/// the answer — counting queued lines as deliveries overcounts whenever a
+/// frame settles late or fails. Failures stay loud as `radio-error`.
+/// Pure so the every-settle-is-visible invariant is unit-pinned.
+fn notify_settled_log(
+    service: &str,
+    characteristic: &str,
+    outcome: &SendOutcome,
+) -> (&'static str, serde_json::Value) {
+    match outcome {
+        SendOutcome::OsAccepted => (
+            "notify-settled",
+            json!({"service": service, "characteristic": characteristic, "outcome": "os-accepted"}),
+        ),
+        SendOutcome::Queued => (
+            "notify-settled",
+            json!({"service": service, "characteristic": characteristic, "outcome": "queued"}),
+        ),
+        SendOutcome::NotSubscribed => (
+            "radio-error",
+            json!({"op": "notify-settled", "service": service, "characteristic": characteristic, "error": "session ended before delivery"}),
+        ),
+        SendOutcome::Failed(reason) => (
+            "radio-error",
+            json!({"op": "notify-settled", "service": service, "characteristic": characteristic, "error": reason}),
+        ),
+    }
+}
+
+/// Index of the frame's last sample for a frame holding `count` samples
+/// starting at `index`: samples `[index, index+count)`, so the stamp trails
+/// the frame start by `count - 1` samples (Polar timestamps the last sample,
+/// and a constant one-sample bias is invisible in capture deltas, so this is
+/// pinned here rather than in the captures).
+fn ecg_frame_last_sample_index(index: u64, count: usize) -> u64 {
+    index.saturating_add((count as u64).saturating_sub(1))
 }
 
 fn slice_at(value: &[u8], offset: u64) -> Option<Vec<u8>> {
@@ -963,23 +1112,10 @@ async fn handle_radio(
             service,
             characteristic,
             outcome,
-        } => match outcome {
-            // Accepted frames were logged with full detail when queued; only
-            // failures speak again, loudly.
-            SendOutcome::OsAccepted | SendOutcome::Queued => {}
-            SendOutcome::NotSubscribed => {
-                log.log(
-                    "radio-error",
-                    json!({"op": "notify-settled", "service": service, "characteristic": characteristic, "error": "session ended before delivery"}),
-                );
-            }
-            SendOutcome::Failed(reason) => {
-                log.log(
-                    "radio-error",
-                    json!({"op": "notify-settled", "service": service, "characteristic": characteristic, "error": reason}),
-                );
-            }
-        },
+        } => {
+            let (kind, detail) = notify_settled_log(&service, &characteristic, &outcome);
+            log.log(kind, detail);
+        }
         RadioEvent::Write {
             service,
             characteristic,
@@ -1561,6 +1697,84 @@ async fn stale_callback(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn comparison_report(passed: bool, complete: bool) -> compare::ComparisonReport {
+        compare::ComparisonReport {
+            passed,
+            complete,
+            tolerances: compare::Tolerances::default(),
+            fields: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn compare_exit_code_needs_passed_and_complete() {
+        // A passed-but-incomplete run (unverified payload bytes, parent
+        // paths, adv interval) must not read as qualified.
+        assert_eq!(
+            compare_exit_code(&comparison_report(true, true), false),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(
+            compare_exit_code(&comparison_report(true, false), false),
+            ExitCode::from(1)
+        );
+        assert_eq!(
+            compare_exit_code(&comparison_report(true, false), true),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(
+            compare_exit_code(&comparison_report(false, false), true),
+            ExitCode::from(1)
+        );
+        assert_eq!(
+            compare_exit_code(&comparison_report(false, true), false),
+            ExitCode::from(1)
+        );
+    }
+
+    #[test]
+    fn ecg_frame_stamp_is_the_last_sample_not_one_past_it() {
+        // The frame holds samples [index, index+count); the strap stamps the
+        // last sample, so the first frame (73 samples @130 Hz) stamps sample
+        // 72, i.e. 72/130 s after boot — not 73/130 s.
+        assert_eq!(ecg_frame_last_sample_index(0, 73), 72);
+        assert_eq!(ecg_frame_last_sample_index(73, 73), 145);
+        assert_eq!(ecg_frame_last_sample_index(0, 1), 0);
+        assert_eq!(ecg_frame_last_sample_index(0, 0), 0);
+        let first_ns = sim::device_timestamp_ns(
+            sim::DeviceClock::Unsynchronized,
+            0,
+            ecg_frame_last_sample_index(0, 73),
+        );
+        assert_eq!(first_ns, 72 * 1_000_000_000 / 130);
+    }
+
+    #[test]
+    fn every_notify_settle_logs_a_line() {
+        // A queued-but-unsettled frame must read as missing its answer, not
+        // as delivered: every SendOutcome maps to exactly one log line, and
+        // successes speak as `notify-settled` (previously silent) while
+        // failures stay loud as `radio-error`.
+        for outcome in [
+            SendOutcome::OsAccepted,
+            SendOutcome::Queued,
+            SendOutcome::NotSubscribed,
+            SendOutcome::Failed("gone".to_string()),
+        ] {
+            let (kind, detail) = notify_settled_log("svc", "chr", &outcome);
+            assert!(
+                kind == "notify-settled" || kind == "radio-error",
+                "every settle outcome must log, got {kind} for {outcome:?}"
+            );
+            assert_eq!(detail["service"], serde_json::json!("svc"));
+            assert_eq!(detail["characteristic"], serde_json::json!("chr"));
+        }
+        let (kind, _) = notify_settled_log("svc", "chr", &SendOutcome::OsAccepted);
+        assert_eq!(kind, "notify-settled");
+        let (kind, _) = notify_settled_log("svc", "chr", &SendOutcome::Queued);
+        assert_eq!(kind, "notify-settled");
+    }
 
     #[test]
     fn drop_summary_with_no_targets_says_no_simulator_clients() {

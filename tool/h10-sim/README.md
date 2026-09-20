@@ -672,8 +672,10 @@ equal; timing distributions pass when
 `|sim − real| ≤ max(min_abs_ms, p50_relative × |real|)`, with the applied
 bound printed on every timing check. Host-side observations are reported,
 never judged: characteristic `availability`, battery `effectiveDelivery` and
-MTU `effective`. Tolerances are reported, never hidden. Exit 0 when every
-check passes, 1 otherwise. The comparator is unit-tested with synthetic
+MTU `effective`. Tolerances are reported, never hidden. Exit 0 only when every
+check passes AND coverage is complete, 1 otherwise (FX4); --allow-incomplete
+accepts passed-alone explicitly and never applies to --qualify-ota. The
+comparator is unit-tested with synthetic
 fingerprints (`src/compare.rs`). Without going over the air,
 `--emit-sim-fingerprint` prints the in-process sim fingerprint for the same
 comparison:
@@ -683,10 +685,14 @@ comparison:
 ./target/debug/h10-sim --compare fixtures/h10-fingerprints/<real>.json /tmp/sim-fp.json
 ```
 
-The fidelity test (`src/fidelity.rs`) runs this comparison in-process for
-every committed real fingerprint (default tolerances 0.25 / 50 ms; the
-Android capture is normalized by stripping its platform-injected `1800` /
-`1801` services first) and fails on the first gap, printing the report.
+The structural fidelity tests (`src/fidelity.rs`, default tolerances 0.25 /
+50 ms; the Android capture is normalized by stripping its
+platform-injected `1800` / `1801` services first) assert no checked field
+disagreed (passed) and are partial by construction — point distributions
+and omitted central-side timings always leave Incomplete corners.
+Over-the-air equivalence is a real capture vs a real simulator run:
+`h10-sim --qualify-ota <real>.json <sim-run>.json`, which requires passed
+AND complete.
 
 ### 3. Timing model
 

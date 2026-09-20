@@ -2949,3 +2949,91 @@ async fn expired_connect_budget_frees_the_peer_for_retry() {
         "retry is admitted"
     );
 }
+
+/// A notification stamped with the previous connection's enable epoch must
+/// never reach the new subscription after a reconnect: the hub drops it on
+/// the routing-epoch check instead of delivering a stale value (RV2
+/// coverage gap).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stale_epoch_notification_never_reaches_the_new_subscription() {
+    let radio = Scripted::polar();
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("rn").unwrap();
+    connect(&session, "c1").await;
+    ok(&call(
+        &session,
+        "gatt.discover",
+        &json!({"peerId": POLAR, "lease": "lease-1", "operationId": "d1"}).to_string(),
+    )
+    .await);
+    ok(&call(
+        &session,
+        "gatt.subscribe",
+        &json!({"peerId": POLAR, "selector": selector(), "consumer": "hr",
+                    "deliveryMode": "require-notification", "operationId": "sub-1"})
+        .to_string(),
+    )
+    .await);
+    let stale_epoch = enable_epoch(&radio);
+    // The first generation delivers live values.
+    host.ingest(hr_value(&[0x00, 0x55], stale_epoch));
+    let records = drain_until(&session, |r| !of_type(r, "value").is_empty()).await;
+    assert_eq!(of_type(&records, "value").len(), 1);
+
+    // The OS reports link loss; the routing clear bumps the epoch.
+    host.ingest(RadioIngress::Connection {
+        peer_id: POLAR.to_owned(),
+        connected: false,
+        status: Some(8),
+    });
+    let records = drain_until(&session, |r| !of_type(r, "stream-end").is_empty()).await;
+    assert!(!of_type(&records, "stream-end").is_empty());
+
+    // Reconnect, rediscover, and resubscribe under a new consumer: the radio
+    // sees a second enable with a newer epoch.
+    connect(&session, "c2").await;
+    ok(&call(
+        &session,
+        "gatt.discover",
+        &json!({"peerId": POLAR, "lease": "lease-1", "operationId": "d2"}).to_string(),
+    )
+    .await);
+    ok(&call(
+        &session,
+        "gatt.subscribe",
+        &json!({"peerId": POLAR, "selector": selector(), "consumer": "hr2",
+                    "deliveryMode": "require-notification", "operationId": "sub-2"})
+        .to_string(),
+    )
+    .await);
+    let live_epoch = enable_epoch(&radio);
+    assert_ne!(
+        stale_epoch, live_epoch,
+        "reconnect re-enables under a new epoch"
+    );
+
+    // A value stamped with the dead generation arrives late: it must never
+    // surface, while a value under the live epoch still does.
+    host.ingest(hr_value(&[0x09, 0x09], stale_epoch));
+    host.ingest(hr_value(&[0x00, 0x55], live_epoch));
+    let records = drain_until(&session, |r| {
+        of_type(r, "value").iter().any(|v| v["valueB64"] == "AFU=")
+    })
+    .await;
+    assert!(
+        of_type(&records, "value")
+            .iter()
+            .all(|v| v["valueB64"] != "CQk="),
+        "stale-epoch value reached the new subscription: {records:#?}"
+    );
+    // Give the stale value every chance to surface late, then confirm absence.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let trailing = parse(&session.drain(256, 65536));
+    let trailing = trailing["records"].as_array().cloned().unwrap_or_default();
+    assert!(
+        of_type(&trailing, "value")
+            .iter()
+            .all(|v| v["valueB64"] != "CQk="),
+        "stale-epoch value surfaced late: {trailing:#?}"
+    );
+}

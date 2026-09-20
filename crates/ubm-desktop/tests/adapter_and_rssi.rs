@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use ubm_desktop::{
     AdapterPowerState, CentralProfile, CentralSignal, DesktopCentral, FakeRadio, FaultOp,
-    OpControl, PeerSnapshot, RadioEvent, Retryability,
+    OpControl, PeerSnapshot, PlatformDetail, RadioEvent, Retryability,
 };
 
 fn advertisement(peer_id: &str) -> RadioEvent {
@@ -156,4 +156,22 @@ async fn a_requested_adapter_is_the_one_the_central_opens_on() {
             assert_eq!(error.operation(), "adapter.select");
         }
     }
+}
+
+/// Same naming rule as the MTU read: a link drop mid-RSSI-read reports
+/// `connection.lost`, like a characteristic read on the same dead link.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rssi_link_loss_is_connection_lost() {
+    let central = connected("peer-rssi-lost").await;
+    central.boundary().fail_next_with_platform(
+        FaultOp::Rssi,
+        "gone",
+        PlatformDetail::new("btleplug", "not-connected").with_message("Not connected"),
+    );
+    let error = central
+        .read_rssi("peer-rssi-lost", "lease-a", OpControl::budget_ms(5000))
+        .await
+        .expect_err("RSSI read on a lost link");
+    assert_eq!(error.code_str(), "connection.lost");
+    assert!(error.platform().is_some(), "the platform's answer is kept");
 }

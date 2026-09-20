@@ -947,15 +947,29 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     await owner.stop()
 
     const peerId = await observedPeerId(backend, boundary)
+    const nativeConnect = jest.spyOn(boundary, 'connect')
     const lease = await backend.connections.connect(
       peerId,
       opaqueId('first-client', 'client', 'winrt:tck'),
       operation()
     )
-    await expect(
-      backend.connections.connect(peerId, opaqueId('second-client', 'client', 'winrt:tck'), operation())
-    ).rejects.toMatchObject({ normalized: { code: 'connection.already-owned' } })
-    await lease.release()
+    // FX1B: a second connect to a connected peer joins the live link with an
+    // independent generation — never `connection.already-owned`.
+    const joinedLease = await backend.connections.connect(
+      peerId,
+      opaqueId('second-client', 'client', 'winrt:tck'),
+      operation()
+    )
+    expect(String(joinedLease.connection.connectionGeneration)).not.toBe(String(lease.connection.connectionGeneration))
+    expect(nativeConnect).toHaveBeenCalledTimes(1)
+    expect(backend.resourceCounters()).toMatchObject({ connectionLeases: 2, physicalLinks: 1 })
+    await expect(joinedLease.release()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(backend.resourceCounters()).toMatchObject({ connectionLeases: 1, physicalLinks: 1 })
+    const database = await backend.gatt.discover(lease.connection, operation())
+    expect((await database.snapshot()).characteristics.length).toBeGreaterThan(0)
+    await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(backend.resourceCounters()).toMatchObject({ connectionLeases: 0, physicalLinks: 0 })
+    expect(boundary.disconnectCalls).toBe(1)
     await backend.destroy()
     expect(boundary.destroyed).toBe(true)
   })

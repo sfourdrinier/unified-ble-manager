@@ -10,6 +10,7 @@ import {
   type NormalizedBleError
 } from '../backend-contract/errors'
 import type { BackendIdentity } from '../backend-contract/identity'
+import type { PublicOperationOptions } from '../backend-contract/operations'
 import {
   capacity,
   canonicalBleAddress,
@@ -205,7 +206,7 @@ export interface WriteReadinessEvent extends BleControlObservationMetadata {
 
 export interface BleConnectionControls {
   readRssi(options?: OperationOptions): Promise<RssiObservation>
-  effectiveMtu(): Promise<MtuObservation>
+  effectiveMtu(options?: OperationOptions): Promise<MtuObservation>
   requestMtu(mtu: number, options?: OperationOptions): Promise<MtuNegotiation>
   maximumWriteLength(mode: WriteMode): Promise<MaximumWriteLengthObservation>
   requestPriority(priority: ConnectionPriority, options?: OperationOptions): Promise<ConnectionPriorityResult>
@@ -1003,7 +1004,7 @@ type InternalPublicConnection<Attachment extends string, Identity extends Backen
 >
 
 interface OptionalInternalControlConnection<Attachment extends string> {
-  readonly effectiveMtu?: () => Promise<{
+  readonly effectiveMtu?: (options: PublicOperationOptions) => Promise<{
     readonly connectionId: string
     readonly connectionGeneration: string
     readonly attMtu: number | null
@@ -1304,17 +1305,18 @@ function createPublicConnectionControls<Attachment extends string, Identity exte
       })
     })
 
-  const effectiveMtu = (): Promise<MtuObservation> =>
+  const effectiveMtu = (options: OperationOptions = {}): Promise<MtuObservation> =>
     runPublicControl(async () => {
       const descriptor = requireControlCapability(
         internal,
         'connection:effective-mtu',
         'public-connection.controls.effective-mtu'
       )
+      const normalized = normalizeOperationOptions(options, now)
       if (connection.effectiveMtu === undefined) {
         throw contractError('capability.unsupported', 'connection', 'public-connection.controls.effective-mtu')
       }
-      const result = await connection.effectiveMtu()
+      const result = await connection.effectiveMtu({ signal: normalized.signal, deadline: normalized.deadline })
       assertPublicConnectionIdentity(connection, result, 'public-connection.controls.effective-mtu.identity')
       if (result.attMtu !== null) {
         if (

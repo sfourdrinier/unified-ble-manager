@@ -6,11 +6,15 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ### Changed
 
-- **Same-peer connects join on every backend (W7/G6).** A second connect to a
-  connected peer leases the peer's link with an independent generation instead
-  of failing `connection.already-owned` (`docs/UNIFIED_SEMANTICS.md` §§3 and 8;
-  Android is the reference). `physicalLinks` counts peers: one link, N leases.
-  The TCK pins are updated.
+- **Same-peer connects join on every backend (W7/G6; completed by
+  FX1B/RV1-1).** A second connect to a connected peer leases the peer's link
+  with an independent generation instead of failing
+  `connection.already-owned`, on every backend — WinRT, CoreBluetooth, Web
+  and React Native/Android now join the same way the desktop, BlueZ and
+  deterministic backends already did (`docs/UNIFIED_SEMANTICS.md` §§3 and 8;
+  Android is the reference). `physicalLinks` counts peers: one link, N
+  leases. `connection.already-owned` now means only a transitional teardown
+  or a different owner. The TCK pins are updated.
 - **`when-available` refusal matches the capability (W7/G4).** A backend
   without presence semantics refuses `connection:connect` with intent
   `when-available` as `capability.unsupported`, and
@@ -127,19 +131,19 @@ build` and the phone Expo builds (Apple RustCore / Android jniLibs) — and
   `crates/ubm-desktop/tests/event_vocabulary.rs` and
   `crates/ubm-mobile/tests/event_vocabulary.rs`. Before and after:
 
-  | Event                               | Backend                 | 4.x / rc.0                                                                                                                                                                                     | 5.0                                                                 |
-  | ----------------------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-  | Link lost during an operation       | RN iOS                  | `platform.failure` (finding 132)                                                                                                                                                               | `connection.lost`                                                   |
-  |                                     | macOS / Windows / Linux | the operation's code (`gatt.read-failed`, `platform.failure`, `gatt.discovery-required`), `operation.disconnected` for a late read, or `operation.timed-out` when CoreBluetooth never answered | `connection.lost`, at once                                          |
-  |                                     | Web                     | `operation.disconnected` (and `NetworkError` → `operation.disconnected`)                                                                                                                       | `connection.lost`                                                   |
-  | App release cuts an operation off   | RN Android / iOS        | `connection.lost` / `platform.failure`                                                                                                                                                         | `operation.disconnected`                                            |
-  |                                     | Web                     | `operation.disconnected`                                                                                                                                                                       | unchanged                                                           |
-  | Adapter lost during an operation    | Web                     | `operation.disconnected`; lifecycle `peer-link-loss`, stream `connection-lost`                                                                                                                 | `operation.reset`; lifecycle `adapter-loss`, stream `source-failed` |
-  | Connect not established             | RN Android / iOS, Linux | `platform.failure`                                                                                                                                                                             | `connection.failed` (and `caller-decides`, above)                   |
-  | Peer never observed                 | Web                     | `connection.not-found`                                                                                                                                                                         | `peer.not-found`                                                    |
-  | Authentication / encryption refused | RN Android / iOS, Linux | `platform.failure`                                                                                                                                                                             | `platform.security` (recovery: pair)                                |
-  |                                     | macOS                   | `gatt.read-failed` / `gatt.write-failed`                                                                                                                                                       | `platform.security`                                                 |
-  |                                     | Windows                 | `gatt.read-failed` / `gatt.write-failed`                                                                                                                                                       | unchanged: WinRT gives no ATT error through the radio               |
+  | Event                               | Backend                 | 4.x / rc.0                                                                                                                                                                                     | 5.0                                                                                                                                                                                                   |
+  | ----------------------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | Link lost during an operation       | RN iOS                  | `platform.failure` (finding 132)                                                                                                                                                               | `connection.lost`                                                                                                                                                                                     |
+  |                                     | macOS / Windows / Linux | the operation's code (`gatt.read-failed`, `platform.failure`, `gatt.discovery-required`), `operation.disconnected` for a late read, or `operation.timed-out` when CoreBluetooth never answered | `connection.lost`, at once                                                                                                                                                                            |
+  |                                     | Web                     | `operation.disconnected` (and `NetworkError` → `operation.disconnected`)                                                                                                                       | `connection.lost`                                                                                                                                                                                     |
+  | App release cuts an operation off   | RN Android / iOS        | `connection.lost` / `platform.failure`                                                                                                                                                         | `operation.disconnected`                                                                                                                                                                              |
+  |                                     | Web                     | `operation.disconnected`                                                                                                                                                                       | unchanged                                                                                                                                                                                             |
+  | Adapter lost during an operation    | Web                     | `operation.disconnected`; lifecycle `peer-link-loss`, stream `connection-lost`                                                                                                                 | `operation.reset`; lifecycle `adapter-loss`, stream `source-failed`                                                                                                                                   |
+  | Connect not established             | RN Android / iOS, Linux | `platform.failure`                                                                                                                                                                             | `connection.failed` (and `caller-decides`, above)                                                                                                                                                     |
+  | Peer never observed                 | Web                     | `connection.not-found`                                                                                                                                                                         | `peer.not-found`                                                                                                                                                                                      |
+  | Authentication / encryption refused | RN Android / iOS, Linux | `platform.failure`                                                                                                                                                                             | `platform.security` (recovery: pair)                                                                                                                                                                  |
+  |                                     | macOS                   | `gatt.read-failed` / `gatt.write-failed`                                                                                                                                                       | `platform.security`                                                                                                                                                                                   |
+  |                                     | Windows                 | `gatt.read-failed` / `gatt.write-failed`                                                                                                                                                       | `platform.security` (recovery: pair) when the ATT error byte is present (`protocol-error` + attError 5/8/12/15); `gatt.read-failed` / `gatt.write-failed` when the write path yields no result object |
 
   Mechanics:
   - one rule set in `crates/ubm-desktop/src/errors.rs`, applied by the
@@ -653,9 +657,61 @@ previousAttachmentId, attachmentId, attachment}}`. The renderer/webview
   `build-identity.txt`). The publish workflow rejects Apple or Android
   artifacts not built from the tagged sources. The currently committed
   Android prebuilts predate sealing and must be refreshed before release.
+- **`effectiveMtu()` accepts caller operation options, matching `readRssi`
+  (FX9; pre-1.0 contract change on an unreleased 5.0).**
+  `BleConnectionControls.effectiveMtu()` now accepts caller `OperationOptions`
+  (`signal`, `timeoutMs`) like every other link control, across the public
+  contract and every backend. On the React Native Rust route
+  `connection.effective-mtu` now carries `operationId` with optional
+  `budgetMs`, so a caller `AbortSignal` cancels an in-flight observation and a
+  deadline bounds it.
 
 ### Fixed
 
+- **Radio-failure connects report `caller-decides` (FX1/RV1-2).**
+  `connection.failed` from a genuine radio failure (the WinRT helper, the
+  desktop-core `classify_connect_failure`, and the unified-core non-contract
+  fallback) now carries `caller-decides`/`retry-with-backoff`, matching the
+  vocabulary. Terminal refusals (`already-owned`, `peer.not-found`,
+  `ownership.denied`) stay `never`.
+- **Web connect deadline docs corrected (FX1/RV1-3).** Behavior was already
+  right (finding 161/F7): a web connect deadline reports `connection.failed`
+  with `DeadlineExpired`, and a retry on the same manager is a fresh
+  attempt, never `connection.already-owned`. `docs/WEB.md` described the
+  stale `operation.timed-out`/destroy-and-recreate shape; it now matches the
+  code.
+- **Tauri docs corrected: `connection:effective-mtu` is answered, not
+  unsupported (FX1/RV1-4).** The dispatcher already answers
+  `connection:effective-mtu`; `docs/TAURI.md` claimed it was
+  `capability.unsupported`, which was stale.
+- **Presence-appearance drain is exactly-once under concurrency (mobile,
+  FX2).** The Android presence store snapshotted then wiped, so an
+  appearance saved in between was lost silently; the drain now removes
+  exactly the snapshotted keys under a lock shared with saves.
+  Unparseable/foreign records are reported (log plus
+  `PresenceRestoredStore.malformedRecordCount()`, surfaced once per drain in
+  the process-host log) instead of cleared silently. A mobile-host test pins
+  that a pre-reconnect-epoch notification never reaches the new
+  subscription.
+- **A lost link answers `connection.lost` on effective-MTU, RSSI and
+  write-readiness reads (FX3).** Renderer abort and the budget-derived
+  deadline are now forwarded on the Electron `connection.effective-mtu`
+  route.
+- **`h10-sim --compare` exits 0 only when the run is complete, not just
+  passed (FX4).** `--compare` now exits 0 only when every check passed AND
+  coverage is complete (`--allow-incomplete` opts into passed-alone);
+  settled notifies are logged as `notify-settled`; the ECG stamp uses the
+  last sample (was one sample late); W6 scenario 3 pins
+  `operation.disconnected`; join facts pin `physicalLinks === 1`; the
+  capture test proves identity propagation instead of echoing the fake's
+  own label.
+- **H10 fidelity split: structural checks vs. OTA qualification (FX7).**
+  In-process fingerprint tests are renamed to
+  `structural_fidelity_has_no_mismatches_*` (partial, passed-only — they
+  cannot measure over-the-air timing); a new `h10-sim --qualify-ota
+<real-capture> <sim-run-capture>` requires passed AND complete
+  (`--allow-incomplete` never applies to it); the in-process path is pinned
+  incomplete so it can never qualify as OTA.
 - **Synthetic staging defaults to the live routing epoch (W7/G1).** A staged
   notification or loss with no epoch now delivers after a reconnect; an
   explicit stale epoch is still dropped. Real-radio forwarding is unchanged.
@@ -1670,6 +1726,16 @@ lease, with_response, ctl)` answers without discovery.
   TypeScript operation coordinator now stamps `commit: 'uncertain'` on every
   failure of a dispatched write, and public cleanup failures keep the `commit`
   they were given instead of dropping it.
+- **Mobile session identity is process-monotonic; the host value-signal queue
+  is genuinely bounded (FX6/FX6B).** `ubm-mobile` session instance identity
+  is now minted from a process-monotonic counter instead of an allocator
+  address, so a dropped-and-recreated session can no longer reuse an old
+  instance id (this is what made the Windows CI job fail). Host value
+  signals now share one queued marker with a bounded batch drain, so the
+  signal queue stays bounded however many value scopes go dirty at once.
+  `counters.describe`'s `process.native` gains `connectSections`. The W6 S5
+  acceptance test proves pre-disconnect backlog arrival (`arrivalProven`) so
+  it no longer depends on flood-vs-disconnect scheduling.
 
 ### Added
 
@@ -1763,6 +1829,10 @@ lease, with_response, ctl)` answers without discovery.
   (`example-expo/scripts/build-tv.sh`, `docs/TVOS.md`). No library radio
   change: the podspec already declared tvOS and the full pod target compiles
   and archives for tvOS arm64.
+- Android TV: the Google TV emulator (API 36) is a repeatable Expo test host
+  via `bash example-expo/scripts/android-tv-emu.sh all`. It proves
+  adapter/scan truthfulness only (clean 0-observation scans); it is not
+  physical-radio evidence.
 
 ## [5.0.0-rc.0] - 2026-09-16 (prerelease candidate, unpublished)
 

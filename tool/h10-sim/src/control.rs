@@ -153,20 +153,30 @@ impl ControlCommand {
 
     /// Whether the command injects a labelled fault: only meaningful in
     /// `adversarial` mode. Configuration, telemetry and help stay available
-    /// in `faithful` mode.
+    /// in `faithful` mode. Exhaustive on purpose: a new variant cannot
+    /// compile without a faithful/adversarial decision here.
     pub fn is_adversarial(&self) -> bool {
-        matches!(
-            self,
+        match self {
             Self::DropLink
-                | Self::SetSilent { .. }
-                | Self::RejectNextPmd { .. }
-                | Self::ClearPmdFault
-                | Self::DelayResponses { .. }
-                | Self::FlapLink
-                | Self::InterruptNextSubscribe
-                | Self::StaleCallback
-                | Self::ConstrainDelivery { .. }
-        )
+            | Self::SetSilent { .. }
+            | Self::RejectNextPmd { .. }
+            | Self::ClearPmdFault
+            | Self::DelayResponses { .. }
+            | Self::FlapLink
+            | Self::InterruptNextSubscribe
+            | Self::StaleCallback
+            | Self::ConstrainDelivery { .. } => true,
+            Self::SetBpm { .. }
+            | Self::SetAdvertising { .. }
+            | Self::SetBattery { .. }
+            | Self::SetContact { .. }
+            | Self::PairPolicy { .. }
+            | Self::LoadProfile { .. }
+            | Self::SetRates { .. }
+            | Self::RunRecord
+            | Self::GetState
+            | Self::Help => false,
+        }
     }
 }
 

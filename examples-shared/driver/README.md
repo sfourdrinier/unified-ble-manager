@@ -32,6 +32,7 @@ platform label, the WebSocket, the app-state source and driver-URL discovery:
 | --- | --- | --- | --- | --- | --- |
 | Expo | `example-expo/src/driver/app-driver.ts` | `createExpoBleManager` + readiness/permission | React Native `AppState` | RN `WebSocket` | Metro bundle host, or `EXPO_PUBLIC_UBM_DRIVER_URL` |
 | Expo (Apple TV) | same adapter (`platform: tvos`, `backend: expo/tvos`) | same                                                                                  | React Native `AppState` | RN `WebSocket`   | TV Metro bundle host, or `EXPO_PUBLIC_UBM_DRIVER_URL` |
+| Expo (Android TV) | same adapter (`platform: android`, `backend: expo/android`; phone APK installed as-is, launched via `adb shell am start`) | same | React Native `AppState` | RN `WebSocket` | reversed Metro (emulator `localhost:8081` -> host `8082`), or `EXPO_PUBLIC_UBM_DRIVER_URL` |
 | Web | `example-web/src/driver.ts` | `createWebBleManager` | page visibility | browser | page host, or `?driver=` |
 | Tauri | `example-tauri/src/driver.ts` | `createTauriBleManager` (Tauri IPC) | page visibility | browser | local server, or `?driver=` |
 | Electron | `example-electron/driver/` | main: desktop provider + router/binding; renderer: `createElectronRendererBleManager` | page visibility | browser | local server, or `--driver-url` |
@@ -293,6 +294,13 @@ and signals TV through `Platform.isTV`, so the adapter reports platform
 same `TouchableOpacity` controls, which the TV focus engine makes focusable
 for the Siri Remote — no TV-only UI fork. The driver server stays shared on
 port 8795; only Metro moves (the TV stage serves its own bundle).
+
+### Android TV emulator host
+
+boot/install/reverse/launch via `example-expo/scripts/android-tv-emu.sh all`
+(AVD `TV_IMAGIBOOKS_GOOGLE_TV_API_36_arm64_v8a`); ceiling is a truthful
+0-observation scan; connect attempts fail closed with
+`operation.timed-out`; see receipt GTV1.md.
 
 ### Web (Chrome / Chromium)
 

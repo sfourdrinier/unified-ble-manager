@@ -616,7 +616,7 @@ export class ElectronMainBleRouter {
   private async effectiveMtu(
     resources: RendererResources,
     payload: SerializableRecord,
-    _controller: AbortController
+    controller: AbortController
   ): Promise<SerializableRecord> {
     const connection = requiredResource(
       resources.connections,
@@ -628,7 +628,7 @@ export class ElectronMainBleRouter {
     // An unmeasured snapshot stays fail-closed upstream with its own reason,
     // so a null here would be a backend contract violation, surfaced by the
     // renderer's required-number check rather than a silent null.
-    const result = await connection.effectiveMtu()
+    const result = await connection.effectiveMtu(operationOptions(payload, controller))
     return Object.freeze({ mtu: result.attMtu })
   }
 

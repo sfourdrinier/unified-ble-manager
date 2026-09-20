@@ -614,7 +614,7 @@ function createIpcConnectionControls(
   // characteristic MTU). A snapshot that does not report it stays
   // fail-closed with the snapshot's own reason (for example
   // `effective-mtu-boundary-unavailable`), never a bare unsupported.
-  const effectiveMtu = (): Promise<MtuObservation> =>
+  const effectiveMtu = (options: OperationOptions = {}): Promise<MtuObservation> =>
     runIpcControl(async () => {
       const descriptor = capabilities.get(BUILT_IN_FEATURE_IDS.connectionEffectiveMtu)
       if (descriptor === undefined || descriptor.state !== 'limited') {
@@ -624,7 +624,11 @@ function createIpcConnectionControls(
           'ipc-public-manager.controls.effective-mtu'
         )
       }
-      const mtu = await connection.effectiveMtu()
+      const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
+      const mtu = await connection.effectiveMtu({
+        signal: normalized.signal ?? undefined,
+        deadline: normalized.deadline
+      })
       const observation: MtuObservation = Object.freeze({
         ...ipcControlMetadata(generation, descriptor, globalThis.performance.now()),
         state: 'measured',

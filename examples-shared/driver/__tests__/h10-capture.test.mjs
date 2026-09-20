@@ -158,7 +158,7 @@ function makeHost(overrides = {}) {
     async destroy() { calls.push('manager.destroy'); return { state: 'released', failures: [] } }
   }
   const host = {
-    identity: { host: 'node', platform: 'linux', backend: 'node/bluez', model: 'fake', osVersion: '0', appBuild: {} },
+    identity: { host: 'node', platform: 'linux', backend: 'test/identity-probe', model: 'fake', osVersion: '0', appBuild: {} },
     runtime,
     appState: null,
     userGesture: null,
@@ -264,7 +264,9 @@ test('h10-capture records a versioned fingerprint through public API only', asyn
   assert.ok(fingerprint.timings.hrNotificationIntervalMs.n >= 2, 'HR intervals measured')
   assert.equal(fingerprint.timings.pmdResponseMs.n, 3, 'get-settings repeated for a latency distribution')
   assert.ok(fingerprint.behaviour.invalidPmdCommand.errorCode !== undefined, 'invalid PMD command probed')
-  assert.equal(fingerprint.host.backend, 'node/bluez')
+  // The fake host carries a sentinel backend label, so this asserts the
+  // scenario propagates host identity instead of echoing a hardcoded string.
+  assert.equal(fingerprint.host.backend, 'test/identity-probe')
   assert.equal(typeof fingerprint.capturedAt, 'string')
   // Finding 209: the advertisement scan stops before find opens the second
   // scan, so the single-scan arbitration admits it.

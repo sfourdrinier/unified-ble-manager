@@ -1114,10 +1114,10 @@ class NativeConnection {
     )
   }
 
-  async effectiveMtu(): Promise<EffectiveMtuMeasurement<string, string>> {
+  async effectiveMtu(options?: PortableOperationOptions): Promise<EffectiveMtuMeasurement<string, string>> {
     return this.control(
       BUILT_IN_FEATURE_IDS.connectionEffectiveMtu,
-      { signal: null, deadline: null },
+      options ?? { signal: null, deadline: null },
       'effective-mtu',
       (connections, operation) =>
         requireControl(connections.effectiveMtu, 'effective-mtu')(this.resource, { operation })

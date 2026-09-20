@@ -8,6 +8,8 @@ name: CI
 # - Apple (macOS): NOT on every PR commit. Runs on:
 #     • push to main when Apple-related paths change
 #     • pull_request with label `ci:apple` (opt-in before merge)
+#     • the 5.0.0 release lane: PRs targeting 5.0.0, and pushes to 5.0.0,
+#       when Apple-related paths change (RV5 finding 5)
 #     • workflow_dispatch (manual)
 # Superseded runs for the same PR/branch are cancelled.
 
@@ -54,6 +56,7 @@ permissions:
 jobs:
   tauri-plugin:
     name: Tauri v2 Rust (${{ matrix.os }})
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -108,6 +111,7 @@ jobs:
   # Job name is honest: lint/prepack/multi-host smoke run only on Linux (R2-F096).
   package:
     name: JS tests (${{ matrix.os }}, Node ${{ matrix.node }})
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -180,6 +184,13 @@ jobs:
       - name: Validate current evidence records
         run: pnpm validate:evidence
 
+      # F9 / RV5 finding 4: the committed Android jniLibs travel with the
+      # push. Check freshness on every PR here (not only in the Android
+      # jobs) so a Rust-only change that outruns its refresh fails fast.
+      - name: Committed Android prebuilts match the sources
+        if: runner.os == 'Linux'
+        run: pnpm native:status --only android
+
       - name: Run plugin tests
         run: pnpm test:plugin
 
@@ -197,6 +208,12 @@ jobs:
       - name: Build package artifacts
         if: runner.os == 'Linux'
         run: pnpm prepack
+
+      # RV5 finding 6: generated artifacts (API reports, PLATFORM_SUPPORT)
+      # must match the sources on every PR, not only under preflight.
+      - name: Generated artifacts match the sources
+        if: runner.os == 'Linux'
+        run: pnpm run docs:check
 
       - name: Build 4.0 Web Bluetooth public example
         if: runner.os == 'Linux' && matrix.node == '22'
@@ -384,11 +401,19 @@ jobs:
         if: runner.os == 'Linux' && matrix.node == '22'
         run: node scripts/ci/g6a-packed-consumer-proof.js
 
+      # RV5 finding 2: the TCK test-only packaging proof runs here, next to
+      # the G6A proof, after prepack above. It fails closed when the shipped
+      # testing entry absorbs the test-only fault hooks.
+      - name: TCK test-only packaging proof
+        if: runner.os == 'Linux' && matrix.node == '22'
+        run: node scripts/ci/check-tck-test-only-packaging.js
+
   # UBM 5.0 contract-freeze gate (U1): strict typecheck plus the frozen
   # contract suite. Runs on every CI invocation like `package`; see
   # contracts/README.md and contracts/RED_BASELINE.md.
   contracts:
     name: UBM 5.0 contracts (tsc + jest)
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -411,6 +436,7 @@ jobs:
   # platform-independent — same convention as the Tauri job).
   rust-5-0:
     name: Rust 5.0 workspace (${{ matrix.os }})
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -450,6 +476,7 @@ jobs:
   # the napi toolchain build is host-sensitive and parity is OS-independent.
   rust-parity-5-0:
     name: Rust 5.0 parity (napi roundtrip)
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -481,6 +508,7 @@ jobs:
   # driver suites. Kept small so the main gates stay fast.
   h10-sim:
     name: h10-sim (${{ matrix.os }})
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -537,6 +565,7 @@ jobs:
 
   changes:
     name: Detect path changes
+    timeout-minutes: 5
     if: |
       github.event_name != 'pull_request' ||
       github.event.action != 'labeled' ||
@@ -564,6 +593,16 @@ jobs:
               - 'example-expo/**'
               - 'app.plugin.js'
               - 'src/**'
+              # Rust trees feeding the committed jniLibs (bindings/jni path-
+              # depends on every crate; the workspace vendors the radio):
+              # a Rust-only change can stale build-identity.json, so it must
+              # trigger the Android jobs (RV5 finding 4).
+              - 'crates/**'
+              - 'bindings/**'
+              - 'vendor/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
               - 'package.json'
               - 'pnpm-lock.yaml'
               - '.github/workflows/ci.yml'
@@ -582,6 +621,15 @@ jobs:
               - 'unified-ble-manager.podspec'
               - 'src/**'
               - 'scripts/ci/**'
+              # Same Rust reasoning as android: bindings/uniffi path-depends
+              # on every crate, so a Rust-only change must trigger the Apple
+              # compile (RV5 finding 4).
+              - 'crates/**'
+              - 'bindings/**'
+              - 'vendor/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
               - 'package.json'
               - 'pnpm-lock.yaml'
               - '.github/workflows/ci.yml'
@@ -592,6 +640,7 @@ jobs:
 
   expo-cng-android:
     name: Expo CNG Android build
+    timeout-minutes: 60
     needs: changes
     if: |
       !cancelled() &&
@@ -674,6 +723,7 @@ jobs:
   # wired through the bare example app (not only CNG). Gated by android path filter.
   classic-rn-android:
     name: Classic RN Android assemble
+    timeout-minutes: 60
     needs: changes
     if: |
       !cancelled() &&
@@ -743,7 +793,8 @@ jobs:
 
   # --- Apple compile checks (#20) ---
   # Compile/link only. No simulator boot, no BLE runtime (see #14).
-  # Expensive: gated by main path changes, `ci:apple` label, or manual run.
+  # Expensive: gated by main path changes, `ci:apple` label, the 5.0.0 lane
+  # with Apple path changes (RV5 finding 5), or manual run.
   # Implementation lives in reusable workflow apple-ci.yml + composite actions under
   # .github/actions/ (select-xcode, setup-js-package) so we do not triple-copy jobs.
   apple:
@@ -761,6 +812,16 @@ jobs:
         (
           github.event_name == 'push' &&
           github.ref == 'refs/heads/main' &&
+          needs.changes.outputs.apple == 'true'
+        ) ||
+        (
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/5.0.0' &&
+          needs.changes.outputs.apple == 'true'
+        ) ||
+        (
+          github.event_name == 'pull_request' &&
+          github.base_ref == '5.0.0' &&
           needs.changes.outputs.apple == 'true'
         )
       )

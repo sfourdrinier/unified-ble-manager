@@ -30,6 +30,7 @@ type DeterministicAuthority = ManagerOwnershipAuthority<string>
 type OwnerScopedProof = SerializableRecord & {
   readonly ownerConnectionRetained: boolean
   readonly borrowerJoined: boolean
+  readonly onePhysicalLink: boolean
   readonly borrowerReleased: boolean
   readonly ownerRemainedReady: boolean
   readonly ownerOperationRetained: boolean
@@ -56,7 +57,11 @@ export async function deterministicManagerOwnershipFacts(): Promise<readonly Tck
   const transfer = await proveAuthenticatedTransfer()
   const revocation = await proveSettledBorrowerRevocation()
   return [
-    fact('connection-leases-are-owner-scoped', sharing.ownerConnectionRetained && sharing.borrowerJoined, sharing),
+    fact(
+      'connection-leases-are-owner-scoped',
+      sharing.ownerConnectionRetained && sharing.borrowerJoined && sharing.onePhysicalLink,
+      sharing
+    ),
     fact(
       'connection-borrowing-cannot-destroy-or-cancel-owner-work',
       sharing.borrowerReleased &&
@@ -90,6 +95,7 @@ async function proveOwnerScopedBorrowing(): Promise<OwnerScopedProof> {
     const borrowerConnection = await settle(context.fixture, borrower.connect(peerId(), operationOptions()))
     const borrowerJoined =
       String(borrowerConnection.connectionGeneration) !== String(firstConnection.connectionGeneration)
+    const onePhysicalLink = Number(context.fixture.backend.resourceCounters().physicalLinks) === 1
     await settle(context.fixture, borrowerConnection.release())
     const borrowerCleanup = await settle(context.fixture, borrower.destroy())
     const ownerRemainedReady = owner.state === 'ready'
@@ -103,6 +109,7 @@ async function proveOwnerScopedBorrowing(): Promise<OwnerScopedProof> {
     return {
       ownerConnectionRetained,
       borrowerJoined,
+      onePhysicalLink,
       borrowerReleased: borrowerCleanup.state === 'released',
       ownerRemainedReady,
       ownerOperationRetained,

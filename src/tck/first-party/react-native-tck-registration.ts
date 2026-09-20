@@ -7,8 +7,6 @@
 // involved.
 
 import type { Spec as NativeUnifiedBleRustCore } from '../../NativeUnifiedBleRustCore'
-import { createReactNativeRustCoreBinding } from '../../backends/reactnative/react-native-rust-core-binding'
-import { createReactNativeRustCoreBackendProvider } from '../../backends/reactnative/react-native-rust-core-provider'
 import type { ReactNativeRestorationAuthority } from '../../backends/reactnative/react-native-rust-core-restoration'
 import {
   reactNativeAndroidDefaultAdapterId,
@@ -26,6 +24,23 @@ import type {
   TckScenarioId
 } from '../contracts'
 import type { FirstPartyBackendTckRegistration } from './first-party-tck-registry'
+
+/**
+ * Loads the React Native Rust-core route at call time. The binding pulls the
+ * `react-native` host framework, whose Flow entry plain-node TCK consumers
+ * cannot parse, so the testing entry must not reach it at require time. The
+ * factories below are the only users; loading here keeps the exported
+ * contract identical while this module stays plain-node loadable.
+ */
+function loadReactNativeRustCoreRoute(): {
+  binding: typeof import('../../backends/reactnative/react-native-rust-core-binding')
+  provider: typeof import('../../backends/reactnative/react-native-rust-core-provider')
+} {
+  return {
+    binding: require('../../backends/reactnative/react-native-rust-core-binding'),
+    provider: require('../../backends/reactnative/react-native-rust-core-provider')
+  }
+}
 
 /** The characteristic a deterministic notification is emitted on. */
 export interface DeterministicReactNativeCharacteristicAddress {
@@ -132,9 +147,10 @@ export function createReactNativeAndroidFirstPartyTckRegistration(
   options: ReactNativeAndroidFirstPartyTckRegistrationOptions
 ): FirstPartyBackendTckRegistration {
   let authority: ReactNativeRestorationAuthority | null = null
-  const provider = createReactNativeRustCoreBackendProvider({
+  const route = loadReactNativeRustCoreRoute()
+  const provider = route.provider.createReactNativeRustCoreBackendProvider({
     platform: 'android',
-    binding: createReactNativeRustCoreBinding({ platform: 'android', native: options.native }),
+    binding: route.binding.createReactNativeRustCoreBinding({ platform: 'android', native: options.native }),
     owner: 'react-native-android-tck',
     now: options.now,
     runtime: { androidApiLevel: options.androidApiLevel ?? 34 },
@@ -231,9 +247,10 @@ export function createReactNativeAppleFirstPartyTckRegistration(
   options: ReactNativeAppleFirstPartyTckRegistrationOptions
 ): FirstPartyBackendTckRegistration {
   let authority: ReactNativeRestorationAuthority | null = null
-  const provider = createReactNativeRustCoreBackendProvider({
+  const route = loadReactNativeRustCoreRoute()
+  const provider = route.provider.createReactNativeRustCoreBackendProvider({
     platform: 'apple',
-    binding: createReactNativeRustCoreBinding({ platform: 'apple', native: options.native }),
+    binding: route.binding.createReactNativeRustCoreBinding({ platform: 'apple', native: options.native }),
     owner: 'react-native-apple-tck',
     now: options.now,
     runtime: { androidApiLevel: null },

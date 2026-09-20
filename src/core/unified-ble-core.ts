@@ -608,9 +608,16 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
               signal: backendAbort.signal
             })
           } catch (error) {
-            throw error instanceof BackendContractError
-              ? error
-              : contractError('connection.failed', 'connection', 'unified-core.connect')
+            if (error instanceof BackendContractError) {
+              throw error
+            }
+            // RV1 finding 2: a backend that rejects connect without a
+            // contract error lost the radio race — nothing was committed, so
+            // repeating the attempt is the caller's policy
+            // (`caller-decides`), matching the event vocabulary
+            // (`connect-not-established`) and the recovery catalog.
+            const normalized = contractError('connection.failed', 'connection', 'unified-core.connect')
+            throw new BackendContractError({ ...normalized.normalized, retryability: 'caller-decides' })
           }
           const closed = this.admissionClosedError(admissionEpoch, options, 'connect')
           if (cancelled || closed !== null) {

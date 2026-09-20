@@ -601,8 +601,13 @@ async function scenarioDisconnectDuringSubscribe(ctx) {
 
   const holds =
     detail.midEnableSettled === 'rejected' &&
+    // The app's own disconnect cuts the pending enable: the fate is
+    // operation.disconnected (UNIFIED_SEMANTICS requested-disconnect-
+    // during-operation), never a generic abort — a wrong code must fail.
+    detail.midEnableCode === 'operation.disconnected' &&
     detail.noOrphanAfterCccdRace === true &&
     detail.pmdWriteSettled === 'rejected' &&
+    detail.pmdWriteCode === 'operation.disconnected' &&
     detail.staleSubscribeRejected === true &&
     detail.noOrphanAfterPmdRace === true &&
     detail.generationsDiffer === true &&
@@ -764,10 +769,47 @@ async function scenarioSlowDrain(ctx) {
   detail.quiescent = quiescent
   detail.postDrainRetained = Number(manager.localResourceCounters().retainedByteBuffers)
 
-  // Phase B — promptness with the backlog present: flood again without
-  // draining, drop the link, and require the lifecycle terminal within a
-  // bounded number of pulls (it must not starve behind data).
+  // Phase B — promptness with the backlog present: flood again, prove the
+  // flood reached the subscription stream, then drop the link and require
+  // the lifecycle terminal within a bounded number of pulls (it must not
+  // starve behind data). The proof step is load-bearing: the phase-A
+  // quiescence timeout abandons one pending next() inside the stream, and
+  // the desktop legs stage flood items through the real N-API addon with
+  // no pump between staging and disconnect. If the disconnect closes the
+  // stream before any re-flood item arrives, the abandoned consumer takes
+  // the terminal and these pulls observe bare `done` — a scheduler race,
+  // not a lifecycle defect. Pulling until the first arrival is observed
+  // retires the abandoned consumer on the controlled scheduler and proves
+  // the backlog is present, so the terminal bound below asserts lifecycle
+  // promptness, never the race. Most of the flood stays queued, so the
+  // starvation condition is preserved.
   await flood(emitted)
+  let preDisconnectValues = 0
+  let preDisconnectNotices = 0
+  let preDisconnectEnded = null
+  let arrivalProven = false
+  for (let pull = 0; pull < 20 && !arrivalProven && preDisconnectEnded === null; pull += 1) {
+    const item = await settleBounded(controller, iterator.next(), 5000)
+    if (item === null) continue
+    if (item.done) {
+      preDisconnectEnded = 'done'
+      break
+    }
+    if (item.value.kind === 'value') {
+      preDisconnectValues += 1
+      arrivalProven = true
+    } else if (item.value.kind === 'overflow') {
+      preDisconnectNotices += 1
+      arrivalProven = true
+    } else if (item.value.kind === 'terminal') {
+      preDisconnectEnded = item.value.reason ?? 'terminal'
+      break
+    }
+  }
+  detail.preDisconnectValues = preDisconnectValues
+  detail.preDisconnectNotices = preDisconnectNotices
+  detail.preDisconnectEnded = preDisconnectEnded
+  detail.arrivalProven = arrivalProven
   if (controller.availableActions.includes('force-disconnect')) {
     await controller.perform('force-disconnect', Object.freeze({ peerId: String(connection.peerId) }))
   } else {
@@ -816,7 +858,10 @@ async function scenarioSlowDrain(ctx) {
   const lossAccounted = noticeItems.length >= 1 && restatementsMonotonic && lastStatesGap
   const memoryBounded = detail.managerRetainedDuringFlood <= 8
   const lifecyclePrompt = terminalFound && pullsToTerminal <= 8
-  const holds = conserved && bounded && lossAccounted && memoryBounded && lifecyclePrompt
+  // arrivalProven is the setup guard, not a loosening: without a proven
+  // backlog at disconnect the promptness bound would pass vacuously, so a
+  // phase-B setup that never delivered must fail loudly instead.
+  const holds = conserved && bounded && lossAccounted && memoryBounded && lifecyclePrompt && arrivalProven
   return { holds, skips, detail: { ...detail, conserved, bounded, lossAccounted, memoryBounded, lifecyclePrompt } }
 }
 

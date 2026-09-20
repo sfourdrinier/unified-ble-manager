@@ -2317,8 +2317,13 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     connection: BackendConnection<string, string>,
     request: EffectiveMtuRequest<string, Operation>
   ): BackendOperationDispatch<string, EffectiveMtuMeasurement<string, Operation>> {
-    return this.control(connection, request, 'effective-mtu', async entry => {
-      const answer = await this.invoke('connection.effective-mtu', { peerId: entry.nativePeerId, lease: entry.lease })
+    return this.control(connection, request, 'effective-mtu', async (entry, operationId, budget) => {
+      const answer = await this.invoke('connection.effective-mtu', {
+        peerId: entry.nativePeerId,
+        lease: entry.lease,
+        operationId,
+        ...budget
+      })
       return Object.freeze({
         connectionId: entry.resource.connectionId,
         connectionGeneration: entry.resource.connectionGeneration,

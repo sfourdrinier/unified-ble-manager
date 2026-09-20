@@ -166,6 +166,10 @@ pub struct RadioCounters {
     pub advertisement_drops: u64,
     pub notification_drops: u64,
     pub control_drops: u64,
+    /// Live entries of the per-peer connect-section table: one per peer
+    /// ever connected, never removed, so a soak test can prove it is not
+    /// growing from garbage peer ids.
+    pub connect_sections: u64,
 }
 
 /// Outcome of handing one completion to the radio.
@@ -523,6 +527,7 @@ impl ForeignRadio {
             advertisement_drops: shared.drops[0].load(Ordering::Relaxed),
             notification_drops: shared.drops[1].load(Ordering::Relaxed),
             control_drops: shared.drops[2].load(Ordering::Relaxed),
+            connect_sections: lock(&shared.connect_sections).len() as u64,
         }
     }
 
@@ -970,5 +975,51 @@ impl RadioBoundary for ForeignRadio {
     /// `advanceGeneration`).
     fn tears_down_on_adapter_loss(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Stub;
+
+    impl PlatformRadio for Stub {
+        fn submit(&self, _request: RadioRequest) {}
+        fn cancel(&self, _request_id: RequestId) {}
+    }
+
+    fn radio() -> ForeignRadio {
+        ForeignRadio::new(
+            Arc::new(Stub),
+            MobilePlatform::Android,
+            "stub-adapter".to_owned(),
+        )
+    }
+
+    /// The connect-section table keeps one entry per peer ever seen: the
+    /// count tracks distinct peers and stays flat when the same peers
+    /// reconnect, so a soak test can tell growth from garbage peer ids.
+    #[tokio::test]
+    async fn connect_section_count_tracks_distinct_peers() {
+        let radio = radio();
+        assert_eq!(radio.counters().connect_sections, 0);
+        let ctl = OpControl::unbounded();
+        let _first = radio
+            .lock_connect_section("peer-a", &ctl)
+            .await
+            .expect("section");
+        let _second = radio
+            .lock_connect_section("peer-b", &ctl)
+            .await
+            .expect("section");
+        assert_eq!(radio.counters().connect_sections, 2);
+        drop(_first);
+        drop(_second);
+        let _repeat = radio
+            .lock_connect_section("peer-a", &ctl)
+            .await
+            .expect("section");
+        assert_eq!(radio.counters().connect_sections, 2);
     }
 }

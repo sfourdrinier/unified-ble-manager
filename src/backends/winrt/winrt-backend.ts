@@ -325,6 +325,12 @@ export interface WinRtConnectionRecord {
   readonly peerId: PeerId<string>
   readonly connectionId: ConnectionId<string, string>
   readonly connectionGeneration: GenerationId<'connection-generation', string>
+  /**
+   * The generation the native link was dialled with (FX1B). Joined leases
+   * carry their own `connectionGeneration` but share the dial generation,
+   * so a link drop still matches after the dialling owner released.
+   */
+  readonly dialGeneration: GenerationId<'connection-generation', string>
   readonly ownerLeaseId: LeaseId<string, string>
   state: 'connecting' | 'connected' | 'disconnecting' | 'disconnected' | 'lost'
   gattRevision: number
@@ -409,15 +415,25 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     nativePeerId: string,
     connectionGeneration: GenerationId<'connection-generation', string>
   ): boolean {
-    const record = this.connectionsByNativeId.get(nativePeerId)
-    return record !== undefined && record.connectionGeneration === connectionGeneration
+    for (const record of this.connectionsById.values()) {
+      if (record.nativePeerId === nativePeerId && record.connectionGeneration === connectionGeneration) {
+        return true
+      }
+    }
+    return false
   }
   private readonly backendInstanceId: BackendInstanceId<string>
   private readonly eventStreams = new Set<CoreBoundedStream<BackendEvent<string>>>()
   private readonly stateStreams = new Set<CoreBoundedStream<AdapterStateSnapshot<string>>>()
   private readonly peerIdsByNativeId = new Map<string, PeerId<string>>()
   private readonly nativeIdsByPeerId = new Map<string, string>()
-  private readonly connectionsByNativeId = new Map<string, WinRtConnectionRecord>()
+  /**
+   * One record per lease, keyed by connection id (UNIFIED_SEMANTICS §3/§8,
+   * FX1B). Leases of one peer share the single native link; the map holds a
+   * join family of `connected` records, a single transitional record, or
+   * terminal garbage awaiting deletion — never a mix.
+   */
+  private readonly connectionsById = new Map<string, WinRtConnectionRecord>()
   private readonly removeConnectionListener: () => void
   private readonly removeDatabaseListener: () => void
   private readonly removeScanTerminalListener: () => void
@@ -565,7 +581,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     return winRtResourceCounters(
       this.scanGroup === null ? 0 : 1,
       this.scanGroup?.consumers.size ?? 0,
-      this.connectionsByNativeId.values(),
+      this.connectionsById.values(),
       this.subscriptions.values(),
       this.dispatcher.activeCount()
     )
@@ -634,7 +650,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
   }
 
   requireConnection(connection: BackendConnection<string, string>, operation: string): WinRtConnectionRecord {
-    const record = this.connectionsByNativeId.get(this.nativeIdsByPeerId.get(String(connection.peerId)) ?? '')
+    const record = this.connectionsById.get(String(connection.connectionId))
     if (
       record === undefined ||
       record.connectionId !== connection.connectionId ||
@@ -654,14 +670,14 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     operation: string
   ): WinRtGattDatabase {
-    const nativePeerId = this.nativeIdsByPeerId.get(String(path.peerId))
-    const record = nativePeerId === undefined ? undefined : this.connectionsByNativeId.get(nativePeerId)
-    const database = record?.database
-    if (database === null || database === undefined || !database.matchesPath(path)) {
-      throw contractError('gatt.stale-handle', 'gatt', operation)
+    for (const record of this.connectionsById.values()) {
+      const database = record.database
+      if (database !== null && database !== undefined && database.matchesPath(path)) {
+        database.assertCurrent(operation)
+        return database
+      }
     }
-    database.assertCurrent(operation)
-    return database
+    throw contractError('gatt.stale-handle', 'gatt', operation)
   }
 
   /** Retains the logical operation in the connection generation that owns its native work. */
@@ -790,19 +806,45 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
       return invalidation
     }
     this.retireDisconnectedRecord(record)
-    return invalidation
+    // An explicit disconnect drops the shared link: every joined lease ends
+    // with it. The radio fired once above; siblings end locally.
+    const siblingFailures: CleanupFailure[] = []
+    for (const sibling of this.recordsForNativePeer(record.nativePeerId)) {
+      if (sibling === record) {
+        continue
+      }
+      const siblingInvalidation = await this.invalidateConnectionChildren(
+        sibling,
+        'owner-released',
+        contractError('operation.disconnected', 'gatt', 'winrt.gatt.subscribe.connection-release')
+      )
+      siblingFailures.push(...siblingInvalidation.failures)
+      if (siblingInvalidation.state !== 'release-failed') {
+        this.retireDisconnectedRecord(sibling)
+      }
+    }
+    if (siblingFailures.length === 0) {
+      return invalidation
+    }
+    return Object.freeze({ state: 'release-failed', failures: Object.freeze(siblingFailures) })
   }
 
   private retireDisconnectedRecord(record: WinRtConnectionRecord): void {
     record.state = 'disconnected'
     record.lease?.markReleased()
-    if (this.connectionsByNativeId.get(record.nativePeerId) === record) {
-      this.connectionsByNativeId.delete(record.nativePeerId)
+    if (this.connectionsById.get(String(record.connectionId)) === record) {
+      this.connectionsById.delete(String(record.connectionId))
     }
   }
 
   async releaseConnectionLease(lease: WinRtConnectionLease): Promise<CleanupRecord> {
-    return this.disconnect(lease.record, 'winrt.connection.release')
+    const record = lease.record
+    // A lease that shares its peer's link with other live leases ends
+    // locally without radio work; the final holder drives the radio.
+    if (this.liveLinkHolders(record.nativePeerId, record).length > 0) {
+      return this.releaseSharedLease(record)
+    }
+    return this.disconnect(record, 'winrt.connection.release')
   }
 
   async stopScanConsumer(consumer: WinRtScanConsumer): Promise<CleanupRecord> {
@@ -1127,6 +1169,121 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     return new WinRtScanLease(this, consumer)
   }
 
+  /**
+   * Every lease record for one native peer. Joins share the single native
+   * link; see the `connectionsById` invariant.
+   */
+  private recordsForNativePeer(nativePeerId: string): WinRtConnectionRecord[] {
+    return [...this.connectionsById.values()].filter(record => record.nativePeerId === nativePeerId)
+  }
+
+  /**
+   * The peer's live link, if any: a `connected` record whose lease still
+   * holds it. A connect joins this link with an independent generation
+   * instead of re-dialling the radio.
+   */
+  private liveSharedLink(nativePeerId: string): WinRtConnectionRecord | null {
+    for (const record of this.connectionsById.values()) {
+      if (record.nativePeerId !== nativePeerId) continue
+      // A record with teardown in flight (`disconnectResult`) is not a live
+      // link: a connect joins only a settled `connected` lease, otherwise the
+      // joiner would land on a dying link.
+      if (record.state === 'connected' && record.lease !== null && record.disconnectResult === null) {
+        return record
+      }
+    }
+    return null
+  }
+
+  /**
+   * Live holders of the peer's link besides `except`: `connected`,
+   * `disconnecting` or `lost`-retained records still name the native link.
+   * A non-final release ends locally while any holder remains.
+   */
+  private liveLinkHolders(nativePeerId: string, except: WinRtConnectionRecord): WinRtConnectionRecord[] {
+    return this.recordsForNativePeer(nativePeerId).filter(
+      record =>
+        record !== except &&
+        (record.state === 'connected' || record.state === 'disconnecting' || record.state === 'lost')
+    )
+  }
+
+  private joinSharedLink(peerId: PeerId<string>, shared: WinRtConnectionRecord): WinRtConnectionLease {
+    const ids = this.identifiers()
+    const record: WinRtConnectionRecord = {
+      attachment: this.attachment(),
+      nativePeerId: shared.nativePeerId,
+      peerId,
+      connectionId: ids.connectionId(`winrt-connection-${this.nextConnection}`),
+      connectionGeneration: opaqueId(String(this.nextConnection), 'connection-generation', 'winrt'),
+      dialGeneration: shared.dialGeneration,
+      ownerLeaseId: ids.leaseId(`winrt-connection-lease-${this.nextLease}`),
+      state: 'connected',
+      gattRevision: 0,
+      database: null,
+      lease: null,
+      pendingConnect: null,
+      pendingOperations: new Map(),
+      disconnectResult: null,
+      disconnectSettlement: null
+    }
+    this.nextConnection += 1
+    this.nextLease += 1
+    this.connectionsById.set(String(record.connectionId), record)
+    const connection = new WinRtConnection(this, record)
+    const lease = new WinRtConnectionLease(this, record, connection)
+    record.lease = lease
+    return lease
+  }
+
+  /**
+   * Ends one joined lease locally: only its own generation's subscriptions
+   * are removed (another lease's enablement is untouched); the native link
+   * is untouched.
+   */
+  private async releaseSharedLease(record: WinRtConnectionRecord): Promise<CleanupRecord> {
+    const invalidation = await this.invalidateJoinChildren(
+      record,
+      'owner-released',
+      contractError('operation.disconnected', 'gatt', 'winrt.gatt.subscribe.connection-release')
+    )
+    if (invalidation.state === 'release-failed') {
+      return invalidation
+    }
+    record.state = 'disconnected'
+    record.lease?.markReleased()
+    record.lease = null
+    if (this.connectionsById.get(String(record.connectionId)) === record) {
+      this.connectionsById.delete(String(record.connectionId))
+    }
+    return invalidation
+  }
+
+  private async invalidateJoinChildren(
+    record: WinRtConnectionRecord,
+    reason: 'connection-lost' | 'owner-released',
+    pendingSubscriptionError: Error
+  ): Promise<CleanupRecord> {
+    const failures: CleanupFailure[] = []
+    record.database?.invalidate()
+    record.database = null
+    for (const physical of [...this.subscriptions.values()]) {
+      if (String(physical.connectionGeneration) !== String(record.connectionGeneration)) {
+        continue
+      }
+      for (const consumer of physical.consumers) {
+        consumer.stream.closeWithReason(reason)
+        consumer.removed = true
+      }
+      physical.consumers.clear()
+      const cleanup = await invalidateWinRtPhysicalSubscription(this, physical, pendingSubscriptionError)
+      failures.push(...cleanup.failures)
+    }
+    return failures.length === 0
+      ? releasedCleanup
+      : Object.freeze({ state: 'release-failed', failures: Object.freeze(failures) })
+  }
+
   private async connect(
     peerId: PeerId<string>,
     _clientId: ClientId<string, string>,
@@ -1142,12 +1299,29 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     if (nativePeerId === undefined) {
       throw contractError('connection.not-found', 'connection', 'winrt.connect.peer')
     }
-    const existing = this.connectionsByNativeId.get(nativePeerId)
-    if (existing !== undefined) {
-      if ((existing.state !== 'disconnecting' && existing.state !== 'lost') || existing.lease !== null) {
+    // Same-peer join (UNIFIED_SEMANTICS §3/§8, FX1B, Android reference): a
+    // live link is leased, never re-dialled. Only a peer with no live link
+    // reaches the radio; a transitional record arbitrates
+    // `connection.already-owned` until its teardown completes.
+    const shared = this.liveSharedLink(nativePeerId)
+    if (shared !== null) {
+      return this.joinSharedLink(peerId, shared)
+    }
+    for (const retained of this.recordsForNativePeer(nativePeerId)) {
+      // A retired record whose lease object is still live blocks a new dial:
+      // its release retry owns the peer until it settles.
+      if (retained.state === 'disconnected' && retained.lease === null) {
+        continue
+      }
+      if ((retained.state !== 'disconnecting' && retained.state !== 'lost') || retained.lease !== null) {
         throw contractError('connection.already-owned', 'connection', 'winrt.connect.owner')
       }
-      await this.retryRetainedConnectionCleanup(existing)
+      await this.retryRetainedConnectionCleanup(retained)
+    }
+    for (const terminal of this.recordsForNativePeer(nativePeerId)) {
+      if (terminal.state === 'disconnected' || terminal.state === 'lost') {
+        this.connectionsById.delete(String(terminal.connectionId))
+      }
     }
     this.assertUsable('winrt.connect')
     assertWinRtAdapterReady(this.adapterStateSnapshot, 'winrt.connect')
@@ -1161,12 +1335,14 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
       physicalSettlement: null,
       terminalError: null
     }
+    const connectionGeneration = opaqueId(String(this.nextConnection), 'connection-generation', 'winrt')
     const record: WinRtConnectionRecord = {
       attachment: this.attachment(),
       nativePeerId,
       peerId,
       connectionId: ids.connectionId(`winrt-connection-${this.nextConnection}`),
-      connectionGeneration: opaqueId(String(this.nextConnection), 'connection-generation', 'winrt'),
+      connectionGeneration,
+      dialGeneration: connectionGeneration,
       ownerLeaseId: ids.leaseId(`winrt-connection-lease-${this.nextLease}`),
       state: 'connecting',
       gattRevision: 0,
@@ -1179,7 +1355,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     }
     this.nextConnection += 1
     this.nextLease += 1
-    this.connectionsByNativeId.set(nativePeerId, record)
+    this.connectionsById.set(String(record.connectionId), record)
     const dispatch = this.dispatcher.dispatch(
       options,
       'winrt.connect',
@@ -1217,11 +1393,11 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
   }
 
   private removeConnectingRecord(record: WinRtConnectionRecord): void {
-    if (this.connectionsByNativeId.get(record.nativePeerId) !== record || record.state !== 'connecting') {
+    if (this.connectionsById.get(String(record.connectionId)) !== record || record.state !== 'connecting') {
       return
     }
     record.state = 'disconnected'
-    this.connectionsByNativeId.delete(record.nativePeerId)
+    this.connectionsById.delete(String(record.connectionId))
   }
 
   /** Retries a failed compensating disconnect before another owner can claim the late-connected peer. */
@@ -1247,20 +1423,20 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     const cleanup = await this.startNativeDisconnect(record, operation)
     if (cleanup.state === 'release-failed') {
       record.state = 'disconnecting'
-      this.connectionsByNativeId.set(record.nativePeerId, record)
+      this.connectionsById.set(String(record.connectionId), record)
       console.error('[WinRtBackend.connect] Late native connect cleanup requires retry:', cleanup.failures)
       throw contractError('platform.failure', 'cleanup', operation)
     }
     if (invalidation.state === 'release-failed') {
       record.state = 'disconnected'
-      this.connectionsByNativeId.set(record.nativePeerId, record)
+      this.connectionsById.set(String(record.connectionId), record)
       console.error('[WinRtBackend.connect] Late native connect cleanup requires retry:', invalidation.failures)
       throw contractError('platform.failure', 'cleanup', operation)
     }
     record.state = 'disconnected'
     record.lease = null
-    if (this.connectionsByNativeId.get(record.nativePeerId) === record) {
-      this.connectionsByNativeId.delete(record.nativePeerId)
+    if (this.connectionsById.get(String(record.connectionId)) === record) {
+      this.connectionsById.delete(String(record.connectionId))
     }
   }
 
@@ -1492,13 +1668,26 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     if (this.destroyed) {
       return
     }
-    const record = this.connectionsByNativeId.get(event.nativePeerId)
-    if (record === undefined || record.state === 'lost' || record.state === 'disconnected') {
+    // A link drop ends every lease with `connection.lost`. The native event
+    // names the generation the link was dialled with; once any live lease
+    // still names that dial generation, every live lease of the peer ends
+    // with its own generation.
+    const live = this.recordsForNativePeer(event.nativePeerId).filter(
+      record => record.state !== 'lost' && record.state !== 'disconnected'
+    )
+    const owner = live.find(record => String(record.dialGeneration) === event.connectionGeneration)
+    if (owner === undefined) {
       return
     }
-    if (String(record.connectionGeneration) !== event.connectionGeneration) {
-      return
+    for (const record of live) {
+      this.handleRecordConnectionLoss(record)
     }
+    if (event.safeReason !== null) {
+      console.info('[WinRtBackend.connection-loss] WinRT reported connection loss:', event.safeReason)
+    }
+  }
+
+  private handleRecordConnectionLoss(record: WinRtConnectionRecord): void {
     if (this.adapterLossPending) {
       const previous = record.state === 'disconnecting' ? 'disconnecting' : 'connected'
       this.terminalizeAdapterLossConnection(record, previous)
@@ -1554,9 +1743,6 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     })
     this.nextIngressOrdinal += 1
     record.lease = null
-    if (event.safeReason !== null) {
-      console.info('[WinRtBackend.connection-loss] WinRT reported connection loss:', event.safeReason)
-    }
   }
 
   private terminalizeAdapterLossConnection(
@@ -1578,8 +1764,8 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     record.database = null
     record.lease?.markReleased()
     record.lease = null
-    if (this.connectionsByNativeId.get(record.nativePeerId) === record) {
-      this.connectionsByNativeId.delete(record.nativePeerId)
+    if (this.connectionsById.get(String(record.connectionId)) === record) {
+      this.connectionsById.delete(String(record.connectionId))
     }
     broadcastWinRtEvent(this.eventStreams, {
       attachment: record.attachment,
@@ -1630,10 +1816,10 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
       return cleanup
     }
     if (
-      this.connectionsByNativeId.get(record.nativePeerId) === record &&
+      this.connectionsById.get(String(record.connectionId)) === record &&
       (record.state === 'lost' || record.state === 'disconnected')
     ) {
-      this.connectionsByNativeId.delete(record.nativePeerId)
+      this.connectionsById.delete(String(record.connectionId))
     }
     return releasedCleanup
   }
@@ -1757,23 +1943,29 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     if (this.destroyed) {
       return
     }
-    const record = this.connectionsByNativeId.get(event.nativePeerId)
-    const database = record?.database
-    if (
-      record === undefined ||
-      record.state !== 'connected' ||
-      String(record.connectionGeneration) !== event.connectionGeneration
-    ) {
+    // Services changed on the shared link: the event names the dial
+    // generation; every connected lease's snapshot ends with its own path.
+    // Subscription teardown stays peer-wide and idempotent.
+    const live = this.recordsForNativePeer(event.nativePeerId).filter(record => record.state === 'connected')
+    const owner = live.find(record => String(record.dialGeneration) === event.connectionGeneration)
+    if (owner === undefined) {
       return
     }
-    record.gattRevision += 1
-    database?.invalidate()
-    record.database = null
-    this.terminalizeConnectionOperations(record, operationName =>
-      contractError('gatt.stale-handle', 'gatt', `${operationName}.services-changed`)
-    )
+    const invalidated: WinRtGattDatabase[] = []
+    for (const record of live) {
+      record.gattRevision += 1
+      const database = record.database
+      database?.invalidate()
+      record.database = null
+      this.terminalizeConnectionOperations(record, operationName =>
+        contractError('gatt.stale-handle', 'gatt', `${operationName}.services-changed`)
+      )
+      if (database !== null && database !== undefined) {
+        invalidated.push(database)
+      }
+    }
     this.invalidateConnectionChildren(
-      record,
+      owner,
       'connection-lost',
       contractError('gatt.stale-handle', 'gatt', 'winrt.gatt.subscribe.database-changed')
     ).then(
@@ -1784,18 +1976,20 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
       },
       error => console.error('[WinRtBackend.database-changed] Subscription cleanup rejected:', error)
     )
-    if (database === null || database === undefined) {
+    if (invalidated.length === 0) {
       return
     }
     const attachment = this.attachment()
-    broadcastWinRtEvent(this.eventStreams, {
-      attachment,
-      attachmentId: attachment.attachmentId,
-      kind: 'database-changed',
-      database: database.path,
-      ingressOrdinal: this.nextIngressOrdinal
-    })
-    this.nextIngressOrdinal += 1
+    for (const database of invalidated) {
+      broadcastWinRtEvent(this.eventStreams, {
+        attachment,
+        attachmentId: attachment.attachmentId,
+        kind: 'database-changed',
+        database: database.path,
+        ingressOrdinal: this.nextIngressOrdinal
+      })
+      this.nextIngressOrdinal += 1
+    }
   }
 
   private handleAdapterState(state: WinRtAdapterSnapshot): void {
@@ -1873,7 +2067,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
         ).failures
       )
     }
-    for (const record of this.connectionsByNativeId.values()) {
+    for (const record of this.connectionsById.values()) {
       if (record.state === 'connecting' || record.state === 'connected' || record.state === 'disconnecting') {
         failures.push(
           ...cleanupFailure(
@@ -1968,17 +2162,35 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     for (const cleanup of subscriptionCleanups) {
       failures.push(...(await cleanup).failures)
     }
-    for (const record of [...this.connectionsByNativeId.values()]) {
+    // One native disconnect per peer: joined leases share the link, so only
+    // the first record of a peer drives the radio; every record of a
+    // released link is terminalized with its own generation. Peers are
+    // snapshotted before the radio fires because retirement deletes records
+    // from the map. A failed radio disconnect retains every record of the
+    // peer for the next retry.
+    const peerReleased = new Map<string, boolean>()
+    for (const record of [...this.connectionsById.values()]) {
       if (record.state === 'connected' || record.state === 'disconnecting') {
         const previous = record.state
-        const disconnectCleanup = await this.disconnect(record, 'winrt.adapter-loss.disconnect', false, false)
-        failures.push(...disconnectCleanup.failures)
-        if (disconnectCleanup.state === 'release-failed') {
+        const peers = this.recordsForNativePeer(record.nativePeerId)
+        let released = peerReleased.get(record.nativePeerId)
+        if (released === undefined) {
+          const disconnectCleanup = await this.disconnect(record, 'winrt.adapter-loss.disconnect', false, false)
+          failures.push(...disconnectCleanup.failures)
+          released = disconnectCleanup.state !== 'release-failed'
+          peerReleased.set(record.nativePeerId, released)
+        }
+        if (!released) {
           // A failed native disconnect retains the connected record, lease, and physical-link counter
           // for the next adapter-state cleanup retry.
           continue
         }
-        this.terminalizeAdapterLossConnection(record, previous)
+        for (const peerRecord of peers) {
+          if (peerRecord.state === 'lost') {
+            continue
+          }
+          this.terminalizeAdapterLossConnection(peerRecord, peerRecord === record ? previous : 'connected')
+        }
       }
       if (record.state === 'connecting' && record.pendingConnect !== null) {
         this.terminalizePendingConnect(
@@ -1992,8 +2204,8 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
         record.database = null
         record.lease?.markReleased()
         record.lease = null
-        if (this.connectionsByNativeId.get(record.nativePeerId) === record) {
-          this.connectionsByNativeId.delete(record.nativePeerId)
+        if (this.connectionsById.get(String(record.connectionId)) === record) {
+          this.connectionsById.delete(String(record.connectionId))
         }
       }
     }
@@ -2132,7 +2344,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     for (const cleanup of subscriptionCleanups) {
       failures.push(...(await cleanup).failures)
     }
-    for (const record of [...this.connectionsByNativeId.values()]) {
+    for (const record of [...this.connectionsById.values()]) {
       failures.push(...(await this.disconnect(record, 'winrt.destroy.connection')).failures)
     }
     const nonZeroCounters = Object.entries(this.resourceCounters()).filter(([, value]) => Number(value) !== 0)

@@ -489,6 +489,11 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
       if (record.connection !== null && String(record.connection.connectionId) === connectionId) {
         return record
       }
+      for (const lease of record.leases) {
+        if (String(lease.connection.connectionId) === connectionId) {
+          return record
+        }
+      }
     }
     return null
   }
@@ -791,14 +796,11 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     connection: import('../../backend-contract/backend').BackendConnection<string, string>,
     operation: string
   ): BluezConnectionRecord {
-    if (
-      !(connection instanceof BluezConnection) ||
-      connection.record.connection !== connection ||
-      !connection.record.active
-    ) {
+    const record = connection instanceof BluezConnection ? connection.record : null
+    if (record === null || !bluezConnectionOwned(record, connection) || !record.active) {
       throw contractError('connection.stale', 'connection', operation)
     }
-    return connection.record
+    return record
   }
 
   private requireDatabaseForPath(
@@ -828,7 +830,16 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     record: BluezConnectionRecord,
     cause: import('../../backend-contract/errors').BleErrorCode
   ): void {
-    const connection = cause === 'connection.lost' ? this.connectionPathFor(record) : null
+    // A link drop ends every lease: each live lease connection broadcasts
+    // its own `connection.lost` naming its independent generation (FX1B),
+    // so the core ends every public lease of the link. A released owner's
+    // connection no live lease references is not named.
+    const lostConnections =
+      cause === 'connection.lost'
+        ? [...record.leases]
+            .map(lease => lease.connection)
+            .filter((connection, index, all) => all.indexOf(connection) === index)
+        : []
     record.active = false
     record.physicalLinkMayExist = false
     record.state = cause === 'connection.lost' ? 'lost' : 'disconnected'
@@ -850,7 +861,11 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     if (this.connectionRecords.get(record.devicePath) === record) {
       this.connectionRecords.delete(record.devicePath)
     }
-    if (connection !== null) {
+    for (const leaseConnection of lostConnections) {
+      const connection = this.connectionPathForConnection(record, leaseConnection)
+      if (connection === null) {
+        continue
+      }
       this.broadcastEvent({
         attachment: connection.attachment,
         attachmentId: connection.attachmentId,
@@ -919,20 +934,23 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     record.currentDatabase = null
   }
 
-  private connectionPathFor(record: BluezConnectionRecord): ConnectionPath<string, string> | null {
-    const connection = record.connection
-    const ownerLeaseId = record.ownerLeaseId
-    if (connection === null || ownerLeaseId === null) {
+  private connectionPathForConnection(
+    record: BluezConnectionRecord,
+    leaseConnection: import('./bluez-backend-handles').BluezConnection
+  ): ConnectionPath<string, string> | null {
+    const joinOwner = [...record.leases].find(lease => lease.connection === leaseConnection)?.leaseId
+    const ownerLease = record.connection === leaseConnection ? record.ownerLeaseId : (joinOwner ?? null)
+    if (ownerLease === null) {
       return null
     }
     const attachment = this.attachment()
     return Object.freeze({
       attachment,
       attachmentId: attachment.attachmentId,
-      peerId: connection.peerId,
-      connectionId: connection.connectionId,
-      ownerLeaseId,
-      connectionGeneration: connection.connectionGeneration
+      peerId: leaseConnection.peerId,
+      connectionId: leaseConnection.connectionId,
+      ownerLeaseId: ownerLease,
+      connectionGeneration: leaseConnection.connectionGeneration
     })
   }
 
@@ -1187,4 +1205,21 @@ function observeBluezCleanup(cleanup: Promise<CleanupRecord>, context: string): 
   cleanup.catch(error => {
     console.error(context, error)
   })
+}
+
+/**
+ * Joined leases carry their own connection identity over the shared link
+ * (FX1B): the record's dialling-owner connection or any live lease's.
+ */
+function bluezConnectionOwned(
+  record: import('./bluez-runtime-types').BluezConnectionRecord,
+  connection: import('../../backend-contract/backend').BackendConnection<string, string>
+): boolean {
+  if (!(connection instanceof BluezConnection)) {
+    return false
+  }
+  if (record.connection === connection) {
+    return true
+  }
+  return [...record.leases].some(lease => lease.connection === connection)
 }

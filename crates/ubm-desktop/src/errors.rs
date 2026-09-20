@@ -206,10 +206,17 @@ pub fn is_security_answer(platform: &PlatformDetail) -> bool {
     }
 }
 
-/// Operations that run on an established link: GATT verbs and discovery.
-/// A connect, a disconnect, a scan or an adapter read is not one.
+/// Operations that run on an established link: GATT verbs, discovery, and
+/// the link reads (`connection.effective-mtu`, `connection.rssi`; the
+/// radio seam names the latter `peer.rssi`). A connect, a disconnect, a
+/// scan or an adapter read is not one: they keep their own names even when
+/// the platform reports the link gone.
 fn is_link_operation(operation: &str) -> bool {
-    operation.starts_with("gatt.") || operation.starts_with("discovery.")
+    operation.starts_with("gatt.")
+        || operation.starts_with("discovery.")
+        || operation == "connection.effective-mtu"
+        || operation == "connection.rssi"
+        || operation == "peer.rssi"
 }
 
 /// Whether the caller may safely repeat the operation (PR210-22). Set by
@@ -322,15 +329,36 @@ impl DesktopError {
         self
     }
 
-    /// Owner decision (5.0): a connect the platform failed is
-    /// `connection.failed` on every host, the platform's answer kept; a
-    /// more specific code (permission, adapter, peer, cancel, timeout) is
-    /// unchanged.
+    /// Owner decision (5.0, RV1 finding 2): a connect the platform failed
+    /// is `connection.failed` on every host, the platform's answer kept,
+    /// matching the event vocabulary (`connect-not-established`) and the
+    /// recovery catalog (`retry-with-backoff`); the library never retries
+    /// it itself. A more specific code (permission, adapter, peer, cancel,
+    /// timeout) is unchanged, and genuinely terminal refusals keep their
+    /// codes' `never`.
+    ///
+    /// Retryability reads the platform's answer, never the request:
+    /// - transient radio failure — nothing was committed, the caller
+    ///   decides with backoff (`caller-decides`): Android `androidGattStatus`
+    ///   133/62/147, CoreBluetooth `CBErrorDomain` 6/10, WinRT `gatt-status`
+    ///   `unreachable`, BlueZ `Failed`/`ConnectionAttemptFailed`, or no
+    ///   platform answer at all (a generic radio failure);
+    /// - terminal refusal — retrying the same connect cannot succeed
+    ///   (`never`): any [`is_security_answer`] (Android 5/8/12/15/137,
+    ///   `CBATTErrorDomain` 5/8/12/15, `CBErrorDomain` 14/15, BlueZ
+    ///   `NotAuthorized`/`AuthenticationFailed`/`NotPermitted`+`Not paired`,
+    ///   WinRT `protocol-error`+`attError` 5/8/12/15); recovery is
+    ///   pair/repair, not retry.
     #[must_use]
     pub fn classify_connect_failure(mut self) -> Self {
         if self.operation == "connection.connect" && self.code == BleErrorCode::PlatformFailure {
             self.code = BleErrorCode::ConnectionFailed;
             self.domain = BleErrorDomain::Connection;
+            if self.platform().is_some_and(is_security_answer) {
+                return self;
+            }
+            let commit = self.commit;
+            return self.with_outcome(commit, Retryability::CallerDecides);
         }
         self
     }
@@ -816,6 +844,11 @@ mod tests {
                 "gatt.discover",
                 "discovery.complete",
                 "gatt.subscribe",
+                "gatt.write-readiness",
+                "connection.effective-mtu",
+                "connection.rssi",
+                // The radio seam's name for the central `connection.rssi` read.
+                "peer.rssi",
             ] {
                 let error = DesktopError::new(
                     BleErrorCode::GattReadFailed,
@@ -1010,6 +1043,28 @@ mod tests {
         )
         .classify_connect_failure();
         assert_eq!(read.code(), BleErrorCode::PlatformFailure, "connect only");
+    }
+
+    /// RV1 finding 2: a connect the platform failed commits nothing, so
+    /// repeating it is the caller's policy (`caller-decides`), matching the
+    /// event vocabulary (`connect-not-established`) and the recovery catalog
+    /// (`retry-with-backoff`). Genuinely terminal refusals keep their names
+    /// and their codes' `never`.
+    #[test]
+    fn a_platform_connect_failure_is_caller_decides() {
+        use super::Retryability;
+        let error = DesktopError::new(
+            BleErrorCode::PlatformFailure,
+            BleErrorDomain::Platform,
+            "connection.connect",
+        )
+        .classify_connect_failure();
+        assert_eq!(error.code(), BleErrorCode::ConnectionFailed);
+        assert_eq!(
+            error.retryability(),
+            Retryability::CallerDecides,
+            "a radio-failure connect is the caller's retry policy"
+        );
     }
 
     /// Owner decision (5.0, finding 161): a connect whose deadline expired

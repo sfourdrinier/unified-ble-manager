@@ -692,8 +692,8 @@ export class Connection<Attachment extends string, Identity extends BackendIdent
     return this.connection.requestMtu(requestedMtu, toPublicOperationOptions(options))
   }
 
-  effectiveMtu() {
-    return this.connection.effectiveMtu({ signal: null, deadline: null })
+  effectiveMtu(options?: PortableOperationOptions) {
+    return this.connection.effectiveMtu(toPublicOperationOptions(options ?? { signal: null, deadline: null }))
   }
 
   requestPriority(priority: ConnectionPriority, options: PortableOperationOptions) {

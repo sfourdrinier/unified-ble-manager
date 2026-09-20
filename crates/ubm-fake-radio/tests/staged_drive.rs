@@ -420,10 +420,37 @@ fn capability_projection_reports_six_limited_rows() {
 fn lease_borrow_transfer_release_flows() {
     let mut driver = driver();
     setup_link(&mut driver);
-    // Without sharing support the second lease fails closed at arbitration
-    // with the frozen `connection.already-owned` identity.
-    let denied = run(
+    // Join semantics (OWN-01/FX1B): sharing is the default, so the second
+    // lease joins the live link — one physical link, two leases — instead
+    // of failing `connection.already-owned`.
+    let joined = run(
         &mut driver,
+        "{\"step\":\"link.borrow\",\"peer\":\"p\",\"lease\":\"lease-b\",\"op\":\"borrow0\"}",
+    );
+    assert!(ok(&joined), "{joined}");
+    assert!(joined.contains("\"lease_count\":2"), "{joined}");
+    // Exclusive links still fail closed when the host opts out before the
+    // connection captures the flag.
+    let mut exclusive = StagedDriver::open().expect("staged open must succeed");
+    assert!(ok(&run(&mut exclusive, "{\"step\":\"cap.project\"}")));
+    assert!(ok(&run(
+        &mut exclusive,
+        "{\"step\":\"link.sharing\",\"supported\":false}"
+    )));
+    assert!(ok(&run(
+        &mut exclusive,
+        "{\"step\":\"peer.advertise\",\"peer\":\"p\",\"domain\":\"platform-guid\",\"value\":\"peer-1\"}"
+    )));
+    assert!(ok(&run(
+        &mut exclusive,
+        "{\"step\":\"link.connect\",\"peer\":\"p\",\"lease\":\"lease-a\",\"op\":\"conn0\"}"
+    )));
+    assert!(ok(&run(
+        &mut exclusive,
+        "{\"step\":\"link.established\",\"peer\":\"p\",\"op\":\"conn0\"}"
+    )));
+    let denied = run(
+        &mut exclusive,
         "{\"step\":\"link.borrow\",\"peer\":\"p\",\"lease\":\"lease-b\",\"op\":\"borrow0\"}",
     );
     assert!(!ok(&denied), "{denied}");

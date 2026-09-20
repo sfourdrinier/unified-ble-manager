@@ -173,20 +173,25 @@ async fn r2_concurrent_starts_on_one_session_admit_exactly_one() {
     ok(&call(&session, "scan.start", &scan_args("s3")).await);
 }
 /// X-R3: two same-peer connects with different options, spawned back to
-/// back. Staging is keyed by peer, so the second stager overwrites the
-/// first; the first dispatch must still carry its own operation's options.
-/// Each round attributes the single dispatch to the op that completes from
-/// its answer and checks the payload matches that op.
+/// back. Under join semantics (FX1B) both ops lease the one live link, so
+/// each dispatches its own radio dial in turn; the per-peer section keeps
+/// the waves serialized so every dispatch carries exactly its own
+/// operation's options. Each round attributes every wave to the op that
+/// completes from its answer and checks the payload matches that op.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r3_same_peer_connects_keep_their_own_options() {
     let mut mismatches = 0u32;
     let mut decisive = 0u32;
     for _ in 0..12 {
-        match one_race_roundtrip().await {
+        // A future section cycle must fail loudly, never hang CI: the
+        // whole round is bounded.
+        let round = tokio::time::timeout(Duration::from_secs(30), one_race_roundtrip())
+            .await
+            .expect("one round completes within 30 s; a hang is a connect-section deadlock");
+        match round {
             Some(false) => mismatches += 1,
             Some(true) => decisive += 1,
-            // Both ops won a dispatch or neither settled: the round proves
-            // nothing and must not pass the suite on its own.
+            // The round proved nothing and must not pass the suite alone.
             None => {}
         }
     }
@@ -194,9 +199,9 @@ async fn r3_same_peer_connects_keep_their_own_options() {
     assert!(decisive > 0, "at least one round pinned a dispatch");
 }
 
-/// One back-to-back pair: `Some(true)` when the dispatch matches its
-/// completer, `Some(false)` on a mismatch, `None` when the round proved
-/// nothing (both settled or neither did).
+/// One back-to-back pair: `Some(true)` when every wave matches its
+/// completer and both ops join the one link, `Some(false)` on a mismatch,
+/// `None` when the round proved nothing.
 async fn one_race_roundtrip() -> Option<bool> {
     let radio = Scripted::new(Box::new(|request| match request {
         ubm_mobile::RadioRequest::Connect { .. } => Reply::Hold,
@@ -229,55 +234,79 @@ async fn one_race_roundtrip() -> Option<bool> {
             .await
         }
     });
-    // The core admits one connect at a time: exactly one dispatch is held.
-    wait_for(|| !radio.held_of(RequestKind::Connect).is_empty()).await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(radio.held_of(RequestKind::Connect).len(), 1);
-    let payload = radio
-        .held
-        .lock()
-        .unwrap()
-        .values()
-        .find(|request| request.kind() == RequestKind::Connect)
-        .cloned()
-        .expect("one held connect");
-    for id in radio.held_of(RequestKind::Connect) {
-        radio.answer(id, RadioCompletion::Unit);
+    // The section serializes the two dials: exactly one wave is held at a
+    // time. Drain every wave (bounded): answering only the first strands
+    // the joiner's dial and hangs the join below (FXA).
+    let mut matched = true;
+    let (mut direct_done, mut auto_done) = (false, false);
+    for wave in 1..=2 {
+        // The section admits one connect at a time: exactly one dispatch
+        // is held.
+        wait_for(|| !radio.held_of(RequestKind::Connect).is_empty()).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            radio.held_of(RequestKind::Connect).len(),
+            1,
+            "wave {wave} is one dispatch"
+        );
+        let payload = radio
+            .held
+            .lock()
+            .unwrap()
+            .values()
+            .find(|request| request.kind() == RequestKind::Connect)
+            .cloned()
+            .expect("one held connect");
+        for id in radio.held_of(RequestKind::Connect) {
+            radio.answer(id, RadioCompletion::Unit);
+        }
+        // Attribute the wave: exactly one op completes from its answer —
+        // the one that dispatched it. An op cannot complete before its own
+        // wave is answered (its radio reply is its completion), so the
+        // completion count tracks answered waves.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let done = usize::from(direct.is_finished()) + usize::from(auto.is_finished());
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "wave {wave} strands its joiner: no op completed in 5 s"
+            );
+            if done == wave {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        let owner_auto = !auto_done && auto.is_finished();
+        let owner_direct = !direct_done && direct.is_finished();
+        if owner_auto == owner_direct {
+            // Zero or two new completions: the wave cannot be attributed.
+            return None;
+        }
+        direct_done = direct.is_finished();
+        auto_done = auto.is_finished();
+        let payload_auto = matches!(
+            payload,
+            RadioRequest::Connect {
+                auto_connect: true,
+                ..
+            }
+        );
+        matched = matched && (payload_auto == owner_auto);
     }
-    // Attribute the dispatch: the op that completes from this answer is the
-    // one that dispatched it.
+    // Both dials ran, so both ops are done: the join below cannot block.
+    assert_eq!(
+        radio.count(RequestKind::Connect),
+        2,
+        "one dial per caller, no more"
+    );
     let (first, second) = tokio::join!(direct, auto);
     let (first, second) = (first.unwrap(), second.unwrap());
-    let direct_ok = parse(&first)["ok"] == json!(true);
-    let auto_ok = parse(&second)["ok"] == json!(true);
-    // Park the loser so no task outlives the round.
-    if !direct_ok {
-        let _ = call(
-            &session_a,
-            "op.cancel",
-            &json!({"operationId": "ca"}).to_string(),
-        )
-        .await;
-    }
-    if !auto_ok {
-        let _ = call(
-            &session_b,
-            "op.cancel",
-            &json!({"operationId": "cb"}).to_string(),
-        )
-        .await;
-    }
-    // Exactly one op wins the dispatch; otherwise the round proves nothing.
-    if direct_ok == auto_ok {
-        return None;
-    }
-    let expected_auto = auto_ok && !direct_ok;
-    let payload_auto = matches!(
-        payload,
-        RadioRequest::Connect {
-            auto_connect: true,
-            ..
-        }
-    );
-    Some(expected_auto == payload_auto)
+    // A second connect to a connected peer joins: both succeed on the one
+    // link generation.
+    let direct_value = ok(&first);
+    let auto_value = ok(&second);
+    matched = matched
+        && direct_value["peerKey"] == auto_value["peerKey"]
+        && direct_value["connectionGeneration"] == auto_value["connectionGeneration"];
+    Some(matched)
 }

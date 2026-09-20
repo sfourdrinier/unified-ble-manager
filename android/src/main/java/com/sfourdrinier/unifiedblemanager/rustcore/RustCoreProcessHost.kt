@@ -78,10 +78,17 @@ class RustCoreProcessHost(
    * each; appearances the owner refused are persisted again. Returns the
    * count ingested.
    */
+  private var reportedMalformedAppearances = 0L
+
   @Synchronized
   fun drainPresenceAppearances(): Int {
     val store = presenceStore ?: return 0
     val pending = store.drainAppearances()
+    val malformed = store.malformedRecordCount()
+    if (malformed > reportedMalformedAppearances) {
+      log("presence drain reported ${malformed - reportedMalformedAppearances} malformed appearance records")
+      reportedMalformedAppearances = malformed
+    }
     if (pending.isEmpty()) return 0
     val peers = pending.map { PresenceRestoredPeer(it.address, null, false) }
     return if (ingestPresenceRestored(peers)) {

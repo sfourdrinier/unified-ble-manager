@@ -905,6 +905,7 @@ async function executeManagerOwnershipScenario<
   // destroying the borrower leaves the owner's lease untouched.
   const borrowerConnection = await fixture.controller.settle(borrower.connect(connection.peerId, operationOptions))
   const borrowerJoined = String(borrowerConnection.connectionGeneration) !== String(connection.connectionGeneration)
+  const onePhysicalLink = Number(fixture.backend.resourceCounters().physicalLinks) === 1
   await fixture.controller.settle(borrowerConnection.release())
   const borrowerCleanup = await fixture.controller.settle(borrower.destroy())
   assertCleanupReleased(definition, borrowerCleanup, 'borrowing manager')
@@ -1004,9 +1005,10 @@ async function executeManagerOwnershipScenario<
     throw new AggregateError(transferCleanupErrors, `${definition.id}: ownership cleanup failed`)
   }
   return [
-    fact('connection-leases-are-owner-scoped', borrowerJoined && ownerConnectionRetained, {
+    fact('connection-leases-are-owner-scoped', borrowerJoined && ownerConnectionRetained && onePhysicalLink, {
       borrowerJoined,
-      ownerConnectionRetained
+      ownerConnectionRetained,
+      onePhysicalLink
     }),
     fact(
       'connection-borrowing-cannot-destroy-or-cancel-owner-work',
@@ -1059,14 +1061,20 @@ async function executeConnectionArbitrationScenario<
   // manager leases the peer's link with an independent generation.
   const secondConnection = await fixture.controller.settle(second.connect(connection.peerId, operationOptions))
   const secondJoined = String(secondConnection.connectionGeneration) !== String(connection.connectionGeneration)
+  const onePhysicalLink = Number(fixture.backend.resourceCounters().physicalLinks) === 1
   assertCleanupReleased(definition, await fixture.controller.settle(secondConnection.release()), 'second connection')
   assertCleanupReleased(definition, await fixture.controller.settle(second.destroy()), 'second manager')
   assertCleanupReleased(definition, await fixture.controller.settle(connection.release()), 'owner connection')
   return [
-    fact('connection-second-client-arbitrates-without-stealing-link', secondJoined && owner.state === 'ready', {
-      secondJoined,
-      ownerReady: owner.state === 'ready'
-    })
+    fact(
+      'connection-second-client-arbitrates-without-stealing-link',
+      secondJoined && onePhysicalLink && owner.state === 'ready',
+      {
+        secondJoined,
+        onePhysicalLink,
+        ownerReady: owner.state === 'ready'
+      }
+    )
   ]
 }
 

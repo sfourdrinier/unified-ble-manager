@@ -351,7 +351,7 @@ async fn generate() -> String {
         &session,
         "effective mtu",
         "connection.effective-mtu",
-        json!({"peerId": peer, "lease": "lease-1"}),
+        json!({"peerId": peer, "lease": "lease-1", "operationId": "mtu-obs-1"}),
     )
     .await;
     r.invoke(

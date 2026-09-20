@@ -175,9 +175,9 @@ const connection = await manager.connect(peer, {
 })
 ```
 
-There is one important browser boundary: `BluetoothRemoteGATTServer.connect()` returns a native promise with no cancellation API. If `manager.connect()` reaches its deadline, UBM reports `operation.timed-out` but retains pending ownership so a second native connection cannot race the first one.
+There is one important browser boundary: `BluetoothRemoteGATTServer.connect()` returns a native promise with no cancellation API. If `manager.connect()` reaches its deadline, UBM reports `connection.failed` (`caller-decides`, platform `web-bluetooth`/`DeadlineExpired`, bound in `deadlineMs`) and releases the pending attempt; a late native success is disconnected by compensation, so a retry on the same manager and peer is a fresh attempt, never `connection.already-owned`.
 
-Do not immediately call `connect()` again on that same manager and peer. That correctly fails with `connection.already-owned`. Instead, destroy the manager, await cleanup, then start a fresh user-driven attempt:
+The pending attempt is released when the failure settles, so a retry cannot overlap it; a late native success is disconnected by compensation:
 
 ```ts
 try {
@@ -185,17 +185,17 @@ try {
 } catch (error) {
   if (
     error instanceof BleError &&
-    error.code === 'operation.timed-out' &&
+    error.code === 'connection.failed' &&
     error.operation === 'web-connection.connect'
   ) {
-    await manager.destroy()
-    manager = await createWebBleManager()
+    // The pending attempt was already released; retry on the same manager and peer.
+    return manager.connect(peer, { timeoutMs: 60_000 })
   }
   throw error
 }
 ```
 
-Destroy compensation also handles a late native success by disconnecting it. Clearing ownership early would permit overlapping browser connections and is intentionally not supported.
+Clearing ownership early would permit overlapping browser connections and is intentionally not supported.
 
 ## Notifications and cleanup
 
@@ -231,7 +231,7 @@ Common boundaries:
 
 - `chooser.cancelled` + `NotFoundError`: the chooser ended without returning a compatible device;
 - `connection.failed` + `NetworkError`: Chrome selected the device but could not open GATT; the link was not established, so it is `caller-decides` (5.0) and the backend never retries it;
-- `operation.timed-out` at `web-connection.connect`: the bounded native connection did not settle;
+- `connection.failed` + `DeadlineExpired` at `web-connection.connect`: the bounded native connection did not settle (`caller-decides`; every other operation keeps `operation.timed-out`);
 - `gatt.not-found`: the connection opened, but a requested service or characteristic was unavailable or not granted;
 - `connection.lost`: the browser reported the link gone (or failed a GATT call with `NetworkError`) during another operation;
 - `operation.disconnected`: the app's own release cut another operation off;

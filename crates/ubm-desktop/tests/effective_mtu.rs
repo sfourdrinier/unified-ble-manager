@@ -7,7 +7,9 @@
 //! MTU. A radio that withholds the measurement answers
 //! `capability.unsupported` with the reason, never a guessed 23.
 
-use ubm_desktop::{DesktopCentral, FakeRadio, OpControl, PeerSnapshot, RadioEvent};
+use ubm_desktop::{
+    DesktopCentral, FakeRadio, FaultOp, OpControl, PeerSnapshot, PlatformDetail, RadioEvent,
+};
 
 fn advertisement(peer_id: &str) -> RadioEvent {
     RadioEvent::Advertisement(PeerSnapshot {
@@ -88,4 +90,24 @@ async fn unmeasured_effective_mtu_is_unsupported_with_a_reason() {
         detail.contains("no effective ATT MTU measured"),
         "unexpected reason: {detail}"
     );
+}
+
+/// RV3 finding 1: a link drop mid-MTU-read is one physical event with the
+/// characteristic-read name (`connection.lost`), never the raw radio code,
+/// with the platform's answer kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn effective_mtu_link_loss_is_connection_lost() {
+    let central = connected("peer-mtu-lost").await;
+    central.boundary().fail_next_with_platform(
+        FaultOp::EffectiveMtu,
+        "gone",
+        PlatformDetail::new("btleplug", "not-connected").with_message("Not connected"),
+    );
+    let error = central
+        .read_effective_mtu("peer-mtu-lost", "lease-a", OpControl::budget_ms(5000))
+        .await
+        .expect_err("MTU read on a lost link");
+    assert_eq!(error.code_str(), "connection.lost");
+    assert_eq!(error.domain().as_str(), "connection");
+    assert!(error.platform().is_some(), "the platform's answer is kept");
 }

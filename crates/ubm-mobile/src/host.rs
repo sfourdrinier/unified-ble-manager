@@ -113,7 +113,9 @@ pub(crate) type StreamEnd = (&'static str, u64, u64);
 
 enum HostSignal {
     Advertisements,
-    Value(InstanceKey),
+    /// At least one value scope is dirty; the scopes themselves wait in the
+    /// dirty set, so any number of them costs this one queue slot.
+    Values,
     Lifecycle(LifecycleEvent),
     /// A platform adapter change, with the attachment it happened under.
     Adapter(AdapterSnapshot, u64, AttachmentTuple),
@@ -126,12 +128,18 @@ enum HostSignal {
     IngressDrop(IngressClass, u64),
 }
 
-/// Bound for queued host signals (X-R6). Value and advertisement markers
-/// are deduplicated by scope, and every other current-state fact merges per
-/// scope below, so a stalled pump plus a burst retains a bounded prefix.
+/// Bound for queued host signals (X-R6). Value scopes share one queued
+/// marker, the advertisement signal one, and every other current-state fact
+/// merges per scope below, so a stalled pump plus a burst retains a bounded
+/// prefix: at most `SIGNALS_CAP + 2` entries whatever the number of scopes.
 /// What the bound refuses is counted in `signal_lost` / `overflow_drops`
 /// and broadcast by the pump — never silently discarded.
 const SIGNALS_CAP: usize = 1024;
+
+/// Dirty value scopes one marker handling flushes. Bounded so one marker
+/// cannot starve lifecycle and current-state signals; leftovers requeue
+/// the marker for another turn.
+const VALUE_SCOPE_BATCH: usize = 32;
 
 const INGRESS_CLASSES: [IngressClass; 3] = [
     IngressClass::Advertisement,
@@ -150,7 +158,12 @@ const fn ingress_index(class: IngressClass) -> usize {
 #[derive(Default)]
 struct SignalState {
     queue: VecDeque<HostSignal>,
+    /// Every value scope with unflushed core values. Entries are small
+    /// (one tuple per scope); the queue holds at most one marker for all
+    /// of them, so the queue — not this set — is the bounded channel.
     dirty: HashSet<InstanceKey>,
+    /// A `Values` marker already waits in the queue.
+    value_marker_queued: bool,
     advertisements_pending: bool,
     closed: bool,
     /// Non-coalescible signals refused past the bound (lifecycle
@@ -164,8 +177,9 @@ struct SignalState {
 }
 
 /// Ordered signal queue between the central (and ingress) and the pump.
-/// Value and advertisement signals coalesce per scope: the pump polls the
-/// core's bounded queues, so one pending marker per scope is enough.
+/// Value scopes share one queued marker and advertisement signals one: the
+/// pump polls the core's bounded queues, so one pending marker is enough
+/// and the queue stays constantly bounded whatever the number of scopes.
 /// Current-state facts (adapter, security, restored set, scan outcome,
 /// reset, ingress-drop counts) merge per scope too: only the latest is
 /// ever queued. Lifecycle transitions never coalesce — past the bound
@@ -187,17 +201,7 @@ impl Signals {
                 return;
             }
             match signal {
-                HostSignal::Value(scope) => {
-                    if !state.dirty.insert(scope.clone()) {
-                        return;
-                    }
-                    // A new scope marker always queues, past the cap if it
-                    // must: dropping it would leave the scope dirty with no
-                    // marker, stalling its values until the core queue
-                    // fills. Growth needs distinct scopes with queued
-                    // values, which the core bounds independently.
-                    state.queue.push_back(HostSignal::Value(scope));
-                }
+                HostSignal::Values => Self::ensure_value_marker(&mut state),
                 HostSignal::Advertisements => {
                     if state.advertisements_pending {
                         return;
@@ -328,6 +332,65 @@ impl Signals {
         }
     }
 
+    /// Queue one dirty value scope. The scope joins the dirty set; at most
+    /// one marker waits in the queue for all of them, so any number of
+    /// scopes costs one queue slot. The marker may pass the cap by one
+    /// slot: dropping it would strand dirty scopes with no marker, and one
+    /// slot keeps the queue's constant bound.
+    fn push_value(&self, scope: InstanceKey) {
+        {
+            let mut state = lock(&self.state);
+            if state.closed {
+                return;
+            }
+            state.dirty.insert(scope);
+            Self::ensure_value_marker(&mut state);
+        }
+        self.notify.notify_one();
+    }
+
+    /// Queue the value marker unless one already waits. Callers hold the
+    /// signal lock.
+    fn ensure_value_marker(state: &mut SignalState) {
+        if !state.value_marker_queued {
+            state.value_marker_queued = true;
+            state.queue.push_back(HostSignal::Values);
+        }
+    }
+
+    /// Take up to `max` dirty value scopes for one bounded pump batch.
+    /// Scopes leave the dirty set here, so each drains exactly once per
+    /// marker cycle; leftovers requeue the marker below. Order across
+    /// scopes is unspecified — values within a scope stay ordered by the
+    /// core queue the pump polls — so callers must not depend on it.
+    fn take_value_batch(&self, max: usize) -> Vec<InstanceKey> {
+        let mut state = lock(&self.state);
+        let batch: Vec<InstanceKey> = state.dirty.iter().take(max).cloned().collect();
+        for scope in &batch {
+            state.dirty.remove(scope);
+        }
+        batch
+    }
+
+    /// Requeue the value marker while dirty scopes remain (the consumed
+    /// marker drained one bounded batch). May pass the cap by one slot,
+    /// like the initial queue, so no scope is ever stranded.
+    fn requeue_values_if_dirty(&self) {
+        let queued = {
+            let mut state = lock(&self.state);
+            if state.dirty.is_empty() || state.value_marker_queued {
+                false
+            } else {
+                state.value_marker_queued = true;
+                state.queue.push_back(HostSignal::Values);
+                true
+            }
+        };
+        if queued {
+            self.notify.notify_one();
+        }
+    }
+
     /// Take accumulated overflow for the pump to broadcast. Counts reset:
     /// every lost signal is reported exactly once, to every session.
     fn take_overflow(&self) -> (u64, [u64; 3]) {
@@ -338,13 +401,21 @@ impl Signals {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn queue_len(&self) -> usize {
+        lock(&self.state).queue.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn dirty_len(&self) -> usize {
+        lock(&self.state).dirty.len()
+    }
+
     fn pop(&self) -> Option<HostSignal> {
         let mut state = lock(&self.state);
         let signal = state.queue.pop_front()?;
         match &signal {
-            HostSignal::Value(scope) => {
-                state.dirty.remove(scope);
-            }
+            HostSignal::Values => state.value_marker_queued = false,
             HostSignal::Advertisements => state.advertisements_pending = false,
             _ => {}
         }
@@ -739,7 +810,16 @@ impl HostInner {
                     self.route_advertisement(&snapshot);
                 }
             }
-            HostSignal::Value(scope) => self.flush_scope(&scope).await,
+            HostSignal::Values => {
+                // One bounded batch per marker turn, so lifecycle and
+                // current-state signals waiting behind it are not starved;
+                // leftovers requeue the marker for another turn.
+                let batch = self.signals.take_value_batch(VALUE_SCOPE_BATCH);
+                for scope in &batch {
+                    self.flush_scope(scope).await;
+                }
+                self.signals.requeue_values_if_dirty();
+            }
             HostSignal::Lifecycle(event) => self.route_lifecycle(event).await,
             HostSignal::Adapter(snapshot, updated_at, attachment) => {
                 let record = object(vec![
@@ -1314,7 +1394,7 @@ impl HostInner {
 
     /// Queue a flush of `scope` (values admitted before a route existed).
     pub(crate) fn kick(&self, scope: InstanceKey) {
-        self.signals.push(HostSignal::Value(scope));
+        self.signals.push_value(scope);
     }
 
     pub(crate) fn remove_session(&self, session_id: u64) {
@@ -1474,7 +1554,7 @@ impl MobileHost {
         let observer_signals = Arc::clone(&signals);
         let observer: ubm_desktop::CentralObserver = Arc::new(move |signal| match signal {
             CentralSignal::Advertisement(_) => observer_signals.push(HostSignal::Advertisements),
-            CentralSignal::Value { scope, .. } => observer_signals.push(HostSignal::Value(scope)),
+            CentralSignal::Value { scope, .. } => observer_signals.push_value(scope),
             CentralSignal::Lifecycle(event) => {
                 observer_signals.push(HostSignal::Lifecycle(event));
             }
@@ -2008,18 +2088,18 @@ mod signal_tests {
         signals.push(HostSignal::IngressDrop(IngressClass::Control, 2));
         signals.push(HostSignal::IngressDrop(IngressClass::Control, 3));
         signals.push(HostSignal::IngressDrop(IngressClass::Advertisement, 1));
-        signals.push(HostSignal::Value(scope("peer-a")));
-        signals.push(HostSignal::Value(scope("peer-a")));
-        signals.push(HostSignal::Value(scope("peer-b")));
+        signals.push_value(scope("peer-a"));
+        signals.push_value(scope("peer-a"));
+        signals.push_value(scope("peer-b"));
 
         let mut seen = Vec::new();
         while let Some(signal) = signals.pop() {
             seen.push(signal);
         }
         // Two peers' security (latest per peer), one scan failure
-        // (latest), two ingress-drop markers (merged per class), two value
-        // markers (one per scope).
-        assert_eq!(seen.len(), 7);
+        // (latest), two ingress-drop markers (merged per class), one value
+        // marker for both dirty scopes.
+        assert_eq!(seen.len(), 6);
         let security_a = seen
             .iter()
             .find(|signal| matches!(signal, HostSignal::Security(peer, _) if peer == "peer-a"))
@@ -2033,6 +2113,56 @@ mod signal_tests {
             .find(|signal| matches!(signal, HostSignal::IngressDrop(class, _) if *class == IngressClass::Control))
             .expect("control marker");
         assert!(matches!(control, HostSignal::IngressDrop(_, 5)));
+        let (lost, drops) = signals.take_overflow();
+        assert_eq!((lost, drops), (0, [0, 0, 0]));
+    }
+
+    /// X-R6 follow-up: a stalled pump (no pops) plus far more distinct
+    /// value scopes than the cap keeps the queue constantly bounded, and
+    /// every dirty scope is still delivered — one shared marker, bounded
+    /// batches, requeued while scopes remain. Nothing is stranded and
+    /// nothing is silently dropped.
+    #[test]
+    fn distinct_value_scopes_stay_bounded_and_all_delivered() {
+        let signals = Signals::default();
+        let scopes = SIGNALS_CAP + 5000;
+        for index in 0..scopes {
+            signals.push_value(scope(&format!("peer-{index:05}")));
+        }
+        // Stalled: the whole burst costs one queue slot.
+        assert_eq!(signals.queue_len(), 1);
+        assert_eq!(signals.dirty_len(), scopes);
+        // Pump simulation: each marker drains one bounded batch and
+        // requeues while scopes remain; the queue never grows back.
+        let mut delivered = HashSet::new();
+        let mut markers = 0usize;
+        while let Some(signal) = signals.pop() {
+            assert!(
+                matches!(signal, HostSignal::Values),
+                "only the value marker waits while value scopes drain"
+            );
+            markers += 1;
+            let batch = signals.take_value_batch(VALUE_SCOPE_BATCH);
+            assert!(
+                !batch.is_empty() && batch.len() <= VALUE_SCOPE_BATCH,
+                "bounded non-empty batch per marker turn"
+            );
+            for scope in batch {
+                assert!(delivered.insert(scope), "a scope drained twice");
+            }
+            signals.requeue_values_if_dirty();
+            assert!(
+                signals.queue_len() <= 1,
+                "queue grew back mid-drain: {}",
+                signals.queue_len()
+            );
+        }
+        assert_eq!(delivered.len(), scopes, "every dirty scope drained");
+        assert_eq!(signals.dirty_len(), 0, "no scope stranded dirty");
+        assert!(
+            markers * VALUE_SCOPE_BATCH >= scopes,
+            "batching covered every scope in {markers} marker turns"
+        );
         let (lost, drops) = signals.take_overflow();
         assert_eq!((lost, drops), (0, [0, 0, 0]));
     }

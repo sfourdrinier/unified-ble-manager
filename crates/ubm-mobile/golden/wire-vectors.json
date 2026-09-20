@@ -31,7 +31,7 @@
     },
     {
       "args": "{}",
-      "envelope": "{\"ok\":true,\"value\":{\"counters\":{\"activeScanControllers\":0,\"chooserSessions\":0,\"connectionLeases\":0,\"databaseSnapshots\":0,\"dispatchedOperations\":0,\"orphanedIpcOwners\":0,\"physicalCccdEnablements\":0,\"physicalLinks\":0,\"queuedOperations\":0,\"restorationRecords\":0,\"retainedByteBuffers\":0,\"scanConsumers\":0,\"subscriptionConsumers\":0},\"native\":{\"liveOps\":0,\"pendingRadioRequests\":0},\"process\":{\"counters\":{\"activeScanControllers\":0,\"chooserSessions\":0,\"connectionLeases\":0,\"databaseSnapshots\":0,\"dispatchedOperations\":0,\"orphanedIpcOwners\":0,\"physicalCccdEnablements\":0,\"physicalLinks\":0,\"queuedOperations\":0,\"restorationRecords\":0,\"retainedByteBuffers\":0,\"scanConsumers\":0,\"subscriptionConsumers\":0},\"native\":{\"ingressDrops\":{\"advertisement\":0,\"control\":0,\"notification\":0},\"lateRadioCompletions\":0,\"liveOps\":0,\"pendingRadioRequests\":0}}}}",
+      "envelope": "{\"ok\":true,\"value\":{\"counters\":{\"activeScanControllers\":0,\"chooserSessions\":0,\"connectionLeases\":0,\"databaseSnapshots\":0,\"dispatchedOperations\":0,\"orphanedIpcOwners\":0,\"physicalCccdEnablements\":0,\"physicalLinks\":0,\"queuedOperations\":0,\"restorationRecords\":0,\"retainedByteBuffers\":0,\"scanConsumers\":0,\"subscriptionConsumers\":0},\"native\":{\"liveOps\":0,\"pendingRadioRequests\":0},\"process\":{\"counters\":{\"activeScanControllers\":0,\"chooserSessions\":0,\"connectionLeases\":0,\"databaseSnapshots\":0,\"dispatchedOperations\":0,\"orphanedIpcOwners\":0,\"physicalCccdEnablements\":0,\"physicalLinks\":0,\"queuedOperations\":0,\"restorationRecords\":0,\"retainedByteBuffers\":0,\"scanConsumers\":0,\"subscriptionConsumers\":0},\"native\":{\"connectSections\":0,\"ingressDrops\":{\"advertisement\":0,\"control\":0,\"notification\":0},\"lateRadioCompletions\":0,\"liveOps\":0,\"pendingRadioRequests\":0}}}}",
       "expect": "value",
       "name": "counters at baseline",
       "op": "counters.describe"
@@ -177,42 +177,42 @@
       "op": "connection.rssi"
     },
     {
-      "args": "{\"lease\":\"lease-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "args": "{\"admission\":16,\"lease\":\"lease-1\",\"operationId\":\"mtu-obs-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
       "envelope": "{\"ok\":true,\"value\":{\"mtu\":247}}",
       "expect": "value",
       "name": "effective mtu",
       "op": "connection.effective-mtu"
     },
     {
-      "args": "{\"admission\":16,\"lease\":\"lease-1\",\"mode\":\"without-response\",\"operationId\":\"mwl-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "args": "{\"admission\":17,\"lease\":\"lease-1\",\"mode\":\"without-response\",\"operationId\":\"mwl-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
       "envelope": "{\"ok\":true,\"value\":{\"maximumWriteLength\":244}}",
       "expect": "value",
       "name": "maximum write length",
       "op": "connection.maximum-write-length"
     },
     {
-      "args": "{\"admission\":17,\"lease\":\"lease-1\",\"mtu\":247,\"operationId\":\"mtu-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "args": "{\"admission\":18,\"lease\":\"lease-1\",\"mtu\":247,\"operationId\":\"mtu-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
       "envelope": "{\"ok\":true,\"value\":{\"mtu\":247}}",
       "expect": "value",
       "name": "request mtu",
       "op": "connection.request-mtu"
     },
     {
-      "args": "{\"admission\":18,\"lease\":\"lease-1\",\"operationId\":\"prio-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"priority\":\"high-throughput\"}",
+      "args": "{\"admission\":19,\"lease\":\"lease-1\",\"operationId\":\"prio-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"priority\":\"high-throughput\"}",
       "envelope": "{\"ok\":true,\"value\":{\"accepted\":true}}",
       "expect": "value",
       "name": "request priority",
       "op": "connection.request-priority"
     },
     {
-      "args": "{\"admission\":19,\"lease\":\"lease-1\",\"operationId\":\"phy-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "args": "{\"admission\":20,\"lease\":\"lease-1\",\"operationId\":\"phy-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
       "envelope": "{\"ok\":true,\"value\":{\"rx\":\"le-1m\",\"tx\":\"le-2m\"}}",
       "expect": "value",
       "name": "read phy",
       "op": "connection.read-phy"
     },
     {
-      "args": "{\"admission\":20,\"lease\":\"lease-1\",\"operationId\":\"phy-2\",\"peerId\":\"A0:9E:1A:00:00:01\",\"rx\":\"le-2m\",\"tx\":\"le-2m\"}",
+      "args": "{\"admission\":21,\"lease\":\"lease-1\",\"operationId\":\"phy-2\",\"peerId\":\"A0:9E:1A:00:00:01\",\"rx\":\"le-2m\",\"tx\":\"le-2m\"}",
       "envelope": "{\"ok\":true,\"value\":{\"accepted\":true,\"observation\":{\"rx\":\"le-2m\",\"tx\":\"le-2m\"}}}",
       "expect": "value",
       "name": "request phy",
@@ -226,7 +226,7 @@
       "op": "security.state"
     },
     {
-      "args": "{\"admission\":21,\"operationId\":\"pair-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"transport\":\"auto\"}",
+      "args": "{\"admission\":22,\"operationId\":\"pair-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"transport\":\"auto\"}",
       "envelope": "{\"ok\":true,\"value\":{\"outcome\":\"paired\",\"state\":{\"authentication\":\"unauthenticated\",\"bond\":\"bonded\",\"encryption\":\"encrypted\",\"pairingPossible\":null,\"secureConnections\":\"yes\"}}}",
       "expect": "value",
       "name": "pair",
@@ -240,14 +240,14 @@
       "op": "security.cancel-pairing"
     },
     {
-      "args": "{\"admission\":22,\"operationId\":\"bonded-1\"}",
+      "args": "{\"admission\":23,\"operationId\":\"bonded-1\"}",
       "envelope": "{\"ok\":true,\"value\":[{\"bond\":\"bonded\",\"connection\":\"unknown\",\"lastSeenAtMonotonicMs\":null,\"name\":\"Bonded Sensor\",\"peerId\":\"C0:FF:EE:00:00:02\",\"reachability\":\"unknown\",\"rssi\":null,\"source\":\"system-bonded\"}]}",
       "expect": "value",
       "name": "bonded peers",
       "op": "peers.bonded"
     },
     {
-      "args": "{\"admission\":23,\"kind\":\"connected-device\",\"operationId\":\"bg-1\",\"reason\":\"heart rate streaming\"}",
+      "args": "{\"admission\":24,\"kind\":\"connected-device\",\"operationId\":\"bg-1\",\"reason\":\"heart rate streaming\"}",
       "envelope": "{\"ok\":true,\"value\":{\"leaseId\":\"fgs-lease-1\"}}",
       "expect": "value",
       "name": "background acquire",
@@ -275,21 +275,21 @@
       "op": "companion.associate"
     },
     {
-      "args": "{\"admission\":24,\"operationId\":\"presence-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "args": "{\"admission\":25,\"operationId\":\"presence-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
       "envelope": "{\"ok\":true,\"value\":{\"state\":\"observing\"}}",
       "expect": "value",
       "name": "presence observe",
       "op": "presence.observe"
     },
     {
-      "args": "{\"admission\":25,\"operationId\":\"presence-2\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "args": "{\"admission\":26,\"operationId\":\"presence-2\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
       "envelope": "{\"ok\":true,\"value\":{\"state\":\"idle\"}}",
       "expect": "value",
       "name": "presence unobserve",
       "op": "presence.unobserve"
     },
     {
-      "args": "{\"admission\":26,\"operationId\":\"never-seen\"}",
+      "args": "{\"admission\":27,\"operationId\":\"never-seen\"}",
       "envelope": "{\"ok\":true,\"value\":{\"state\":\"cancellation-requested\"}}",
       "expect": "value",
       "name": "cancel before admission",
@@ -310,7 +310,7 @@
       "op": "gatt.bogus"
     },
     {
-      "args": "{\"admission\":27,\"duplicatePolicy\":\"merged\",\"operationId\":\"scan-2\",\"serviceUuids\":[]}",
+      "args": "{\"admission\":28,\"duplicatePolicy\":\"merged\",\"operationId\":\"scan-2\",\"serviceUuids\":[]}",
       "envelope": "{\"commit\":null,\"error\":{\"code\":\"capability.unsupported\",\"detail\":\"the radio reports every advertisement; apply first/merged above it\",\"domain\":\"capability\",\"operation\":\"scan.start.duplicate-policy\",\"platform\":null},\"ok\":false,\"retryability\":\"never\"}",
       "expect": "failure",
       "name": "unsupported duplicate policy",
@@ -338,7 +338,7 @@
       "op": "session.reconcile"
     },
     {
-      "args": "{\"admission\":28,\"consumer\":\"hr\",\"operationId\":\"unsub-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"selector\":{\"characteristicOccurrence\":0,\"characteristicUuid\":\"2A37\",\"serviceOccurrence\":0,\"serviceUuid\":\"180D\"}}",
+      "args": "{\"admission\":29,\"consumer\":\"hr\",\"operationId\":\"unsub-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"selector\":{\"characteristicOccurrence\":0,\"characteristicUuid\":\"2A37\",\"serviceOccurrence\":0,\"serviceUuid\":\"180D\"}}",
       "envelope": "{\"ok\":true,\"value\":{\"physicalDisabled\":false,\"state\":\"released\"}}",
       "expect": "value",
       "name": "unsubscribe",
@@ -381,7 +381,7 @@
     },
     {
       "args": "{}",
-      "envelope": "{\"ok\":true,\"value\":{\"counters\":{\"activeScanControllers\":0,\"chooserSessions\":0,\"connectionLeases\":0,\"databaseSnapshots\":0,\"dispatchedOperations\":0,\"orphanedIpcOwners\":0,\"physicalCccdEnablements\":0,\"physicalLinks\":0,\"queuedOperations\":0,\"restorationRecords\":1,\"retainedByteBuffers\":0,\"scanConsumers\":0,\"subscriptionConsumers\":0},\"native\":{\"liveOps\":0,\"pendingRadioRequests\":0},\"process\":{\"counters\":{\"activeScanControllers\":0,\"chooserSessions\":0,\"connectionLeases\":0,\"databaseSnapshots\":0,\"dispatchedOperations\":0,\"orphanedIpcOwners\":0,\"physicalCccdEnablements\":0,\"physicalLinks\":0,\"queuedOperations\":0,\"restorationRecords\":1,\"retainedByteBuffers\":0,\"scanConsumers\":0,\"subscriptionConsumers\":0},\"native\":{\"ingressDrops\":{\"advertisement\":0,\"control\":0,\"notification\":0},\"lateRadioCompletions\":0,\"liveOps\":0,\"pendingRadioRequests\":0}}}}",
+      "envelope": "{\"ok\":true,\"value\":{\"counters\":{\"activeScanControllers\":0,\"chooserSessions\":0,\"connectionLeases\":0,\"databaseSnapshots\":0,\"dispatchedOperations\":0,\"orphanedIpcOwners\":0,\"physicalCccdEnablements\":0,\"physicalLinks\":0,\"queuedOperations\":0,\"restorationRecords\":1,\"retainedByteBuffers\":0,\"scanConsumers\":0,\"subscriptionConsumers\":0},\"native\":{\"liveOps\":0,\"pendingRadioRequests\":0},\"process\":{\"counters\":{\"activeScanControllers\":0,\"chooserSessions\":0,\"connectionLeases\":0,\"databaseSnapshots\":0,\"dispatchedOperations\":0,\"orphanedIpcOwners\":0,\"physicalCccdEnablements\":0,\"physicalLinks\":0,\"queuedOperations\":0,\"restorationRecords\":1,\"retainedByteBuffers\":0,\"scanConsumers\":0,\"subscriptionConsumers\":0},\"native\":{\"connectSections\":0,\"ingressDrops\":{\"advertisement\":0,\"control\":0,\"notification\":0},\"lateRadioCompletions\":0,\"liveOps\":0,\"pendingRadioRequests\":0}}}}",
       "expect": "value",
       "name": "counters after claim",
       "op": "counters.describe"

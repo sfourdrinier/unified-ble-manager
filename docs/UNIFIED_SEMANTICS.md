@@ -136,7 +136,7 @@ two clients use equal filters or peer identifiers.
 | ordinary scan | One physical scan controller. A second non-shared request fails `scan.already-active` without changing the first. |
 | explicitly shared scan | Allowed only with an existing authorized share token naming identical filter, duplicate, timestamp, delivery, deadline, and overflow semantics. The owner retains physical control; each client receives an independently bounded stream. Releasing one share closes only that stream; it cannot stop physical scanning while another share remains. |
 | chooser | Per-session and non-shareable unless a platform evidence record proves a safe shared model. A second request fails `chooser.busy`. |
-| peer connection | Multiple clients MAY lease a single physical link only when the backend reports sharing support. Each lease has independent generation validity and cleanup. Lease release cannot disconnect the physical link while another lease remains; the final release or explicit owner disconnect does. Otherwise the second request fails `connection.already-owned`. |
+| peer connection | Multiple clients lease a single physical link on every backend, each with independent generation validity and cleanup. Release cannot drop the link while another lease remains; final release or explicit owner disconnect does. |
 | notification subscription | Distinct consumer streams MAY share a physical enablement only through the owner; disabling one consumer MUST NOT disable another. |
 
 The main process is the sole arbiter for desktop IPC. A preload bridge only

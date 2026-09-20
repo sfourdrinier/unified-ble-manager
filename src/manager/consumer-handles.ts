@@ -343,7 +343,7 @@ export interface BleConnectionHandle {
     readonly negotiatedMtu: number
     readonly terminal: PortableOperationTerminalRecord
   }>
-  effectiveMtu(): Promise<{
+  effectiveMtu(options?: PortableOperationOptions): Promise<{
     readonly connectionId: string
     readonly connectionGeneration: string
     readonly attMtu: number | null

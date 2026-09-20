@@ -1803,7 +1803,11 @@ impl Central {
             destroy_record: None,
             disconnect_failures: Vec::new(),
             shutdown_tombstones: HashMap::new(),
-            sharing_supported: false,
+            // Every platform shares a same-process link (OWN-01/FX1B): a
+            // second connect leases the live link, never re-dials. A host
+            // that genuinely cannot share opts out via
+            // `set_sharing_supported(false)`.
+            sharing_supported: true,
             security_available: false,
             restoration_authority: true,
             handshake_complete: handshake.complete,
@@ -2131,7 +2135,10 @@ impl Central {
         self.kernel.suppressed_count(id)
     }
 
-    /// Whether the backend reports shared-link support (OWN-01).
+    /// Whether the backend reports shared-link support (OWN-01/FX1B).
+    /// Defaults to shared: every platform leases a same-process link. A
+    /// host that genuinely cannot share opts out with `false`, and the
+    /// second connect fails `connection.already-owned`.
     pub fn set_sharing_supported(&mut self, sharing_supported: bool) {
         self.sharing_supported = sharing_supported;
     }
@@ -2528,8 +2535,10 @@ impl Central {
         }
     }
 
-    /// Connect as the physical owner (first lease) or fail closed with
-    /// `connection.already-owned` when the link is exclusively held (OWN-01).
+    /// Connect as the physical owner (first lease), join the live link as an
+    /// independent lease when the peer is already connected (OWN-01/FX1B),
+    /// or fail closed with `connection.already-owned` when the link is
+    /// exclusively held (sharing opted out) or tearing down.
     pub fn connect(
         &mut self,
         peer_key: &str,
@@ -5629,8 +5638,24 @@ mod tests {
     }
 
     #[test]
-    fn own01_exclusive_second_connect_rejected() -> Result<(), CoreError> {
+    fn own01_default_second_connect_shares() -> Result<(), CoreError> {
+        // FX1B: sharing is the default — a second connect leases the live
+        // link with an independent lease, never `connection.already-owned`.
         let mut central = fixture_central()?;
+        let mut out = batch();
+        let peer = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:01")?;
+        let _first = central.connect(&peer, "client-1", 5000, 1000, &mut out)?;
+        let _second = central.connect(&peer, "client-2", 5000, 1001, &mut out)?;
+        check(central.connection_lease_count(&peer) == 2, "two leases");
+        Ok(())
+    }
+
+    #[test]
+    fn own01_opt_out_exclusive_second_connect_rejected() -> Result<(), CoreError> {
+        // `connection.already-owned` stays reachable where it belongs: a
+        // host that genuinely cannot share opts out explicitly.
+        let mut central = fixture_central()?;
+        central.set_sharing_supported(false);
         let mut out = batch();
         let peer = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:01")?;
         let _first = central.connect(&peer, "client-1", 5000, 1000, &mut out)?;

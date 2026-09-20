@@ -1780,8 +1780,22 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 }
             }
         }
-        match drive(&ctl.ticket, window, self.inner.boundary.read_rssi(peer_id)).await {
-            Wait::Done(outcome) => outcome,
+        match drive_link(
+            &self.inner,
+            peer_id,
+            "connection.rssi",
+            &ctl.ticket,
+            window,
+            self.inner.boundary.read_rssi(peer_id),
+        )
+        .await
+        {
+            Wait::Done(Ok(rssi)) => Ok(rssi),
+            Wait::Done(Err(error)) => {
+                return self
+                    .name_link_end(&peer_key, Err(classify(error, OpKind::Read, true)))
+                    .await;
+            }
             Wait::Expired => Err(classify(
                 timed_out("connection.rssi", window),
                 OpKind::Read,
@@ -5958,7 +5972,9 @@ mod adapter_tests {
     }
 
     #[tokio::test]
-    async fn connect_does_not_share_without_rule() {
+    async fn connect_shares_live_link_by_default() {
+        // FX1B: sharing is the default — a second connect leases the live
+        // link instead of failing `connection.already-owned`.
         let central = open().await;
         central.boundary().push_event(advertisement("peer-1"));
         let handle = central
@@ -5971,18 +5987,18 @@ mod adapter_tests {
             .with_core(|core| core.connection_state(&handle.peer_key))
             .await;
         assert_eq!(state, Some(ConnectionState::Connected));
-        // No sharing support: a second lease is rejected before any radio call.
-        let before = central.boundary().calls().len();
-        let error = central
+        let joined = central
             .connect("peer-1", "lease-b", OpControl::budget_ms(5000))
             .await
-            .expect_err("second lease rejected");
-        assert_eq!(error.code_str(), "connection.already-owned");
+            .expect("second lease joins the live link");
         assert_eq!(
-            central.boundary().calls().len(),
-            before,
-            "no radio on rejection"
+            joined.connection_generation, handle.connection_generation,
+            "one link, one link generation, two leases"
         );
+        let leases = central
+            .with_core(|core| core.connection_lease_count(&handle.peer_key))
+            .await;
+        assert_eq!(leases, 2, "two leases on the shared link");
         central
             .disconnect("peer-1", "lease-a", OpControl::unbounded())
             .await

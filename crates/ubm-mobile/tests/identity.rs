@@ -103,6 +103,60 @@ fn the_mobile_identity_names_every_scope_in_the_legacy_react_native_formats() {
     }
 }
 
+/// `instance_key` backs per-session client state (test admissions, and any
+/// host keeping state per session): it must never repeat for a new session,
+/// even when the allocator hands the freed address straight back. On Windows
+/// the second platform iteration inherited the first one's admissions and
+/// production correctly refused them as `argument.invalid` -- the harness
+/// identity, not the admission check, was wrong. Hosts drop per iteration
+/// exactly like the adapter-loss test, so a pointer-derived key collides
+/// here on any recycling allocator.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_instance_keys_are_never_reused_across_hosts() {
+    use std::collections::HashSet;
+    let mut seen = HashSet::new();
+    for round in 0..32u32 {
+        for platform in [MobilePlatform::Android, MobilePlatform::Apple] {
+            let radio = Scripted::polar();
+            let (host, _) = open(&radio, platform).await;
+            let session = host.open_session("reuse").expect("session");
+            let key = session.instance_key();
+            assert_eq!(
+                session.clone().instance_key(),
+                key,
+                "clones share the session identity"
+            );
+            assert!(
+                seen.insert(key),
+                "round {round} {platform:?}: instance_key {key} reused after its session died"
+            );
+        }
+    }
+}
+
+/// The tightest form of the same contract: dispose, drop, and recreate on
+/// one host. A pointer-derived key is at the mercy of the freelist here, so
+/// this fails fast on recycling allocators while the cross-host test above
+/// mirrors the Windows CI shape (one host per platform per round).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_instance_keys_differ_after_drop_and_recreate() {
+    use std::collections::HashSet;
+    let radio = Scripted::polar();
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let mut seen = HashSet::new();
+    for round in 0..64u32 {
+        let session = host.open_session("cycle").expect("session");
+        let key = session.instance_key();
+        assert!(
+            seen.insert(key),
+            "round {round}: instance_key {key} reused after drop and recreate"
+        );
+        ok(&call(&session, "session.dispose", "{}").await);
+        drop(session);
+        tokio::task::yield_now().await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_empty_host_owner_fails_the_open_in_the_mobile_namespace() {
     use std::sync::Arc;

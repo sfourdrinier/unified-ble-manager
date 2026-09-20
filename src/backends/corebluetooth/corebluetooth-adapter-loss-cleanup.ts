@@ -54,20 +54,31 @@ export async function releaseCoreBluetoothAdapterLossResources(
     const cleanup = await state.gattOperations.stopPhysicalSubscription(physical)
     failures.push(...cleanup.failures)
   }
+  // One native disconnect per peer: joined leases share the link, so only
+  // the first record of a peer drives the radio; every record of a released
+  // link is terminalized.
+  const peerReleased = new Map<string, boolean>()
   for (const record of [...state.connections.values()]) {
     const previous = record.state === 'disconnecting' ? 'disconnecting' : 'connected'
-    record.state = 'disconnecting'
-    try {
-      const cleanup = await state.disconnectNative(record, 'direct-gatt.adapter-loss.disconnect', true)
-      failures.push(...cleanup.failures)
-      if (cleanup.state === 'release-failed') {
+    let released = peerReleased.get(record.nativePeerId)
+    if (released === undefined) {
+      record.state = 'disconnecting'
+      try {
+        const cleanup = await state.disconnectNative(record, 'direct-gatt.adapter-loss.disconnect', true)
+        failures.push(...cleanup.failures)
+        released = cleanup.state !== 'release-failed'
+        if (!released) {
+          record.state = 'connected'
+        }
+      } catch (error) {
         record.state = 'connected'
-      } else {
-        state.terminalizeAdapterLossConnection(record, previous)
+        released = false
+        failures.push(cleanupFailureDetail('connection', 'direct-gatt.adapter-loss.disconnect', error))
       }
-    } catch (error) {
-      record.state = 'connected'
-      failures.push(cleanupFailureDetail('connection', 'direct-gatt.adapter-loss.disconnect', error))
+      peerReleased.set(record.nativePeerId, released)
+    }
+    if (released) {
+      state.terminalizeAdapterLossConnection(record, previous)
     }
   }
   return failures.length === 0

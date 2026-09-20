@@ -105,6 +105,43 @@ pub fn compare_fingerprints(real: &Value, sim: &Value, tolerances: Tolerances) -
     }
 }
 
+/// Over-the-air qualification verdict for a real strap capture compared
+/// against a real simulator run (both produced by the same `h10-capture`
+/// scenario over the air, compared with [`compare_fingerprints`]):
+/// qualified only when every check passed AND coverage is complete. A
+/// passed-but-incomplete run is refused with its unverified field names,
+/// and a failed run with its failed field names — never a silent pass.
+/// The in-process `--emit-sim-fingerprint` path is structural evidence
+/// only (point distributions, omitted central-side timings) and cannot
+/// qualify; qualify two over-the-air captures instead (`--qualify-ota`).
+pub fn qualify_ota(report: &ComparisonReport) -> Result<(), String> {
+    if report.passed && report.complete {
+        return Ok(());
+    }
+    let failed: Vec<&str> = report
+        .fields
+        .iter()
+        .filter(|field| field.status == CheckStatus::Fail)
+        .map(|field| field.field.as_str())
+        .collect();
+    if !failed.is_empty() {
+        return Err(format!(
+            "not qualified: failed fields: {}",
+            failed.join(", ")
+        ));
+    }
+    let unverified: Vec<&str> = report
+        .fields
+        .iter()
+        .filter(|field| field.status == CheckStatus::Incomplete)
+        .map(|field| field.field.as_str())
+        .collect();
+    Err(format!(
+        "not qualified: passed but incomplete, unverified fields: {}",
+        unverified.join(", ")
+    ))
+}
+
 fn pass(field: &str, detail: String) -> FieldResult {
     FieldResult {
         field: field.to_string(),
@@ -1008,6 +1045,55 @@ mod tests {
             .find(|field| field.field == "timings.hrNotificationIntervalMs.max")
             .unwrap();
         assert_eq!(field.status, CheckStatus::Fail, "detail: {}", field.detail);
+    }
+
+    #[test]
+    fn ota_qualification_needs_passed_and_complete() {
+        // The OTA gate (a real capture against a real simulator run) is
+        // `passed && complete`: passed-but-incomplete names its unverified
+        // fields, and any failure names its failed fields — never a silent
+        // pass.
+        let qualified = ComparisonReport {
+            passed: true,
+            complete: true,
+            tolerances: Tolerances::default(),
+            fields: vec![FieldResult {
+                field: "gatt.services".to_string(),
+                status: CheckStatus::Pass,
+                detail: "equal".to_string(),
+            }],
+        };
+        assert!(qualify_ota(&qualified).is_ok());
+        let incomplete = ComparisonReport {
+            passed: true,
+            complete: false,
+            tolerances: Tolerances::default(),
+            fields: vec![FieldResult {
+                field: "timings.hrNotificationIntervalMs.n".to_string(),
+                status: CheckStatus::Incomplete,
+                detail: "point distribution on a side".to_string(),
+            }],
+        };
+        let refusal = qualify_ota(&incomplete).unwrap_err();
+        assert!(
+            refusal.contains("timings.hrNotificationIntervalMs.n"),
+            "refusal must name the unverified field, got: {refusal}"
+        );
+        let failed = ComparisonReport {
+            passed: false,
+            complete: false,
+            tolerances: Tolerances::default(),
+            fields: vec![FieldResult {
+                field: "behaviour.invalidPmdCommand".to_string(),
+                status: CheckStatus::Fail,
+                detail: "status mismatch".to_string(),
+            }],
+        };
+        let refusal = qualify_ota(&failed).unwrap_err();
+        assert!(
+            refusal.contains("behaviour.invalidPmdCommand"),
+            "refusal must name the failed field, got: {refusal}"
+        );
     }
 
     #[test]

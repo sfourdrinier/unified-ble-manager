@@ -45,6 +45,7 @@ permissions:
 jobs:
   native-prebuild-plan:
     name: Plan native Node-API prebuilds
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
@@ -65,6 +66,7 @@ jobs:
   #     public entrypoint; Phase 4 deletes these legs with native/electron/*.
   native-prebuild:
     name: Native prebuild (${{ matrix.backend }} ${{ matrix.platform }}-${{ matrix.arch }})
+    timeout-minutes: 90
     needs: native-prebuild-plan
     strategy:
       fail-fast: false
@@ -136,6 +138,7 @@ jobs:
   # and apple-ci use — no second producer, no drift.
   native-rustcore:
     name: Native RustCore XCFramework (macOS)
+    timeout-minutes: 90
     runs-on: macos-26
     steps:
       - name: Checkout tag
@@ -182,6 +185,7 @@ jobs:
 
   publish:
     name: Publish canonical package
+    timeout-minutes: 45
     needs: [native-prebuild, native-rustcore]
     runs-on: ubuntu-latest
     environment: npm

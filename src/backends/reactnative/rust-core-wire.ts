@@ -238,6 +238,7 @@ export interface WireCounters {
       readonly pendingRadioRequests: number
       readonly lateRadioCompletions: number
       readonly ingressDrops: { readonly advertisement: number; readonly notification: number; readonly control: number }
+      readonly connectSections: number
       readonly liveOps: number
     }
   }
@@ -1137,7 +1138,7 @@ function countersOrThrow(value: unknown, path: string): WireCounters {
   const processNativePath = `${processPath}.native`
   const processNative = exactObject(
     owner.get('native'),
-    ['pendingRadioRequests', 'lateRadioCompletions', 'ingressDrops', 'liveOps'],
+    ['pendingRadioRequests', 'lateRadioCompletions', 'ingressDrops', 'connectSections', 'liveOps'],
     processNativePath
   )
   const dropsPath = `${processNativePath}.ingressDrops`
@@ -1165,6 +1166,7 @@ function countersOrThrow(value: unknown, path: string): WireCounters {
           notification: nonNegative(drops.get('notification'), `${dropsPath}.notification`),
           control: nonNegative(drops.get('control'), `${dropsPath}.control`)
         }),
+        connectSections: nonNegative(processNative.get('connectSections'), `${processNativePath}.connectSections`),
         liveOps: nonNegative(processNative.get('liveOps'), `${processNativePath}.liveOps`)
       })
     })

@@ -27,7 +27,7 @@ use ubm_core::contracts::{BleErrorCode, BleErrorDomain, CommitState};
 
 use super::{
     CentralSignal, DesktopCentral, Inner, OpKind, PathSelector, Wait, classify, contract_error,
-    drive, lock_std, timed_out,
+    drive, drive_link, lock_std, timed_out,
 };
 use crate::boundary::{
     AdapterAuthorization, AddressType, BondState, PairOutcome, RadioBoundary, SecurityState,
@@ -386,14 +386,22 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let peer_key = self.known_peer_key(peer_id).await?;
         self.require_connected_lease(&peer_key, lease, "gatt.write-readiness")
             .await?;
-        match drive(
+        match drive_link(
+            &self.inner,
+            peer_id,
+            "gatt.write-readiness",
             &ctl.ticket,
             window,
             self.inner.boundary.write_without_response_ready(peer_id),
         )
         .await
         {
-            Wait::Done(outcome) => outcome,
+            Wait::Done(Ok(ready)) => Ok(ready),
+            Wait::Done(Err(error)) => {
+                return self
+                    .name_link_end(&peer_key, Err(classify(error, OpKind::Read, true)))
+                    .await;
+            }
             Wait::Expired => Err(classify(
                 timed_out("gatt.write-readiness", window),
                 OpKind::Read,
@@ -933,14 +941,22 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let peer_key = self.known_peer_key(peer_id).await?;
         self.require_connected_lease(&peer_key, lease, "connection.effective-mtu")
             .await?;
-        match drive(
+        match drive_link(
+            &self.inner,
+            peer_id,
+            "connection.effective-mtu",
             &ctl.ticket,
             window,
             self.inner.boundary.read_effective_mtu(peer_id),
         )
         .await
         {
-            Wait::Done(outcome) => outcome,
+            Wait::Done(Ok(mtu)) => Ok(mtu),
+            Wait::Done(Err(error)) => {
+                return self
+                    .name_link_end(&peer_key, Err(classify(error, OpKind::Read, true)))
+                    .await;
+            }
             Wait::Expired => Err(classify(
                 timed_out("connection.effective-mtu", window),
                 OpKind::Read,
