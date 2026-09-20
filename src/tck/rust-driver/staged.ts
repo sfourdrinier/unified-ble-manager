@@ -426,13 +426,18 @@ export const PROGRAM_CONNECTION_LEASE: StagedProgram = {
 export const PROGRAM_CONNECTION_ARBITRATION: StagedProgram = {
   scenarioId: 'connection.two-client-arbitration',
   provenance:
-    'Pins transcribe connection arbitration (second lease fails connection.already-owned) and the ' +
-    'loss-vs-disconnect race (loss wins; disconnect fails lifecycle.invalid-state); captured from a staged run.',
+    'Pins transcribe join arbitration (a second link.connect to the live link joins: ok with a ' +
+    'central.borrow effect; releasing the joiner keeps the first lease: released:false, ' +
+    'lease_count:1) and the loss-vs-disconnect race (loss wins; disconnect fails ' +
+    'lifecycle.invalid-state); captured from a staged run. The kernel runs sharing-by-default ' +
+    '(no link.sharing step precedes admission), so already-owned never fires here; the ' +
+    'exclusive-mode refusal stays pinned by the Rust staged_drive lease test.',
   steps: [
     ADVERTISE_P,
     step('{"step":"link.connect","peer":"p","lease":"lease-a","op":"conn0"}'),
     step('{"step":"link.established","peer":"p","op":"conn0"}'),
     step('{"step":"link.connect","peer":"p","lease":"lease-b","op":"conn1"}'),
+    step('{"step":"link.release","peer":"p","lease":"lease-b"}'),
     step('{"step":"link.loss","peer":"p"}'),
     step('{"step":"link.disconnect","peer":"p","lease":"lease-a"}')
   ],
@@ -461,8 +466,19 @@ export const PROGRAM_CONNECTION_ARBITRATION: StagedProgram = {
     }),
     norm({
       step: 'link.connect',
-      ok: false,
-      error: 'connection.already-owned|core|staged-link-connect|connection.arbitration'
+      ok: true,
+      op_id: '@op1',
+      peer_key: 'platform-guid:peer-1',
+      staged: 1,
+      effects: 'central.borrow#@op1:connection.borrow'
+    }),
+    norm({
+      step: 'link.release',
+      ok: true,
+      released: false,
+      lease_count: 1,
+      staged: 0,
+      effects: ''
     }),
     norm({ step: 'link.loss', ok: true, state: 'lost', connection: 'lost', staged: 0, effects: '' }),
     norm({

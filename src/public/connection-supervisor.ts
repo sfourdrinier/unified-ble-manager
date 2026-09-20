@@ -918,6 +918,12 @@ function isAdapterLossDuringSetup(error: BleError): boolean {
 }
 
 function isRetryableConnectionError(error: BleError): boolean {
+  // The operation's own answer wins (5.0): a terminal refusal reports
+  // `never` and is never retried, even when its code alone would retry
+  // (insufficient authentication, a removed pairing). `caller-decides`
+  // keeps the catalog-backed code list below; its recovery disposition
+  // already carries the richer answer on the error itself.
+  if (error.retryability === 'never') return false
   return (
     error.code === 'backend.reset' ||
     error.code === 'connection.failed' ||

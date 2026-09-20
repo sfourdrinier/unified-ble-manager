@@ -553,6 +553,41 @@ describe('public connection supervisor', () => {
     expect(supervisor.snapshot.state).toBe('stopped')
   })
 
+  test('does not retry a connection.failed carrying never (terminal refusal)', async () => {
+    const ble = manager(null)
+    ble.connect.mockRejectedValue(
+      new BleError('connection.failed', 'connection', 'test.security-refused', { retryability: 'never' })
+    )
+    const supervisor = createConnectionSupervisor(ble, 'peer-terminal', {
+      retry: { initialDelayMs: 0, maximumDelayMs: 0, multiplier: 1, jitter: 0, maximumAttempts: 5 }
+    })
+
+    supervisor.start()
+    await wait()
+
+    expect(ble.connect).toHaveBeenCalledTimes(1)
+    expect(supervisor.snapshot.state).toBe('stopped')
+    expect(supervisor.snapshot.lastError).toMatchObject({ code: 'connection.failed', retryability: 'never' })
+    await expect(supervisor.stop()).resolves.toMatchObject({ state: 'released' })
+  })
+
+  test('retries a connection.failed carrying caller-decides with backoff', async () => {
+    const ble = manager(null)
+    ble.connect.mockRejectedValue(
+      new BleError('connection.failed', 'connection', 'test.transient', { retryability: 'caller-decides' })
+    )
+    const supervisor = createConnectionSupervisor(ble, 'peer-transient', {
+      retry: { initialDelayMs: 0, maximumDelayMs: 0, multiplier: 1, jitter: 0, maximumAttempts: 3 }
+    })
+
+    supervisor.start()
+    for (let turn = 0; turn < 100 && ble.connect.mock.calls.length < 3; turn += 1) await wait(5)
+
+    expect(ble.connect).toHaveBeenCalledTimes(3)
+    expect(supervisor.snapshot.state).toBe('stopped')
+    await expect(supervisor.stop()).resolves.toMatchObject({ state: 'released' })
+  })
+
   test('does not start another attempt after a backoff exhausts the elapsed retry budget', async () => {
     let now = 0
     const ble = manager(null)

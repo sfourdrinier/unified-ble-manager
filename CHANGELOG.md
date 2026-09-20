@@ -6,6 +6,14 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ### Changed
 
+- **The connection supervisor honours terminal retryability (FXC).** A
+  `connection.failed` (or any listed code) reporting `retryability: "never"` —
+  an insufficient-authentication refusal, or a peer that removed its pairing —
+  stops the supervisor after one attempt instead of retrying with backoff.
+  `caller-decides` keeps the existing retry behaviour. The staged TCK
+  arbitration program, which still pinned the pre-join refusal, now pins the
+  join.
+
 - **Same-peer connects join on every backend (W7/G6; completed by
   FX1B/RV1-1).** A second connect to a connected peer leases the peer's link
   with an independent generation instead of failing
@@ -332,8 +340,10 @@ adapter`) and public resource names (`corebluetooth-peer-{gen}-{n}`,
   again (a skewed offer is `protocol.incompatible`, a malformed one
   `protocol.malformed`) and refuses a second attach; `events()` returns one
   stream per caller, so a borrowing manager no longer shares or ends the
-  owner's; CoreBluetooth and WinRT refuse a second connect to a live link
-  with `connection.already-owned` (BlueZ still joins, as dbus-next did); and
+  owner's; a second connect to a live link was refused
+  `connection.already-owned` on CoreBluetooth and WinRT while BlueZ joined (as
+  dbus-next did) — later in this release every backend joins, see "Same-peer
+  connects join on every backend"; and
   `security.watch` opens with the peer's current state. `resourceCounters()`
   `dispatchedOperations` now counts operations in flight, not a running total.
 - **Breaking for TCK consumers: new base scenario
