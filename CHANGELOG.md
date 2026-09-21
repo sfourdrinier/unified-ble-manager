@@ -1393,6 +1393,35 @@ metadata:{androidGattStatus}}` on Android, or the `NSError` domain and code
 
 ### Fixed
 
+- **The Windows CI leg runs the shell-script behaviour tests it was skipping
+  past.** Nine tests in three suites had never passed on `windows-latest`, each
+  for its own reason and none of them a real platform limit: the TV stage guard
+  only recognised `TMPDIR`, which Git Bash leaves unset, so a Windows temp dir
+  was rejected as "not an absolute tmp dir"; one test clobbered `PATH` so
+  narrowly that Node could no longer find `bash` itself, producing a failure
+  with empty output; and the test harness's `pnpm` stub had no extension, which
+  Windows cannot execute. The guard now accepts the host's real temp directory
+  whatever names it (`TMPDIR`, `TEMP`, `TMP`, `/tmp`) and normalises the stage
+  path for rsync, and the harness uses the platform path delimiter and a
+  `pnpm.cmd` stub. Nothing is skipped: every behaviour is still proven on every
+  platform that can run it.
+
+- **The packed-tarball guard recognises the whole shipped surface.** The
+  canonical pack verifier had never run to completion — earlier failures always
+  aborted the job first — so three gaps in its allowlists only surfaced now:
+  the `backends/desktop` sources, the five private runtime modules the
+  Node/desktop entrypoints require, and `scripts/release/native-build-identity.js`
+  plus the vendored crates, all of which ship deliberately. `npm pack` output is
+  compared against the source tree again instead of failing on its own contents.
+
+- **The sealed native build identity is regenerated after a Rust-source
+  change.** A formatting-only `cargo fmt` stales the digest that
+  `src/generated/native-build-identity.ts` seals, and `prepack` checks it, so
+  four native build jobs failed on a change that altered no behaviour.
+  `docs/NATIVE_ARTIFACTS.md` now names this file as the fourth thing a Rust
+  change stales, explains that `native:refresh` does not write it, and gives
+  the command that does.
+
 - **Presence observation accepts the peer id the library hands out (Android).**
   `presence.observe` resolved the public peer id to the device address the
   platform requires; arming with the library's own identifier used to fail with

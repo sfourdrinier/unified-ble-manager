@@ -4,8 +4,11 @@ package com.sfourdrinier.unifiedblemanager.presence
 
 import com.sfourdrinier.unifiedblemanager.rustcore.FakeCore
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /** The wake reconnects through the Rust core with no JavaScript (BGS4). */
 class RustCoreContinuationExecutorTest {

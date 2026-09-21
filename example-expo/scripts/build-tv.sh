@@ -50,14 +50,34 @@ TV_DEVICE_ID="${TV_DEVICE_ID:-27C3EE87-9EB5-54C1-8CAB-52D33CB077C9}"
 TV_BUNDLE_ID="${TV_BUNDLE_ID:-com.sfourdrinier.bleplxexample}"
 
 if [[ -n "${TV_STAGE_DIR:-}" ]]; then
-  # Test/CI override: an absolute tmp dir, never the real tree.
-  _tv_tmp="${TMPDIR:-/tmp}"
-  _tv_tmp="${_tv_tmp%/}"
-  case "${STAGE}" in
-    /tmp/*|"$_tv_tmp"/*) ;;
-    *) echo "error: TV_STAGE_DIR must be an absolute tmp dir (${STAGE})" >&2; exit 1 ;;
-  esac
-  unset _tv_tmp
+  # Test/CI override: an absolute tmp dir, never the real tree. The host's
+  # real temp dir, whatever it is: TMPDIR on POSIX, TEMP/TMP on Windows
+  # (Git Bash leaves TMPDIR unset while the test passes in the TEMP path,
+  # in backslash form). Compare with backslashes normalised so a Windows
+  # temp dir matches its own prefix.
+  _tv_stage_norm="${STAGE//\\//}"
+  _tv_stage_ok=0
+  for _tv_tmp in "${TMPDIR:-}" "${TEMP:-}" "${TMP:-}" /tmp; do
+    [[ -n "${_tv_tmp:-}" ]] || continue
+    _tv_tmp="${_tv_tmp//\\//}"
+    _tv_tmp="${_tv_tmp%/}"
+    case "${_tv_stage_norm}" in
+      "${_tv_tmp}"/*) _tv_stage_ok=1; break ;;
+    esac
+  done
+  unset _tv_tmp _tv_stage_norm
+  if [[ "${_tv_stage_ok}" != 1 ]]; then
+    echo "error: TV_STAGE_DIR must be an absolute tmp dir (${STAGE})" >&2; exit 1
+  fi
+  unset _tv_stage_ok
+  # A Windows-form stage dir (C:\...) is unusable as-is for rsync, which
+  # reads the drive colon as a remote host. Normalise to the msys form
+  # (/c/...) where cygpath exists; a no-op everywhere else.
+  if command -v cygpath >/dev/null 2>&1; then
+    case "${STAGE}" in
+      [A-Za-z]:*) STAGE="$(cygpath -u "${STAGE}")" ;;
+    esac
+  fi
 elif [[ "${STAGE}" != "${APP_DIR}"/* ]]; then
   echo "error: stage dir escaped the app dir (${STAGE})" >&2
   exit 1

@@ -207,10 +207,13 @@ describe('android-tv-emu.sh', () => {
     const dir = tmpDir()
     try {
       const adb = fakeAdb(dir)
+      // No PATH override: the script never consults PATH for the emulator
+      // binary, and clobbering PATH with a POSIX-only value hides `bash`
+      // itself from Node's executable lookup on Windows (ENOENT with empty
+      // stderr instead of the script's loud error).
       const out = run(['boot'], {
         ADB: adb.bin,
-        ANDROID_EMULATOR_BIN: path.join(dir, 'no-emulator'),
-        PATH: '/usr/bin:/bin'
+        ANDROID_EMULATOR_BIN: path.join(dir, 'no-emulator')
       })
       expect(out.exit).not.toBe(0)
       expect(out.stderr).toMatch(/emulator/i)

@@ -19,9 +19,20 @@ const ENSURE_JS = path.join(ROOT, 'scripts', 'native', 'ensure-native.js')
 function stubPnpm(exitCode) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-stub-pnpm-'))
   const log = path.join(dir, 'calls.log')
-  fs.writeFileSync(path.join(dir, 'pnpm'), `#!/bin/sh\necho "$@" >> ${JSON.stringify(log)}\nexit ${exitCode}\n`, {
-    mode: 0o755
-  })
+  if (process.platform === 'win32') {
+    // Windows Node (CreateProcess) cannot execute the extensionless sh
+    // stub; PATHEXT resolves bare `pnpm` to this companion and runs it via
+    // cmd, the same mechanism that runs the real pnpm shim. CRLF: cmd
+    // batch files must use carriage returns.
+    fs.writeFileSync(
+      path.join(dir, 'pnpm.cmd'),
+      `@echo off\r\necho %*>>${JSON.stringify(log)}\r\nexit /b ${exitCode}\r\n`
+    )
+  } else {
+    fs.writeFileSync(path.join(dir, 'pnpm'), `#!/bin/sh\necho "$@" >> ${JSON.stringify(log)}\nexit ${exitCode}\n`, {
+      mode: 0o755
+    })
+  }
   return { dir, log }
 }
 
@@ -48,7 +59,7 @@ describe('consumer refresh guards', () => {
     fs.writeFileSync(path.join(stub.dir, 'pgrep'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
     const state = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-hosts-state-'))
     const outcome = run('bash', [HOSTS_SH, 'up', 'electron'], {
-      PATH: `${stub.dir}:${process.env.PATH}`,
+      PATH: `${stub.dir}${path.delimiter}${process.env.PATH}`,
       UBM_DRIVER_HOSTS_STATE: state,
       UBM_HOSTS_DIRECT: '1'
     })
@@ -65,7 +76,7 @@ describe('consumer refresh guards', () => {
     const stub = stubPnpm(1)
     const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-tv-guard-'))
     const outcome = run('bash', [BUILD_TV_SH, 'build'], {
-      PATH: `${stub.dir}:${process.env.PATH}`,
+      PATH: `${stub.dir}${path.delimiter}${process.env.PATH}`,
       TV_STAGE_DIR: stage,
       DEVELOPMENT_TEAM: 'TESTTEAM'
     })
@@ -82,7 +93,7 @@ describe('consumer refresh guards', () => {
   test('UBM_NATIVE_REFRESH=off switches ensure-native to check-only', () => {
     const stub = stubPnpm(0)
     const outcome = run(process.execPath, [ENSURE_JS, 'desktop'], {
-      PATH: `${stub.dir}:${process.env.PATH}`,
+      PATH: `${stub.dir}${path.delimiter}${process.env.PATH}`,
       UBM_NATIVE_REFRESH: 'off'
     })
     expect(outcome.exit).toBe(0)
@@ -92,7 +103,7 @@ describe('consumer refresh guards', () => {
   test('ensure-native fails loudly when the refresh fails', () => {
     const stub = stubPnpm(3)
     const outcome = run(process.execPath, [ENSURE_JS, 'android'], {
-      PATH: `${stub.dir}:${process.env.PATH}`
+      PATH: `${stub.dir}${path.delimiter}${process.env.PATH}`
     })
     expect(outcome.exit).not.toBe(0)
     expect(outcome.stderr).toMatch(/refusing to continue on a stale artifact/)
@@ -102,7 +113,7 @@ describe('consumer refresh guards', () => {
   test('ensure-native check-only fails loudly when the status check fails', () => {
     const stub = stubPnpm(1)
     const outcome = run(process.execPath, [ENSURE_JS, 'apple'], {
-      PATH: `${stub.dir}:${process.env.PATH}`,
+      PATH: `${stub.dir}${path.delimiter}${process.env.PATH}`,
       UBM_NATIVE_REFRESH: 'off'
     })
     expect(outcome.exit).not.toBe(0)
