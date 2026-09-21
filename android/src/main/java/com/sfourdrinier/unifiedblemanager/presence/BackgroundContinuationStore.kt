@@ -42,7 +42,6 @@ class SharedPreferencesBackgroundContinuationStore(
   )
 
   private val lock = Any()
-  private var malformed = 0L
 
   override fun saveDeclaration(json: String) {
     // Validated at parse on every read, so a write never fails: the wake
@@ -66,15 +65,29 @@ class SharedPreferencesBackgroundContinuationStore(
     return try {
       BackgroundContinuationDeclaration.parse(json)
     } catch (error: IllegalArgumentException) {
-      malformed += 1
+      countMalformed(json)
       log("background continuation $source declaration unparseable, using record-only: ${error.message}")
       BackgroundContinuationDeclaration.recordOnly()
     }
   }
 
+  /**
+   * Counts distinct bad declarations in the store itself, so the count
+   * survives the woken process that reads it and names declarations rather
+   * than reads: re-reading one bad payload never increments twice.
+   */
+  private fun countMalformed(payload: String) {
+    if (preferences.all[MALFORMED_PAYLOAD_KEY] == payload) return
+    val count = (preferences.all[MALFORMED_COUNT_KEY] as? Number)?.toLong() ?: 0L
+    preferences.edit()
+      .putString(MALFORMED_PAYLOAD_KEY, payload)
+      .putLong(MALFORMED_COUNT_KEY, count + 1)
+      .apply()
+  }
+
   override fun malformedDeclarationCount(): Long {
     synchronized(lock) {
-      return malformed
+      return (preferences.all[MALFORMED_COUNT_KEY] as? Number)?.toLong() ?: 0L
     }
   }
 
@@ -110,6 +123,8 @@ class SharedPreferencesBackgroundContinuationStore(
 
   companion object {
     private const val DECLARATION_KEY = "background-continuation:declaration"
+    private const val MALFORMED_COUNT_KEY = "background-continuation:malformed-count"
+    private const val MALFORMED_PAYLOAD_KEY = "background-continuation:malformed-payload"
     private const val WAKE_KEY = "background-continuation:last-wake"
     private const val TAG = "UnifiedBleContinuation"
 
@@ -137,6 +152,7 @@ class InMemoryBackgroundContinuationStore : BackgroundContinuationStore {
   private val lock = Any()
   private var declarationJson: String? = null
   private var malformed = 0L
+  private var lastBadPayload: String? = null
   private var lastWake: ContinuationWakeRecord? = null
 
   override fun saveDeclaration(json: String) {
@@ -151,7 +167,10 @@ class InMemoryBackgroundContinuationStore : BackgroundContinuationStore {
       return try {
         BackgroundContinuationDeclaration.parse(json)
       } catch (error: IllegalArgumentException) {
-        malformed += 1
+        if (lastBadPayload != json) {
+          malformed += 1
+          lastBadPayload = json
+        }
         BackgroundContinuationDeclaration.recordOnly()
       }
     }

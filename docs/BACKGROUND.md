@@ -225,6 +225,12 @@ const status = await manager.continuation.status()
 `malformedDeclarations` counts declarations the native side could not parse;
 a non-zero value means a wake did **less** than the app believes it declared.
 
+`detail` is the host's own qualification of the declaration, when it has one.
+Apple uses it to say that a declared strategy was validated but is not
+implemented in this release — the status reports what was actually declared and
+validated, and says plainly that nothing will execute it, rather than reporting
+plausible nulls that read as a working standing order.
+
 ### Draining what the wake collected
 
 Values that arrived while no JavaScript was running are queued natively and
@@ -250,6 +256,24 @@ Loss is reported, never hidden:
 
 A native module without the claim answers `capability.unsupported` — never an
 invented empty backlog, which would read as "the wake collected nothing".
+
+**The claim has a duty.** `disposed` reports whether the wake's session was
+released. When it is `false`, the session is **kept for the next claim, never
+abandoned**, and `disposeFailure` says why the release did not complete — the
+failures the platform reported, verbatim. The same is true when a drain is cut
+short by the batch cap with more still queued: the unread tail is retained
+rather than discarded. An application that sees `disposed: false` must claim
+again until it sees `true`; treating one claim as the end of the backlog loses
+data that the library deliberately kept for it.
+
+**Every wake is recorded, including the ones that do nothing.** A peer that
+appears without an association is recorded as `association.unknown`, and an
+appearance outside a `peerId`-scoped order is recorded as a scoped skip. Both
+reach `status.lastWake` with their outcome, so `lastWake: null` means "no wake
+has happened", and never "a wake happened and was quietly refused".
+
+`malformedDeclarations` is persisted and counts distinct bad declarations, not
+reads: asking twice does not inflate it, and a restart does not forget it.
 
 ### Capabilities
 

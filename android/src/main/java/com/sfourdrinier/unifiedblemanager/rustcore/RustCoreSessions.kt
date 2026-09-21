@@ -148,7 +148,11 @@ class RustCoreSessions(
         RustCoreJson.write(
           linkedMapOf(
             "batches" to claim.batches,
-            "disposed" to claim.disposed
+            "disposed" to claim.disposed,
+            // Why the session is still alive (null when disposed or when no
+            // wake existed): a release-failed dispose or an incomplete drain
+            // is retried by the next claim, never abandoned silently.
+            "disposeFailure" to claim.disposeFailure
           )
         )
       )

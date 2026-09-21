@@ -118,6 +118,12 @@ export interface ExpoContinuationStatus {
   readonly resubscribe: number
   readonly malformedDeclarations: number
   readonly lastWake: ExpoContinuationWakeReport | null
+  /**
+   * The host's own qualification of the declaration, when it has one — for
+   * example that a declared strategy is validated but not implemented in this
+   * release. Null when the host adds nothing.
+   */
+  readonly detail: string | null
 }
 
 export interface ExpoContinuationValue {
@@ -138,6 +144,13 @@ export interface ExpoContinuationBacklog {
   readonly streamEnds: readonly ExpoContinuationStreamEnd[]
   readonly controlLost: number
   readonly disposed: boolean
+  /**
+   * Why the wake's session could not be released, when it could not. The
+   * session is kept for the next claim rather than abandoned, so an
+   * application that sees `disposed: false` with a reason here must claim
+   * again; null when the release was clean.
+   */
+  readonly disposeFailure: string | null
 }
 
 export interface ExpoContinuationClaimRequest {
@@ -886,7 +899,8 @@ async function readExpoContinuationStatus(host: ReactNativeManagerHost): Promise
       peerId: status.peerId,
       resubscribe: status.resubscribe,
       malformedDeclarations: status.malformedDeclarations,
-      lastWake: status.lastWake === null ? null : Object.freeze({ ...status.lastWake })
+      lastWake: status.lastWake === null ? null : Object.freeze({ ...status.lastWake }),
+      detail: status.detail
     })
   } catch (error) {
     throwOwnerError(error, operation)
@@ -904,7 +918,8 @@ async function claimExpoContinuationBacklog(
       values: Object.freeze(backlog.values.map(record => Object.freeze({ ...record }))),
       streamEnds: Object.freeze(backlog.streamEnds.map(record => Object.freeze({ ...record }))),
       controlLost: backlog.controlLost,
-      disposed: backlog.disposed
+      disposed: backlog.disposed,
+      disposeFailure: backlog.disposeFailure
     })
   } catch (error) {
     throwOwnerError(error, operation)

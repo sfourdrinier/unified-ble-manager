@@ -3,8 +3,11 @@
 package com.sfourdrinier.unifiedblemanager.presence
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /** The wake executes the declared standing order — and only that order (BGS4). */
 class PresenceWakeContinuationTest {
@@ -75,11 +78,69 @@ class PresenceWakeContinuationTest {
   }
 
   @Test
-  fun nativeSkipsAnAppearanceOutsideTheDeclaredPeer() {
+  fun nativeSkipsAnAppearanceOutsideTheDeclaredPeerButRecordsTheSkip() {
     declaration = nativeDeclaration(other)
     coordinator().appeared(peer, null)
     assertTrue(executed.isEmpty())
-    assertTrue(outcomes.isEmpty())
+    // The wake happened and the order refused it: lastWake must show the
+    // rejection, never stay null as if nothing woke.
+    assertEquals(1, outcomes.size)
+    assertEquals("continuation.failed", outcomes[0].event)
+    assertEquals(ContinuationStrategy.NATIVE, outcomes[0].strategy)
+    assertEquals(peer, outcomes[0].peerAddress)
+    assertTrue(outcomes[0].code != null)
+    assertTrue(outcomes[0].reason!!.contains(other))
+  }
+
+  @Test
+  fun anUnassociatedAppearanceRecordsItsRejection() {
+    declaration = nativeDeclaration(null)
+    val stranger = "FF:FF:FF:FF:FF:FF"
+    assertFalse(coordinator().appeared(stranger, null))
+    assertTrue(executed.isEmpty())
+    // "Never woken" (lastWake null) must stay distinguishable from "woken
+    // and rejected": the rejection is recorded with its outcome.
+    assertEquals(1, outcomes.size)
+    assertEquals("continuation.failed", outcomes[0].event)
+    assertEquals(ContinuationStrategy.NATIVE, outcomes[0].strategy)
+    assertEquals(stranger, outcomes[0].peerAddress)
+    assertEquals("association.unknown", outcomes[0].code)
+    assertTrue(outcomes[0].reason != null)
+  }
+
+  @Test
+  fun aDisappearanceDoesNotWaitForNativeContinuationIO() {
+    declaration = nativeDeclaration(null)
+    val entered = CountDownLatch(1)
+    val release = CountDownLatch(1)
+    val blocking = PresenceWakeCoordinator(
+      associatedAddresses = { setOf(peer, other) },
+      store = store,
+      nowMs = { 12345L },
+      ensureOwner = { true },
+      ingest = { true },
+      log = {},
+      continuation = { declaration },
+      executeContinuation = { address, declared ->
+        executed.add(address to declared)
+        entered.countDown()
+        release.await(15, TimeUnit.SECONDS)
+        executorAnswer
+      },
+      recordWakeOutcome = { outcomes.add(it) }
+    )
+    val appearing = Thread { blocking.appeared(peer, null) }
+    appearing.isDaemon = true
+    appearing.start()
+    assertTrue(entered.await(5, TimeUnit.SECONDS))
+    // Teardown state must not queue behind the held radio I/O.
+    val disappearing = Thread { blocking.disappeared(peer, null) }
+    disappearing.isDaemon = true
+    disappearing.start()
+    disappearing.join(5_000)
+    assertFalse(disappearing.isAlive)
+    release.countDown()
+    appearing.join(5_000)
   }
 
   @Test

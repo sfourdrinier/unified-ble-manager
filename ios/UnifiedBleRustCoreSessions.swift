@@ -294,40 +294,63 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
   // MARK: - Background continuation (BGS4; iOS wake execution deferred to rc.1)
 
   /// Persists the declared standing order so a future wake can execute it.
-  /// iOS wake execution is deferred: the order is stored verbatim and the
-  /// status reports it, but the claim answers `capability.unsupported`.
+  /// The declaration is validated with the same rules the Android wake
+  /// enforces: a malformed order is refused with no effect, never stored
+  /// verbatim. iOS wake execution is deferred, so the status reports the
+  /// validated order with the same "not implemented in this release" words
+  /// the Android path uses, and the claim answers `capability.unsupported`.
   public func declareBackgroundContinuation(_ declarationJson: String, completion: (String?, String?) -> Void) {
-    guard !declarationJson.isEmpty,
-          declarationJson.utf8.count <= 65536,
-          let data = declarationJson.data(using: .utf8),
-          (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] != nil
-    else {
+    guard !declarationJson.isEmpty, declarationJson.utf8.count <= Self.maxContinuationJson else {
       completion(nil, Self.failureJson(
         code: "argument.invalid", domain: "restoration", operation: "continuation.declare",
-        detail: "declaration malformed"
+        detail: "declaration must be 1..\(Self.maxContinuationJson) bytes"
       ))
       return
     }
-    UserDefaults.standard.set(declarationJson, forKey: Self.continuationDefaultsKey)
-    completion("{\"state\":\"declared\"}", nil)
+    switch Self.validatedContinuation(declarationJson) {
+    case .success:
+      UserDefaults.standard.set(declarationJson, forKey: Self.continuationDefaultsKey)
+      completion("{\"state\":\"declared\"}", nil)
+    case .failure(let error):
+      completion(nil, Self.failureJson(
+        code: "argument.invalid", domain: "restoration", operation: "continuation.declare",
+        detail: error.detail
+      ))
+    }
   }
 
+  /// Reports the continuation posture for Diagnostics: the validated
+  /// declared strategy and peer, how many persisted declarations could not
+  /// be parsed, and the last wake outcome. A malformed persisted record
+  /// (written before validation existed) falls back to `record-only` and is
+  /// counted once per distinct payload — reported, never silently kept. A
+  /// non-`record-only` strategy carries the deferred-execution disclaimer in
+  /// `detail` with the same words the Android path uses; `lastWake` is null
+  /// until a wake executes one, never invented.
   public func continuationStatus(_ completion: (String?, String?) -> Void) {
     var strategy = "record-only"
+    var peerId: String?
     var resubscribe = 0
-    if let stored = UserDefaults.standard.string(forKey: Self.continuationDefaultsKey),
-       let data = stored.data(using: .utf8),
-       let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
-      if let declared = parsed["onAppearance"] as? String { strategy = declared }
-      if let entries = parsed["resubscribe"] as? [Any] { resubscribe = entries.count }
+    if let stored = UserDefaults.standard.string(forKey: Self.continuationDefaultsKey) {
+      switch Self.validatedContinuation(stored) {
+      case let .success(valid):
+        strategy = valid.strategy
+        peerId = valid.peerId
+        resubscribe = valid.resubscribe
+      case .failure:
+        Self.countMalformedDeclaration(stored)
+      }
     }
-    let status: [String: Any] = [
+    var status: [String: Any] = [
       "strategy": strategy,
-      "peerId": NSNull(),
+      "peerId": peerId as Any? ?? NSNull(),
       "resubscribe": resubscribe,
-      "malformedDeclarations": 0,
-      "lastWake": NSNull()
+      "malformedDeclarations": UserDefaults.standard.integer(forKey: Self.continuationMalformedCountKey),
+      "lastWake": Self.readLastWake() as Any? ?? NSNull()
     ]
+    if strategy != "record-only" {
+      status["detail"] = "\(strategy) continuation is not implemented in this release"
+    }
     guard let data = try? JSONSerialization.data(withJSONObject: status, options: [.sortedKeys]),
           let text = String(data: data, encoding: .utf8)
     else {
@@ -348,6 +371,160 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
   }
 
   private static let continuationDefaultsKey = "com.sfourdrinier.unifiedblemanager.background-continuation"
+  private static let continuationMalformedCountKey = "com.sfourdrinier.unifiedblemanager.background-continuation.malformed-count"
+  private static let continuationMalformedPayloadKey = "com.sfourdrinier.unifiedblemanager.background-continuation.malformed-payload"
+  private static let continuationLastWakeKey = "com.sfourdrinier.unifiedblemanager.background-continuation.last-wake"
+  /// The canonical declaration JSON is small; anything larger is not ours
+  /// (the Android declare refuses the same bound).
+  private static let maxContinuationJson = 65536
+
+  /// What was actually declared and validated: the strategy, the scoped
+  /// peer, and how many resubscriptions the wake would run.
+  struct ValidatedContinuation {
+    let strategy: String
+    let peerId: String?
+    let resubscribe: Int
+  }
+
+  struct ContinuationValidationError: Error {
+    let detail: String
+  }
+
+  /// Validates a declaration with the same rules the Android wake enforces:
+  /// the exact key set the binding persists, a known strategy, a MAC peer,
+  /// at most 64 well-formed selectors, and the headless-task /
+  /// foreground-service payloads only on their own strategies.
+  static func validatedContinuation(_ json: String) -> Result<ValidatedContinuation, ContinuationValidationError> {
+    func fail(_ detail: String) -> Result<ValidatedContinuation, ContinuationValidationError> {
+      .failure(ContinuationValidationError(detail: detail))
+    }
+    guard let data = json.data(using: .utf8),
+          let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+      return fail("background.continuation: not an object")
+    }
+    let topKeys: Set<String> = ["onAppearance", "peerId", "resubscribe", "headlessTaskName", "foregroundService"]
+    let unknown = Set(root.keys).subtracting(topKeys).sorted()
+    if !unknown.isEmpty { return fail("background.continuation unknown keys: \(unknown.joined(separator: ","))") }
+    let strategies = ["record-only", "native", "headless-task", "foreground-service"]
+    let strategy: String
+    if root["onAppearance"] == nil {
+      strategy = "record-only"
+    } else if let wire = root["onAppearance"] as? String, strategies.contains(wire) {
+      strategy = wire
+    } else {
+      return fail("background.continuation: unknown onAppearance \(String(describing: root["onAppearance"]))")
+    }
+    let peerId: String?
+    if root["peerId"] == nil {
+      peerId = nil
+    } else if let text = root["peerId"] as? String, isMacAddress(text) {
+      peerId = text.uppercased()
+    } else {
+      return fail("background.continuation: peerId must be a MAC address")
+    }
+    let resubscribe: Int
+    if root["resubscribe"] == nil {
+      resubscribe = 0
+    } else if let entries = root["resubscribe"] as? [Any] {
+      if entries.count > 64 { return fail("background.continuation: resubscribe too many") }
+      for entry in entries {
+        guard let selector = entry as? [String: Any],
+              Set(selector.keys) == ["serviceUuid", "serviceOccurrence", "characteristicUuid", "characteristicOccurrence"],
+              let service = selector["serviceUuid"] as? String, isUuid(service),
+              let characteristic = selector["characteristicUuid"] as? String, isUuid(characteristic),
+              isPositiveIntOrMissing(selector["serviceOccurrence"]),
+              isPositiveIntOrMissing(selector["characteristicOccurrence"]) else {
+          return fail("background.continuation: resubscribe entry must name canonical UUIDs with positive occurrences")
+        }
+      }
+      resubscribe = entries.count
+    } else {
+      return fail("background.continuation: resubscribe must be an array")
+    }
+    if strategy == "headless-task" {
+      guard let name = root["headlessTaskName"] as? String, !name.isEmpty else {
+        return fail("background.continuation: headlessTaskName required for headless-task")
+      }
+    } else if root["headlessTaskName"] != nil {
+      return fail("background.continuation: headlessTaskName applies only to headless-task")
+    }
+    if strategy == "foreground-service" {
+      guard let service = root["foregroundService"] as? [String: Any],
+            Set(service.keys) == ["notification"],
+            let notification = service["notification"] as? [String: Any],
+            Set(notification.keys).isSubset(of: ["channelId", "channelName", "title", "body", "icon"]),
+            ["channelId", "channelName", "title"].allSatisfy({ Self.isNonEmptyString(notification[$0]) }),
+            Self.isMissingOrString(notification["body"]),
+            Self.isMissingOrString(notification["icon"]) else {
+        return fail("background.continuation: foregroundService notification required for foreground-service")
+      }
+    } else if root["foregroundService"] != nil {
+      return fail("background.continuation: foregroundService applies only to foreground-service")
+    }
+    return .success(ValidatedContinuation(strategy: strategy, peerId: peerId, resubscribe: resubscribe))
+  }
+
+  /// Counts a malformed persisted declaration once per distinct payload, so
+  /// the counter names bad declarations rather than status reads. Survives
+  /// process death with the woken process that matters.
+  static func countMalformedDeclaration(_ payload: String) {
+    let defaults = UserDefaults.standard
+    if defaults.string(forKey: continuationMalformedPayloadKey) != payload {
+      defaults.set(payload, forKey: continuationMalformedPayloadKey)
+      defaults.set(defaults.integer(forKey: continuationMalformedCountKey) + 1, forKey: continuationMalformedCountKey)
+    }
+  }
+
+  /// The last wake outcome a future wake persists (rc.1 writes it); null
+  /// until one exists, never invented. A record that is not the expected
+  /// shape reads as no wake rather than a fabricated one.
+  static func readLastWake() -> [String: Any]? {
+    guard let text = UserDefaults.standard.string(forKey: continuationLastWakeKey),
+          let data = text.data(using: .utf8),
+          let wake = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+          wake["observedAtMs"] is NSNumber,
+          wake["event"] as? String == "continuation.completed" || wake["event"] as? String == "continuation.failed",
+          wake["strategy"] is String,
+          wake["peerAddress"] == nil || wake["peerAddress"] is String,
+          wake["code"] == nil || wake["code"] is String,
+          wake["reason"] == nil || wake["reason"] is String else {
+      return nil
+    }
+    return wake
+  }
+
+  private static func isNonEmptyString(_ value: Any?) -> Bool {
+    guard let text = value as? String else { return false }
+    return !text.isEmpty
+  }
+
+  /// A missing notification field is absent on Android too: the binding may
+  /// persist an explicit null, which reads as missing rather than malformed.
+  private static func isMissingOrString(_ value: Any?) -> Bool {
+    guard let value else { return true }
+    return value is NSNull || value is String
+  }
+
+  private static func isMacAddress(_ text: String) -> Bool {
+    let parts = text.split(separator: ":", omittingEmptySubsequences: false)
+    guard parts.count == 6 else { return false }
+    return parts.allSatisfy { $0.count == 2 && $0.allSatisfy({ $0.isHexDigit }) }
+  }
+
+  private static func isUuid(_ text: String) -> Bool {
+    let parts = text.split(separator: "-", omittingEmptySubsequences: false).map(String.init)
+    guard parts.count == 5,
+          [8, 4, 4, 4, 12].elementsEqual(parts.map(\.count)) else { return false }
+    return parts.joined().allSatisfy({ $0.isHexDigit })
+  }
+
+  /// A missing occurrence defaults to 1 on Android; a present one must be a
+  /// positive integer (never a boolean, which JSON decodes as a number).
+  private static func isPositiveIntOrMissing(_ value: Any?) -> Bool {
+    guard let value else { return true }
+    guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return false }
+    return number.int64Value >= 1 && number.doubleValue == Double(number.int64Value)
+  }
 
   // MARK: - Private
 

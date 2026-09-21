@@ -41,9 +41,9 @@ export interface ExpoBleManager extends BleManager {
 - `ExpoCompanionAssociationResult :: { readonly source: "associated" | "already-associated"; readonly associationId: number; readonly peerId: string | null; readonly displayName: string | null }`
 - `ExpoCompanionDisassociationRequest :: { readonly associationId: number }`
 - `ExpoCompanionDisassociationResult :: { readonly state: "disassociated"; readonly associationId: number }`
-- `ExpoContinuationBacklog :: { readonly values: readonly ExpoContinuationValue[]; readonly streamEnds: readonly ExpoContinuationStreamEnd[]; readonly controlLost: number; readonly disposed: boolean }`
+- `ExpoContinuationBacklog :: { readonly values: readonly ExpoContinuationValue[]; readonly streamEnds: readonly ExpoContinuationStreamEnd[]; readonly controlLost: number; readonly disposed: boolean; readonly disposeFailure: string | null }`
 - `ExpoContinuationClaimRequest :: { readonly maxItems?: number | undefined; readonly maxBytes?: number | undefined }`
-- `ExpoContinuationStatus :: { readonly strategy: string; readonly peerId: string | null; readonly resubscribe: number; readonly malformedDeclarations: number; readonly lastWake: ExpoContinuationWakeReport | null }`
+- `ExpoContinuationStatus :: { readonly strategy: string; readonly peerId: string | null; readonly resubscribe: number; readonly malformedDeclarations: number; readonly lastWake: ExpoContinuationWakeReport | null; readonly detail: string | null }`
 - `ExpoContinuationStreamEnd :: { readonly consumer: string; readonly reason: "overflow" | "closed" | "invalidated"; readonly droppedItems: number; readonly droppedBytes: number }`
 - `ExpoContinuationValue :: { readonly consumer: string; readonly value: Uint8Array<ArrayBufferLike>; readonly delivery: "unknown" | "notification" | "indication" }`
 - `ExpoContinuationWakeReport :: { readonly observedAtMs: number; readonly event: "continuation.completed" | "continuation.failed"; readonly strategy: string; readonly peerAddress: string | null; readonly code: string | null; readonly reason: string | null }`

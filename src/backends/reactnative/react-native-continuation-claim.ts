@@ -21,6 +21,12 @@ import { parseDrainText, type WireDrainRecord, type WireDelivery } from './rust-
 export interface ContinuationClaimPayload {
   readonly batches: readonly string[]
   readonly disposed: boolean
+  /**
+   * Why the session is still alive (absent or null when disposed or when no
+   * wake existed): a release-failed dispose or an incomplete drain the next
+   * claim retries, never an abandoned session.
+   */
+  readonly disposeFailure?: string | null
 }
 
 export interface ContinuationBacklogValue {
@@ -44,6 +50,8 @@ export interface ContinuationBacklog {
   /** Cumulative control loss: an increase means run `session.reconcile`. */
   readonly controlLost: number
   readonly disposed: boolean
+  /** Why the session is still alive (null when disposed or no wake existed). */
+  readonly disposeFailure: string | null
 }
 
 function assertClaimPayload(value: unknown): asserts value is ContinuationClaimPayload {
@@ -58,6 +66,10 @@ function assertClaimPayload(value: unknown): asserts value is ContinuationClaimP
   }
   if (typeof disposed !== 'boolean') {
     throw contractError('protocol.malformed', 'restoration', 'continuation-claim.disposed')
+  }
+  const disposeFailure = value.disposeFailure
+  if (disposeFailure !== undefined && disposeFailure !== null && typeof disposeFailure !== 'string') {
+    throw contractError('protocol.malformed', 'restoration', 'continuation-claim.dispose-failure')
   }
 }
 
@@ -93,6 +105,12 @@ export interface ContinuationStatus {
   readonly resubscribe: number
   readonly malformedDeclarations: number
   readonly lastWake: ContinuationWakeStatus | null
+  /**
+   * Deferred-execution disclaimer on hosts where the strategy is not
+   * implemented (Apple: "<strategy> continuation is not implemented in this
+   * release"); absent (null) where the order executes.
+   */
+  readonly detail: string | null
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -121,7 +139,7 @@ export function parseContinuationStatus(value: unknown): ContinuationStatus {
   }
   unexpectedKeys(
     parsed,
-    ['strategy', 'peerId', 'resubscribe', 'malformedDeclarations', 'lastWake'],
+    ['strategy', 'peerId', 'resubscribe', 'malformedDeclarations', 'lastWake', 'detail'],
     'continuation-status.keys'
   )
   if (typeof parsed.strategy !== 'string' || parsed.strategy.length === 0) {
@@ -138,12 +156,17 @@ export function parseContinuationStatus(value: unknown): ContinuationStatus {
   ) {
     throw contractError('protocol.malformed', 'restoration', 'continuation-status.counts')
   }
+  const detail = parsed.detail ?? null
+  if (detail !== null && typeof detail !== 'string') {
+    throw contractError('protocol.malformed', 'restoration', 'continuation-status.detail')
+  }
   return Object.freeze({
     strategy: parsed.strategy,
     peerId: parsed.peerId,
     resubscribe: parsed.resubscribe,
     malformedDeclarations: parsed.malformedDeclarations,
-    lastWake: parseWakeStatus(parsed.lastWake)
+    lastWake: parseWakeStatus(parsed.lastWake),
+    detail
   })
 }
 
@@ -239,6 +262,7 @@ export function aggregateContinuationClaim(
     streamEnds: Object.freeze(streamEnds),
     control: Object.freeze(control),
     controlLost,
-    disposed: claim.disposed
+    disposed: claim.disposed,
+    disposeFailure: claim.disposeFailure ?? null
   })
 }

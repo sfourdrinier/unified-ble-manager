@@ -7,6 +7,7 @@ import com.sfourdrinier.unifiedblemanager.rustcore.RustCoreJson
 import com.ubm.core.MobileCoreBridge
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -33,99 +34,19 @@ class RustCoreContinuationExecutor(
   private var sessionId: Long? = null
   private var continuingPeer: String? = null
   private var subscribedConsumers = 0
-  private var admission = 0L
+  private val admission = AtomicLong(0)
+
+  /** One execution's state snapshot: the lock guards this handoff, not the radio I/O. */
+  private data class Execution(val session: Long)
 
   /** Executes the order; every refusal is a typed outcome, never a throw. */
   fun execute(address: String, declaration: BackgroundContinuationDeclaration): ContinuationOutcome {
-    synchronized(lock) {
-      try {
-        val session = ensureSession()
-        val held = continuingPeer
-        if (held != null && held != address) {
-          return ContinuationOutcome.failed(
-            ContinuationStrategy.NATIVE,
-            "lifecycle.invalid-state",
-            "continuation session already holds $held; one peer at a time this release",
-            null
-          )
-        }
-        if (held == address && subscribedConsumers == declaration.resubscribe.size) {
-          log("continuation session already holds $address; already continuing")
-          return ContinuationOutcome.completed(ContinuationStrategy.NATIVE, address, subscribedConsumers)
-        }
-        val connected = invokeChecked(
-          session,
-          "connection.connect",
-          linkedMapOf(
-            "peerId" to address,
-            "lease" to CONTINUATION_LEASE,
-            "operationId" to "continuation-connect",
-            "intent" to "when-available",
-            "transport" to "auto",
-            "preferredPhy" to emptyList<String>(),
-            "budgetMs" to connectBudgetMs
-          ),
-          opTimeoutMs + connectBudgetMs
-        )
-        if (!connected.ok) {
-          return ContinuationOutcome.failed(
-            ContinuationStrategy.NATIVE,
-            connected.code,
-            connected.reason,
-            connected.platform
-          )
-        }
-        val discovered = invokeChecked(
-          session,
-          "gatt.discover",
-          linkedMapOf(
-            "peerId" to address,
-            "lease" to CONTINUATION_LEASE,
-            "operationId" to "continuation-discover"
-          ),
-          opTimeoutMs
-        )
-        if (!discovered.ok) {
-          return ContinuationOutcome.failed(
-            ContinuationStrategy.NATIVE,
-            discovered.code,
-            discovered.reason,
-            discovered.platform
-          )
-        }
-        var resubscribed = 0
-        declaration.resubscribe.forEachIndexed { index, selector ->
-          val consumer = "$CONSUMER_PREFIX$index"
-          val subscribed = invokeChecked(
-            session,
-            "gatt.subscribe",
-            linkedMapOf(
-              "peerId" to address,
-              "selector" to linkedMapOf(
-                "serviceUuid" to selector.serviceUuid,
-                "serviceOccurrence" to selector.serviceOccurrence,
-                "characteristicUuid" to selector.characteristicUuid,
-                "characteristicOccurrence" to selector.characteristicOccurrence
-              ),
-              "consumer" to consumer,
-              "operationId" to "continuation-subscribe-$index"
-            ),
-            opTimeoutMs
-          )
-          if (!subscribed.ok) {
-            return ContinuationOutcome.failed(
-              ContinuationStrategy.NATIVE,
-              subscribed.code,
-              subscribed.reason,
-              subscribed.platform
-            )
-          }
-          resubscribed += 1
-        }
-        continuingPeer = address
-        subscribedConsumers = resubscribed
-        log("continuation completed for $address: connected when-available, resubscribed $resubscribed")
-        return ContinuationOutcome.completed(ContinuationStrategy.NATIVE, address, resubscribed)
+    // State under the lock, radio I/O outside it: a second appearance, a
+    // disappearance, or teardown never queues behind the connect budget and
+    // the resubscribe timeouts.
+    val execution = synchronized(lock) {
+      val session = try {
+        ensureSession()
       } catch (error: ContinuationFailure) {
         return ContinuationOutcome.failed(
           ContinuationStrategy.NATIVE,
@@ -134,6 +55,109 @@ class RustCoreContinuationExecutor(
           null
         )
       }
+      val held = continuingPeer
+      if (held != null && held != address) {
+        return ContinuationOutcome.failed(
+          ContinuationStrategy.NATIVE,
+          "lifecycle.invalid-state",
+          "continuation session already holds $held; one peer at a time this release",
+          null
+        )
+      }
+      if (held == address && subscribedConsumers == declaration.resubscribe.size) {
+        log("continuation session already holds $address; already continuing")
+        return ContinuationOutcome.completed(ContinuationStrategy.NATIVE, address, subscribedConsumers)
+      }
+      Execution(session)
+    }
+    try {
+      val connected = invokeChecked(
+        execution.session,
+        "connection.connect",
+        linkedMapOf(
+          "peerId" to address,
+          "lease" to CONTINUATION_LEASE,
+          "operationId" to "continuation-connect",
+          "intent" to "when-available",
+          "transport" to "auto",
+          "preferredPhy" to emptyList<String>(),
+          "budgetMs" to connectBudgetMs
+        ),
+        opTimeoutMs + connectBudgetMs
+      )
+      if (!connected.ok) {
+        return ContinuationOutcome.failed(
+          ContinuationStrategy.NATIVE,
+          connected.code,
+          connected.reason,
+          connected.platform
+        )
+      }
+      val discovered = invokeChecked(
+        execution.session,
+        "gatt.discover",
+        linkedMapOf(
+          "peerId" to address,
+          "lease" to CONTINUATION_LEASE,
+          "operationId" to "continuation-discover"
+        ),
+        opTimeoutMs
+      )
+      if (!discovered.ok) {
+        return ContinuationOutcome.failed(
+          ContinuationStrategy.NATIVE,
+          discovered.code,
+          discovered.reason,
+          discovered.platform
+        )
+      }
+      var resubscribed = 0
+      declaration.resubscribe.forEachIndexed { index, selector ->
+        val consumer = "$CONSUMER_PREFIX$index"
+        val subscribed = invokeChecked(
+          execution.session,
+          "gatt.subscribe",
+          linkedMapOf(
+            "peerId" to address,
+            "selector" to linkedMapOf(
+              "serviceUuid" to selector.serviceUuid,
+              "serviceOccurrence" to selector.serviceOccurrence,
+              "characteristicUuid" to selector.characteristicUuid,
+              "characteristicOccurrence" to selector.characteristicOccurrence
+            ),
+            "consumer" to consumer,
+            "operationId" to "continuation-subscribe-$index"
+          ),
+          opTimeoutMs
+        )
+        if (!subscribed.ok) {
+          return ContinuationOutcome.failed(
+            ContinuationStrategy.NATIVE,
+            subscribed.code,
+            subscribed.reason,
+            subscribed.platform
+          )
+        }
+        resubscribed += 1
+      }
+      synchronized(lock) {
+        // A claim may have disposed the session while the radio worked: the
+        // link gap is covered by the drain's loss accounting, so a stale
+        // commit must not resurrect ownership here.
+        if (sessionId == execution.session) {
+          continuingPeer = address
+          subscribedConsumers = resubscribed
+        }
+      }
+      log("continuation completed for $address: connected when-available, resubscribed $resubscribed")
+      return ContinuationOutcome.completed(ContinuationStrategy.NATIVE, address, resubscribed)
+    } catch (error: ContinuationFailure) {
+      return ContinuationOutcome.failed(
+        ContinuationStrategy.NATIVE,
+        "platform.failure",
+        error.message ?: "continuation invoke refused",
+        null
+      )
     }
   }
 
@@ -159,6 +183,14 @@ class RustCoreContinuationExecutor(
    * Drains the continuation backlog (verbatim drain batches for the JS
    * codec) and disposes the session. The app's own session connects next;
    * the link gap is covered by the core's loss accounting, never silence.
+   *
+   * The dispose envelope decides ownership: `released` clears the session,
+   * while `release-failed` (or an unreadable dispose) keeps the id with the
+   * failure in [ContinuationClaim.disposeFailure], so the next claim retries
+   * the dispose instead of abandoning a live session with no owner. An
+   * incomplete drain (a drain throw, an unparseable batch, or a full batch
+   * cap with `more` still queued) likewise keeps the session: disposing now
+   * would discard the unread tail silently.
    */
   fun claimAndDispose(maxItems: Int, maxBytes: Int, maxBatches: Int = 32): ContinuationClaim {
     val session = synchronized(lock) { sessionId }
@@ -166,12 +198,14 @@ class RustCoreContinuationExecutor(
     val batches = ArrayList<String>(4)
     var more = true
     var rounds = 0
+    var drainFailure: String? = null
     while (more && rounds < maxBatches) {
       rounds += 1
       val batch = try {
         core.drain(session, maxItems, maxBytes)
       } catch (error: RuntimeException) {
-        log("continuation drain failed: ${error.message ?: error.javaClass.simpleName}")
+        drainFailure = "continuation drain failed: ${error.message ?: error.javaClass.simpleName}"
+        log(drainFailure)
         break
       }
       batches.add(batch)
@@ -179,23 +213,51 @@ class RustCoreContinuationExecutor(
         val root = RustCoreJson.parse(batch) as? Map<*, *>
         root?.get("more") as? Boolean ?: false
       } catch (error: IllegalArgumentException) {
-        log("continuation drain batch unparseable: ${error.message}")
+        drainFailure = "continuation drain batch unparseable: ${error.message}"
+        log(drainFailure)
         false
       }
     }
-    val disposed = try {
-      invoke(session, "session.dispose", emptyMap(), opTimeoutMs)
-      true
+    if (drainFailure == null && more) {
+      drainFailure = "continuation claim stopped after $rounds batches with more queued; the session is kept for a follow-up claim"
+      log(drainFailure)
+    }
+    if (drainFailure != null) {
+      return ContinuationClaim(batches, false, drainFailure)
+    }
+    val disposeFailure = try {
+      disposeFailure(invoke(session, "session.dispose", emptyMap(), opTimeoutMs))
     } catch (error: ContinuationFailure) {
-      log("continuation dispose failed: ${error.message}")
-      false
+      "continuation dispose failed: ${error.message}"
+    }
+    if (disposeFailure != null) {
+      log(disposeFailure)
+      return ContinuationClaim(batches, false, disposeFailure)
     }
     synchronized(lock) {
-      sessionId = null
-      continuingPeer = null
-      subscribedConsumers = 0
+      if (sessionId == session) {
+        sessionId = null
+        continuingPeer = null
+        subscribedConsumers = 0
+      }
     }
-    return ContinuationClaim(batches, disposed)
+    return ContinuationClaim(batches, true)
+  }
+
+  /**
+   * Reads the `session.dispose` envelope. Null when the lease is gone
+   * (`released`, or `lifecycle.destroyed` for a session the core already
+   * forgot); otherwise why the session is kept for a retry.
+   */
+  private fun disposeFailure(root: Map<*, *>): String? {
+    val checked = checkEnvelope("session.dispose", root)
+    if (checked.ok) {
+      if (checked.value["state"] == "released") return null
+      return "session.dispose reported ${checked.value["state"] ?: "release-failed"}; " +
+        "the session is kept for a retry: ${RustCoreJson.write(checked.value)}"
+    }
+    if (checked.code == "lifecycle.destroyed") return null
+    return "session.dispose refused: ${checked.code} ${checked.reason}"
   }
 
   private fun ensureSession(): Long {
@@ -212,7 +274,7 @@ class RustCoreContinuationExecutor(
     }
     val id = (parsed?.get("sessionId") as? Number)?.toLong()
       ?: throw ContinuationFailure("continuation session admission without a session id")
-    admission = 0L
+    admission.set(0)
     sessionId = id
     return id
   }
@@ -220,9 +282,8 @@ class RustCoreContinuationExecutor(
   private data class Checked(val ok: Boolean, val code: String, val reason: String, val platform: String?, val value: Map<*, *>)
 
   private fun invokeChecked(session: Long, op: String, args: Map<String, Any?>, timeoutMs: Long): Checked {
-    admission += 1
     val withAdmission = LinkedHashMap<String, Any?>(args)
-    withAdmission["admission"] = admission
+    withAdmission["admission"] = admission.incrementAndGet()
     return checkEnvelope(op, invoke(session, op, withAdmission, timeoutMs))
   }
 
@@ -292,7 +353,14 @@ data class BacklogCounts(val queuedBytes: Long?, val ingressDrops: Map<String, L
 
 /**
  * Verbatim drain batches for the JS codec plus whether a session was
- * disposed. Empty batches with `disposed: false` is the valid no-wake
- * answer (no continuation session alive) — never an error.
+ * disposed. Empty batches with `disposed: false` and no [disposeFailure] is
+ * the valid no-wake answer (no continuation session alive) — never an
+ * error. A non-null [disposeFailure] is why the session is still alive: the
+ * drain did not complete or the dispose reported failures, so the next
+ * claim retries instead of abandoning the session with no owner.
  */
-data class ContinuationClaim(val batches: List<String>, val disposed: Boolean)
+data class ContinuationClaim(
+  val batches: List<String>,
+  val disposed: Boolean,
+  val disposeFailure: String? = null
+)

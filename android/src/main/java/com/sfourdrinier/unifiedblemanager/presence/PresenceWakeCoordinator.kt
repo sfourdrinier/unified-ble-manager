@@ -7,8 +7,8 @@ data class PresenceRestoredPeer(val peerId: String, val name: String?, val conne
 
 /**
  * Routes Companion Device Manager presence callbacks (issue #212). Only an
- * address the app associated is ours — anything else is logged and ignored,
- * never recorded and never scanned for. An appearance installs the process
+ * address the app associated is ours — anything else is logged, recorded as
+ * a rejected wake, and never scanned for. An appearance installs the process
  * owner when the OS woke a dead process ([ensureOwner]), then ingests into
  * it; only an appearance no owner takes persists in the
  * [PresenceRestoredStore] for exactly-once drain at the next session open.
@@ -80,8 +80,14 @@ class PresenceWakeCoordinator(
    * the owner (ingest accepted); duplicates, unassociated devices and
    * appearances persisted for a later session all report false, so the
    * caller can log the outcome it actually produced.
+   *
+   * The coordinator lock guards state (the delivered set), never I/O: owner
+   * bootstrap, ingest, and the standing-order execution all run outside it,
+   * so a disappearance or teardown never queues behind radio I/O. Every wake
+   * except an exact duplicate records its outcome — including rejections —
+   * so `status.lastWake` distinguishes "never woken" (null) from "woken and
+   * rejected".
    */
-  @Synchronized
   fun appeared(address: String, associationId: Int?): Boolean {
     // MAC addresses are case-insensitive hex; normalize before comparing,
     // tracking and persisting, so a differently-cased twin of an associated
@@ -89,9 +95,11 @@ class PresenceWakeCoordinator(
     val normalized = address.uppercase()
     if (associatedAddresses().map { it.uppercase() }.toSet().contains(normalized).not()) {
       log("presence appearance for unassociated device ignored")
+      recordWakeOutcome(unassociatedRecord(normalized))
       return false
     }
-    if (!delivered.add(normalized)) {
+    val firstDelivery = synchronized(this) { delivered.add(normalized) }
+    if (!firstDelivery) {
       log("presence duplicate appearance for $normalized ignored (associationId=${associationId ?: "none"}): no disappearance since the last delivery")
       return false
     }
@@ -111,12 +119,35 @@ class PresenceWakeCoordinator(
     } else {
       log("presence appearance persisted for the next session open: no live owner")
     }
-    executeStandingOrder(normalized, owned)
+    executeStandingOrder(normalized, owned, readDeclaration())
     if (!delivered) {
       store.saveAppearance(normalized, associationId, nowMs())
       return false
     }
     return true
+  }
+
+  /** Reads the declared standing order; an unreadable one is `record-only`, never a dropped wake. */
+  private fun readDeclaration(): BackgroundContinuationDeclaration {
+    return try {
+      continuation()
+    } catch (error: RuntimeException) {
+      log("presence continuation unreadable, using record-only: ${error.message ?: error.javaClass.simpleName}")
+      BackgroundContinuationDeclaration.recordOnly()
+    }
+  }
+
+  /** The rejection record for an appearance no association owns. */
+  private fun unassociatedRecord(address: String): ContinuationWakeRecord {
+    val declaration = readDeclaration()
+    return ContinuationWakeRecord(
+      observedAtMs = nowMs(),
+      event = "continuation.failed",
+      strategy = declaration.strategy,
+      peerAddress = address,
+      code = "association.unknown",
+      reason = "presence appearance for unassociated device ignored; only an address the app associated wakes the process"
+    )
   }
 
   /**
@@ -125,13 +156,7 @@ class PresenceWakeCoordinator(
    * when one is named) while the deferred strategies record their
    * `capability.unsupported` refusal. Nothing here invents a strategy.
    */
-  private fun executeStandingOrder(address: String, owned: Boolean) {
-    val declaration = try {
-      continuation()
-    } catch (error: RuntimeException) {
-      log("presence continuation unreadable, using record-only: ${error.message ?: error.javaClass.simpleName}")
-      BackgroundContinuationDeclaration.recordOnly()
-    }
+  private fun executeStandingOrder(address: String, owned: Boolean, declaration: BackgroundContinuationDeclaration) {
     if (declaration.strategy == ContinuationStrategy.RECORD_ONLY) return
     if (!owned) {
       recordWakeOutcome(
@@ -150,6 +175,16 @@ class PresenceWakeCoordinator(
       ContinuationStrategy.NATIVE -> {
         if (declaration.peerId != null && declaration.peerId != address) {
           log("presence native continuation skips $address: standing order scopes to ${declaration.peerId}")
+          recordWakeOutcome(
+            ContinuationWakeRecord(
+              observedAtMs = nowMs(),
+              event = "continuation.failed",
+              strategy = declaration.strategy,
+              peerAddress = address,
+              code = "operation.aborted",
+              reason = "presence native continuation skips $address: standing order scopes to ${declaration.peerId}"
+            )
+          )
           return
         }
         val outcome = try {

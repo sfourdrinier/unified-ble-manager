@@ -1393,6 +1393,37 @@ metadata:{androidGattStatus}}` on Android, or the `NSError` domain and code
 
 ### Fixed
 
+- **A background wake no longer abandons a session it could not release.**
+  `claimContinuation` read the dispose result and cleared the session id
+  regardless, so a release that reported failures left the connection or
+  subscriptions with no owner and no retry — the most expensive shape of bug,
+  because nothing reported it. The claim now keeps the session when the release
+  reports failures, returns the reason as `disposeFailure`, and the next claim
+  retries. An incomplete drain, or a full batch cap with more still queued,
+  likewise keeps the unread tail instead of discarding it. Applications must
+  claim again while `disposed` is false.
+
+- **Presence rejections are recorded instead of returning silently.** An
+  appearance from an unassociated device is recorded as `association.unknown`,
+  and an appearance outside a `peerId`-scoped order is recorded as a scoped
+  skip; both reach `continuationStatus().lastWake`. Previously both returned
+  with no record at all, so `lastWake` stayed null forever and an operator
+  could not tell "never woken" from "woken and refused".
+
+- **Apple's continuation status tells the truth about what will execute.** It
+  reported peer id null, zero malformed declarations and no last wake, and
+  echoed the declared strategy unvalidated, so a declared native standing order
+  looked accepted on Apple when nothing would run it. It now validates the
+  declaration by the same rules as Android, reports what was actually declared,
+  and carries a `detail` saying the strategy is not implemented in this
+  release. `malformedDeclarations` is persisted per distinct declaration rather
+  than counted per read.
+
+- **The wake no longer holds its lock across radio I/O.** Execution held a
+  single lock across a connect budget and up to sixty-four subscribes, so a
+  second appearance, a disappearance or teardown queued behind it. The lock now
+  guards state only.
+
 - **The repository says one thing about its own license.** The dual
   arrangement itself is unchanged and was already stated correctly in `NOTICE`,
   the README, `CONTRIBUTING.md` and every crate manifest: material retained

@@ -38,6 +38,25 @@ class BackgroundContinuationStoreTest {
   }
 
   @Test
+  fun rereadingOneBadDeclarationCountsOnce() {
+    val store = InMemoryBackgroundContinuationStore()
+    store.saveDeclaration("{\"onAppearance\":")
+    store.loadDeclaration()
+    store.loadDeclaration()
+    assertEquals(1L, store.malformedDeclarationCount())
+  }
+
+  @Test
+  fun distinctBadDeclarationsCountSeparately() {
+    val store = InMemoryBackgroundContinuationStore()
+    store.saveDeclaration("{\"onAppearance\":")
+    store.loadDeclaration()
+    store.saveDeclaration("not json at all")
+    store.loadDeclaration()
+    assertEquals(2L, store.malformedDeclarationCount())
+  }
+
+  @Test
   fun lastWakeOutcomeRoundTripsForDiagnostics() {
     val store = InMemoryBackgroundContinuationStore()
     assertEquals(null, store.lastWakeOutcome())

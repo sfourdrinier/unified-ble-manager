@@ -36,6 +36,19 @@ class RustCoreContinuationExecutorTest {
 
   private fun ok(valueJson: String) = "{\"ok\":true,\"value\":$valueJson}"
 
+  /** Answers one issued invoke by index, waiting until the executor issues it. */
+  private fun answerAt(index: Int, json: String) {
+    val deadline = System.currentTimeMillis() + 10_000L
+    while (System.currentTimeMillis() < deadline) {
+      if (fake.callbacks.size > index) {
+        fake.callbacks[index].onResult(json)
+        return
+      }
+      Thread.sleep(5)
+    }
+    throw AssertionError("invoke #$index was never issued")
+  }
+
   /** Answers every invoke the executor issues, in order, on a helper thread. */
   private fun answerInvokes(answers: List<String>): Thread {
     val thread = Thread {
@@ -125,6 +138,70 @@ class RustCoreContinuationExecutorTest {
       executor.execute(peer, declaration())
     )
     assertEquals(invokesAfterFirst, fake.invokes.size)
+  }
+
+  @Test
+  fun aDisposeReportingReleaseFailedKeepsTheSessionAndReportsTheFailure() {
+    fake.openRecord = { "{\"sessionId\":7,\"contractRevision\":\"c\",\"wireRevision\":\"ubm-mobile-wire/1\"}" }
+    val answering = answerInvokes(
+      listOf(
+        ok("{\"peerKey\":\"k\",\"connectionGeneration\":\"cg-1\"}"),
+        ok("{\"connectionGeneration\":\"cg-1\",\"databaseGeneration\":\"db-1\",\"services\":[]}"),
+        ok("{\"consumer\":\"ubm-continuation-0\",\"delivery\":\"notification\"}")
+      )
+    )
+    executor.execute(peer, declaration())
+    answering.join(10_000)
+    fake.drainAnswer = "{\"more\":false,\"records\":[],\"controlLost\":0}"
+    val disposing = Thread { answerAt(3, "{\"ok\":true,\"value\":{\"state\":\"release-failed\",\"failures\":[{\"resourceKind\":\"connection\",\"code\":\"connection.failed\"}]}}") }
+    disposing.isDaemon = true
+    disposing.start()
+    val claim = executor.claimAndDispose(256, 65536)
+    disposing.join(10_000)
+    // The Rust side keeps failed leases and subscriptions for retry and only
+    // removes the session when clean: a release-failed dispose must NOT clear
+    // the id, and the failure must reach the app instead of reading disposed.
+    assertFalse(claim.disposed)
+    assertTrue(logs.any { it.contains("release-failed") })
+    // The kept session retries the dispose on the next claim.
+    val retry = Thread { answerAt(4, "{\"ok\":true,\"value\":{\"state\":\"released\",\"failures\":[]}}") }
+    retry.isDaemon = true
+    retry.start()
+    val second = executor.claimAndDispose(256, 65536)
+    retry.join(10_000)
+    assertEquals(true, second.disposed)
+    assertEquals(2, fake.invokes.count { it.second == "session.dispose" })
+  }
+
+  @Test
+  fun stateReadsDoNotWaitForRadioIO() {
+    fake.openRecord = { "{\"sessionId\":7,\"contractRevision\":\"c\",\"wireRevision\":\"ubm-mobile-wire/1\"}" }
+    // The connect invoke is never answered: execute stays inside radio I/O.
+    val slow = Thread { executor.execute(peer, declaration()) }
+    slow.isDaemon = true
+    slow.start()
+    val deadline = System.currentTimeMillis() + 10_000L
+    while (fake.invokes.isEmpty() && System.currentTimeMillis() < deadline) Thread.sleep(5)
+    assertTrue(fake.invokes.isNotEmpty())
+    // A backlog read must not queue behind the held radio I/O.
+    var backlog: BacklogCounts? = null
+    val done = CountDownLatch(1)
+    val reading = Thread {
+      backlog = executor.describeBacklog()
+      done.countDown()
+    }
+    reading.isDaemon = true
+    reading.start()
+    val answeringDescribe = Thread {
+      try {
+        answerAt(1, ok("{\"counters\":{},\"process\":{}}"))
+      } catch (_: AssertionError) {
+      }
+    }
+    answeringDescribe.isDaemon = true
+    answeringDescribe.start()
+    assertTrue(done.await(5, TimeUnit.SECONDS))
+    assertTrue(backlog != null)
   }
 
   @Test

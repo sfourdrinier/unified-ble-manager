@@ -972,7 +972,13 @@ function main(options = {}) {
       "const reactNativeModuleEntry = path.join(packageRoot, 'lib/module/react-native.js');",
       "const nativeProtocolControl = path.join(packageRoot, 'lib/module/NativeUnifiedBleProtocolControl.js');",
       "assert.ok(fs.existsSync(nativeProtocolControl), 'packed React Native host includes Metro-resolvable NativeUnifiedBleProtocolControl');",
-      "assert.ok(fs.readFileSync(reactNativeModuleEntry, 'utf8').includes(\"require('./NativeUnifiedBleProtocolControl')\"), 'public React Native host keeps the generated control import');",
+      // PR210 (ca017247) removed the legacy protocol-control route from the
+      // public React Native entry: the host goes through the Rust core, and
+      // `getNativeUnifiedBleProtocolControl` is gone. __tests__/PackageSurface4
+      // pins its absence from the source surface; this pins it in what a
+      // consumer actually installs. The generated spec is still packed above,
+      // because React Native Codegen resolves it at build time.
+      "assert.ok(!fs.readFileSync(reactNativeModuleEntry, 'utf8').includes('getNativeUnifiedBleProtocolControl'), 'public React Native host does not reintroduce the removed protocol-control accessor');",
       "const electronNativeBuildDependency = require('node-addon-api/package.json');",
       "assert.strictEqual(electronNativeBuildDependency.name, 'node-addon-api', 'packed Electron native build dependency resolves');",
       "const electronNativeBuildTool = require('node-gyp/package.json');",
