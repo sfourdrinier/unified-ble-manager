@@ -18,6 +18,27 @@ against the current sources; a mismatch is `stale`, never silent.
 The Tauri plugin (`native/tauri`) is not a precompiled artifact: it compiles
 inside the Tauri app build, so it needs no status row and no refresh.
 
+## The fourth thing a Rust change stales: the expected identity
+
+`src/generated/native-build-identity.ts` is the identity every host compares a
+loaded binary against. It is generated from the same digest, so a Rust change
+stales it too — **including a formatting-only `cargo fmt`**, which changes the
+sources the digest covers without changing a single artifact's behaviour.
+
+It has its own gate, separate from `native:status`: `pnpm prepack` runs
+`node scripts/release/native-build-identity.js --check`, and a stale file fails
+the build before anything is packed. `pnpm native:refresh` rebuilds artifacts;
+it does not write this file. Regenerate it with
+
+```sh
+node scripts/release/native-build-identity.js --write
+```
+
+and commit the result with the Rust change that caused it. `--check` is the
+question "does the expected identity match the sources?"; `pnpm native:status`
+is the question "were the artifacts built from these sources?". Both have to
+answer yes, and one can be stale while the other is fresh.
+
 ## One-command status and refresh
 
 - `pnpm native:status` prints one line per artifact — `fresh`, `stale` or
