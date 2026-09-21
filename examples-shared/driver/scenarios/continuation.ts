@@ -27,6 +27,18 @@ import {
   type ScenarioCommand
 } from '../scenario-core.ts'
 
+/**
+ * The owner's answers arrive as `unknown`, and a driver report must be JSON the
+ * protocol can carry: narrow to text rather than widening the report's type.
+ */
+function isJsonObject(value: JsonValue | null): value is JsonObject {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function asText(value: unknown): string | null {
+  return typeof value === 'string' ? value : value === undefined || value === null ? null : String(value)
+}
+
 const WAKE_FEATURE: FeatureId = 'background:wake-on-appearance'
 const NATIVE_FEATURE: FeatureId = 'background:native-resubscribe'
 const HEADLESS_FEATURE: FeatureId = 'background:headless-task'
@@ -193,7 +205,13 @@ export class ContinuationScenario extends ScenarioController<ContinuationState> 
         return { state: 'unregistered' }
       }
       const status = await manager.continuation.status()
-      this.replace({ ...this.snapshot(), lastWake: status.lastWake ?? null })
+      // `status.lastWake` is the owner's own record: keep it only when it is an
+      // object the protocol can carry, never a stringified shadow of one.
+      const lastWake = toJsonValue(status.lastWake ?? null)
+      this.replace({
+        ...this.snapshot(),
+        lastWake: isJsonObject(lastWake) ? lastWake : null
+      })
       this.emit('continuation-status', { state: 'reported', status })
       return status
     })
@@ -213,8 +231,8 @@ export class ContinuationScenario extends ScenarioController<ContinuationState> 
         if (code === 'capability.unsupported') {
           const reported = {
             state: 'capability-unsupported',
-            operation: (error as { operation?: unknown }).operation ?? null,
-            reason: (error as { message?: unknown }).message ?? null
+            operation: asText((error as { operation?: unknown }).operation),
+            reason: asText((error as { message?: unknown }).message)
           }
           this.emit('continuation-backlog', reported)
           return reported
@@ -233,11 +251,11 @@ export class ContinuationScenario extends ScenarioController<ContinuationState> 
       )
       const report = {
         values: values.length,
-        consumers: values.map(value => (value as { consumer?: unknown }).consumer ?? null),
+        consumers: values.map(value => asText((value as { consumer?: unknown }).consumer)),
         droppedItems,
         droppedBytes,
         controlLost: typeof claim.controlLost === 'number' ? claim.controlLost : null,
-        disposed: claim.disposed ?? null
+        disposed: typeof claim.disposed === 'boolean' ? claim.disposed : null
       }
       this.replace({ ...this.snapshot(), backlog: report })
       this.emit('continuation-backlog', report)

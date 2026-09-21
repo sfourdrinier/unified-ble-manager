@@ -14,11 +14,12 @@ use ubm_desktop::{
 };
 use ubm_mobile::{
     AdapterAuthorization, AdapterAvailability, AdapterPower, AdapterSnapshot, Advertisement,
-    AuthenticationState, BondState, BondedPeer, CloseFailure, CompletionStatus, EncryptionState,
-    FailureKind, HostOptions, IngressClass, Instance, ManufacturerData, MobileHost, MobilePlatform,
-    MobileSession, PhyObservation, PlatformFailure, PlatformRadio, RadioCompletion, RadioIngress,
-    RadioRequest, RestoredPeer, SecureConnectionsState, SecurityState, ServiceData, WakeSink,
-    WriteLimits, CompanionRecord,};
+    AuthenticationState, BondState, BondedPeer, CloseFailure, CompanionRecord, CompletionStatus,
+    EncryptionState, FailureKind, HostOptions, IngressClass, Instance, ManufacturerData,
+    MobileHost, MobilePlatform, MobileSession, PhyObservation, PlatformFailure, PlatformRadio,
+    RadioCompletion, RadioIngress, RadioRequest, RestoredPeer, SecureConnectionsState,
+    SecurityState, ServiceData, WakeSink, WriteLimits,
+};
 
 use crate::build_identity::ubm_build_identity_json;
 
@@ -459,10 +460,12 @@ impl From<&RadioRequest> for MobileRadioRequest {
                 service_uuid: service_uuid.clone(),
             },
             RadioRequest::ListCompanion { id } => Self::ListCompanion { id: *id },
-            RadioRequest::DisassociateCompanion { id, association_id } => Self::DisassociateCompanion {
-                id: *id,
-                association_id: *association_id,
-            },
+            RadioRequest::DisassociateCompanion { id, association_id } => {
+                Self::DisassociateCompanion {
+                    id: *id,
+                    association_id: *association_id,
+                }
+            }
             RadioRequest::ObservePresence { id, peer_id } => Self::ObservePresence {
                 id: *id,
                 peer_id: peer_id.clone(),

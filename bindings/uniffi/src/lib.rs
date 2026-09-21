@@ -30,11 +30,11 @@ use core_backend::{CoreSession, EchoError, SharedCore, StagedError};
 pub use mobile::{
     mobile_build_identity_json, mobile_contract_revision, mobile_host_current, mobile_host_install,
     mobile_wire_revision, MobileAdapterSnapshot, MobileAdvertisement, MobileCloseFailure,
-    MobileCoreError, MobileCoreHost, MobileCoreSession, MobileGattCharacteristic,
-    MobileGattDescriptor, MobileGattProperties, MobileGattService, MobileInstance,
-    MobileCompanionRecord, MobileInvokeCompletion, MobileManufacturerData, MobilePeerName, MobilePlatformRadio,
-    MobileRadioCompletion, MobileRadioIngress, MobileRadioRequest, MobileRestoredPeer,
-    MobileSecurityState, MobileServiceData, MobileWakeSink,
+    MobileCompanionRecord, MobileCoreError, MobileCoreHost, MobileCoreSession,
+    MobileGattCharacteristic, MobileGattDescriptor, MobileGattProperties, MobileGattService,
+    MobileInstance, MobileInvokeCompletion, MobileManufacturerData, MobilePeerName,
+    MobilePlatformRadio, MobileRadioCompletion, MobileRadioIngress, MobileRadioRequest,
+    MobileRestoredPeer, MobileSecurityState, MobileServiceData, MobileWakeSink,
 };
 
 uniffi::include_scaffolding!("ubm_echo");
