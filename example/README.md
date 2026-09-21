@@ -25,6 +25,15 @@ pnpm --dir example android
 pnpm --dir example ios
 ```
 
+Every one of those three scripts first checks the Metro port (8081 by default,
+`RCT_METRO_PORT` to move it). If another project already serves that port, the
+run stops with the holder's pid, working directory and command instead of
+starting: a React Native app pointed at a foreign dev server loads that
+project's bundle, registers no callable JavaScript modules, and then throws on
+every native call without bound — an error loop that reads as a hang and eats
+memory until the machine runs out. Where the guard cannot identify the holder
+(no `lsof`) it says so and lets the run continue rather than guessing.
+
 The fixture can exercise manager construction, scan, connection, GATT, and
 cleanup against the device/permissions available to the app. It does not confer
 hardware support for any Android or Apple environment. A simulator, compilation,

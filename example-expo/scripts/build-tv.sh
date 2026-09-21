@@ -294,6 +294,10 @@ cmd_build() {
 }
 
 cmd_metro() {
+  # Finding 241: the staged TV app is pointed at TV_LAN_HOST:TV_METRO_PORT, so a
+  # port another project already serves hands it that project's bundle. React
+  # Native then throws on every native call without bound. Refuse first.
+  node "${ROOT}/examples-shared/dev/metro-port-guard.js" "${TV_METRO_PORT}" "${ROOT}"
   (cd "${STAGE}" && npx expo start --port "${TV_METRO_PORT}")
 }
 

@@ -3,9 +3,9 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
-    "android": "react-native run-android",
-    "ios": "react-native run-ios",
-    "start": "react-native start",
+    "android": "node ../examples-shared/dev/metro-port-guard.js ${RCT_METRO_PORT:-8081} . && react-native run-android",
+    "ios": "node ../examples-shared/dev/metro-port-guard.js ${RCT_METRO_PORT:-8081} . && react-native run-ios",
+    "start": "node ../examples-shared/dev/metro-port-guard.js ${RCT_METRO_PORT:-8081} . && react-native start",
     "pods": "bundle install && (cd ios && bundle exec pod install)"
   },
   "dependencies": {

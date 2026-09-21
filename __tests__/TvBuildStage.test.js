@@ -10,13 +10,24 @@
 // TV_STAGE_DIR redirects the stage to a temporary directory so these tests
 // never touch the real example-expo/ios-tv tree.
 
-const { execFileSync } = require('node:child_process')
+const { execFileSync, spawn, spawnSync } = require('node:child_process')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 
 const SCRIPT = path.join(__dirname, '..', 'example-expo', 'scripts', 'build-tv.sh')
 const ROOT = path.join(__dirname, '..')
+const HELD_PORT = 18099
+
+function waitForListener(port) {
+  const deadline = Date.now() + 10000
+  while (Date.now() < deadline) {
+    const probe = spawnSync('lsof', ['-nP', `-iTCP:${String(port)}`, '-sTCP:LISTEN', '-Fp'], { encoding: 'utf8' })
+    if (probe.status === 0 && typeof probe.stdout === 'string' && probe.stdout.includes('p')) return true
+    execFileSync('sleep', ['0.1'])
+  }
+  return false
+}
 
 function run(args, env) {
   try {
@@ -76,6 +87,33 @@ describe('build-tv.sh finding 176', () => {
       expect(fs.existsSync(path.join(staleLib, 'STALE-MARKER'))).toBe(false)
     } finally {
       fs.rmSync(stage, { recursive: true, force: true })
+    }
+  })
+
+  // Finding 241: the staged TV app is pointed at TV_LAN_HOST:TV_METRO_PORT, so
+  // a port another project already serves hands it that project's bundle and
+  // React Native throws on every native call without bound. `metro` must refuse
+  // before it starts anything.
+  test('metro refuses a port held from outside this repository', () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-not-this-repo-'))
+    const holder = spawn(
+      process.execPath,
+      [
+        '-e',
+        "require('net').createServer().listen(Number(process.argv[1]), '127.0.0.1', () => console.log('ready'))",
+        String(HELD_PORT)
+      ],
+      { cwd: outside, stdio: 'ignore' }
+    )
+    try {
+      expect(waitForListener(HELD_PORT)).toBe(true)
+      const result = run(['metro'], { TV_METRO_PORT: String(HELD_PORT) })
+      expect(result.exit).not.toBe(0)
+      expect(`${result.stdout}${result.stderr ?? ''}`).toContain('held by another project')
+      expect(`${result.stdout}${result.stderr ?? ''}`).toContain(outside)
+    } finally {
+      holder.kill('SIGKILL')
+      fs.rmSync(outside, { recursive: true, force: true })
     }
   })
 
