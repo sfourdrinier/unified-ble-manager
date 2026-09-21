@@ -42,7 +42,7 @@ export const EXPECTED_NATIVE_BUILD_IDENTITY: ExpectedNativeBuildIdentity = Objec
       targets: Object.freeze(['aarch64-linux-android', 'x86_64-linux-android'])
     }),
     uniffi: Object.freeze({
-      sourceDigest: 'b02dd4928243acf56f1c7aec7cbb2f2d314b5dfea64f78e895249dfff5dc6531',
+      sourceDigest: '57a82de9d6c77d8f790e06b6e450ff7484c97289ed84e959b03febf1c832b4d2',
       bindingSchema: 'ff9a8398a79c0a74da790baf4d8a2cbb81819b364fee67f9223a7f4883960e3d',
       targets: Object.freeze([
         'aarch64-apple-ios',
