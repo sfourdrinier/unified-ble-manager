@@ -61,6 +61,9 @@ Tauri consumers do not resolve Expo tooling.
           },
           "android": {
             "mode": "none"
+          },
+          "continuation": {
+            "onAppearance": "record-only"
           }
         },
         "diagnostics": {
@@ -133,6 +136,21 @@ hosts fail explicitly.
   requires a complete notification (channelId, channelName, and title) and may
   set body, icon, and an explicit restart policy. Background is absent by
   default; restart is `never` by default.
+
+- continuation declares the background standing order a wake may execute
+  before any JavaScript runs (`background.continuation`). `onAppearance` is
+  one of `record-only` (the default, and today's behaviour), `native`,
+  `headless-task` or `foreground-service`; `peerId` is an optional MAC subject
+  and `resubscribe` an optional list of service/characteristic selectors with
+  optional occurrences. `headlessTaskName` is required for `headless-task` and
+  rejected for anything else; `foregroundService` is required for
+  `foreground-service` and rejected for anything else — a declaration that
+  could not execute is refused at prebuild rather than at 3 a.m. on a user's
+  phone. The plugin writes the validated declaration as the Android manifest
+  meta-data `com.sfourdrinier.unifiedblemanager.BACKGROUND_CONTINUATION`, and
+  removes it again when the option is dropped. The strategies, what the wake
+  does, and how an app reads the outcome and drains the backlog are in
+  [`BACKGROUND.md`](BACKGROUND.md).
 
 When the Android connected-device service is active, applications can publish
 current user-facing state without changing service ownership:

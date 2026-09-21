@@ -656,6 +656,9 @@ bunx eas build --profile development --platform android
       },
       "android": {
         "mode": "none"
+      },
+      "continuation": {
+        "onAppearance": "record-only"
       }
     },
     "diagnostics": {
@@ -726,17 +729,41 @@ bunx eas build --profile development --platform android
             </p>
             <h3>background</h3>
             <ul>
-              <li>ios.mode must be central; peripheral mode is rejected.</li>
               <li>
-                ios.restoration accepts one application-facing id and an optional generation. The plugin writes only
-                UnifiedBleProtocolRestorationId and UnifiedBleProtocolRestorationGeneration. The trusted native host
-                derives the restore identifier, namespace, client identity, and host scope from its bundle identifier
-                plus these values.
+                <p>ios.mode must be central; peripheral mode is rejected.</p>
               </li>
               <li>
-                android.mode is none or connected-device-foreground-service. The latter requires a complete notification
-                (channelId, channelName, and title) and may set body, icon, and an explicit restart policy. Background
-                is absent by default; restart is <code>never</code> by default.
+                <p>
+                  ios.restoration accepts one application-facing id and an optional generation. The plugin writes only
+                  UnifiedBleProtocolRestorationId and UnifiedBleProtocolRestorationGeneration. The trusted native host
+                  derives the restore identifier, namespace, client identity, and host scope from its bundle identifier
+                  plus these values.
+                </p>
+              </li>
+              <li>
+                <p>
+                  android.mode is none or connected-device-foreground-service. The latter requires a complete
+                  notification (channelId, channelName, and title) and may set body, icon, and an explicit restart
+                  policy. Background is absent by default; restart is <code>never</code> by default.
+                </p>
+              </li>
+              <li>
+                <p>
+                  continuation declares the background standing order a wake may execute before any JavaScript runs
+                  (<code>background.continuation</code>). <code>onAppearance</code> is one of
+                  <code>record-only</code> (the default, and today's behaviour), <code>native</code>,
+                  <code>headless-task</code> or <code>foreground-service</code>; <code>peerId</code> is an optional MAC
+                  subject and <code>resubscribe</code> an optional list of service/characteristic selectors with
+                  optional occurrences. <code>headlessTaskName</code> is required for <code>headless-task</code> and
+                  rejected for anything else; <code>foregroundService</code> is required for
+                  <code>foreground-service</code> and rejected for anything else — a declaration that could not execute
+                  is refused at prebuild rather than at 3 a.m. on a user's phone. The plugin writes the validated
+                  declaration as the Android manifest meta-data
+                  <code>com.sfourdrinier.unifiedblemanager.BACKGROUND_CONTINUATION</code>, and removes it again when the
+                  option is dropped. The strategies, what the wake does, and how an app reads the outcome and drains the
+                  backlog are in <a href="BACKGROUND.md"><code>BACKGROUND.md</code></a
+                  >.
+                </p>
               </li>
             </ul>
             <p>

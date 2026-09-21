@@ -128,6 +128,161 @@ known peer id, adoption happens once per process, nothing reconnected or
 resumed before the app's `reconnect` call, and a platform that cannot
 restore says so with `capability.unsupported` instead of failing silently.
 
+## 5.0 background continuation (the declared standing order)
+
+Restoration above answers "the app is alive again — what was it connected to?".
+Continuation answers the next question: **what may the wake itself do, before
+any application code runs?**
+
+The app declares a standing order while it is alive. When the OS wakes the
+process, the wake executes **only what was declared** — the library never
+invents a connect, never resubscribes to something the app did not name, and
+never widens a declaration it could not validate. `record-only` is the default
+and is exactly 5.0-before-this-feature behaviour, so an application that does
+not opt in sees no change.
+
+Contract: [`../src/backend-contract/background-continuation.ts`](../src/backend-contract/background-continuation.ts).
+Event vocabulary: [`UNIFIED_SEMANTICS.md`](UNIFIED_SEMANTICS.md).
+
+### The four strategies
+
+| `onAppearance`       | What one wake does                                                                                                                | Status in this release                        |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `record-only`        | Install the process radio owner, record the restored peer, stop.                                                                  | **Default.** Implemented.                     |
+| `native`             | Reconnect the declared known peer and resubscribe the declared characteristics through the Rust core, with no JavaScript running. | Implemented on Android. Apple parity is rc.1. |
+| `headless-task`      | Run the registered headless JS task (Android).                                                                                    | **Deferred to rc.1.**                         |
+| `foreground-service` | Start the configured connected-device foreground service from the wake.                                                           | **Deferred to rc.1.**                         |
+
+The two deferred strategies keep their validated option shape now, so rc.1 adds
+the executors with no breaking change. Until then they answer
+`capability.unsupported` with _"not implemented in this release"_ — deliberately
+distinct from _"the platform cannot"_. A reader must never have to guess which
+of the two they are looking at.
+
+### Declaring it
+
+The declaration is part of host configuration, not a runtime call — a standing
+order the OS may execute when nothing of the app is running cannot be
+negotiated later.
+
+**Expo apps** declare it in the config plugin, beside the other background
+options, and the plugin validates it at prebuild time
+([`EXPO_PLUGIN.md`](EXPO_PLUGIN.md)):
+
+```json
+"background": {
+  "continuation": {
+    "onAppearance": "native",
+    "resubscribe": [
+      {
+        "serviceUuid": "0000180d-0000-1000-8000-00805f9b34fb",
+        "characteristicUuid": "00002a37-0000-1000-8000-00805f9b34fb"
+      }
+    ]
+  }
+}
+```
+
+`peerId` is optional: omitted, the order is scoped to whichever armed peer
+appears. `serviceOccurrence` and `characteristicOccurrence` default to `0` and
+only matter for a peer that advertises the same UUID more than once.
+
+**Bare React Native** passes the same shape to the host factory:
+
+```ts
+const host = await createReactNativeManagerHost({
+  // …
+  background: {
+    continuation: {
+      onAppearance: 'native',
+      resubscribe: [
+        /* … */
+      ]
+    }
+  }
+})
+```
+
+A non-`record-only` order without a persisting native owner **fails host
+creation** with `capability.unsupported`. It never degrades quietly to
+`record-only`: an app that believes a wake will reconnect, and is wrong, is
+worse off than an app that was told no. `host.continuation` reports the
+normalized declaration the host actually holds.
+
+### Reading what happened
+
+Expo apps read it through the manager's `continuation` namespace; bare React
+Native hosts call the same two operations on `host.services`:
+
+```ts
+const status = await manager.continuation.status()
+// strategy, peerId, resubscribe (count), malformedDeclarations, lastWake
+```
+
+`lastWake` is the wake's own answer — `observedAtMs`, `event`
+(`continuation.completed` or `continuation.failed`), `strategy`,
+`peerAddress`, `code`, `reason` — not an inference from what was asked of it.
+`malformedDeclarations` counts declarations the native side could not parse;
+a non-zero value means a wake did **less** than the app believes it declared.
+
+### Draining what the wake collected
+
+Values that arrived while no JavaScript was running are queued natively and
+claimed afterwards:
+
+```ts
+const backlog = await manager.continuation.claim({ maxItems, maxBytes })
+// values[], streamEnds[], controlLost, disposed
+```
+
+Each value carries the consumer that produced it, named
+`ubm-continuation-{index}` — one per declared resubscription, in declaration
+order — so a reader maps every value back to the selector that subscribed it.
+
+Loss is reported, never hidden:
+
+- a `streamEnd` carries `reason` (`overflow`, `invalidated`, `closed`) with
+  `droppedItems` and `droppedBytes`;
+- `controlLost` is cumulative; an increase means the app must run
+  `session.reconcile` rather than infer the current state;
+- a broken ordinal chain or an unparseable batch **fails closed**. No partial
+  backlog is ever handed over as though it were complete.
+
+A native module without the claim answers `capability.unsupported` — never an
+invented empty backlog, which would read as "the wake collected nothing".
+
+### Capabilities
+
+One capability per strategy, reported at runtime by the instantiated backend —
+never a static platform matrix:
+
+| Capability                      | Means                                                                           |
+| ------------------------------- | ------------------------------------------------------------------------------- |
+| `background:wake-on-appearance` | The OS wakes the dead process when the peer appears.                            |
+| `background:native-resubscribe` | The wake reconnects and resubscribes through the Rust core, with no JavaScript. |
+| `background:headless-task`      | The wake can run the registered headless JS task.                               |
+| `background:wake-notification`  | The wake can start the configured foreground service with its notification.     |
+
+### What the app owns, and what this package owns
+
+This package implements the mechanism wherever the platform offers it. The
+approvals are the application's business: Android Companion Device Manager
+association plus `REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE` (presence
+observation needs API 31+), a foreground-service type where one is used,
+battery-optimisation exemptions, notification permission; on Apple, the
+background modes and the restoration identifiers. We never withhold a mechanism
+because an app might not be entitled to it, and we never substitute a lesser
+path. When the platform refuses at runtime, the refusal is reported with the
+platform's own reason under `platform`.
+
+### Prerequisites on Android
+
+A `native` order only executes if the peer can wake the process at all, which
+means the peer is associated through Companion Device Manager and presence is
+being observed. In order: `ble.association.associate` → `presence.observe` →
+declare the continuation. A peer that is not associated cannot appear, and the
+status will show it.
+
 ## Related records
 
 - [`ADR/2026-09-5.0-restoration-known-peer-reconnect.md`](ADR/2026-09-5.0-restoration-known-peer-reconnect.md)
