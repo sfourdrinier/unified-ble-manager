@@ -77,7 +77,8 @@ function deterministicRustCoreTckBoundary(native) {
         serviceOccurrence: address.serviceOccurrence,
         characteristicOccurrence: address.characteristicOccurrence
       }),
-    prepareSecurityCancellation: () => native.deferNextPair()
+    prepareSecurityCancellation: () => native.deferNextPair(),
+    setAdapterState: state => native.setAdapter(state)
   }
 }
 

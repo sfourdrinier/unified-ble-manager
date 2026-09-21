@@ -88,6 +88,8 @@ interface MobileRadioRequest {
     ReleaseBackground(u64 id, string lease_id);
     UpdateBackgroundNotification(u64 id, string lease_id, string title, string? body);
     AssociateCompanion(u64 id, string? name, string? service_uuid);
+    ListCompanion(u64 id);
+    DisassociateCompanion(u64 id, i64 association_id);
     ObservePresence(u64 id, string peer_id);
     StopPresence(u64 id, string peer_id);
     Close(u64 id);
@@ -134,6 +136,12 @@ dictionary MobileSecurityState {
     boolean? pairing_possible;
 };
 
+dictionary MobileCompanionRecord {
+    i64 association_id;
+    string? peer_id;
+    string? display_name;
+};
+
 dictionary MobilePeerName {
     string peer_id;
     string? name;
@@ -164,7 +172,8 @@ interface MobileRadioCompletion {
     Security(MobileSecurityState state);
     BondedPeers(sequence<MobilePeerName> peers);
     Lease(string lease_id);
-    Companion(i64 association_id, string? peer_id, string? display_name);
+    Companion(i64 association_id, string? peer_id, string? display_name, boolean already_associated);
+    CompanionList(sequence<MobileCompanionRecord> records);
     Closed(sequence<MobileCloseFailure> failures);
     // dispatched = false: the platform refused before sending anything to
     // the peer (a failed write then reports commit "not-dispatched").

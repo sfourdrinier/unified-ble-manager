@@ -742,10 +742,15 @@ async fn serve(
         log.log("driver-joining", json!({"url": url}));
         let driver_commands = control_tx.clone();
         let host_label = format!("peripheral-sim/{}", std::env::consts::OS);
+        // `driver::run` rejoins forever and only returns when the simulator
+        // loop itself is gone. Control state (mode, faults, profile, run
+        // record) lives in the sim loop behind `driver_commands`, so it
+        // survives every rejoin unreset. Without `--driver` this task simply
+        // never spawns and the sim runs standalone.
         tokio::spawn(async move {
             match driver::run(url, host_label, driver_commands, event_rx).await {
-                Ok(()) => eprintln!("h10-sim: driver connection closed"),
-                Err(error) => eprintln!("h10-sim: driver exited: {error}"),
+                Ok(()) => eprintln!("h10-sim: driver task ended"),
+                Err(error) => eprintln!("h10-sim: driver task ended: {error}"),
             }
         });
     }

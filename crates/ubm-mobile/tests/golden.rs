@@ -180,7 +180,16 @@ fn responder(request: &RadioRequest) -> Reply {
             association_id: 42,
             peer_id: Some(POLAR.to_owned()),
             display_name: Some("Polar H10".to_owned()),
+            already_associated: false,
         },
+        RadioRequest::ListCompanion { .. } => {
+            RadioCompletion::CompanionList(vec![ubm_mobile::CompanionRecord {
+                association_id: 42,
+                peer_id: Some(POLAR.to_owned()),
+                display_name: Some("Polar H10".to_owned()),
+            }])
+        }
+        RadioRequest::DisassociateCompanion { .. } => RadioCompletion::Unit,
         other => match polar_responder(other) {
             Reply::Now(completion) => completion,
             Reply::Hold => unreachable!("polar responder never holds"),
@@ -428,6 +437,15 @@ async fn generate() -> String {
         "companion associate",
         "companion.associate",
         json!({"name": "Polar", "serviceUuid": "180D"}),
+    )
+    .await;
+    r.invoke(&session, "companion list", "companion.list", json!({}))
+        .await;
+    r.invoke(
+        &session,
+        "companion disassociate",
+        "companion.disassociate",
+        json!({"associationId": 42}),
     )
     .await;
     r.invoke(

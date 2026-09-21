@@ -18,8 +18,7 @@ use ubm_mobile::{
     FailureKind, HostOptions, IngressClass, Instance, ManufacturerData, MobileHost, MobilePlatform,
     MobileSession, PhyObservation, PlatformFailure, PlatformRadio, RadioCompletion, RadioIngress,
     RadioRequest, RestoredPeer, SecureConnectionsState, SecurityState, ServiceData, WakeSink,
-    WriteLimits,
-};
+    WriteLimits, CompanionRecord,};
 
 use crate::build_identity::ubm_build_identity_json;
 
@@ -260,6 +259,13 @@ pub enum MobileRadioRequest {
         name: Option<String>,
         service_uuid: Option<String>,
     },
+    ListCompanion {
+        id: u64,
+    },
+    DisassociateCompanion {
+        id: u64,
+        association_id: i64,
+    },
     ObservePresence {
         id: u64,
         peer_id: String,
@@ -452,6 +458,11 @@ impl From<&RadioRequest> for MobileRadioRequest {
                 name: name.clone(),
                 service_uuid: service_uuid.clone(),
             },
+            RadioRequest::ListCompanion { id } => Self::ListCompanion { id: *id },
+            RadioRequest::DisassociateCompanion { id, association_id } => Self::DisassociateCompanion {
+                id: *id,
+                association_id: *association_id,
+            },
             RadioRequest::ObservePresence { id, peer_id } => Self::ObservePresence {
                 id: *id,
                 peer_id: peer_id.clone(),
@@ -525,6 +536,15 @@ pub struct MobilePeerName {
     pub name: Option<String>,
 }
 
+/// Mirrors UDL `dictionary MobileCompanionRecord`: one Companion Device Manager
+/// association this app holds (finding 236).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MobileCompanionRecord {
+    pub association_id: i64,
+    pub peer_id: Option<String>,
+    pub display_name: Option<String>,
+}
+
 /// Mirrors UDL `dictionary MobileCloseFailure`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MobileCloseFailure {
@@ -587,6 +607,12 @@ pub enum MobileRadioCompletion {
         association_id: i64,
         peer_id: Option<String>,
         display_name: Option<String>,
+        /// The platform already held this association (finding 236): the record
+        /// is the existing one and nothing new was created.
+        already_associated: bool,
+    },
+    CompanionList {
+        records: Vec<MobileCompanionRecord>,
     },
     Closed {
         failures: Vec<MobileCloseFailure>,
@@ -736,11 +762,23 @@ pub fn completion(value: MobileRadioCompletion) -> Result<RadioCompletion, Strin
             association_id,
             peer_id,
             display_name,
+            already_associated,
         } => RadioCompletion::Companion {
             association_id,
             peer_id,
             display_name,
+            already_associated,
         },
+        MobileRadioCompletion::CompanionList { records } => RadioCompletion::CompanionList(
+            records
+                .into_iter()
+                .map(|record| CompanionRecord {
+                    association_id: record.association_id,
+                    peer_id: record.peer_id,
+                    display_name: record.display_name,
+                })
+                .collect(),
+        ),
         MobileRadioCompletion::Closed { failures } => RadioCompletion::Closed(
             failures
                 .into_iter()

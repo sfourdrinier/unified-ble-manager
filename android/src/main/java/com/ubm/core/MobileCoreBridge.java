@@ -180,6 +180,12 @@ public final class MobileCoreBridge {
         /** Answer: {@link #nativeCompleteCompanion}. */
         void associateCompanion(long requestId, String name, String serviceUuid);
 
+        /** This app's associations. Answer: {@link #nativeCompleteCompanionList}. */
+        void listCompanion(long requestId);
+
+        /** Removes one association by id. Answer: {@link #nativeCompleteUnit}. */
+        void disassociateCompanion(long requestId, long associationId);
+
         /**
          * Arms Companion Device Manager device presence for one associated
          * peer (API 31+). Answer: {@link #nativeCompleteUnit}. Appearances
@@ -287,7 +293,11 @@ public final class MobileCoreBridge {
 
     public static native int nativeCompleteLease(long requestId, String leaseId);
 
-    public static native int nativeCompleteCompanion(long requestId, long associationId, String peerId, String displayName);
+    /** alreadyAssociated: the platform already held this association; nothing new was created. */
+    public static native int nativeCompleteCompanion(long requestId, long associationId, String peerId, String displayName, boolean alreadyAssociated);
+
+    /** One entry per association: parallel arrays, null entries where the platform reports none. */
+    public static native int nativeCompleteCompanionList(long requestId, long[] associationIds, String[] peerIds, String[] displayNames);
 
     /** One entry per characteristic scope whose release failed (empty arrays = all released). */
     public static native int nativeCompleteClosed(long requestId, String[] peerIds, String[] serviceUuids, long[] serviceOccurrences, String[] characteristicUuids, long[] characteristicOccurrences, String[] details);

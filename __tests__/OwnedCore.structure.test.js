@@ -43,6 +43,12 @@ describe('Unified Android native protocol structure', () => {
       'background/ConnectedDeviceForegroundServiceLeaseRegistry.java',
       'background/ForegroundServiceControlException.java',
       'background/ForegroundServiceNotificationConfiguration.java',
+      // FXM contract update (justified): `CompanionAssociations` is the
+      // pure Companion Device Manager association lookup both associate
+      // routes share (finding 236: report the existing association for a
+      // named device instead of accumulating a duplicate). Covered by
+      // `CompanionAssociationsTest`. Boundary member by design.
+      'companion/CompanionAssociations.java',
       'expo/UnifiedBleExpoRuntimeModule.java',
       // Issue #212 contract update (justified): the `presence` package is
       // the Companion Device Manager presence endpoint (API 31+) that wakes
@@ -50,15 +56,34 @@ describe('Unified Android native protocol structure', () => {
       // coordinator, persisted store, and the bound service. Covered by
       // `CompanionPresenceObserverTest` and `PresenceWakeCoordinatorTest`.
       // Boundary member by design, not legacy residue.
+      // Background continuation (contract update, justified): the standing
+      // order an application declares while it is alive, the store that keeps
+      // it across process death, and the executor that carries it out from the
+      // wake — reconnect and resubscribe through the Rust core with no
+      // JavaScript. Covered by the continuation Kotlin tests and the
+      // deterministic declaration suites. Boundary members by design: the wake
+      // has no other way to act on what the application declared.
+      'presence/BackgroundContinuation.kt',
+      'presence/BackgroundContinuationStore.kt',
       'presence/CompanionPresenceObserver.kt',
       'presence/PresenceRestoredStore.kt',
       'presence/PresenceWakeCoordinator.kt',
+      'presence/RustCoreContinuationExecutor.kt',
       'presence/UbmCompanionPresenceService.kt',
       // R02 contract update (justified): `CoreCommandAuthority` is the
       // admission table the dispatcher consults before radio execution
       // (covered commands + scoped exceptions + core*-coded terminals),
       // covered by `CoreCommandAuthorityTest`. Boundary member by design.
       'protocol/CoreCommandAuthority.kt',
+      // FXH contract update (justified): `LegacyCompanionAssociationRequests`
+      // is the pure Companion Device Manager request builder the legacy
+      // protocol-control association shares with the Rust-route chooser's LE
+      // treatment (finding 222 twin: BLE-only filter, single-device only for
+      // named requests). Dependency-free holder so JVM unit tests can pin it
+      // without loading the native library; covered by
+      // `UnifiedBleProtocolControlModuleAssociationTest`. Boundary member by
+      // design, not boundary growth by accident.
+      'protocol/LegacyCompanionAssociationRequests.java',
       'protocol/ProtocolCommandDecoder.kt',
       'protocol/ProtocolWireEncoder.kt',
       'protocol/UnifiedBleProtocolAndroidDispatcher.kt',

@@ -449,12 +449,45 @@ class RustRadioHostAdapter(
       result.fold(
         onSuccess = { association ->
           answer(requestId, "companion") {
-            core.completeCompanion(requestId, association.associationId, association.peerId, association.displayName)
+            core.completeCompanion(
+              requestId,
+              association.associationId,
+              association.peerId,
+              association.displayName,
+              association.alreadyAssociated
+            )
           }
         },
         onFailure = { error -> fail(requestId, error) }
       )
     }
+  }
+
+  override fun listCompanion(requestId: Long) = runService(requestId) {
+    val port = companion()
+      ?: throw RadioPortFailure(
+        RadioFailureKind.UNSUPPORTED,
+        "companion association listing is not attached on this host"
+      )
+    val records = port.listAssociations()
+    answer(requestId, "companion-list") {
+      core.completeCompanionList(
+        requestId,
+        records.map { it.associationId }.toLongArray(),
+        records.map { it.peerId }.toTypedArray(),
+        records.map { it.displayName }.toTypedArray()
+      )
+    }
+  }
+
+  override fun disassociateCompanion(requestId: Long, associationId: Long) = runService(requestId) {
+    val port = companion()
+      ?: throw RadioPortFailure(
+        RadioFailureKind.UNSUPPORTED,
+        "companion association removal is not attached on this host"
+      )
+    port.disassociate(associationId)
+    answer(requestId, "unit") { core.completeUnit(requestId) }
   }
 
   override fun observePresence(requestId: Long, peerId: String) = runService(requestId) {

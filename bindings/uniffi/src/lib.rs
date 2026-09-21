@@ -32,7 +32,7 @@ pub use mobile::{
     mobile_wire_revision, MobileAdapterSnapshot, MobileAdvertisement, MobileCloseFailure,
     MobileCoreError, MobileCoreHost, MobileCoreSession, MobileGattCharacteristic,
     MobileGattDescriptor, MobileGattProperties, MobileGattService, MobileInstance,
-    MobileInvokeCompletion, MobileManufacturerData, MobilePeerName, MobilePlatformRadio,
+    MobileCompanionRecord, MobileInvokeCompletion, MobileManufacturerData, MobilePeerName, MobilePlatformRadio,
     MobileRadioCompletion, MobileRadioIngress, MobileRadioRequest, MobileRestoredPeer,
     MobileSecurityState, MobileServiceData, MobileWakeSink,
 };

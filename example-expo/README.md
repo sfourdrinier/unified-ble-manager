@@ -23,8 +23,16 @@ On macOS with the required Xcode and CocoaPods environment, use
 the fixture's ignored native project directories; it does not validate a live
 Bluetooth journey.
 
-The fixture exercises the current source-tree CNG/plugin contract; its native
-configuration is not an application restoration recipe. It tears the manager
+The fixture exercises the current source-tree CNG/plugin contract. Its
+`app.json` opts into the restoration paths — the iOS
+`background.ios.restoration` id and the Android companion-presence
+foreground service — so the `restoration` scenario can be tested physically
+(the procedure in [`BACKGROUND.md`](../docs/BACKGROUND.md) depends on that
+opt-in); the fixture config is still not a production restoration recipe.
+In the app the two actions stay distinct: **Claim native restoration
+(iOS)** adopts the OS journal via `restoration.claim()`, while **Show
+restored peers (Android)** reads `peers.restored()`, because Android has no
+journal to claim. It tears the manager
 down with `destroy()`. A successful CNG prebuild and Android debug
 APK/assembly are source-tree/plugin and Android compile proof only. The packed
 host gate separately proves the installed tarball's conditional `./expo`,

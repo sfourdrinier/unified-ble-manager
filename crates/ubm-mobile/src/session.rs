@@ -81,6 +81,8 @@ pub const OPS: &[&str] = &[
     "background.release",
     "background.update-notification",
     "companion.associate",
+    "companion.list",
+    "companion.disassociate",
     "presence.observe",
     "presence.unobserve",
     "op.cancel",
@@ -1177,6 +1179,40 @@ impl MobileSession {
                     budget(args, received)?,
                 )
             }
+            "companion.list" => {
+                args.exact(&[], &["budgetMs", "operationId"])?;
+                if apple {
+                    return Err(unsupported(
+                        "companion.list",
+                        "companion-device association is an Android service",
+                    ));
+                }
+                (
+                    Body::CompanionList,
+                    Self::operation_id(args)?,
+                    budget(args, received)?,
+                )
+            }
+            "companion.disassociate" => {
+                args.exact(&["associationId"], &["budgetMs", "operationId"])?;
+                if apple {
+                    return Err(unsupported(
+                        "companion.disassociate",
+                        "companion-device association is an Android service",
+                    ));
+                }
+                let association_id = args.integer("associationId", wire::MAX_SAFE_INTEGER)?;
+                if association_id == 0 {
+                    return Err(wire::invalid("args.associationId"));
+                }
+                (
+                    Body::CompanionDisassociate {
+                        association_id: association_id as i64,
+                    },
+                    Self::operation_id(args)?,
+                    budget(args, received)?,
+                )
+            }
             "presence.observe" | "presence.unobserve" => {
                 args.exact(&["peerId"], &["budgetMs", "operationId"])?;
                 if apple {
@@ -1817,18 +1853,67 @@ impl MobileSession {
                         association_id,
                         peer_id,
                         display_name,
+                        already_associated,
                     } => {
                         if let Some(peer_id) = &peer_id {
                             host.note_peer(peer_id, display_name.clone(), "origin-authorized");
                         }
+                        // Finding 236: the platform already held this
+                        // association and created nothing new. The result
+                        // reports what happened so the caller can tell.
+                        let source = if already_associated {
+                            "already-associated"
+                        } else {
+                            "associated"
+                        };
                         Ok(object(vec![
-                            ("source", Value::from("associated")),
+                            ("source", Value::from(source)),
                             ("associationId", Value::from(association_id)),
                             ("peerId", opt_text(peer_id.as_deref())),
                             ("displayName", opt_text(display_name.as_deref())),
                         ]))
                     }
                     _ => Err(protocol("companion.associate")),
+                }
+            }
+            Body::CompanionList => {
+                match bounded(
+                    &ctl,
+                    "companion.list",
+                    host.radio.call(|id| RadioRequest::ListCompanion { id }),
+                )
+                .await?
+                {
+                    RadioCompletion::CompanionList(records) => {
+                        let values = records
+                            .into_iter()
+                            .map(|record| {
+                                object(vec![
+                                    ("associationId", Value::from(record.association_id)),
+                                    ("peerId", opt_text(record.peer_id.as_deref())),
+                                    ("displayName", opt_text(record.display_name.as_deref())),
+                                ])
+                            })
+                            .collect();
+                        Ok(object(vec![("associations", Value::Array(values))]))
+                    }
+                    _ => Err(protocol("companion.list")),
+                }
+            }
+            Body::CompanionDisassociate { association_id } => {
+                match bounded(
+                    &ctl,
+                    "companion.disassociate",
+                    host.radio
+                        .call(|id| RadioRequest::DisassociateCompanion { id, association_id }),
+                )
+                .await?
+                {
+                    RadioCompletion::Unit => Ok(object(vec![
+                        ("state", Value::from("disassociated")),
+                        ("associationId", Value::from(association_id)),
+                    ])),
+                    _ => Err(protocol("companion.disassociate")),
                 }
             }
             Body::PresenceObserve { peer_id } => {
@@ -2611,6 +2696,10 @@ enum Body {
     CompanionAssociate {
         name: Option<String>,
         service_uuid: Option<String>,
+    },
+    CompanionList,
+    CompanionDisassociate {
+        association_id: i64,
     },
     PresenceObserve {
         peer_id: String,

@@ -10,7 +10,7 @@ const IMPLEMENTATION_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Capabilities whose mechanics are implemented by this dispatcher. Every
 /// implemented entry remains `limited` until the corresponding physical-radio
 /// evidence is qualified; every other catalog entry is explicitly unsupported.
-const TAURI_CAPABILITIES: [&str; 38] = [
+const TAURI_CAPABILITIES: [&str; 42] = [
     "discovery:continuous-scan",
     "discovery:system-chooser",
     "discovery:advertisement-watch",
@@ -47,6 +47,13 @@ const TAURI_CAPABILITIES: [&str; 38] = [
     "gatt:high-throughput-acquire",
     "background:apple-restoration",
     "background:android-connected-device-service",
+    // Background continuation: a desktop host is never terminated and woken by
+    // the OS for a peer's advertisement, so Tauri answers unsupported for all
+    // four rather than leaving a capability a caller cannot ask about.
+    "background:wake-on-appearance",
+    "background:native-resubscribe",
+    "background:headless-task",
+    "background:wake-notification",
     "background:desktop-maintain-connection",
     "lifecycle:page-persistence",
 ];

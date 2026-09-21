@@ -570,13 +570,63 @@ class RustRadioHostAdapterTest {
   @Test
   fun companionAssociationUsesTheAttachedChooser() {
     adapter.associateCompanion(1, "Polar", null)
-    chooser = object : CompanionPort {
-      override fun associate(name: String?, serviceUuid: String?, onResult: (Result<CompanionAssociation>) -> Unit) {
-        onResult(Result.success(CompanionAssociation(17, peer, "Polar H10 $name")))
-      }
-    }
+    chooser = stubChooser(onAssociate = { name -> CompanionAssociation(17, peer, "Polar H10 $name") })
     adapter.associateCompanion(2, "Polar", HR_SERVICE)
-    assertEquals(listOf("failure:1:unsupported:null", "companion:2:17:$peer:Polar H10 Polar"), core.calls)
+    assertEquals(listOf("failure:1:unsupported:null", "companion:2:17:$peer:Polar H10 Polar:false"), core.calls)
+  }
+
+  @Test
+  fun alreadyAssociatedCompanionPropagatesTheExistingRecord() {
+    chooser = stubChooser(onAssociate = { CompanionAssociation(4, peer, "Polar H10 E9B93D29", alreadyAssociated = true) })
+    adapter.associateCompanion(1, "Polar H10 E9B93D29", null)
+    assertEquals(listOf("companion:1:4:$peer:Polar H10 E9B93D29:true"), core.calls)
+  }
+
+  @Test
+  fun companionListingAndRemovalUseTheAttachedChooser() {
+    val records = mutableListOf(
+      CompanionAssociationRecord(4, peer, "Polar H10 E9B93D29"),
+      CompanionAssociationRecord(5, peer, "Polar H10 E9B93D29")
+    )
+    val removed = mutableListOf<Long>()
+    chooser = stubChooser(records = records, removed = removed)
+    adapter.listCompanion(1)
+    assertEquals(
+      listOf("companion-list:1:[4, 5]:[$peer, $peer]:[Polar H10 E9B93D29, Polar H10 E9B93D29]"),
+      core.calls
+    )
+    adapter.disassociateCompanion(2, 5)
+    assertEquals(listOf(5L), removed)
+    assertEquals(
+      listOf(
+        "companion-list:1:[4, 5]:[$peer, $peer]:[Polar H10 E9B93D29, Polar H10 E9B93D29]",
+        "unit:2"
+      ),
+      core.calls
+    )
+  }
+
+  @Test
+  fun companionAdministrationWithoutAnAttachedChooserIsUnsupported() {
+    adapter.listCompanion(1)
+    adapter.disassociateCompanion(2, 4)
+    assertEquals(listOf("failure:1:unsupported:null", "failure:2:unsupported:null"), core.calls)
+  }
+
+  private fun stubChooser(
+    onAssociate: (String?) -> CompanionAssociation = { name -> CompanionAssociation(17, peer, "Polar H10 $name") },
+    records: List<CompanionAssociationRecord> = emptyList(),
+    removed: MutableList<Long> = mutableListOf()
+  ): CompanionPort = object : CompanionPort {
+    override fun associate(name: String?, serviceUuid: String?, onResult: (Result<CompanionAssociation>) -> Unit) {
+      onResult(Result.success(onAssociate(name)))
+    }
+
+    override fun listAssociations(): List<CompanionAssociationRecord> = records.toList()
+
+    override fun disassociate(associationId: Long) {
+      removed.add(associationId)
+    }
   }
 
   @Test

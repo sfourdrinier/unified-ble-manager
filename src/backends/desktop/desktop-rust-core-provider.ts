@@ -2099,6 +2099,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     // A power change keeps the last measured authorization and its reason,
     // except where the state itself decides them (unsupported).
     const snapshot = this.snapshotFor(power, null, null)
+    const previous = this.adapterState
     this.adapterState =
       power === 'unsupported' || power === 'unauthorized'
         ? snapshot
@@ -2107,8 +2108,18 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
             authorization: this.adapterState.authorization,
             safeReason: this.adapterState.safeReason
           })
-    for (const stream of [...this.adapterTransitions]) {
-      if (stream.emit(this.adapterState, 96).terminated) this.adapterTransitions.delete(stream)
+    // A re-announced snapshot that changes nothing observable is not a
+    // transition: emitting it would duplicate the watch's initial snapshot
+    // (or an earlier transition) for every subscriber.
+    const unchanged =
+      this.adapterState.availability === previous.availability &&
+      this.adapterState.authorization === previous.authorization &&
+      this.adapterState.power === previous.power &&
+      this.adapterState.safeReason === previous.safeReason
+    if (!unchanged) {
+      for (const stream of [...this.adapterTransitions]) {
+        if (stream.emit(this.adapterState, 96).terminated) this.adapterTransitions.delete(stream)
+      }
     }
     this.emitEvent({
       kind: 'adapter-state',

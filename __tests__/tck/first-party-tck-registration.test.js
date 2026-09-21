@@ -294,6 +294,7 @@ describe('first-party backend standard TCK registrations', () => {
         'identity.valid-all-axis-negotiation',
         'identity.version-skew-and-malformed-offers',
         'capability.truth-limits-evidence-and-binding',
+        'adapter.atomic-snapshot-and-watch',
         'gatt.duplicate-uuid-occurrences-route-exactly',
         'scenario.scan-connect-discover-read-notify-destroy'
       ])

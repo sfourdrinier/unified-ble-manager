@@ -51,6 +51,24 @@ export interface Spec extends TurboModule {
    * namespaceValue, clientId, hostSessionScope}` JSON.
    */
   restorationIdentity(requestJson: string): Promise<string>
+  /**
+   * Persists the declared background standing order (`background.continuation`
+   * canonical JSON) in the native owner so an OS wake with no JavaScript can
+   * execute it. Resolves once persisted; rejects with the native reason when
+   * the declaration is malformed.
+   */
+  declareBackgroundContinuation(declarationJson: string): Promise<void>
+  /**
+   * Reports the continuation posture for Diagnostics: the declared strategy
+   * and the last wake outcome. Resolves the status JSON verbatim.
+   */
+  continuationStatus(): Promise<string>
+  /**
+   * Drains the continuation backlog (verbatim drain batches for the JS
+   * codec) and disposes the continuation session. Resolves
+   * `{batches, disposed}` JSON verbatim.
+   */
+  claimContinuation(maxItems: number, maxBytes: number): Promise<string>
   /** One emission per armed Rust wake; JS drains until `more` is false. */
   readonly onSessionWake: CodegenTypes.EventEmitter<RustCoreSessionWake>
 }

@@ -114,6 +114,43 @@ if (managerCleanup.state === 'release-failed') {
 
 After `destroy()`, the manager admits no new operation.
 
+## Restoration and presence (known peers)
+
+Reconnecting to a peer the app already connected to needs no scan, but the
+wake-up is platform-specific and every step is app-owned:
+
+```ts
+// Android: the peer id recorded by an earlier connect.
+await ble.association.associate({ name: 'Sensor' })
+await ble.presence.observe({ peerId })
+const restored = await ble.peers.restored()
+const known = restored.find(peer => peer.id === peerId)
+if (known === undefined) {
+  throw new Error('The associated peer has not appeared yet.')
+}
+const connection = await ble.connect(known.id, { intent: 'when-available', timeoutMs: 15_000 })
+```
+
+On iOS the same reconnect follows `restoration.claim()` after the system
+relaunches the app (see [`BACKGROUND.md`](BACKGROUND.md) for the
+configuration). Below API 31, and on tvOS, desktop and Web, presence
+observation reports `capability.unsupported` with a reason instead of
+waking anything. The task-ordered Android chain, the iOS counterpart, and
+the per-platform refusals are in [`BACKGROUND.md`](BACKGROUND.md).
+
+## MTU and read provenance (per-platform limits)
+
+`connection.controls.requestMtu(n)` and `effectiveMtu()` do not behave the
+same everywhere: on Android the effective MTU is unavailable before a
+successful MTU exchange; on Apple there is no caller-directed MTU request
+and the effective MTU is derived per link as
+`maximumWriteValueLength(for: .withResponse) + 3`; on BlueZ a withheld link
+answers `capability.unavailable`. Likewise, an Apple read issued while the
+characteristic notifies resolves with provenance `read-or-notification`
+(the value may be a notification); use
+`characteristic.readReceipt()` when it matters. The exact per-host rows are
+in [`UNIFIED_SEMANTICS.md`](UNIFIED_SEMANTICS.md#172-current-pr8-host-matrix).
+
 ## See also
 
-[`HELPERS.md`](HELPERS.md), [`PROFILES_AND_COMMANDS.md`](PROFILES_AND_COMMANDS.md), [`CONNECTION_MANAGER.md`](CONNECTION_MANAGER.md).
+[`HELPERS.md`](HELPERS.md), [`PROFILES_AND_COMMANDS.md`](PROFILES_AND_COMMANDS.md), [`CONNECTION_MANAGER.md`](CONNECTION_MANAGER.md), [`BACKGROUND.md`](BACKGROUND.md).

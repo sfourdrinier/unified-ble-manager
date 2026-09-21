@@ -52,6 +52,12 @@ export function createFakeManager({
   // tests prove the provider honors it. `failFindStop` leaves the run's
   // scan open while `find` still reports its cleanup failure loudly.
   sharedScans = null,
+  presence = 'supported',
+  restored = 'supported',
+  restoredPeers = null,
+  // The host continuation API: null (absent, like a plain BleManager host),
+  // 'unsupported' (present but refused by the platform), or { status, claim }.
+  continuation = null,
   failFindStop = 0,
   // Models a dispose that also failed (finding 185 residual): the stuck
   // scan survives destroy with visible debt, and the next find heals it.
@@ -109,7 +115,74 @@ export function createFakeManager({
     }
   }
   const peer = { id: 'peer-h10', name: peerName, rssi: -50, reference: null, sources: ['test'] }
+  const unsupportedPresence = (peerId, operation) =>
+    Object.assign(new Error(`presence observation is not supported on this platform (peer ${peerId})`), {
+      code: 'capability.unsupported',
+      operation,
+      platform: 'fake-april'
+    })
+  const presenceApi =
+    presence === 'absent'
+      ? null
+      : {
+          async observe({ peerId }) {
+            calls.push(`observe-presence ${peerId}`)
+            if (presence === 'unsupported') throw unsupportedPresence(peerId, 'fake.presence.observe')
+            return { state: 'observing' }
+          },
+          async unobserve({ peerId }) {
+            calls.push(`unobserve-presence ${peerId}`)
+            if (presence === 'unsupported') throw unsupportedPresence(peerId, 'fake.presence.unobserve')
+            return { state: 'idle' }
+          }
+        }
+  const unsupportedRestored = operation =>
+    Object.assign(new Error('restored peers are not supported on this platform'), {
+      code: 'capability.unsupported',
+      operation,
+      platform: 'fake-april'
+    })
+  const peersApi = {
+    async restored() {
+      calls.push('peers.restored')
+      if (restored === 'unsupported') throw unsupportedRestored('fake.peers.restored')
+      return restoredPeers ?? [{ ...peer }]
+    }
+  }
+  const unsupportedContinuation = operation =>
+    Object.assign(new Error('continuation is not supported on this platform'), {
+      code: 'capability.unsupported',
+      operation,
+      platform: 'fake-april'
+    })
+  const continuationApi =
+    continuation === null
+      ? null
+      : continuation === 'unsupported'
+        ? {
+            async status() {
+              calls.push('continuation.status')
+              throw unsupportedContinuation('fake.continuation.status')
+            },
+            async claim() {
+              calls.push('continuation.claim')
+              throw unsupportedContinuation('fake.continuation.claim')
+            }
+          }
+        : {
+            async status() {
+              calls.push('continuation.status')
+              return continuation.status
+            },
+            async claim() {
+              calls.push('continuation.claim')
+              return continuation.claim
+            }
+          }
   const manager = {
+    ...(presenceApi === null ? {} : { presence: presenceApi }),
+    ...(continuationApi === null ? {} : { continuation: continuationApi }),
+    peers: peersApi,
     discovery: { kind: discovery },
     adapter: {
       async state() {

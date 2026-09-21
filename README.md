@@ -23,11 +23,11 @@ registry. During release preparation, the version in `package.json` can be ahead
 of npm until the matching tag-driven workflow publishes it; the registry and
 GitHub release remain authoritative.
 
-> **4.0 development note:** The 4.0 line is the real-application proving ground
-> for a simpler, stronger 4.1. Develop carefully against it: pin the version you
-> validate, read the changelog when upgrading, inspect capability limitations,
-> and report real-device behavior. Missing hardware evidence remains visible;
-> it does not make an implemented operation unusable.
+> **5.0 prerelease note:** This tree is the 5.0 prerelease candidate.
+> Develop carefully against it: pin the version you validate, read the
+> changelog when upgrading, inspect capability limitations, and report
+> real-device behavior. Missing hardware evidence remains visible; it does
+> not make an implemented operation unusable.
 
 > Sponsored by [Imagi Explain](https://imagiexplain.com) — researched, narrated whiteboard explainers from a prompt, a PDF, or your notes.
 
@@ -174,6 +174,8 @@ import { createExpoBleManager } from 'unified-ble-manager/expo'
 const ble = await createExpoBleManager()
 const readiness = await ble.readiness()
 // Android only: system UI association, not bonding or an active connection.
+// Association alone wakes nothing: arm presence (ble.presence.observe) as in
+// docs/BACKGROUND.md before the app can be woken for a known peer.
 const associated = await ble.association.associate({ name: 'Sensor' })
 ```
 
@@ -292,7 +294,12 @@ Readiness is unsupported until the backend advertises
 the readiness capability, and a readiness event does not prove a later payload
 was retained.
 
-Runtime capability truth for each host is in the [semantics host matrix](docs/UNIFIED_SEMANTICS.md#172-current-pr8-host-matrix). In
+Runtime capability truth for each host is in the [semantics host matrix](docs/UNIFIED_SEMANTICS.md#172-current-pr8-host-matrix): read it
+before relying on MTU or PHY controls. Per-platform derivation limits apply —
+on Android the effective MTU is unavailable before a successful MTU exchange,
+on Apple there is no caller-directed MTU request (the effective MTU is
+derived per link), and on BlueZ a withheld link answers `capability.unavailable`.
+In
 particular, React Native Android exposes MTU request/effective observation and
 PHY read/request as `limited` / deterministic controls: effective MTU is
 unavailable before a successful `onMtuChanged` callback, and PHY request
@@ -367,7 +374,7 @@ after disconnect, service change, or rediscovery.
 - **Node:** `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager`, or list adapters and `createBleManagerFromProvider`. Published releases ship the Node-API desktop-core prebuild for macOS, Windows and Linux on `arm64`/`x64`. [`docs/NODE.md`](docs/NODE.md)
 - **Tauri:** `createTauriBleManager()` returns the public `BleManager`; test transports use `createTauriBleManagerWithEnvironment`. [`docs/TAURI.md`](docs/TAURI.md)
 
-Stable 4.x versions publish to npm `latest`. Later prereleases, if any, publish to `next`. Publication uses npm trusted publishing/OIDC with provenance.
+Stable 5.x versions publish to npm `latest`. Later prereleases, if any, publish to `next`. Publication uses npm trusted publishing/OIDC with provenance.
 
 ## Migrating from react-native-ble-plx
 

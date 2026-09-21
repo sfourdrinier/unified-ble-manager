@@ -1319,6 +1319,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     }
   }
   private handleAdapterState(state: CoreBluetoothAdapterSnapshot): void {
+    const previous = this.attachmentLifecycle.adapterState()
     this.attachmentLifecycle.updateAdapterState(state)
     if (this.admissionClosed || this.destroyed) {
       return
@@ -1331,9 +1332,20 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       this.adapterLossActive = false
     }
     const snapshot = this.attachmentLifecycle.adapterState()
-    for (const stream of [...this.stateStreams]) {
-      if (stream.emit(snapshot, 96, String(snapshot.backendGeneration)).terminated) {
-        this.stateStreams.delete(stream)
+    // A re-announced state that changes nothing observable is not a
+    // transition: emitting it would duplicate the watch's initial snapshot
+    // for every subscriber. Bookkeeping, the backend event, loss cleanup and
+    // generation advances are untouched.
+    const unchanged =
+      snapshot.availability === previous.availability &&
+      snapshot.authorization === previous.authorization &&
+      snapshot.power === previous.power &&
+      snapshot.safeReason === previous.safeReason
+    if (!unchanged) {
+      for (const stream of [...this.stateStreams]) {
+        if (stream.emit(snapshot, 96, String(snapshot.backendGeneration)).terminated) {
+          this.stateStreams.delete(stream)
+        }
       }
     }
     const attachment = this.attachment()

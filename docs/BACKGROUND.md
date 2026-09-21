@@ -33,7 +33,12 @@ do it reports `capability.unsupported` with a reason, never a fake.
   (`startObservingDevicePresence`, API 31+). The Expo plugin declares
   `UbmCompanionPresenceService` (see `EXPO_PLUGIN.md`); its appearance
   callback surfaces the same `restored` peers and `restoration-received`
-  event as iOS.
+  event as iOS. What Android does NOT have is an OS restoration journal to
+  adopt, so `restoration.claim()` answers `capability.unsupported` there and
+  the restored peer is read from `peers.restored` instead — the same words,
+  the platform's own mechanism. The example app labels the two actions
+  "Claim native restoration (iOS)" and "Show restored peers (Android)"; the
+  test driver exposes them as `restoration claim` and `restoration restored`.
 - **Capabilities:** `state:restoration-adoption` and
   `state:presence-observation`, reported verbatim by the backend. Apple
   presence observation is `unsupported`: restoration arrives through
@@ -43,6 +48,59 @@ do it reports `capability.unsupported` with a reason, never a fake.
 - **Shared example scenario:** `restoration` in `examples-shared` (`start`
   connects, subscribes, and records the known peer id; `reconnect` dials
   that id directly after a relaunch with no scan).
+
+### Android presence chain, in task order
+
+On Android there is no OS journal, so every step below is explicit and
+app-owned. Skip one and there is nothing to wake the app:
+
+1. **Associate.** `await ble.association.associate({ name: 'Sensor' })`
+   launches the Android system UI and returns an `associated`
+   peer-directory record. Association is not a bond, a connection, or a
+   scan-permission bypass.
+2. **Permission.** The library manifest and the Expo plugin declare
+   `REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE`; the app still requests the
+   Android 12+ runtime permissions (`BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT`)
+   itself, as in [`GETTING_STARTED.md`](GETTING_STARTED.md).
+3. **Arm presence.** `await ble.presence.observe({ peerId })` for the known
+   peer id recorded by a previous connect. Without this call an appearance
+   wakes nothing.
+4. **OS wake.** Companion Device Manager binds
+   `UbmCompanionPresenceService` on appearance, which installs the process
+   radio owner and surfaces the associated peer as a `restored` record at
+   once.
+5. **Read, then reconnect.** `await ble.peers.restored()` lists the
+   restored peer; the app reconnects with
+   `await ble.connect(peerId, { intent: 'when-available', timeoutMs })`
+   and replays subscriptions through `subscribe`. The library never
+   auto-reconnects. `restoration.claim()` answers
+   `capability.unsupported` on Android — there is no journal to adopt —
+   so claim nothing; read the directory instead.
+
+### iOS counterpart
+
+Configure `background.ios.restoration` (`{ id, generation }` in the Expo
+plugin, or the `restoration` manager option) and rebuild: the system
+relaunches the terminated app on a BLE event, delivers the peripherals
+through `willRestoreState`, and the app adopts them with
+`restoration.claim()`. Then the same app-owned `connect` + `subscribe`
+as on Android.
+
+### What the other platforms answer instead
+
+- **Android API < 31:** no presence wake exists; presence observation
+  reports `capability.unsupported`.
+- **tvOS:** no background Bluetooth mode and no state restoration, so the
+  TV prebuild writes neither key; both capabilities report
+  `capability.unsupported` / `capability.unavailable` with the native
+  reason.
+- **Desktop (CoreBluetooth, WinRT, BlueZ) and Tauri/Electron:** no OS
+  restoration journal for a terminated app and no presence wake; the
+  `restoration-received` event never fires and presence observation
+  reports `capability.unsupported` with a reason.
+- **Web:** Web Bluetooth has no background relaunch or presence wake; the
+  event never fires and restoration reports `capability.unsupported`
+  with a reason.
 
 ### Physical test procedure (owner, one strap per phone)
 

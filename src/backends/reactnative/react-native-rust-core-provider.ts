@@ -48,6 +48,17 @@ import {
   type ScanFilter,
   type SourceTimestamp
 } from '../../backend-contract/advertisement'
+import {
+  normalizeBackgroundContinuation,
+  serializeBackgroundContinuation,
+  type BackgroundContinuationDeclaration
+} from '../../backend-contract/background-continuation'
+import {
+  aggregateContinuationClaim,
+  parseContinuationStatus,
+  type ContinuationBacklog,
+  type ContinuationStatus
+} from './react-native-continuation-claim'
 import type {
   FeatureRegistry,
   MaximumWriteLengthFeatureInput,
@@ -247,6 +258,13 @@ export interface ReactNativeRustCoreProviderOptions {
    * records its dispatch and outcome here; absent, nothing is traced.
    */
   readonly trace?: CoreTraceSink
+  /**
+   * Declared background standing order (`background.continuation`, BGS4),
+   * normalized before the backend opens. A non-`record-only` declaration
+   * without a persisting native owner fails backend creation with
+   * `capability.unsupported` — never a silent record-only.
+   */
+  readonly backgroundContinuation?: unknown
 }
 
 export interface ReactNativeRustCoreBackendProvider extends ReactNativeRestorationBackendProvider {
@@ -285,6 +303,20 @@ function adapterNativeIdFor(platform: ReactNativeRustCorePlatform): string {
   return platform === 'android'
     ? REACT_NATIVE_ANDROID_DEFAULT_ADAPTER_NATIVE_ID
     : REACT_NATIVE_APPLE_DEFAULT_ADAPTER_NATIVE_ID
+}
+
+/**
+ * Finding 223: resource ids name the platform that produced them. Android
+ * ids are `android-{kind}-*`; Apple keeps the legacy `corebluetooth-{kind}-*`.
+ * The shape and per-session counters are unchanged, and lookups key on the
+ * full string, so the prefix is vocabulary only — nothing parses it.
+ */
+function resourcePrefixFor(platform: ReactNativeRustCorePlatform): string {
+  return platform === 'android' ? 'android' : 'corebluetooth'
+}
+
+function peerPrefixFor(platform: ReactNativeRustCorePlatform): string {
+  return `${resourcePrefixFor(platform)}-peer`
 }
 
 function defaultAdapterIdFor(platform: ReactNativeRustCorePlatform) {
@@ -363,6 +395,11 @@ async function openBackend(
   if (ownerId.length === 0) {
     throw contractError('argument.invalid', 'core', 'react-native-rust-core.provider.owner-id')
   }
+  // The standing order is validated before the session opens: every
+  // rejection happens before any effect. An absent option leaves the native
+  // store untouched, so a build-time manifest declaration stands.
+  const continuationDeclared = options.backgroundContinuation !== undefined
+  const continuation = normalizeBackgroundContinuation(options.backgroundContinuation)
   const session = await binding.openSession(`${options.owner}/${ownerId}`)
   let backend: ReactNativeRustCoreBackend
   try {
@@ -374,7 +411,8 @@ async function openBackend(
       options.runtime,
       state,
       options.trace ?? null,
-      leaseId => releaseBackgroundThroughModule(binding, `${options.owner}/${ownerId}/background`, leaseId)
+      leaseId => releaseBackgroundThroughModule(binding, `${options.owner}/${ownerId}/background`, leaseId),
+      continuationAccessFor(binding, continuation)
     )
   } catch (error) {
     await disposeUnopenedSession(session, error)
@@ -385,6 +423,13 @@ async function openBackend(
     if (restoration !== null) {
       backend.activateRestoration(restoration.restoration)
       restoration.journalHost.backend = backend
+      // The probe path (`restoration === null`) opens nothing durable, so it
+      // declares nothing, and an absent option leaves a build-time manifest
+      // declaration standing. A failed persist destroys the backend: a
+      // standing order the owner did not take must never look declared.
+      if (continuationDeclared) {
+        await persistBackgroundContinuation(binding, continuation)
+      }
     }
     return backend
   } catch (error) {
@@ -394,6 +439,89 @@ async function openBackend(
     }
     throw error
   }
+}
+
+/**
+ * Persists the declared standing order in the native owner. `record-only`
+ * needs no owner state, so an older native module without the method is
+ * fine; any other strategy without a persisting owner fails fast with
+ * `capability.unsupported` — never a silent record-only. A native refusal
+ * travels with the platform's own reason.
+ */
+async function persistBackgroundContinuation(
+  binding: ReactNativeRustCoreBinding,
+  declaration: BackgroundContinuationDeclaration
+): Promise<void> {
+  const persist = binding.declareBackgroundContinuation
+  if (persist === undefined) {
+    if (declaration.onAppearance === 'record-only') return
+    throw contractError('capability.unsupported', 'restoration', 'react-native-rust-core.continuation.not-persisted')
+  }
+  try {
+    await persist.call(binding, serializeBackgroundContinuation(declaration))
+  } catch (error) {
+    if (error instanceof BackendContractError) throw error
+    throw contractError('platform.failure', 'restoration', 'react-native-rust-core.continuation.persist', {
+      domain: 'react-native-rust-core',
+      code: 'declare-background-continuation',
+      safeMessage: error instanceof Error ? error.message.slice(0, 1024) : String(error).slice(0, 1024),
+      metadata: Object.freeze({})
+    })
+  }
+}
+
+/**
+ * Native continuation access for one backend: the declared order plus the
+ * claim/status callers. A native module without the claim answers
+ * `capability.unsupported` — never an invented empty backlog.
+ */
+export interface ReactNativeContinuationAccess {
+  readonly declaration: BackgroundContinuationDeclaration
+  readonly claimBatches: (maxItems: number, maxBytes: number) => Promise<unknown>
+  readonly readStatus: () => Promise<unknown>
+}
+
+function continuationAccessFor(
+  binding: ReactNativeRustCoreBinding,
+  declaration: BackgroundContinuationDeclaration
+): ReactNativeContinuationAccess {
+  const claim = binding.claimContinuation
+  const status = binding.continuationStatus
+  return Object.freeze({
+    declaration,
+    claimBatches: (maxItems: number, maxBytes: number) => {
+      if (claim === undefined) {
+        return Promise.reject(
+          contractError('capability.unsupported', 'restoration', 'react-native-rust-core.continuation.claim')
+        )
+      }
+      return claim.call(binding, maxItems, maxBytes).catch(error => {
+        if (error instanceof BackendContractError) throw error
+        throw contractError('platform.failure', 'restoration', 'react-native-rust-core.continuation.claim', {
+          domain: 'react-native-rust-core',
+          code: 'claim-continuation',
+          safeMessage: error instanceof Error ? error.message.slice(0, 1024) : String(error).slice(0, 1024),
+          metadata: Object.freeze({})
+        })
+      })
+    },
+    readStatus: () => {
+      if (status === undefined) {
+        return Promise.reject(
+          contractError('capability.unsupported', 'restoration', 'react-native-rust-core.continuation.status')
+        )
+      }
+      return status.call(binding).catch(error => {
+        if (error instanceof BackendContractError) throw error
+        throw contractError('platform.failure', 'restoration', 'react-native-rust-core.continuation.status', {
+          domain: 'react-native-rust-core',
+          code: 'continuation-status',
+          safeMessage: error instanceof Error ? error.message.slice(0, 1024) : String(error).slice(0, 1024),
+          metadata: Object.freeze({})
+        })
+      })
+    }
+  })
 }
 
 /** Disposes a session no backend owns yet; a failed disposal travels with the error. */
@@ -709,7 +837,8 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     runtime: ReactNativeRustCoreRuntimeFacts,
     initialState: WireAdapterState,
     private readonly trace: CoreTraceSink | null = null,
-    private readonly releaseModuleBackground: ((leaseId: string) => Promise<CleanupRecord>) | null = null
+    private readonly releaseModuleBackground: ((leaseId: string) => Promise<CleanupRecord>) | null = null,
+    private readonly continuationAccess: ReactNativeContinuationAccess | null = null
   ) {
     // Legacy React Native attachment names (origin/main
     // corebluetooth-attachment-lifecycle.ts): the instance is this backend's,
@@ -844,10 +973,60 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       }) => this.updateBackgroundNotification(request),
       associateCompanion: (request: { readonly name?: string; readonly serviceUuid?: string }) =>
         this.associateCompanion(request),
+      listCompanionAssociations: () => this.listCompanionAssociations(),
+      disassociateCompanion: (request: { readonly associationId: number }) => this.disassociateCompanion(request),
       observePresence: (request: { readonly peerId: string }) => this.observePresence(request),
       unobservePresence: (request: { readonly peerId: string }) => this.unobservePresence(request),
-      counters: () => this.describeCounters()
+      counters: () => this.describeCounters(),
+      claimContinuationBacklog: (request?: { readonly maxItems?: number; readonly maxBytes?: number }) =>
+        this.claimContinuationBacklog(request),
+      continuationStatus: () => this.continuationStatus()
     })
+  }
+
+  /**
+   * Drains the continuation backlog the wake queued, with its loss
+   * accounting (values, stream-end drop counts, cumulative controlLost).
+   * Fails closed on any gap; a missing native claim answers
+   * `capability.unsupported`.
+   */
+  async claimContinuationBacklog(request?: {
+    readonly maxItems?: number
+    readonly maxBytes?: number
+  }): Promise<ContinuationBacklog> {
+    this.assertOperational(`${SCOPE}.continuation.claim`)
+    const access = this.continuationAccess
+    if (access === null) {
+      throw contractError('capability.unsupported', 'restoration', `${SCOPE}.continuation.claim`)
+    }
+    const maxItems = request?.maxItems ?? 256
+    const maxBytes = request?.maxBytes ?? 65536
+    if (!Number.isSafeInteger(maxItems) || maxItems < 1 || !Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+      throw contractError('argument.invalid', 'restoration', `${SCOPE}.continuation.claim-bounds`)
+    }
+    const payload = await access.claimBatches(maxItems, maxBytes)
+    return aggregateContinuationClaim(this.parseClaimPayload(payload), access.declaration)
+  }
+
+  /** Reports the continuation posture (declared strategy, last wake). */
+  async continuationStatus(): Promise<ContinuationStatus> {
+    this.assertOperational(`${SCOPE}.continuation.status`)
+    const access = this.continuationAccess
+    if (access === null) {
+      throw contractError('capability.unsupported', 'restoration', `${SCOPE}.continuation.status`)
+    }
+    return parseContinuationStatus(await access.readStatus())
+  }
+
+  private parseClaimPayload(payload: unknown): unknown {
+    // The shape is validated by `aggregateContinuationClaim`; unparseable text
+    // is malformed here, never passed on.
+    if (typeof payload !== 'string') return payload
+    try {
+      return JSON.parse(payload)
+    } catch {
+      throw contractError('protocol.malformed', 'restoration', `${SCOPE}.continuation.claim-json`)
+    }
   }
 
   /** Starts delivery (one drain collects anything queued before) and loads the counters. */
@@ -1394,15 +1573,25 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   }
 
   /**
-   * Legacy `handleAdapterState` / `advanceGeneration`: watchers see every
-   * state; a state change is an `adapter-state` event, a generation advance
-   * a `backend-restarted` one.
+   * Legacy `handleAdapterState` / `advanceGeneration`: a state change is an
+   * `adapter-state` event, a generation advance a `backend-restarted` one.
+   * Watchers see the initial snapshot followed only by real changes: a
+   * re-announced record that changes nothing observable is not a transition.
    */
   private onAdapterRecord(state: WireAdapterState): void {
+    const previous = this.attachmentRecord.adapter.state
     const restarted = this.observeGenerations(state)
     const snapshot = this.snapshotFrom(state, opaqueId(state.backendGeneration, 'backend-generation', SCOPE))
-    for (const watch of [...this.adapterWatches])
-      watch.emit(snapshot, RECORD_BYTES + utf8Length(state.safeReason ?? ''))
+    const unchanged =
+      !restarted &&
+      snapshot.availability === previous.availability &&
+      snapshot.authorization === previous.authorization &&
+      snapshot.power === previous.power &&
+      snapshot.safeReason === previous.safeReason
+    if (!unchanged) {
+      for (const watch of [...this.adapterWatches])
+        watch.emit(snapshot, RECORD_BYTES + utf8Length(state.safeReason ?? ''))
+    }
     this.emitEvent({ kind: restarted ? 'backend-restarted' : 'adapter-state' })
   }
 
@@ -1412,7 +1601,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const existing = this.peerIdsByNativeId.get(nativePeerId)
     if (existing !== undefined) return existing
     const peerId = opaqueId(
-      `corebluetooth-peer-${String(this.attachmentRecord.backendGeneration)}-${this.nextPeer}`,
+      `${peerPrefixFor(this.platform)}-${String(this.attachmentRecord.backendGeneration)}-${this.nextPeer}`,
       'peer',
       SCOPE
     )
@@ -1647,10 +1836,10 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     this.nextScan += 1
     const group: ScanGroup = {
       membership,
-      scanSessionId: this.identifiers.scanSessionId(`corebluetooth-scan-session-${ordinal}`),
-      ownerLeaseId: this.identifiers.leaseId(`corebluetooth-scan-lease-${ordinal}`),
+      scanSessionId: this.identifiers.scanSessionId(`${resourcePrefixFor(this.platform)}-scan-session-${ordinal}`),
+      ownerLeaseId: this.identifiers.leaseId(`${resourcePrefixFor(this.platform)}-scan-lease-${ordinal}`),
       shareToken: options.sharing.allowSharing
-        ? this.identifiers.scanShareToken(`corebluetooth-scan-share-${ordinal}`)
+        ? this.identifiers.scanShareToken(`${resourcePrefixFor(this.platform)}-scan-share-${ordinal}`)
         : null,
       consumers: new Map(),
       state: 'active',
@@ -1775,7 +1964,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     this.nextScan += 1
     const joined = this.addScanConsumer(
       group,
-      this.identifiers.leaseId(`corebluetooth-scan-lease-${ordinal}`),
+      this.identifiers.leaseId(`${resourcePrefixFor(this.platform)}-scan-lease-${ordinal}`),
       owner.options
     )
     return this.scanLease(group, joined)
@@ -2033,8 +2222,12 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     } finally {
       removeAbort()
     }
-    const connectionId = this.identifiers.connectionId(`corebluetooth-connection-${connectionOrdinal}`)
-    const leaseId = this.identifiers.leaseId(`corebluetooth-connection-lease-${connectionOrdinal}`)
+    const connectionId = this.identifiers.connectionId(
+      `${resourcePrefixFor(this.platform)}-connection-${connectionOrdinal}`
+    )
+    const leaseId = this.identifiers.leaseId(
+      `${resourcePrefixFor(this.platform)}-connection-lease-${connectionOrdinal}`
+    )
     const key = String(connectionId)
     const entry: ConnectionEntry = {
       key,
@@ -2053,7 +2246,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         // The public generation is this backend's legacy name for the
         // owner's `coreGeneration` above, which alone crosses the wire.
         connectionGeneration: opaqueId(
-          `corebluetooth-connection-generation-${connectionOrdinal}`,
+          `${resourcePrefixFor(this.platform)}-connection-generation-${connectionOrdinal}`,
           'connection-generation',
           SCOPE
         ),
@@ -2494,13 +2687,17 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     this.requireConnection(connection, operation)
     const ordinal = this.nextDatabase
     this.nextDatabase += 1
-    const databaseId = this.identifiers.databaseId(`corebluetooth-database-${ordinal}`)
+    const databaseId = this.identifiers.databaseId(`${resourcePrefixFor(this.platform)}-database-${ordinal}`)
     const leaseId = this.leaseIdFor(entry)
     const path: DatabasePath<string, string, string> = Object.freeze({
       ...this.connectionPath(entry, leaseId),
       databaseId,
       // Legacy name for the owner's `coreGeneration` below.
-      databaseGeneration: opaqueId(`corebluetooth-database-generation-${ordinal}`, 'database-generation', SCOPE)
+      databaseGeneration: opaqueId(
+        `${resourcePrefixFor(this.platform)}-database-generation-${ordinal}`,
+        'database-generation',
+        SCOPE
+      )
     })
     const key = String(databaseId)
     const stored: DatabaseEntry = {
@@ -2828,7 +3025,9 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const operationId = this.mintOperationId('subscribe')
     const budget = this.budget(request.operation, operation)
     const consumer = this.mintOperationId('consumer')
-    const subscriptionId = this.identifiers.subscriptionId(`corebluetooth-subscription-${this.nextSubscription}`)
+    const subscriptionId = this.identifiers.subscriptionId(
+      `${resourcePrefixFor(this.platform)}-subscription-${this.nextSubscription}`
+    )
     this.nextSubscription += 1
     // Registered before the owner can deliver: a value that arrives in the
     // drain before `gatt.subscribe` resolves is routed, not lost.
@@ -3240,10 +3439,39 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     })
   }
 
+  private listCompanionAssociations(): Promise<WireOpResults['companion.list']> {
+    this.assertOperational(`${SCOPE}.companion.list`)
+    return this.invoke('companion.list', {
+      operationId: this.mintOperationId('companion')
+    })
+  }
+
+  private disassociateCompanion(request: {
+    readonly associationId: number
+  }): Promise<WireOpResults['companion.disassociate']> {
+    this.assertOperational(`${SCOPE}.companion.disassociate`)
+    return this.invoke('companion.disassociate', {
+      associationId: request.associationId,
+      operationId: this.mintOperationId('companion')
+    })
+  }
+
+  /**
+   * Finding 228: presence takes the peer id a consumer holds, which is this
+   * provider's opaque id, while the platform call
+   * (`CompanionDeviceManager.startObservingDevicePresence`) needs the device
+   * address. A known opaque id resolves to its native id; anything else is
+   * passed through unchanged, so a caller holding a platform address (the TCK
+   * and the native seam do) still works.
+   */
+  private presencePeerId(peerId: string): string {
+    return this.nativeIdsByPeerId.get(peerId) ?? peerId
+  }
+
   private observePresence(request: { readonly peerId: string }): Promise<WireOpResults['presence.observe']> {
     this.assertOperational(`${SCOPE}.presence.observe`)
     return this.invoke('presence.observe', {
-      peerId: String(request.peerId),
+      peerId: this.presencePeerId(String(request.peerId)),
       operationId: this.mintOperationId('presence')
     })
   }
@@ -3251,7 +3479,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private unobservePresence(request: { readonly peerId: string }): Promise<WireOpResults['presence.unobserve']> {
     this.assertOperational(`${SCOPE}.presence.unobserve`)
     return this.invoke('presence.unobserve', {
-      peerId: String(request.peerId),
+      peerId: this.presencePeerId(String(request.peerId)),
       operationId: this.mintOperationId('presence')
     })
   }
@@ -3269,14 +3497,36 @@ export interface ReactNativeRustCoreHostServices {
     readonly body?: string
   }): Promise<void>
   associateCompanion(request: { readonly name?: string; readonly serviceUuid?: string }): Promise<{
-    readonly source: 'associated'
+    readonly source: 'associated' | 'already-associated'
     readonly associationId: number
     readonly peerId: string | null
     readonly displayName: string | null
   }>
+  listCompanionAssociations(): Promise<{
+    readonly associations: readonly {
+      readonly associationId: number
+      readonly peerId: string | null
+      readonly displayName: string | null
+    }[]
+  }>
+  disassociateCompanion(request: { readonly associationId: number }): Promise<{
+    readonly state: 'disassociated'
+    readonly associationId: number
+  }>
   observePresence(request: { readonly peerId: string }): Promise<{ readonly state: 'observing' }>
   unobservePresence(request: { readonly peerId: string }): Promise<{ readonly state: 'idle' }>
   counters(): Promise<WireCounters>
+  /**
+   * Drains the continuation backlog the wake queued, with its loss
+   * accounting. A native module without the claim answers
+   * `capability.unsupported` — never an invented empty backlog.
+   */
+  claimContinuationBacklog(request?: {
+    readonly maxItems?: number
+    readonly maxBytes?: number
+  }): Promise<ContinuationBacklog>
+  /** Reports the continuation posture (declared strategy, last wake). */
+  continuationStatus(): Promise<ContinuationStatus>
 }
 
 type DistributiveOmit<Type, Key extends PropertyKey> = Type extends unknown ? Omit<Type, Key> : never

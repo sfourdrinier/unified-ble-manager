@@ -108,6 +108,21 @@ public class UnifiedBleRustCoreModule extends NativeUnifiedBleRustCoreSpec {
   }
 
   @Override
+  public void declareBackgroundContinuation(String declarationJson, Promise promise) {
+    sessions.declareContinuation(declarationJson, reply(promise));
+  }
+
+  @Override
+  public void continuationStatus(Promise promise) {
+    sessions.continuationStatus(reply(promise));
+  }
+
+  @Override
+  public void claimContinuation(double maxItems, double maxBytes, Promise promise) {
+    sessions.claimContinuation(maxItems, maxBytes, reply(promise));
+  }
+
+  @Override
   public void invalidate() {
     sessions.invalidate();
     host.detachCompanionChooser(companionChooser);

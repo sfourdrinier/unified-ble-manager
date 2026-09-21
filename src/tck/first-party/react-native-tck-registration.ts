@@ -51,6 +51,14 @@ export interface DeterministicReactNativeCharacteristicAddress {
   readonly characteristicOccurrence: number
 }
 
+/** The owner adapter facts a deterministic module stages for adapter-watch coverage. */
+export interface DeterministicReactNativeAdapterState {
+  readonly availability: string
+  readonly authorization: string
+  readonly power: string
+  readonly safeReason: string | null
+}
+
 /** Controller hooks into the deterministic native module (radio events the TCK drives). */
 export interface DeterministicReactNativeTckBoundary {
   /** Seeds the native restoration journal (issue #212); absent when the leg cannot restore. */
@@ -58,6 +66,8 @@ export interface DeterministicReactNativeTckBoundary {
   emitAdvertisement(): void
   emitNotification(address: DeterministicReactNativeCharacteristicAddress, bytes: Uint8Array): void
   prepareSecurityCancellation?(): void
+  /** Stages an owner adapter record the provider announces to adapter watchers. */
+  setAdapterState(state: DeterministicReactNativeAdapterState): void
 }
 
 export interface DeterministicReactNativeAppleTckBoundary extends DeterministicReactNativeTckBoundary {
@@ -103,6 +113,7 @@ const reactNativeProviderScenarioIds: readonly TckScenarioId[] = Object.freeze([
   'identity.valid-all-axis-negotiation',
   'identity.version-skew-and-malformed-offers',
   'capability.truth-limits-evidence-and-binding',
+  'adapter.atomic-snapshot-and-watch',
   'gatt.duplicate-uuid-occurrences-route-exactly',
   'scenario.scan-connect-discover-read-notify-destroy'
 ])
@@ -336,7 +347,8 @@ function createReactNativeController(
   const availableActions: readonly TckControllerAction[] = Object.freeze([
     'queue-advertisement',
     'emit-notification',
-    'seed-restoration-journal'
+    'seed-restoration-journal',
+    'set-adapter-state'
   ])
   return Object.freeze({
     availableActions,
@@ -367,6 +379,15 @@ function createReactNativeController(
         boundary.seedRestorationJournal()
         return
       }
+      if (action === 'set-adapter-state') {
+        boundary.setAdapterState({
+          availability: stringField(action, input, 'availability'),
+          authorization: stringField(action, input, 'authorization'),
+          power: stringField(action, input, 'power'),
+          safeReason: nullableStringField(action, input, 'safeReason')
+        })
+        return
+      }
       throw new Error(`React Native deterministic boundary cannot perform ${action}`)
     }
   })
@@ -394,6 +415,17 @@ function stringField(action: string, input: SerializableRecord, field: string): 
   const value = input[field]
   if (typeof value !== 'string' || value.length === 0) {
     throw new Error(`${action}.${field} must be a non-empty string`)
+  }
+  return value
+}
+
+function nullableStringField(action: string, input: SerializableRecord, field: string): string | null {
+  const value = input[field]
+  if (value === null) {
+    return null
+  }
+  if (typeof value !== 'string') {
+    throw new Error(`${action}.${field} must be a string or null`)
   }
   return value
 }

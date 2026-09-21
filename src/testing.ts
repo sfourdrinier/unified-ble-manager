@@ -100,6 +100,7 @@ export type {
   WebBluetoothNotificationInput
 } from './tck/first-party/web-bluetooth-tck-registration'
 export type {
+  DeterministicReactNativeAdapterState,
   DeterministicReactNativeAppleTckBoundary,
   DeterministicReactNativeTckBoundary,
   ReactNativeAndroidSecurityTckOptions,

@@ -103,7 +103,8 @@ export async function createReactNativeApplicationHost(
     adapterId: normalized.adapterId,
     diagnostics: normalized.diagnostics,
     rustCore: binding,
-    ...(restorationAuthority === undefined ? {} : { restorationAuthority })
+    ...(restorationAuthority === undefined ? {} : { restorationAuthority }),
+    ...(normalized.background === undefined ? {} : { background: normalized.background })
   })
 }
 

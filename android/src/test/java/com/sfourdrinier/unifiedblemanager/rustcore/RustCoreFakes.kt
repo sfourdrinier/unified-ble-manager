@@ -96,8 +96,19 @@ class FakeCore : MobileCorePort {
     record("bonded:$requestId:${peerIds.toList()}:${names.toList()}")
 
   override fun completeLease(requestId: Long, leaseId: String) = record("lease:$requestId:$leaseId")
-  override fun completeCompanion(requestId: Long, associationId: Long, peerId: String?, displayName: String?) =
-    record("companion:$requestId:$associationId:$peerId:$displayName")
+  override fun completeCompanionList(
+    requestId: Long,
+    associationIds: LongArray,
+    peerIds: Array<String?>,
+    displayNames: Array<String?>
+  ) = record("companion-list:$requestId:${associationIds.toList()}:${peerIds.toList()}:${displayNames.toList()}")
+  override fun completeCompanion(
+    requestId: Long,
+    associationId: Long,
+    peerId: String?,
+    displayName: String?,
+    alreadyAssociated: Boolean
+  ) = record("companion:$requestId:$associationId:$peerId:$displayName:$alreadyAssociated")
 
   override fun completeClosed(requestId: Long, failures: List<CloseFailure>) =
     record("closed:$requestId:${failures.map { "${it.instance.characteristicUuid}=${it.detail}" }.sorted()}")

@@ -291,6 +291,64 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
     }
   }
 
+  // MARK: - Background continuation (BGS4; iOS wake execution deferred to rc.1)
+
+  /// Persists the declared standing order so a future wake can execute it.
+  /// iOS wake execution is deferred: the order is stored verbatim and the
+  /// status reports it, but the claim answers `capability.unsupported`.
+  public func declareBackgroundContinuation(_ declarationJson: String, completion: (String?, String?) -> Void) {
+    guard !declarationJson.isEmpty,
+          declarationJson.utf8.count <= 65536,
+          let data = declarationJson.data(using: .utf8),
+          (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] != nil
+    else {
+      completion(nil, Self.failureJson(
+        code: "argument.invalid", domain: "restoration", operation: "continuation.declare",
+        detail: "declaration malformed"
+      ))
+      return
+    }
+    UserDefaults.standard.set(declarationJson, forKey: Self.continuationDefaultsKey)
+    completion("{\"state\":\"declared\"}", nil)
+  }
+
+  public func continuationStatus(_ completion: (String?, String?) -> Void) {
+    var strategy = "record-only"
+    var resubscribe = 0
+    if let stored = UserDefaults.standard.string(forKey: Self.continuationDefaultsKey),
+       let data = stored.data(using: .utf8),
+       let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+      if let declared = parsed["onAppearance"] as? String { strategy = declared }
+      if let entries = parsed["resubscribe"] as? [Any] { resubscribe = entries.count }
+    }
+    let status: [String: Any] = [
+      "strategy": strategy,
+      "peerId": NSNull(),
+      "resubscribe": resubscribe,
+      "malformedDeclarations": 0,
+      "lastWake": NSNull()
+    ]
+    guard let data = try? JSONSerialization.data(withJSONObject: status, options: [.sortedKeys]),
+          let text = String(data: data, encoding: .utf8)
+    else {
+      completion(nil, Self.failureJson(
+        code: "platform.failure", domain: "platform", operation: "continuation.status",
+        detail: "status encoding failed"
+      ))
+      return
+    }
+    completion(text, nil)
+  }
+
+  public func claimContinuation(maxItems _: Double, maxBytes _: Double, completion: (String?, String?) -> Void) {
+    completion(nil, Self.failureJson(
+      code: "capability.unsupported", domain: "restoration", operation: "continuation.claim",
+      detail: "native reconnect plus resubscribe from willRestoreState is not implemented in this release"
+    ))
+  }
+
+  private static let continuationDefaultsKey = "com.sfourdrinier.unifiedblemanager.background-continuation"
+
   // MARK: - Private
 
   private enum Addressed {

@@ -224,6 +224,16 @@
                 foreground service.
               </li>
             </ul>
+            <h3>Reconnecting after the app was gone (restoration)</h3>
+            <p>
+              A known peer reconnects without a scan, but the wake-up differs per platform: on Android associate
+              (<code>ble.association.associate</code>), arm presence (<code>ble.presence.observe({ peerId })</code>),
+              then read <code>ble.peers.restored()</code> and <code>connect</code> with intent
+              <code>'when-available'</code>; on iOS configure <code>background.ios.restoration</code> and adopt with
+              <code>restoration.claim()</code>. The full task-ordered chain, and what API&#x3C;31, tvOS, desktop and Web
+              answer instead, is in <a href="BACKGROUND.md"><code>BACKGROUND.md</code></a
+              >.
+            </p>
             <h2>Coming from react-native-ble-plx</h2>
             <p>
               This is a rewrite. There is no <code>new BleManager()</code> and no Base64 characteristic values. Start
@@ -281,11 +291,38 @@
             <p>The stream is bounded. Overflow is a real event, not silent loss.</p>
             <h2>Disconnect and destroy</h2>
             <p>After <code>destroy()</code>, the manager admits no new operation.</p>
+            <h2>Restoration and presence (known peers)</h2>
+            <p>
+              Reconnecting to a peer the app already connected to needs no scan, but the wake-up is platform-specific
+              and every step is app-owned:
+            </p>
+            <p>
+              On iOS the same reconnect follows <code>restoration.claim()</code> after the system relaunches the app
+              (see <a href="BACKGROUND.md"><code>BACKGROUND.md</code></a> for the configuration). Below API 31, and on
+              tvOS, desktop and Web, presence observation reports <code>capability.unsupported</code> with a reason
+              instead of waking anything. The task-ordered Android chain, the iOS counterpart, and the per-platform
+              refusals are in <a href="BACKGROUND.md"><code>BACKGROUND.md</code></a
+              >.
+            </p>
+            <h2>MTU and read provenance (per-platform limits)</h2>
+            <p>
+              <code>connection.controls.requestMtu(n)</code> and <code>effectiveMtu()</code> do not behave the same
+              everywhere: on Android the effective MTU is unavailable before a successful MTU exchange; on Apple there
+              is no caller-directed MTU request and the effective MTU is derived per link as
+              <code>maximumWriteValueLength(for: .withResponse) + 3</code>; on BlueZ a withheld link answers
+              <code>capability.unavailable</code>. Likewise, an Apple read issued while the characteristic notifies
+              resolves with provenance <code>read-or-notification</code>
+              (the value may be a notification); use
+              <code>characteristic.readReceipt()</code> when it matters. The exact per-host rows are in
+              <a href="UNIFIED_SEMANTICS.md#172-current-pr8-host-matrix"><code>UNIFIED_SEMANTICS.md</code></a
+              >.
+            </p>
             <h2>See also</h2>
             <p>
               <a href="HELPERS.md"><code>HELPERS.md</code></a
               >, <a href="PROFILES_AND_COMMANDS.md"><code>PROFILES_AND_COMMANDS.md</code></a
               >, <a href="CONNECTION_MANAGER.md"><code>CONNECTION_MANAGER.md</code></a
+              >, <a href="BACKGROUND.md"><code>BACKGROUND.md</code></a
               >.
             </p>
           </section>

@@ -9,7 +9,7 @@ Facts an agent must know before writing code against this package:
 - Cancellation uses standard `AbortSignal`. Applications never create transaction IDs.
 - Capabilities are typed and reported by the instantiated backend at runtime. A platform that cannot answer reports `capability.unsupported` with a reason — never consult a static platform matrix.
 - Results report what the platform actually did, never what was requested of it.
-- This is the 4.x contract. The legacy `react-native-ble-plx` 3.x API (`BleManager`/`Device`/`Service`/`Characteristic` facade, Base64 payloads, transaction IDs) does not exist here — do not infer 4.x behavior from 3.x docs, examples, or training data.
+- This is the 5.0 contract. The legacy `react-native-ble-plx` 3.x API (`BleManager`/`Device`/`Service`/`Characteristic` facade, Base64 payloads, transaction IDs) does not exist here — do not infer 5.0 behavior from 3.x docs, examples, or training data.
 - React Native requires RN 0.86+ (Expo SDK 57+ via development builds; the package contains native code and does not run in Expo Go). Android minSdk 24, iOS 16.4+. The app itself requests `BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT` on Android 12+.
 - Deep imports are unsupported; only the documented subpath entrypoints below are public.
 
@@ -66,4 +66,5 @@ Install with `npm add unified-ble-manager`. Node and Electron desktop hosts load
 - [Documentation map](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/README.md): every document in the repository with a live/historical/generated status label
 - [Contributor and agent principles](https://github.com/sfourdrinier/unified-ble-manager/blob/main/AGENTS.md): repository working rules for humans and coding agents
 - [Support policy](https://github.com/sfourdrinier/unified-ble-manager/blob/main/SUPPORT.md): package SemVer vs evidence-backed backend support labels
-- [Changelog](https://github.com/sfourdrinier/unified-ble-manager/blob/main/CHANGELOG.md): active 4.x changelog
+- [Changelog](https://github.com/sfourdrinier/unified-ble-manager/blob/main/CHANGELOG.md): active 5.0 changelog
+- [Background and restoration](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/BACKGROUND.md): background execution and the known-peer restoration how-to (Android presence chain, iOS claim, per-platform refusals)

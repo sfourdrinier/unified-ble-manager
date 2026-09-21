@@ -477,6 +477,14 @@ control as `sim-control` scenario commands (`ubm-test-driver/1` host kind
 ./target/debug/h10-sim --driver ws://127.0.0.1:8795/host
 ```
 
+The driver connection self-heals. If the server becomes unreachable the
+simulator retries forever with bounded exponential backoff (1 s doubling to a
+30 s cap, jittered), logging each attempt with its delay and logging the
+re-registration; its mode, injected faults, profile and run record survive the
+rejoin. Before this, a network interruption left the simulator advertising but
+invisible to the driver, and every scenario against it timed out with nothing
+to explain why.
+
 The hello advertises the same command table as `help`, so the two can never
 drift (a node conformance test decodes the checked-in
 `tests/driver-hello.json` fixture through the real `protocol.ts`; CI

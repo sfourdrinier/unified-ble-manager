@@ -88,16 +88,27 @@ afterEach(() => {
  * platform through the Rust owner (CHANGELOG, docs/MOBILE_RUST_WIRE.md).
  * Finding 217 likewise answers Apple `connection:effective-mtu` per link as
  * `maximumWriteValueLength(.withResponse) + 3` (owner modernize rule); the
- * legacy Apple reference route keeps reporting it unsupported.
+ * legacy Apple reference route keeps reporting it unsupported. BGS4 adds one
+ * capability per background-continuation strategy
+ * (`background:wake-on-appearance`, `background:native-resubscribe`,
+ * `background:headless-task`, `background:wake-notification`): additive, and
+ * the deferred strategies report `capability.unsupported` ("not implemented
+ * in this release") rather than a platform refusal.
  */
+const CONTINUATION_IDS = Object.freeze([
+  'background:wake-on-appearance',
+  'background:native-resubscribe',
+  'background:headless-task',
+  'background:wake-notification'
+])
 const FIVE_ZERO_STATES = Object.freeze({
   'gatt:maximum-write-length': 'limited',
   'connection:effective-mtu': 'limited'
 })
 
 describe.each([
-  ['android', ['discovery:continuous-scan', 'security:cancel-pairing']],
-  ['apple', ['discovery:continuous-scan']]
+  ['android', ['discovery:continuous-scan', 'security:cancel-pairing', ...CONTINUATION_IDS]],
+  ['apple', ['discovery:continuous-scan', ...CONTINUATION_IDS]]
 ])('%s: the Rust route registers every legacy capability in the same state', (platform, extras) => {
   test('feature registry parity', async () => {
     const legacy = await legacyBackend(platform)
@@ -650,35 +661,40 @@ describe('resource names have the legacy React Native formats', () => {
   // Native providers ran on; every counter is the backend's own and starts at 1.
   test.each(['android', 'apple'])('%s: scan, peer, connection, database and subscription', async platform => {
     const { native, manager, backend } = await rustManager(platform)
+    // Finding 223 twin: every resource id names the platform that produced
+    // it; Apple keeps the legacy corebluetooth-* prefix.
+    const prefix = platform === 'android' ? 'android' : 'corebluetooth'
     const scan = await manager.scan(scanOptions())
-    expect(String(scan.scanSessionId)).toBe('corebluetooth-scan-session-1')
-    expect(String(scan.leaseId)).toBe('corebluetooth-scan-lease-1')
+    expect(String(scan.scanSessionId)).toBe(`${prefix}-scan-session-1`)
+    expect(String(scan.leaseId)).toBe(`${prefix}-scan-lease-1`)
     native.emitAdvertisement()
     const observation = (await take(scan.observations)).value.value
     const peerId = observation.device.id
-    expect(String(peerId)).toBe('corebluetooth-peer-1-1')
+    expect(String(peerId)).toBe(
+      platform === 'android' ? 'android-peer-1-1' : 'corebluetooth-peer-1-1'
+    )
     expect((await scan.stop()).state).toBe('released')
     expect(backend.identity.registeredBackendId).toContain(platform)
     const connection = await manager.connect(peerId, NO_OPTIONS)
-    expect(String(connection.connectionId)).toBe('corebluetooth-connection-1')
-    expect(String(connection.ownerLeaseId)).toBe('corebluetooth-connection-lease-1')
-    expect(String(connection.connectionGeneration)).toBe('corebluetooth-connection-generation-1')
+    expect(String(connection.connectionId)).toBe(`${prefix}-connection-1`)
+    expect(String(connection.ownerLeaseId)).toBe(`${prefix}-connection-lease-1`)
+    expect(String(connection.connectionGeneration)).toBe(`${prefix}-connection-generation-1`)
     const database = await connection.discover(NO_OPTIONS)
-    expect(String(database.path.databaseId)).toBe('corebluetooth-database-1')
-    expect(String(database.path.databaseGeneration)).toBe('corebluetooth-database-generation-1')
+    expect(String(database.path.databaseId)).toBe(`${prefix}-database-1`)
+    expect(String(database.path.databaseGeneration)).toBe(`${prefix}-database-generation-1`)
     const path = (await database.snapshot()).characteristics[0].path
     const subscription = await database.subscribe(path, subscribeOptions())
-    expect(String(subscription.subscriptionId)).toBe('corebluetooth-subscription-1')
+    expect(String(subscription.subscriptionId)).toBe(`${prefix}-subscription-1`)
     expect((await subscription.remove()).state).toBe('released')
 
     // A rediscovery and a reconnect advance the backend's own counters, as legacy did.
     const rediscovered = await connection.discover(NO_OPTIONS)
-    expect(String(rediscovered.path.databaseId)).toBe('corebluetooth-database-2')
-    expect(String(rediscovered.path.databaseGeneration)).toBe('corebluetooth-database-generation-2')
+    expect(String(rediscovered.path.databaseId)).toBe(`${prefix}-database-2`)
+    expect(String(rediscovered.path.databaseGeneration)).toBe(`${prefix}-database-generation-2`)
     expect((await connection.disconnect()).state).toBe('released')
     const again = await manager.connect(peerId, NO_OPTIONS)
-    expect(String(again.connectionId)).toBe('corebluetooth-connection-2')
-    expect(String(again.connectionGeneration)).toBe('corebluetooth-connection-generation-2')
+    expect(String(again.connectionId)).toBe(`${prefix}-connection-2`)
+    expect(String(again.connectionGeneration)).toBe(`${prefix}-connection-generation-2`)
     expect(native.opsInvoked('connection.connect')).toHaveLength(2)
     await manager.destroy()
   })

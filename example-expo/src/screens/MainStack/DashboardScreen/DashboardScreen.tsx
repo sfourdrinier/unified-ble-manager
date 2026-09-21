@@ -21,6 +21,7 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
   const [planDigest, setPlanDigest] = useState<string | null>(null)
   const [diagnosticCounters, setDiagnosticCounters] = useState<string | null>(null)
   const [restoration, setRestoration] = useState<string | null>(null)
+  const [restoredPeers, setRestoredPeers] = useState<string | null>(null)
   const [supportBundle, setSupportBundle] = useState<string | null>(null)
   const [adapter, setAdapter] = useState<string | null>(null)
 
@@ -62,6 +63,19 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
       setRestoration(`${result.outcome}: ${result.replayRecordCount} bounded record(s)`)
     } catch (claimError) {
       setRestoration(messageFor(claimError))
+    }
+  }
+
+  const inspectRestoredPeers = async () => {
+    try {
+      const peers = await BLEService.restoredPeers()
+      setRestoredPeers(
+        peers.length === 0
+          ? 'none'
+          : peers.map(peer => `${peer.id} (${peer.name ?? peer.reference?.opaqueId ?? peer.id})`).join('; ')
+      )
+    } catch (restoredError) {
+      setRestoredPeers(messageFor(restoredError))
     }
   }
 
@@ -128,6 +142,14 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
 
   return (
     <ScreenDefaultContainer>
+      {/* Finding 231: the screen is taller than a phone. Its body is the
+          discovered-peer list, so the controls ride in the list header:
+          one scroller, and no virtualized list nested in a ScrollView. */}
+      <FlatList
+        style={{ flex: 1 }}
+        keyboardShouldPersistTaps="handled"
+        ListHeaderComponent={
+          <>
       {isConnecting ? (
         <DropDown>
           <AppText style={{ fontSize: 30 }}>Connecting</AppText>
@@ -140,7 +162,8 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
       <AppButton label="Check Expo readiness" onPress={() => void inspectReadiness()} />
       <AppButton label="Inspect plan and diagnostics" onPress={inspectDiagnostics} />
       <AppButton label="Expo diagnostics" onPress={() => navigation.navigate('EXPO_DIAGNOSTICS_SCREEN')} />
-      <AppButton label="Claim native restoration" onPress={() => void claimRestoration()} />
+      <AppButton label="Claim native restoration (iOS)" onPress={() => void claimRestoration()} />
+      <AppButton label="Show restored peers (Android)" onPress={() => void inspectRestoredPeers()} />
       <AppButton label="Create redacted support bundle" onPress={() => void createSupportBundle()} />
       {adapter === null ? null : <AppText>Adapter: {adapter}</AppText>}
       <AppButton label="Stop scan" onPress={() => void stopScan(work, setError)} />
@@ -159,9 +182,10 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
       {planDigest === null ? null : <AppText>Scan plan digest: {planDigest}</AppText>}
       {diagnosticCounters === null ? null : <AppText>Resource counters: {diagnosticCounters}</AppText>}
       {restoration === null ? null : <AppText>Restoration: {restoration}</AppText>}
+      {restoredPeers === null ? null : <AppText>Restored peers: {restoredPeers}</AppText>}
       {supportBundle === null ? null : <AppText>Support bundle: {supportBundle}</AppText>}
-      <FlatList
-        style={{ flex: 1 }}
+          </>
+        }
         data={foundPeers}
         renderItem={({ item }) => <BleDevice peer={item} onPress={peer => void connect(peer)} />}
         keyExtractor={peer => String(peer.peerId)}

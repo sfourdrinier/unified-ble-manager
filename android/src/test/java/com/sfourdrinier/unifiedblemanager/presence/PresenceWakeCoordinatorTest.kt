@@ -3,6 +3,7 @@
 package com.sfourdrinier.unifiedblemanager.presence
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -107,5 +108,67 @@ class PresenceWakeCoordinatorTest {
     coordinator.appeared(peer, null)
     coordinator.disappeared(peer, null)
     assertTrue(store.drainAppearances().isEmpty())
+  }
+
+  @Test
+  fun aRepeatAppearanceWithNoDisappearanceIsIgnored() {
+    // Finding 236: two associations for one strap deliver two appearances
+    // for one physical event. The second must not reinstall the owner,
+    // re-ingest the peer, or re-persist — it is logged and dropped.
+    coordinator.appeared(peer, 4)
+    coordinator.appeared(peer, 5)
+    assertEquals(listOf(PresenceRestoredPeer(peer, null, false)), ingested)
+    assertEquals(listOf("ensureOwner", "ingest"), order)
+    assertTrue(store.drainAppearances().isEmpty())
+    assertTrue(logs.isNotEmpty())
+  }
+
+  @Test
+  fun aRepeatAppearanceWhileUnownedPersistsOnlyOnce() {
+    hostAlive = false
+    coordinator.appeared(peer, 4)
+    coordinator.appeared(peer, 5)
+    assertEquals(listOf(PresenceAppearance(peer, 4, 12345L)), store.drainAppearances())
+    assertTrue(logs.isNotEmpty())
+  }
+
+  @Test
+  fun aDifferentlyCasedTwinOfAnAssociatedDeviceIsDeliveredOnce() {
+    // The platform reports MACs in its stored case while callbacks arrive
+    // in theirs; case must never read as unassociated or double-deliver.
+    coordinator.appeared(peer.lowercase(), 4)
+    coordinator.appeared(peer, 5)
+    assertEquals(listOf(PresenceRestoredPeer(peer, null, false)), ingested)
+    assertEquals(listOf("ensureOwner", "ingest"), order)
+  }
+
+  @Test
+  fun appearedReportsWhetherTheWakeWasDelivered() {
+    // The caller logs the outcome it produced; only a delivered wake
+    // reports true, every ignored or deferred outcome reports false.
+    assertTrue(coordinator.appeared(peer, 4))
+    assertFalse(coordinator.appeared(peer, 5))
+    assertFalse(coordinator.appeared(stranger, null))
+  }
+
+  @Test
+  fun appearedReportsFalseWhenPersistedForALaterSession() {
+    hostAlive = false
+    assertFalse(coordinator.appeared(peer, null))
+  }
+
+  @Test
+  fun anAppearanceAfterADisappearanceIsDeliveredAgain() {
+    coordinator.appeared(peer, 4)
+    coordinator.disappeared(peer, 4)
+    coordinator.appeared(peer, 4)
+    assertEquals(
+      listOf(
+        PresenceRestoredPeer(peer, null, false),
+        PresenceRestoredPeer(peer, null, false)
+      ),
+      ingested
+    )
+    assertEquals(listOf("ensureOwner", "ingest", "ensureOwner", "ingest"), order)
   }
 }

@@ -6,9 +6,13 @@ import android.content.Context
 import android.util.Log
 import com.sfourdrinier.unifiedblemanager.background.AndroidConnectedDeviceForegroundServiceDriver
 import com.sfourdrinier.unifiedblemanager.background.ConnectedDeviceForegroundServiceLeaseRegistry
+import com.sfourdrinier.unifiedblemanager.presence.BackgroundContinuationStore
 import com.sfourdrinier.unifiedblemanager.presence.CompanionPresenceObserver
+import com.sfourdrinier.unifiedblemanager.presence.InMemoryBackgroundContinuationStore
 import com.sfourdrinier.unifiedblemanager.presence.PresenceRestoredPeer
 import com.sfourdrinier.unifiedblemanager.presence.PresenceRestoredStore
+import com.sfourdrinier.unifiedblemanager.presence.RustCoreContinuationExecutor
+import com.sfourdrinier.unifiedblemanager.presence.SharedPreferencesBackgroundContinuationStore
 import com.sfourdrinier.unifiedblemanager.presence.SharedPreferencesPresenceStore
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio
 import com.ubm.core.MobileCoreBridge
@@ -40,6 +44,13 @@ class RustCoreProcessHost(
   @Volatile
   private var presenceStore: PresenceRestoredStore? = null
 
+  /** The persisted standing order the OS wake executes with no JavaScript. */
+  @Volatile
+  private var continuationStore: BackgroundContinuationStore? = null
+
+  @Volatile
+  private var continuationExecutor: RustCoreContinuationExecutor? = null
+
   /** Rust's single wake sink for the process. */
   val wake = MobileCoreBridge.WakeListener { sessionId ->
     val route = routes[sessionId]
@@ -64,6 +75,30 @@ class RustCoreProcessHost(
   /** Presence appearance persistence (written by the presence service, drained at session open). */
   fun attachPresenceStore(store: PresenceRestoredStore) {
     presenceStore = store
+  }
+
+  /** Standing-order persistence (written by JS declare, read by the wake). */
+  fun attachContinuationStore(store: BackgroundContinuationStore) {
+    continuationStore = store
+  }
+
+  fun continuationStore(): BackgroundContinuationStore =
+    continuationStore ?: InMemoryBackgroundContinuationStore().also { continuationStore = it }
+
+  /**
+   * The host-owned continuation executor (one continuation session per
+   * process). Built on first use against the installed core.
+   */
+  @Synchronized
+  fun continuationExecutor(): RustCoreContinuationExecutor {
+    continuationExecutor?.let { return it }
+    val built = RustCoreContinuationExecutor(
+      core = core,
+      wireRevision = core.wireRevision(),
+      log = log
+    )
+    continuationExecutor = built
+    return built
   }
 
   /**
@@ -163,6 +198,7 @@ class RustCoreProcessHost(
         ::log
       )
       host.attachPresenceStore(SharedPreferencesPresenceStore(application))
+      host.attachContinuationStore(SharedPreferencesBackgroundContinuationStore(application))
       shared = host
       return host
     }

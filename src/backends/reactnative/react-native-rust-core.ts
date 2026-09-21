@@ -52,6 +52,26 @@ export interface RustCoreRestorationIdentityRequest {
 export interface ReactNativeRustCoreBinding {
   /** Verifies the binary identity, then admits one session lease. */
   openSession(owner: string): Promise<ReactNativeRustCoreSession>
+  /**
+   * Persists the declared background standing order in the native owner so
+   * an OS wake (no JavaScript) can execute it. Optional: a binding whose
+   * native module predates it omits the method, and a non-`record-only`
+   * declaration then fails fast with `capability.unsupported` instead of a
+   * silent record-only.
+   */
+  declareBackgroundContinuation?(declarationJson: string): Promise<void>
+  /**
+   * Drains the continuation backlog the wake queued (verbatim
+   * `{batches, disposed}` claim JSON). Optional like the declare method; a
+   * missing claim answers `capability.unsupported`, never an invented empty
+   * backlog.
+   */
+  claimContinuation?(maxItems: number, maxBytes: number): Promise<string>
+  /**
+   * Reports the continuation posture (verbatim status JSON). Optional like
+   * the declare method.
+   */
+  continuationStatus?(): Promise<string>
   /** Cryptographically secure random bytes from the platform CSPRNG (1..1024). */
   randomBytes(length: number): Promise<Uint8Array>
   /** The app-declared restoration identity (Info.plist / manifest). */

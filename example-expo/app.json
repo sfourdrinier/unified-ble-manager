@@ -44,6 +44,15 @@
                 "title": "Example BLE active",
                 "body": "Bluetooth activity in progress"
               }
+            },
+            "continuation": {
+              "onAppearance": "native",
+              "resubscribe": [
+                {
+                  "serviceUuid": "0000180d-0000-1000-8000-00805f9b34fb",
+                  "characteristicUuid": "00002a37-0000-1000-8000-00805f9b34fb"
+                }
+              ]
             }
           }
         }

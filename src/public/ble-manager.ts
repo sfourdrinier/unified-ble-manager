@@ -282,6 +282,17 @@ export type {
 // Public peer — opaque backend-scoped identifier, no generic.
 export interface BlePeer {
   readonly id: string
+  /**
+   * The name the platform supplied with this record, or null when it
+   * supplied none. Null is a truthful answer, never a missing field: a
+   * restored peer has no advertisement observation in this process, so its
+   * name is whatever name the OS handed back with the restoration (Apple
+   * `CBPeripheral.name`) or null (Android presence wake hands back a bare
+   * address). The Companion Device Manager association label is NOT merged
+   * here — it is an association-time label, not a radio observation.
+   * Display `reference.opaqueId` (the address on Android) or your own stored
+   * label when this is null; `lastAdvertisement` is null on the same record.
+   */
   readonly name: string | null
   readonly rssi: number | null
   readonly reference: PeerReference | null

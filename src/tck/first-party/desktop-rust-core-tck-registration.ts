@@ -214,6 +214,7 @@ const providerContractScenarioIds: readonly TckScenarioId[] = Object.freeze([
   'identity.valid-all-axis-negotiation',
   'identity.version-skew-and-malformed-offers',
   'capability.truth-limits-evidence-and-binding',
+  'adapter.atomic-snapshot-and-watch',
   'gatt.duplicate-uuid-occurrences-route-exactly',
   'scenario.scan-connect-discover-read-notify-destroy'
 ])
@@ -261,7 +262,8 @@ const coreBluetoothControllerActions: readonly TckControllerAction[] = Object.fr
 
 const providerContractControllerActions: readonly TckControllerAction[] = Object.freeze([
   'queue-advertisement',
-  'emit-notification'
+  'emit-notification',
+  'set-adapter-state'
 ])
 
 interface DesktopLegShape {
@@ -421,7 +423,7 @@ function createDesktopRustCoreTckRegistration(
   const opened: OpenedLeg[] = []
   const bindingFor = async (): Promise<DesktopRustCoreBinding> =>
     syntheticOnlyBinding(options.binding ?? (await loadDesktopCoreBinding(profile)), profile, async central => {
-      await seedSyntheticWorld(central, shape.platform, nativePeerId)
+      await seedSyntheticWorld(central, nativePeerId)
       const leg = legFor(central)
       opened.push(leg.opened)
       return leg.central
@@ -528,17 +530,13 @@ function syntheticOnlyBinding(
 }
 
 /** The radio world every fixture starts from: a powered adapter and one known peer. */
-async function seedSyntheticWorld(
-  central: SyntheticCentral,
-  platform: DesktopRustCorePlatform,
-  nativePeerId: string
-): Promise<void> {
-  // CoreBluetooth reports its first usable state after the manager exists
-  // (the legacy first-state wait); the other OSes read it on demand.
-  if (platform === 'corebluetooth') {
-    await central.stageAdapterAuthorization('granted', false)
-    await central.stageAdapterState('powered-on', true)
-  }
+async function seedSyntheticWorld(central: SyntheticCentral, nativePeerId: string): Promise<void> {
+  // Every leg starts from a powered adapter: the adapter scenario stages its
+  // transition from the initial snapshot, so the seed is `on` on all OSes.
+  // (CoreBluetooth additionally needs it for the legacy first-state wait;
+  // the other OSes read it on demand.)
+  await central.stageAdapterAuthorization('granted', false)
+  await central.stageAdapterState('powered-on', true)
   await central.stageServices(nativePeerId, tckServices)
   await central.stageMtu(nativePeerId, TCK_ATT_MTU)
   await central.stageRssi(nativePeerId, TCK_RSSI)

@@ -23,6 +23,7 @@ import {
   combineReactNativeFeatureRegistries,
   createReactNativeRestorationFeatureRegistry
 } from './react-native-restoration'
+import { createReactNativeContinuationFeatureRegistry } from './react-native-continuation'
 
 export type ReactNativeRustCoreFeaturePlatform = 'android' | 'apple'
 
@@ -213,6 +214,11 @@ export function createReactNativeRustCoreFeatureRegistry(
     }),
     createReactNativeDescriptorFeatureRegistry(platform, implementationVersion),
     createReactNativeRestorationFeatureRegistry(platform, implementationVersion),
+    // BGS4: one capability per continuation strategy, answered at runtime
+    // for the instantiated platform — never a static matrix.
+    createReactNativeContinuationFeatureRegistry(platform, implementationVersion, {
+      androidApiLevel: facts.androidApiLevel
+    }),
     createFeatureRegistry(
       Object.freeze([
         direct,

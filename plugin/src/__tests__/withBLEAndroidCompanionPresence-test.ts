@@ -1,5 +1,6 @@
 import {
   COMPANION_PRESENCE_BIND_PERMISSION,
+  COMPANION_PRESENCE_OBSERVE_PERMISSION,
   COMPANION_PRESENCE_SERVICE_ACTION,
   COMPANION_PRESENCE_SERVICE_NAME,
   reconcileAndroidCompanionPresence
@@ -30,6 +31,10 @@ function emptyManifest() {
 
 function servicesOf(manifest: { manifest: { application: Array<{ service?: ManifestService[] }> } }) {
   return manifest.manifest.application[0].service ?? []
+}
+
+function permissionsOf(manifest: { manifest: { 'uses-permission'?: Array<{ $: Record<string, string> }> } }) {
+  return manifest.manifest['uses-permission'] ?? []
 }
 
 describe('withBLEAndroidCompanionPresence', () => {
@@ -74,6 +79,45 @@ describe('withBLEAndroidCompanionPresence', () => {
     const removed = reconcileAndroidCompanionPresence(configured, { mode: 'none' })
 
     expect(servicesOf(removed)).toContainEqual(presence)
+  })
+
+  it('declares the observe-presence permission exactly when it declares the presence service', () => {
+    const configured = reconcileAndroidCompanionPresence(emptyManifest(), connectedDeviceOptions)
+
+    expect(permissionsOf(configured)).toContainEqual({ $: { 'android:name': COMPANION_PRESENCE_OBSERVE_PERMISSION } })
+  })
+
+  it('is idempotent: applying twice leaves a single observe-presence permission entry', () => {
+    const once = reconcileAndroidCompanionPresence(emptyManifest(), connectedDeviceOptions)
+    const twice = reconcileAndroidCompanionPresence(once, connectedDeviceOptions)
+
+    expect(
+      permissionsOf(twice).filter(permission => permission.$['android:name'] === COMPANION_PRESENCE_OBSERVE_PERMISSION)
+    ).toHaveLength(1)
+  })
+
+  it('removes the plugin observe-presence permission when background android is disabled', () => {
+    const configured = reconcileAndroidCompanionPresence(emptyManifest(), connectedDeviceOptions)
+    const removed = reconcileAndroidCompanionPresence(configured, { mode: 'none' })
+
+    expect(
+      permissionsOf(removed).filter(
+        permission => permission.$['android:name'] === COMPANION_PRESENCE_OBSERVE_PERMISSION
+      )
+    ).toHaveLength(0)
+  })
+
+  it('preserves a host-modified observe-presence permission declaration when disabling', () => {
+    const configured = reconcileAndroidCompanionPresence(emptyManifest(), connectedDeviceOptions)
+    const permission = permissionsOf(configured).find(
+      entry => entry.$['android:name'] === COMPANION_PRESENCE_OBSERVE_PERMISSION
+    )
+    if (!permission) throw new Error('Expected the plugin to add the observe-presence permission')
+    permission.$['android:maxSdkVersion'] = '33'
+
+    const removed = reconcileAndroidCompanionPresence(configured, { mode: 'none' })
+
+    expect(permissionsOf(removed)).toContainEqual(permission)
   })
 
   it('leaves a host-declared presence service untouched when enabling', () => {

@@ -177,6 +177,128 @@ test('restoration reconnect without a known peer is refused, never silently skip
   await assert.rejects(registry.dispatch('restoration', 'reconnect', {}), { code: 'scenario.no-known-peer' })
 })
 
+test('restoration observe-presence arms the recorded peer by default and reports the owner answer verbatim', async () => {
+  const { manager, calls } = createFakeManager()
+  const registry = createScenarioRegistry(createFakeHost({ manager, adapterHostManager }))
+  await registry.dispatch('restoration', 'start', { autoReconnect: false })
+  await registry.dispatch('restoration', 'stop', {})
+  const result = await registry.dispatch('restoration', 'observe-presence', {})
+  assert.deepEqual(result, { peerId: 'peer-h10', state: 'observing' })
+  assert.ok(calls.includes('observe-presence peer-h10'))
+  const scenario = registry.get('restoration')
+  assert.ok(eventsOf(scenario).includes('presence-observing'))
+  assert.equal(scenario.snapshot().knownPeerId, 'peer-h10')
+  await registry.dispatch('restoration', 'stop', {})
+})
+
+test('restoration observe-presence takes an explicit peer id instead of the recorded one', async () => {
+  const { manager, calls } = createFakeManager()
+  const registry = createScenarioRegistry(createFakeHost({ manager, adapterHostManager }))
+  const result = await registry.dispatch('restoration', 'observe-presence', { peerId: 'peer-other' })
+  assert.deepEqual(result, { peerId: 'peer-other', state: 'observing' })
+  assert.ok(calls.includes('observe-presence peer-other'))
+  await registry.dispatch('restoration', 'stop', {})
+})
+
+test('restoration unobserve-presence releases the recorded peer and reports the owner answer verbatim', async () => {
+  const { manager, calls } = createFakeManager()
+  const registry = createScenarioRegistry(createFakeHost({ manager, adapterHostManager }))
+  await registry.dispatch('restoration', 'start', { autoReconnect: false })
+  await registry.dispatch('restoration', 'stop', {})
+  const result = await registry.dispatch('restoration', 'unobserve-presence', {})
+  assert.deepEqual(result, { peerId: 'peer-h10', state: 'idle' })
+  assert.ok(calls.includes('unobserve-presence peer-h10'))
+  assert.ok(eventsOf(registry.get('restoration')).includes('presence-idle'))
+  await registry.dispatch('restoration', 'stop', {})
+})
+
+test('restoration observe-presence without a known peer is refused, never silently skipped', async () => {
+  const { manager } = createFakeManager()
+  const registry = createScenarioRegistry(createFakeHost({ manager, adapterHostManager }))
+  await assert.rejects(registry.dispatch('restoration', 'observe-presence', {}), { code: 'scenario.no-known-peer' })
+  await assert.rejects(registry.dispatch('restoration', 'unobserve-presence', {}), { code: 'scenario.no-known-peer' })
+})
+
+test('restoration observe-presence reports the owner capability.unsupported answer unwrapped', async () => {
+  const { manager } = createFakeManager({ presence: 'unsupported' })
+  const registry = createScenarioRegistry(createFakeHost({ manager, adapterHostManager }))
+  await registry.dispatch('restoration', 'start', { autoReconnect: false })
+  await registry.dispatch('restoration', 'stop', {})
+  await assert.rejects(registry.dispatch('restoration', 'observe-presence', {}), error => {
+    assert.equal(error.code, 'capability.unsupported')
+    assert.match(error.message, /not supported on this platform/)
+    return true
+  })
+  await assert.rejects(registry.dispatch('restoration', 'unobserve-presence', { peerId: 'peer-h10' }), {
+    code: 'capability.unsupported'
+  })
+})
+
+test('restoration restored reports the restored peer verbatim', async () => {
+  const { manager, calls } = createFakeManager()
+  const registry = createScenarioRegistry(createFakeHost({ manager, adapterHostManager }))
+  const result = await registry.dispatch('restoration', 'restored', {})
+  assert.ok(calls.includes('peers.restored'))
+  assert.equal(result.count, 1)
+  assert.equal(result.peers.length, 1)
+  assert.equal(result.peers[0].id, 'peer-h10')
+  assert.equal(result.peers[0].name, 'Polar H10 1234')
+  assert.ok(eventsOf(registry.get('restoration')).includes('restoration-restored-peers'))
+  await registry.dispatch('restoration', 'stop', {})
+})
+
+test('restoration restored reports a nameless restored peer verbatim: null name, address in the reference', async () => {
+  const { manager, calls } = createFakeManager({
+    restoredPeers: [
+      {
+        id: 'android-peer-1-1',
+        name: null,
+        rssi: null,
+        reference: { opaqueId: 'A0:9E:1A:E9:B9:3D' },
+        sources: ['restored'],
+        lastAdvertisement: null,
+        state: { reachability: 'unknown', connection: 'unknown', bond: 'unknown', lastSeenAtMonotonicMs: null }
+      }
+    ]
+  })
+  const registry = createScenarioRegistry(createFakeHost({ manager, adapterHostManager }))
+  const result = await registry.dispatch('restoration', 'restored', {})
+  assert.ok(calls.includes('peers.restored'))
+  assert.equal(result.count, 1)
+  assert.equal(result.peers[0].id, 'android-peer-1-1')
+  assert.equal(result.peers[0].name, null)
+  assert.equal(result.peers[0].reference.opaqueId, 'A0:9E:1A:E9:B9:3D')
+  assert.ok(eventsOf(registry.get('restoration')).includes('restoration-restored-peers'))
+  await registry.dispatch('restoration', 'stop', {})
+})
+
+test('restoration restored answers explicitly when there are no restored peers', async () => {
+  const { manager } = createFakeManager({ restoredPeers: [] })
+  const registry = createScenarioRegistry(createFakeHost({ manager, adapterHostManager }))
+  const result = await registry.dispatch('restoration', 'restored', {})
+  assert.deepEqual(result.peers, [])
+  assert.equal(result.count, 0)
+  await registry.dispatch('restoration', 'stop', {})
+})
+
+test('restoration restored reports the owner capability.unsupported answer unwrapped', async () => {
+  const { manager } = createFakeManager({ restored: 'unsupported' })
+  const registry = createScenarioRegistry(createFakeHost({ manager, adapterHostManager }))
+  await assert.rejects(registry.dispatch('restoration', 'restored', {}), error => {
+    assert.equal(error.code, 'capability.unsupported')
+    assert.match(error.message, /not supported on this platform/)
+    return true
+  })
+})
+
+test('restoration observe-presence on a host without a presence API is refused, never faked', async () => {
+  const { manager } = createFakeManager({ presence: 'absent' })
+  const registry = createScenarioRegistry(createFakeHost({ manager, adapterHostManager }))
+  await assert.rejects(registry.dispatch('restoration', 'observe-presence', { peerId: 'peer-h10' }), {
+    code: 'scenario.presence-unavailable'
+  })
+})
+
 test('capabilityLease passes the library capability report on verbatim and holds nothing', async () => {
   const { manager } = createFakeManager({ capabilities: { 'background:desktop-maintain-connection': 'supported', 'web:background-operation': 'unsupported' } })
   const supported = await capabilityLease(manager, 'background:desktop-maintain-connection')

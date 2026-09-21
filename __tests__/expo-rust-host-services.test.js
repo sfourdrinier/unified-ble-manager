@@ -241,6 +241,84 @@ describe('Expo host services on the Rust session', () => {
     await manager.destroy()
   })
 
+  test('a second associate for an associated device reports already-associated, not a duplicate', async () => {
+    const { native, manager } = await expoManager()
+    const first = await manager.association.associate({ name: 'Sensor', serviceUuid: '180D' })
+    expect(first).toEqual({
+      source: 'associated',
+      associationId: 7,
+      peerId: DEFAULT_PEER,
+      displayName: 'Sensor'
+    })
+    const second = await manager.association.associate({ name: 'Sensor', serviceUuid: '180D' })
+    expect(second).toEqual({
+      source: 'already-associated',
+      associationId: 7,
+      peerId: DEFAULT_PEER,
+      displayName: 'Sensor'
+    })
+    expect(await manager.association.list()).toEqual([
+      { associationId: 7, peerId: DEFAULT_PEER, displayName: 'Sensor' }
+    ])
+    await manager.destroy()
+  })
+
+  test('association listing and removal round-trip; unknown ids are reported', async () => {
+    const { native, manager } = await expoManager()
+    expect(await manager.association.list()).toEqual([])
+    const first = await manager.association.associate({ name: 'Sensor' })
+    await expect(manager.association.disassociate({ associationId: 0 })).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'argument.invalid',
+      operation: 'expo.association.disassociate'
+    })
+    await expect(manager.association.disassociate({ associationId: 999 })).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'peer.not-found',
+      operation: 'expo.association.disassociate'
+    })
+    await expect(manager.association.disassociate({ associationId: first.associationId })).resolves.toEqual({
+      state: 'disassociated',
+      associationId: first.associationId
+    })
+    expect(await manager.association.list()).toEqual([])
+    const removals = native.opsInvoked('companion.disassociate')
+    expect(removals[removals.length - 1]).toMatchObject({
+      associationId: first.associationId
+    })
+    await manager.destroy()
+  })
+
+  test('association administration is unsupported where the platform has no companion-device concept', async () => {
+    const { manager } = await expoManager('apple')
+    await expect(manager.association.list()).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'capability.unsupported',
+      operation: 'expo.association.list'
+    })
+    await expect(manager.association.disassociate({ associationId: 4 })).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'capability.unsupported',
+      operation: 'expo.association.disassociate'
+    })
+    await manager.destroy()
+  })
+
+  test('a malformed association administration answer is protocol.malformed at the Expo boundary', async () => {
+    const { native, manager } = await expoManager()
+    native.hold('companion.list')
+    const pending = manager.association.list()
+    for (let turn = 0; turn < 20; turn += 1) await Promise.resolve()
+    native.release('companion.list', { associations: [{ associationId: 0, peerId: null, displayName: null }] })
+    await expect(pending).rejects.toMatchObject({ code: 'protocol.malformed', operation: 'expo.association.result' })
+    native.hold('companion.disassociate')
+    const removal = manager.association.disassociate({ associationId: 4 })
+    for (let turn = 0; turn < 20; turn += 1) await Promise.resolve()
+    native.release('companion.disassociate', { state: 'disassociated', associationId: 0 })
+    await expect(removal).rejects.toMatchObject({ code: 'protocol.malformed', operation: 'expo.association.result' })
+    await manager.destroy()
+  })
+
   test('claims Apple restoration with the configured authority; unconfigured apps are told so', async () => {
     const authority = {
       namespaceValue: 'ubm-ns:expo',
@@ -267,5 +345,99 @@ describe('Expo host services on the Rust session', () => {
       operation: 'expo.restoration.claim'
     })
     await unconfigured.manager.destroy()
+  })
+
+  describe('background continuation (BGS4)', () => {
+    const NATIVE_ORDER = {
+      onAppearance: 'native',
+      resubscribe: [
+        {
+          serviceUuid: '0000180d-0000-1000-8000-00805f9b34fb',
+          characteristicUuid: '00002a37-0000-1000-8000-00805f9b34fb'
+        }
+      ]
+    }
+    const CLAIM = JSON.stringify({
+      batches: [
+        JSON.stringify({
+          more: false,
+          controlLost: 0,
+          records: [
+            { t: 'value', ordinal: 1, consumer: 'ubm-continuation-0', valueB64: 'AEg=', delivery: 'notification' },
+            {
+              t: 'stream-end',
+              ordinal: 2,
+              consumer: 'ubm-continuation-0',
+              reason: 'overflow',
+              droppedItems: 5,
+              droppedBytes: 100
+            }
+          ]
+        })
+      ],
+      disposed: true
+    })
+    const STATUS = JSON.stringify({
+      strategy: 'native',
+      peerId: null,
+      resubscribe: 1,
+      malformedDeclarations: 0,
+      lastWake: {
+        observedAtMs: 12345,
+        event: 'continuation.completed',
+        strategy: 'native',
+        peerAddress: 'A0:9E:1A:E9:B9:3D',
+        code: null,
+        reason: null
+      }
+    })
+
+    async function continuationManager() {
+      const harness = rustCoreHarness({ platform: 'android' })
+      harness.native.declareBackgroundContinuation = async () => {}
+      harness.native.claimContinuation = async () => CLAIM
+      harness.native.continuationStatus = async () => STATUS
+      // The harness binds eagerly; rebuild after adding the native methods.
+      const { createReactNativeRustCoreBinding } = require('../src/backends/reactnative/react-native-rust-core-binding')
+      const binding = createReactNativeRustCoreBinding({ platform: 'android', native: harness.native })
+      const manager = await createExpoBleManagerWithEnvironment({
+        ...environment(harness, { background: { continuation: NATIVE_ORDER } }),
+        rustCore: binding,
+        expo: EXPO
+      })
+      return { native: harness.native, manager }
+    }
+
+    test('declares the standing order at open and reports status and backlog with loss accounting', async () => {
+      const { manager } = await continuationManager()
+      const status = await manager.continuation.status()
+      expect(status.strategy).toBe('native')
+      expect(status.lastWake.event).toBe('continuation.completed')
+      const backlog = await manager.continuation.claim()
+      expect(backlog.values).toHaveLength(1)
+      expect([...backlog.values[0].value]).toEqual([0, 72])
+      expect(backlog.streamEnds).toEqual([
+        { consumer: 'ubm-continuation-0', reason: 'overflow', droppedItems: 5, droppedBytes: 100 }
+      ])
+      expect(backlog.disposed).toBe(true)
+      await manager.destroy()
+    })
+
+    test('a native module without the claim answers unsupported, never an invented backlog', async () => {
+      const harness = rustCoreHarness({ platform: 'android' })
+      harness.native.declareBackgroundContinuation = async () => {}
+      const { createReactNativeRustCoreBinding } = require('../src/backends/reactnative/react-native-rust-core-binding')
+      const binding = createReactNativeRustCoreBinding({ platform: 'android', native: harness.native })
+      const manager = await createExpoBleManagerWithEnvironment({
+        ...environment(harness, { background: { continuation: NATIVE_ORDER } }),
+        rustCore: binding,
+        expo: EXPO
+      })
+      await expect(manager.continuation.claim()).rejects.toMatchObject({
+        code: 'capability.unsupported',
+        operation: 'expo.continuation.claim'
+      })
+      await manager.destroy()
+    })
   })
 })

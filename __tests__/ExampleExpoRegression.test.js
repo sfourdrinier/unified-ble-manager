@@ -74,6 +74,16 @@ describe('Expo example cold-review regressions', () => {
     )
   })
 
+  test('restored peers display the address when the platform supplied no name (FXL-233)', () => {
+    const dashboard = readExampleSource('example-expo', 'screens/MainStack/DashboardScreen/DashboardScreen.tsx')
+    // A restored peer has no advertisement observation in this process, so
+    // `name` is null on Android presence wake; the screen shows the
+    // address-bearing reference instead of an empty name.
+    expect(dashboard).toContain('peer.reference?.opaqueId')
+    expect(dashboard).not.toContain("'unnamed'")
+    expect(dashboard).not.toContain('"unnamed"')
+  })
+
   test('nRF flow respects Apple-managed MTU and treats Android MTU failure as a failed flow', () => {
     for (const exampleDirectory of ['example', 'example-expo']) {
       const nrf = readExampleSource(exampleDirectory, 'screens/MainStack/DevicenRFTestScreen/DevicenRFTestScreen.tsx')

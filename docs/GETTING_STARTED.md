@@ -208,6 +208,16 @@ Each `timeoutMs` is scoped to its public operation. More recipes: [`TUTORIALS.md
 - Reading a characteristic while it notifies works on every platform, but on Apple CoreBluetooth (iOS, macOS Node/Electron) the value cannot be told apart from a notification: `didUpdateValueFor` reports both. Use `characteristic.readReceipt()` when it matters: `provenance` is `read-response` when the platform attributed the value to your read, and `read-or-notification` when it may be a notification. Subscribers receive that value too. Android, WinRT, BlueZ and Web always answer `read-response`.
 - `requiredHardware: true` only marks the Android BLE hardware feature. It does not start a foreground service.
 
+### Reconnecting after the app was gone (restoration)
+
+A known peer reconnects without a scan, but the wake-up differs per
+platform: on Android associate (`ble.association.associate`), arm presence
+(`ble.presence.observe({ peerId })`), then read `ble.peers.restored()` and
+`connect` with intent `'when-available'`; on iOS configure
+`background.ios.restoration` and adopt with `restoration.claim()`. The full
+task-ordered chain, and what API<31, tvOS, desktop and Web answer instead,
+is in [`BACKGROUND.md`](BACKGROUND.md).
+
 ## Coming from react-native-ble-plx
 
 This is a rewrite. There is no `new BleManager()` and no Base64 characteristic values. Start with [`MIGRATION_4.0.md`](../MIGRATION_4.0.md).

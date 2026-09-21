@@ -29,10 +29,11 @@ use ubm_desktop::{
 };
 use ubm_mobile::{
     AdapterAuthorization, AdapterAvailability, AdapterPower, AdapterSnapshot, Advertisement,
-    AuthenticationState, BondState, BondedPeer, CloseFailure, CompletionStatus, EncryptionState,
-    FailureKind, HostOptions, IngressClass, IngressStatus, Instance, ManufacturerData, MobileHost,
-    MobilePlatform, PhyObservation, PlatformFailure, PlatformRadio, RadioCompletion, RadioIngress,
-    RadioRequest, RestoredPeer, SecureConnectionsState, SecurityState, ServiceData, WakeSink,
+    AuthenticationState, BondState, BondedPeer, CloseFailure, CompanionRecord, CompletionStatus,
+    EncryptionState, FailureKind, HostOptions, IngressClass, IngressStatus, Instance,
+    ManufacturerData, MobileHost, MobilePlatform, PhyObservation, PlatformFailure, PlatformRadio,
+    RadioCompletion, RadioIngress, RadioRequest, RestoredPeer, SecureConnectionsState,
+    SecurityState, ServiceData, WakeSink,
 };
 
 use crate::build_identity::ubm_build_identity_json;
@@ -363,6 +364,11 @@ pub fn request_call(request: &RadioRequest) -> (&'static str, Vec<Arg>) {
         } => (
             "associateCompanion",
             vec![rid, Arg::Str(name.clone()), Arg::Str(service_uuid.clone())],
+        ),
+        RadioRequest::ListCompanion { .. } => ("listCompanion", vec![rid]),
+        RadioRequest::DisassociateCompanion { association_id, .. } => (
+            "disassociateCompanion",
+            vec![rid, Arg::Long(*association_id)],
         ),
         RadioRequest::ObservePresence { peer_id, .. } => {
             ("observePresence", vec![rid, text(peer_id)])
@@ -1331,14 +1337,47 @@ completion_native!(
 completion_native!(
     Java_com_ubm_core_MobileCoreBridge_nativeCompleteCompanion,
     "mobile.complete.companion",
-    (association_id: jlong, peer_id: JString<'caller>, display_name: JString<'caller>),
+    (association_id: jlong, peer_id: JString<'caller>, display_name: JString<'caller>, already_associated: jboolean),
     |env| {
         const OP: &str = "mobile.complete.companion";
         Ok(RadioCompletion::Companion {
             association_id,
             peer_id: read_opt_text(env, &peer_id, OP)?,
             display_name: read_opt_text(env, &display_name, OP)?,
+            already_associated,
         })
+    }
+);
+
+completion_native!(
+    Java_com_ubm_core_MobileCoreBridge_nativeCompleteCompanionList,
+    "mobile.complete.companion-list",
+    (association_ids: JLongArray<'caller>, peer_ids: JObjectArray<'caller, JString<'caller>>, display_names: JObjectArray<'caller, JString<'caller>>),
+    |env| {
+        const OP: &str = "mobile.complete.companion-list";
+        let association_ids = read_longs(env, &association_ids)?;
+        let peer_ids = read_texts(env, &peer_ids, OP)?;
+        let display_names = read_texts(env, &display_names, OP)?;
+        same_length(
+            OP,
+            &[
+                association_ids.len(),
+                peer_ids.len(),
+                display_names.len(),
+            ],
+        )?;
+        Ok(RadioCompletion::CompanionList(
+            association_ids
+                .into_iter()
+                .zip(peer_ids)
+                .zip(display_names)
+                .map(|((association_id, peer_id), display_name)| CompanionRecord {
+                    association_id,
+                    peer_id,
+                    display_name,
+                })
+                .collect(),
+        ))
     }
 );
 

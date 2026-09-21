@@ -32,12 +32,34 @@ class ForegroundServiceBackgroundPort(
   override fun update(leaseId: String, title: String, body: String?) = leases.update(leaseId, title, body)
 }
 
-/** Companion Device Manager association chooser (`AssociateCompanion`). */
+/**
+ * Companion Device Manager association chooser (`AssociateCompanion`) and
+ * association administration (`ListCompanion` / `DisassociateCompanion`,
+ * finding 236: the record a duplicate check and the cleanup UI read).
+ */
 interface CompanionPort {
   fun associate(name: String?, serviceUuid: String?, onResult: (Result<CompanionAssociation>) -> Unit)
+  /** This app's associations; empty when none. Throws [RadioPortFailure] when the platform cannot answer. */
+  fun listAssociations(): List<CompanionAssociationRecord>
+  /** Removes one association by id; throws [RadioPortFailure] when no association carries it. */
+  fun disassociate(associationId: Long)
 }
 
-data class CompanionAssociation(val associationId: Long, val peerId: String?, val displayName: String?)
+/** One listed association (finding 236). */
+data class CompanionAssociationRecord(val associationId: Long, val peerId: String?, val displayName: String?)
+
+/**
+ * One association the platform reports. [alreadyAssociated] is true when the
+ * platform already held an association for the requested device and created
+ * nothing new (finding 236): the record is the existing association, and
+ * the caller reports `already-associated` instead of `associated`.
+ */
+data class CompanionAssociation(
+  val associationId: Long,
+  val peerId: String?,
+  val displayName: String?,
+  val alreadyAssociated: Boolean = false
+)
 
 /** Classifies a foreground-service control failure by its stable code. */
 internal fun classifyBackgroundFailure(error: Throwable): RadioFailure {

@@ -344,7 +344,33 @@ export function createReactNativeRustCoreBinding(
       )
       const text = await call('restoration-identity', () => native.restorationIdentity(requestText))
       return unwrap(parseRestorationIdentityText(text))
-    }
+    },
+    // An older native module predates the standing order: the methods are
+    // omitted then, and the provider fails fast instead of a silent
+    // record-only or an invented empty backlog.
+    ...(typeof native.declareBackgroundContinuation === 'function'
+      ? {
+          declareBackgroundContinuation: async (declarationJson: string): Promise<void> => {
+            if (declarationJson.length === 0) {
+              throw contractError('argument.invalid', 'restoration', `${OPERATION}.continuation.empty`)
+            }
+            await call('declare-background-continuation', () => native.declareBackgroundContinuation(declarationJson))
+          }
+        }
+      : {}),
+    ...(typeof native.claimContinuation === 'function' && typeof native.continuationStatus === 'function'
+      ? {
+          claimContinuation: async (maxItems: number, maxBytes: number): Promise<string> => {
+            if (!Number.isSafeInteger(maxItems) || maxItems < 1 || !Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+              throw contractError('argument.invalid', 'restoration', `${OPERATION}.continuation.claim-bounds`)
+            }
+            return call('claim-continuation', () => native.claimContinuation(maxItems, maxBytes))
+          },
+          continuationStatus: async (): Promise<string> => {
+            return call('continuation-status', () => native.continuationStatus())
+          }
+        }
+      : {})
   })
 }
 

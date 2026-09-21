@@ -78,14 +78,71 @@ export interface ExpoCompanionAssociationRequest {
 }
 
 export interface ExpoCompanionAssociationResult {
-  readonly source: 'associated'
+  readonly source: 'associated' | 'already-associated'
   readonly associationId: number
   readonly peerId: string | null
   readonly displayName: string | null
 }
 
+export interface ExpoCompanionAssociationRecord {
+  readonly associationId: number
+  readonly peerId: string | null
+  readonly displayName: string | null
+}
+
+export interface ExpoCompanionDisassociationRequest {
+  readonly associationId: number
+}
+
+export interface ExpoCompanionDisassociationResult {
+  readonly state: 'disassociated'
+  readonly associationId: number
+}
+
 export interface ExpoPresenceObservationRequest {
   readonly peerId: string
+}
+
+export interface ExpoContinuationWakeReport {
+  readonly observedAtMs: number
+  readonly event: 'continuation.completed' | 'continuation.failed'
+  readonly strategy: string
+  readonly peerAddress: string | null
+  readonly code: string | null
+  readonly reason: string | null
+}
+
+export interface ExpoContinuationStatus {
+  readonly strategy: string
+  readonly peerId: string | null
+  readonly resubscribe: number
+  readonly malformedDeclarations: number
+  readonly lastWake: ExpoContinuationWakeReport | null
+}
+
+export interface ExpoContinuationValue {
+  readonly consumer: string
+  readonly value: Uint8Array
+  readonly delivery: 'notification' | 'indication' | 'unknown'
+}
+
+export interface ExpoContinuationStreamEnd {
+  readonly consumer: string
+  readonly reason: 'overflow' | 'invalidated' | 'closed'
+  readonly droppedItems: number
+  readonly droppedBytes: number
+}
+
+export interface ExpoContinuationBacklog {
+  readonly values: readonly ExpoContinuationValue[]
+  readonly streamEnds: readonly ExpoContinuationStreamEnd[]
+  readonly controlLost: number
+  readonly disposed: boolean
+}
+
+export interface ExpoContinuationClaimRequest {
+  readonly maxItems?: number
+  readonly maxBytes?: number
 }
 
 export interface ExpoPresenceObservationResult {
@@ -126,6 +183,8 @@ export interface ExpoBleManager extends BleManager {
   }
   readonly association: {
     readonly associate: (request?: ExpoCompanionAssociationRequest) => Promise<ExpoCompanionAssociationResult>
+    readonly list: () => Promise<readonly ExpoCompanionAssociationRecord[]>
+    readonly disassociate: (request: ExpoCompanionDisassociationRequest) => Promise<ExpoCompanionDisassociationResult>
   }
   readonly restoration: {
     readonly claim: () => Promise<ExpoRestorationClaimResult>
@@ -133,6 +192,16 @@ export interface ExpoBleManager extends BleManager {
   readonly presence: {
     readonly observe: (request: ExpoPresenceObservationRequest) => Promise<ExpoPresenceObservationResult>
     readonly unobserve: (request: ExpoPresenceObservationRequest) => Promise<ExpoPresenceReleaseResult>
+  }
+  /**
+   * Background continuation (BGS4): the declared standing order's posture
+   * and backlog. `claim` drains what the wake queued with its loss
+   * accounting; a native module without the claim answers
+   * `capability.unsupported`, never an invented empty backlog.
+   */
+  readonly continuation: {
+    readonly status: () => Promise<ExpoContinuationStatus>
+    readonly claim: (request?: ExpoContinuationClaimRequest) => Promise<ExpoContinuationBacklog>
   }
 }
 
@@ -458,7 +527,9 @@ function withExpoRuntime(
         updateExpoBackgroundNotification(request, host, activeBackgroundLeases)
     }),
     association: Object.freeze({
-      associate: (request: ExpoCompanionAssociationRequest = {}) => associateExpoCompanionDevice(request, host)
+      associate: (request: ExpoCompanionAssociationRequest = {}) => associateExpoCompanionDevice(request, host),
+      list: () => listExpoCompanionAssociations(host),
+      disassociate: (request: ExpoCompanionDisassociationRequest) => disassociateExpoCompanionDevice(request, host)
     }),
     restoration: Object.freeze({
       claim: () => claimExpoRestoration(host)
@@ -466,6 +537,10 @@ function withExpoRuntime(
     presence: Object.freeze({
       observe: (request: ExpoPresenceObservationRequest) => observeExpoPresence(request, host),
       unobserve: (request: ExpoPresenceObservationRequest) => unobserveExpoPresence(request, host)
+    }),
+    continuation: Object.freeze({
+      status: () => readExpoContinuationStatus(host),
+      claim: (request: ExpoContinuationClaimRequest = {}) => claimExpoContinuationBacklog(request, host)
     })
   })
 }
@@ -715,6 +790,49 @@ async function associateExpoCompanionDevice(
   return parseExpoAssociationResult(result)
 }
 
+async function listExpoCompanionAssociations(
+  host: ReactNativeManagerHost
+): Promise<readonly ExpoCompanionAssociationRecord[]> {
+  const operation = 'expo.association.list'
+  let result: unknown
+  try {
+    result = await host.services.listCompanionAssociations()
+  } catch (error) {
+    // Association administration is new in 5.x with no legacy Expo code to
+    // preserve: the owner's answer keeps its code
+    // (capability.unsupported where the platform has no companion-device
+    // concept), never a wrapped fake.
+    throwOwnerError(error, operation)
+  }
+  return parseExpoAssociationList(result)
+}
+
+async function disassociateExpoCompanionDevice(
+  request: ExpoCompanionDisassociationRequest,
+  host: ReactNativeManagerHost
+): Promise<ExpoCompanionDisassociationResult> {
+  const operation = 'expo.association.disassociate'
+  if (!isRecord(request) || !isSafePositiveInteger(request.associationId)) {
+    throwExpoRuntimeError(
+      'argument.invalid',
+      operation,
+      'A positive association id is required to remove its association.'
+    )
+  }
+  const associationId = request.associationId
+  let result: unknown
+  try {
+    result = await host.services.disassociateCompanion({ associationId })
+  } catch (error) {
+    throwOwnerError(error, operation)
+  }
+  const record = expoRecord(result, 'expo.association.result')
+  if (record.state !== 'disassociated' || !isSafePositiveInteger(record.associationId)) {
+    throwExpoMalformedResult('expo.association.result')
+  }
+  return Object.freeze({ state: 'disassociated', associationId: record.associationId })
+}
+
 function expoPresencePeerId(request: ExpoPresenceObservationRequest, operation: string): string {
   if (!isRecord(request) || typeof request.peerId !== 'string' || request.peerId.length === 0) {
     throwExpoRuntimeError('argument.invalid', operation, 'A known peer id is required to observe its presence.')
@@ -757,6 +875,40 @@ async function unobserveExpoPresence(
   const record = expoRecord(result, 'expo.presence.result')
   if (record.state !== 'idle') throwExpoMalformedResult('expo.presence.result')
   return Object.freeze({ state: 'idle' })
+}
+
+async function readExpoContinuationStatus(host: ReactNativeManagerHost): Promise<ExpoContinuationStatus> {
+  const operation = 'expo.continuation.status'
+  try {
+    const status = await host.services.continuationStatus()
+    return Object.freeze({
+      strategy: status.strategy,
+      peerId: status.peerId,
+      resubscribe: status.resubscribe,
+      malformedDeclarations: status.malformedDeclarations,
+      lastWake: status.lastWake === null ? null : Object.freeze({ ...status.lastWake })
+    })
+  } catch (error) {
+    throwOwnerError(error, operation)
+  }
+}
+
+async function claimExpoContinuationBacklog(
+  request: ExpoContinuationClaimRequest,
+  host: ReactNativeManagerHost
+): Promise<ExpoContinuationBacklog> {
+  const operation = 'expo.continuation.claim'
+  try {
+    const backlog = await host.services.claimContinuationBacklog({ ...request })
+    return Object.freeze({
+      values: Object.freeze(backlog.values.map(record => Object.freeze({ ...record }))),
+      streamEnds: Object.freeze(backlog.streamEnds.map(record => Object.freeze({ ...record }))),
+      controlLost: backlog.controlLost,
+      disposed: backlog.disposed
+    })
+  } catch (error) {
+    throwOwnerError(error, operation)
+  }
 }
 
 async function claimExpoRestoration(host: ReactNativeManagerHost): Promise<ExpoRestorationClaimResult> {
@@ -805,19 +957,47 @@ function parseExpoPermissionResult(value: unknown): ExpoPermissionResult {
 function parseExpoAssociationResult(value: unknown): ExpoCompanionAssociationResult {
   const result = expoRecord(value, 'expo.association.result')
   if (
-    result.source !== 'associated' ||
+    (result.source !== 'associated' && result.source !== 'already-associated') ||
     !isSafePositiveInteger(result.associationId) ||
     !nullableString(result.peerId) ||
     !nullableString(result.displayName)
   ) {
     throwExpoMalformedResult('expo.association.result')
   }
+  // Finding 236: the result reports what happened — a fresh association or
+  // the already-held record — so the caller can tell.
+  const source: ExpoCompanionAssociationResult['source'] =
+    result.source === 'already-associated' ? 'already-associated' : 'associated'
   return Object.freeze({
-    source: 'associated',
+    source,
     associationId: result.associationId,
     peerId: result.peerId,
     displayName: result.displayName
   })
+}
+
+function parseExpoAssociationRecord(value: unknown): ExpoCompanionAssociationRecord {
+  const operation = 'expo.association.result'
+  const result = expoRecord(value, operation)
+  if (
+    !isSafePositiveInteger(result.associationId) ||
+    !nullableString(result.peerId) ||
+    !nullableString(result.displayName)
+  ) {
+    throwExpoMalformedResult(operation)
+  }
+  return Object.freeze({
+    associationId: result.associationId,
+    peerId: result.peerId,
+    displayName: result.displayName
+  })
+}
+
+function parseExpoAssociationList(value: unknown): readonly ExpoCompanionAssociationRecord[] {
+  const operation = 'expo.association.result'
+  const result = expoRecord(value, operation)
+  if (!Array.isArray(result.associations)) throwExpoMalformedResult(operation)
+  return Object.freeze(result.associations.map((entry: unknown) => parseExpoAssociationRecord(entry)))
 }
 
 function expoPermissionList(value: unknown, operation: string): BlePermission[] {

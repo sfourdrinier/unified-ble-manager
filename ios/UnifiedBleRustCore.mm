@@ -163,6 +163,44 @@ RCT_EXPORT_MODULE(UnifiedBleRustCore)
                                                 }];
 }
 
+- (void)declareBackgroundContinuation:(NSString *)declarationJson
+                              resolve:(RCTPromiseResolveBlock)resolve
+                               reject:(RCTPromiseRejectBlock)reject {
+  [[UnifiedBleRustCoreSessions shared] declareBackgroundContinuation:declarationJson
+                                                          completion:^(NSString *state, NSString *failure) {
+                                                            if (failure != nil) {
+                                                              rejectWithFailure(reject, failure);
+                                                              return;
+                                                            }
+                                                            resolve(state);
+                                                          }];
+}
+
+- (void)continuationStatus:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
+  [[UnifiedBleRustCoreSessions shared] continuationStatus:^(NSString *status, NSString *failure) {
+    if (failure != nil) {
+      rejectWithFailure(reject, failure);
+      return;
+    }
+    resolve(status);
+  }];
+}
+
+- (void)claimContinuation:(double)maxItems
+                maxBytes:(double)maxBytes
+                 resolve:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject {
+  [[UnifiedBleRustCoreSessions shared] claimContinuationWithMaxItems:maxItems
+                                                           maxBytes:maxBytes
+                                                         completion:^(NSString *claim, NSString *failure) {
+                                                           if (failure != nil) {
+                                                             rejectWithFailure(reject, failure);
+                                                             return;
+                                                           }
+                                                           resolve(claim);
+                                                         }];
+}
+
 @end
 
 #endif

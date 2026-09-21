@@ -39,6 +39,18 @@ export type RestorationState = HeartRateState & {
 const RESTORATION_ADOPTION_FEATURE: FeatureId = 'state:restoration-adoption'
 const RESTORATION_PRESENCE_FEATURE: FeatureId = 'state:presence-observation'
 
+/** The Expo/RN presence surface the scenario arms; plain BleManager hosts lack it. */
+interface PresenceObservationApi {
+  readonly observe: (request: { readonly peerId: string }) => Promise<{ readonly state: 'observing' }>
+  readonly unobserve: (request: { readonly peerId: string }) => Promise<{ readonly state: 'idle' }>
+}
+
+type ManagerWithPresence = BleManager & { readonly presence: PresenceObservationApi }
+
+function hasPresenceApi(manager: BleManager): manager is ManagerWithPresence {
+  return 'presence' in manager
+}
+
 function capabilityState(manager: BleManager, feature: FeatureId): string {
   return manager.capabilities.get(feature)?.state ?? 'unregistered'
 }
@@ -77,6 +89,30 @@ export class RestorationScenario extends HeartRateScenario<RestorationState> {
         peerId: args.optionalString(raw, 'peerId')
       }),
       run: options => this.reconnectKnownPeer(options)
+    }),
+    'observe-presence': defineCommand({
+      label: 'Observe presence',
+      description:
+        'Arm cold-start presence observation for a known peer id. args: {peerId?: string (default: the peer recorded by start)}. Stop the run first, then arm before the docs/BACKGROUND.md kill step. Reports the owner\'s verbatim answer ({state: "observing"}); where the platform cannot observe, the owner\'s capability.unsupported error propagates unwrapped. Refused without a peer id.',
+      presets: [],
+      parse: raw => ({ peerId: args.optionalString(raw, 'peerId') }),
+      run: options => this.setPresence(options, 'observe')
+    }),
+    'unobserve-presence': defineCommand({
+      label: 'Unobserve presence',
+      description:
+        'Release cold-start presence observation for a known peer id. args: {peerId?: string (default: the peer recorded by start)}. Reports the owner\'s verbatim answer ({state: "idle"}); where the platform cannot observe, the owner\'s capability.unsupported error propagates unwrapped. Refused without a peer id.',
+      presets: [],
+      parse: raw => ({ peerId: args.optionalString(raw, 'peerId') }),
+      run: options => this.setPresence(options, 'unobserve')
+    }),
+    restored: defineCommand({
+      label: 'Restored peers',
+      description:
+        'Query the public restored-peers directory (manager.peers.restored()) and report each restored peer verbatim (id, name, and whatever the record carries). Answers explicitly with an empty list when there are none; where the platform cannot answer, the owner\'s capability.unsupported error propagates unwrapped.',
+      presets: [{ label: 'Restored peers', args: {} }],
+      parse: args.none,
+      run: () => this.queryRestoredPeers()
     }),
     stop: this.stopCommand
   }
@@ -120,6 +156,56 @@ export class RestorationScenario extends HeartRateScenario<RestorationState> {
       this.emit('restoration-known-peer', { peerId: knownPeerId, connectionGeneration: result.connectionGeneration ?? null })
     }
     return { ...result, knownPeerId }
+  }
+
+  private async setPresence(
+    options: { readonly peerId: string | null },
+    mode: 'observe' | 'unobserve'
+  ): Promise<JsonObject> {
+    const command = mode === 'observe' ? 'observe-presence' : 'unobserve-presence'
+    // The default is captured before the journey resets the state to idle.
+    const peerId = options.peerId ?? this.snapshot().knownPeerId
+    if (peerId === null || peerId.length === 0) {
+      throw new ScenarioError(
+        'scenario.no-known-peer',
+        `${command} needs a known peer id (peerId); run "start" first, then pass its peer id after relaunch`
+      )
+    }
+    return this.runJourney(async signal => {
+      const hosted = await this.createManager(signal)
+      await this.afterManagerReady(hosted)
+      const manager = hosted.manager
+      if (!hasPresenceApi(manager)) {
+        throw new ScenarioError(
+          'scenario.presence-unavailable',
+          'this host exposes no presence observation API; arm presence from an Expo/RN host'
+        )
+      }
+      // The owner's answer is reported verbatim: {state: "observing"} (or
+      // {state: "idle"}), or the owner's own error — capability.unsupported
+      // on Apple — propagating unwrapped, never a wrapped fake.
+      const state =
+        mode === 'observe' ? (await manager.presence.observe({ peerId })).state : (await manager.presence.unobserve({ peerId })).state
+      this.patchRestoration({ knownPeerId: peerId })
+      this.emit(mode === 'observe' ? 'presence-observing' : 'presence-idle', { peerId, state })
+      return { peerId, state }
+    })
+  }
+
+  private async queryRestoredPeers(): Promise<JsonObject> {
+    return this.runJourney(async signal => {
+      const hosted = await this.createManager(signal)
+      await this.afterManagerReady(hosted)
+      // The owner's answer is reported verbatim: one entry per restored
+      // peer (id, name, and whatever the record carries), an explicit
+      // empty list when there are none — or the owner's own error,
+      // capability.unsupported where the platform cannot answer,
+      // propagating unwrapped, never a wrapped fake.
+      const peers = await hosted.manager.peers.restored()
+      const report = { count: peers.length, peers: peers.map(peer => toJsonValue(peer)) }
+      this.emit('restoration-restored-peers', report)
+      return { count: report.count, peers: report.peers }
+    })
   }
 
   private async reconnectKnownPeer(options: {

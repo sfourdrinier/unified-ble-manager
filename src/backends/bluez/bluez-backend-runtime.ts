@@ -185,6 +185,8 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
   private backendGeneration = 1
   private adapterGeneration = 1
   private adapterStateUpdatedAt: MonotonicTimestamp
+  /** Last adapter snapshot emitted to watchers; same-state signals are not transitions. */
+  private lastWatcherAdapterState: AdapterStateSnapshot<string> | null = null
   nextScan = 1
   nextConnection = 1
   nextLease = 1
@@ -203,6 +205,7 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     this.now = construction.now
     this.pairingGeneration = construction.pairingGeneration ?? null
     this.adapterStateUpdatedAt = monotonicTimestamp(this.now())
+    this.lastWatcherAdapterState = this.adapterState()
     this.backendInstanceId = construction.backendInstanceId
     this.dispatcher = new BluezOperationDispatcher(this.now)
     this.observer = this.store.addObserver(this)
@@ -1093,10 +1096,25 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
 
   private broadcastAdapterState(): void {
     const state = this.adapterState()
-    for (const stream of [...this.stateStreams]) {
-      if (stream.emit(state, 64, String(state.backendGeneration)).terminated) {
-        this.stateStreams.delete(stream)
+    // An adapter-path signal that changes nothing observable (for example
+    // another D-Bus client toggling Discovering) is not a transition:
+    // emitting it would duplicate the watch's initial snapshot for every
+    // subscriber. A generation advance still emits: it is new information.
+    const previous = this.lastWatcherAdapterState
+    const unchanged =
+      previous !== null &&
+      state.availability === previous.availability &&
+      state.authorization === previous.authorization &&
+      state.power === previous.power &&
+      state.safeReason === previous.safeReason &&
+      String(state.backendGeneration) === String(previous.backendGeneration)
+    if (!unchanged) {
+      for (const stream of [...this.stateStreams]) {
+        if (stream.emit(state, 64, String(state.backendGeneration)).terminated) {
+          this.stateStreams.delete(stream)
+        }
       }
+      this.lastWatcherAdapterState = state
     }
     const attachment = this.attachment()
     this.broadcastEvent({

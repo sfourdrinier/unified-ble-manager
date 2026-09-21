@@ -118,7 +118,8 @@ const withBLE: ConfigPlugin<UnifiedBleExpoPluginOptions | void> = (config, props
     requiredHardware: options.requiredHardware ?? false,
     neverForLocation: options.permissions?.android?.neverForLocation ?? false,
     legacyLocation: options.permissions?.android?.legacyLocation ?? 'none',
-    nativeLogging: options.diagnostics?.nativeLogging
+    nativeLogging: options.diagnostics?.nativeLogging,
+    ...(options.background?.continuation === undefined ? {} : { continuation: options.background.continuation })
   })
   config = withBLEAndroidForegroundService(config, options.background?.android ?? { mode: 'none' })
   config = withBLEAndroidCompanionPresence(config, options.background?.android ?? { mode: 'none' })

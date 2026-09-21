@@ -34,6 +34,7 @@ and coding agents should read [`../AGENTS.md`](../AGENTS.md) first.
 | [`PEERS.md`](PEERS.md) | `PeerReference` peer directories, persistence, resolve-then-reconnect semantics | Current |
 | [`CONNECTION_MANAGER.md`](CONNECTION_MANAGER.md) | Connection ownership, leases, generations, application-owned reconnect policy | Current |
 | [`BONDING.md`](BONDING.md) | Pairing, bonding, encryption, and authentication semantics via `manager.security` | Current |
+| [`BACKGROUND.md`](BACKGROUND.md) | Background execution and the known-peer restoration how-to: Android presence chain, iOS claim, per-platform refusals | Current |
 | [`../MIGRATION_4.0.md`](../MIGRATION_4.0.md) | Side-by-side migration map from `react-native-ble-plx` 3.x to 4.0 | Current |
 
 ## Host guides
@@ -109,7 +110,7 @@ and coding agents should read [`../AGENTS.md`](../AGENTS.md) first.
 | [`../UBM-CONTRIBUTION-TERMS-1.0.md`](../UBM-CONTRIBUTION-TERMS-1.0.md) | Contribution terms 1.0 for new 5.0 contributions with explicit assent record | Current |
 | [`security/UNIFIED_BLE_4.0_THREAT_MODEL.md`](security/UNIFIED_BLE_4.0_THREAT_MODEL.md) | Repo-wide threat model: trust boundaries, attacker classes, objectives | Current |
 | [`DEPENDENCY_AND_ARTIFACT_POLICY.md`](DEPENDENCY_AND_ARTIFACT_POLICY.md) | SBOM and third-party license generation and policy | Current |
-| [`../CHANGELOG.md`](../CHANGELOG.md) | Active 4.x changelog | Current |
+| [`../CHANGELOG.md`](../CHANGELOG.md) | Package changelog: Unreleased section plus release history | Current |
 
 ## Historical records
 
@@ -126,7 +127,6 @@ Kept as evidence of how the project got here. Nothing below is guidance.
 | [`../TVOS_SUPPORT_SPEC.md`](../TVOS_SUPPORT_SPEC.md) | Spec for adding tvOS support to the 3.x fork | Historical |
 | [`README_V1.md`](README_V1.md) | Original `react-native-ble-plx` v1 README | Historical |
 | [`MIGRATION_V1.md`](MIGRATION_V1.md) | 1.1.0 → 2.0.0 Podfile migration note | Historical |
-| [`BACKGROUND.md`](BACKGROUND.md) | Background/restoration behavior characterization of inherited source; transitional, not 4.0 semantics | Historical |
 | [`TVOS.md`](TVOS.md) | tvOS current-source characterization; not a 4.0 support claim | Historical |
 
 ### Fix trackers and review rounds

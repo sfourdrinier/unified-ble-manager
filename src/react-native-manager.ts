@@ -1,5 +1,10 @@
 // src/react-native-manager.ts
 
+import {
+  normalizeBackgroundContinuation,
+  DEFAULT_BACKGROUND_CONTINUATION,
+  type BackgroundContinuationDeclaration
+} from './backend-contract/background-continuation'
 import type { NativeBackendIdentity } from './backend-contract/identity'
 import { contractError } from './backend-contract/errors'
 import { byteLimit, opaqueId } from './backend-contract/primitives'
@@ -61,6 +66,15 @@ export interface ReactNativeBleManagerOptions {
    * one, exactly as the native journal refused an unconfigured app.
    */
   readonly restorationAuthority?: ReactNativeRestorationAuthority
+  /**
+   * Declared background standing order (`background.continuation`, BGS4).
+   * Absent means `record-only`. A non-`record-only` order without a
+   * persisting native owner fails host creation with
+   * `capability.unsupported` — never a silent record-only.
+   */
+  readonly background?: {
+    readonly continuation?: unknown
+  }
 }
 
 /** What an Expo host reaches besides the public manager. */
@@ -69,6 +83,8 @@ export interface ReactNativeManagerHost {
   readonly services: ReactNativeRustCoreHostServices
   /** Adopts restoration with the configured authority (Expo `restoration.claim`). */
   readonly claimRestoration: () => ReturnType<BleManager<string, NativeBackendIdentity<string>>['adoptRestoration']>
+  /** The normalized declared standing order (defaults to `record-only`). */
+  readonly continuation: BackgroundContinuationDeclaration
 }
 
 /**
@@ -111,6 +127,14 @@ export async function createReactNativeManagerHost(
   )
   const binding = options.rustCore ?? createReactNativeRustCoreBinding({ platform: options.platform })
   const authority = options.restorationAuthority ?? null
+  // Only an explicitly passed order reaches the owner: an absent option
+  // leaves the native store alone, so a build-time manifest declaration
+  // stands until the app overrides it at runtime (or clears it with an
+  // explicit record-only). The host still reports the record-only default.
+  const continuation =
+    options.background === undefined
+      ? DEFAULT_BACKGROUND_CONTINUATION
+      : normalizeBackgroundContinuation(options.background.continuation)
   const provider = createReactNativeRustCoreBackendProvider({
     platform: options.platform,
     binding,
@@ -121,6 +145,7 @@ export async function createReactNativeManagerHost(
     },
     restorationAuthority: () => authority,
     trace,
+    ...(options.background === undefined ? {} : { backgroundContinuation: continuation }),
     ...(options.createOwnerId === undefined ? {} : { createOwnerId: options.createOwnerId })
   })
   const backend: ReactNativeRustCoreBackend = await provider.create({ selectedAdapterId: expectedAdapterId })
@@ -155,6 +180,7 @@ export async function createReactNativeManagerHost(
   return Object.freeze({
     manager,
     services: backend.hostServices,
+    continuation,
     claimRestoration: () => {
       if (authority === null) {
         throw contractError('capability.unavailable', 'restoration', 'react-native-manager.restoration.claim')

@@ -96,6 +96,9 @@ describe('Android RN 0.86 unified protocol boundary', () => {
       'background/ConnectedDeviceForegroundServiceLeaseRegistry.java',
       'background/ForegroundServiceControlException.java',
       'background/ForegroundServiceNotificationConfiguration.java',
+      // FXM contract update (justified): `CompanionAssociations` is the
+      // pure association lookup both associate routes share (finding 236).
+      'companion/CompanionAssociations.java',
       'expo/UnifiedBleExpoRuntimeModule.java',
       // Issue #212 contract update (justified): the `presence` package is
       // the Companion Device Manager presence endpoint (API 31+) that wakes
@@ -103,9 +106,16 @@ describe('Android RN 0.86 unified protocol boundary', () => {
       // coordinator, persisted store, and the bound service. Covered by
       // `CompanionPresenceObserverTest` and `PresenceWakeCoordinatorTest`.
       // Current protocol graph member by design, not legacy residue.
+      // Background continuation (contract update, justified): the declared
+      // standing order, its store across process death, and the executor that
+      // reconnects and resubscribes from the wake through the Rust core.
+      // Current protocol graph members by design, not legacy residue.
+      'presence/BackgroundContinuation.kt',
+      'presence/BackgroundContinuationStore.kt',
       'presence/CompanionPresenceObserver.kt',
       'presence/PresenceRestoredStore.kt',
       'presence/PresenceWakeCoordinator.kt',
+      'presence/RustCoreContinuationExecutor.kt',
       'presence/UbmCompanionPresenceService.kt',
       // R02 contract update (justified): `CoreCommandAuthority` is the
       // admission table the dispatcher consults before radio execution
@@ -113,6 +123,15 @@ describe('Android RN 0.86 unified protocol boundary', () => {
       // covered by `CoreCommandAuthorityTest`. Current protocol graph
       // member by design, not legacy residue.
       'protocol/CoreCommandAuthority.kt',
+      // FXH contract update (justified): `LegacyCompanionAssociationRequests`
+      // is the pure Companion Device Manager request builder the legacy
+      // protocol-control association shares with the Rust-route chooser's LE
+      // treatment (finding 222 twin: BLE-only filter, single-device only for
+      // named requests). Dependency-free holder so JVM unit tests can pin it
+      // without loading the native library; covered by
+      // `UnifiedBleProtocolControlModuleAssociationTest`. Current protocol
+      // graph member by design, not legacy residue.
+      'protocol/LegacyCompanionAssociationRequests.java',
       'protocol/ProtocolCommandDecoder.kt',
       'protocol/ProtocolWireEncoder.kt',
       'protocol/UnifiedBleProtocolAndroidDispatcher.kt',

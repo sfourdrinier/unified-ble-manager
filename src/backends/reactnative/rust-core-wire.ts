@@ -72,6 +72,8 @@ export const WIRE_OPS = Object.freeze([
   'background.release',
   'background.update-notification',
   'companion.associate',
+  'companion.list',
+  'companion.disassociate',
   'presence.observe',
   'presence.unobserve',
   'gatt.discover',
@@ -246,6 +248,7 @@ export interface WireCounters {
 
 export interface WirePeerRecord {
   readonly peerId: string
+  /** The restored/observed name the owner holds, or null when it holds none (Android presence wake restores a bare address). */
   readonly name: string | null
   readonly rssi: number | null
   readonly source: PeerSource
@@ -356,6 +359,13 @@ export interface WireService {
   readonly characteristics: readonly WireCharacteristic[]
 }
 
+/** One of this app's companion-device associations (finding 236). */
+export interface WireCompanionRecord {
+  readonly associationId: number
+  readonly peerId: string | null
+  readonly displayName: string | null
+}
+
 export interface WireDiscovery {
   readonly connectionGeneration: string
   readonly databaseGeneration: string
@@ -399,10 +409,17 @@ export interface WireOpResults {
   readonly 'presence.observe': { readonly state: 'observing' }
   readonly 'presence.unobserve': { readonly state: 'idle' }
   readonly 'companion.associate': {
-    readonly source: 'associated'
+    readonly source: 'associated' | 'already-associated'
     readonly associationId: number
     readonly peerId: string | null
     readonly displayName: string | null
+  }
+  readonly 'companion.list': {
+    readonly associations: readonly WireCompanionRecord[]
+  }
+  readonly 'companion.disassociate': {
+    readonly state: 'disassociated'
+    readonly associationId: number
   }
   readonly 'gatt.discover': WireDiscovery
   readonly 'gatt.read': { readonly value: Uint8Array; readonly provenance: ReadProvenance }
@@ -1478,7 +1495,7 @@ const OP_PARSERS: OpParsers = Object.freeze({
   'companion.associate': (value: unknown, path: string) => {
     const fields = exactObject(value, ['source', 'associationId', 'peerId', 'displayName'], path)
     return Object.freeze({
-      source: enumOrThrow(fields.get('source'), ['associated'] as const, `${path}.source`),
+      source: enumOrThrow(fields.get('source'), ['associated', 'already-associated'] as const, `${path}.source`),
       associationId: integerOrThrow(
         fields.get('associationId'),
         { min: -Number.MAX_SAFE_INTEGER, max: Number.MAX_SAFE_INTEGER },
@@ -1486,6 +1503,34 @@ const OP_PARSERS: OpParsers = Object.freeze({
       ),
       peerId: optionalTextOrThrow(fields.get('peerId'), `${path}.peerId`),
       displayName: optionalTextOrThrow(fields.get('displayName'), `${path}.displayName`)
+    })
+  },
+  'companion.list': (value: unknown, path: string) => {
+    const fields = exactObject(value, ['associations'], path)
+    return Object.freeze({
+      associations: arrayOf(fields.get('associations'), `${path}.associations`, (entry, entryPath) => {
+        const record = exactObject(entry, ['associationId', 'peerId', 'displayName'], entryPath)
+        return Object.freeze({
+          associationId: integerOrThrow(
+            record.get('associationId'),
+            { min: -Number.MAX_SAFE_INTEGER, max: Number.MAX_SAFE_INTEGER },
+            `${entryPath}.associationId`
+          ),
+          peerId: optionalTextOrThrow(record.get('peerId'), `${entryPath}.peerId`),
+          displayName: optionalTextOrThrow(record.get('displayName'), `${entryPath}.displayName`)
+        })
+      })
+    })
+  },
+  'companion.disassociate': (value: unknown, path: string) => {
+    const fields = exactObject(value, ['state', 'associationId'], path)
+    return Object.freeze({
+      state: enumOrThrow(fields.get('state'), ['disassociated'] as const, `${path}.state`),
+      associationId: integerOrThrow(
+        fields.get('associationId'),
+        { min: -Number.MAX_SAFE_INTEGER, max: Number.MAX_SAFE_INTEGER },
+        `${path}.associationId`
+      )
     })
   },
   'connection.connect': (value: unknown, path: string) => {

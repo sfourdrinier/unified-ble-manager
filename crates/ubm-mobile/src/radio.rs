@@ -635,6 +635,8 @@ pub enum RequestKind {
     ReleaseBackground,
     UpdateBackgroundNotification,
     AssociateCompanion,
+    ListCompanion,
+    DisassociateCompanion,
     ObservePresence,
     StopPresence,
     Close,
@@ -672,6 +674,8 @@ impl RequestKind {
             Self::ReleaseBackground => "background.release",
             Self::UpdateBackgroundNotification => "background.update-notification",
             Self::AssociateCompanion => "companion.associate",
+            Self::ListCompanion => "companion.list",
+            Self::DisassociateCompanion => "companion.disassociate",
             Self::ObservePresence => "presence.observe",
             Self::StopPresence => "presence.unobserve",
             Self::Close => "radio.close",
@@ -709,6 +713,8 @@ impl RequestKind {
             | Self::ReleaseBackground
             | Self::UpdateBackgroundNotification
             | Self::AssociateCompanion
+            | Self::ListCompanion
+            | Self::DisassociateCompanion
             | Self::ObservePresence
             | Self::StopPresence => "platformFailure",
         }
@@ -746,6 +752,8 @@ impl RequestKind {
             | Self::ReleaseBackground
             | Self::UpdateBackgroundNotification
             | Self::AssociateCompanion
+            | Self::ListCompanion
+            | Self::DisassociateCompanion
             | Self::ObservePresence
             | Self::StopPresence => "platformFailure",
         }
@@ -782,6 +790,8 @@ impl RequestKind {
             Self::ReleaseBackground => "release-background",
             Self::UpdateBackgroundNotification => "update-background-notification",
             Self::AssociateCompanion => "associate-companion",
+            Self::ListCompanion => "list-companion",
+            Self::DisassociateCompanion => "disassociate-companion",
             Self::ObservePresence => "observe-presence",
             Self::StopPresence => "unobserve-presence",
             Self::Close => "close",
@@ -929,6 +939,13 @@ pub enum RadioRequest {
         name: Option<String>,
         service_uuid: Option<String>,
     },
+    /// This app's `CompanionDeviceManager` associations (finding 236: the
+    /// record a duplicate check and the cleanup UI read).
+    /// → [`RadioCompletion::CompanionList`].
+    ListCompanion { id: RequestId },
+    /// Android `CompanionDeviceManager.disassociate` for one association id.
+    /// → [`RadioCompletion::Unit`].
+    DisassociateCompanion { id: RequestId, association_id: i64 },
     /// Arms Companion Device Manager device presence for one associated peer
     /// (Android API 31+; the session refuses it on Apple).
     /// → [`RadioCompletion::Unit`].
@@ -973,6 +990,8 @@ impl RadioRequest {
             | Self::ReleaseBackground { id, .. }
             | Self::UpdateBackgroundNotification { id, .. }
             | Self::AssociateCompanion { id, .. }
+            | Self::ListCompanion { id }
+            | Self::DisassociateCompanion { id, .. }
             | Self::ObservePresence { id, .. }
             | Self::StopPresence { id, .. }
             | Self::Close { id } => *id,
@@ -1009,6 +1028,8 @@ impl RadioRequest {
             Self::ReleaseBackground { .. } => RequestKind::ReleaseBackground,
             Self::UpdateBackgroundNotification { .. } => RequestKind::UpdateBackgroundNotification,
             Self::AssociateCompanion { .. } => RequestKind::AssociateCompanion,
+            Self::ListCompanion { .. } => RequestKind::ListCompanion,
+            Self::DisassociateCompanion { .. } => RequestKind::DisassociateCompanion,
             Self::ObservePresence { .. } => RequestKind::ObservePresence,
             Self::StopPresence { .. } => RequestKind::StopPresence,
             Self::Close { .. } => RequestKind::Close,
@@ -1051,9 +1072,23 @@ pub enum RadioCompletion {
         association_id: i64,
         peer_id: Option<String>,
         display_name: Option<String>,
+        /// The platform already held this association: nothing new was
+        /// created and the record is the existing association (finding
+        /// 236). The session reports `already-associated` instead of
+        /// `associated` so the caller can tell what happened.
+        already_associated: bool,
     },
+    CompanionList(Vec<CompanionRecord>),
     Closed(Vec<CloseFailure>),
     Failed(PlatformFailure),
+}
+
+/// One of this app's Companion Device Manager associations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompanionRecord {
+    pub association_id: i64,
+    pub peer_id: Option<String>,
+    pub display_name: Option<String>,
 }
 
 impl RadioCompletion {
@@ -1081,11 +1116,13 @@ impl RadioCompletion {
                         | K::CancelBond
                         | K::ReleaseBackground
                         | K::UpdateBackgroundNotification
+                        | K::DisassociateCompanion
                         | K::ObservePresence
                         | K::StopPresence
                 )
                 | (Self::Lease(_), K::AcquireBackground)
                 | (Self::Companion { .. }, K::AssociateCompanion)
+                | (Self::CompanionList(_), K::ListCompanion)
                 | (Self::Discovered(_), K::Discover)
                 | (Self::Read { .. }, K::Read)
                 | (Self::Bytes(_), K::ReadDescriptor)

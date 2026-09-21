@@ -2,6 +2,7 @@
 
 package com.sfourdrinier.unifiedblemanager.rustcore
 
+import com.sfourdrinier.unifiedblemanager.presence.BackgroundContinuationDeclaration
 import com.ubm.core.MobileCoreBridge
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
@@ -114,6 +115,74 @@ class RustCoreSessions(
   }
 
   /**
+   * Persists the declared background standing order (BGS4) in the process
+   * owner so an OS wake with no JavaScript can execute it. The payload is
+   * the binding's canonical JSON; it is parsed here before persisting, so
+   * a malformed declaration is refused with no effect.
+   */
+  fun declareContinuation(declarationJson: String, reply: Reply) = perform(reply, "continuation.declare") {
+    if (declarationJson.isEmpty() || declarationJson.length > MAX_CONTINUATION_JSON) {
+      throw RustCoreRejection.invalid("continuation.declare", "declaration must be 1..$MAX_CONTINUATION_JSON bytes")
+    }
+    try {
+      BackgroundContinuationDeclaration.parse(declarationJson)
+    } catch (error: IllegalArgumentException) {
+      throw RustCoreRejection.invalid("continuation.declare", error.message ?: "declaration malformed")
+    }
+    host.continuationStore().saveDeclaration(declarationJson)
+    reply.resolve("{\"state\":\"declared\"}")
+  }
+
+  /**
+   * Drains the continuation backlog (verbatim drain batches for the JS
+   * codec) and disposes the continuation session, so the app's own session
+   * connects next. Values queued with no JS session drain here with the
+   * drain contract's own loss accounting — nothing silently dropped.
+   */
+  fun claimContinuation(maxItems: Double, maxBytes: Double, reply: Reply) =
+    perform(reply, "continuation.claim") {
+      val items = positiveInt(maxItems, "maxItems")
+      val bytes = positiveInt(maxBytes, "maxBytes")
+      val claim = host.continuationExecutor().claimAndDispose(items, bytes)
+      reply.resolve(
+        RustCoreJson.write(
+          linkedMapOf(
+            "batches" to claim.batches,
+            "disposed" to claim.disposed
+          )
+        )
+      )
+    }
+
+  /**
+   * Reports the continuation posture for Diagnostics: the declared strategy
+   * and the last wake outcome. Never fails for an undeclared order.
+   */
+  fun continuationStatus(reply: Reply) = perform(reply, "continuation.status") {
+    val store = host.continuationStore()
+    val declaration = store.loadDeclaration()
+    val wake = store.lastWakeOutcome()
+    reply.resolve(
+      RustCoreJson.write(
+        linkedMapOf(
+          "strategy" to declaration.strategy.wire,
+          "peerId" to declaration.peerId,
+          "resubscribe" to declaration.resubscribe.size,
+          "malformedDeclarations" to store.malformedDeclarationCount(),
+          "lastWake" to if (wake == null) null else linkedMapOf(
+            "observedAtMs" to wake.observedAtMs,
+            "event" to wake.event,
+            "strategy" to wake.strategy.wire,
+            "peerAddress" to wake.peerAddress,
+            "code" to wake.code,
+            "reason" to wake.reason
+          )
+        )
+      )
+    )
+  }
+
+  /**
    * React context teardown: dispose every session this context still owns,
    * then end the module's background scope (its foreground-service leases).
    */
@@ -189,6 +258,8 @@ class RustCoreSessions(
   companion object {
     const val DISPOSE = "session.dispose"
     private const val LIFECYCLE_DESTROYED = "lifecycle.destroyed"
+    /** The canonical declaration JSON is small; anything larger is not ours. */
+    private const val MAX_CONTINUATION_JSON = 65536
 
     private fun sessionId(text: String, operation: String): Long {
       if (text.isEmpty() || text.length > 20 || !text.all { it in '0'..'9' }) {

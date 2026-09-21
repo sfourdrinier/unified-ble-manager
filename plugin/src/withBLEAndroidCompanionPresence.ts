@@ -5,6 +5,7 @@ import type { AndroidManifestWithExtraTools, ManifestServiceWithExtraTools } fro
 export const COMPANION_PRESENCE_SERVICE_NAME = 'com.sfourdrinier.unifiedblemanager.presence.UbmCompanionPresenceService'
 export const COMPANION_PRESENCE_SERVICE_ACTION = 'android.companion.CompanionDeviceService'
 export const COMPANION_PRESENCE_BIND_PERMISSION = 'android.permission.BIND_COMPANION_DEVICE_SERVICE'
+export const COMPANION_PRESENCE_OBSERVE_PERMISSION = 'android.permission.REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE'
 
 type PluginIntentFilter = NonNullable<ManifestServiceWithExtraTools['intent-filter']>[number]
 
@@ -72,12 +73,47 @@ function removeCompanionPresenceService(androidManifest: AndroidManifestWithExtr
   app.service = app.service.filter(service => !isPluginOwnedService(service))
 }
 
+function permissionsOf(androidManifest: AndroidManifestWithExtraTools) {
+  if (!Array.isArray(androidManifest.manifest['uses-permission'])) {
+    androidManifest.manifest['uses-permission'] = []
+  }
+  return androidManifest.manifest['uses-permission']
+}
+
+function isPluginOwnedPermission(permission: { $: Record<string, string> }): boolean {
+  // Exact shape: any host-added attribute makes the declaration host-owned.
+  return (
+    Object.keys(permission.$).length === 1 && permission.$['android:name'] === COMPANION_PRESENCE_OBSERVE_PERMISSION
+  )
+}
+
+function addCompanionPresencePermission(androidManifest: AndroidManifestWithExtraTools): void {
+  const permissions = permissionsOf(androidManifest)
+  // A host-declared entry with the same name stays untouched: the host owns
+  // the declaration and the plugin must not clobber it.
+  if (permissions.some(permission => permission.$['android:name'] === COMPANION_PRESENCE_OBSERVE_PERMISSION)) return
+  permissions.push({ $: { 'android:name': COMPANION_PRESENCE_OBSERVE_PERMISSION } })
+}
+
+function removeCompanionPresencePermission(androidManifest: AndroidManifestWithExtraTools): void {
+  const permissions = androidManifest.manifest['uses-permission']
+  if (!Array.isArray(permissions)) return
+  // Only the exact plugin shape is removed: a host-modified declaration is
+  // host-owned and survives the disable.
+  androidManifest.manifest['uses-permission'] = permissions.filter(permission => !isPluginOwnedPermission(permission))
+}
+
 export function reconcileAndroidCompanionPresence(
   androidManifest: AndroidManifestWithExtraTools,
   options: AndroidBackgroundOptions
 ): AndroidManifestWithExtraTools {
-  if (options.mode === 'none') removeCompanionPresenceService(androidManifest)
-  else addCompanionPresenceService(androidManifest)
+  if (options.mode === 'none') {
+    removeCompanionPresenceService(androidManifest)
+    removeCompanionPresencePermission(androidManifest)
+  } else {
+    addCompanionPresenceService(androidManifest)
+    addCompanionPresencePermission(androidManifest)
+  }
   return androidManifest
 }
 

@@ -138,6 +138,16 @@ Preserve these unless the user explicitly requests a versioned contract change:
   was chosen. Without it the capability reports `unsupported` and the default
   posture is unchanged. Document the privilege, its blast radius, and what a
   failure leaves behind beside the option that requests it;
+- **support the mechanism; the consumer owns its entitlements.** Where a
+  platform offers a capability, this package implements it, whatever approvals,
+  exemptions or store review the consuming application must obtain to use it
+  (background execution, foreground-service types, battery-optimisation
+  exemptions, notification permission, restoration identifiers). We never
+  withhold a mechanism because an app might not be entitled to it, and we never
+  quietly substitute a lesser path. When the platform refuses at runtime, the
+  result reports that refusal with the platform's own reason under `platform`,
+  and the capability says what is available; the app's negotiation with Apple
+  or Google is the app's business, not ours;
 - package SemVer and backend support/evidence labels are independent
   dimensions.
 

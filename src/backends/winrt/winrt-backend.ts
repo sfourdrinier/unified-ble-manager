@@ -1996,7 +1996,8 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     if (this.destroyed) {
       return
     }
-    const wasReady = winRtAdapterIsReady(this.adapterStateSnapshot)
+    const previous = this.adapterStateSnapshot
+    const wasReady = winRtAdapterIsReady(previous)
     this.adapterStateSnapshot = state
     if (wasReady && !winRtAdapterIsReady(state)) {
       this.backendGeneration += 1
@@ -2011,8 +2012,19 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
       this.startAdapterLossCleanup()
     }
     const snapshot = winRtAdapterState(this.adapterStateSnapshot, this.backendGeneration, this.now)
-    for (const stream of this.stateStreams) {
-      stream.emit(snapshot, 64, 'adapter-state')
+    // A re-announced record that changes nothing observable is not a
+    // transition: emitting it would duplicate the watch's initial snapshot
+    // for every subscriber. Bookkeeping, the backend event and generation
+    // advances are untouched.
+    const unchanged =
+      state.availability === previous.availability &&
+      state.authorization === previous.authorization &&
+      state.power === previous.power &&
+      state.safeReason === previous.safeReason
+    if (!unchanged) {
+      for (const stream of this.stateStreams) {
+        stream.emit(snapshot, 64, 'adapter-state')
+      }
     }
     const attachment = this.attachment()
     broadcastWinRtEvent(this.eventStreams, {

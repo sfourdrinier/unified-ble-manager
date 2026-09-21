@@ -857,12 +857,19 @@ mod tests {
         }
         assert_eq!(
             frozen_ids.len(),
-            38,
+            42,
             "frozen matrix changed size: update this test and the desktop rows together"
         );
+        // Mobile-only rows: the desktop matrix does not carry them. The four
+        // continuation capabilities describe what an OS wake may do to a
+        // process it restarted, which no desktop host offers.
         let scoped_out = [
             "background:apple-restoration",
             "background:android-connected-device-service",
+            "background:wake-on-appearance",
+            "background:native-resubscribe",
+            "background:headless-task",
+            "background:wake-notification",
         ];
         for scoped in scoped_out {
             assert!(

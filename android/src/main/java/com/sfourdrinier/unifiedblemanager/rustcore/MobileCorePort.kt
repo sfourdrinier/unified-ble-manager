@@ -42,7 +42,23 @@ interface MobileCorePort {
   fun completeSecurity(requestId: Long, security: SecurityFacts): Int
   fun completeBondedPeers(requestId: Long, peerIds: Array<String>, names: Array<String?>): Int
   fun completeLease(requestId: Long, leaseId: String): Int
-  fun completeCompanion(requestId: Long, associationId: Long, peerId: String?, displayName: String?): Int
+  fun completeCompanionList(
+    requestId: Long,
+    associationIds: LongArray,
+    peerIds: Array<String?>,
+    displayNames: Array<String?>
+  ): Int
+  /**
+   * [alreadyAssociated] reports an association the platform already held:
+   * nothing new was created and the record is the existing association.
+   */
+  fun completeCompanion(
+    requestId: Long,
+    associationId: Long,
+    peerId: String?,
+    displayName: String?,
+    alreadyAssociated: Boolean
+  ): Int
   fun completeClosed(requestId: Long, failures: List<CloseFailure>): Int
   fun completeFailure(requestId: Long, failure: RadioFailure): Int
 
@@ -126,8 +142,20 @@ object JniMobileCorePort : MobileCorePort {
     MobileCoreBridge.nativeCompleteBondedPeers(requestId, peerIds, names)
 
   override fun completeLease(requestId: Long, leaseId: String): Int = MobileCoreBridge.nativeCompleteLease(requestId, leaseId)
-  override fun completeCompanion(requestId: Long, associationId: Long, peerId: String?, displayName: String?): Int =
-    MobileCoreBridge.nativeCompleteCompanion(requestId, associationId, peerId, displayName)
+  override fun completeCompanionList(
+    requestId: Long,
+    associationIds: LongArray,
+    peerIds: Array<String?>,
+    displayNames: Array<String?>
+  ): Int = MobileCoreBridge.nativeCompleteCompanionList(requestId, associationIds, peerIds, displayNames)
+  override fun completeCompanion(
+    requestId: Long,
+    associationId: Long,
+    peerId: String?,
+    displayName: String?,
+    alreadyAssociated: Boolean
+  ): Int =
+    MobileCoreBridge.nativeCompleteCompanion(requestId, associationId, peerId, displayName, alreadyAssociated)
 
   override fun completeClosed(requestId: Long, failures: List<CloseFailure>): Int =
     MobileCoreBridge.nativeCompleteClosed(

@@ -275,6 +275,20 @@
       "op": "companion.associate"
     },
     {
+      "args": "{}",
+      "envelope": "{\"ok\":true,\"value\":{\"associations\":[{\"associationId\":42,\"displayName\":\"Polar H10\",\"peerId\":\"A0:9E:1A:00:00:01\"}]}}",
+      "expect": "value",
+      "name": "companion list",
+      "op": "companion.list"
+    },
+    {
+      "args": "{\"associationId\":42}",
+      "envelope": "{\"ok\":true,\"value\":{\"associationId\":42,\"state\":\"disassociated\"}}",
+      "expect": "value",
+      "name": "companion disassociate",
+      "op": "companion.disassociate"
+    },
+    {
       "args": "{\"admission\":25,\"operationId\":\"presence-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
       "envelope": "{\"ok\":true,\"value\":{\"state\":\"observing\"}}",
       "expect": "value",

@@ -87,6 +87,8 @@ const ARG_SCHEMAS = Object.freeze({
     ['body', 'budgetMs']
   ],
   'companion.associate': [[], ['name', 'serviceUuid', 'budgetMs', 'operationId']],
+  'companion.list': [[], ['budgetMs', 'operationId']],
+  'companion.disassociate': [['associationId'], ['budgetMs', 'operationId']],
   'presence.observe': [['peerId'], ['budgetMs', 'operationId']],
   'presence.unobserve': [['peerId'], ['budgetMs', 'operationId']],
   'op.cancel': [['operationId'], []]
@@ -104,6 +106,8 @@ const APPLE_UNSUPPORTED = new Set([
   'connection.read-phy',
   'connection.request-phy',
   'companion.associate',
+  'companion.list',
+  'companion.disassociate',
   'presence.observe',
   'presence.unobserve'
 ])
@@ -279,6 +283,9 @@ class DeterministicRustCoreNative {
     // `invalidate()` (87/N8, docs/MOBILE_RUST_WIRE.md).
     this.backgroundLeases = new Set()
     this.presenceArmed = new Set()
+    /** associationId → `{ associationId, peerId, displayName }` (finding 236). */
+    this.associations = new Map()
+    this.nextAssociation = 7
     this.holds = new Map()
     this.liveOps = new Map()
     this.nextGeneration = 1
@@ -1219,8 +1226,34 @@ class DeterministicRustCoreNative {
       case 'background.update-notification':
         if (!this.backgroundLeases.has(args.leaseId)) throw new WireFault('ownership.denied', 'core', op)
         return { state: 'updated' }
-      case 'companion.associate':
-        return { source: 'associated', associationId: 7, peerId: DEFAULT_PEER, displayName: args.name ?? null }
+      case 'companion.associate': {
+        // Finding 236: the deterministic radio models the fixed platform —
+        // a named device that already holds an association reports it
+        // instead of accumulating a duplicate.
+        const duplicate = [...this.associations.values()].find(
+          entry => args.name !== undefined && entry.displayName === args.name
+        )
+        if (duplicate !== undefined) return { source: 'already-associated', ...duplicate }
+        const associationId = this.nextAssociation++
+        const record = { associationId, peerId: DEFAULT_PEER, displayName: args.name ?? null }
+        this.associations.set(associationId, record)
+        return { source: 'associated', ...record }
+      }
+      case 'companion.list':
+        return { associations: [...this.associations.values()] }
+      case 'companion.disassociate': {
+        const removed = this.associations.get(args.associationId)
+        if (removed === undefined) {
+          throw new WireFault(
+            'peer.not-found',
+            'connection',
+            op,
+            `no companion association carries id ${args.associationId}`
+          )
+        }
+        this.associations.delete(args.associationId)
+        return { state: 'disassociated', associationId: removed.associationId }
+      }
       case 'presence.observe': {
         if (apple) throw new WireFault('capability.unsupported', 'capability', op)
         this.presenceArmed.add(args.peerId)
