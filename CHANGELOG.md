@@ -1393,6 +1393,18 @@ metadata:{androidGattStatus}}` on Android, or the `NSError` domain and code
 
 ### Fixed
 
+- **The native refresh consumers work on Windows.** `ensure-native.js` spawned
+  `pnpm` with no shell. Windows runs pnpm as `pnpm.cmd`, which only executes
+  through `cmd.exe`, so every consumer that refreshes native artifacts through
+  it — `hosts.sh up`, the TV build, the check-only switch — failed there and
+  could never report why. It now spawns through a shell, the same command on
+  every platform. Two developer scripts had the same class of bug: they passed
+  a shell path inside a quoted `node -e` program, which Git Bash leaves in MSYS
+  form (`/c/...`) because it only rewrites path-shaped arguments, and they
+  hardcoded `python3` where Windows names it `python`. Both are fixed portably
+  rather than with a platform branch, and guards pin the shapes so they cannot
+  come back.
+
 - **A background wake no longer abandons a session it could not release.**
   `claimContinuation` read the dispose result and cleared the session id
   regardless, so a release that reported failures left the connection or

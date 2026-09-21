@@ -48,6 +48,14 @@ CONFIG_TV_VERSION="${CONFIG_TV_VERSION:-0.1.6}"
 # The Apple TV this repo builds for ("Office", Apple TV 4K 3rd gen).
 TV_DEVICE_ID="${TV_DEVICE_ID:-27C3EE87-9EB5-54C1-8CAB-52D33CB077C9}"
 TV_BUNDLE_ID="${TV_BUNDLE_ID:-com.sfourdrinier.bleplxexample}"
+# `python` is the canonical executable name on Windows while POSIX setups
+# only provide `python3`. Prefer python3, fall back to python, fail loudly
+# when neither exists. Overridable via PYTHON3 for hermetic tests.
+PYTHON3="${PYTHON3:-$(command -v python3 || command -v python || true)}"
+if [[ -z "${PYTHON3}" ]]; then
+  echo "error: no python3 or python on PATH" >&2
+  exit 1
+fi
 
 if [[ -n "${TV_STAGE_DIR:-}" ]]; then
   # Test/CI override: an absolute tmp dir, never the real tree. The host's
@@ -131,7 +139,7 @@ cmd_stage() {
 
   # The staged Metro still serves the shared driver, but from the repo path:
   # a relative ../examples-shared would resolve inside example-expo.
-  python3 - "${STAGE}/metro.config.js" "${ROOT}/examples-shared" <<'EOF'
+  "${PYTHON3}" - "${STAGE}/metro.config.js" "${ROOT}/examples-shared" <<'EOF'
 import sys
 path, shared = sys.argv[1], sys.argv[2]
 text = open(path).read()
@@ -143,7 +151,7 @@ EOF
   # src/driver/shared.ts must climb one more level to reach the same
   # shared driver. Without this both tsc and the TV Metro bundle resolve a
   # path that does not exist.
-  python3 - "${STAGE}/src/driver/shared.ts" <<'EOF'
+  "${PYTHON3}" - "${STAGE}/src/driver/shared.ts" <<'EOF'
 import sys
 path = sys.argv[1]
 text = open(path).read()
@@ -183,9 +191,12 @@ cmd_verify_identity() {
     echo "error: staged unified-ble-manager build identity is stale (diff ${repo_identity} ${staged_identity}): re-run stage, then install" >&2
     exit 1
   fi
+  # MSYS (Git Bash) converts path-looking ARGUMENTS for a native binary but
+  # never rewrites a path embedded in the quoted -e program, so Node for
+  # Windows cannot resolve it. Pass every path as an argument instead.
   local repo_version staged_version
-  repo_version="$(node -e "console.log(require('${ROOT}/package.json').version)")"
-  staged_version="$(node -e "console.log(require('${staged_lib}/package.json').version)")"
+  repo_version="$(node -e 'console.log(require(process.argv[1]).version)' "${ROOT}/package.json")"
+  staged_version="$(node -e 'console.log(require(process.argv[1]).version)' "${staged_lib}/package.json")"
   if [[ "${repo_version}" != "${staged_version}" ]]; then
     echo "error: staged unified-ble-manager version ${staged_version} != repo ${repo_version}: re-run stage, then install" >&2
     exit 1
@@ -201,7 +212,7 @@ cmd_prebuild() {
   # the fork's own RCT_TESTONLY_RNCORE_TARBALL_PATH switch. Debug tarball: this
   # script only builds Debug.
   local tv_version tarball_name tarball_url tarball_path
-  tv_version="$(node -e "console.log(require('${STAGE}/node_modules/react-native/package.json').version)")"
+  tv_version="$(node -e 'console.log(require(process.argv[1]).version)' "${STAGE}/node_modules/react-native/package.json")"
   tarball_name="reactnative-core-${tv_version}-debug.tar.gz"
   tarball_url="https://repo1.maven.org/maven2/io/github/react-native-tvos/react-native-artifacts/${tv_version}/react-native-artifacts-${tv_version}-reactnative-core-debug.tar.gz"
   tarball_path="/tmp/tv-prebuilt-cache/${tarball_name}"
@@ -236,7 +247,7 @@ cmd_bundle_url() {
       echo "bundle URL override already present in ${delegate}"
       return 0
     fi
-    python3 - "${delegate}" "${TV_LAN_HOST}:${TV_METRO_PORT}" <<'EOF'
+    "${PYTHON3}" - "${delegate}" "${TV_LAN_HOST}:${TV_METRO_PORT}" <<'EOF'
 import sys
 path, location = sys.argv[1], sys.argv[2]
 import re
@@ -248,7 +259,7 @@ EOF
     echo "bundle URL override -> ${TV_LAN_HOST}:${TV_METRO_PORT} in ${delegate}"
     return 0
   fi
-  python3 - "${delegate}" "${TV_LAN_HOST}:${TV_METRO_PORT}" <<'EOF'
+  "${PYTHON3}" - "${delegate}" "${TV_LAN_HOST}:${TV_METRO_PORT}" <<'EOF'
 import sys
 path, location = sys.argv[1], sys.argv[2]
 text = open(path).read()
@@ -262,7 +273,7 @@ EOF
 
 xcode_scheme() {
   local schemes scheme
-  schemes="$(xcodebuild -list -json -project "${STAGE}/ios/"*.xcodeproj 2>/dev/null | python3 -c 'import json,sys; print("\n".join(json.load(sys.stdin)["project"]["schemes"]))')"
+  schemes="$(xcodebuild -list -json -project "${STAGE}/ios/"*.xcodeproj 2>/dev/null | "${PYTHON3}" -c 'import json,sys; print("\n".join(json.load(sys.stdin)["project"]["schemes"]))')"
   scheme="$(printf '%s\n' "${schemes}" | grep -i -m1 'tv' || true)"
   if [[ -z "${scheme}" ]]; then
     scheme="$(printf '%s\n' "${schemes}" | head -1)"

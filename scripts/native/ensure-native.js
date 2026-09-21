@@ -26,7 +26,11 @@ function main(argv, env = process.env) {
   const only = groups.join(',')
   const checkOnly = env.UBM_NATIVE_REFRESH === 'off'
   const script = checkOnly ? 'native:status' : 'native:refresh'
-  const result = spawnSync('pnpm', ['--dir', ROOT, script, '--only', only], { stdio: 'inherit' })
+  // Windows executes pnpm as pnpm.cmd, which needs cmd.exe: without a shell
+  // the spawn fails and no consumer guard can ever observe the stub or the
+  // real shim. shell:true is portable (same command on every platform) and
+  // matches native-refresh.js, which already runs its builders through one.
+  const result = spawnSync('pnpm', ['--dir', ROOT, script, '--only', only], { stdio: 'inherit', shell: true })
   if (result.error !== undefined) {
     throw new Error(`could not run pnpm ${script} --only ${only}: ${result.error.message}`)
   }

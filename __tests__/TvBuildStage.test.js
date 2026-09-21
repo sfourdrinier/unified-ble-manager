@@ -17,6 +17,8 @@ const path = require('node:path')
 
 const SCRIPT = path.join(__dirname, '..', 'example-expo', 'scripts', 'build-tv.sh')
 const ROOT = path.join(__dirname, '..')
+const HOSTS_SH = path.join(ROOT, 'examples-shared', 'driver', 'hosts.sh')
+const ANDROID_TV_EMU_SH = path.join(__dirname, '..', 'example-expo', 'scripts', 'android-tv-emu.sh')
 const HELD_PORT = 18099
 
 function waitForListener(port) {
@@ -145,6 +147,85 @@ describe('build-tv.sh finding 176', () => {
       expect(text).not.toContain('192.168.68.116:8081')
     } finally {
       fs.rmSync(stage, { recursive: true, force: true })
+    }
+  })
+
+  // Git Bash converts path-looking ARGUMENTS for a native Windows binary but
+  // never rewrites a path embedded in the quoted `node -e` program string,
+  // so `require('/c/...')` fails with MODULE_NOT_FOUND while the same path
+  // as an argument is converted and resolves. Every node -e program must be
+  // single-quoted (no shell interpolation) with paths passed as arguments.
+  test('shell paths never hide inside a node -e program', () => {
+    for (const file of [SCRIPT, HOSTS_SH, ANDROID_TV_EMU_SH]) {
+      const text = fs.readFileSync(file, 'utf8')
+      const offenders = text.split('\n').filter(line => /node\s+(-e|--eval)\s+"/.test(line))
+      expect(offenders).toEqual([])
+    }
+  })
+
+  // `python` is the canonical executable name on Windows while POSIX setups
+  // only provide `python3`. The script must fall back instead of failing
+  // when python3 is absent.
+  test('bundle-url resolves python portably when python3 is absent', () => {
+    const stage = stageDir()
+    const shim = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-py-shim-'))
+    try {
+      const iosDir = path.join(stage, 'ios', 'TvApp')
+      fs.mkdirSync(iosDir, { recursive: true })
+      const delegate = path.join(iosDir, 'AppDelegate.swift')
+      fs.writeFileSync(
+        delegate,
+        'func sourceURL() {\n    return RCTBundleURLProvider.sharedSettings().jsBundleURL(forBundleRoot: "index")\n}\n'
+      )
+      const discoveredPy3 = spawnSync('bash', ['-lc', 'command -v python3'], { encoding: 'utf8' }).stdout
+        .trim()
+        .split('\n')[0]
+      expect(discoveredPy3).not.toBe('')
+      const resolved = p => {
+        try {
+          return fs.realpathSync(p)
+        } catch {
+          return p
+        }
+      }
+      const isExec = p => {
+        try {
+          fs.accessSync(p, fs.constants.X_OK)
+          return true
+        } catch {
+          return false
+        }
+      }
+      fs.symlinkSync(fs.realpathSync(discoveredPy3), path.join(shim, 'python'))
+      // Hide every python3 on PATH (there can be more than one), re-shimming
+      // any other tool the bundle-url path needs from an excluded directory.
+      const excluded = new Set()
+      const kept = process.env.PATH.split(path.delimiter).filter(entry => {
+        if (entry === '') return false
+        if (isExec(path.join(entry, 'python3'))) {
+          excluded.add(resolved(entry))
+          return false
+        }
+        return true
+      })
+      expect(excluded.size).toBeGreaterThan(0)
+      for (const tool of ['bash', 'dirname', 'find', 'head', 'grep']) {
+        const found = spawnSync('bash', ['-lc', `command -v ${tool}`], { encoding: 'utf8' }).stdout.trim()
+        if (found !== '' && excluded.has(resolved(path.dirname(found)))) {
+          fs.symlinkSync(fs.realpathSync(found), path.join(shim, tool))
+        }
+      }
+      const result = run(['bundle-url'], {
+        TV_STAGE_DIR: stage,
+        TV_LAN_HOST: '192.168.68.116',
+        TV_METRO_PORT: '8091',
+        PATH: `${shim}${path.delimiter}${kept.join(path.delimiter)}`
+      })
+      expect(result.exit).toBe(0)
+      expect(fs.readFileSync(delegate, 'utf8')).toContain('192.168.68.116:8091')
+    } finally {
+      fs.rmSync(stage, { recursive: true, force: true })
+      fs.rmSync(shim, { recursive: true, force: true })
     }
   })
 

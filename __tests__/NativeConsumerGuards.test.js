@@ -90,6 +90,17 @@ describe('consumer refresh guards', () => {
     expect(pkg.scripts.android).toMatch(/ensure-native\.js.*android/)
   })
 
+  test('ensure-native runs pnpm through a shell so Windows can execute pnpm.cmd', () => {
+    // A .cmd shim (what the real pnpm and the win32 test stub are) only runs
+    // under cmd.exe. Spawning bare `pnpm` without a shell never reaches it —
+    // isolated PATH with only pnpm.cmd present fails with ENOENT — so every
+    // guard flowing through ensure-native.js would fail on windows-latest
+    // while passing on POSIX. shell:true is the portable form (same command
+    // everywhere) and matches native-refresh.js, which already uses one.
+    const src = fs.readFileSync(ENSURE_JS, 'utf8')
+    expect(src).toMatch(/spawnSync\(\s*'pnpm'[\s\S]*?shell:\s*true/)
+  })
+
   test('UBM_NATIVE_REFRESH=off switches ensure-native to check-only', () => {
     const stub = stubPnpm(0)
     const outcome = run(process.execPath, [ENSURE_JS, 'desktop'], {
