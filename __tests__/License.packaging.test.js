@@ -89,12 +89,59 @@ describe('UBM 5.0 license packaging and metadata', () => {
   test('SBOM reports the LicenseRef identifier through the real generator', () => {
     execFileSync(process.execPath, ['scripts/release/generate-dependency-artifacts.js', '--check'], {
       cwd: root,
-      stdio: 'pipe',
+      stdio: 'pipe'
     })
     const sbom = JSON.parse(read('SBOM.cdx.json'))
     expect(sbom.metadata.component.licenses).toEqual([{ expression: SAL_LICENSE_REF }])
     const generator = read('scripts/release/generate-dependency-artifacts.js')
     expect(generator).toContain(SAL_LICENSE_REF)
+  })
+
+  test('GOVERNANCE describes the project as source-available and points at NOTICE, not open source', () => {
+    const governance = read('GOVERNANCE.md')
+    expect(governance).toMatch(/source-available/)
+    expect(governance).toContain(NOTICE_FILE)
+    expect(governance).not.toMatch(/open-source/)
+  })
+
+  test('live self-descriptions present the package as source-available, never as open source', () => {
+    const support = read('SUPPORT.md')
+    expect(support).toContain('Support is best-effort maintenance.')
+    expect(support).not.toMatch(/open-source/i)
+
+    const threat = read('docs/security/UNIFIED_BLE_4.0_THREAT_MODEL.md')
+    expect(threat).toMatch(/source-available, multi-host/)
+    expect(threat).toContain('NOTICE')
+    expect(threat).not.toMatch(/open-source/i)
+
+    const plan = read('docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md')
+    expect(plan).toContain('new source-available package with no production users')
+    expect(plan).toContain('a source-available release process')
+    expect(plan).toContain('designed for the public ecosystem')
+    expect(plan).toContain('## 21. Public product quality')
+    expect(plan).toContain('proves the source-available package independently')
+    expect(plan).not.toMatch(/open-source (package|library|foundation|release process|product quality|ecosystem)/)
+    expect(plan).not.toMatch(/open-source, multi-host/)
+    expect(plan).not.toMatch(/new open-source package/)
+  })
+
+  test('dated records keep their history behind a superseding license note', () => {
+    const roadmap = read('ROADMAP.4.0.md')
+    expect(roadmap).toContain('new open-source package line')
+    expect(roadmap).toContain('License note (5.0)')
+    expect(roadmap).toContain('NOTICE')
+
+    const adr = read('docs/ADR/2026-07-4.0-open-source-governance.md')
+    expect(adr).toContain('open-source foundation')
+    expect(adr).toContain('License note (5.0)')
+    expect(adr).toContain('NOTICE')
+    expect(exists('docs/ADR/2026-07-4.0-open-source-governance.md')).toBe(true)
+  })
+
+  test('RELEASE release invariants name the dual-license documents, not only the root LICENSE', () => {
+    const release = read('RELEASE.md')
+    expect(release).toContain(NOTICE_FILE)
+    expect(release).toContain(SAL_LICENSE_FILE)
   })
 
   test('README presents the custom license as source-available, not open source', () => {

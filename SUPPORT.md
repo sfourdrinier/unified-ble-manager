@@ -40,4 +40,4 @@ Do not post real BLE payloads, patient/user data, credentials, or stable device 
 
 Beginning with stable `4.0.0`, support targets the current 4.x release line. Security support follows [`SECURITY.md`](SECURITY.md).
 
-Support is best-effort open-source maintenance. It does not replace application-specific device validation, regulatory review, safety engineering, or an emergency/medical monitoring system.
+Support is best-effort maintenance. It does not replace application-specific device validation, regulatory review, safety engineering, or an emergency/medical monitoring system.

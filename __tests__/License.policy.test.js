@@ -134,6 +134,12 @@ describe('UBM 5.0 license policy contract cases', () => {
     expect(text).toContain('not an OSI-approved open-source license')
   })
 
+  test('the SAL keeps its qualifying open-source project grant vocabulary', () => {
+    const text = read(SAL_LICENSE_FILE)
+    expect(text).toContain('qualifying open-source project')
+    expect(text).toContain('Open-source projects:')
+  })
+
   test('the SAL text authorizes no runtime enforcement machinery', () => {
     const text = read(SAL_LICENSE_FILE)
     expect(text).toContain('There is no revenue threshold')

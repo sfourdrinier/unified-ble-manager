@@ -94,7 +94,7 @@ describe('consumer documentation matches the published package', () => {
   test('controlling implementation plan records the clean-baseline decisions', () => {
     const plan = read('docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md')
 
-    expect(plan).toContain('new open-source package with no production users')
+    expect(plan).toContain('new source-available package with no production users')
     expect(plan).toContain('one versioned backend contract')
     expect(plan).toContain('one shared manager/policy core')
     expect(plan).toContain('All payloads are `Uint8Array`')

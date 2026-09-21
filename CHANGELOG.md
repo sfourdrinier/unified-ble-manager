@@ -1393,6 +1393,22 @@ metadata:{androidGattStatus}}` on Android, or the `NSError` domain and code
 
 ### Fixed
 
+- **The repository says one thing about its own license.** The dual
+  arrangement itself is unchanged and was already stated correctly in `NOTICE`,
+  the README, `CONTRIBUTING.md` and every crate manifest: material retained
+  from the Apache-only baseline stays under Apache-2.0, and new 5.0 work is
+  under the UBM Source Available License 1.0. Several documents had not caught
+  up and still called the package "open-source", which its own license text
+  explicitly says it is not — `GOVERNANCE.md`, `SUPPORT.md`, the 4.0
+  implementation plan and the threat model now say source-available and point
+  at `NOTICE`, and `RELEASE.md`'s release invariant names the metadata and the
+  documents it has to reconcile instead of a single `LICENSE`. Dated records
+  (the 4.0 roadmap banner, the governance ADR) keep their original wording
+  behind a note saying it is history, because a decision taken in 2026-07 is
+  not rewritten by a license adopted later. The license's own "qualifying
+  open-source project" term is part of the grant and is untouched, and pinned
+  by test.
+
 - **The examples refuse a dev-server port that belongs to another project.** A
   React Native app pointed at a Metro serving a different project loads that
   project's bundle, registers no callable JavaScript modules, and then throws on

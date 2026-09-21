@@ -4,7 +4,7 @@
 
 ## Overview
 
-`unified-ble-manager` is an open-source, multi-host Bluetooth Low Energy central library with a 4.0 clean baseline. The durable product boundary is the host-neutral backend contract, manager/core lifecycle, explicit host backends, typed capabilities and limitations, `Uint8Array` GATT operations, bounded streams, and release evidence. This model applies to the whole repository and its release workflow, not to a particular diff or a list of current findings.
+`unified-ble-manager` is a source-available, multi-host Bluetooth Low Energy central library with a 4.0 clean baseline; see [`NOTICE`](../../NOTICE) for the Apache-2.0 / UBM Source Available License 1.0 arrangement. The durable product boundary is the host-neutral backend contract, manager/core lifecycle, explicit host backends, typed capabilities and limitations, `Uint8Array` GATT operations, bounded streams, and release evidence. This model applies to the whole repository and its release workflow, not to a particular diff or a list of current findings.
 
 The security objectives are to preserve user control of nearby radio operations; prevent untrusted local, renderer, peripheral, or package inputs from crossing host/process/native boundaries with more authority than intended; keep BLE identifiers and GATT values from becoming unnecessary telemetry or diagnostics; and ensure that published packages and support claims truthfully describe what was built and exercised. The library does not itself authenticate a physical peripheral's business identity or make clinical decisions. Consumers must authenticate application protocols and make product-specific authorization, persistence, consent, telemetry, and medical-safety decisions.
 

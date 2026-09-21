@@ -50,7 +50,7 @@ Before a stable release tag is pushed:
 5. `SBOM.cdx.json` and `THIRD_PARTY_LICENSES.json` are generated from the same package metadata/lockfile.
 6. canonical CI is green for the release commit.
 7. package/repository/homepage/bug URLs point at `sfourdrinier/unified-ble-manager`.
-8. the license metadata and root `LICENSE` agree.
+8. the license metadata (`package.json` license field, Cargo `license-file` pointers, SBOM expression) and the license documents (`LICENSE`, `LICENSE-UBM-SOURCE-AVAILABLE-1.0.md`, `NOTICE`) agree.
 9. the npm trusted publisher points at this repository/workflow/environment.
 10. GitHub private vulnerability reporting is enabled for the canonical repository.
 11. the complete macOS/Windows `arm64`/`x64` Node-API prebuild matrix is produced from the release tag and verified under Node and Electron.

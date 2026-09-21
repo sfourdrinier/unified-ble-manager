@@ -5,6 +5,10 @@
 > **Status: Historical record.** This roadmap's scope was delivered with the
 > stable 4.0 releases. It is kept as a decision record and is not current
 > guidance. See the [documentation map](docs/README.md).
+>
+> **License note (5.0):** "open-source" below records the 4.0 Apache posture
+> and is history. New 5.0 material is source-available under the UBM Source
+> Available License 1.0; see [`NOTICE`](NOTICE).
 
 **Status:** implemented 4.0 product scope; stable package/API release target
 
