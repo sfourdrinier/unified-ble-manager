@@ -1393,6 +1393,18 @@ metadata:{androidGattStatus}}` on Android, or the `NSError` domain and code
 
 ### Fixed
 
+- **The examples refuse a dev-server port that belongs to another project.** A
+  React Native app pointed at a Metro serving a different project loads that
+  project's bundle, registers no callable JavaScript modules, and then throws on
+  every native call — thousands per second, without bound, growing about 20 MB a
+  second until the machine runs out of memory. Nothing in that sequence names
+  the cause: it reads as a hang. The bare example's `start`, `ios` and `android`
+  scripts, and `build-tv.sh metro`, now check who holds the port first and stop
+  with the holder's pid, working directory and command. Where the platform
+  offers no way to identify the holder the guard says exactly that and lets the
+  run continue, rather than refusing something it cannot judge. `example-expo`
+  is unchanged: Expo already detects a busy port and offers another.
+
 - **The Windows CI leg runs the shell-script behaviour tests it was skipping
   past.** Nine tests in three suites had never passed on `windows-latest`, each
   for its own reason and none of them a real platform limit: the TV stage guard
