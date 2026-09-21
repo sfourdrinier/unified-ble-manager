@@ -96,6 +96,54 @@ describe('build-tv.sh finding 176', () => {
   // a port another project already serves hands it that project's bundle and
   // React Native throws on every native call without bound. `metro` must refuse
   // before it starts anything.
+  // The stage owns the port, not the repo: a server started from the stage is
+  // the TV's own and must be allowed, and a server started from elsewhere in
+  // the repository (the bare example on the same default port) must not be.
+  // Passing the repo root as the project root got both of these backwards.
+  test('metro allows the port its own staged server holds', () => {
+    const stage = stageDir()
+    const holder = spawn(
+      process.execPath,
+      ['-e', "require('net').createServer().listen(Number(process.argv[1]), '127.0.0.1')", String(HELD_PORT + 1)],
+      { cwd: stage, stdio: 'ignore' }
+    )
+    try {
+      expect(waitForListener(HELD_PORT + 1)).toBe(true)
+      const guard = spawnSync(
+        process.execPath,
+        [path.join(ROOT, 'examples-shared', 'dev', 'metro-port-guard.js'), String(HELD_PORT + 1), stage],
+        { encoding: 'utf8' }
+      )
+      expect(guard.status).toBe(0)
+      expect(guard.stdout).toContain('held by this project')
+    } finally {
+      holder.kill('SIGKILL')
+      fs.rmSync(stage, { recursive: true, force: true })
+    }
+  })
+
+  test('metro refuses a repository server that is not the stage', () => {
+    const stage = stageDir()
+    const holder = spawn(
+      process.execPath,
+      ['-e', "require('net').createServer().listen(Number(process.argv[1]), '127.0.0.1')", String(HELD_PORT + 2)],
+      { cwd: path.join(ROOT, 'example'), stdio: 'ignore' }
+    )
+    try {
+      expect(waitForListener(HELD_PORT + 2)).toBe(true)
+      const guard = spawnSync(
+        process.execPath,
+        [path.join(ROOT, 'examples-shared', 'dev', 'metro-port-guard.js'), String(HELD_PORT + 2), stage],
+        { encoding: 'utf8' }
+      )
+      expect(guard.status).not.toBe(0)
+      expect(guard.stderr).toContain('held by another project')
+    } finally {
+      holder.kill('SIGKILL')
+      fs.rmSync(stage, { recursive: true, force: true })
+    }
+  })
+
   test('metro refuses a port held from outside this repository', () => {
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-not-this-repo-'))
     const holder = spawn(
@@ -177,8 +225,8 @@ describe('build-tv.sh finding 176', () => {
         delegate,
         'func sourceURL() {\n    return RCTBundleURLProvider.sharedSettings().jsBundleURL(forBundleRoot: "index")\n}\n'
       )
-      const discoveredPy3 = spawnSync('bash', ['-lc', 'command -v python3'], { encoding: 'utf8' }).stdout
-        .trim()
+      const discoveredPy3 = spawnSync('bash', ['-lc', 'command -v python3'], { encoding: 'utf8' })
+        .stdout.trim()
         .split('\n')[0]
       expect(discoveredPy3).not.toBe('')
       const resolved = p => {

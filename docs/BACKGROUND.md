@@ -184,8 +184,8 @@ options, and the plugin validates it at prebuild time
 ```
 
 `peerId` is optional: omitted, the order is scoped to whichever armed peer
-appears. `serviceOccurrence` and `characteristicOccurrence` default to `0` and
-only matter for a peer that advertises the same UUID more than once.
+appears. `serviceOccurrence` and `characteristicOccurrence` default to `1` and
+only matter for a peer that exposes the same UUID more than once.
 
 **Bare React Native** passes the same shape to the host factory:
 
@@ -264,7 +264,11 @@ failures the platform reported, verbatim. The same is true when a drain is cut
 short by the batch cap with more still queued: the unread tail is retained
 rather than discarded. An application that sees `disposed: false` must claim
 again until it sees `true`; treating one claim as the end of the backlog loses
-data that the library deliberately kept for it.
+data that the library deliberately kept for it. One path reports less than the
+others: when a queued batch is itself unparseable the claim fails closed with
+`protocol.malformed` before any backlog is built, so the session is still kept
+but the reason reaches the caller as that error rather than as
+`disposeFailure`.
 
 **Every wake is recorded, including the ones that do nothing.** A peer that
 appears without an association is recorded as `association.unknown`, and an

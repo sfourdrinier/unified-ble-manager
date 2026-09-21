@@ -308,7 +308,14 @@ cmd_metro() {
   # Finding 241: the staged TV app is pointed at TV_LAN_HOST:TV_METRO_PORT, so a
   # port another project already serves hands it that project's bundle. React
   # Native then throws on every native call without bound. Refuse first.
-  node "${ROOT}/examples-shared/dev/metro-port-guard.js" "${TV_METRO_PORT}" "${ROOT}"
+  #
+  # The project root here is the STAGE, not the repo: this server runs from the
+  # stage, and the stage is what owns the port. Passing the repo root instead
+  # got it wrong twice over — it refused the TV's own server whenever the stage
+  # sat outside the repo, and it accepted any other server started from a repo
+  # subdirectory (the bare example on the same default 8081), which is exactly
+  # the collision the guard exists to catch.
+  node "${ROOT}/examples-shared/dev/metro-port-guard.js" "${TV_METRO_PORT}" "${STAGE}"
   (cd "${STAGE}" && npx expo start --port "${TV_METRO_PORT}")
 }
 

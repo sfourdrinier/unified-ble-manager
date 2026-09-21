@@ -1411,7 +1411,10 @@ metadata:{androidGattStatus}}` on Android, or the `NSError` domain and code
   subscriptions with no owner and no retry — the most expensive shape of bug,
   because nothing reported it. The claim now keeps the session when the release
   reports failures, returns the reason as `disposeFailure`, and the next claim
-  retries. An incomplete drain, or a full batch cap with more still queued,
+  retries. (One path reports less: when a queued batch is itself unparseable the
+  claim fails closed with `protocol.malformed` before a backlog is built, so the
+  session is kept but the reason arrives as that error rather than as
+  `disposeFailure`.) An incomplete drain, or a full batch cap with more still queued,
   likewise keeps the unread tail instead of discarding it. Applications must
   claim again while `disposed` is false.
 

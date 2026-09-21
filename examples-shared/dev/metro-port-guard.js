@@ -17,6 +17,7 @@
 
 'use strict'
 
+const fs = require('fs')
 const path = require('path')
 const { spawnSync } = require('child_process')
 
@@ -71,8 +72,24 @@ function processCommand(pid) {
   return trimmed === '' ? null : trimmed
 }
 
+/**
+ * `lsof` reports the process's PHYSICAL working directory, while the caller
+ * usually passes a logical one — on macOS every `os.tmpdir()` path is a
+ * symlink (`/var/...` to `/private/var/...`), so comparing the two as written
+ * calls a project's own server someone else's. Resolve both sides first, and
+ * fall back to the literal path when a side cannot be resolved rather than
+ * failing the comparison.
+ */
+function resolveReal(candidate) {
+  try {
+    return fs.realpathSync(candidate)
+  } catch {
+    return candidate
+  }
+}
+
 function isInside(directory, root) {
-  const relative = path.relative(root, directory)
+  const relative = path.relative(resolveReal(root), resolveReal(directory))
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
 }
 
