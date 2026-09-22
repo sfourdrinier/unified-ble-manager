@@ -52,9 +52,10 @@ describe('build-napi-addon install step', () => {
   })
 
   test('reads the built addon from Cargo target-dir overrides', () => {
-    expect(resolveCargoTargetRoot('/repo', undefined)).toBe(path.join('/repo', 'target'))
-    expect(resolveCargoTargetRoot('/repo', 'custom-target')).toBe(path.join('/repo', 'custom-target'))
-    expect(resolveCargoTargetRoot('/repo', path.join(directory, 'cargo-target'))).toBe(
+    const root = path.resolve(directory, 'repo')
+    expect(resolveCargoTargetRoot(root, undefined)).toBe(path.join(root, 'target'))
+    expect(resolveCargoTargetRoot(root, 'custom-target')).toBe(path.join(root, 'custom-target'))
+    expect(resolveCargoTargetRoot(root, path.join(directory, 'cargo-target'))).toBe(
       path.join(directory, 'cargo-target')
     )
   })

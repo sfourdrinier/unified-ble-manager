@@ -14,7 +14,12 @@ const { execFileSync, spawn, spawnSync } = require('node:child_process')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
-const { gitBashExecutableTemp } = require('./helpers/git-bash-temp')
+const {
+  findExecutableOnPath,
+  gitBashExecutableTemp,
+  shimExecutableIntoDir,
+  shimPythonIntoDir
+} = require('./helpers/git-bash-temp')
 
 const SCRIPT = path.join(__dirname, '..', 'example-expo', 'scripts', 'build-tv.sh')
 const ROOT = path.join(__dirname, '..')
@@ -65,48 +70,10 @@ function waitForExit(child) {
   }
 }
 
-// Portable executable discovery, done in Node instead of through
-// `bash -lc 'command -v ...'`: on Windows that prints MSYS paths (/c/...)
-// Node cannot resolve, and the first `python3` hit may be the 0-byte
-// Microsoft Store stub. Scan PATH entries directly and skip zero-byte
-// stubs; copy (never symlink — file symlinks need privilege on Windows).
-function findOnPath(names) {
-  const extensions = process.platform === 'win32' ? ['', '.exe', '.cmd', '.bat'] : ['']
-  for (const entry of process.env.PATH.split(path.delimiter)) {
-    if (entry === '') continue
-    for (const name of names) {
-      for (const extension of extensions) {
-        const candidate = path.join(entry, name + extension)
-        try {
-          const stat = fs.statSync(candidate)
-          if (stat.isFile() && stat.size > 0) return candidate
-        } catch {
-          // Missing or unreadable: keep scanning.
-        }
-      }
-    }
-  }
-  return ''
-}
-
-function shimIntoDir(shim, source, name) {
-  const target = path.join(shim, name ?? path.basename(source))
-  if (process.platform === 'win32') {
-    // File symlinks need privilege on Windows; copies run fine there.
-    fs.copyFileSync(source, target)
-    try {
-      fs.chmodSync(target, 0o755)
-    } catch {
-      // Best-effort: chmod is a no-op on Windows, where the extension resolves.
-    }
-  } else {
-    // Copies of platform-signed binaries are killed on exec; symlinking
-    // keeps the original (and needs no privilege here).
-    fs.symlinkSync(fs.realpathSync(source), target)
-  }
-  return target
-}
-
+// Portable executable discovery stays outside `bash command -v`: its Windows
+// answer uses MSYS paths that Node cannot resolve. The shared helper uses
+// where.exe there and skips zero-byte Store stubs. Python runs through a Git
+// Bash wrapper at its installed location so its adjacent DLLs remain visible.
 function dirProvidesPython3(entry) {
   const names = process.platform === 'win32' ? ['python3', 'python3.exe'] : ['python3']
   return names.some(name => {
@@ -356,7 +323,7 @@ describe('build-tv.sh finding 176', () => {
       )
       // A real interpreter to expose as `python` (on Windows there is no
       // python3 beyond the Store stub, so the real `python` is the source).
-      const discovered = findOnPath(process.platform === 'win32' ? ['python'] : ['python3'])
+      const discovered = findExecutableOnPath(process.platform === 'win32' ? ['python'] : ['python3'])
       expect(discovered).not.toBe('')
       const resolved = p => {
         try {
@@ -365,7 +332,7 @@ describe('build-tv.sh finding 176', () => {
           return p
         }
       }
-      shimIntoDir(shim, discovered, process.platform === 'win32' ? 'python.exe' : 'python')
+      shimPythonIntoDir(shim, discovered)
       // Hide every python3 on PATH (there can be more than one), re-shimming
       // any other tool the bundle-url path needs from an excluded directory.
       const excluded = new Set()
@@ -379,9 +346,9 @@ describe('build-tv.sh finding 176', () => {
       })
       expect(excluded.size).toBeGreaterThan(0)
       for (const tool of ['bash', 'dirname', 'find', 'head', 'grep']) {
-        const found = findOnPath([tool])
+        const found = findExecutableOnPath([tool])
         if (found !== '' && excluded.has(resolved(path.dirname(found)))) {
-          shimIntoDir(shim, found)
+          shimExecutableIntoDir(shim, found)
         }
       }
       const result = run(['bundle-url'], {

@@ -78,20 +78,38 @@ function deferAdapterEvents(harness) {
 function deferAdapterAndResetEvents(harness) {
   const openSynthetic = harness.binding.openSynthetic
   let released = false
+  const heldResets = []
   harness.binding.openSynthetic = async (owner, options) => {
     const central = await openSynthetic(owner, options)
     return new Proxy(central, {
       get(target, property) {
-        if (property === 'takeAdapterEvent' || property === 'takeAdapterResetEvent') {
-          return () => (released ? Reflect.apply(target[property], target, []) : Promise.resolve(null))
+        if (property === 'takeAdapterEvent') {
+          return () => (released ? target.takeAdapterEvent() : Promise.resolve(null))
+        }
+        if (property === 'takeAdapterResetEvent') {
+          return async () => {
+            if (released) return heldResets.shift() ?? target.takeAdapterResetEvent()
+            const reset = await target.takeAdapterResetEvent()
+            if (reset !== null && reset !== undefined) heldResets.push(reset)
+            return null
+          }
         }
         const value = Reflect.get(target, property)
         return typeof value === 'function' ? (...args) => Reflect.apply(value, target, args) : value
       }
     })
   }
-  return () => {
-    released = true
+  return {
+    async waitForReset() {
+      const until = Date.now() + 5000
+      while (heldResets.length === 0 && Date.now() < until) {
+        await new Promise(resolve => setTimeout(resolve, 5))
+      }
+      expect(heldResets).not.toHaveLength(0)
+    },
+    release() {
+      released = true
+    }
   }
 }
 
@@ -235,7 +253,7 @@ describe('adapter loss follows the legacy per-OS sequence (LEGACY-AUDIT-1 #57)',
 
   test('an off reset precedes a queued on recovery at the new generation', async () => {
     const harness = realBinding('bluez')
-    const releaseEvents = deferAdapterAndResetEvents(harness)
+    const deferredEvents = deferAdapterAndResetEvents(harness)
     const provider = createTestDesktopRustCoreBackendProvider({
       platform: 'bluez',
       owner: 'reset-before-recovery',
@@ -252,7 +270,8 @@ describe('adapter loss follows the legacy per-OS sequence (LEGACY-AUDIT-1 #57)',
       const transitions = watch.transitions[Symbol.asyncIterator]()
       await stage.stageAdapterState('powered-off', true)
       await stage.stageAdapterState('powered-on', true)
-      releaseEvents()
+      await deferredEvents.waitForReset()
+      deferredEvents.release()
       await backend.settleCoreEvents()
       const off = await nextItem(transitions, 5000)
       const on = await nextItem(transitions, 5000)
@@ -267,7 +286,7 @@ describe('adapter loss follows the legacy per-OS sequence (LEGACY-AUDIT-1 #57)',
 
   test('a reset does not replay queued states at or before its causal sequence', async () => {
     const harness = realBinding('bluez')
-    const releaseEvents = deferAdapterAndResetEvents(harness)
+    const deferredEvents = deferAdapterAndResetEvents(harness)
     const provider = createTestDesktopRustCoreBackendProvider({
       platform: 'bluez',
       owner: 'reset-discards-pre-reset-state',
@@ -284,7 +303,8 @@ describe('adapter loss follows the legacy per-OS sequence (LEGACY-AUDIT-1 #57)',
       const transitions = watch.transitions[Symbol.asyncIterator]()
       await stage.stageAdapterState('powered-on', true)
       await stage.stageAdapterState('powered-off', true)
-      releaseEvents()
+      await deferredEvents.waitForReset()
+      deferredEvents.release()
       await backend.settleCoreEvents()
       const transition = await nextItem(transitions, 5000)
       expect(transition).toMatchObject({ kind: 'value', value: { power: 'off' } })
@@ -297,7 +317,7 @@ describe('adapter loss follows the legacy per-OS sequence (LEGACY-AUDIT-1 #57)',
 
   test('a direct adapter removal carries its wake-state sequence across the reset boundary', async () => {
     const harness = realBinding('bluez')
-    const releaseEvents = deferAdapterAndResetEvents(harness)
+    const deferredEvents = deferAdapterAndResetEvents(harness)
     const provider = createTestDesktopRustCoreBackendProvider({
       platform: 'bluez',
       owner: 'direct-loss-reset-sequence',
@@ -314,7 +334,8 @@ describe('adapter loss follows the legacy per-OS sequence (LEGACY-AUDIT-1 #57)',
       const transitions = watch.transitions[Symbol.asyncIterator]()
       await stage.stageAdapterState('powered-on', true)
       await stage.stageAdapterReset('removed')
-      releaseEvents()
+      await deferredEvents.waitForReset()
+      deferredEvents.release()
       await backend.settleCoreEvents()
       const transition = await nextItem(transitions, 5000)
       expect(transition).toMatchObject({ kind: 'value', value: { power: 'on' } })
