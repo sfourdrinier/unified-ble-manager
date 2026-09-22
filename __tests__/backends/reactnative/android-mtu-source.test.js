@@ -6,7 +6,10 @@ const repositoryRoot = path.resolve(__dirname, '../../..')
 describe('Android effective MTU source seam', () => {
   test('uses generation-bound cached GATT state through the serial queue', () => {
     const radio = fs.readFileSync(
-      path.join(repositoryRoot, 'android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt'),
+      path.join(
+        repositoryRoot,
+        'android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt'
+      ),
       'utf8'
     )
     const dispatcher = fs.readFileSync(

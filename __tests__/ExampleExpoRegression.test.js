@@ -21,9 +21,11 @@ describe('Expo example cold-review regressions', () => {
     const classicPnpmConfig = fs.readFileSync(path.join(root, 'example', '.npmrc'), 'utf8')
 
     expect(expoPackage.dependencies['@expo/dom-webview']).toBe('57.0.1')
-    expect(expoPackage.dependencies.expo).toBe('~57.0.20')
-    expect(expoPackage.dependencies['expo-system-ui']).toBe('^57.0.3')
+    expect(expoPackage.dependencies.expo).toBe('~57.0.23')
+    expect(expoPackage.dependencies['expo-system-ui']).toBe('^57.0.4')
     expect(expoPackage.dependencies['react-native']).toBe('~0.86.3')
+    expect(expoPackage.dependencies['react-native-screens']).toBe('~4.26.0')
+    expect(expoPackage.dependencies['react-dom']).toBe('19.2.3')
     expect(expoPackage.devDependencies).not.toHaveProperty('@expo/config-plugins')
     expect(expoPackage.devDependencies['@react-native/babel-preset']).toBe('~0.86.3')
     expect(expoPackage.devDependencies['@react-native/metro-config']).toBe('~0.86.3')
@@ -70,6 +72,16 @@ describe('Expo example cold-review regressions', () => {
     expect(dashboard).toMatch(
       /<AppButton\s+label="Expo diagnostics"\s+onPress=\{\(\) => navigation\.navigate\('EXPO_DIAGNOSTICS_SCREEN'\)\}\s*\/>/
     )
+  })
+
+  test('restored peers display the address when the platform supplied no name (FXL-233)', () => {
+    const dashboard = readExampleSource('example-expo', 'screens/MainStack/DashboardScreen/DashboardScreen.tsx')
+    // A restored peer has no advertisement observation in this process, so
+    // `name` is null on Android presence wake; the screen shows the
+    // address-bearing reference instead of an empty name.
+    expect(dashboard).toContain('peer.reference?.opaqueId')
+    expect(dashboard).not.toContain("'unnamed'")
+    expect(dashboard).not.toContain('"unnamed"')
   })
 
   test('nRF flow respects Apple-managed MTU and treats Android MTU failure as a failed flow', () => {

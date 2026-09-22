@@ -1,0 +1,4 @@
+$ pm revoke BLUETOOTH_CONNECT (kill probe)
+[exit=0]
+
+

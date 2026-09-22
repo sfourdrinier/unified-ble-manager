@@ -1,0 +1,23 @@
+[package]
+name = "ubm5_napi_echo"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.98.1"
+description = "UBM 5.0 N-API binding: FFI echo round-trip (trackourhealth/bun-mono#1188, FFI-NAPI card) plus the F01 UbmCentral dispatch over ubm-desktop (real BLE operations in Rust)."
+publish = false
+license-file = "../../LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
+repository = "https://github.com/sfourdrinier/unified-ble-manager"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+napi = { version = "=2.16.17", features = ["napi4", "tokio_rt"] }
+napi-derive = "=2.16.13"
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+ubm-core = { path = "../../crates/ubm-core" }
+ubm-desktop = { path = "../../crates/ubm-desktop" }
+ubm-fake-radio = { path = "../../crates/ubm-fake-radio" }
+
+[build-dependencies]
+napi-build = "=2.4.2"

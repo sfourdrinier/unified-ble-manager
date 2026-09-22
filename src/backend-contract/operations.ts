@@ -173,4 +173,31 @@ export interface ReadResult<Attachment extends string, _Operation extends string
   readonly value: OwnedBytes
   readonly terminal: OperationTerminalRecord<Attachment, string>
 }
+/**
+ * What the platform says a characteristic read value is. One vocabulary on
+ * every backend:
+ * - `read-response`: the platform attributed the value to this read's ATT
+ *   read response (Android `onCharacteristicRead`, WinRT `ReadValueAsync`,
+ *   BlueZ `ReadValue`, Web Bluetooth `readValue()`, CoreBluetooth while the
+ *   characteristic cannot notify);
+ * - `read-or-notification`: the platform reports read responses and
+ *   notifications through one callback (CoreBluetooth `didUpdateValueFor`) and
+ *   the characteristic could notify or indicate when the value arrived, so the
+ *   value is this read's response or a notification/indication. The same value
+ *   is also delivered to the characteristic's subscribers.
+ */
+export const READ_PROVENANCES = Object.freeze(['read-response', 'read-or-notification'] as const)
+export type ReadProvenance = (typeof READ_PROVENANCES)[number]
+export function isReadProvenance(value: unknown): value is ReadProvenance {
+  return READ_PROVENANCES.some(provenance => provenance === value)
+}
+/** A characteristic read: its value and the platform's own provenance. */
+export interface CharacteristicRead {
+  readonly value: OwnedBytes
+  readonly provenance: ReadProvenance
+}
+/** A characteristic read's dispatch result: the read and its terminal record. */
+export interface CharacteristicReadResult<Attachment extends string, Operation extends string>
+  extends ReadResult<Attachment, Operation>,
+    CharacteristicRead {}
 export type WriteResult<Attachment extends string, _Operation extends string> = WriteReceipt<Attachment, string>

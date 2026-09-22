@@ -1,0 +1,241 @@
+{
+  "suite": "ubm5-android-emulator-battery-v1",
+  "avd": "ubm5-emu-probe",
+  "serial": "emulator-5554",
+  "package": "com.ubmprobe",
+  "consumer": "com.ubmprobe debug APK built from emulator-probe/consumer (real 4.x native module path; Expo Go and JS mocks excluded)",
+  "nativeModule": "UnifiedBleProtocolControl via BlePlxPackage; libunified_ble_native_protocol.so (x86_64)",
+  "rustSwapInPoint": "emulator-probe/README.md documents substituting the 5.0 Rust artifact for android/ JNI libs",
+  "startedAt": "2026-09-18T00:29:13.829Z",
+  "records": [
+    {
+      "id": "PRE",
+      "name": "device identity + preconditions",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 3,
+        "total": 3
+      },
+      "checks": [
+        {
+          "check": "device reachable (sdk_gphone64_x86_64)",
+          "pass": true,
+          "detail": "google/sdk_gphone64_x86_64/emu64xa:14/UE1A.230829.050/12077443:userdebug/dev-keys sdk=34 abi=x86_64"
+        },
+        {
+          "check": "bluetooth_manager queryable",
+          "pass": true,
+          "detail": "  enabled: true   state: ON   address: <REDACTED-MAC>"
+        },
+        {
+          "check": "package absent before install",
+          "pass": true,
+          "detail": "pm list packages scanned on host"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "adb uninstall (idempotent reruns)",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/PRE-0.log"
+        },
+        {
+          "command": "adb shell getprop fingerprint/sdk/abi/release",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/PRE-1.log"
+        },
+        {
+          "command": "adb shell dumpsys bluetooth_manager",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/PRE-2.log"
+        },
+        {
+          "command": "pre-install package check",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/PRE-3.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "T1",
+      "name": "install UBM consumer APK (real 4.x native module path)",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 3,
+        "total": 3
+      },
+      "checks": [
+        {
+          "check": "install reports Success",
+          "pass": true,
+          "detail": "Success"
+        },
+        {
+          "check": "package listed after install",
+          "pass": true,
+          "detail": "package:com.ubmprobe"
+        },
+        {
+          "check": "package info queryable (v1/min24/target36)",
+          "pass": true,
+          "detail": "    versionCode=1 minSdk=24 targetSdk=36"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "adb install -r app-debug.apk",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T1-0.log"
+        },
+        {
+          "command": "pm list packages (host-matched)",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T1-1.log"
+        },
+        {
+          "command": "dumpsys package (host-matched)",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T1-2.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "T8",
+      "name": "JS-driven native battery: init/adapters/bonded/abort/scan through the real module",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 14,
+        "total": 14
+      },
+      "checks": [
+        {
+          "check": "metro packager reachable [HOST-JVM host-side]",
+          "pass": true,
+          "detail": "host-side curl http://127.0.0.1:8081/status (not device-observed)"
+        },
+        {
+          "check": "JS bundle executed (app-mounted)",
+          "pass": true,
+          "detail": "I/ReactNativeJS( 7815): [UBM_PROBE] app-mounted"
+        },
+        {
+          "check": "no FATAL EXCEPTION for consumer",
+          "pass": true,
+          "detail": "host-matched over full logcat"
+        },
+        {
+          "check": "no UnsatisfiedLinkError",
+          "pass": true,
+          "detail": "host-matched over full logcat"
+        },
+        {
+          "check": "Init button tapped",
+          "pass": true,
+          "detail": "tapped at 540,254"
+        },
+        {
+          "check": "runtime permissions granted (dialog answered or already granted)",
+          "pass": true,
+          "detail": "Allow tapped at 540,1062; I/ReactNativeJS( 7815): [UBM_PROBE] scan=granted connect=granted I/ReactNativeJS( 7815): [UBM_PROBE] permission-ok=true"
+        },
+        {
+          "check": "manager created through the production binding (post-flip native route)",
+          "pass": true,
+          "detail": "I/ReactNativeJS( 7815): [UBM_PROBE] manager-created"
+        },
+        {
+          "check": "adapter state round-trips through the production binding",
+          "pass": true,
+          "detail": "I/ReactNativeJS( 7815): [UBM_PROBE] adapter power=on availability=available authorization=granted"
+        },
+        {
+          "check": "Bonded button tapped",
+          "pass": true,
+          "detail": "tapped at 540,482"
+        },
+        {
+          "check": "bonded reports the empty table without errors (no core bond surface yet; R03)",
+          "pass": true,
+          "detail": "I/ReactNativeJS( 7815): [UBM_PROBE] bonded-count=0"
+        },
+        {
+          "check": "Aborted-find button tapped",
+          "pass": true,
+          "detail": "tapped at 540,596"
+        },
+        {
+          "check": "pre-aborted find settles as operation.aborted on-device",
+          "pass": true,
+          "detail": "I/ReactNativeJS( 7815): [UBM_PROBE] aborted-find-settled name=BleError code=operation.aborted message=operation.aborted: scan"
+        },
+        {
+          "check": "Scan button tapped",
+          "pass": true,
+          "detail": "tapped at 540,368"
+        },
+        {
+          "check": "scan settles with an explicit typed error (no hang, nothing swallowed)",
+          "pass": true,
+          "detail": "I/ReactNativeJS( 7815): [UBM_PROBE] find-settled name=BleError code=operation.aborted message=operation.aborted: public-ble-manager.find"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "launch on Metro",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T8-0.log"
+        },
+        {
+          "command": "logcat after launch",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T8-1.log"
+        },
+        {
+          "command": "logcat after init",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T8-2.log"
+        },
+        {
+          "command": "logcat after bonded",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T8-3.log"
+        },
+        {
+          "command": "logcat after aborted find",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T8-4.log"
+        },
+        {
+          "command": "logcat after scan",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T8-5.log"
+        }
+      ],
+      "result": "pass",
+      "boundaryReason": "Mid-scan AbortSignal cancellation needs a pending scan; scans reject immediately on the virtual adapter, so no native queue forms. Pending-scan cancellation stays a U-ANDROID-PHYSICAL follow-up."
+    }
+  ],
+  "summary": {
+    "tests": 3,
+    "assertionsPassed": 20,
+    "assertionsTotal": 20,
+    "byResult": {
+      "pass": 3
+    }
+  }
+}

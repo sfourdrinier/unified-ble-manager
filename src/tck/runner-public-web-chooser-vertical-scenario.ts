@@ -54,7 +54,7 @@ export async function executePublicWebChooserVerticalSlice<
     throw new TckAssertionError(definition.id, 'late browser chooser completion retained resources')
   }
   const cancelledPeerRejected = await fixture.controller.settle(
-    rejectsWithCode(manager.connect(adapter.expectedSelectedPeerId, operationOptions), 'connection.not-found')
+    rejectsWithCode(manager.connect(adapter.expectedSelectedPeerId, operationOptions), 'peer.not-found')
   )
   if (!cancelledPeerRejected) {
     throw new TckAssertionError(

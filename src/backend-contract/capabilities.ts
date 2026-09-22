@@ -62,6 +62,10 @@ export const BUILT_IN_FEATURE_IDS = Object.freeze({
   backgroundAppleRestoration: 'background:apple-restoration',
   backgroundAndroidConnectedDeviceService: 'background:android-connected-device-service',
   backgroundDesktopMaintainConnection: 'background:desktop-maintain-connection',
+  backgroundWakeOnAppearance: 'background:wake-on-appearance',
+  backgroundNativeResubscribe: 'background:native-resubscribe',
+  backgroundHeadlessTask: 'background:headless-task',
+  backgroundWakeNotification: 'background:wake-notification',
   lifecyclePagePersistence: 'lifecycle:page-persistence'
 })
 export type BuiltInFeatureId = (typeof BUILT_IN_FEATURE_IDS)[keyof typeof BUILT_IN_FEATURE_IDS]

@@ -11,6 +11,7 @@ import type { CleanupFailure, CleanupRecord } from '../backend-contract/errors'
 import type { CharacteristicPath } from '../backend-contract/gatt'
 import type { BackendIdentity } from '../backend-contract/identity'
 import type {
+  CharacteristicRead,
   LongWriteChunkProgress,
   LongWriteNotPlannedReceipt,
   LongWritePolicy,
@@ -66,7 +67,7 @@ export async function readCoreCharacteristic<Attachment extends string, Identity
   database: CoreGattDatabase<Attachment, Identity>,
   path: CurrentCharacteristicPath<Attachment>,
   options: PublicOperationOptions
-): Promise<OwnedBytes> {
+): Promise<CharacteristicRead> {
   database.assertPath(path)
   const result = await operationCoordinator.run({
     queueKey: String(path.connectionId),
@@ -80,7 +81,7 @@ export async function readCoreCharacteristic<Attachment extends string, Identity
     }
   })
   const read = requireOperationValue(result, 'unified-core.read')
-  return ownBytes(read.value, maximumValueBytes)
+  return Object.freeze({ value: ownBytes(read.value, maximumValueBytes), provenance: read.provenance })
 }
 
 export async function writeCoreCharacteristic<Attachment extends string, Identity extends BackendIdentity<Attachment>>(

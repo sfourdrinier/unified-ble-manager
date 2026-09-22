@@ -47,6 +47,34 @@ describe('trusted IPC capability bootstrap', () => {
     })
   })
 
+  test('finding 217 follow-up: the projection routes the effective MTU, so the native descriptor passes through', () => {
+    const refused = descriptor('connection:effective-mtu', 'connection-controls')
+    refused.state = 'unsupported'
+    const nativeLimitation = {
+      code: 'effective-mtu-boundary-unavailable',
+      explanation: 'The dispatcher exposes no authoritative current ATT MTU observation.',
+      affectedGuarantee: 'current effective ATT MTU observation'
+    }
+    refused.limitations = [nativeLimitation]
+    const measured = descriptor('connection:effective-mtu', 'connection-controls')
+    const projected = projectRemoteCapabilities({
+      schemaVersion: 2,
+      backendGeneration: 'backend-generation-1',
+      descriptors: [refused, measured]
+    })
+
+    // A platform that genuinely cannot answer keeps `unsupported` with its
+    // own precise reason — no renderer note appended.
+    expect(projected.descriptors[0]).toMatchObject({
+      id: refused.id,
+      state: 'unsupported',
+      limitations: [expect.objectContaining({ code: 'effective-mtu-boundary-unavailable' })]
+    })
+    expect(projected.descriptors[0].limitations).toHaveLength(1)
+    // A platform that answers keeps `limited`: the renderer routes it now.
+    expect(projected.descriptors[1]).toMatchObject({ id: measured.id, state: 'limited' })
+  })
+
   test('projects host descriptors without changing evidence or TCK data', () => {
     const source = descriptor('gatt:indications', 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation')
     const capabilities = createPublicBleCapabilities(

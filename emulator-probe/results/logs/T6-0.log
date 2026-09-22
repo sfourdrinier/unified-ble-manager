@@ -1,0 +1,4 @@
+$ pm revoke BLUETOOTH_SCAN
+[exit=0]
+
+

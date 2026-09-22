@@ -1,0 +1,25 @@
+{
+  "device_information": {
+    "manufacturer": "Polar Electro Oy",
+    "model": "H10",
+    "serial": "SIM000042",
+    "firmware": "1.5.9",
+    "hardware": "7",
+    "software": "1.5.9",
+    "system_id_manufacturer": 66,
+    "system_id_oui": [107, 0, 0]
+  },
+  "battery": { "level": 15, "drain_per_min": 1.0 },
+  "advertising": {
+    "name": "Polar H10 SIM0042",
+    "manufacturer_company": 107,
+    "manufacturer_payload_hex": ""
+  },
+  "heart_rate": {
+    "bpm": 68,
+    "contact_detected": true,
+    "rr_jitter_ms": 25.0,
+    "bpm_curve": [{ "at_s": 0.0, "bpm": 68 }, { "at_s": 60.0, "bpm": 96 }]
+  },
+  "pmd": { "pair_policy": "just-works", "ecg_source": "synthetic" }
+}

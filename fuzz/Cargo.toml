@@ -1,0 +1,39 @@
+[package]
+name = "ubm-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ubm-core = { path = "../crates/ubm-core" }
+ubm-fake-radio = { path = "../crates/ubm-fake-radio" }
+
+[[bin]]
+name = "cleanup_codec"
+path = "fuzz_targets/cleanup_codec.rs"
+
+[[bin]]
+name = "profile_codec"
+path = "fuzz_targets/profile_codec.rs"
+
+[[bin]]
+name = "staged_step"
+path = "fuzz_targets/staged_step.rs"
+
+[[bin]]
+name = "json_parse"
+path = "fuzz_targets/json_parse.rs"
+
+[[bin]]
+name = "gatt_wire"
+path = "fuzz_targets/gatt_wire.rs"
+
+[[bin]]
+name = "contracts_decimal"
+path = "fuzz_targets/contracts_decimal.rs"

@@ -15,6 +15,31 @@ export interface UnifiedBleExpoPermissions {
   readonly android?: UnifiedBleExpoAndroidPermissions
 }
 
+export type BackgroundContinuationStrategy = 'record-only' | 'native' | 'headless-task' | 'foreground-service'
+
+export interface UnifiedBleExpoContinuationResubscribe {
+  readonly serviceUuid: string
+  readonly serviceOccurrence?: number
+  readonly characteristicUuid: string
+  readonly characteristicOccurrence?: number
+}
+
+export interface UnifiedBleExpoBackgroundContinuation {
+  readonly onAppearance?: BackgroundContinuationStrategy
+  readonly peerId?: string
+  readonly resubscribe?: readonly UnifiedBleExpoContinuationResubscribe[]
+  readonly headlessTaskName?: string
+  readonly foregroundService?: {
+    readonly notification: {
+      readonly channelId: string
+      readonly channelName: string
+      readonly title: string
+      readonly body?: string
+      readonly icon?: string
+    }
+  }
+}
+
 export interface UnifiedBleExpoPluginOptions {
   readonly requiredHardware?: boolean
   readonly permissions?: UnifiedBleExpoPermissions
@@ -28,6 +53,7 @@ export interface UnifiedBleExpoPluginOptions {
       readonly showPowerAlert?: boolean
     }
     readonly android?: AndroidBackgroundOptions
+    readonly continuation?: UnifiedBleExpoBackgroundContinuation
   }
   readonly diagnostics?: {
     readonly nativeLogging?: NativeLoggingLevel
@@ -59,7 +85,21 @@ export interface IosNativeProtocolRestoration {
 const ROOT_KEYS = Object.freeze(['requiredHardware', 'permissions', 'background', 'diagnostics'])
 const PERMISSIONS_KEYS = Object.freeze(['bluetoothAlways', 'android'])
 const ANDROID_PERMISSIONS_KEYS = Object.freeze(['neverForLocation', 'legacyLocation'])
-const BACKGROUND_KEYS = Object.freeze(['ios', 'android'])
+const BACKGROUND_KEYS = Object.freeze(['ios', 'android', 'continuation'])
+const CONTINUATION_KEYS = Object.freeze([
+  'onAppearance',
+  'peerId',
+  'resubscribe',
+  'headlessTaskName',
+  'foregroundService'
+])
+const CONTINUATION_RESUBSCRIBE_KEYS = Object.freeze([
+  'serviceUuid',
+  'serviceOccurrence',
+  'characteristicUuid',
+  'characteristicOccurrence'
+])
+const CONTINUATION_FOREGROUND_SERVICE_KEYS = Object.freeze(['notification'])
 const IOS_BACKGROUND_KEYS = Object.freeze(['mode', 'restoration', 'showPowerAlert'])
 const RESTORATION_KEYS = Object.freeze(['id', 'generation'])
 const ANDROID_NOTIFICATION_KEYS = Object.freeze(['channelId', 'channelName', 'title', 'body', 'icon'])
@@ -238,15 +278,163 @@ function validateAndroidBackground(value: unknown): AndroidBackgroundOptions {
   })
 }
 
+const MAC_PATTERN = /^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/
+const UUID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
+
+function continuationOccurrence(value: unknown, label: string): number {
+  if (value === undefined) return 1
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`${label} must be a positive integer when configured`)
+  }
+  return value
+}
+
+function continuationUuid(value: unknown, label: string): string {
+  const text = nonEmptyString(value, label)
+  if (!UUID_PATTERN.test(text)) {
+    throw new Error(`${label} must be a canonical 128-bit UUID`)
+  }
+  return text.toLowerCase()
+}
+
+function validateContinuationResubscribe(
+  value: unknown
+): NonNullable<UnifiedBleExpoBackgroundContinuation['resubscribe']>[number] {
+  const entry = configurationObject(value, 'background.continuation.resubscribe entry')
+  rejectUnknownProperties(entry, CONTINUATION_RESUBSCRIBE_KEYS, 'background.continuation.resubscribe entry')
+  return freezeObject({
+    serviceUuid: continuationUuid(entry.serviceUuid, 'background.continuation.resubscribe.serviceUuid'),
+    serviceOccurrence: continuationOccurrence(
+      entry.serviceOccurrence,
+      'background.continuation.resubscribe.serviceOccurrence'
+    ),
+    characteristicUuid: continuationUuid(
+      entry.characteristicUuid,
+      'background.continuation.resubscribe.characteristicUuid'
+    ),
+    characteristicOccurrence: continuationOccurrence(
+      entry.characteristicOccurrence,
+      'background.continuation.resubscribe.characteristicOccurrence'
+    )
+  })
+}
+
+function validateContinuationForegroundService(
+  value: unknown
+): NonNullable<UnifiedBleExpoBackgroundContinuation['foregroundService']> {
+  const service = configurationObject(value, 'background.continuation.foregroundService')
+  rejectUnknownProperties(service, CONTINUATION_FOREGROUND_SERVICE_KEYS, 'background.continuation.foregroundService')
+  if (service.notification === undefined) {
+    throw new Error('background.continuation.foregroundService.notification is required')
+  }
+  const notification = configurationObject(
+    service.notification,
+    'background.continuation.foregroundService.notification'
+  )
+  rejectUnknownProperties(
+    notification,
+    ANDROID_NOTIFICATION_KEYS,
+    'background.continuation.foregroundService.notification'
+  )
+  return freezeObject({
+    notification: freezeObject({
+      channelId: nonEmptyString(
+        notification.channelId,
+        'background.continuation.foregroundService.notification.channelId'
+      ),
+      channelName: nonEmptyString(
+        notification.channelName,
+        'background.continuation.foregroundService.notification.channelName'
+      ),
+      title: nonEmptyString(notification.title, 'background.continuation.foregroundService.notification.title'),
+      ...(optionalString(notification.body, 'background.continuation.foregroundService.notification.body') === undefined
+        ? {}
+        : {
+            body: optionalString(notification.body, 'background.continuation.foregroundService.notification.body')
+          }),
+      ...(optionalString(notification.icon, 'background.continuation.foregroundService.notification.icon') === undefined
+        ? {}
+        : {
+            icon: optionalString(notification.icon, 'background.continuation.foregroundService.notification.icon')
+          })
+    })
+  })
+}
+
+function continuationStrategy(value: unknown): BackgroundContinuationStrategy {
+  if (value === 'record-only' || value === 'native' || value === 'headless-task' || value === 'foreground-service') {
+    return value
+  }
+  throw new Error(
+    'background.continuation.onAppearance must be record-only, native, headless-task, or foreground-service'
+  )
+}
+
+function continuationPeerId(value: unknown): string {
+  const text = nonEmptyString(value, 'background.continuation.peerId')
+  if (!MAC_PATTERN.test(text)) {
+    throw new Error('background.continuation.peerId must be a MAC address (AA:BB:CC:DD:EE:FF)')
+  }
+  return text.toUpperCase()
+}
+
+function continuationResubscribeList(
+  value: unknown
+): readonly NonNullable<UnifiedBleExpoBackgroundContinuation['resubscribe']>[number][] {
+  if (!Array.isArray(value)) {
+    throw new Error('background.continuation.resubscribe must be an array when configured')
+  }
+  return Object.freeze(value.map(validateContinuationResubscribe))
+}
+
+function validateContinuation(value: unknown): UnifiedBleExpoBackgroundContinuation {
+  const continuation = configurationObject(value, 'background.continuation')
+  rejectUnknownProperties(continuation, CONTINUATION_KEYS, 'background.continuation')
+  const strategy =
+    continuation.onAppearance === undefined ? 'record-only' : continuationStrategy(continuation.onAppearance)
+  const peerId = continuation.peerId === undefined ? undefined : continuationPeerId(continuation.peerId)
+  const resubscribe =
+    continuation.resubscribe === undefined ? undefined : continuationResubscribeList(continuation.resubscribe)
+  const headlessTaskName =
+    continuation.headlessTaskName === undefined
+      ? undefined
+      : nonEmptyString(continuation.headlessTaskName, 'background.continuation.headlessTaskName')
+  if (strategy === 'headless-task' && headlessTaskName === undefined) {
+    throw new Error('background.continuation.headlessTaskName is required for headless-task')
+  }
+  if (strategy !== 'headless-task' && headlessTaskName !== undefined) {
+    throw new Error('background.continuation.headlessTaskName applies only to headless-task')
+  }
+  const foregroundService =
+    continuation.foregroundService === undefined
+      ? undefined
+      : validateContinuationForegroundService(continuation.foregroundService)
+  if (strategy === 'foreground-service' && foregroundService === undefined) {
+    throw new Error('background.continuation.foregroundService is required for foreground-service')
+  }
+  if (strategy !== 'foreground-service' && foregroundService !== undefined) {
+    throw new Error('background.continuation.foregroundService applies only to foreground-service')
+  }
+  return freezeObject({
+    onAppearance: strategy,
+    ...(peerId === undefined ? {} : { peerId }),
+    ...(resubscribe === undefined ? {} : { resubscribe }),
+    ...(headlessTaskName === undefined ? {} : { headlessTaskName }),
+    ...(foregroundService === undefined ? {} : { foregroundService })
+  })
+}
+
 function validateBackground(value: unknown): UnifiedBleExpoPluginOptions['background'] {
   const background = configurationObject(value, 'background')
   rejectUnknownProperties(background, BACKGROUND_KEYS, 'background')
   requireNonEmptyProperties(background, 'background')
   const ios = background.ios === undefined ? undefined : validateIosBackground(background.ios)
   const android = background.android === undefined ? undefined : validateAndroidBackground(background.android)
+  const continuation = background.continuation === undefined ? undefined : validateContinuation(background.continuation)
   return freezeObject({
     ...(ios === undefined ? {} : { ios }),
-    ...(android === undefined ? {} : { android })
+    ...(android === undefined ? {} : { android }),
+    ...(continuation === undefined ? {} : { continuation })
   })
 }
 

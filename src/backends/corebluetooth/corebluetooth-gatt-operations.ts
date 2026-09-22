@@ -2,10 +2,15 @@
 
 import type { BackendConnection, BackendSubscription } from '../../backend-contract/backend'
 import { contractError, type CleanupRecord } from '../../backend-contract/errors'
-import { mapCoreBluetoothNativeFailure } from './corebluetooth-read-notify-provenance'
+import {
+  LEGACY_COREBLUETOOTH_READ_PROVENANCE,
+  mapCoreBluetoothNativeFailure
+} from './corebluetooth-read-notify-provenance'
 import type { CharacteristicPath, DatabasePath, DescriptorPath, GattDatabase } from '../../backend-contract/gatt'
 import type {
   BackendOperationDispatch,
+  CharacteristicRead,
+  CharacteristicReadResult,
   OperationOptions,
   OperationTerminalRecord,
   PublicOperationOptions,
@@ -93,7 +98,7 @@ export class CoreBluetoothGattOperations {
   read(
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     request: ReadRequest<string, string>
-  ): BackendOperationDispatch<string, ReadResult<string, string>> {
+  ): BackendOperationDispatch<string, CharacteristicReadResult<string, string>> {
     this.backend.assertOperational('direct-gatt.gatt.read')
     const database = this.backend.databaseForPath(path, 'direct-gatt.gatt.read')
     const address = database.addressFor(path, 'direct-gatt.gatt.read')
@@ -104,6 +109,7 @@ export class CoreBluetoothGattOperations {
         try {
           return {
             value: ownBytes(await this.backend.boundary.read(address), maximumValueBytes),
+            provenance: LEGACY_COREBLUETOOTH_READ_PROVENANCE,
             terminal: successfulTerminal(request.operation)
           }
         } catch (error) {
@@ -424,12 +430,16 @@ export class CoreBluetoothGattOperations {
     address: CoreBluetoothCharacteristicAddress,
     options: PublicOperationOptions,
     connectionSerializationKey: string
-  ): Promise<OwnedBytes> {
+  ): Promise<CharacteristicRead> {
     this.backend.assertOperational('direct-gatt.gatt.database-read')
     const dispatch = this.backend.dispatcher.dispatch(
       options,
       'direct-gatt.gatt.database-read',
-      async () => ownBytes(await this.backend.boundary.read(address), maximumValueBytes),
+      async () =>
+        Object.freeze({
+          value: ownBytes(await this.backend.boundary.read(address), maximumValueBytes),
+          provenance: LEGACY_COREBLUETOOTH_READ_PROVENANCE
+        }),
       connectionSerializationKey
     )
     return dispatch.completion
@@ -514,7 +524,7 @@ export class CoreBluetoothGattOperations {
       }
       const copied = ownBytes(source, maximumValueBytes)
       const push = consumer.stream.emit(
-        Object.freeze({ value: ownBytes(copied, maximumValueBytes), indication: false }),
+        Object.freeze({ value: ownBytes(copied, maximumValueBytes), delivery: 'unknown' as const }),
         copied.byteLength
       )
       if (push.terminated) {

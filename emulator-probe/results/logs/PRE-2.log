@@ -1,0 +1,1001 @@
+$ adb shell dumpsys bluetooth_manager
+[exit=0]
+Bluetooth Status
+  enabled: true
+  state: ON
+  address: <REDACTED-MAC>
+  name: sdk_gphone64_x86_64
+  time since enabled: 01:08:55.745
+
+Enable log:
+  09-17 16:18:06.097  Enabled  due to SYSTEM_BOOT by android
+
+Bluetooth crashed 0 times
+
+0 BLE apps registered
+
+BluetoothManagerService:
+  mEnable:true
+  mQuietEnable:false
+  mEnableExternal:true
+  mQuietEnableExternal:false
+
+
+AdapterProperties
+  Name: sdk_gphone64_x86_64
+  Address: <REDACTED-MAC>
+  ScanMode: SCAN_MODE_CONNECTABLE
+  ConnectionState: STATE_DISCONNECTED
+  State: ON
+  MaxConnectedAudioDevices: 5
+  A2dpOffloadEnabled: false
+  Discovering: false
+  DiscoveryEndMs: 0
+  Bonded devices:
+
+  Scan Mode Changes:
+    09-17 16:18:06.932 (uid/pid=1002/864) SCAN_MODE_CONNECTABLE
+sSnoopLogSettingAtEnable = EMPTY
+sDefaultSnoopLogSettingAtEnable = null
+
+Enabled Profile Services:
+  A2dpService
+  AvrcpTargetService
+  HeadsetService
+  HearingAidService
+  HidDeviceService
+  HidHostService
+  GattService
+  BluetoothMapService
+  McpService
+  BluetoothOppService
+  PanService
+  BluetoothPbapService
+
+AdapterState:
+ total records=4
+ rec[0]: time=09-17 16:18:06.700 processed=OffState org=OffState dest=TurningBleOnState what=3(0x3) BLE_TURN_ON
+ rec[1]: time=09-17 16:18:06.813 processed=TurningBleOnState org=TurningBleOnState dest=BleOnState what=7(0x7) BLE_STARTED
+ rec[2]: time=09-17 16:18:06.815 processed=BleOnState org=BleOnState dest=TurningOnState what=1(0x1) USER_TURN_ON
+ rec[3]: time=09-17 16:18:06.933 processed=TurningOnState org=TurningOnState dest=OnState what=5(0x5) BREDR_STARTED
+curState=OnState
+
+SilenceDeviceManager:
+  Address            | Is silenced?
+
+BluetoothDatabase:
+  Metadata Changes:
+
+Metadata:
+
+Profile: GattService
+  mAdvertisingServiceUuids:
+  mMaxScanFilters: 0
+
+Registered App
+  Scanner:
+      app_if: 2, appName: com.google.uid.shared:10128
+      app_if: 1, appName: com.google.uid.shared:10128
+  Client:
+  Server:
+      app_if: 6, appName: android.uid.bluetooth:1002
+
+
+GATT Scanner Map
+  Entries: 1
+
+  com.google.uid.shared:10128 (Registered)
+  LE scans (started/stopped)                                  : 3 / 1
+  Scan time in ms (active/suspend/total)                      : 8245637 / 0 / 8245637
+  Scan time with mode in ms (Opp/LowPower/Balanced/LowLatency/AmbientDiscovery):4120741 / 0 / 4118847 / 6049 / 0
+  Scan mode counter (Opp/LowPower/Balanced/LowLatency/AmbientDiscovery):1 / 0 / 1 / 1 / 0
+  Score                                                       : 1035760
+  Total number of results                                     : 0
+  Last 1 scans                                                :
+    09-17 16:18:16 - 6049ms Filter 0 results (1) CB Regular Scan
+      └ Scan Config: [ ScanMode=LOW_LATENCY, callbackType=ALL_MATCHES ]
+      └ BluetoothLeScanFilter [ ServiceDataUuid=0000fff6-0000-1000-8000-00805f9b34fb ServiceData=[0] ServiceDataMask=[0] ]
+      └ BluetoothLeScanFilter [ ServiceDataUuid=0000fe2c-0000-1000-8000-00805f9b34fb ServiceData=[0] ServiceDataMask=[0] ]
+  Ongoing scans                                               :
+    09-17 16:18:22 - 4118847ms Forced Filter 0 results (1) CB Regular Scan
+      └ Scan Config: [ ScanMode=BALANCED, callbackType=ALL_MATCHES ]
+      └ BluetoothLeScanFilter [ ServiceDataUuid=0000fff6-0000-1000-8000-00805f9b34fb ServiceData=[0] ServiceDataMask=[0] ]
+      └ BluetoothLeScanFilter [ ServiceDataUuid=0000fe2c-0000-1000-8000-00805f9b34fb ServiceData=[0] ServiceDataMask=[0] ]
+    09-17 16:18:21 - 4120741ms Opp Filter 0 results (2) CB Regular Scan
+      └ Scan Config: [ ScanMode=OPPORTUNISTIC, callbackType=ALL_MATCHES ]
+      └ BluetoothLeScanFilter [ ServiceDataUuid=0000fe2c-0000-1000-8000-00805f9b34fb ServiceData=[-4, 18, -114] ]
+      └ BluetoothLeScanFilter [ ServiceUuid=0000fe2c-0000-1000-8000-00805f9b34fb ]
+  Application ID                     : 2
+  UUID                               : b4e84c7b-8e55-43c7-b3cc-b0dd082ceeff
+  Connections: 0
+
+GATT Advertiser Map
+
+GATT Client Map
+  Entries: 0
+
+GATT Server Map
+  Entries: 1
+
+  android.uid.bluetooth:1002 (Registered)
+  LE scans (started/stopped)                                  : 0 / 0
+  Scan time in ms (active/suspend/total)                      : 0 / 0 / 0
+  Scan time with mode in ms (Opp/LowPower/Balanced/LowLatency/AmbientDiscovery):0 / 0 / 0 / 0 / 0
+  Scan mode counter (Opp/LowPower/Balanced/LowLatency/AmbientDiscovery):0 / 0 / 0 / 0 / 0
+  Score                                                       : 0
+  Total number of results                                     : 0
+  Application ID                     : 6
+  UUID                               : 7e750333-5428-41fb-9d23-dc7df81f4c8f
+  Connections: 0
+
+GATT Handle Map
+  Entries: 25
+  Requests: 0
+  6: [40] Service 00001849-0000-1000-8000-00805f9b34fb, started true
+  6: [42]   Characteristic 00002b93-0000-1000-8000-00805f9b34fb
+  6: [43]     Descriptor 00002902-0000-1000-8000-00805f9b34fb
+  6: [45]   Characteristic 00002b96-0000-1000-8000-00805f9b34fb
+  6: [46]     Descriptor 00002902-0000-1000-8000-00805f9b34fb
+  6: [48]   Characteristic 00002b97-0000-1000-8000-00805f9b34fb
+  6: [49]     Descriptor 00002902-0000-1000-8000-00805f9b34fb
+  6: [51]   Characteristic 00002b98-0000-1000-8000-00805f9b34fb
+  6: [52]     Descriptor 00002902-0000-1000-8000-00805f9b34fb
+  6: [54]   Characteristic 00002b99-0000-1000-8000-00805f9b34fb
+  6: [55]     Descriptor 00002902-0000-1000-8000-00805f9b34fb
+  6: [57]   Characteristic 00002b9a-0000-1000-8000-00805f9b34fb
+  6: [58]     Descriptor 00002902-0000-1000-8000-00805f9b34fb
+  6: [60]   Characteristic 00002b9b-0000-1000-8000-00805f9b34fb
+  6: [61]     Descriptor 00002902-0000-1000-8000-00805f9b34fb
+  6: [63]   Characteristic 00002ba1-0000-1000-8000-00805f9b34fb
+  6: [64]     Descriptor 00002902-0000-1000-8000-00805f9b34fb
+  6: [66]   Characteristic 00002ba2-0000-1000-8000-00805f9b34fb
+  6: [68]   Characteristic 00002ba3-0000-1000-8000-00805f9b34fb
+  6: [69]     Descriptor 00002902-0000-1000-8000-00805f9b34fb
+  6: [71]   Characteristic 00002ba4-0000-1000-8000-00805f9b34fb
+  6: [72]     Descriptor 00002902-0000-1000-8000-00805f9b34fb
+  6: [74]   Characteristic 00002ba5-0000-1000-8000-00805f9b34fb
+  6: [75]     Descriptor 00002902-0000-1000-8000-00805f9b34fb
+  6: [77]   Characteristic 00002bba-0000-1000-8000-00805f9b34fb
+
+Profile: A2dpService
+  mActiveDevice: null
+  mMaxConnectedAudioDevices: 5
+  codecConfigPriorities:
+    SBC: 1001
+    AAC: 2001
+    aptX: 3001
+    aptX HD: 4001
+    LDAC: 5001
+    Opus: 7001
+  mA2dpOffloadEnabled: false
+
+Profile: AvrcpTargetService:
+  AVRCP version: Invalid
+  List of MediaControllers: size=1
+  <Active>   Media Player 1: com.google.android.googlequicksearchbox
+    MediaController (com.google.android.googlequicksearchbox@e410fba) null, null, null
+    Current Data:
+      Song: { mediaId="currsong" title="Not Provided" artist="" album="" duration=0 trackPosition=1/1 image=null }
+      PlayState: PlaybackState {state=NONE(0), position=0, buffered position=0, speed=0.0, updated=18687, actions=2409991, custom actions=[Action:mName='Rewind 10 seconds, mIcon=2131234345, mExtras=null, Action:mName='Fast forward 30 second, mIcon=2131234125, mExtras=null], active item id=-1, error=null}
+      Queue: size=1
+        { mediaId="currsong" title="Not Provided" artist="" album="" duration=0 trackPosition=1/1 image=null }
+    BTAudio Playback State change Event:
+  
+  List of Browsers: size=0
+  BTAudio Active Player Events:
+    09-17 16:18:21.243 setActivePlayer(): setting player to com.google.android.googlequicksearchbox
+  
+  BTAudio Audio Playback State Events:
+  
+  BTAudio Media Key Events:
+  
+  AvrcpVolumeManager:
+    mCurrentDevice: null
+    Current System Volume: 5
+    Device Volume Memory Map:
+      Device Address    : Device Name    : Vol : AbsVol
+    BTAudio Volume Events:
+
+Profile: HeadsetService
+  mMaxHeadsetConnections: 5
+  DefaultMaxHeadsetConnections: 5
+  mActiveDevice: null
+  isInbandRingingEnabled: true
+  isInbandRingingSupported: true
+  mInbandRingingRuntimeDisable: false
+  mAudioRouteAllowed: true
+  mVoiceRecognitionStarted: false
+  mVoiceRecognitionTimeoutEvent: null
+  mVirtualCallStarted: false
+  mDialingOutTimeoutEvent: null
+  mForceScoAudio: false
+  mCreated: true
+  mStarted: true
+  AudioManager.isBluetoothScoOn(): false
+  Telecom.isInCall(): false
+  Telecom.isRinging(): false
+
+Profile: HearingAidService
+
+Profile: HidDeviceService
+
+Profile: HidHostService
+  mTargetDevice: null
+  mInputDevices:
+
+Profile: BluetoothMapService
+  mRemoteDevice: null
+  sRemoteDeviceName: null
+  mState: 0
+  mAppObserver: com.android.bluetooth.map.BluetoothMapAppObserver@db29c44
+  mIsWaitingAuthorization: false
+  mRemoveTimeoutMsg: false
+  mPermission: 0
+  mAccountChanged: false
+  mBluetoothMnsObexClient: null
+  mMasInstanceMap:
+    null : MasId: 0 Uri:null SMS/MMS:true
+  mEnabledAccounts:
+
+Profile: McpService
+Media Control Service  instance list:
+	MediaControlService instance:
+		Ccid = 1
+		Features:
+			PLAYER_NAME(BIT 1)
+			TRACK_CHANGED(BIT 4)
+			TRACK_TITLE(BIT 5)
+			TRACK_DURATION(BIT 6)
+			TRACK_POSITION(BIT 7)
+			PLAYBACK_SPEED(BIT 8)
+			SEEKING_SPEED(BIT 9)
+			PLAYING_ORDER(BIT 15)
+			PLAYING_ORDER_SUPPORTED(BIT 16)
+			MEDIA_STATE(BIT 17)
+			MEDIA_CONTROL_POINT(BIT 18)
+			MEDIA_CONTROL_POINT_OPCODES_SUPPORTED(BIT 19)
+			CONTENT_CONTROL_ID(BIT 22)
+			PLAYER_NAME(BIT 1)
+			TRACK_TITLE(BIT 5)
+			TRACK_DURATION(BIT 6)
+			TRACK_POSITION(BIT 7)
+			PLAYBACK_SPEED(BIT 8)
+			SEEKING_SPEED(BIT 9)
+			PLAYING_ORDER(BIT 15)
+			MEDIA_CONTROL_POINT_OPCODES_SUPPORTED(BIT 19)
+		Player name: Google
+		CurrentPlaybackState = INACTIVE
+Profile: BluetoothOppService
+
+Profile: PanService
+  mMaxPanDevices: 5
+  mPanIfName: bt-pan
+  mTetherOn: false
+  mPanDevices:
+
+Profile: BluetoothPbapService
+
+Connection Events:
+  None
+
+Bond Events: 
+  Total Number of events: 0
+
+Link Key Types:
+
+AVRCP Native State:
+  Devices (0 / 5):
+
+A2DP State:
+  TxQueue:
+  Counts (enqueue/dequeue/readbuf)                        : 0 / 0 / 0
+  Last update time ago in ms (enqueue/dequeue/readbuf)    : 0 / 0 / 0
+  Frames per packet (total/max/ave)                       : 0 / 0 / 0
+  Counts (flushed/dropped/dropouts)                       : 0 / 0 / 0
+  Counts (max dropped)                                    : 0
+  Last update time ago in ms (flushed/dropped)            : 0 / 0
+  Counts (underflow)                                      : 0
+  Bytes (underflow)                                       : 0
+  Last update time ago in ms (underflow)                  : 0
+  Enqueue deviation counts (overdue/premature)            : 0 / 0
+  Enqueue overdue scheduling time in ms (total/max/ave)   : 0 / 0 / 0
+  Enqueue premature scheduling time in ms (total/max/ave) : 0 / 0 / 0
+  Dequeue deviation counts (overdue/premature)            : 0 / 0
+  Dequeue overdue scheduling time in ms (total/max/ave)   : 0 / 0 / 0
+  Dequeue premature scheduling time in ms (total/max/ave) : 0 / 0 / 0
+
+A2DP Source State: Enabled
+  Active peer: <REDACTED-MAC>
+
+A2DP Sink State: Disabled
+
+Socket Events: 
+  Time        	Address          	State             	Role
+  16:18:06.932	<REDACTED-MAC>	STATE_LISTENING   	ROLE_LISTEN
+  16:18:06.933	<REDACTED-MAC>	STATE_LISTENING   	ROLE_LISTEN
+  16:18:06.942	<REDACTED-MAC>	STATE_LISTENING   	ROLE_LISTEN
+  16:18:06.942	<REDACTED-MAC>	STATE_LISTENING   	ROLE_LISTEN
+  16:18:06.946	<REDACTED-MAC>	STATE_LISTENING   	ROLE_LISTEN
+  16:18:06.946	<REDACTED-MAC>	STATE_LISTENING   	ROLE_LISTEN
+  16:18:06.947	<REDACTED-MAC>	STATE_LISTENING   	ROLE_LISTEN
+  16:18:06.947	<REDACTED-MAC>	STATE_LISTENING   	ROLE_LISTEN
+  16:18:06.954	<REDACTED-MAC>	STATE_LISTENING   	ROLE_LISTEN
+  16:18:06.955	<REDACTED-MAC>	STATE_LISTENING   	ROLE_LISTEN
+  16:18:06.979	<REDACTED-MAC>	STATE_LISTENING   	ROLE_LISTEN
+  16:18:06.979	<REDACTED-MAC>	STATE_LISTENING   	ROLE_LISTEN
+
+
+AVRCP Target Native Service: 0 devices
+
+Bluetooth Config:
+  Config Source: Not loaded
+  Devices loaded: 0
+  File created/tagged: 
+  File source: Empty
+
+Bluetooth HF Client BTA Statistics
+
+Bluetooth Wakelock Statistics:
+  Is acquired                    : false
+  Acquired/released count        : 1 / 1
+  Acquired/released error count  : 0 / 0
+  Last acquire/release error code: 0 / 0
+  Last acquired time (ms)        : 6
+  Acquired time min/max/avg (ms) : 6 / 6 / 6
+  Total acquired time (ms)       : 6
+  Total run time (ms)            : 4135045
+
+Bluetooth Memory Allocation Statistics:
+  Total allocated/free/used counts : 0 / 0 / 0
+  Total allocated/free/used octets : 0 / 0 / 0
+
+Bluetooth Alarms Statistics:
+  Total Alarms: 0
+
+Coordinated Set Service Client:
+
+Hearing Access Service Client:
+  no instance
+
+Hearing Aid Manager:
+  Hearing Aid Audio HAL:
+    Counts (underflow)                                      : 0
+    Bytes (underflow)                                       : 0
+    Last update time ago in ms (underflow)                  : 0
+
+Device Groups Manager:
+  Not initialized 
+LeAudio Manager: 
+  Not initialized 
+  LE AudioHalClient:
+    Counts (underflow)                                      : 0
+    Bytes (underflow)                                       : 0
+    Last update time ago in ms (underflow)                  : 0
+
+ AudioSetConfigurationProvider not initialized: config provider: 0, pimpl: 0 
+  ----------------
+   ISO Manager:
+    Available credits: 12
+    Controller buffer size: 1021
+    Num of ISO traffic callbacks: 1
+    CISes:
+    BISes:
+  ----------------
+ 
+Le Audio Broadcaster:
+
+Volume Control Manager:
+
+
+connection_manager state:
+	no Low Energy connection attempts
+
+BT Quality Report Events: 
+Event queue is empty.
+ ----- shim::legacy::pan -----
+shim::legacy::pan Connections:0 roles configured:C.N[0x5] current:...[0x0] previous:...[0x0]
+shim::legacy::pan service_name_user:"Android Network User"
+shim::legacy::pan service_name_nap:"Android Network Access Point"
+ ----- shim::legacy::hid -----
+shim::legacy::hid status:BTIF_HH_ENABLED num_devices:0
+shim::legacy::hid status:BTIF_HH_ENABLED
+ ----- shim::legacy::bta::dm -----
+shim::legacy::bta::dm  last 0 search state transitions
+shim::legacy::bta::dm  current bta_dm_search_state:BTA_DM_SEARCH_IDLE
+shim::legacy::dumpsys Dumping shim legacy targets:1
+ ----- shim::legacy::record -----
+shim::legacy::stack Stack information ᛒᚼ
+shim::legacy::stack Classic inquiry:disabled
+shim::legacy::stack Le scan:enabled duration_s:3818.835 results:0
+shim::legacy::stack Last 0 inquiry scans:
+ ----- shim::legacy::acl -----
+shim::acl Shadow le accept list              size:0   controller_max_size:16
+shim::acl Shadow le address resolution list  size:0   controller_max_size:16
+ ----- shim::legacy::l2cap -----
+ ----- shim::legacy::btm -----
+shim::legacy::btm  2026-09-17 16:18:06.798 Initialized btm history
+shim::legacy::btm  2026-09-17 16:18:06.913 PAN    Registered               : <REDACTED-MAC> 
+shim::legacy::btm  2026-09-17 16:18:06.913 PAN    Role change              : <REDACTED-MAC> role:0x5
+shim::legacy::btm  2026-09-17 16:18:06.932 SCAN   Classic updated          : <REDACTED-MAC> inquiry_scan_enable:F page_scan_enable:F
+shim::legacy::btm  2026-09-17 16:18:06.932 SCAN   Classic updated          : <REDACTED-MAC> inquiry_scan_enable:F page_scan_enable:T
+shim::legacy::btm  2026-09-17 16:18:16.964 SCAN   Le scan started          : <REDACTED-MAC> 
+shim::legacy::btm  2026-09-17 16:18:16.966 SCAN   Le scan stopped          : <REDACTED-MAC> duration_s: 0.005 results:0  
+shim::legacy::btm  2026-09-17 16:18:16.967 SCAN   Le scan started          : <REDACTED-MAC> 
+shim::legacy::btm  2026-09-17 16:18:22.992 SCAN   Le scan stopped          : <REDACTED-MAC> duration_s: 6.025 results:0  
+shim::legacy::btm  2026-09-17 16:18:22.999 SCAN   Le scan started          : <REDACTED-MAC> 
+shim::legacy::btm  2026-09-17 16:18:23.000 SCAN   Le scan stopped          : <REDACTED-MAC> duration_s: 0.001 results:0  
+shim::legacy::btm  2026-09-17 16:18:23.001 SCAN   Le scan started          : <REDACTED-MAC> 
+shim::legacy::btm  2026-09-17 16:23:23.010 SCAN   Le scan stopped          : <REDACTED-MAC> duration_s:300.009 results:0  
+shim::legacy::btm  2026-09-17 16:23:23.010 SCAN   Le scan started          : <REDACTED-MAC> 
+ ----- Filtering as Developer -----
+{
+  title: "----- Gd Dumpsys ------",
+  init_flags: {
+    values: [
+      {
+        flag: "always_send_services_if_gatt_disc_done",
+        value: "true"
+      },
+      {
+        flag: "always_use_private_gatt_for_debugging",
+        value: "false"
+      },
+      {
+        flag: "asha_packet_drop_frequency_threshold",
+        value: "60"
+      },
+      {
+        flag: "asha_phy_update_retry_limit",
+        value: "5"
+      },
+      {
+        flag: "asynchronously_start_l2cap_coc",
+        value: "true"
+      },
+      {
+        flag: "bluetooth_quality_report_callback",
+        value: "true"
+      },
+      {
+        flag: "bta_dm_clear_conn_id_on_client_close",
+        value: "true"
+      },
+      {
+        flag: "btaa_hci",
+        value: "true"
+      },
+      {
+        flag: "btm_dm_flush_discovery_queue_on_search_cancel",
+        value: "false"
+      },
+      {
+        flag: "classic_discovery_only",
+        value: "false"
+      },
+      {
+        flag: "clear_hidd_interrupt_cid_on_disconnect",
+        value: "true"
+      },
+      {
+        flag: "default_log_level",
+        value: "4"
+      },
+      {
+        flag: "delay_hidh_cleanup_until_hidh_ready_start",
+        value: "true"
+      },
+      {
+        flag: "device_iot_config_logging",
+        value: "false"
+      },
+      {
+        flag: "dynamic_avrcp_version_enhancement",
+        value: "true"
+      },
+      {
+        flag: "finite_att_timeout",
+        value: "true"
+      },
+      {
+        flag: "gatt_robust_caching_client",
+        value: "true"
+      },
+      {
+        flag: "gatt_robust_caching_server",
+        value: "false"
+      },
+      {
+        flag: "gd_core",
+        value: "false"
+      },
+      {
+        flag: "gd_hal_snoop_logger_filtering",
+        value: "true"
+      },
+      {
+        flag: "gd_hal_snoop_logger_socket",
+        value: "true"
+      },
+      {
+        flag: "gd_l2cap",
+        value: "false"
+      },
+      {
+        flag: "gd_link_policy",
+        value: "false"
+      },
+      {
+        flag: "gd_remote_name_request",
+        value: "false"
+      },
+      {
+        flag: "gd_rust",
+        value: "false"
+      },
+      {
+        flag: "hci_adapter",
+        value: "0"
+      },
+      {
+        flag: "hfp_dynamic_version",
+        value: "true"
+      },
+      {
+        flag: "irk_rotation",
+        value: "false"
+      },
+      {
+        flag: "leaudio_targeted_announcement_reconnection_mode",
+        value: "true"
+      },
+      {
+        flag: "logging_explicit_tag_settings",
+        value: "{}"
+      },
+      {
+        flag: "pass_phy_update_callback",
+        value: "true"
+      },
+      {
+        flag: "pbap_pse_dynamic_version_upgrade",
+        value: "false"
+      },
+      {
+        flag: "periodic_advertising_adi",
+        value: "true"
+      },
+      {
+        flag: "private_gatt",
+        value: "true"
+      },
+      {
+        flag: "queue_l2cap_coc_while_encrypting",
+        value: "true"
+      },
+      {
+        flag: "read_encryption_key_size",
+        value: "true"
+      },
+      {
+        flag: "redact_log",
+        value: "true"
+      },
+      {
+        flag: "rust_event_loop",
+        value: "true"
+      },
+      {
+        flag: "sco_codec_select_lc3",
+        value: "false"
+      },
+      {
+        flag: "sco_codec_timeout_clear",
+        value: "false"
+      },
+      {
+        flag: "sdp_return_classic_services_when_le_discovery_fails",
+        value: "true"
+      },
+      {
+        flag: "sdp_serialization",
+        value: "true"
+      },
+      {
+        flag: "sdp_skip_rnr_if_known",
+        value: "true"
+      },
+      {
+        flag: "set_min_encryption",
+        value: "true"
+      },
+      {
+        flag: "subrating",
+        value: "true"
+      },
+      {
+        flag: "trigger_advertising_callbacks_on_first_resume_after_pause",
+        value: "true"
+      },
+      {
+        flag: "use_unified_connection_manager",
+        value: "false"
+      }
+    ]
+  },
+  wakelock_manager_data: {
+    title: "Bluetooth Wakelock Statistics",
+    is_acquired: false,
+    is_native: true,
+    acquired_count: 1,
+    released_count: 1,
+    acquired_error_count: 0,
+    released_error_count: 0,
+    last_acquire_error_code: 0,
+    last_release_error_code: 0,
+    last_acquired_timestamp_millis: 33,
+    last_released_timestamp_millis: 11738,
+    last_interval_millis: 33,
+    max_interval_millis: 33,
+    min_interval_millis: 33,
+    avg_interval_millis: 33,
+    total_interval_millis: 33,
+    total_time_since_reset_millis: 4135267
+  },
+  shim_dumpsys_data: {
+    title: "----- Shim Dumpsys -----",
+    number_of_bundled_schemas: 8
+  },
+  hci_acl_manager_dumpsys_data: {
+    title: "----- Acl Manager Dumpsys -----",
+    le_filter_accept_list_count: 0,
+    le_filter_accept_list: [
+
+    ],
+    le_connectability_state: "ConnectabilityState::DISARMED",
+    le_create_connection_timeout_alarms_count: 0
+  },
+  hci_controller_dumpsys_data: {
+    title: "----- Hci Controller Dumpsys -----",
+    local_version_information: {
+      hci_version: "V_5_3",
+      hci_revision: 0,
+      lmp_version: "V_5_3",
+      manufacturer_name: 224,
+      lmp_subversion: 0
+    },
+    acl_buffer_size: {
+      data_packet_length: 1023,
+      total_num_packets: 10
+    },
+    sco_buffer_size: {
+      data_packet_length: 255,
+      total_num_packets: 10
+    },
+    iso_buffer_size: {
+      data_packet_length: 1021,
+      total_num_packets: 12
+    },
+    le_buffer_size: {
+      data_packet_length: 27,
+      total_num_packets: 20
+    },
+    le_connect_list_size: 16,
+    le_resolving_list_size: 16,
+    le_maximum_data_length: {
+      supported_max_tx_octets: 74,
+      supported_max_tx_time: 338,
+      supported_max_rx_octets: 64,
+      supported_max_rx_time: 328
+    },
+    le_maximum_advertising_data_length: 512,
+    le_suggested_default_data_length: 27,
+    le_number_supported_advertising_sets: 16,
+    le_periodic_advertiser_list_size: 8,
+    local_supported_commands: [
+      {
+        index: 0,
+        value: 243
+      },
+      {
+        index: 1,
+        value: 255
+      },
+      {
+        index: 2,
+        value: 239
+      },
+      {
+        index: 3,
+        value: 3
+      },
+      {
+        index: 4,
+        value: 206
+      },
+      {
+        index: 5,
+        value: 255
+      },
+      {
+        index: 6,
+        value: 131
+      },
+      {
+        index: 7,
+        value: 255
+      },
+      {
+        index: 8,
+        value: 63
+      },
+      {
+        index: 9,
+        value: 63
+      },
+      {
+        index: 10,
+        value: 255
+      },
+      {
+        index: 11,
+        value: 31
+      },
+      {
+        index: 12,
+        value: 254
+      },
+      {
+        index: 13,
+        value: 15
+      },
+      {
+        index: 14,
+        value: 232
+      },
+      {
+        index: 15,
+        value: 110
+      },
+      {
+        index: 16,
+        value: 255
+      },
+      {
+        index: 17,
+        value: 247
+      },
+      {
+        index: 18,
+        value: 131
+      },
+      {
+        index: 19,
+        value: 255
+      },
+      {
+        index: 20,
+        value: 252
+      },
+      {
+        index: 21,
+        value: 0
+      },
+      {
+        index: 22,
+        value: 4
+      },
+      {
+        index: 23,
+        value: 24
+      },
+      {
+        index: 24,
+        value: 227
+      },
+      {
+        index: 25,
+        value: 247
+      },
+      {
+        index: 26,
+        value: 255
+      },
+      {
+        index: 27,
+        value: 255
+      },
+      {
+        index: 28,
+        value: 127
+      },
+      {
+        index: 29,
+        value: 63
+      },
+      {
+        index: 30,
+        value: 0
+      },
+      {
+        index: 31,
+        value: 0
+      },
+      {
+        index: 32,
+        value: 254
+      },
+      {
+        index: 33,
+        value: 240
+      },
+      {
+        index: 34,
+        value: 251
+      },
+      {
+        index: 35,
+        value: 127
+      },
+      {
+        index: 36,
+        value: 254
+      },
+      {
+        index: 37,
+        value: 255
+      },
+      {
+        index: 38,
+        value: 255
+      },
+      {
+        index: 39,
+        value: 7
+      },
+      {
+        index: 40,
+        value: 0
+      },
+      {
+        index: 41,
+        value: 160
+      },
+      {
+        index: 42,
+        value: 31
+      },
+      {
+        index: 43,
+        value: 28
+      },
+      {
+        index: 44,
+        value: 154
+      },
+      {
+        index: 45,
+        value: 1
+      },
+      {
+        index: 46,
+        value: 3
+      },
+      {
+        index: 47,
+        value: 0
+      },
+      {
+        index: 48,
+        value: 0
+      },
+      {
+        index: 49,
+        value: 0
+      },
+      {
+        index: 50,
+        value: 0
+      },
+      {
+        index: 51,
+        value: 0
+      },
+      {
+        index: 52,
+        value: 0
+      },
+      {
+        index: 53,
+        value: 0
+      },
+      {
+        index: 54,
+        value: 0
+      },
+      {
+        index: 55,
+        value: 0
+      },
+      {
+        index: 56,
+        value: 0
+      },
+      {
+        index: 57,
+        value: 0
+      },
+      {
+        index: 58,
+        value: 0
+      },
+      {
+        index: 59,
+        value: 0
+      },
+      {
+        index: 60,
+        value: 0
+      },
+      {
+        index: 61,
+        value: 0
+      },
+      {
+        index: 62,
+        value: 0
+      },
+      {
+        index: 63,
+        value: 0
+      }
+    ],
+    extended_lmp_features_array: [
+      9735656339825229567,
+      2,
+      768
+    ],
+    le_local_supported_features: 70515578386943,
+    le_supported_states: 4398046511103,
+    vendor_capabilities: {
+      is_supported: 1,
+      max_advt_instances: 0,
+      offloaded_resolution_of_private_address: 0,
+      total_scan_results_storage: 0,
+      max_irk_list_sz: 16,
+      filtering_support: 1,
+      max_filter: 16,
+      activity_energy_info_support: 0,
+      version_supported: 262,
+      total_num_of_advt_tracked: 16,
+      extended_scan_support: 0,
+      debug_logging_supported: 0,
+      le_address_generation_offloading_support: 0,
+      a2dp_source_offload_capability_mask: 0,
+      bluetooth_quality_report_support: 0
+    }
+  },
+  activity_attribution_dumpsys_data: {
+    title_device_wakeup: "----- Device-based Wakeup Attribution Dumpsys -----",
+    num_device_wakeup: 0,
+    device_wakeup_attribution: [
+
+    ],
+    title_device_activity: "----- Device-based Activity Attribution Dumpsys -----",
+    num_device_activity: 0,
+    device_activity_aggregation: [
+
+    ],
+    title_app_wakeup: "----- App-based Wakeup Attribution Dumpsys -----",
+    num_app_wakeup: 0,
+    app_wakeup_attribution: [
+
+    ],
+    title_app_activity: "----- App-based Activity Attribution Dumpsys -----",
+    num_app_activity: 0,
+    app_activity_aggregation: [
+
+    ]
+  }
+}
+
+

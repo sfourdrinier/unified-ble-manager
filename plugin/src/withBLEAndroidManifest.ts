@@ -1,5 +1,5 @@
 import { type ConfigPlugin, withAndroidManifest, AndroidConfig } from 'expo/config-plugins'
-import type { LegacyLocationPolicy, NativeLoggingLevel } from './expoPluginSchema'
+import type { LegacyLocationPolicy, NativeLoggingLevel, UnifiedBleExpoBackgroundContinuation } from './expoPluginSchema'
 import { setUnifiedBleNativeLoggingAndroidManifest } from './withBLEDebugLogging'
 
 type InnerManifest = AndroidConfig.Manifest.AndroidManifest['manifest']
@@ -75,12 +75,14 @@ export const withBLEAndroidManifest: ConfigPlugin<{
   neverForLocation: boolean
   legacyLocation: LegacyLocationPolicy
   nativeLogging?: NativeLoggingLevel
-}> = (config, { requiredHardware, neverForLocation, legacyLocation, nativeLogging }) =>
+  continuation?: UnifiedBleExpoBackgroundContinuation
+}> = (config, { requiredHardware, neverForLocation, legacyLocation, nativeLogging, continuation }) =>
   withAndroidManifest(config, config => {
     config.modResults = reconcileExpoAndroidManifest(config.modResults, {
       requiredHardware,
       neverForLocation,
-      legacyLocation
+      legacyLocation,
+      continuation
     })
     setUnifiedBleNativeLoggingAndroidManifest(config.modResults, nativeLogging)
     return config
@@ -91,6 +93,12 @@ export interface ExpoAndroidManifestOptions {
   readonly neverForLocation: boolean
   readonly legacyLocation: LegacyLocationPolicy
   readonly nativeLogging?: NativeLoggingLevel
+  /**
+   * Build-time `background.continuation` default (BGS4): written as manifest
+   * meta-data the wake reads when the app never declared at runtime. A
+   * runtime declare always wins; removing the config removes the meta-data.
+   */
+  readonly continuation?: UnifiedBleExpoBackgroundContinuation
 }
 
 /** Applies the complete managed Android projection with stable ordering and removal. */
@@ -104,7 +112,27 @@ export function reconcileExpoAndroidManifest(
   reconcileBLEHardwareFeature(androidManifest, options.requiredHardware)
   reconcileCompanionSetupFeature(androidManifest)
   reconcileRuntimeConfigurationMetadata(androidManifest, options)
+  reconcileContinuationMetadata(androidManifest, options.continuation)
   return androidManifest
+}
+
+export const BACKGROUND_CONTINUATION_METADATA_NAME = 'com.sfourdrinier.unifiedblemanager.BACKGROUND_CONTINUATION'
+
+/**
+ * Writes the validated continuation declaration as manifest meta-data (the
+ * same key set the runtime serializer writes, so the native parser cannot
+ * tell them apart). Absent config removes the entry: a deleted declaration
+ * stops arming the wake on the next build.
+ */
+function reconcileContinuationMetadata(
+  androidManifest: AndroidManifestWithExtraTools,
+  continuation: UnifiedBleExpoBackgroundContinuation | undefined
+): void {
+  if (continuation === undefined) {
+    removeMetadata(androidManifest, BACKGROUND_CONTINUATION_METADATA_NAME)
+    return
+  }
+  setMetadata(androidManifest, BACKGROUND_CONTINUATION_METADATA_NAME, JSON.stringify(continuation))
 }
 
 /**

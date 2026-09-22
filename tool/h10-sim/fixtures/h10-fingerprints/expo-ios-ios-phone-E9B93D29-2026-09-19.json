@@ -1,0 +1,878 @@
+{
+  "version": 1,
+  "capturedAt": "2026-09-19T04:03:38.588Z",
+  "device": {
+    "query": {
+      "match": "exact",
+      "name": "Polar H10 E9B93D29"
+    },
+    "name": "Polar H10 E9B93D29",
+    "id": "corebluetooth-peer-1-7"
+  },
+  "host": {
+    "host": "expo",
+    "platform": "ios",
+    "backend": "expo/ios",
+    "model": "iOS phone",
+    "osVersion": "26.6.2"
+  },
+  "advertisement": {
+    "ok": true,
+    "observations": 46,
+    "localName": "Polar H10 E9B93D29",
+    "connectable": true,
+    "serviceUuids": [
+      "0000180d-0000-1000-8000-00805f9b34fb",
+      "0000feee-0000-1000-8000-00805f9b34fb"
+    ],
+    "manufacturerData": [
+      {
+        "companyId": 107,
+        "data": "3b00005b"
+      }
+    ],
+    "serviceData": null,
+    "firstObservation": {
+      "localName": "Polar H10 E9B93D29",
+      "rssi": -59,
+      "connectable": true,
+      "serviceUuids": [
+        "0000180d-0000-1000-8000-00805f9b34fb",
+        "0000feee-0000-1000-8000-00805f9b34fb"
+      ],
+      "manufacturerData": [
+        {
+          "companyId": 107,
+          "data": "3b00005b"
+        }
+      ],
+      "serviceData": null,
+      "observedAtMonotonicMs": 604169232.969458,
+      "peer": {
+        "id": "corebluetooth-peer-1-7",
+        "name": "Polar H10 E9B93D29",
+        "rssi": -59,
+        "hasReference": false,
+        "sources": [
+          "scan-observed"
+        ]
+      }
+    },
+    "advertisementIntervalMs": {
+      "n": 45,
+      "min": 0.26762497425079346,
+      "p10": 0.8485000133514404,
+      "p50": 155.09679210186005,
+      "p90": 632.1867079734802,
+      "max": 785.6459580659866,
+      "mean": 214.03962593343522,
+      "stdev": 239.8510674834514
+    },
+    "rssi": {
+      "n": 46,
+      "min": -69,
+      "p10": -66,
+      "p50": -59,
+      "p90": -56,
+      "max": -54,
+      "mean": -59.5,
+      "stdev": 3.468805081818835
+    },
+    "txPowerSeen": false
+  },
+  "gatt": {
+    "generation": "corebluetooth-database-generation-1",
+    "services": [
+      {
+        "uuid": "0000180d-0000-1000-8000-00805f9b34fb",
+        "occurrence": 0,
+        "primary": true
+      },
+      {
+        "uuid": "0000180a-0000-1000-8000-00805f9b34fb",
+        "occurrence": 0,
+        "primary": true
+      },
+      {
+        "uuid": "0000180f-0000-1000-8000-00805f9b34fb",
+        "occurrence": 0,
+        "primary": true
+      },
+      {
+        "uuid": "6217ff4b-fb31-1140-ad5a-a45545d7ecf3",
+        "occurrence": 0,
+        "primary": true
+      },
+      {
+        "uuid": "fb005c80-02e7-f387-1cad-8acd2d8df0c8",
+        "occurrence": 0,
+        "primary": true
+      },
+      {
+        "uuid": "0000feee-0000-1000-8000-00805f9b34fb",
+        "occurrence": 0,
+        "primary": true
+      }
+    ],
+    "characteristics": [
+      {
+        "uuid": "00002a37-0000-1000-8000-00805f9b34fb",
+        "occurrence": 0,
+        "properties": {
+          "broadcast": false,
+          "read": false,
+          "writeWithResponse": false,
+          "writeWithoutResponse": false,
+          "authenticatedSignedWrites": false,
+          "notify": true,
+          "indicate": false,
+          "extendedProperties": false,
+          "reliableWrite": false,
+          "writableAuxiliaries": false,
+          "availability": {
+            "broadcast": "unknown",
+            "read": "known",
+            "writeWithResponse": "known",
+            "writeWithoutResponse": "known",
+            "authenticatedSignedWrites": "unknown",
+            "notify": "known",
+            "indicate": "known",
+            "extendedProperties": "unknown",
+            "reliableWrite": "unknown",
+            "writableAuxiliaries": "unknown"
+          }
+        }
+      },
+      {
+        "uuid": "00002a38-0000-1000-8000-00805f9b34fb",
+        "occurrence": 0,
+        "properties": {
+          "broadcast": false,
+          "read": true,
+          "writeWithResponse": false,
+          "writeWithoutResponse": false,
+          "authenticatedSignedWrites": false,
+          "notify": false,
+          "indicate": false,
+          "extendedProperties": false,
+          "reliableWrite": false,
+          "writableAuxiliaries": false,
+          "availability": {
+            "broadcast": "unknown",
+            "read": "known",
+            "writeWithResponse": "known",
+            "writeWithoutResponse": "known",
+            "authenticatedSignedWrites": "unknown",
+            "notify": "known",
+            "indicate": "known",
+            "extendedProperties": "unknown",
+            "reliableWrite": "unknown",
+            "writableAuxiliaries": "unknown"
+          }
+        }
+      },
+      {
+        "uuid": "00002a29-0000-1000-8000-00805f9b34fb",
+        "occurrence": 0,
+        "properties": {
+          "broadcast": false,
+          "read": true,
+          "writeWithResponse": false,
+          "writeWithoutResponse": false,
+          "authenticatedSignedWrites": false,
+          "notify": false,
+          "indicate": false,
+          "extendedProperties": false,
+          "reliableWrite": false,
+          "writableAuxiliaries": false,
+          "availability": {
+            "broadcast": "unknown",
+            "read": "known",
+            "writeWithResponse": "known",
+            "writeWithoutResponse": "known",
+            "authenticatedSignedWrites": "unknown",
+            "notify": "known",
+            "indicate": "known",
+            "extendedProperties": "unknown",
+            "reliableWrite": "unknown",
+            "writableAuxiliaries": "unknown"
+          }
+        }
+      },
+      {
+        "uuid": "00002a24-0000-1000-8000-00805f9b34fb",
+        "occurrence": 0,
+        "properties": {
+          "broadcast": false,
+          "read": true,
+          "writeWithResponse": false,
+          "writeWithoutResponse": false,
+          "authenticatedSignedWrites": false,
+          "notify": false,
+          "indicate": false,
+          "extendedProperties": false,
+          "reliableWrite": false,
+          "writableAuxiliaries": false,
+          "availability": {
+            "broadcast": "unknown",
+            "read": "known",
+            "writeWithResponse": "known",
+            "writeWithoutResponse": "known",
+            "authenticatedSignedWrites": "unknown",
+            "notify": "known",
+            "indicate": "known",
+            "extendedProperties": "unknown",
+            "reliableWrite": "unknown",
+            "writableAuxiliaries": "unknown"
+          }
+        }
+      },
+      {
+        "uuid": "00002a25-0000-1000-8000-00805f9b34fb",
+        "occurrence": 0,
+        "properties": {
+          "broadcast": false,
+          "read": true,
+          "writeWithResponse": false,
+          "writeWithoutResponse": false,
+          "authenticatedSignedWrites": false,
+          "notify": false,
+          "indicate": false,
+          "extendedProperties": false,
+          "reliableWrite": false,
+          "writableAuxiliaries": false,
+          "availability": {
+            "broadcast": "unknown",
+            "read": "known",
+            "writeWithResponse": "known",
+            "writeWithoutResponse": "known",
+            "authenticatedSignedWrites": "unknown",
+            "notify": "known",
+            "indicate": "known",
+            "extendedProperties": "unknown",
+            "reliableWrite": "unknown",
+            "writableAuxiliaries": "unknown"
+          }
+        }
+      },
+      {
+        "uuid": "00002a27-0000-1000-8000-00805f9b34fb",
+        "occurrence": 0,
+        "properties": {
+          "broadcast": false,
+          "read": true,
+          "writeWithResponse": false,
+          "writeWithoutResponse": false,
+          "authenticatedSignedWrites": false,
+          "notify": false,
+          "indicate": false,
+          "extendedProperties": false,
+          "reliableWrite": false,
+          "writableAuxiliaries": false,
+          "availability": {
+            "broadcast": "unknown",
+            "read": "known",
+            "writeWithResponse": "known",
+            "writeWithoutResponse": "known",
+            "authenticatedSignedWrites": "unknown",
+            "notify": "known",
+            "indicate": "known",
+            "extendedProperties": "unknown",
+            "reliableWrite": "unknown",
+            "writableAuxiliaries": "unknown"
+          }
+        }
+      },
+      {
+        "uuid": "00002a26-0000-1000-8000-00805f9b34fb",
+        "occurrence": 0,
+        "properties": {
+          "broadcast": false,
+          "read": true,
+          "writeWithResponse": false,
+          "writeWithoutResponse": false,
+          "authenticatedSignedWrites": false,
+          "notify": false,
+          "indicate": false,
+          "extendedProperties": false,
+          "reliableWrite": false,
+          "writableAuxiliaries": false,
+          "availability": {
+            "broadcast": "unknown",
+            "read": "known",
+            "writeWithResponse": "known",
+            "writeWithoutResponse": "known",
+            "authenticatedSignedWrites": "unknown",
+            "notify": "known",
+            "indicate": "known",
+            "extendedProperties": "unknown",
+            "reliableWrite": "unknown",
+            "writableAuxiliaries": "unknown"
+          }
+        }
+      },
+      {
+        "uuid": "00002a28-0000-1000-8000-00805f9b34fb",
+        "occurrence": 0,
+        "properties": {
+          "broadcast": false,
+          "read": true,
+          "writeWithResponse": false,
+          "writeWithoutResponse": false,
+          "authenticatedSignedWrites": false,
+          "notify": false,
+          "indicate": false,
+          "extendedProperties": false,
+          "reliableWrite": false,
+          "writableAuxiliaries": false,
+          "availability": {
+            "broadcast": "unknown",
+            "read": "known",
+            "writeWithResponse": "known",
+            "writeWithoutResponse": "known",
+            "authenticatedSignedWrites": "unknown",
+            "notify": "known",
+            "indicate": "known",
+            "extendedProperties": "unknown",
+            "reliableWrite": "unknown",
+            "writableAuxiliaries": "unknown"
+          }
+        }
+      },
+      {
+        "uuid": "00002a23-0000-1000-8000-00805f9b34fb",
+        "occurrence": 0,
+        "properties": {
+          "broadcast": false,
+          "read": true,
+          "writeWithResponse": false,
+          "writeWithoutResponse": false,
+          "authenticatedSignedWrites": false,
+          "notify": false,
+          "indicate": false,
+          "extendedProperties": false,
+          "reliableWrite": false,
+          "writableAuxiliaries": false,
+          "availability": {
+            "broadcast": "unknown",
+            "read": "known",
+            "writeWithResponse": "known",
+            "writeWithoutResponse": "known",
+            "authenticatedSignedWrites": "unknown",
+            "notify": "known",
+            "indicate": "known",
+            "extendedProperties": "unknown",
+            "reliableWrite": "unknown",
+            "writableAuxiliaries": "unknown"
+          }
+        }
+      },
+      {
+        "uuid": "00002a19-0000-1000-8000-00805f9b34fb",
+        "occurrence": 0,
+        "properties": {
+          "broadcast": false,
+          "read": true,
+          "writeWithResponse": false,
+          "writeWithoutResponse": false,
+          "authenticatedSignedWrites": false,
+          "notify": true,
+          "indicate": false,
+          "extendedProperties": false,
+          "reliableWrite": false,
+          "writableAuxiliaries": false,
+          "availability": {
+            "broadcast": "unknown",
+            "read": "known",
+            "writeWithResponse": "known",
+            "writeWithoutResponse": "known",
+            "authenticatedSignedWrites": "unknown",
+            "notify": "known",
+            "indicate": "known",
+            "extendedProperties": "unknown",
+            "reliableWrite": "unknown",
+            "writableAuxiliaries": "unknown"
+          }
+        }
+      },
+      {
+        "uuid": "6217ff4c-c8ec-b1fb-1380-3ad986708e2d",
+        "occurrence": 0,
+        "properties": {
+          "broadcast": false,
+          "read": true,
+          "writeWithResponse": false,
+          "writeWithoutResponse": false,
+          "authenticatedSignedWrites": false,
+          "notify": false,
+          "indicate": false,
+          "extendedProperties": false,
+          "reliableWrite": false,
+          "writableAuxiliaries": false,
+          "availability": {
+            "broadcast": "unknown",
+            "read": "known",
+            "writeWithResponse": "known",
+            "writeWithoutResponse": "known",
+            "authenticatedSignedWrites": "unknown",
+            "notify": "known",
+            "indicate": "known",
+            "extendedProperties": "unknown",
+            "reliableWrite": "unknown",
+            "writableAuxiliaries": "unknown"
+          }
+        }
+      },
+      {
+        "uuid": "6217ff4d-91bb-91d0-7e2a-7cd3bda8a1f3",
+        "occurrence": 0,
+        "properties": {
+          "broadcast": false,
+          "read": false,
+          "writeWithResponse": false,
+          "writeWithoutResponse": true,
+          "authenticatedSignedWrites": false,
+          "notify": false,
+          "indicate": true,
+          "extendedProperties": false,
+          "reliableWrite": false,
+          "writableAuxiliaries": false,
+          "availability": {
+            "broadcast": "unknown",
+            "read": "known",
+            "writeWithResponse": "known",
+            "writeWithoutResponse": "known",
+            "authenticatedSignedWrites": "unknown",
+            "notify": "known",
+            "indicate": "known",
+            "extendedProperties": "unknown",
+            "reliableWrite": "unknown",
+            "writableAuxiliaries": "unknown"
+          }
+        }
+      },
+      {
+        "uuid": "fb005c81-02e7-f387-1cad-8acd2d8df0c8",
+        "occurrence": 0,
+        "properties": {
+          "broadcast": false,
+          "read": true,
+          "writeWithResponse": true,
+          "writeWithoutResponse": false,
+          "authenticatedSignedWrites": false,
+          "notify": false,
+          "indicate": true,
+          "extendedProperties": false,
+          "reliableWrite": false,
+          "writableAuxiliaries": false,
+          "availability": {
+            "broadcast": "unknown",
+            "read": "known",
+            "writeWithResponse": "known",
+            "writeWithoutResponse": "known",
+            "authenticatedSignedWrites": "unknown",
+            "notify": "known",
+            "indicate": "known",
+            "extendedProperties": "unknown",
+            "reliableWrite": "unknown",
+            "writableAuxiliaries": "unknown"
+          }
+        }
+      },
+      {
+        "uuid": "fb005c82-02e7-f387-1cad-8acd2d8df0c8",
+        "occurrence": 0,
+        "properties": {
+          "broadcast": false,
+          "read": false,
+          "writeWithResponse": false,
+          "writeWithoutResponse": false,
+          "authenticatedSignedWrites": false,
+          "notify": true,
+          "indicate": false,
+          "extendedProperties": false,
+          "reliableWrite": false,
+          "writableAuxiliaries": false,
+          "availability": {
+            "broadcast": "unknown",
+            "read": "known",
+            "writeWithResponse": "known",
+            "writeWithoutResponse": "known",
+            "authenticatedSignedWrites": "unknown",
+            "notify": "known",
+            "indicate": "known",
+            "extendedProperties": "unknown",
+            "reliableWrite": "unknown",
+            "writableAuxiliaries": "unknown"
+          }
+        }
+      },
+      {
+        "uuid": "fb005c51-02e7-f387-1cad-8acd2d8df0c8",
+        "occurrence": 0,
+        "properties": {
+          "broadcast": false,
+          "read": false,
+          "writeWithResponse": true,
+          "writeWithoutResponse": true,
+          "authenticatedSignedWrites": false,
+          "notify": true,
+          "indicate": false,
+          "extendedProperties": false,
+          "reliableWrite": false,
+          "writableAuxiliaries": false,
+          "availability": {
+            "broadcast": "unknown",
+            "read": "known",
+            "writeWithResponse": "known",
+            "writeWithoutResponse": "known",
+            "authenticatedSignedWrites": "unknown",
+            "notify": "known",
+            "indicate": "known",
+            "extendedProperties": "unknown",
+            "reliableWrite": "unknown",
+            "writableAuxiliaries": "unknown"
+          }
+        }
+      },
+      {
+        "uuid": "fb005c52-02e7-f387-1cad-8acd2d8df0c8",
+        "occurrence": 0,
+        "properties": {
+          "broadcast": false,
+          "read": false,
+          "writeWithResponse": false,
+          "writeWithoutResponse": false,
+          "authenticatedSignedWrites": false,
+          "notify": true,
+          "indicate": false,
+          "extendedProperties": false,
+          "reliableWrite": false,
+          "writableAuxiliaries": false,
+          "availability": {
+            "broadcast": "unknown",
+            "read": "known",
+            "writeWithResponse": "known",
+            "writeWithoutResponse": "known",
+            "authenticatedSignedWrites": "unknown",
+            "notify": "known",
+            "indicate": "known",
+            "extendedProperties": "unknown",
+            "reliableWrite": "unknown",
+            "writableAuxiliaries": "unknown"
+          }
+        }
+      },
+      {
+        "uuid": "fb005c53-02e7-f387-1cad-8acd2d8df0c8",
+        "occurrence": 0,
+        "properties": {
+          "broadcast": false,
+          "read": false,
+          "writeWithResponse": true,
+          "writeWithoutResponse": true,
+          "authenticatedSignedWrites": false,
+          "notify": false,
+          "indicate": false,
+          "extendedProperties": false,
+          "reliableWrite": false,
+          "writableAuxiliaries": false,
+          "availability": {
+            "broadcast": "unknown",
+            "read": "known",
+            "writeWithResponse": "known",
+            "writeWithoutResponse": "known",
+            "authenticatedSignedWrites": "unknown",
+            "notify": "known",
+            "indicate": "known",
+            "extendedProperties": "unknown",
+            "reliableWrite": "unknown",
+            "writableAuxiliaries": "unknown"
+          }
+        }
+      }
+    ],
+    "descriptors": [
+      {
+        "uuid": "00002902-0000-1000-8000-00805f9b34fb",
+        "occurrence": 0
+      },
+      {
+        "uuid": "00002902-0000-1000-8000-00805f9b34fb",
+        "occurrence": 0
+      },
+      {
+        "uuid": "00002902-0000-1000-8000-00805f9b34fb",
+        "occurrence": 0
+      },
+      {
+        "uuid": "00002902-0000-1000-8000-00805f9b34fb",
+        "occurrence": 0
+      },
+      {
+        "uuid": "00002902-0000-1000-8000-00805f9b34fb",
+        "occurrence": 0
+      },
+      {
+        "uuid": "00002902-0000-1000-8000-00805f9b34fb",
+        "occurrence": 0
+      },
+      {
+        "uuid": "00002902-0000-1000-8000-00805f9b34fb",
+        "occurrence": 0
+      }
+    ],
+    "serviceCount": 6,
+    "characteristicCount": 17,
+    "descriptorCount": 7
+  },
+  "values": {
+    "batteryLevelPercent": {
+      "ok": true,
+      "text": "Z",
+      "raw": "5a"
+    },
+    "manufacturerName": {
+      "ok": true,
+      "text": "Polar Electro Oy\u0000",
+      "raw": "506f6c617220456c656374726f204f7900"
+    },
+    "modelNumber": {
+      "ok": true,
+      "text": "H10\u0000",
+      "raw": "48313000"
+    },
+    "serialNumber": {
+      "ok": true,
+      "text": "E9B93D29\u0000",
+      "raw": "453942393344323900"
+    },
+    "hardwareRevision": {
+      "ok": true,
+      "text": "00760690.03\u0000",
+      "raw": "30303736303639302e303300"
+    },
+    "firmwareRevision": {
+      "ok": true,
+      "text": "5.0.0\u0000",
+      "raw": "352e302e3000"
+    },
+    "softwareRevision": {
+      "ok": true,
+      "text": "4.2.0\u0000",
+      "raw": "342e322e3000"
+    },
+    "systemId": {
+      "ok": true,
+      "text": "=����\u001a��",
+      "raw": "3db9e9feff1a9ea0"
+    },
+    "bodySensorLocation": {
+      "ok": true,
+      "text": "\u0001",
+      "raw": "01"
+    },
+    "pnpId": {
+      "ok": false,
+      "error": {
+        "code": "gatt.not-found",
+        "message": "gatt.not-found: public-gatt.service.characteristic",
+        "detail": {
+          "domain": "gatt",
+          "operation": "public-gatt.service.characteristic",
+          "retryability": "never",
+          "commit": null,
+          "platform": null,
+          "limitations": [],
+          "recovery": {
+            "disposition": "none",
+            "actions": []
+          }
+        }
+      }
+    },
+    "pmdFeatures": {
+      "ok": true,
+      "ecg": true,
+      "ppg": false,
+      "acc": true,
+      "ppi": false,
+      "raw": "0f05000000000000000000000000000000"
+    },
+    "pmdSettingsEcg": {
+      "ok": true,
+      "value": {
+        "SAMPLE_RATE": [
+          130
+        ],
+        "RESOLUTION": [
+          14
+        ]
+      }
+    }
+  },
+  "timings": {
+    "connectMs": 2248.937916994095,
+    "discoveryMs": 279.0888329744339,
+    "mtu": {
+      "requested": 517,
+      "negotiation": {
+        "error": {
+          "code": "capability.unsupported",
+          "message": "capability.unsupported: public-connection.controls.request-mtu",
+          "detail": {
+            "domain": "connection",
+            "operation": "public-connection.controls.request-mtu",
+            "retryability": "never",
+            "commit": null,
+            "platform": {
+              "domain": "capability",
+              "code": "corebluetooth-auto-negotiated-mtu",
+              "safeMessage": "CoreBluetooth negotiates ATT MTU internally and exposes no request API to the application.",
+              "metadata": {
+                "featureId": "connection:request-mtu",
+                "state": "unsupported",
+                "limitationCodes": [
+                  "corebluetooth-auto-negotiated-mtu"
+                ]
+              }
+            },
+            "limitations": [
+              {
+                "code": "corebluetooth-auto-negotiated-mtu",
+                "explanation": "CoreBluetooth negotiates ATT MTU internally and exposes no request API to the application.",
+                "affectedGuarantee": "caller-directed ATT MTU negotiation"
+              }
+            ],
+            "recovery": {
+              "disposition": "none",
+              "actions": []
+            }
+          }
+        }
+      },
+      "effective": {
+        "error": {
+          "code": "capability.unsupported",
+          "message": "capability.unsupported: public-connection.controls.effective-mtu",
+          "detail": {
+            "domain": "connection",
+            "operation": "public-connection.controls.effective-mtu",
+            "retryability": "never",
+            "commit": null,
+            "platform": {
+              "domain": "capability",
+              "code": "corebluetooth-effective-mtu-unavailable",
+              "safeMessage": "CoreBluetooth exposes neither the current ATT MTU nor a platform PDU observation.",
+              "metadata": {
+                "featureId": "connection:effective-mtu",
+                "state": "unsupported",
+                "limitationCodes": [
+                  "corebluetooth-effective-mtu-unavailable"
+                ]
+              }
+            },
+            "limitations": [
+              {
+                "code": "corebluetooth-effective-mtu-unavailable",
+                "explanation": "CoreBluetooth exposes neither the current ATT MTU nor a platform PDU observation.",
+                "affectedGuarantee": "current effective ATT MTU observation"
+              }
+            ],
+            "recovery": {
+              "disposition": "none",
+              "actions": []
+            }
+          }
+        }
+      },
+      "negotiationMs": 0.46216702461242676
+    },
+    "timeToFirstHrMs": 446.16804099082947,
+    "hrNotificationIntervalMs": {
+      "n": 59,
+      "min": 478.8509171009064,
+      "p10": 957.6382080316544,
+      "p50": 962.4747910499573,
+      "p90": 1052.729500055313,
+      "max": 1912.8617919683456,
+      "mean": 1005.0927987280538,
+      "stdev": 183.34066583157687
+    },
+    "pmdGetSettingsMs": 958.4341670274734,
+    "pmdStartMs": 961.7662498950958,
+    "pmdStopMs": 90.55158293247223,
+    "pmdResponseMs": {
+      "n": 3,
+      "min": 958.4341670274734,
+      "p10": 958.4341670274734,
+      "p50": 958.947084069252,
+      "p90": 1919.7690420150757,
+      "max": 1919.7690420150757,
+      "mean": 1279.0500977039337,
+      "stdev": 453.05675874762915
+    },
+    "ecgFrameIntervalMs": {
+      "n": 29,
+      "min": 561.592236,
+      "p10": 561.592236,
+      "p50": 561.597322,
+      "p90": 561.622752,
+      "max": 561.622754,
+      "mean": 561.6004793103449,
+      "stdev": 0.009852710703874258
+    },
+    "ecgSamplesPerFrame": {
+      "frames": 30,
+      "min": 73,
+      "max": 73,
+      "consistent": true,
+      "expectedPerSecond": 130
+    }
+  },
+  "behaviour": {
+    "pmdStartWithoutMtu": {
+      "op": "start-without-mtu",
+      "errorCode": 0,
+      "errorName": "SUCCESS",
+      "ms": 123.22266697883606
+    },
+    "repeatedStart": {
+      "op": "repeated-start",
+      "errorCode": 6,
+      "errorName": "ERROR_ALREADY_IN_STATE",
+      "ms": 89.48354208469391
+    },
+    "stop": {
+      "op": "stop",
+      "errorCode": 0,
+      "errorName": "SUCCESS",
+      "ms": 91.73041701316833
+    },
+    "stopWhenStopped": {
+      "op": "stop-when-stopped",
+      "errorCode": 6,
+      "errorName": "ERROR_ALREADY_IN_STATE",
+      "ms": 90.17341601848602
+    },
+    "invalidPmdCommand": {
+      "op": "invalid-op",
+      "errorCode": 1,
+      "errorName": "ERROR_INVALID_OP_CODE",
+      "ms": 88.2696670293808
+    },
+    "controlPointReadWhileNotifying": {
+      "ok": true,
+      "ecg": true,
+      "ppg": false,
+      "acc": true,
+      "ppi": false,
+      "raw": "0f05000000000000000000000000000000"
+    },
+    "batteryNotify": {
+      "ok": true,
+      "effectiveDelivery": "notification",
+      "release": "released"
+    }
+  }
+}

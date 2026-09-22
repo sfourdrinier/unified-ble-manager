@@ -1,0 +1,8 @@
+{
+  "name": "MTU / maximum write length before and after requestMtu(517)",
+  "defaultTimeoutMs": 60000,
+  "steps": [
+    { "run": "mtu", "command": "probe", "args": { "mtu": 517 } },
+    { "expectSnapshot": "mtu", "match": { "phase": "done" }, "capture": ["probes"] }
+  ]
+}

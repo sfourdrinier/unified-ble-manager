@@ -189,7 +189,7 @@ describe('public profiles and command helpers', () => {
     )
     await expect(next).resolves.toMatchObject({
       done: false,
-      value: { kind: 'value', value: { value: new Uint8Array([0x06, 76]), indication: false } }
+      value: { kind: 'value', value: { value: new Uint8Array([0x06, 76]), delivery: 'notification' } }
     })
     await settle(fixture.controller, subscription.remove())
     expect(Number(fixture.backend.resourceCounters().physicalCccdEnablements)).toBe(0)

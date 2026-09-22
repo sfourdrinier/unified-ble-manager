@@ -4,26 +4,19 @@ const {
   createFirstPartyBackendTckRegistry,
   createWebBluetoothFirstPartyTckRegistration,
   createCoreBluetoothFirstPartyTckRegistration,
-  createBluezFirstPartyTckRegistration
+  createBluezFirstPartyTckRegistration,
+  createWinRtFirstPartyTckRegistration
 } = require('../../src/testing')
-const { InMemoryCoreBluetoothBoundary } = require('../../test-support/corebluetooth/in-memory-corebluetooth-boundary')
-const { InMemoryWebBluetoothTckBoundary } = require('../../test-support/web/in-memory-web-bluetooth-tck-boundary')
+const {
+  InMemoryWebBluetoothTckBoundary,
+  WEB_BLUETOOTH_TCK_BATTERY_SERVICE_UUID: BATTERY_SERVICE_UUID
+} = require('../../test-support/web/in-memory-web-bluetooth-tck-boundary')
 const { createWebBluetoothFeatureRegistry } = require('../../src/web/web-feature-registry')
 const { BUILT_IN_FEATURE_IDS } = require('../../src/backend-contract/capabilities')
-const {
-  BLUEZ_ADAPTER_INTERFACE,
-  BLUEZ_DEVICE_INTERFACE,
-  BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
-  BLUEZ_GATT_SERVICE_INTERFACE,
-  InMemoryBluezBoundary
-} = require('../../test-support/bluez/in-memory-bluez-object-manager')
 
 const SERVICE_UUID = '0000180d-0000-1000-8000-00805f9b34fb'
-const CHARACTERISTIC_UUID = '00002a37-0000-1000-8000-00805f9b34fb'
-const BLUEZ_ADAPTER_PATH = '/org/bluez/hci0'
-const BLUEZ_DEVICE_PATH = `${BLUEZ_ADAPTER_PATH}/dev_AA_BB_CC_DD_EE_FF`
-const BLUEZ_SERVICE_PATH = `${BLUEZ_DEVICE_PATH}/service0001`
-const BLUEZ_CHARACTERISTIC_PATH = `${BLUEZ_SERVICE_PATH}/char0001`
+
+jest.setTimeout(60000)
 
 describe('first-party backend standard TCK registrations', () => {
   test('runs Web applicable provider and capability suites while retaining explicit platform exclusions', async () => {
@@ -45,7 +38,8 @@ describe('first-party backend standard TCK registrations', () => {
       'identity.adapter-selection-and-unique-instance',
       'identity.valid-all-axis-negotiation',
       'identity.version-skew-and-malformed-offers',
-      'capability.truth-limits-evidence-and-binding'
+      'capability.truth-limits-evidence-and-binding',
+      'gatt.duplicate-uuid-occurrences-route-exactly'
     ])
     expect(registration.featureSuites).toEqual([
       expect.objectContaining({
@@ -63,6 +57,19 @@ describe('first-party backend standard TCK registrations', () => {
         suiteId: 'web-chooser-discovery',
         requiredScenarioIds: ['web.chooser-connect-discover-read-notify-destroy'],
         evidenceScenarioIds: ['web.chooser-connect-discover-read-notify-destroy']
+      }),
+      // The shared discovery vocabulary (5.0), bound to the same chooser suite.
+      expect.objectContaining({
+        featureId: 'discovery:system-chooser',
+        suiteId: 'web-chooser-discovery',
+        requiredScenarioIds: [
+          'web.chooser-connect-discover-read-notify-destroy',
+          'web.unsupported-capabilities-reject-and-remain-honest'
+        ],
+        evidenceScenarioIds: [
+          'web.chooser-connect-discover-read-notify-destroy',
+          'web.unsupported-capabilities-reject-and-remain-honest'
+        ]
       }),
       expect.objectContaining({
         featureId: 'web:chooser-discovery',
@@ -113,7 +120,7 @@ describe('first-party backend standard TCK registrations', () => {
       lastChooserRequest: {
         filters: [{ services: [SERVICE_UUID], manufacturerData: [], namePrefix: null }],
         acceptAllDevices: false,
-        optionalServices: [SERVICE_UUID]
+        optionalServices: [SERVICE_UUID, BATTERY_SERVICE_UUID]
       },
       connected: false,
       disconnectListeners: 0,
@@ -207,23 +214,14 @@ describe('first-party backend standard TCK registrations', () => {
     })
   })
 
-  test('runs every applicable CoreBluetooth deterministic callback and capability scenario without unsupported promotion', async () => {
-    const boundaries = []
+  // The desktop legs run the Rust route (LEGACY-AUDIT-2 N3): the production
+  // desktop provider over the REAL N-API addon on its synthetic radio.
+  test('runs every applicable CoreBluetooth scenario on the Rust route without unsupported promotion', async () => {
     const registration = createCoreBluetoothFirstPartyTckRegistration({
-      now: () => 20,
-      nativePeerId: 'native-polar-h10',
-      createBoundary: () => {
-        const boundary = new InMemoryCoreBluetoothBoundary({
-          serviceUuid: SERVICE_UUID,
-          characteristicUuid: CHARACTERISTIC_UUID
-        })
-        boundaries.push(boundary)
-        return boundary
-      }
+      now: () => performance.now(),
+      binding: desktopCoreBinding('corebluetooth')
     })
-    const registry = createFirstPartyBackendTckRegistry([registration])
-
-    const report = await registry.run('unified-ble:corebluetooth')
+    const report = await createFirstPartyBackendTckRegistry([registration]).run('unified-ble:corebluetooth')
 
     expect(report.standard.baseScenarioIds).toEqual([
       'identity.provider-loadability-and-adapter-availability',
@@ -237,29 +235,22 @@ describe('first-party backend standard TCK registrations', () => {
       'connection.lease-joins-borrowing-transfer-and-revocation',
       'connection.two-client-arbitration',
       'gatt.discovery-complete-paths-and-services-changed',
+      'gatt.duplicate-uuid-occurrences-route-exactly',
       'diagnostics.trace-redaction-and-resource-counters',
       'scenario.scan-connect-discover-read-notify-destroy'
     ])
     expect(report.standard.featureSuiteIds).toEqual(['connection-controls', 'tck.feature.gatt.maximum-write-length'])
     expect(report.standard.featureBindings.map(binding => binding.featureId)).toEqual([
       'connection:direct',
+      'gatt:descriptors',
       BUILT_IN_FEATURE_IDS.connectionRssi,
-      'gatt:maximum-write-length'
+      // finding 217 follow-up: desktop routes measure the effective ATT MTU
+      // (macOS maximumWriteValueLength + 3, WinRT MaxPduSize, BlueZ characteristic MTU).
+      BUILT_IN_FEATURE_IDS.connectionEffectiveMtu,
+      'gatt:maximum-write-length',
+      BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness
     ])
-    expect(report.standard.receipts.slice(0, report.standard.baseScenarioIds.length)).toEqual(
-      report.standard.baseScenarioIds.map(scenarioId =>
-        expect.objectContaining({
-          scenarioId,
-          error: null,
-          facts: expect.arrayContaining([expect.objectContaining({ holds: true })])
-        })
-      )
-    )
-    expect(report.standard.receipts.map(receipt => receipt.scenarioId)).toEqual([
-      ...report.standard.baseScenarioIds,
-      'connection.rssi-and-att-mtu-capability-contract',
-      'gatt.maximum-write-length-boundaries'
-    ])
+    expectEveryReceiptHolds(report)
     expect(report.standard.receipts).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -283,103 +274,136 @@ describe('first-party backend standard TCK registrations', () => {
     expect(report.standard.featureBindings.map(binding => binding.featureId)).not.toContain(
       BUILT_IN_FEATURE_IDS.connectionRequestMtu
     )
-    expect(
-      report.standard.receipts
-        .map(receipt => receipt.scenarioId)
-        .filter(scenarioId => scenarioId.startsWith('gatt.long-write-'))
-    ).toEqual([])
-    expect(registration.featureSuites.map(suite => suite.suiteId)).toEqual([
-      'connection-controls',
-      'tck.feature.gatt.maximum-write-length'
-    ])
-    expect(boundaries.length).toBeGreaterThan(0)
-    expect(
-      boundaries.every(boundary =>
-        Object.values(boundary.resourceSnapshot()).every(value => value === false || value === 0)
-      )
-    ).toBe(true)
+    expect(report.capabilityExclusions).toEqual([])
   })
 
-  test('runs the exact BlueZ provider and public vertical scenario profile with explicit exclusions', async () => {
-    const registry = createFirstPartyBackendTckRegistry([
-      createBluezFirstPartyTckRegistration({
-        busKind: 'system',
-        now: () => 20,
-        selectedAdapterId: BLUEZ_ADAPTER_PATH,
-        createBoundary: createBluezTckBoundary
-      })
-    ])
+  test.each([
+    ['bluez', 'unified-ble:bluez-dbus', 'bluez-provider-contract-v1', 'tck.feature.security.bluez'],
+    ['winrt', 'unified-ble:winrt', 'winrt-provider-contract-v2', 'tck.feature.security.winrt']
+  ])(
+    'runs the %s provider, public vertical and security profile on the Rust route',
+    async (platform, backendId, suiteId, securitySuite) => {
+      const create = platform === 'bluez' ? createBluezFirstPartyTckRegistration : createWinRtFirstPartyTckRegistration
+      const registration = create({ now: () => performance.now(), binding: desktopCoreBinding(platform) })
+      expect(registration.suites.map(suite => suite.suiteId)).toEqual([suiteId])
+      const report = await createFirstPartyBackendTckRegistry([registration]).run(backendId)
 
-    const report = await registry.run('unified-ble:bluez-dbus')
-
-    expect(report.standard.baseScenarioIds).toEqual([
-      'identity.provider-loadability-and-adapter-availability',
-      'identity.adapter-selection-and-unique-instance',
-      'identity.valid-all-axis-negotiation',
-      'identity.version-skew-and-malformed-offers',
-      'capability.truth-limits-evidence-and-binding',
-      'scenario.scan-connect-discover-read-notify-destroy'
-    ])
-    expect(report.standard.featureSuiteIds).toEqual(['tck.feature.security.bluez'])
-    expect(report.standard.featureBindings.map(binding => binding.featureId)).toEqual([
-      'connection:direct',
-      'peer:address-targeting',
-      'security:state',
-      'security:pair',
-      'security:cancel-pairing',
-      'security:unpair'
-    ])
-    expect(report.standard.receipts).toHaveLength(10)
-    expect(report.standard.receipts).toEqual(
-      expect.arrayContaining(
-        report.standard.baseScenarioIds.map(scenarioId =>
-          expect.objectContaining({
-            scenarioId,
-            error: null,
-            facts: expect.arrayContaining([expect.objectContaining({ holds: true })])
-          })
-        )
-      )
-    )
-    expect(report.standard.receipts).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          scenarioId: 'scenario.scan-connect-discover-read-notify-destroy',
-          error: null,
-          facts: [expect.objectContaining({ id: 'vertical-slice-preserves-scan-and-cleans-up', holds: true })]
-        })
+      expect(report.standard.baseScenarioIds).toEqual([
+        'identity.provider-loadability-and-adapter-availability',
+        'identity.adapter-selection-and-unique-instance',
+        'identity.valid-all-axis-negotiation',
+        'identity.version-skew-and-malformed-offers',
+        'capability.truth-limits-evidence-and-binding',
+        'adapter.atomic-snapshot-and-watch',
+        'gatt.duplicate-uuid-occurrences-route-exactly',
+        'scenario.scan-connect-discover-read-notify-destroy'
       ])
-    )
-    expect(
-      report.standard.receipts
-        .filter(receipt => receipt.scenarioId === 'security.state-pair-cancel-unpair')
-        .every(receipt => receipt.error === null && receipt.facts.every(fact => fact.holds))
-    ).toBe(true)
-    expect(
-      report.capabilityExclusions.map(exclusion => ({ featureId: exclusion.featureId, state: exclusion.state }))
-    ).toEqual([
-      { featureId: 'bluez:acquire-write', state: 'unsupported' },
-      { featureId: 'bluez:acquire-notify', state: 'unsupported' },
-      { featureId: 'bluez:pairing-agent', state: 'unsupported' },
-      { featureId: 'bluez:deterministic-advanced-scenario-controls', state: 'unavailable' },
-      { featureId: 'bluez:live-radio', state: 'unavailable' }
-    ])
-    expect(report.capabilityExclusions.every(exclusion => exclusion.reason.length > 0)).toBe(true)
+      // finding 217 follow-up: BlueZ and WinRT now measure the effective ATT MTU,
+      // so the connection-controls suite applies to them as it does on macOS.
+      expect(report.standard.featureSuiteIds).toEqual(['connection-controls', securitySuite, 'tck.feature.gatt.maximum-write-length'])
+      expectEveryReceiptHolds(report)
+      const security = report.standard.receipts.filter(
+        receipt => receipt.scenarioId === 'security.state-pair-cancel-unpair'
+      )
+      expect(security.length).toBeGreaterThan(0)
+      expect(security[0].facts).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: 'security-pairing-cancellation-cleans-up',
+            holds: true,
+            detail: expect.objectContaining({
+              cancelled: 'cancelled',
+              cancelledPair: 'cancelled',
+              afterCancellation: 'not-pairing'
+            })
+          }),
+          expect.objectContaining({
+            id: 'security-pairing-is-terminal-and-idempotent',
+            holds: true,
+            detail: { paired: 'paired', alreadyPaired: 'already-paired' }
+          })
+        ])
+      )
+      expect(
+        report.capabilityExclusions.map(exclusion => ({ featureId: exclusion.featureId, state: exclusion.state }))
+      ).toEqual(
+        platform === 'bluez'
+          ? [
+              { featureId: 'bluez:acquire-write', state: 'unsupported' },
+              { featureId: 'bluez:acquire-notify', state: 'unsupported' },
+              { featureId: 'bluez:pairing-agent', state: 'unsupported' },
+              { featureId: 'bluez:deterministic-advanced-scenario-controls', state: 'unavailable' },
+              { featureId: 'bluez:live-radio', state: 'unavailable' }
+            ]
+          : [{ featureId: 'winrt:live-radio', state: 'unavailable' }]
+      )
+      expect(report.capabilityExclusions.every(exclusion => exclusion.reason.length > 0)).toBe(true)
+    }
+  )
+
+  test('a desktop leg never opens a production radio', async () => {
+    const binding = desktopCoreBinding('bluez')
+    const openProduction = jest.fn(binding.openProduction)
+    const registration = createBluezFirstPartyTckRegistration({
+      now: () => performance.now(),
+      binding: { ...binding, openProduction }
+    })
+    const [adapter] = await registration.factory.provider.listAdapters()
+    const backend = await registration.factory.provider.create({ selectedAdapterId: adapter.adapterId })
+    expect(backend.identity.runtime.diagnostics).toMatchObject({ radio: 'synthetic', transport: 'napi-UbmCentral' })
+    await backend.destroy()
+    expect(openProduction).not.toHaveBeenCalled()
   })
 
-  test('rejects a BlueZ TCK boundary that declares a bus different from the registration', async () => {
-    const registration = createBluezFirstPartyTckRegistration({
-      busKind: 'system',
-      now: () => 20,
-      selectedAdapterId: BLUEZ_ADAPTER_PATH,
-      createBoundary: () => createBluezTckBoundary('session')
+  test('a desktop leg refuses a central without the synthetic staging surface', async () => {
+    const binding = desktopCoreBinding('winrt')
+    const closed = []
+    const registration = createWinRtFirstPartyTckRegistration({
+      now: () => performance.now(),
+      binding: {
+        ...binding,
+        openSynthetic: async (owner, options) => {
+          const central = await binding.openSynthetic(owner, options)
+          const surface = {}
+          for (const name of ['close', 'createTicket', 'adapterState']) {
+            surface[name] = (...args) => central[name](...args)
+          }
+          surface.close = async () => {
+            closed.push(owner)
+            return central.close()
+          }
+          return surface
+        }
+      }
     })
-
-    await expect(registration.factory.provider.listAdapters()).rejects.toThrow(
-      'BlueZ TCK boundary expected system bus, received session'
-    )
+    await expect(registration.factory.provider.listAdapters()).rejects.toMatchObject({
+      normalized: { code: 'protocol.incompatible', operation: 'winrt.tck.synthetic-surface' }
+    })
+    expect(closed).toHaveLength(1)
   })
 })
+
+function expectEveryReceiptHolds(report) {
+  expect(report.standard.receipts.length).toBeGreaterThan(report.standard.baseScenarioIds.length)
+  for (const receipt of report.standard.receipts) {
+    expect({ scenarioId: receipt.scenarioId, error: receipt.error }).toEqual({
+      scenarioId: receipt.scenarioId,
+      error: null
+    })
+    expect(receipt.facts.every(fact => fact.holds)).toBe(true)
+  }
+}
+
+/** The identity-verified binding over the checkout's REAL N-API addon. */
+function desktopCoreBinding(platform) {
+  const { bindDesktopCore } = require('../../src/desktop-core-addon')
+  const { DESKTOP_RUST_CORE_PROFILES } = require('../../src/backends/desktop/desktop-rust-core-provider')
+  const { addonPath, loadAddon } = require('../helpers/desktop-rust-core-harness')
+  return bindDesktopCore(
+    { platform, operationPrefix: DESKTOP_RUST_CORE_PROFILES[platform].operationPrefix },
+    { module: loadAddon(), path: addonPath, mode: 'source', sidecar: null }
+  )
+}
 
 function createWebTckBoundary() {
   return new InMemoryWebBluetoothTckBoundary({
@@ -392,80 +416,6 @@ function webChooserRequest() {
   return {
     filters: [{ serviceUuids: [SERVICE_UUID], manufacturerData: [], localNamePrefix: null }],
     acceptAllDevices: false,
-    optionalServices: [SERVICE_UUID]
+    optionalServices: [SERVICE_UUID, BATTERY_SERVICE_UUID]
   }
-}
-
-function createBluezTckBoundary(busKind = 'system') {
-  const boundary = new InMemoryBluezBoundary({
-    busKind,
-    objects: [
-      {
-        path: BLUEZ_ADAPTER_PATH,
-        interfaces: [
-          {
-            name: BLUEZ_ADAPTER_INTERFACE,
-            properties: {
-              Address: { signature: 's', value: '00:11:22:33:44:55' },
-              Alias: { signature: 's', value: 'BlueZ TCK adapter' },
-              Powered: { signature: 'b', value: true }
-            }
-          }
-        ]
-      },
-      {
-        path: BLUEZ_DEVICE_PATH,
-        interfaces: [
-          {
-            name: BLUEZ_DEVICE_INTERFACE,
-            properties: {
-              Address: { signature: 's', value: 'AA:BB:CC:DD:EE:FF' },
-              AddressType: { signature: 's', value: 'random' },
-              Alias: { signature: 's', value: 'BlueZ TCK peer' },
-              RSSI: { signature: 'n', value: -40 },
-              UUIDs: { signature: 'as', value: [SERVICE_UUID] },
-              Connected: { signature: 'b', value: true },
-              ServicesResolved: { signature: 'b', value: true },
-              Paired: { signature: 'b', value: false }
-            }
-          }
-        ]
-      },
-      {
-        path: BLUEZ_SERVICE_PATH,
-        interfaces: [
-          {
-            name: BLUEZ_GATT_SERVICE_INTERFACE,
-            properties: {
-              Device: { signature: 'o', value: BLUEZ_DEVICE_PATH },
-              UUID: { signature: 's', value: SERVICE_UUID },
-              Primary: { signature: 'b', value: true }
-            }
-          }
-        ]
-      },
-      {
-        path: BLUEZ_CHARACTERISTIC_PATH,
-        interfaces: [
-          {
-            name: BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
-            properties: {
-              Service: { signature: 'o', value: BLUEZ_SERVICE_PATH },
-              UUID: { signature: 's', value: CHARACTERISTIC_UUID },
-              Flags: { signature: 'as', value: ['read', 'write', 'notify'] },
-              Value: { signature: 'ay', value: new Uint8Array([1]) },
-              Notifying: { signature: 'b', value: false }
-            }
-          }
-        ]
-      }
-    ]
-  })
-  boundary.onCall(
-    BLUEZ_CHARACTERISTIC_PATH,
-    BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
-    'ReadValue',
-    async () => new Uint8Array([1])
-  )
-  return boundary
 }

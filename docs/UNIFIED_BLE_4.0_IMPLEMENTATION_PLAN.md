@@ -20,7 +20,7 @@
 
 ## 1. Executive decision
 
-`unified-ble-manager@4.0.0` is a new open-source package with no production users. It is not a compatibility release of `react-native-ble-plx`, even though it inherits proven code and platform work from that project.
+`unified-ble-manager@4.0.0` is a new source-available package with no production users (see [`NOTICE`](../NOTICE) for the Apache-2.0 / UBM Source Available License 1.0 arrangement). It is not a compatibility release of `react-native-ble-plx`, even though it inherits proven code and platform work from that project.
 
 This is the one-time opportunity to establish a best-of-breed BLE central foundation that unrelated applications, libraries, device vendors, mobile products, desktop products, web products, XR products, and independently shipped backends can adopt. Track Our Health's `bun-mono` repository is the first proving consumer, not the design authority. The public contract must make sense without any Track Our Health concept.
 
@@ -41,7 +41,7 @@ The implementation must therefore converge on:
 11. a framework-neutral public core with isolated host subpaths;
 12. a publishable backend SDK and conformance kit for third parties;
 13. one authority for every contract, schema, capability, semantic rule, and generated projection;
-14. an open-source release process whose claims are backed by public evidence.
+14. a source-available release process whose claims are backed by public evidence.
 
 The current `BlePort`, `PortBleManager`, React Native `BleManager`, Base64 bridge, static host capability matrix, numeric native handle registry, and transaction-ID public surface are implementation inputs. They are not constraints on the final 4.0.0 API.
 
@@ -612,7 +612,7 @@ Temporary branch continuity is not consumer compatibility. Old code may remain o
 
 ### 6.11 Public ecosystem neutrality
 
-`unified-ble-manager` is designed for the open-source ecosystem. `bun-mono` is an integration proving ground and may be rewritten to consume the final contract.
+`unified-ble-manager` is designed for the public ecosystem. `bun-mono` is an integration proving ground and may be rewritten to consume the final contract.
 
 The public package must never import, name, or encode:
 
@@ -1756,7 +1756,7 @@ Vision Pro, tvOS, embedded JS hosts, or third-party backends follow the same reg
 
 ---
 
-## 21. Open-source product quality
+## 21. Public product quality
 
 Architecture quality is necessary but insufficient. The public project must also be installable, understandable, diagnosable, governable, and honest for users who have no relationship with the maintainer.
 
@@ -2547,7 +2547,7 @@ The shared-domain migration may start after `G2` against a packed prerelease. Ho
 
 #### Exit gate `G6A — INDEPENDENT_CONSUMER_PROOF`
 
-This gate proves the open-source package independently of the complete bun-mono product migration:
+This gate proves the source-available package independently of the complete bun-mono product migration:
 
 - a clean external fixture installs the packed release-candidate artifact, never a private source path;
 - at least two materially different host families consume the same public contract, including one native or desktop host and one other host;

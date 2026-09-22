@@ -119,7 +119,14 @@ export interface TckIpcTransportScenarioAdapter<Attachment extends string> {
 }
 
 /** Typed deterministic-boundary inputs for feature scenarios that the standard runner observes. */
+/** Presence observation for the leg's known peer (issue #212). */
+export interface TckPresenceScenarioAdapter {
+  observeKnownPeer(): Promise<{ readonly state: 'observing' }>
+  unobserveKnownPeer(): Promise<{ readonly state: 'idle' }>
+}
+
 export interface TckFeatureScenarioAdapters<Attachment extends string, Identity extends BackendIdentity<Attachment>> {
+  readonly presence?: TckPresenceScenarioAdapter
   readonly connectionControls?: TckConnectionControlsScenarioAdapter
   readonly ipcTransport?: TckIpcTransportScenarioAdapter<Attachment>
   readonly restoration?: TckRestorationScenarioAdapter<Attachment, Identity>
@@ -193,6 +200,7 @@ export type TckScenarioId =
   | 'connection.rssi-and-att-mtu-capability-contract'
   | 'gatt.descriptor-discovery-read-write'
   | 'gatt.discovery-complete-paths-and-services-changed'
+  | 'gatt.duplicate-uuid-occurrences-route-exactly'
   | 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation'
   | 'gatt.maximum-write-length-boundaries'
   | 'gatt.long-write-partial-failure'
@@ -201,6 +209,7 @@ export type TckScenarioId =
   | 'subscription.enable-ready-shared-cccd-and-fanout'
   | 'subscription.pre-ready-overflow-controls-and-late-quarantine'
   | 'restoration.provider-journal-adoption-and-rejection'
+  | 'restoration.presence-observation-arms-known-peer'
   | 'electron.trusted-sender-envelope-generations-and-quotas'
   | 'lifecycle.destroy-idempotency-admission-and-exact-settlement'
   | 'diagnostics.trace-redaction-and-resource-counters'
@@ -256,6 +265,8 @@ export type TckFactId =
   | 'gatt-discovery-returns-complete-occurrence-safe-paths'
   | 'gatt-services-changed-invalidates-database-generation'
   | 'gatt-stale-path-rejects-before-dispatch'
+  | 'gatt-duplicate-uuid-occurrences-are-indexed-per-parent'
+  | 'gatt-duplicate-uuid-notifications-route-to-exact-instance'
   | 'gatt-read-and-descriptor-return-owned-bytes'
   | 'gatt-write-policy-and-uncertain-dispatched-commit-are-exact'
   | 'gatt-operation-queue-is-fair-and-bounded'
@@ -271,6 +282,8 @@ export type TckFactId =
   | 'restoration-journal-is-provider-owned-and-bounded'
   | 'restoration-adoption-is-verified-and-exactly-once'
   | 'restoration-rejection-is-non-consuming'
+  | 'presence-observation-arms-known-peer'
+  | 'presence-unobserve-disarms-known-peer'
   | 'electron-sender-and-envelope-are-validated-before-backend-work'
   | 'electron-generation-and-client-quotas-isolate-renderers'
   | 'destroy-closes-admission-and-is-idempotent'

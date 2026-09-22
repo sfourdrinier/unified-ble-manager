@@ -1,5 +1,10 @@
 // src/electron/main-binding.ts
 
+import {
+  registerElectronBindingReleaseInspector,
+  type ElectronMainBindingReleaseInspection,
+  type ElectronMainBindingRendererReleaseSnapshot
+} from './main-binding-inspection'
 import type { CleanupRecord } from '../backend-contract/errors'
 import { BackendContractError, contractError } from '../backend-contract/errors'
 import { snapshotSerializableRecord } from '../backend-contract/serializable'
@@ -36,6 +41,15 @@ const outboundTerminalEventCapacity = 8
 const outboundTerminalByteCapacity = 16 * 1024
 const acknowledgedEventRetentionCapacity = 256
 const destroyedRendererRetryDelayMilliseconds = 100
+/**
+ * How many paced retries a failed renderer release gets before the binding
+ * stops and reports the terminal `release-failed` record (finding F3). The
+ * retry only paces re-checking whether a renderer being torn down has
+ * finished; a release still failing after ~3 s of 100 ms ticks is a
+ * persistent fault, not a teardown in flight, so it is reported once instead
+ * of rescheduled forever.
+ */
+const maxRendererReleaseRetries = 30
 
 /** Structural Electron main-process sender contract; importing Electron remains the host application's decision. */
 export interface ElectronMainIpcSender {
@@ -108,6 +122,8 @@ interface BoundRenderer<Sender extends ElectronMainIpcSender> {
   terminalBytes: number
   retryHandle: ReturnType<typeof setTimeout> | null
   releaseResult: Promise<CleanupRecord> | null
+  releaseRetries: number
+  lastReleaseFailure: CleanupRecord | null
   destroyedListener: (() => void) | null
   navigationStartListener: ElectronNavigationStartListener | null
   navigationRedirectListener: ElectronNavigationStartListener | null
@@ -167,6 +183,7 @@ export class ElectronMainBleBinding<Sender extends ElectronMainIpcSender> {
 
   constructor(private readonly options: ElectronMainBleBindingOptions<Sender>) {
     options.router.setEventPublisher((clientId, event) => this.publish(clientId, event))
+    registerElectronBindingReleaseInspector(this, () => this.releaseInspection())
   }
 
   install(): void {
@@ -214,6 +231,7 @@ export class ElectronMainBleBinding<Sender extends ElectronMainIpcSender> {
 
   private async destroyBinding(): Promise<CleanupRecord> {
     this.uninstall()
+    this.cancelRendererReleaseRetries()
     for (const admission of [...this.bootstrapAdmissionTails.values()]) {
       await admission
     }
@@ -267,6 +285,33 @@ export class ElectronMainBleBinding<Sender extends ElectronMainIpcSender> {
       failures.push(...cleanup.failures)
     }
     return failures.length === 0 ? { state: 'released', failures: [] } : { state: 'release-failed', failures }
+  }
+
+  /**
+   * Finding F3: disarm every release-retry timer before teardown touches the
+   * router, so no callback can fire after `router.destroy()` and call back
+   * into a destroyed router.
+   */
+  private cancelRendererReleaseRetries(): void {
+    for (const renderer of this.renderers.values()) {
+      if (renderer.retryHandle !== null) {
+        clearTimeout(renderer.retryHandle)
+        renderer.retryHandle = null
+      }
+    }
+  }
+
+  private releaseInspection(): ElectronMainBindingReleaseInspection {
+    const renderers: ElectronMainBindingRendererReleaseSnapshot[] = []
+    for (const [leaseId, renderer] of this.renderers) {
+      renderers.push({
+        leaseId,
+        releaseRetries: renderer.releaseRetries,
+        retryExhausted: renderer.lastReleaseFailure !== null,
+        lastReleaseFailure: renderer.lastReleaseFailure
+      })
+    }
+    return { lifecycle: this.lifecycle, renderers: Object.freeze(renderers) }
   }
 
   private async handleIpcRequest(
@@ -821,7 +866,7 @@ export class ElectronMainBleBinding<Sender extends ElectronMainIpcSender> {
     try {
       const cleanup = await this.releaseRenderer(rendererLeaseId, renderer)
       if (cleanup.state === 'release-failed') {
-        this.scheduleRendererReleaseRetry(rendererLeaseId, renderer)
+        this.scheduleRendererReleaseRetry(rendererLeaseId, renderer, cleanup)
       }
       return cleanup
     } catch (error) {
@@ -829,17 +874,30 @@ export class ElectronMainBleBinding<Sender extends ElectronMainIpcSender> {
         rendererLeaseId,
         error
       })
-      this.scheduleRendererReleaseRetry(rendererLeaseId, renderer)
+      this.scheduleRendererReleaseRetry(rendererLeaseId, renderer, releaseFailureFromUnknown(error))
       return null
     }
   }
 
-  private scheduleRendererReleaseRetry(rendererLeaseId: string, renderer: BoundRenderer<Sender>): void {
+  private scheduleRendererReleaseRetry(
+    rendererLeaseId: string,
+    renderer: BoundRenderer<Sender>,
+    failure: CleanupRecord
+  ): void {
     if (renderer.retryHandle !== null || this.renderers.get(rendererLeaseId) !== renderer) {
+      return
+    }
+    if (renderer.releaseRetries >= maxRendererReleaseRetries) {
+      renderer.lastReleaseFailure = failure
+      console.error('[ElectronMainBleBinding] Renderer release retries exhausted; reporting release-failed:', {
+        rendererLeaseId,
+        cleanup: failure
+      })
       return
     }
     renderer.retryHandle = setTimeout(() => {
       renderer.retryHandle = null
+      renderer.releaseRetries += 1
       this.releaseRendererAuthoritatively(rendererLeaseId, renderer).catch(error => {
         console.error('[ElectronMainBleBinding] Renderer release retry orchestration rejected:', {
           rendererLeaseId,
@@ -966,6 +1024,8 @@ function createBoundRenderer<Sender extends ElectronMainIpcSender>(
     terminalBytes: 0,
     retryHandle: null,
     releaseResult: null,
+    releaseRetries: 0,
+    lastReleaseFailure: null,
     destroyedListener: null,
     navigationStartListener: null,
     navigationRedirectListener: null,
@@ -1077,6 +1137,17 @@ function recordValue(value: unknown): Record<string, unknown> | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function releaseFailureFromUnknown(error: unknown): CleanupRecord {
+  const normalized =
+    error instanceof BackendContractError
+      ? error.normalized
+      : contractError('platform.failure', 'cleanup', 'electron-main-binding.release-rejected').normalized
+  return {
+    state: 'release-failed',
+    failures: [{ resourceKind: 'electron-renderer', error: normalized }]
+  }
 }
 
 function isRollbackReleaseRequiredError(error: unknown): boolean {

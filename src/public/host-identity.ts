@@ -1,5 +1,9 @@
 // src/public/host-identity.ts
 
+import {
+  normalizeBackgroundContinuation,
+  type BackgroundContinuationDeclaration
+} from '../backend-contract/background-continuation'
 import { contractError } from '../backend-contract/errors'
 import {
   normalizeRestorationBootstrapRequest,
@@ -107,6 +111,18 @@ export interface BleManagerCreateOptions {
     readonly restorationId: string
     readonly generation?: string
   }
+  /**
+   * Declared background standing order (BGS4). The app declares while alive
+   * what an OS wake may do; the wake executes only what was declared. Absent
+   * means `record-only` (today's behaviour): 5.0 defaults change nothing.
+   */
+  readonly background?: {
+    readonly continuation?: unknown
+  }
+}
+
+export interface NormalizedBackgroundOptions {
+  readonly continuation: BackgroundContinuationDeclaration
 }
 
 export interface DiagnosticsOptions {
@@ -116,9 +132,13 @@ export interface DiagnosticsOptions {
 }
 
 function assertPlainRecord(value: unknown, operation: string): void {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+  if (!isPlainRecord(value)) {
     throw contractError('argument.invalid', 'core', operation)
   }
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 export function normalizeBleManagerCreateOptions(
@@ -128,7 +148,7 @@ export function normalizeBleManagerCreateOptions(
     return Object.freeze({})
   }
   assertPlainRecord(options, 'options')
-  const allowedKeys = new Set(['instanceId', 'adapterId', 'diagnostics', 'restoration', 'randomBytes'])
+  const allowedKeys = new Set(['instanceId', 'adapterId', 'diagnostics', 'restoration', 'randomBytes', 'background'])
   if (Object.keys(options).some(key => !allowedKeys.has(key))) {
     throw contractError('argument.invalid', 'core', 'options.unknown-key')
   }
@@ -162,7 +182,19 @@ export function normalizeBleManagerCreateOptions(
   }
   const restoration: RestorationBootstrapRequest | undefined =
     options.restoration === undefined ? undefined : normalizeRestorationBootstrapRequest(options.restoration)
-  return Object.freeze({ ...options, restoration })
+  const background: NormalizedBackgroundOptions | undefined =
+    options.background === undefined ? undefined : normalizeBackgroundOptions(options.background)
+  return Object.freeze({ ...options, restoration, ...(background === undefined ? {} : { background }) })
+}
+
+function normalizeBackgroundOptions(value: unknown): NormalizedBackgroundOptions {
+  if (!isPlainRecord(value)) {
+    throw contractError('argument.invalid', 'core', 'options.background')
+  }
+  if (Object.keys(value).some(key => key !== 'continuation')) {
+    throw contractError('argument.invalid', 'core', 'options.background.unknown-key')
+  }
+  return Object.freeze({ continuation: normalizeBackgroundContinuation(value.continuation) })
 }
 
 // Exposed only for contract/vector tests; it contains no derivation implementation.

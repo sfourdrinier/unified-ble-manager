@@ -118,7 +118,11 @@ describe('4.0 public package surface', () => {
     expect(typeof corebluetooth.createCoreBluetoothBleManager).toBe('function')
     expect(typeof winrt.createWinRtBleManager).toBe('function')
     expect(typeof bluez.createBluezBleManager).toBe('function')
-    expect(typeof reactNative.getNativeUnifiedBleProtocolControl).toBe('function')
+    // 5.0: the React Native entrypoint exposes only the Rust route; the legacy
+    // protocol control is not part of the public surface.
+    expect(reactNative.getNativeUnifiedBleProtocolControl).toBeUndefined()
+    expect(typeof reactNative.createReactNativeRustCoreBinding).toBe('function')
+    expect(typeof reactNative.createReactNativeAppleBackendProvider).toBe('function')
     expect(typeof bluez.createDbusNextBluezBackendProvider).toBe('function')
     expect(typeof winrt.createNativeWinRtBackendProvider).toBe('function')
     expect(typeof electronMain.createElectronMainWinRtBackendProvider).toBe('function')
@@ -251,6 +255,7 @@ describe('4.0 public package surface', () => {
       './expo'
     ])
     expect(packageJson.files).toContain('src')
+    expect(packageJson.files).toContain('llms.txt')
     expect(packageJson.codegenConfig.jsSrcsDir).toBe('src')
   })
 

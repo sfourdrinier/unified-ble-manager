@@ -127,7 +127,28 @@ export interface ElectronMainArbiter<Attachment extends string> {
     sender: TrustedIpcSender<Attachment, Renderer>,
     lease: RendererLeaseIdentity
   ): Promise<CleanupRecord>
+  /**
+   * Host-only (IPC protocol 4): the backend replaced the attachment after an
+   * adapter loss. Later routes must name `next`; routes naming a replaced
+   * attachment are refused `backend.reset`, releases excepted. No renderer
+   * request reaches this.
+   */
+  rebindAttachment(next: AttachmentRecord<Attachment>): void
 }
+
+/**
+ * Commands that only release what a renderer already holds (or cancel its own
+ * in-flight work): admitted on a replaced attachment so the renderer can settle
+ * its handles, as on the Tauri host.
+ */
+const IPC_RELEASE_COMMANDS: ReadonlySet<string> = new Set([
+  'operation.cancel',
+  'scan.stop',
+  'gatt.unsubscribe',
+  'gatt.database.release',
+  'connection.disconnect',
+  'connection.events.unsubscribe'
+])
 
 interface RendererAccounting<Attachment extends string> {
   readonly identity: RendererIdentity<Attachment, string>
@@ -171,7 +192,9 @@ export class IpcArbiterContext<Attachment extends string> implements ElectronMai
    */
   private static readonly maximumTerminalReplayEntries = 128
   private readonly renderers = new Map<string, RendererAccounting<Attachment>>()
-  private readonly authority: ElectronMainArbiterAuthority<Attachment>
+  private authority: ElectronMainArbiterAuthority<Attachment>
+  /** Attachments an adapter loss replaced (protocol 4). */
+  private readonly replacedAttachmentIds = new Set<string>()
   private readonly handlers: ElectronMainArbiterHandlers<Attachment>
   private nextRendererLease = 1
 
@@ -339,9 +362,18 @@ export class IpcArbiterContext<Attachment extends string> implements ElectronMai
     }
   }
 
+  rebindAttachment(next: AttachmentRecord<Attachment>): void {
+    this.replacedAttachmentIds.add(String(this.authority.attachment.attachmentId))
+    this.authority = snapshotArbiterAuthority({ ...this.authority, attachment: next })
+  }
+
   private assertAttachment<Renderer extends string, Operation extends string>(
     envelope: IpcEnvelope<Attachment, Renderer, Operation>
   ): void {
+    if (this.replacedAttachmentIds.has(String(envelope.attachmentId))) {
+      if (IPC_RELEASE_COMMANDS.has(envelope.command)) return
+      throw contractError('backend.reset', 'adapter', 'electron-main-arbiter.attachment-replaced')
+    }
     if (
       envelope.attachmentId !== envelope.attachment.attachmentId ||
       envelope.attachmentId !== this.authority.attachment.attachmentId ||

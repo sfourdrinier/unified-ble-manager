@@ -1,8 +1,10 @@
 import {
   BackendContractError,
+  BLE_COMMIT_UNCERTAINTIES,
   BLE_ERROR_CODES,
   BLE_ERROR_DOMAINS,
   contractError,
+  type BleCommitUncertainty,
   type CleanupFailure,
   type CleanupRecord,
   type NormalizedBleError
@@ -37,9 +39,11 @@ import type {
   PortableDatabasePath,
   PortableGattDatabaseSnapshot,
   PortableOperationOptions,
+  PortableReadReceipt,
   PortableSubscriptionOptions,
   PortableWritePolicy
 } from '../manager/consumer-handles'
+import { isReadProvenance } from '../backend-contract/operations'
 import type { AdvertisementObservation } from '../backend-contract/advertisement'
 import type { AttachmentRecord } from '../backend-contract/identity'
 import type { PeerReference } from '../backend-contract/peer-reference'
@@ -49,7 +53,7 @@ import { normalizeScanQuery } from '../public/scan-query'
 import { BleCleanupError, collectCleanupPhases } from '../public/error-bridge'
 import type { CleanupRecord as PublicCleanupRecord } from '../public/cleanup'
 import { IpcBleClient } from './client'
-import { IPC_GATT_DATABASE_SCHEMA_VERSION } from './protocol'
+import { IPC_ATTACHMENT_STREAM_ID, IPC_GATT_DATABASE_SCHEMA_VERSION } from './protocol'
 import type { IpcCapabilitySnapshotV2, IpcClientTransport } from './protocol'
 import { decodeIpcScanQuery, encodeIpcScanQuery } from './scan-planning'
 import type { NormalizedScanQuery } from '../backend-contract/scan-query'
@@ -214,7 +218,7 @@ export interface IpcWriteReceipt {
     readonly cause: string | null
   }
   readonly mode: 'with-response' | 'without-response'
-  readonly commitState: 'confirmed' | 'accepted' | 'unknown' | 'not-started'
+  readonly commitState: 'confirmed' | 'unknown' | 'not-started'
   readonly bytesSubmitted: number
 }
 
@@ -388,13 +392,18 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     if (typeof peerId !== 'string' || peerId.length === 0) {
       throw contractError('argument.invalid', 'connection', 'ipc-manager.connect.peer-id')
     }
+    const startedAt = globalThis.performance?.now() ?? null
     const deadline = operationDeadline(options)
     const payload = await this.route('connection.connect', Object.freeze({ peerId, deadline }), null, options.signal)
-    if (deadline !== null && deadline <= globalThis.performance.now()) {
+    // The native answer arrived but the deadline had already passed (a
+    // clamped timer, typically): no link came up in time, so the attempt is
+    // the peer not answering (`connection.failed`, finding 161), and the
+    // provisional identity is compensated like any other failed admission.
+    if (deadline !== null && startedAt !== null && deadline <= globalThis.performance.now()) {
       const expired = decodeProvisionalConnectIdentity(payload)
       await this.compensateFailedConnect(
         expired,
-        contractError('operation.timed-out', 'ipc', 'ipc-manager.connection.connect')
+        ipcConnectDeadlineError('ipc-manager.connection.connect', Math.max(0, deadline - startedAt))
       )
     }
     const provisional = decodeProvisionalConnectIdentity(payload)
@@ -496,17 +505,35 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       controller.abort()
     }
     signal?.addEventListener('abort', forwardAbort, { once: true })
+    const startedAt = globalThis.performance.now()
     let timedOut = false
-    const timer = globalThis.setTimeout(() => {
-      timedOut = true
-      controller.abort()
-    }, deadline - globalThis.performance.now())
+    const timer = globalThis.setTimeout(
+      () => {
+        timedOut = true
+        controller.abort()
+      },
+      Math.max(0, deadline - startedAt)
+    )
     try {
       const receipt = await this.client.request({ command, payload, binaryPayload, signal: controller.signal })
       return receipt.payload
     } catch (error) {
-      if (timedOut && !callerAborted && error instanceof BackendContractError) {
-        throw contractError('operation.timed-out', 'ipc', `ipc-manager.${command}`)
+      // The deadline, not the caller, aborted the request, so the native
+      // abort is reported as the expiry it was. Only the code changes: the
+      // native answer about retryability (a dispatched write is `never`) and
+      // its platform detail are the operation's own and are kept — except a
+      // dispatched connect, whose deadline expiring before any link came up
+      // is the peer not answering (`connection.failed`, finding 161).
+      if (
+        timedOut &&
+        !callerAborted &&
+        error instanceof BackendContractError &&
+        error.normalized.code === 'operation.aborted'
+      ) {
+        if (command === 'connection.connect') {
+          throw ipcConnectDeadlineError(`ipc-manager.${command}`, Math.max(0, deadline - startedAt))
+        }
+        throw new BackendContractError({ ...error.normalized, code: 'operation.timed-out' })
       }
       throw error
     } finally {
@@ -652,9 +679,24 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     return {
       events,
       unsubscribe: async () => {
-        const cleanup = cleanupRecord(
-          await this.route('connection.events.unsubscribe', Object.freeze({ connectionEventsHandle: handle }))
-        )
+        let cleanup: CleanupRecord
+        try {
+          cleanup = cleanupRecord(
+            await this.route('connection.events.unsubscribe', Object.freeze({ connectionEventsHandle: handle }))
+          )
+        } catch (error) {
+          // The host ended this stream with its terminal and forgot it: the
+          // host's own answer is that nothing is held, i.e. released (the
+          // renderer client's rule for the same refusal).
+          if (
+            error instanceof BackendContractError &&
+            error.normalized.code === 'ownership.denied' &&
+            !this.streams.has(handle)
+          ) {
+            return Object.freeze({ state: 'released' as const, failures: Object.freeze([]) })
+          }
+          throw error
+        }
         if (cleanup.state === 'released') this.closeStream(handle)
         return cleanup
       }
@@ -686,6 +728,8 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
           const eventValue = event.value
           const streamId = requiredString(eventValue, 'streamId', 'ipc-manager.event')
           const item = requiredRecord(eventValue, 'item', 'ipc-manager.event')
+          // The client adopted the host's attachment rebind itself (protocol 4).
+          if (streamId === IPC_ATTACHMENT_STREAM_ID) continue
           const sink = this.streams.get(streamId)
           if (sink === undefined) {
             this.bufferPendingStreamItem(streamId, item)
@@ -1075,7 +1119,6 @@ const REMOTE_SECURITY_CAPABILITY_IDS = new Set<string>([
 ])
 
 const REMOTE_RENDERER_UNSUPPORTED_CAPABILITY_IDS = new Set<string>([
-  BUILT_IN_FEATURE_IDS.connectionEffectiveMtu,
   BUILT_IN_FEATURE_IDS.connectionRequestMtu,
   BUILT_IN_FEATURE_IDS.connectionPriority,
   BUILT_IN_FEATURE_IDS.connectionPhy,
@@ -1100,11 +1143,16 @@ export function projectRemoteCapabilities(snapshot: IpcCapabilitySnapshotV2): Ip
 }
 
 function unsupportedRemoteRendererDescriptor(descriptor: CapabilityDescriptor): CapabilityDescriptor {
+  // Finding 190b: the projection adds its own routing note but never
+  // substitutes it for the native reason — the native limitations stay
+  // first, so every desktop host answers with the same words (for example
+  // `effective-mtu-boundary-unavailable` for the effective MTU).
   const limitation = Object.freeze({
     code: 'ipc-renderer-control-unavailable',
     explanation: 'This renderer IPC projection does not currently route this native control.',
     affectedGuarantee: 'native control support over renderer IPC'
   })
+  const limitations = Object.freeze([...descriptor.limitations, limitation])
   return Object.freeze({
     ...descriptor,
     state: 'unsupported' as const,
@@ -1113,9 +1161,9 @@ function unsupportedRemoteRendererDescriptor(descriptor: CapabilityDescriptor): 
       receiptId: `ipc-renderer-control-unavailable-${descriptor.id}`,
       evidenceLevel: 'blocked' as const,
       sourceDigest: 'ipc-renderer-control-projection-v1',
-      limitations: Object.freeze([limitation])
+      limitations
     }),
-    limitations: Object.freeze([limitation])
+    limitations
   })
 }
 
@@ -1183,6 +1231,10 @@ export class IpcConnection {
   private disconnectResult: Promise<CleanupRecord> | null = null
   private lifecycleReleased = false
   private connectionReleased = false
+  private appReleaseGate: Promise<boolean> | null = null
+  private resolveAppReleaseGate: ((released: boolean) => void) | null = null
+  private lastLifecycleSequence = 0
+  private lastLifecycleState = 'connected'
 
   constructor(
     private readonly manager: IpcBleManager,
@@ -1262,7 +1314,13 @@ export class IpcConnection {
         continue
       }
       const value = lifecycleEventValue(event)
+      this.noteLifecycleValue(value)
       this.lifecycleEvents.emit(value, estimateByteLength(value))
+    }
+    if (await this.awaitAppReleaseOutcome()) {
+      this.finishAppReleasedLifecycle()
+      this.invalidateDatabases().catch(() => undefined)
+      return
     }
     this.lifecycleEvents.closeWithReason('source-failed')
     this.invalidateDatabases().catch(() => undefined)
@@ -1345,6 +1403,16 @@ export class IpcConnection {
     return requiredNumber(payload, 'rssi', 'ipc-manager.connection-rssi')
   }
 
+  async effectiveMtu(options: IpcManagerOperationOptions = {}): Promise<number> {
+    const payload = await this.manager.route(
+      'connection.effective-mtu',
+      Object.freeze({ ...this.identityPayload(), deadline: operationDeadline(options) }),
+      null,
+      options.signal
+    )
+    return requiredNumber(payload, 'mtu', 'ipc-manager.connection-effective-mtu')
+  }
+
   async maximumWriteLength(mode: 'with-response' | 'without-response' = 'with-response'): Promise<number> {
     const payload = await this.manager.route(
       'connection.maximum-write-length',
@@ -1366,6 +1434,91 @@ export class IpcConnection {
   private async disconnectInternal(): Promise<CleanupRecord> {
     const databaseCleanup = await this.invalidateDatabases()
     this.admissionAbort.abort()
+    this.armAppReleaseGate()
+    try {
+      return await this.disconnectReleased(databaseCleanup)
+    } finally {
+      this.settleAppReleaseGate()
+    }
+  }
+
+  /**
+   * The app asked for this link to go down, so the renderer reports the
+   * release in the vocabulary every host uses: the lifecycle stream delivers
+   * the final `disconnected` / `requested-disconnect` value (unless the host
+   * already delivered a terminal event itself) and ends `owner-released`.
+   * Without this, an unsubscribe-first disconnect ends the pump's loop bare
+   * and the supervisor reads `stream.closed` and stops, while the reference
+   * host reconnects on the same physical event.
+   */
+  private armAppReleaseGate(): void {
+    if (this.resolveAppReleaseGate !== null) return
+    let resolve: ((released: boolean) => void) | null = null
+    this.appReleaseGate = new Promise<boolean>(settled => {
+      resolve = settled
+    })
+    this.resolveAppReleaseGate = resolve
+  }
+
+  private settleAppReleaseGate(): void {
+    const resolve = this.resolveAppReleaseGate
+    this.resolveAppReleaseGate = null
+    const released = this.connectionReleased
+    if (resolve !== null) {
+      resolve(released)
+    }
+    if (released && this.appReleaseGate !== null) {
+      this.finishAppReleasedLifecycle()
+    }
+  }
+
+  private async awaitAppReleaseOutcome(): Promise<boolean> {
+    const gate = this.appReleaseGate
+    this.appReleaseGate = null
+    if (gate === null) return false
+    try {
+      return await gate
+    } catch {
+      return false
+    }
+  }
+
+  private finishAppReleasedLifecycle(): void {
+    if (this.lifecycleEvents.isTerminal()) return
+    if (this.lastLifecycleState !== 'disconnected' && this.lastLifecycleState !== 'lost') {
+      const sequence = this.lastLifecycleSequence + 1
+      const record = Object.freeze({
+        kind: 'connection-lifecycle',
+        schemaVersion: 2,
+        attachmentId: this.manager.bootstrap.attachment.attachmentId,
+        peerId: this.peerId,
+        connectionId: this._connectionId,
+        connectionGeneration: this._connectionGeneration,
+        ownerLeaseId: this._ownerLeaseId,
+        sequence,
+        previous: this.lastLifecycleState,
+        current: 'disconnected',
+        cause: 'requested-disconnect'
+      })
+      this.lifecycleEvents.emit(record, estimateByteLength(record))
+      this.lastLifecycleSequence = sequence
+      this.lastLifecycleState = 'disconnected'
+    }
+    this.lifecycleEvents.finishWithReason('owner-released')
+  }
+
+  private noteLifecycleValue(value: SerializableRecord): void {
+    const sequence: unknown = value.sequence
+    if (typeof sequence === 'number' && Number.isSafeInteger(sequence) && sequence > this.lastLifecycleSequence) {
+      this.lastLifecycleSequence = sequence
+    }
+    const current: unknown = value.current
+    if (typeof current === 'string' && isConnectionLifecycleState(current)) {
+      this.lastLifecycleState = current
+    }
+  }
+
+  private async disconnectReleased(databaseCleanup: CleanupRecord): Promise<CleanupRecord> {
     if (this.lifecycleSubscription === null) {
       this.lifecycleReleased = true
     }
@@ -1735,6 +1888,13 @@ export class IpcGattDatabase {
     return this.characteristicForPath(path).read(toIpcOptions(options))
   }
 
+  async readReceipt(
+    path: PortableCurrentCharacteristicPath,
+    options: PortableOperationOptions = EMPTY_OPERATION_OPTIONS
+  ): Promise<PortableReadReceipt> {
+    return this.characteristicForPath(path).readReceipt(toIpcOptions(options))
+  }
+
   async write(
     path: PortableCurrentCharacteristicPath,
     bytes: Readonly<Uint8Array>,
@@ -1852,13 +2012,25 @@ export class IpcCharacteristic {
   }
 
   async read(options: IpcManagerOperationOptions = {}): Promise<Uint8Array> {
-    const payload = await this.database.route(
+    return requiredBytes(await this.routeRead(options), 'value', 'ipc-manager.gatt-read')
+  }
+
+  /** The value and the host's read provenance; a host answer without one is malformed. */
+  async readReceipt(options: IpcManagerOperationOptions = {}): Promise<PortableReadReceipt> {
+    const payload = await this.routeRead(options)
+    const provenance = payload.provenance
+    if (!isReadProvenance(provenance))
+      throw contractError('protocol.malformed', 'ipc', 'ipc-manager.gatt-read-provenance')
+    return Object.freeze({ value: requiredBytes(payload, 'value', 'ipc-manager.gatt-read'), provenance })
+  }
+
+  private routeRead(options: IpcManagerOperationOptions): Promise<SerializableRecord> {
+    return this.database.route(
       'gatt.read',
       Object.freeze({ characteristicHandle: this.handle, deadline: operationDeadline(options) }),
       null,
       options.signal
     )
-    return requiredBytes(payload, 'value', 'ipc-manager.gatt-read')
   }
 
   async write(bytes: Readonly<Uint8Array>, options: IpcWriteOptions = {}): Promise<SerializableRecord> {
@@ -2122,6 +2294,25 @@ function operationDeadline(options: IpcManagerOperationOptions): number | null {
   return globalThis.performance.now() + options.timeoutMs
 }
 
+/**
+ * Finding 161: a dispatched connect whose deadline expires before any link
+ * came up is the peer not answering — `connection.failed`
+ * (`caller-decides`) on every backend, the same physical event as a
+ * controller-given-up establishment failure. The deadline fact rides in
+ * `platform`; a connect commits nothing, so the caller decides the retry.
+ * Every other operation keeps `operation.timed-out`, and a caller-supplied
+ * AbortSignal abort stays `operation.aborted`.
+ */
+function ipcConnectDeadlineError(operation: string, deadlineMs: number): BackendContractError {
+  const normalized = contractError('connection.failed', 'ipc', operation, {
+    domain: 'ipc',
+    code: 'deadline-expired',
+    safeMessage: `The ${deadlineMs} ms connect deadline expired before any link came up.`,
+    metadata: Object.freeze({ deadlineMs })
+  })
+  return new BackendContractError({ ...normalized.normalized, retryability: 'caller-decides' })
+}
+
 function isCleanupRecord(value: unknown): value is CleanupRecord {
   if (typeof value !== 'object' || value === null) return false
   if (!('state' in value) || !('failures' in value)) return false
@@ -2207,9 +2398,10 @@ function requiredTerminalError(value: SerializableValue | undefined, operation: 
   ) {
     throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-error`)
   }
+  const commit = requiredTerminalCommit(value, operation)
   const platform = value.platform
   if (platform === null) {
-    return { code, domain, operation: value.operation, platform: null, retryability }
+    return { code, domain, operation: value.operation, platform: null, retryability, ...commit }
   }
   if (!isSerializableRecord(platform)) {
     throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-error-platform`)
@@ -2232,8 +2424,24 @@ function requiredTerminalError(value: SerializableValue | undefined, operation: 
       safeMessage: platform.safeMessage,
       metadata: platform.metadata
     },
-    retryability
+    retryability,
+    ...commit
   }
+}
+
+/**
+ * The native commit state of a terminal's error (PR210-37), carried only when
+ * the native side stated it; an unknown word is malformed.
+ */
+function requiredTerminalCommit(
+  value: SerializableRecord,
+  operation: string
+): { readonly commit?: BleCommitUncertainty | null } {
+  if (!('commit' in value)) return {}
+  if (value.commit === null) return { commit: null }
+  const commit = BLE_COMMIT_UNCERTAINTIES.find(candidate => candidate === value.commit)
+  if (commit === undefined) throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-error-commit`)
+  return { commit }
 }
 
 function isSerializableRecord(value: unknown): value is SerializableRecord {
@@ -2396,7 +2604,7 @@ function requiredWriteReceipt(
   const outcome = terminal.outcome
   const cause = terminal.cause
   const successful = outcome === 'succeeded'
-  const expectedCommitState = mode === 'with-response' ? 'confirmed' : 'accepted'
+  const expectedCommitState = mode === 'with-response' ? 'confirmed' : 'unknown'
   const knownCause = cause === null || (typeof cause === 'string' && BLE_ERROR_CODES.some(code => code === cause))
   if (
     (!successful && outcome !== 'failed') ||
@@ -2404,10 +2612,7 @@ function requiredWriteReceipt(
     (successful ? cause !== null || commitState !== expectedCommitState : cause === null) ||
     (!successful && commitState !== 'unknown' && commitState !== 'not-started') ||
     (mode !== 'with-response' && mode !== 'without-response') ||
-    (commitState !== 'confirmed' &&
-      commitState !== 'accepted' &&
-      commitState !== 'unknown' &&
-      commitState !== 'not-started') ||
+    (commitState !== 'confirmed' && commitState !== 'unknown' && commitState !== 'not-started') ||
     (requestedMode !== undefined && mode !== requestedMode) ||
     !Number.isSafeInteger(submitted) ||
     submitted < 0 ||

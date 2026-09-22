@@ -1,0 +1,32 @@
+# System unit for `--linux-advertising mgmt-legacy`, rendered by
+# tool/h10-sim/scripts/install-service.sh --linux-advertising mgmt-legacy --system-unit
+# (@USER@ / @HOME@ replaced) and installed by the owner with sudo; the script
+# never installs it itself.
+#
+# Privilege: CAP_NET_ADMIN is granted to this service only, as an ambient
+# capability, and the bounding set is reduced to it. The process runs as
+# @USER@, not root. Blast radius: CAP_NET_ADMIN lets the process issue any
+# Bluetooth management command on every adapter (power, discoverable,
+# advertising, pairing settings) and administer other network interfaces.
+# A failure leaves no configuration behind; an advertising instance left by
+# a SIGKILL is removed by the next start (README, Linux).
+[Unit]
+Description=Polar H10 BLE simulator, mgmt-legacy advertising (unified-ble-manager test tool)
+Documentation=https://github.com/trackourhealth/unified-ble-manager
+After=bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+User=@USER@
+EnvironmentFile=-@HOME@/.config/h10-sim/env
+ExecStart=@HOME@/.local/bin/h10-sim --profile @HOME@/.config/h10-sim/profile.json --linux-advertising mgmt-legacy
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=yes
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=78
+
+[Install]
+WantedBy=multi-user.target

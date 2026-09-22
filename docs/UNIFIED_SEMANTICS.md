@@ -136,7 +136,7 @@ two clients use equal filters or peer identifiers.
 | ordinary scan | One physical scan controller. A second non-shared request fails `scan.already-active` without changing the first. |
 | explicitly shared scan | Allowed only with an existing authorized share token naming identical filter, duplicate, timestamp, delivery, deadline, and overflow semantics. The owner retains physical control; each client receives an independently bounded stream. Releasing one share closes only that stream; it cannot stop physical scanning while another share remains. |
 | chooser | Per-session and non-shareable unless a platform evidence record proves a safe shared model. A second request fails `chooser.busy`. |
-| peer connection | Multiple clients MAY lease a single physical link only when the backend reports sharing support. Each lease has independent generation validity and cleanup. Lease release cannot disconnect the physical link while another lease remains; the final release or explicit owner disconnect does. Otherwise the second request fails `connection.already-owned`. |
+| peer connection | Multiple clients lease a single physical link on every backend, each with independent generation validity and cleanup. Release cannot drop the link while another lease remains; final release or explicit owner disconnect does. `connection.already-owned` therefore never means "someone else is already connected": it is reported only when the peer cannot be leased right now — the link is mid-transition (connecting, disconnecting, or tearing down), it is owned by a different manager or process, or the backend runs in explicit exclusive (sharing opt-out) mode. |
 | notification subscription | Distinct consumer streams MAY share a physical enablement only through the owner; disabling one consumer MUST NOT disable another. |
 
 The main process is the sole arbiter for desktop IPC. A preload bridge only
@@ -380,9 +380,9 @@ rules as a characteristic.
 
 | Operation | Required semantics |
 | --- | --- |
-| read | One terminal owned byte result or typed error. A cached value is returned only when the caller explicitly requested a declared cache policy and the result labels its source. |
+| read | One terminal owned byte result or typed error, with the platform's provenance: `read-response` when the platform attributed the value to this read's ATT response, `read-or-notification` when the platform reports read responses and notifications through one callback and the characteristic could notify when the value arrived (CoreBluetooth). A read on a notifying characteristic is admitted on every platform; reads of one characteristic complete in request order; a value that may be a notification is still delivered to subscribers. A platform never reports `read-response` for a value it cannot attribute. A cached value is returned only when the caller explicitly requested a declared cache policy and the result labels its source. |
 | write with response | Success requires the backend's protocol-defined completion acknowledgement. |
-| write without response | Success means the backend accepted the complete input into its bounded transport submission boundary, not that a peer application consumed it. |
+| write without response | Success means the backend accepted the complete input into its bounded transport submission boundary, not that a peer application consumed it. The receipt's `commitState` is `unknown` on every host (the peer never confirms). |
 | long write | Validate support and negotiated maximum; segment deterministically; on failure report committed/unknown state and never claim atomicity without evidence. |
 | descriptor read/write | Same as characteristic I/O, including full descriptor occurrence path. |
 | MTU request | Return effective inbound/outbound payload limits, requested size, and the source of each limit. |
@@ -491,13 +491,18 @@ unmeasured maximum is not infinity: the feature is `unavailable` until a safe
 limit is declared. Output larger than an advertised limit is a backend protocol
 failure and invalidates the affected attachment.
 
-For React Native, a negotiated metadata-only control module installs the one
-`__unifiedBleNativeProtocolV2` JSI owner. Its retain operation copies the exact
-`Uint8Array` view before asynchronous use; copy returns an independent
-`Uint8Array`; release is explicit; and attachment close invalidates the owner.
-The installer, its control result, and normal event metadata never carry byte
-content. Any absent, stale, or closed JSI owner is a typed boundary failure,
-not a bridge, text, cache, or fabricated empty-value fallback.
+For React Native, bytes cross the `UnifiedBleRustCore` TurboModule as strict
+RFC 4648 padded base64 inside the JSON wire text (`ubm-mobile-wire/1`,
+docs/MOBILE_RUST_WIRE.md). One pure codec encodes exactly the bytes of the
+`Uint8Array` view (a subarray sends only its own bytes) and decodes into an
+independent `Uint8Array`, with no `Buffer` or `atob`. Size is checked before
+anything is allocated (`bytes.too-large`); malformed text, the URL alphabet,
+whitespace and non-zero pad bits are `protocol.malformed`, never a guessed
+value.
+
+A notification value reports how it arrived: `delivery` is `notification`,
+`indication`, or `unknown` when the platform does not report it (CoreBluetooth,
+BlueZ). A backend never reports a delivery the platform did not report.
 
 The versioned command record carries concrete scan settings (service filters,
 duplicate policy, scan mode, callback type, and legacy-scan selection) and a
@@ -511,10 +516,25 @@ and silently chooses the first matching native attribute.
 ## 13. Operations, cancellation, deadlines, and terminal records
 
 The runtime assigns an opaque operation identity for diagnostics and ownership.
-It is not an API selector, it is not stable across restart, and callers MUST
-NOT expose public transaction IDs. Cancellation is expressed only by an
+It is scoped to the immutable attachment that minted it, is not stable across
+restart, and callers MUST NOT expose public transaction IDs. A host may retain
+a bounded duplicate-cleanup acknowledgement window; after that window expires,
+the host reports an explicit lifecycle outcome rather than treating a once
+valid handle as an arbitrary argument. Cancellation is expressed only by an
 `AbortSignal`; deadlines are absolute monotonic instants or a duration converted
 to one at request admission. A pre-aborted signal rejects before queueing.
+
+A monotonic instant is meaningful only on the clock that produced it. When a
+request crosses into another clock domain (an Electron renderer to Electron
+main, a Tauri webview to the Rust plugin), the sender replaces its deadline
+with `budgetMs`, the remaining budget in whole milliseconds measured just
+before send: a non-negative safe integer, `0` when already expired, absent when
+the caller gave no deadline. The receiver admits it against its own monotonic
+clock at receipt, so queueing on the receiving side is charged to the same
+budget, and an expired budget times out there with no effects. Electron main
+rejects an absolute `deadline` from a renderer as `protocol.malformed` instead
+of comparing it with its own clock. The sender keeps its own deadline locally
+and still routes cancellation for the exact correlation when it expires.
 
 | Phase | Admission and cancellation behavior |
 | --- | --- |
@@ -534,6 +554,36 @@ settles promptly to its chosen caller-visible terminal result, retains hidden
 cleanup ownership, and suppresses its later native completion. Reused backend
 correlation values cannot settle a newer operation because correlation includes
 backend generation and an unrepeatable dispatch epoch.
+
+A failure reports whether the operation may be repeated as `retryability`, and
+that is the operation's own answer, not something derived from the error code.
+`caller-decides` means nothing was committed: the operation never reached the
+radio, or it commits nothing (a read). A connect whose link the platform could
+not establish (Android GATT 133/62/147, CoreBluetooth `connectionTimeout`/
+`connectionFailed`, WinRT `Unreachable`, BlueZ `Failed`/
+`ConnectionAttemptFailed`, Web `NetworkError`) is `caller-decides` on every
+backend with the platform's answer kept; no backend retries it itself (see
+[`CONNECTION_MANAGER.md`](CONNECTION_MANAGER.md)). The same name covers a
+dispatched connect whose deadline expired before any link came up — the peer
+did not answer the attempt within the bound, which CoreBluetooth, btleplug and
+Web never report on their own, so the deadline is their only answer. The
+deadline fact rides in the error platform detail; a caller-supplied AbortSignal
+abort stays `operation.aborted`. An aborted or timed-out operation that
+was dispatched and may already have committed at the peripheral (a write, a
+descriptor write) is `never`, with commit state `unknown`. The public
+`BleError` carries the same `retryability`, and its `recovery` follows it: an
+aborted or timed-out `never` failure advises `verify-state` (read the state
+back) under `caller-policy`, never `retry`, because repeating it could apply its
+effect twice.
+
+When the operation's owner states it, a failure also carries `commit`:
+`not-dispatched` (nothing reached the radio), `uncertain` (dispatched, and may
+have committed), or `null` (the owner does not know). The public `BleError`
+exposes it as `commit` (`null` when not stated). An `uncertain` commit is
+never replayed, whatever the code: recovery keeps the code's prerequisite
+actions (for example `reconnect` after `operation.disconnected`), drops
+`retry`, and ends with `verify-state` under `caller-policy`. A
+`not-dispatched` commit keeps the code's own advice.
 
 <!-- SEM-COVERAGE: SEM-RACES -->
 ## 14. Race arbitration and happens-before rules
@@ -594,6 +644,39 @@ add namespaced subcodes without changing a base meaning.
 | capability | `capability.unsupported`, `capability.unavailable`, `capability.limited` |
 | background | `background.terminated` |
 | platform | `platform.failure`, `platform.security`, `platform.transport` |
+
+### One name per physical event (5.0)
+
+The same physical event carries the same public name on every backend (React
+Native Android and iOS; Node, Electron and Tauri on macOS, Windows and Linux;
+Web), and the connection supervisor makes the same decision for it. Android
+is the reference wherever a platform can do the same; a backend listed under
+"Differs" genuinely cannot tell, and says why. The platform's own answer
+(GATT status, `NSError`, HRESULT, D-Bus error) stays in the error's
+`platform` detail. `connection.lost` and `operation.disconnected` name
+different events: the link went away, versus the app's own release cut the
+operation off. The table is generated from
+`src/backend-contract/event-vocabulary.ts` and pinned by
+`__tests__/event-vocabulary.test.js`; the Rust mapping tests read the same
+table (`crates/ubm-desktop/tests/fixtures/event-vocabulary.json`).
+
+<!-- EVENT-VOCABULARY:BEGIN (generated from src/backend-contract/event-vocabulary.ts) -->
+| Physical event | Error code | Retryability | Lifecycle `current` / `cause` | Stream terminal | Supervisor (context → decision) | Differs |
+| --- | --- | --- | --- | --- | --- | --- |
+| `link-lost`: The link dropped while idle: the peer went away or out of range, the remote side terminated, or the supervision timeout expired. | — | — | `lost` / `peer-link-loss` | `connection-lost` | lifecycle → reconnect | none |
+| `link-lost-during-operation`: The link dropped while an operation (discovery, read, write, subscribe) was pending. The operation ends at once, even when the radio never answers it. | `connection.lost` | `never` | `lost` / `peer-link-loss` | `connection-lost` | configure → reconnect | none |
+| `requested-disconnect`: The app released or disconnected the link. A supervisor whose link the app released reconnects. | — | — | `disconnected` / `requested-disconnect` | `owner-released` | lifecycle → reconnect | none |
+| `requested-disconnect-during-operation`: The app's own release cut off a pending operation. | `operation.disconnected` | `never` | `disconnected` / `requested-disconnect` | `owner-released` | configure → stop | none |
+| `adapter-loss`: Bluetooth was turned off, reset, removed or revoked while a link was up. | — | — | `lost` / `adapter-loss` | `source-failed` | lifecycle → wait-for-adapter | none |
+| `adapter-loss-during-operation`: The adapter went away while an operation was pending. | `operation.reset` | `never` | `lost` / `adapter-loss` | `source-failed` | configure → wait-for-adapter | none |
+| `connect-not-established`: The platform could not establish the link (Android GATT 133/62/147, CoreBluetooth connectionFailed/connectionTimeout, WinRT Unreachable, BlueZ Failed/ConnectionAttemptFailed, Web NetworkError). Nothing was committed; the library never retries it itself. | `connection.failed` | `caller-decides` | — | — | connect → reconnect | none |
+| `connect-deadline-expired`: The dispatched connect deadline expired before any link came up: the peer did not answer the attempt within the bound. The controller giving up (Android GATT 133/62/147) is the same physical event under another observation — CoreBluetooth never fails a pending connect on its own, nor do btleplug and Web report the expiry, so the deadline is their only answer. Nothing was committed; the library never retries it itself. A caller-supplied AbortSignal abort stays `operation.aborted`. The deadline fact rides in the error platform detail. | `connection.failed` | `caller-decides` | — | — | connect → reconnect | none |
+| `peer-not-found`: The peer was never observed (or chosen, on Web), so there is nothing to connect to. | `peer.not-found` | `never` | — | — | connect → stop | none |
+| `security-refused`: The peer refused an operation for lack of authentication, authorization or encryption (ATT 0x05/0x08/0x0C/0x0F, Android 137, CoreBluetooth peerRemovedPairingInformation/encryptionTimedOut, BlueZ NotAuthorized/"Not paired", Web SecurityError). Recovery: pair or repair. | `platform.security` | `never` | — | — | configure → stop | none |
+| `operation-timed-out`: The operation's deadline expired before the platform answered — except a dispatched connect, whose deadline expiring before any link came up is `connect-deadline-expired` (one name for the peer not answering). | `operation.timed-out` | `caller-decides` | — | — | configure → stop | none |
+| `operation-cancelled`: The caller aborted the operation before the platform answered. | `operation.aborted` | `caller-decides` | — | — | configure → stop | none |
+| `restoration-received`: The OS handed back known peers after the app was gone: iOS relaunched the app on a BLE event and delivered restored peripherals through `willRestoreState`; Android woke the process through Companion Device Manager device presence (API 31+) for an armed associated peer. Both phones report `restoration-received` and list the peer under `peers.restored`; a restored record does not prove that a link is live. Reconnect remains app-controlled: Android may call public `connect` with Android `when-available`; iOS may call `connect` with iOS `direct` with the restored `PeerReference`, because Apple rejects `when-available`. After a connection succeeds, the app replays subscriptions through `subscribe`. Presence observation below API 31 has no wake; it reports `capability.unsupported`. | — | — | — | — | restore → stop | desktop-macos:  — macOS has no OS restoration journal for a terminated app and no presence wake; the event never fires and presence observation reports `capability.unsupported` with a reason.<br>desktop-windows:  — Windows has no OS restoration journal for a terminated app and no presence wake; the event never fires and presence observation reports `capability.unsupported` with a reason.<br>desktop-linux:  — Linux has no OS restoration journal for a terminated app and no presence wake; the event never fires and presence observation reports `capability.unsupported` with a reason.<br>web:  — Web Bluetooth has no background relaunch or presence wake; the event never fires and restoration reports `capability.unsupported` with a reason. |
+<!-- EVENT-VOCABULARY:END -->
 
 Platform detail includes only a platform domain, numeric/string code when
 available, operation phase, and a redacted message. It MUST NOT leak addresses,
@@ -694,6 +777,20 @@ named limitation and MUST carry that limitation in its result. An
 `unavailable` capability MUST reject with `capability.unavailable`. No control
 may silently no-op or report success because a façade method exists.
 
+The maximum write length is the platform's own answer for the requested
+mode, bounded by the ATT maximum attribute value (512 bytes), and is the same
+limit a write in that mode is admitted against:
+
+| Host | `with-response` | `without-response` |
+| --- | --- | --- |
+| iOS (React Native), macOS (Node/Electron/Tauri) | `CBPeripheral.maximumWriteValueLength(for: .withResponse)` | `maximumWriteValueLength(for: .withoutResponse)` |
+| Android (React Native) | 512: the stack performs a prepared (long) write past one ATT payload, and `BluetoothGatt.writeCharacteristic` refuses a longer value from API 33 | MTU − 3 of the MTU `onMtuChanged` reported, or of the ATT default MTU 23 (20 bytes) before any exchange; limitation `android-att-default-mtu-before-exchange` |
+| Windows (WinRT) | the long write `WriteValueAsync` performs | one ATT payload of `GattSession.MaxPduSize` |
+| Linux (BlueZ) | the long write BlueZ `WriteValue` performs | one ATT payload of `GattCharacteristic1.MTU` |
+
+A limit the platform does not report fails `capability.unavailable`; it is
+never guessed. Web Bluetooth answers `capability.unsupported`.
+
 Write-without-response readiness is `unsupported` until a backend advertises
 `gatt:write-without-response-readiness`. When advertised, the backend MUST
 provide a bounded stream with a current snapshot for a late subscriber when
@@ -739,10 +836,10 @@ qualification remains open.
 | Host/backend | MTU request / effective observation | PHY read/request | Write-without-response readiness | Parameters / subrate / `writeWhenReady` |
 | --- | --- | --- | --- | --- |
 | React Native Android | `limited` / deterministic. `effectiveMtu()` reads only the generation-bound value recorded by a successful `onMtuChanged`; it is unavailable before measurement. | `limited` / deterministic. `readPhy()` is the `onPhyRead` callback result. `requestPhy()` separates callback-derived `accepted` from its optional `onPhyUpdate` observation. | `unsupported` | `connection:parameters` and `connection:subrate` are unsupported; `writeWhenReady` rejects `capability.unsupported`. |
-| React Native Apple | Caller-directed MTU request, effective ATT MTU observation, and PHY read/request are `unsupported` because CoreBluetooth exposes none of those application controls. | `unsupported` | `unsupported` | `connection:parameters` and `connection:subrate` are unsupported; `writeWhenReady` rejects `capability.unsupported`. |
-| Direct CoreBluetooth Node/Electron-main | `connection:request-mtu` is unsupported because CoreBluetooth negotiates internally; effective MTU is unsupported unless the concrete boundary exposes an authoritative observation. | `connection:phy` is unsupported in the current boundary. | `limited` / deterministic only when both `canSendWriteWithoutResponse` and `peripheralIsReady(toSendWriteWithoutResponse:)` are bridged; otherwise `unsupported`. | `writeWhenReady` is `limited` / deterministic when readiness is authoritative and otherwise rejects `capability.unsupported`; parameters and subrate remain unsupported. |
-| Web, BlueZ, WinRT, Tauri, and Electron renderer IPC | `unsupported` | `unsupported` | `unsupported` | `connection:parameters` and `connection:subrate` are unsupported; `writeWhenReady` rejects `capability.unsupported`. |
-
+| React Native Apple | Caller-directed MTU request is `unsupported`: CoreBluetooth negotiates internally and exposes no request control. Effective ATT MTU observation is `limited` / deterministic, derived per link as `CBPeripheral.maximumWriteValueLength(for: .withResponse) + 3` (limitation `corebluetooth-derived-effective-mtu`, plus `live-radio-qualification-pending`); `connection.controls.effectiveMtu()` measures instead of refusing. PHY read/request is `unsupported` because CoreBluetooth exposes no application control for it. | `unsupported` | `unsupported` | `connection:parameters` and `connection:subrate` are unsupported; `writeWhenReady` rejects `capability.unsupported`. |
+| Direct CoreBluetooth Node/Electron-main | `connection:request-mtu` is unsupported because CoreBluetooth negotiates internally; effective MTU is `limited`, derived per link as `CBPeripheral.maximumWriteValueLength(for: .withResponse) + 3` (`corebluetooth-derived-effective-mtu`). | `connection:phy` is unsupported in the current boundary. | `limited` / deterministic only when both `canSendWriteWithoutResponse` and `peripheralIsReady(toSendWriteWithoutResponse:)` are bridged; otherwise `unsupported`. | `writeWhenReady` is `limited` / deterministic when readiness is authoritative and otherwise rejects `capability.unsupported`; parameters and subrate remain unsupported. |
+| Web and Electron renderer IPC | `unsupported` | `unsupported` | `unsupported` | `connection:parameters` and `connection:subrate` are unsupported; `writeWhenReady` rejects `capability.unsupported`. |
+| Desktop Rust core (BlueZ, WinRT, Tauri) | `connection:request-mtu` is unsupported (no caller-directed negotiation through the boundary); effective MTU is `limited` — WinRT reads `GattSession.MaxPduSize` (`winrt-gattsession-max-pdu-size`), BlueZ reads the `org.bluez.GattCharacteristic1` MTU (`bluez-gatt-characteristic-mtu`; a withheld link answers `capability.unavailable`), and Tauri follows its desktop OS. | `unsupported` | `unsupported` | `connection:parameters` and `connection:subrate` are unsupported; `writeWhenReady` rejects `capability.unsupported`. |
 Android `requestPhy()` does not treat dispatch or a preferred-PHY call as proof
 of the resulting link state: a successful `onPhyUpdate` supplies the accepted
 result and observation, while a failed callback yields rejection with no
@@ -903,6 +1000,17 @@ trace record with redacted client identity, resource kind, opaque diagnostic
 operation identity, generation tuple, ingress ordinal, state transition,
 terminal cause, queue counters, and timing. Diagnostics are bounded according
 to Section 11 and cannot be required for normal operation success.
+
+A backend reports a fact that no typed result or event can carry as a
+`diagnostic-warning` backend event. The manager records each one in its
+diagnostic trace (`diagnostics.snapshot().trace`) as an `attachment` record
+whose event is `diagnostic-warning:<code>` and whose cause is the normalized
+error code the backend reported, or `null`. A warning is never the only report
+of a fact the contract has a typed home for: an observation lost before it
+reached a stream counts in that stream's drop accounting, a source that stops
+ends its streams `source-failed`, missed lifecycle facts are re-read and
+emitted as the transitions they would have been, and an event source that can
+no longer deliver fails the manager's backend event stream.
 
 Raw addresses, peer names, advertisement bytes, GATT values, security material,
 permission prompts, and platform messages are sensitive by default. A trace

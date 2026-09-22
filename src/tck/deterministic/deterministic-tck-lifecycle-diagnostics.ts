@@ -32,9 +32,13 @@ export async function deterministicLifecycleFacts(): Promise<readonly FactObserv
   if (characteristic === undefined) {
     throw new Error('lifecycle probe has no readable characteristic')
   }
+  // Post-R12 limits: byte budget above the 64-byte control reserve (frozen
+  // validateStreamLimits fails closed with stream.quota otherwise). No values
+  // are pushed here, so only admission is affected and the destroy proof is
+  // unchanged.
   const subscriptionPromise = connected.database.subscribe(
     characteristic.path,
-    subscriptionOptions('drop-oldest', 2, 16)
+    subscriptionOptions('drop-oldest', 2, 128)
   )
   fixture.controller.clock.runUntilIdle()
   const subscription = await subscriptionPromise

@@ -34,7 +34,9 @@ import {
 import { deterministicManagerOwnershipFacts } from './deterministic-tck-manager-ownership'
 import { deterministicLifecycleFacts, deterministicDiagnosticsFacts } from './deterministic-tck-lifecycle-diagnostics'
 import { deterministicSubscriptionOverflowFacts } from './deterministic-tck-subscription-overflow'
-import { traceDispatchCount } from './deterministic-tck-scenario-helpers'
+import { subscriptionOptions, traceDispatchCount } from './deterministic-tck-scenario-helpers'
+import { deterministicDuplicateUuidOccurrenceFacts } from './deterministic-tck-occurrences'
+import { inspectOccurrenceIndexing, occurrenceIndexingDetail } from '../runner-public-occurrence-support'
 
 interface FactObservation {
   readonly id: TckFactId
@@ -143,6 +145,9 @@ async function executeScenario(
   }
   if (definition.id === 'gatt.discovery-complete-paths-and-services-changed') {
     return gattDiscovery(fixture)
+  }
+  if (definition.id === 'gatt.duplicate-uuid-occurrences-route-exactly') {
+    return deterministicDuplicateUuidOccurrenceFacts(fixture)
   }
   if (definition.id === 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation') {
     return gattReadWrite(fixture)
@@ -268,22 +273,51 @@ async function connectionArbitration(fixture: DeterministicBackendFixture): Prom
   const first = fixture.backend.connections.connect(peerId(), clientId('connection-owner'), noOperationOptions())
   fixture.controller.clock.runUntilIdle()
   const ownerLease = await first
-  const secondRejected = await rejectsWithCode(
-    fixture.backend.connections.connect(peerId(), clientId('connection-second-client'), noOperationOptions()),
-    'connection.already-owned'
+  // Same-peer join (UNIFIED_SEMANTICS §3/§8, Android reference): the second
+  // client leases the peer's link with an independent generation instead of
+  // failing `connection.already-owned`.
+  const second = fixture.backend.connections.connect(
+    peerId(),
+    clientId('connection-second-client'),
+    noOperationOptions()
   )
+  fixture.controller.clock.runUntilIdle()
+  const joinedLease = await second
+  const generationsDistinct =
+    String(joinedLease.connection.connectionGeneration) !== String(ownerLease.connection.connectionGeneration)
+  const counters = fixture.backend.resourceCounters()
+  const onePhysicalLink = Number(counters.physicalLinks) === 1
+  const twoLeases = Number(counters.connectionLeases) === 2
+  const releaseSecond = joinedLease.release()
+  fixture.controller.clock.runUntilIdle()
+  await releaseSecond
   const release = ownerLease.release()
   fixture.controller.clock.runUntilIdle()
   await release
-  return [fact('connection-second-client-arbitrates-without-stealing-link', secondRejected, { secondRejected })]
+  const drained = fixture.backend.resourceCounters()
+  const countersDrained = Number(drained.physicalLinks) === 0 && Number(drained.connectionLeases) === 0
+  const joined = generationsDistinct && onePhysicalLink && twoLeases && countersDrained
+  return [
+    fact('connection-second-client-arbitrates-without-stealing-link', joined, {
+      joined,
+      generationsDistinct,
+      onePhysicalLink,
+      twoLeases,
+      countersDrained
+    })
+  ]
 }
 
 async function gattDiscovery(fixture: DeterministicBackendFixture): Promise<readonly FactObservation[]> {
   const connected = await connectAndDiscover(fixture, 'gatt-discovery')
+  const indexing = inspectOccurrenceIndexing(connected.snapshot)
   const completePaths =
-    connected.snapshot.services.length === 2 &&
-    connected.snapshot.characteristics.length === 3 &&
-    connected.snapshot.descriptors.length === 1 &&
+    connected.snapshot.services.length === 3 &&
+    connected.snapshot.characteristics.length === 5 &&
+    connected.snapshot.descriptors.length === 3 &&
+    indexing.pathsUnique &&
+    indexing.parentsResolve &&
+    indexing.occurrencesExact &&
     pathsMatchDatabaseGeneration(connected.snapshot)
   const characteristic = connected.snapshot.characteristics[0]
   if (characteristic === undefined) {
@@ -303,7 +337,8 @@ async function gattDiscovery(fixture: DeterministicBackendFixture): Promise<read
     fact('gatt-discovery-returns-complete-occurrence-safe-paths', completePaths, {
       serviceCount: connected.snapshot.services.length,
       characteristicCount: connected.snapshot.characteristics.length,
-      descriptorCount: connected.snapshot.descriptors.length
+      descriptorCount: connected.snapshot.descriptors.length,
+      ...occurrenceIndexingDetail(indexing)
     }),
     fact('gatt-services-changed-invalidates-database-generation', snapshotInvalidated, { snapshotInvalidated }),
     fact('gatt-stale-path-rejects-before-dispatch', staleRejectedBeforeDispatch && staleReadDidNotDispatch, {
@@ -327,12 +362,12 @@ async function gattReadWrite(fixture: DeterministicBackendFixture): Promise<read
   const controllerFaultOutcomeValid = controllerFault.matched
   const read = connected.database.read(characteristic.path, noOperationOptions())
   fixture.controller.clock.runUntilIdle()
-  const firstValue = await read
+  const firstValue = (await read).value
   const firstByte = firstValue[0]
   firstValue[0] = firstByte === undefined ? 1 : firstByte + 1
   const reread = connected.database.read(characteristic.path, noOperationOptions())
   fixture.controller.clock.runUntilIdle()
-  const secondValue = await reread
+  const secondValue = (await reread).value
   const descriptorRead = connected.database.readDescriptor(descriptor.path, noOperationOptions())
   fixture.controller.clock.runUntilIdle()
   const descriptorValue = await descriptorRead
@@ -414,7 +449,11 @@ async function subscriptionReadinessAndSharing(
     cancellable: false,
     deadlineOrder: 'completion-first'
   })
-  const firstPromise = connected.database.subscribe(characteristic.path, subscriptionOptions('drop-oldest', 4, 32))
+  // Post-R12 limits: byte budgets must exceed the 64-byte control reserve
+  // (frozen validateStreamLimits fails closed with stream.quota otherwise).
+  // The 1-byte readiness/fanout values fit either way, so the
+  // no-value-before-ready, shared-CCCD, and isolation proofs are unchanged.
+  const firstPromise = connected.database.subscribe(characteristic.path, subscriptionOptions('drop-oldest', 4, 128))
   fixture.controller.clock.advanceBy(0)
   fixture.controller.emitNotification(characteristicAddress(characteristic.path), new Uint8Array([1]))
   fixture.controller.clock.advanceBy(10)
@@ -422,7 +461,7 @@ async function subscriptionReadinessAndSharing(
   fixture.controller.emitNotification(characteristicAddress(characteristic.path), new Uint8Array([2]))
   const readyItem = await nextValue(first.values)
   const noValueBeforeReady = readyItem !== null && readyItem.value[0] === 2
-  const second = await connected.database.subscribe(characteristic.path, subscriptionOptions('drop-oldest', 4, 32))
+  const second = await connected.database.subscribe(characteristic.path, subscriptionOptions('drop-oldest', 4, 128))
   const sharedCccd =
     Number(fixture.backend.resourceCounters().physicalCccdEnablements) === 1 &&
     Number(fixture.backend.resourceCounters().subscriptionConsumers) === 2
@@ -471,10 +510,12 @@ async function verticalSlice(fixture: DeterministicBackendFixture): Promise<read
   }
   const read = connected.database.read(characteristic.path, noOperationOptions())
   fixture.controller.clock.runUntilIdle()
-  const value = await read
+  const { value } = await read
+  // Post-R12 limits: byte budget above the 64-byte control reserve; the
+  // single 1-byte notification fits either way, so the slice proof is unchanged.
   const subscriptionPromise = connected.database.subscribe(
     characteristic.path,
-    subscriptionOptions('drop-oldest', 2, 16)
+    subscriptionOptions('drop-oldest', 2, 128)
   )
   fixture.controller.clock.runUntilIdle()
   const subscription = await subscriptionPromise
@@ -573,19 +614,6 @@ function characteristicAddress(
     serviceOccurrence: Number(path.serviceOccurrence),
     characteristicUuid: path.characteristicUuid,
     characteristicOccurrence: Number(path.characteristicOccurrence)
-  }
-}
-
-function subscriptionOptions(overflowPolicy: 'drop-oldest' | 'error', itemCapacity: number, byteCapacity: number) {
-  return {
-    signal: null,
-    deadline: null,
-    delivery: {
-      itemCapacity: capacity(itemCapacity),
-      byteCapacity: capacity(byteCapacity),
-      reservedControlCapacity: capacity(1),
-      overflowPolicy
-    }
   }
 }
 

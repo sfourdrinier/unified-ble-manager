@@ -1,0 +1,688 @@
+{
+  "slice": "HOST-ANDROID UBM 5.0 (trackourhealth/bun-mono#1188; U5/U9/U10 vehicle)",
+  "avd": "ubm5-emu-five0",
+  "serial": "emulator-5556",
+  "abi": "x86_64",
+  "api": 34,
+  "apk": "emulator-probe/five0/probe-app/app/build/outputs/apk/debug/app-debug.apk",
+  "revision": "C-UBM.0.1.2-DRAFT",
+  "summary": {
+    "tests": 11,
+    "assertionsPassed": 49,
+    "assertionsTotal": 49,
+    "byResult": {
+      "pass": 11
+    }
+  },
+  "records": [
+    {
+      "id": "AVD",
+      "name": "task-owned AVD create + headless launch",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 5,
+        "total": 5
+      },
+      "checks": [
+        {
+          "check": "x86_64 system image present",
+          "pass": true,
+          "detail": "$HOME/Android/Sdk/system-images/android-34/google_apis/x86_64"
+        },
+        {
+          "check": "avd created",
+          "pass": true,
+          "detail": "exit=0"
+        },
+        {
+          "check": "emulator spawned detached (owned pid)",
+          "pass": true,
+          "detail": "pid=3061862"
+        },
+        {
+          "check": "boot completed within deadline",
+          "pass": true,
+          "detail": "waited=30s"
+        },
+        {
+          "check": "emulator-5556 reachable",
+          "pass": true,
+          "detail": "google/sdk_gphone64_x86_64/emu64xa:14/UE1A.230829.050/12077443:userdebug/dev-keys"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "avdmanager create avd (task-owned)",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/AVD-0.log"
+        },
+        {
+          "command": "fingerprint/sdk/abi",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/AVD-1.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "PRE",
+      "name": "device identity + preconditions",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 3,
+        "total": 3
+      },
+      "checks": [
+        {
+          "check": "sdk_gphone64_x86_64, api 34, abi x86_64",
+          "pass": true,
+          "detail": "google/sdk_gphone64_x86_64/emu64xa:14/UE1A.230829.050/12077443:userdebug/dev-keys sdk=34 abi=x86_64"
+        },
+        {
+          "check": "bluetooth_manager queryable (virtual adapter, never physical)",
+          "pass": true,
+          "detail": "  enabled: true   state: ON   time since enabled: 00:00:06.908"
+        },
+        {
+          "check": "package absent before install",
+          "pass": true,
+          "detail": "host-matched"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "adb uninstall (idempotent reruns)",
+          "exit": 1,
+          "timedOut": false,
+          "log": "logs/PRE-0.log"
+        },
+        {
+          "command": "getprop fingerprint",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/PRE-1.log"
+        },
+        {
+          "command": "getprop sdk",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/PRE-2.log"
+        },
+        {
+          "command": "getprop abi",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/PRE-3.log"
+        },
+        {
+          "command": "dumpsys bluetooth_manager",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/PRE-4.log"
+        },
+        {
+          "command": "pre-install package check",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/PRE-5.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "F1",
+      "name": "install 5.0 probe APK",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 3,
+        "total": 3
+      },
+      "checks": [
+        {
+          "check": "install reports Success",
+          "pass": true,
+          "detail": "Success"
+        },
+        {
+          "check": "package listed after install",
+          "pass": true,
+          "detail": "package:com.ubmfive0probe"
+        },
+        {
+          "check": "package info v1/min24/target34",
+          "pass": true,
+          "detail": "    versionCode=1 minSdk=24 targetSdk=34"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "adb install -r app-debug.apk",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F1-0.log"
+        },
+        {
+          "command": "pm list packages (host-matched)",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F1-1.log"
+        },
+        {
+          "command": "dumpsys package",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F1-2.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "F2",
+      "name": "native-lib load surface (x86_64 cdylib)",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 3,
+        "total": 3
+      },
+      "checks": [
+        {
+          "check": "primaryCpuAbi=x86_64",
+          "pass": true,
+          "detail": "    primaryCpuAbi=x86_64     secondaryCpuAbi=null"
+        },
+        {
+          "check": "nativeLibraryDir declared",
+          "pass": true,
+          "detail": "    legacyNativeLibraryDir=/data/app/~~TypfBLrvMEqWADxQQFB48A==/com.ubmfive0probe-xqcz8fXpp1ejhrmo3o7JBg==/lib"
+        },
+        {
+          "check": "apk path queryable",
+          "pass": true,
+          "detail": "package:/data/app/~~TypfBLrvMEqWADxQQFB48A==/com.ubmfive0probe-xqcz8fXpp1ejhrmo3o7JBg==/base.apk"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "dumpsys package (ABI lines)",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F2-0.log"
+        },
+        {
+          "command": "pm path",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F2-1.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "F3",
+      "name": "binding identity: launch, RESULT ok, no link errors",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 5,
+        "total": 5
+      },
+      "checks": [
+        {
+          "check": "start accepted",
+          "pass": true,
+          "detail": "Starting: Intent { cmp=com.ubmfive0probe/.MainActivity }"
+        },
+        {
+          "check": "process running after launch",
+          "pass": true,
+          "detail": "pid=3703"
+        },
+        {
+          "check": "no FATAL EXCEPTION for probe",
+          "pass": true,
+          "detail": "host-matched"
+        },
+        {
+          "check": "no UnsatisfiedLinkError",
+          "pass": true,
+          "detail": "host-matched"
+        },
+        {
+          "check": "UBM5FIVE0-RESULT result ok",
+          "pass": true,
+          "detail": "I/UBM5FIVE0( 3703): UBM5FIVE0-RESULT {\"result\":\"ok\",\"checks\":41,\"failures\":\"\",\"detail\":\"\"}"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "pm grant BLUETOOTH_SCAN",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F3-0.log"
+        },
+        {
+          "command": "pm grant BLUETOOTH_CONNECT",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F3-1.log"
+        },
+        {
+          "command": "pm grant ACCESS_FINE_LOCATION",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F3-2.log"
+        },
+        {
+          "command": "am start com.ubmfive0probe/.MainActivity",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F3-3.log"
+        },
+        {
+          "command": "F3 logcat after launch",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F3-4.log"
+        },
+        {
+          "command": "pidof after launch",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F3-5.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "F4",
+      "name": "setup-teardown: force-stop clears process",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 2,
+        "total": 2
+      },
+      "checks": [
+        {
+          "check": "force-stop exits 0",
+          "pass": true,
+          "detail": "ok"
+        },
+        {
+          "check": "no process lingers",
+          "pass": true,
+          "detail": "pid=(none)"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "am force-stop",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F4-0.log"
+        },
+        {
+          "command": "pidof after force-stop",
+          "exit": 1,
+          "timedOut": false,
+          "log": "logs/F4-1.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "F5",
+      "name": "lifecycle foreground-background",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 3,
+        "total": 3
+      },
+      "checks": [
+        {
+          "check": "foreground pid captured",
+          "pass": true,
+          "detail": "pid=5071"
+        },
+        {
+          "check": "HOME keeps process (same pid)",
+          "pass": true,
+          "detail": "pid=5071"
+        },
+        {
+          "check": "probe activity re-resumed",
+          "pass": true,
+          "detail": "    topResumedActivity=ActivityRecord{99f64be u0 com.ubmfive0probe/.MainActivity t9}"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "pidof foreground",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F5-0.log"
+        },
+        {
+          "command": "pidof background",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F5-1.log"
+        },
+        {
+          "command": "relaunch to foreground",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F5-2.log"
+        },
+        {
+          "command": "dumpsys activity activities",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F5-3.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "F6",
+      "name": "process kill-relaunch (no immortal handles)",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 6,
+        "total": 6
+      },
+      "checks": [
+        {
+          "check": "victim pid captured",
+          "pass": true,
+          "detail": "pid=5071"
+        },
+        {
+          "check": "kill accepted",
+          "pass": true,
+          "detail": "exit=0"
+        },
+        {
+          "check": "victim gone",
+          "pass": true,
+          "detail": "pid=(none)"
+        },
+        {
+          "check": "fresh pid after relaunch",
+          "pass": true,
+          "detail": "pid=6202"
+        },
+        {
+          "check": "RESULT ok after relaunch (no immortal handles)",
+          "pass": true,
+          "detail": "I/UBM5FIVE0( 6202): UBM5FIVE0-RESULT {\"result\":\"ok\",\"checks\":41,\"failures\":\"\",\"detail\":\"\"}"
+        },
+        {
+          "check": "no FATAL on relaunch",
+          "pass": true,
+          "detail": "host-matched"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "pidof before kill",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F6-0.log"
+        },
+        {
+          "command": "run-as kill -9 own pid",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F6-1.log"
+        },
+        {
+          "command": "pidof after kill",
+          "exit": 1,
+          "timedOut": false,
+          "log": "logs/F6-2.log"
+        },
+        {
+          "command": "am start com.ubmfive0probe/.MainActivity",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F6-3.log"
+        },
+        {
+          "command": "F6 logcat after launch",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F6-4.log"
+        },
+        {
+          "command": "pidof after relaunch",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F6-5.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "F7",
+      "name": "permission-denied fails closed with identity",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 5,
+        "total": 5
+      },
+      "checks": [
+        {
+          "check": "revokes accepted",
+          "pass": true,
+          "detail": "exit=0,0"
+        },
+        {
+          "check": "denial observed with explicit identity",
+          "pass": true,
+          "detail": "W/UBM5FIVE0( 6267): UBM5FIVE0-PERMISSION {\"result\":\"permission-denied:fail-closed\",\"checks\":2,\"failures\":\"\",\"detail\":\"permission.denied|rn-android-boundary|five0-gate|ble-permission-missing\"}I/UBM5FIVE0( 6267): UBM5FIVE0-RESULT {\"result\":\"permission-denied:fail-closed\",\"checks\":2,\"failures\":\"\",\"deta"
+        },
+        {
+          "check": "core cycle did not run while denied",
+          "pass": true,
+          "detail": "host-matched (no binder work without permission)"
+        },
+        {
+          "check": "grants restore",
+          "pass": true,
+          "detail": "exit=0,0"
+        },
+        {
+          "check": "RESULT ok after re-grant",
+          "pass": true,
+          "detail": "I/UBM5FIVE0( 6331): UBM5FIVE0-RESULT {\"result\":\"ok\",\"checks\":41,\"failures\":\"\",\"detail\":\"\"}"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "pm revoke BLUETOOTH_CONNECT",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F7-0.log"
+        },
+        {
+          "command": "pm revoke BLUETOOTH_SCAN",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F7-1.log"
+        },
+        {
+          "command": "am start com.ubmfive0probe/.MainActivity",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F7-2.log"
+        },
+        {
+          "command": "F7-denied logcat after launch",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F7-3.log"
+        },
+        {
+          "command": "pm grant BLUETOOTH_CONNECT back",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F7-4.log"
+        },
+        {
+          "command": "pm grant BLUETOOTH_SCAN back",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F7-5.log"
+        },
+        {
+          "command": "am start com.ubmfive0probe/.MainActivity",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F7-6.log"
+        },
+        {
+          "command": "F7-restored logcat after launch",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F7-7.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "F8",
+      "name": "queued-cancel + lifecycle release via real JNI (synthetic wires)",
+      "origin": "SIMULATED-injection",
+      "assertions": {
+        "passed": 8,
+        "total": 8
+      },
+      "checks": [
+        {
+          "check": "activity will cold-start (no lingering process)",
+          "pass": true,
+          "detail": "pid=(none)"
+        },
+        {
+          "check": "self-test RESULT ok",
+          "pass": true,
+          "detail": "I/UBM5FIVE0( 6430): UBM5FIVE0-RESULT {\"result\":\"ok\",\"checks\":41,\"failures\":\"\",\"detail\":\"\"}"
+        },
+        {
+          "check": "check queued-cancel-aborts PASS",
+          "pass": true,
+          "detail": "I/UBM5FIVE0( 6430): check queued-cancel-aborts PASS {\"ok\":true,\"event\":\"op.cancel\",\"outcome\":\"aborted\"}"
+        },
+        {
+          "check": "check io-settled PASS",
+          "pass": true,
+          "detail": "I/UBM5FIVE0( 6430): check io-settled PASS {\"ok\":true,\"event\":\"op.settle\",\"outcome\":\"succeeded\"}"
+        },
+        {
+          "check": "check release PASS",
+          "pass": true,
+          "detail": "I/UBM5FIVE0( 6430): check release PASS {\"ok\":true,\"event\":\"release\",\"state\":\"released\"}"
+        },
+        {
+          "check": "check post-close-enqueue-rejects PASS",
+          "pass": true,
+          "detail": "I/UBM5FIVE0( 6430): check post-close-enqueue-rejects PASS lifecycle.destroyed|core|gatt-enqueue|unknown-or-closed-handle"
+        },
+        {
+          "check": "check adapter-reset PASS",
+          "pass": true,
+          "detail": "I/UBM5FIVE0( 6430): check adapter-reset PASS {\"ok\":true,\"event\":\"adapter.reset\",\"settled\":2}"
+        },
+        {
+          "check": "check expire-sweep PASS",
+          "pass": true,
+          "detail": "I/UBM5FIVE0( 6430): check expire-sweep PASS {\"ok\":true,\"event\":\"expire-sweep\",\"settled\":0,\"truncated\":false}"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "pidof after force-stop (F8)",
+          "exit": 1,
+          "timedOut": false,
+          "log": "logs/F8-0.log"
+        },
+        {
+          "command": "am start com.ubmfive0probe/.MainActivity",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F8-1.log"
+        },
+        {
+          "command": "F8 logcat after launch",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F8-2.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "F9",
+      "name": "notify bounds via real JNI (synthetic wires)",
+      "origin": "SIMULATED-injection",
+      "assertions": {
+        "passed": 6,
+        "total": 6
+      },
+      "checks": [
+        {
+          "check": "activity will cold-start (no lingering process)",
+          "pass": true,
+          "detail": "pid=(none)"
+        },
+        {
+          "check": "self-test RESULT ok",
+          "pass": true,
+          "detail": "I/UBM5FIVE0( 6492): UBM5FIVE0-RESULT {\"result\":\"ok\",\"checks\":41,\"failures\":\"\",\"detail\":\"\"}"
+        },
+        {
+          "check": "check notify-delivered PASS",
+          "pass": true,
+          "detail": "I/UBM5FIVE0( 6492): check notify-delivered PASS {\"ok\":true,\"event\":\"notify.deliver\",\"deliveries\":[{\"consumer\":\"five0-consumer\",\"outcome\":\"delivered\"}]}"
+        },
+        {
+          "check": "check notify-oversize-rejects PASS",
+          "pass": true,
+          "detail": "I/UBM5FIVE0( 6492): check notify-oversize-rejects PASS bytes.too-large|core|gatt-enqueue|event-exceeds-wire-max"
+        },
+        {
+          "check": "check stale-handle-fails-closed PASS",
+          "pass": true,
+          "detail": "I/UBM5FIVE0( 6492): check stale-handle-fails-closed PASS {\"ok\":false,\"event\":\"read.start\",\"code\":\"gatt.stale-handle\",\"domain\":\"gatt\",\"operation\":\"gatt-drain\",\"d"
+        },
+        {
+          "check": "check path-registered PASS",
+          "pass": true,
+          "detail": "I/UBM5FIVE0( 6492): check path-registered PASS {\"ok\":true,\"event\":\"path.register\",\"path\":0}"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "pidof after force-stop (F9)",
+          "exit": 1,
+          "timedOut": false,
+          "log": "logs/F9-0.log"
+        },
+        {
+          "command": "am start com.ubmfive0probe/.MainActivity",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F9-1.log"
+        },
+        {
+          "command": "F9 logcat after launch",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/F9-2.log"
+        }
+      ],
+      "result": "pass"
+    }
+  ]
+}

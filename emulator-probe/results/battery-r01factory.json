@@ -1,0 +1,321 @@
+{
+  "suite": "ubm5-android-emulator-battery-v1",
+  "avd": "ubm5-emu-probe",
+  "serial": "emulator-5554",
+  "package": "com.ubmprobe",
+  "consumer": "com.ubmprobe debug APK built from emulator-probe/consumer (real 4.x native module path; Expo Go and JS mocks excluded)",
+  "nativeModule": "UnifiedBleProtocolControl via BlePlxPackage; libunified_ble_native_protocol.so (x86_64)",
+  "rustSwapInPoint": "emulator-probe/README.md documents substituting the 5.0 Rust artifact for android/ JNI libs",
+  "startedAt": "2026-09-17T23:28:48.279Z",
+  "records": [
+    {
+      "id": "PRE",
+      "name": "device identity + preconditions",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 3,
+        "total": 3
+      },
+      "checks": [
+        {
+          "check": "device reachable (sdk_gphone64_x86_64)",
+          "pass": true,
+          "detail": "google/sdk_gphone64_x86_64/emu64xa:14/UE1A.230829.050/12077443:userdebug/dev-keys sdk=34 abi=x86_64"
+        },
+        {
+          "check": "bluetooth_manager queryable",
+          "pass": true,
+          "detail": "  enabled: true   state: ON   address: <REDACTED-MAC>"
+        },
+        {
+          "check": "package absent before install",
+          "pass": true,
+          "detail": "pm list packages scanned on host"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "adb uninstall (idempotent reruns)",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/PRE-0.log"
+        },
+        {
+          "command": "adb shell getprop fingerprint/sdk/abi/release",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/PRE-1.log"
+        },
+        {
+          "command": "adb shell dumpsys bluetooth_manager",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/PRE-2.log"
+        },
+        {
+          "command": "pre-install package check",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/PRE-3.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "T1",
+      "name": "install UBM consumer APK (real 4.x native module path)",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 3,
+        "total": 3
+      },
+      "checks": [
+        {
+          "check": "install reports Success",
+          "pass": true,
+          "detail": "Success"
+        },
+        {
+          "check": "package listed after install",
+          "pass": true,
+          "detail": "package:com.ubmprobe"
+        },
+        {
+          "check": "package info queryable (v1/min24/target36)",
+          "pass": true,
+          "detail": "    versionCode=1 minSdk=24 targetSdk=36"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "adb install -r app-debug.apk",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T1-0.log"
+        },
+        {
+          "command": "pm list packages (host-matched)",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T1-1.log"
+        },
+        {
+          "command": "dumpsys package (host-matched)",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T1-2.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "RUSTCORE",
+      "name": "producer binding session: openSession/invoke/close through the real TurboModule + JNI core",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 11,
+        "total": 11
+      },
+      "checks": [
+        {
+          "check": "metro packager reachable [HOST-JVM host-side]",
+          "pass": true,
+          "detail": "host-side curl http://127.0.0.1:8081/status (not device-observed)"
+        },
+        {
+          "check": "JS bundle executed (app-mounted)",
+          "pass": true,
+          "detail": "I/ReactNativeJS( 5221): [UBM_PROBE] app-mounted"
+        },
+        {
+          "check": "RustCore session button tapped",
+          "pass": true,
+          "detail": "tapped at 540,710"
+        },
+        {
+          "check": "session opened on the frozen contract revision",
+          "pass": true,
+          "detail": "I/ReactNativeJS( 5221): [UBM_PROBE] rustcore-ok contract=C-UBM.0.1.2-DRAFT status={\"revision\":\"C-UBM.0.1.2-DRAFT\",\"live_operations\":0,\"retained_cleanup\":0} echo=41 scanOp=central-op-0 scanTake={\"step\":\"scan.start\",\"ok\":true,\"op_id\":\"central"
+        },
+        {
+          "check": "central.status round-trips core-minted JSON",
+          "pass": true,
+          "detail": "I/ReactNativeJS( 5221): [UBM_PROBE] rustcore-ok contract=C-UBM.0.1.2-DRAFT status={\"revision\":\"C-UBM.0.1.2-DRAFT\",\"live_operations\":0,\"retained_cleanup\":0} echo=41 scanOp=central-op-0 scanTake={\"step\":\"scan.start\",\"ok\":true,\"op_id\":\"central"
+        },
+        {
+          "check": "echo.counter round-trips decimal 41",
+          "pass": true,
+          "detail": "I/ReactNativeJS( 5221): [UBM_PROBE] rustcore-ok contract=C-UBM.0.1.2-DRAFT status={\"revision\":\"C-UBM.0.1.2-DRAFT\",\"live_operations\":0,\"retained_cleanup\":0} echo=41 scanOp=central-op-0 scanTake={\"step\":\"scan.start\",\"ok\":true,\"op_id\":\"central"
+        },
+        {
+          "check": "scan.start mints a core op id",
+          "pass": true,
+          "detail": "I/ReactNativeJS( 5221): [UBM_PROBE] rustcore-ok contract=C-UBM.0.1.2-DRAFT status={\"revision\":\"C-UBM.0.1.2-DRAFT\",\"live_operations\":0,\"retained_cleanup\":0} echo=41 scanOp=central-op-0 scanTake={\"step\":\"scan.start\",\"ok\":true,\"op_id\":\"central"
+        },
+        {
+          "check": "scan.take drains staged scan steps",
+          "pass": true,
+          "detail": "I/ReactNativeJS( 5221): [UBM_PROBE] rustcore-ok contract=C-UBM.0.1.2-DRAFT status={\"revision\":\"C-UBM.0.1.2-DRAFT\",\"live_operations\":0,\"retained_cleanup\":0} echo=41 scanOp=central-op-0 scanTake={\"step\":\"scan.start\",\"ok\":true,\"op_id\":\"central"
+        },
+        {
+          "check": "scan.stop settles the minted op",
+          "pass": true,
+          "detail": "t\"} scanStop={\"step\":\"scan.platform\",\"ok\":true,\"event\":\"stop\",\"state\":\"stopping\",\"staged\":0,\"effects\":\"central.scan-settled#central-op-0:scan.stop\"} closed=true"
+        },
+        {
+          "check": "session closed cleanly",
+          "pass": true,
+          "detail": "t\"} scanStop={\"step\":\"scan.platform\",\"ok\":true,\"event\":\"stop\",\"state\":\"stopping\",\"staged\":0,\"effects\":\"central.scan-settled#central-op-0:scan.stop\"} closed=true"
+        },
+        {
+          "check": "no UnsatisfiedLinkError",
+          "pass": true,
+          "detail": "host-matched over full logcat"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "launch on Metro",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/RUSTCORE-0.log"
+        },
+        {
+          "command": "logcat mount poll 0",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/RUSTCORE-1.log"
+        },
+        {
+          "command": "logcat after rustcore session",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/RUSTCORE-2.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "R01FACTORY",
+      "name": "R01 flip: public no-options factory creates + adapter + destroy through the production binding",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 14,
+        "total": 14
+      },
+      "checks": [
+        {
+          "check": "metro packager reachable [HOST-JVM host-side]",
+          "pass": true,
+          "detail": "host-side curl http://127.0.0.1:8081/status (not device-observed)"
+        },
+        {
+          "check": "JS bundle executed (app-mounted)",
+          "pass": true,
+          "detail": "I/ReactNativeJS( 5335): [UBM_PROBE] app-mounted"
+        },
+        {
+          "check": "Init button tapped",
+          "pass": true,
+          "detail": "tapped at 540,254"
+        },
+        {
+          "check": "manager created through the public no-options factory",
+          "pass": true,
+          "detail": "I/ReactNativeJS( 5335): [UBM_PROBE] manager-created"
+        },
+        {
+          "check": "runtime permissions granted (dialog answered)",
+          "pass": true,
+          "detail": "I/ReactNativeJS( 5335): [UBM_PROBE] scan=granted connect=granted I/ReactNativeJS( 5335): [UBM_PROBE] permission-ok=true"
+        },
+        {
+          "check": "adapter state is a concrete platform read (native reader)",
+          "pass": true,
+          "detail": "I/ReactNativeJS( 5335): [UBM_PROBE] adapter power=on availability=available authorization=granted"
+        },
+        {
+          "check": "no init-error",
+          "pass": true,
+          "detail": "clean"
+        },
+        {
+          "check": "Bonded button tapped",
+          "pass": true,
+          "detail": "tapped at 540,482"
+        },
+        {
+          "check": "bonded reports the empty table without errors",
+          "pass": true,
+          "detail": "I/ReactNativeJS( 5335): [UBM_PROBE] bonded-count=0"
+        },
+        {
+          "check": "Teardown button tapped",
+          "pass": true,
+          "detail": "tapped at 540,824"
+        },
+        {
+          "check": "manager destroyed through the production binding",
+          "pass": true,
+          "detail": "I/ReactNativeJS( 5335): [UBM_PROBE] manager-destroyed"
+        },
+        {
+          "check": "no teardown-error",
+          "pass": true,
+          "detail": "clean"
+        },
+        {
+          "check": "no FATAL EXCEPTION for consumer",
+          "pass": true,
+          "detail": "host-matched over full logcat"
+        },
+        {
+          "check": "no UnsatisfiedLinkError",
+          "pass": true,
+          "detail": "host-matched over full logcat"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "launch on Metro",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/R01FACTORY-0.log"
+        },
+        {
+          "command": "logcat mount poll 0",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/R01FACTORY-1.log"
+        },
+        {
+          "command": "logcat after init",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/R01FACTORY-2.log"
+        },
+        {
+          "command": "logcat after bonded",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/R01FACTORY-3.log"
+        },
+        {
+          "command": "logcat after teardown",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/R01FACTORY-4.log"
+        }
+      ],
+      "result": "pass"
+    }
+  ],
+  "summary": {
+    "tests": 4,
+    "assertionsPassed": 31,
+    "assertionsTotal": 31,
+    "byResult": {
+      "pass": 4
+    }
+  }
+}

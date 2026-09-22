@@ -6,7 +6,9 @@ const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf
 
 describe('Expo native runtime bridge source contract', () => {
   test('Android refuses to publish a runtime digest without the plugin-owned marker', () => {
-    const android = read('android/src/main/java/com/sfourdrinier/unifiedblemanager/expo/UnifiedBleExpoRuntimeModule.java')
+    const android = read(
+      'android/src/main/java/com/sfourdrinier/unifiedblemanager/expo/UnifiedBleExpoRuntimeModule.java'
+    )
 
     expect(android).toContain('CONFIGURATION_MARKER_METADATA')
     expect(android).toContain('CONFIGURATION_MARKER = "unified-ble-expo-v1"')

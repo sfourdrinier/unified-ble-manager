@@ -1,0 +1,4 @@
+$ pm revoke BLUETOOTH_CONNECT
+[exit=0]
+
+

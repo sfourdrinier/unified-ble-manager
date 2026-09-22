@@ -15,6 +15,7 @@ import {
   BATTERY_SERVICE,
   parseBatteryLevel
 } from 'unified-ble-manager/profiles/battery-service'
+import { parseHeartRateMeasurement } from 'unified-ble-manager/profiles/heart-rate'
 import {
   decodeDeviceInformationString,
   DEVICE_INFORMATION_SERVICE,
@@ -28,6 +29,14 @@ import {
 } from 'unified-ble-manager/profiles/device-information'
 
 type CanonicalManager = Awaited<ReturnType<typeof createReactNativeBleManager>>
+
+function decodeContinuationHeartRate(value: Uint8Array): number | null {
+  try {
+    return parseHeartRateMeasurement(value).beatsPerMinute
+  } catch {
+    return null
+  }
+}
 type CanonicalConnection = BleConnection
 type CanonicalDatabase = GattDatabase
 type CanonicalSubscription = GattSubscription

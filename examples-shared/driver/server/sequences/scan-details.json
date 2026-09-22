@@ -1,0 +1,9 @@
+{
+  "name": "scan details: unfiltered vs filtered, duplicates all vs coalesced",
+  "defaultTimeoutMs": 60000,
+  "steps": [
+    { "run": "scan-details", "command": "scan", "args": { "filter": "none", "duplicates": "all", "durationMs": 10000 }, "capture": ["observations", "uniquePeers", "perSecond", "txPowerSeen"] },
+    { "run": "scan-details", "command": "scan", "args": { "filter": "none", "duplicates": "coalesced", "durationMs": 10000 }, "capture": ["observations", "uniquePeers", "perSecond"] },
+    { "run": "scan-details", "command": "scan", "args": { "filter": "h10", "duplicates": "all", "durationMs": 10000 }, "expect": { "ok": true, "result": { "uniquePeers": { "$gte": 1 } } }, "capture": ["observations", "peers", "planDigest"] }
+  ]
+}

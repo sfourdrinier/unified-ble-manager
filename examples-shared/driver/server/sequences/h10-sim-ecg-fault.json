@@ -1,0 +1,16 @@
+{
+  "name": "peripheral-sim injects a PMD fault, then the android ECG start reports it",
+  "target": ["android", "peripheral-sim"],
+  "devices": { "android": "Polar H10 SIM0001" },
+  "defaultTimeoutMs": 120000,
+  "steps": [
+    { "run": "sim-control", "command": "reject-next-pmd", "args": { "status": 3 }, "hosts": ["peripheral-sim"] },
+    {
+      "run": "ecg",
+      "command": "start",
+      "hosts": ["android"],
+      "expect": { "ok": false, "error": { "code": "pmd.request-rejected" } }
+    },
+    { "run": "ecg", "command": "stop", "always": true, "hosts": ["android"] }
+  ]
+}

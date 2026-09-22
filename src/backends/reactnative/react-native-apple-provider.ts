@@ -1,4 +1,11 @@
 // src/backends/reactnative/react-native-apple-provider.ts
+//
+// LEGACY REFERENCE ONLY (FIX-PLAN decision 12). `main`'s TypeScript Apple
+// provider — the Swift radio driven through the JSI protocol boundary — kept
+// solely as the parity reference the legacy-vs-Rust capability tests open,
+// until Phase 4 deletes it. No public factory reaches it: every public React
+// Native and Expo factory runs the Rust mobile owner
+// (react-native-rust-core-provider.ts).
 
 import type {
   AdapterBackend,
@@ -12,29 +19,30 @@ import type {
   ScannerBackend
 } from '../../backend-contract/backend'
 import type { OwnerScanOptions } from '../../backend-contract/advertisement'
-import { contractError } from '../../backend-contract/errors'
+import { contractError, type CleanupRecord } from '../../backend-contract/errors'
 import type { AdapterSelection, AttachmentRecord, NativeBackendIdentity } from '../../backend-contract/identity'
-import { UNIFIED_BLE_IMPLEMENTATION_VERSION } from '../../implementation-version'
 import {
   negotiateVersion,
-  opaqueId,
-  version,
-  versionRange,
+  type ClientId,
   type CoreVersionAxes,
-  type NativeCompatibilityOffer,
   type NativeVersionAxes
 } from '../../backend-contract/primitives'
-import type { ClientId } from '../../backend-contract/primitives'
+import {
+  REACT_NATIVE_APPLE_BACKEND_ID,
+  REACT_NATIVE_APPLE_PLATFORM_ID,
+  REACT_NATIVE_APPLE_IMPLEMENTATION_VERSION,
+  REACT_NATIVE_APPLE_DEFAULT_ADAPTER_NATIVE_ID,
+  reactNativeAppleCompatibility,
+  reactNativeAppleDefaultAdapterId
+} from './react-native-platform-identity'
 import type { BoundedAsyncStream } from '../../backend-contract/streams'
 import type { NativeAttachmentIdentity, Spec as NativeProtocolControl } from '../../NativeUnifiedBleProtocolControl'
 import { CoreBluetoothBackend, type DirectGattBackendIdentityOptions } from '../corebluetooth/corebluetooth-backend'
-import { coreBluetoothCompatibility } from '../corebluetooth/corebluetooth-provider'
 import { ReactNativeAppleProtocolBoundary } from '../../native-protocol/rn-apple-boundary'
+import { trustedServiceUuidFilter } from '../scan-planning/service-uuid-scan-planner'
 import { createReactNativeConnectionControlFeatureRegistry } from './react-native-connection-control-features'
 import { createReactNativeDescriptorFeatureRegistry } from './react-native-descriptor-features'
-import { diagnosticReactNativeAppleScanPlan } from './react-native-scan-planner'
-import { planReactNativeAppleScan } from './react-native-scan-planner'
-import { trustedServiceUuidFilter } from '../scan-planning/service-uuid-scan-planner'
+import { diagnosticReactNativeAppleScanPlan, planReactNativeAppleScan } from './react-native-scan-planner'
 import { withReactNativeProviderCleanup } from './react-native-provider-cleanup'
 import {
   combineReactNativeFeatureRegistries,
@@ -44,20 +52,26 @@ import {
   type ReactNativeRestorationBackendProvider
 } from './react-native-restoration'
 
-export const REACT_NATIVE_APPLE_BACKEND_ID = 'unified-ble:react-native-apple'
-export const REACT_NATIVE_APPLE_PLATFORM_ID = 'unified-ble:apple-corebluetooth'
-export const REACT_NATIVE_APPLE_IMPLEMENTATION_VERSION = UNIFIED_BLE_IMPLEMENTATION_VERSION
-export const REACT_NATIVE_APPLE_DEFAULT_ADAPTER_NATIVE_ID = 'apple-corebluetooth-default-adapter'
+export {
+  REACT_NATIVE_APPLE_BACKEND_ID,
+  REACT_NATIVE_APPLE_PLATFORM_ID,
+  REACT_NATIVE_APPLE_IMPLEMENTATION_VERSION,
+  REACT_NATIVE_APPLE_DEFAULT_ADAPTER_NATIVE_ID,
+  reactNativeAppleCompatibility,
+  reactNativeAppleDefaultAdapterId
+}
 
-export const reactNativeAppleCompatibility: NativeCompatibilityOffer = Object.freeze({
-  ...coreBluetoothCompatibility,
-  nativeProtocol: versionRange(version('native-protocol', 2), version('native-protocol', 2))
+const reactNativeAppleProviderDescriptor: ReactNativeRestorationBackendProvider['descriptor'] = Object.freeze({
+  providerId: 'unified-ble:react-native-apple-provider',
+  hostKind: 'native-mobile',
+  loadability: 'loadable',
+  compatibility: reactNativeAppleCompatibility
 })
 
 let nextBoundaryOwner = 1
 
-export interface ReactNativeAppleBackendProviderOptions {
-  /** Generated control module whose JSI runtime owns the one physical CoreBluetooth central. */
+export interface ReactNativeAppleLegacyBackendProviderOptions {
+  /** Generated legacy protocol control (reference route only). */
   readonly control: NativeProtocolControl
   /** Monotonic clock supplied by the React Native host application. */
   readonly now: () => number
@@ -65,19 +79,21 @@ export interface ReactNativeAppleBackendProviderOptions {
   readonly createOwnerId?: () => string
 }
 
-/** Creates a production Apple React Native provider without importing React Native from this public module. */
-export function createReactNativeAppleBackendProvider(
-  options: ReactNativeAppleBackendProviderOptions
+/**
+ * The legacy TypeScript reference route: `main`'s Apple provider, which drives
+ * the Swift `OwnedCoreBluetoothProtocolRadio` through the canonical JSI
+ * protocol boundary with no Rust core. Kept reachable, never a default and
+ * never a fallback: the manager selects it only for
+ * `legacyTypeScriptCore: 'isolated-test-reference'`, and it is not part of the
+ * public React Native entrypoint.
+ */
+export function createReactNativeAppleLegacyBackendProvider(
+  options: ReactNativeAppleLegacyBackendProviderOptions
 ): ReactNativeRestorationBackendProvider {
   const createOwnerId = options.createOwnerId ?? allocateBoundaryOwnerId
-  const restoration = new ReactNativeRestorationCoordinator(options.control, 'apple')
+  const restoration = new ReactNativeRestorationCoordinator(options.control)
   return Object.freeze({
-    descriptor: Object.freeze({
-      providerId: 'unified-ble:react-native-apple-provider',
-      hostKind: 'native-mobile',
-      loadability: 'loadable',
-      compatibility: reactNativeAppleCompatibility
-    }),
+    descriptor: reactNativeAppleProviderDescriptor,
     restoration,
     listAdapters: async () => {
       const backend = await createOpenedBackend(options.control, options.now, createOwnerId(), restoration, false)
@@ -101,7 +117,7 @@ class ReactNativeAppleBackend implements BleCentralBackend<string, NativeBackend
   readonly gatt: GattBackend<string>
   readonly features: CoreBluetoothBackend['features']
 
-  private destroyResult: Promise<import('../../backend-contract/errors').CleanupRecord> | null = null
+  private destroyResult: Promise<CleanupRecord> | null = null
 
   constructor(
     private readonly delegate: CoreBluetoothBackend,
@@ -161,7 +177,7 @@ class ReactNativeAppleBackend implements BleCentralBackend<string, NativeBackend
     return this.delegate.resourceCounters()
   }
 
-  destroy(): Promise<import('../../backend-contract/errors').CleanupRecord> {
+  destroy(): Promise<CleanupRecord> {
     if (this.destroyResult === null) {
       const destruction = this.destroyInternal()
       this.destroyResult = destruction.then(
@@ -180,7 +196,7 @@ class ReactNativeAppleBackend implements BleCentralBackend<string, NativeBackend
     return this.destroyResult
   }
 
-  private async destroyInternal(): Promise<import('../../backend-contract/errors').CleanupRecord> {
+  private async destroyInternal(): Promise<CleanupRecord> {
     if (this.restorationActivation !== null) {
       await this.restoration.deactivate(this.restorationActivation)
     }
@@ -259,8 +275,4 @@ function allocateBoundaryOwnerId(): string {
   const ordinal = nextBoundaryOwner
   nextBoundaryOwner += 1
   return `react-native-apple-owner-${ordinal}`
-}
-
-export function reactNativeAppleDefaultAdapterId() {
-  return opaqueId(REACT_NATIVE_APPLE_DEFAULT_ADAPTER_NATIVE_ID, 'adapter', 'react-native-apple')
 }

@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<!-- 4.x-authored SharedPreferences: file "unified-ble-manager", written by
+     BlePlxForegroundService with a restart-while-session lease active.
+     U9 rehearsal reads this ONLY through copies; the original must stay
+     byte-identical. -->
+<map>
+    <boolean name="unified-ble-manager.background.session-intent-exists" value="true" />
+</map>

@@ -1,18 +1,20 @@
-# AGENTS.md — Unified BLE Manager 4.x
+# AGENTS.md — Unified BLE Manager 5.x
 
 The single source of agent guidance for this repository. `CLAUDE.md` imports
 this file and holds no content of its own, so the two cannot drift apart.
 
 ## What this repository is
 
-The canonical home of `unified-ble-manager` 4.x: a host-neutral Bluetooth Low
+The canonical home of `unified-ble-manager` 5.x: a host-neutral Bluetooth Low
 Energy central/GATT package for React Native, Web, Electron, and Node/desktop
 hosts. `sfourdrinier/react-native-ble-plx` is historical and owns the 3.x line;
-never reintroduce its public contract here, and never infer 4.x behaviour from
+never reintroduce its public contract here, and never infer 5.x behaviour from
 3.x source or docs.
 
-Read `docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md` before cross-cutting
-changes. `README.md` and `RELEASE.md` are current guidance.
+Read `docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md` for the clean-baseline
+architecture before cross-cutting changes, then read the applicable current
+5.0 distribution and release guidance. `README.md`,
+`docs/NATIVE_ARTIFACTS.md`, and `RELEASE.md` are current operational guidance.
 
 ## How we work
 
@@ -57,11 +59,15 @@ pnpm install --frozen-lockfile
 pnpm validate:evidence
 pnpm test:package
 pnpm test:plugin
+pnpm native:status
 pnpm lint
 pnpm prepack
 pnpm release:artifacts:check
 node scripts/ci/pack-install-smoke.js
 ```
+
+Precompiled Rust artifacts are never rebuilt by hand: consumers refresh what
+they consume themselves; see `docs/NATIVE_ARTIFACTS.md`.
 
 Before pushing, `scripts/ci/preflight.sh` runs the Linux-reproducible CI jobs
 against a clean detached worktree outside the working tree — the same thing
@@ -92,7 +98,7 @@ a radio**. Consumers use explicit host entrypoints:
 Profile exports are documented in `README.md` and
 `docs/PROFILES_AND_COMMANDS.md`.
 
-## 4.x contract invariants
+## 5.x contract invariants
 
 Preserve these unless the user explicitly requests a versioned contract change:
 
@@ -109,6 +115,14 @@ Preserve these unless the user explicitly requests a versioned contract change:
   the same set of answers. A platform that cannot answer says so —
   `capability.unsupported` with a reason — and never substitutes something
   plausible;
+- **same behaviour on every platform.** Every host behaves identically unless
+  its platform capability genuinely differs, and then it says so rather than
+  diverging quietly. A library-side refusal of something the platform can do
+  is a defect. Android is the reference behaviour wherever a platform can
+  match it. The same physical event carries the same specific public name on
+  every backend — the platform's own detail rides underneath in `platform` —
+  and reconnect policy makes identical decisions everywhere. The event
+  vocabulary lives in `docs/UNIFIED_SEMANTICS.md`, pinned by tests;
 - the root is host-neutral and never silently picks or falls back to a backend;
 - managers, connections, GATT databases, subscriptions and backend resources
   have explicit ownership and asynchronous teardown; stale discoveries and
@@ -126,6 +140,16 @@ Preserve these unless the user explicitly requests a versioned contract change:
   was chosen. Without it the capability reports `unsupported` and the default
   posture is unchanged. Document the privilege, its blast radius, and what a
   failure leaves behind beside the option that requests it;
+- **support the mechanism; the consumer owns its entitlements.** Where a
+  platform offers a capability, this package implements it, whatever approvals,
+  exemptions or store review the consuming application must obtain to use it
+  (background execution, foreground-service types, battery-optimisation
+  exemptions, notification permission, restoration identifiers). We never
+  withhold a mechanism because an app might not be entitled to it, and we never
+  quietly substitute a lesser path. When the platform refuses at runtime, the
+  result reports that refusal with the platform's own reason under `platform`,
+  and the capability says what is available; the app's negotiation with Apple
+  or Google is the app's business, not ours;
 - package SemVer and backend support/evidence labels are independent
   dimensions.
 
@@ -151,11 +175,11 @@ Renderer reload/rebind is an ownership and security boundary.
 **Node desktop**: first-party CoreBluetooth, WinRT and BlueZ backends.
 CoreBluetooth/WinRT addons are built for the exact Node/Electron ABI and
 architecture that loads them. BlueZ is isolated behind its explicit entrypoint
-and optional `dbus-next` dependency.
+and needs no `dbus-next` on the production path.
 
 ## Evidence and support
 
-Package SemVer and backend qualification are separate. Stable `4.0.0`
+Package SemVer and backend qualification are separate. A 5.0 release
 stabilizes the documented package/API contract; it does not promote any
 backend's evidence label.
 

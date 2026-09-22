@@ -1,8 +1,6 @@
 // __tests__/web/navigator-default-environment.test.js
 
-const {
-  createDefaultNavigatorWebBluetoothEnvironment
-} = require('../../src/web/navigator-web-bluetooth-boundary')
+const { createDefaultNavigatorWebBluetoothEnvironment } = require('../../src/web/navigator-web-bluetooth-boundary')
 
 describe('default navigator Web Bluetooth environment', () => {
   test('visibilitychange reports page-hidden only when the document is hidden', () => {

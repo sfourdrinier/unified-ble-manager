@@ -1,0 +1,11 @@
+{
+  "name": "h10-stream: find, connect, stream 30 s, stop",
+  "defaultTimeoutMs": 60000,
+  "steps": [
+    { "run": "h10-stream", "command": "start", "args": {}, "capture": ["device", "effectiveDelivery"] },
+    { "waitForEvent": "h10-stream", "kind": "value", "count": 10, "timeoutMs": 30000 },
+    { "sleep": 20000 },
+    { "expectSnapshot": "h10-stream", "match": { "phase": "streaming", "valueCount": { "$gte": 25 } }, "capture": ["valueCount", "maxGapMs", "bpm", "lastValueDelivery"] },
+    { "run": "h10-stream", "command": "stop", "always": true, "capture": ["cleanup"] }
+  ]
+}

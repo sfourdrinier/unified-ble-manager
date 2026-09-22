@@ -1,12 +1,26 @@
 // scripts/release/generate-dependency-artifacts.js
 
 const crypto = require('crypto')
+const { execFileSync } = require('child_process')
 const fs = require('fs')
 const path = require('path')
 const { parse: parseYaml } = require('yaml')
 
 const repositoryRoot = path.resolve(__dirname, '..', '..')
 const artifactNames = ['SBOM.cdx.json', 'THIRD_PARTY_LICENSES.json']
+// Package authority for new UBM 5.0 material. The custom license has no OSI
+// SPDX identifier, so npm metadata uses the supported SEE LICENSE IN form and
+// SPDX/SBOM reports use the LicenseRef identifier (see NOTICE).
+const salLicenseFile = 'LICENSE-UBM-SOURCE-AVAILABLE-1.0.md'
+const salLicenseRef = 'LicenseRef-UBM-Source-Available-1.0'
+
+function rootLicenseExpression(rootPackage) {
+  if (rootPackage.license === `SEE LICENSE IN ${salLicenseFile}`) {
+    return salLicenseRef
+  }
+  if (typeof rootPackage.license === 'string') return rootPackage.license
+  return 'Unknown'
+}
 const allowedLicenses = new Set([
   '(AFL-2.1 OR BSD-3-Clause)',
   '(Apache-2.0 OR MIT)',
@@ -33,6 +47,19 @@ const reviewedLicenseOverrides = Object.freeze({
     sha256: '8937affb1fac84258c98aa2351eb161405999975b602140c43bcbac23b22f1e9',
   }),
 })
+
+// Cargo manifests historically used `/` as a shorthand separator. Most of
+// those declarations are alternatives and normalize mechanically to SPDX OR.
+// btleplug is different: its vendored license text separately applies
+// BSD-3-Clause to the crate and MIT-or-Apache-2.0 to forked portions.
+const reviewedCargoLicenseOverrides = Object.freeze({
+  'btleplug@0.12.0': Object.freeze({
+    fileName: 'LICENSE.md',
+    license: 'BSD-3-Clause AND (MIT OR Apache-2.0)',
+    sha256: '95f1ea7e261c12c46fe8f67d2ddb7a92ebb1a5fd10d127e4ab3003f0701d9f56',
+  }),
+})
+const allowedCargoLegacySlashLicenseTerms = new Set(['Apache-2.0', 'MIT', 'Unlicense'])
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex')
@@ -167,6 +194,164 @@ function purlFor(name, version) {
   return `pkg:npm/${encodedName}@${encodeURIComponent(version)}`
 }
 
+function purlForCargo(name, version) {
+  return `pkg:cargo/${encodeURIComponent(name)}@${encodeURIComponent(version)}`
+}
+
+function readCargoMetadata() {
+  let raw
+  try {
+    raw = execFileSync('cargo', ['metadata', '--locked', '--offline', '--format-version', '1'], {
+      cwd: repositoryRoot,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+  } catch (error) {
+    throw new Error(
+      'cargo metadata --locked --offline failed; install the pinned Rust toolchain and keep Cargo.lock coherent'
+    )
+  }
+  try {
+    return JSON.parse(raw)
+  } catch (error) {
+    throw new Error('cargo metadata output is not valid JSON')
+  }
+}
+
+function normalizeCargoSlashLicense(declared) {
+  const alternatives = declared.split('/').map(value => value.trim())
+  if (alternatives.some(value => !allowedCargoLegacySlashLicenseTerms.has(value))) {
+    throw new Error(`Invalid slash-separated Cargo license declaration: ${declared}`)
+  }
+  return `(${alternatives.join(' OR ')})`
+}
+
+function resolveReviewedCargoLicense(pkg, override) {
+  const licensePath = path.join(path.dirname(pkg.manifest_path), override.fileName)
+  if (!fs.existsSync(licensePath)) {
+    throw new Error(`Reviewed Cargo license evidence is missing for ${pkg.name}@${pkg.version}: ${override.fileName}`)
+  }
+  const actualSha256 = sha256(fs.readFileSync(licensePath))
+  if (actualSha256 !== override.sha256) {
+    throw new Error(`Reviewed Cargo license evidence changed for ${pkg.name}@${pkg.version}; audit the new file before updating the override`)
+  }
+  return {
+    declared: pkg.license,
+    evidence: { fileName: override.fileName, sha256: override.sha256 },
+    license: override.license,
+    licenseFile: path.relative(repositoryRoot, licensePath).split(path.sep).join('/'),
+    reviewRequired: false,
+    source: 'reviewed-cargo-license-file',
+  }
+}
+
+// Cargo manifest SPDX expressions pass through verbatim. Legacy `/` separators
+// mean SPDX OR unless an exact reviewed license file supplies more specific
+// terms, as with btleplug's BSD code plus dual-licensed forked portions.
+function resolveCargoLicense(pkg) {
+  const override = reviewedCargoLicenseOverrides[`${pkg.name}@${pkg.version}`]
+  if (override) return resolveReviewedCargoLicense(pkg, override)
+  if (typeof pkg.license === 'string' && pkg.license.length > 0) {
+    if (pkg.license.includes('/')) {
+      return {
+        declared: pkg.license,
+        license: normalizeCargoSlashLicense(pkg.license),
+        reviewRequired: false,
+        source: 'cargo-manifest-license-normalized',
+      }
+    }
+    return {
+      declared: pkg.license,
+      license: pkg.license,
+      reviewRequired: false,
+      source: 'cargo-manifest-license',
+    }
+  }
+  if (typeof pkg.license_file === 'string' && pkg.license_file.length > 0) {
+    const absolute = path.resolve(path.dirname(pkg.manifest_path), pkg.license_file)
+    const portable = path.relative(repositoryRoot, absolute).split(path.sep).join('/')
+    if (portable === salLicenseFile) {
+      return {
+        license: salLicenseRef,
+        licenseFile: portable,
+        reviewRequired: false,
+        source: 'cargo-manifest-license-file',
+      }
+    }
+    return {
+      license: 'NOASSERTION',
+      licenseFile: portable,
+      reviewRequired: true,
+      source: 'cargo-manifest-license-file-unrecognized',
+    }
+  }
+  return {
+    declared: null,
+    license: 'NOASSERTION',
+    reviewRequired: true,
+    source: 'cargo-manifest-license-missing',
+  }
+}
+
+function collectCargoGraph(metadata) {
+  if (!metadata || !Array.isArray(metadata.packages) || !metadata.resolve || !Array.isArray(metadata.resolve.nodes)) {
+    throw new Error('cargo metadata output is missing packages or the resolve graph')
+  }
+  const purlById = new Map()
+  const packages = []
+  for (const pkg of metadata.packages) {
+    if (typeof pkg.id !== 'string' || typeof pkg.name !== 'string' || typeof pkg.version !== 'string') {
+      throw new Error('cargo metadata package is missing its identity')
+    }
+    const bomRef = purlForCargo(pkg.name, pkg.version)
+    if (purlById.has(pkg.id)) throw new Error(`Duplicate cargo package identity: ${pkg.id}`)
+    purlById.set(pkg.id, bomRef)
+    packages.push({ bomRef, name: pkg.name, resolved: resolveCargoLicense(pkg), version: pkg.version })
+  }
+  packages.sort((left, right) => left.bomRef.localeCompare(right.bomRef))
+  if (new Set(packages.map(entry => entry.bomRef)).size !== packages.length) {
+    throw new Error('Duplicate cargo component identity; cannot assign unique bom-refs')
+  }
+
+  const dependenciesByRef = new Map()
+  for (const node of metadata.resolve.nodes) {
+    const ref = purlById.get(node.id)
+    if (!ref) throw new Error(`cargo resolve node is missing package metadata: ${node.id}`)
+    const dependsOn = new Set()
+    for (const edge of node.deps || []) {
+      const target = purlById.get(edge.pkg)
+      if (!target) throw new Error(`cargo resolve edge is missing package metadata: ${edge.pkg}`)
+      dependsOn.add(target)
+    }
+    dependenciesByRef.set(ref, [...dependsOn].sort())
+  }
+  for (const entry of packages) {
+    if (!dependenciesByRef.has(entry.bomRef)) dependenciesByRef.set(entry.bomRef, [])
+  }
+  return { dependenciesByRef, packages }
+}
+
+function cargoComponent(dependency) {
+  const { resolved } = dependency
+  const properties = [{ name: 'unified-ble-manager:license-source', value: resolved.source }]
+  if (resolved.reviewRequired) {
+    properties.push({ name: 'unified-ble-manager:license-review-required', value: 'true' })
+  }
+  if (resolved.licenseFile) {
+    properties.push({ name: 'unified-ble-manager:license-file', value: resolved.licenseFile })
+  }
+  return {
+    type: 'library',
+    'bom-ref': dependency.bomRef,
+    name: dependency.name,
+    version: dependency.version,
+    licenses: resolved.license === 'NOASSERTION' ? [{ name: 'NOASSERTION' }] : [{ expression: resolved.license }],
+    purl: dependency.bomRef,
+    properties,
+  }
+}
+
 function versionFromReference(name, reference) {
   if (typeof reference !== 'string') throw new Error(`Invalid lockfile reference for ${name}`)
   const peerSuffix = reference.indexOf('(')
@@ -284,20 +469,33 @@ function dependencyArtifacts() {
   const packages = auditProductionLicenses(graph.packages)
   const rootPurl = purlFor(rootPackage.name, rootPackage.version)
 
-  const components = packages.map(dependency => {
-    const component = {
-      type: 'library',
-      'bom-ref': dependency.bomRef,
-      ...componentName(dependency.name),
-      version: dependency.version,
-      licenses: [{ expression: dependency.license }],
-      purl: dependency.bomRef,
-      properties: [
-        { name: 'unified-ble-manager:license-source', value: dependency.licenseSource },
-      ],
-    }
-    return component
-  })
+  const cargoLockfileBytes = fs.readFileSync(path.join(repositoryRoot, 'Cargo.lock'))
+  const cargoGraph = collectCargoGraph(readCargoMetadata())
+
+  const components = [
+    ...packages.map(dependency => {
+      const component = {
+        type: 'library',
+        'bom-ref': dependency.bomRef,
+        ...componentName(dependency.name),
+        version: dependency.version,
+        licenses: [{ expression: dependency.license }],
+        purl: dependency.bomRef,
+        properties: [
+          { name: 'unified-ble-manager:license-source', value: dependency.licenseSource },
+        ],
+      }
+      return component
+    }),
+    ...cargoGraph.packages.map(cargoComponent),
+  ]
+
+  const npmDependencyEntries = [...dependenciesByRef.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([ref, dependencies]) => ({ ref, dependsOn: [...dependencies].sort() }))
+  const cargoDependencyEntries = [...cargoGraph.dependenciesByRef.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([ref, dependsOn]) => ({ ref, dependsOn }))
 
   const sbom = {
     $schema: 'https://cyclonedx.org/schema/bom-1.6.schema.json',
@@ -310,19 +508,49 @@ function dependencyArtifacts() {
         'bom-ref': rootPurl,
         name: rootPackage.name,
         version: rootPackage.version,
-        licenses: [{ expression: rootPackage.license }],
+        licenses: [{ expression: rootLicenseExpression(rootPackage) }],
         purl: rootPurl,
       },
       properties: [
         { name: 'unified-ble-manager:pnpm-lock-sha256', value: sha256(lockfileBytes) },
         { name: 'unified-ble-manager:dependency-scope', value: 'production-and-optional-runtime' },
+        { name: 'unified-ble-manager:cargo-lock-sha256', value: sha256(cargoLockfileBytes) },
+        { name: 'unified-ble-manager:rust-dependency-scope', value: 'cargo-workspace-resolved-graph' },
       ],
     },
     components,
-    dependencies: [...dependenciesByRef.entries()]
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([ref, dependencies]) => ({ ref, dependsOn: [...dependencies].sort() })),
+    dependencies: [...npmDependencyEntries, ...cargoDependencyEntries],
   }
+
+  const cargoPackages = cargoGraph.packages.map(dependency => {
+    const { resolved } = dependency
+    const entry = {
+      name: dependency.name,
+      version: dependency.version,
+      license: resolved.license,
+      licenseSource: resolved.source,
+    }
+    if (resolved.reviewRequired) entry.reviewRequired = true
+    if (typeof resolved.declared === 'string') entry.declared = resolved.declared
+    if (resolved.licenseFile) entry.evidence = { fileName: resolved.licenseFile }
+    entry.purl = dependency.bomRef
+    return entry
+  })
+  const unresolved = cargoGraph.packages
+    .filter(dependency => dependency.resolved.reviewRequired)
+    .map(dependency => {
+      const { resolved } = dependency
+      const entry = { purl: dependency.bomRef }
+      if (typeof resolved.declared === 'string') {
+        entry.declared = resolved.declared
+        entry.reason = `ambiguous license declaration "${resolved.declared}"; recorded as NOASSERTION pending human review`
+      } else {
+        entry.reason = 'missing license declaration; recorded as NOASSERTION pending human review'
+      }
+      if (resolved.licenseFile) entry.evidence = { fileName: resolved.licenseFile }
+      return entry
+    })
+    .sort((left, right) => left.purl.localeCompare(right.purl))
 
   const inventory = {
     $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -330,9 +558,11 @@ function dependencyArtifacts() {
     schemaVersion: '1.0.0',
     package: { name: rootPackage.name, version: rootPackage.version },
     source: {
-      method: 'pnpm-lock production graph with installed-manifest license audit',
+      method: 'pnpm-lock production graph with installed-manifest license audit + cargo-metadata workspace graph (declared metadata plus exact reviewed cargo license-file evidence)',
       lockfile: 'pnpm-lock.yaml',
       lockfileSha256: sha256(lockfileBytes),
+      cargoLockfile: 'Cargo.lock',
+      cargoLockfileSha256: sha256(cargoLockfileBytes),
     },
     reviewedOverrides: Object.entries(reviewedLicenseOverrides).map(([dependency, override]) => ({
       dependency,
@@ -340,15 +570,24 @@ function dependencyArtifacts() {
       license: override.license,
       sha256: override.sha256,
     })),
-    unresolved: [],
-    packages: packages.map(dependency => ({
-      name: dependency.name,
-      version: dependency.version,
-      license: dependency.license,
-      licenseSource: dependency.licenseSource,
-      ...(dependency.evidence ? { evidence: dependency.evidence } : {}),
-      purl: dependency.bomRef,
+    reviewedCargoOverrides: Object.entries(reviewedCargoLicenseOverrides).map(([dependency, override]) => ({
+      dependency,
+      fileName: override.fileName,
+      license: override.license,
+      sha256: override.sha256,
     })),
+    unresolved,
+    packages: [
+      ...packages.map(dependency => ({
+        name: dependency.name,
+        version: dependency.version,
+        license: dependency.license,
+        licenseSource: dependency.licenseSource,
+        ...(dependency.evidence ? { evidence: dependency.evidence } : {}),
+        purl: dependency.bomRef,
+      })),
+      ...cargoPackages,
+    ],
   }
 
   return new Map([
@@ -381,4 +620,6 @@ function run() {
   )
 }
 
-run()
+if (require.main === module) run()
+
+module.exports = { normalizeCargoSlashLicense }

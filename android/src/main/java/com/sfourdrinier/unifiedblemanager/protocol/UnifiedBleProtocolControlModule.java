@@ -9,11 +9,9 @@ import android.bluetooth.BluetoothDevice;
 import android.companion.AssociationRequest;
 import android.companion.AssociationInfo;
 import android.companion.CompanionDeviceManager;
-import android.companion.BluetoothDeviceFilter;
 import android.content.IntentSender;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.os.ParcelUuid;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -37,6 +35,7 @@ import java.util.regex.Pattern;
 import com.sfourdrinier.unifiedblemanager.background.AndroidConnectedDeviceForegroundServiceDriver;
 import com.sfourdrinier.unifiedblemanager.background.ConnectedDeviceForegroundServiceLeaseRegistry;
 import com.sfourdrinier.unifiedblemanager.background.ForegroundServiceControlException;
+import com.sfourdrinier.unifiedblemanager.companion.CompanionAssociations;
 @ReactModule(name = UnifiedBleProtocolControlModule.NAME)
 public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProtocolControlSpec
     implements ActivityEventListener {
@@ -179,24 +178,27 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
       }
       final String name = optionalBoundedString(request, "name", 128);
       final String serviceUuid = optionalBoundedString(request, "serviceUuid", 36);
-      final BluetoothDeviceFilter.Builder filter = new BluetoothDeviceFilter.Builder();
-      if (name != null) filter.setNamePattern(Pattern.compile(Pattern.quote(name)));
-      if (serviceUuid != null) {
-        filter.addServiceUuid(ParcelUuid.fromString(normalizeUuid(serviceUuid)), null);
+      final CompanionDeviceManager manager =
+          (CompanionDeviceManager) reactContext.getSystemService(android.content.Context.COMPANION_DEVICE_SERVICE);
+      if (manager == null) throw new IllegalStateException("Companion Device Manager is unavailable.");
+      // Finding 236: a named device this app already associated reports the
+      // existing record instead of launching the system UI into a duplicate.
+      final CompanionAssociations.Summary existing = findExistingAssociation(manager, name);
+      if (existing != null) {
+        promise.resolve(
+            associationResult(
+                "already-associated", existing.id, existing.macAddress, existing.displayName));
+        return;
       }
-      final AssociationRequest associationRequest = new AssociationRequest.Builder()
-          .addDeviceFilter(filter.build())
-          .setSingleDevice(true)
-          .build();
+      // Finding 222 twin: same LE treatment as the Rust-route chooser; see
+      // LegacyCompanionAssociationRequests for the rationale.
+      final AssociationRequest associationRequest = LegacyCompanionAssociationRequests.build(name, serviceUuid);
       pendingAssociation = promise;
       pendingAssociationId = 0;
       final int associationRequestCode = nextAssociationRequestCode();
       pendingAssociationRequestCode = associationRequestCode;
       associationUiLaunched = false;
       associationStarted = true;
-      final CompanionDeviceManager manager =
-          (CompanionDeviceManager) reactContext.getSystemService(android.content.Context.COMPANION_DEVICE_SERVICE);
-      if (manager == null) throw new IllegalStateException("Companion Device Manager is unavailable.");
       manager.associate(associationRequest, new CompanionDeviceManager.Callback() {
         final Promise associationPromise = promise;
 
@@ -279,6 +281,7 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
         pendingAssociationId = associationInfo.getId();
         resolveAssociation(
             associationPromise,
+            "associated",
             pendingAssociationId,
             associationPeerId(associationInfo),
             associationDisplayName(associationInfo));
@@ -293,7 +296,7 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
     }
     final String peerId = deviceAddress(device);
     final String displayName = deviceDisplayName(device);
-    resolveAssociation(associationPromise, pendingAssociationId, peerId, displayName);
+    resolveAssociation(associationPromise, "associated", pendingAssociationId, peerId, displayName);
   }
 
   @Override
@@ -314,6 +317,7 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
     if (!associationUiLaunched) {
       resolveAssociation(
           associationPromise,
+          "associated",
           pendingAssociationId,
           associationPeerId(associationInfo),
           associationDisplayName(associationInfo));
@@ -322,6 +326,7 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
 
   private synchronized void resolveAssociation(
       Promise associationPromise,
+      String source,
       int associationId,
       String peerId,
       String displayName) {
@@ -338,12 +343,28 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
     pendingAssociationId = 0;
     pendingAssociationRequestCode = 0;
     associationUiLaunched = false;
+    promise.resolve(associationResult(source, associationId, peerId, displayName));
+  }
+
+  private static WritableMap associationResult(
+      String source, int associationId, String peerId, String displayName) {
     final WritableMap result = Arguments.createMap();
-    result.putString("source", "associated");
+    result.putString("source", source);
     result.putInt("associationId", associationId);
     if (peerId == null) result.putNull("peerId"); else result.putString("peerId", peerId);
     if (displayName == null) result.putNull("displayName"); else result.putString("displayName", displayName);
-    promise.resolve(result);
+    return result;
+  }
+
+  private static CompanionAssociations.Summary findExistingAssociation(
+      CompanionDeviceManager manager, String name) {
+    try {
+      return CompanionAssociations.findByDisplayName(
+          CompanionAssociations.summarize(manager.getMyAssociations()), name);
+    } catch (RuntimeException error) {
+      Log.w(TAG, "Companion association lookup failed; launching the system chooser", error);
+      return null;
+    }
   }
 
   private synchronized void rejectAssociation(String code, String message) {
@@ -721,13 +742,6 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
       throw new IllegalArgumentException("Invalid association filter: " + key);
     }
     return value;
-  }
-
-  private static String normalizeUuid(String value) {
-    if (value.matches("[0-9A-Fa-f]{4}")) return "0000" + value + "-0000-1000-8000-00805F9B34FB";
-    if (value.matches("[0-9A-Fa-f]{8}")) return value + "-0000-1000-8000-00805F9B34FB";
-    if (value.matches("[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}")) return value;
-    throw new IllegalArgumentException("Association serviceUuid must be a valid Bluetooth UUID");
   }
 
   private static String errorCode(RuntimeException error, String fallback) {

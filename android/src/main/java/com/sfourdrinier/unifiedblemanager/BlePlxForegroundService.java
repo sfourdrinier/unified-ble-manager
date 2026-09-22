@@ -107,6 +107,7 @@ public final class BlePlxForegroundService extends Service {
       }
       return configuration.restartWhileSessionIntentExists() ? START_STICKY : START_NOT_STICKY;
     } catch (RuntimeException error) {
+      android.util.Log.e("UnifiedBleForegroundService", "Foreground-service start failed; session intent cleared", error);
       acknowledge(intent, ACK_FAILED, error.getMessage());
       if (!getSharedPreferences("unified-ble-manager", MODE_PRIVATE)
           .edit()

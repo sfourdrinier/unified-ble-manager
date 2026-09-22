@@ -31,7 +31,7 @@ describe('G6A packed independent-consumer proof fixture', () => {
 
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
     expect(manifest.name).toBe('@example/g6a-packed-consumer')
-    expect(manifest.peerDependencies).toEqual({ 'unified-ble-manager': '>=4.0.0-alpha.0 <5.0.0' })
+    expect(manifest.peerDependencies).toEqual({ 'unified-ble-manager': '>=4.0.0-alpha.0 <5.0.0 || >=5.0.0-rc.0 <6.0.0' })
     expect(manifest.dependencies).toBeUndefined()
     expect(manifest.devDependencies).toBeUndefined()
 
@@ -134,14 +134,14 @@ describe('G6A packed independent-consumer proof fixture', () => {
     expect(validateG6AProof(aggregate, 'unified-ble-manager', '4.0.0')).toEqual(aggregate)
   })
 
-  test('includes the PR8 fair-and-bounded operation queue fact in the 43-fact TCK contract', () => {
+  test('includes the PR8 fair-and-bounded operation queue fact in the 45-fact TCK contract', () => {
     const scenario = expectedThirdPartyTckProfile.find(
       profile => profile.id === 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation'
     )
     const factCount = expectedThirdPartyTckProfile.reduce((total, profile) => total + profile.facts.length, 0)
 
     expect(scenario?.facts).toEqual(expect.arrayContaining(['gatt-operation-queue-is-fair-and-bounded']))
-    expect(factCount).toBe(43)
+    expect(factCount).toBe(45)
   })
 
   test.each([
@@ -370,12 +370,12 @@ function validAggregate(node, web) {
       tckSummary: {
         backendId: 'example:packed-author-backend',
         registeredPlatformId: 'example:deterministic-host',
-        baseScenarioCount: 17,
+        baseScenarioCount: 18,
         featureSuiteCount: 0,
         featureBindingCount: 0,
-        receiptCount: 17,
-        successfulReceiptCount: 17,
-        factCount: 43
+        receiptCount: 18,
+        successfulReceiptCount: 18,
+        factCount: 45
       }
     },
     hardware: {

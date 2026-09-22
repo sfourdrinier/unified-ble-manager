@@ -11,7 +11,7 @@ function read(relativePath) {
   return fs.readFileSync(path.join(root, relativePath), 'utf8')
 }
 
-describe('4.0 Web Bluetooth public example', () => {
+describe('5.0 Web Bluetooth public example', () => {
   test('uses only packed clean-baseline public entrypoints', () => {
     const app = read('example-web/src/main.ts')
     expect(app).toContain("from 'unified-ble-manager'")
@@ -111,7 +111,7 @@ describe('4.0 Web Bluetooth public example', () => {
     expect(config).toContain("root: 'example-web'")
     expect(continuousIntegrationWorkflow).toContain('run: pnpm build:example:web')
     expect(publishWorkflow).toContain('run: pnpm build:example:web')
-    expect(readme).toContain('4.0 TypeScript Web Bluetooth example')
+    expect(readme).toContain('5.0.0-rc.0 TypeScript Web Bluetooth example')
     expect(readme).toMatch(/does not itself create a\s+release evidence receipt/u)
     expect(readme).not.toContain('Historical Web Bluetooth example')
   })

@@ -14,7 +14,7 @@ const {
   BLUEZ_CONNECTION_PRIORITY_LIMITATIONS,
   BLUEZ_CONNECTION_PARAMETERS_LIMITATIONS,
   createBluezConnectionControlRegistrations
-} = require('../../../src/backends/bluez/bluez-connection-capabilities')
+} = require('../../../src/backends/desktop/bluez-connection-capabilities')
 const { createPublicBleManager } = require('../../../src/public/ble-manager')
 const {
   BLUEZ_ADAPTER_INTERFACE,

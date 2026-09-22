@@ -133,6 +133,14 @@ export interface PhysicalSubscription {
   removal: Promise<CleanupRecord> | null
   nativeRemoval: Promise<void> | null
 }
+
+/**
+ * Records that still name the native link (FX1B): a non-final release ends
+ * locally while any holder remains; only the final holder drives the radio.
+ */
+function linkHeld(record: ConnectionRecord): boolean {
+  return record.state === 'connected' || record.state === 'disconnecting' || record.state === 'cleanup-failed'
+}
 let nextBackendInstance = 1
 /**
  * Android scan results expose only the MAC value; the native protocol carries
@@ -330,7 +338,13 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
   private readonly stateStreams = new Set<CoreBoundedStream<AdapterStateSnapshot<string>>>()
   private readonly peerIdsByNativeId = new Map<string, PeerId<string>>()
   private readonly nativeIdsByPeerId = new Map<string, string>()
-  private readonly connectionsByNativeId = new Map<string, ConnectionRecord>()
+  /**
+   * One record per lease, keyed by connection id (UNIFIED_SEMANTICS §3/§8,
+   * FX1B). Leases of one peer share the single native link; the map holds a
+   * join family of `connected` records, a single transitional record, or
+   * terminal garbage awaiting deletion — never a mix.
+   */
+  private readonly connectionsById = new Map<string, ConnectionRecord>()
   readonly subscriptions = new Map<string, PhysicalSubscription>()
   readonly gattOperations: CoreBluetoothGattOperations
   readonly connectionControls: CoreBluetoothConnectionControls
@@ -497,16 +511,14 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       scanConsumers: resourceCount(this.scanGroup?.consumers.size ?? 0),
       chooserSessions: resourceCount(0),
       connectionLeases: resourceCount(
-        [...this.connectionsByNativeId.values()].filter(record => record.lease !== null).length
+        [...this.connectionsById.values()].filter(record => record.lease !== null).length
       ),
+      // One physical link per peer no matter how many leases share it.
       physicalLinks: resourceCount(
-        [...this.connectionsByNativeId.values()].filter(
-          record =>
-            record.state === 'connected' || record.state === 'disconnecting' || record.state === 'cleanup-failed'
-        ).length
+        new Set([...this.connectionsById.values()].filter(linkHeld).map(record => record.nativePeerId)).size
       ),
       databaseSnapshots: resourceCount(
-        [...this.connectionsByNativeId.values()].filter(record => record.database !== null).length
+        [...this.connectionsById.values()].filter(record => record.database !== null).length
       ),
       physicalCccdEnablements: resourceCount(this.subscriptions.size),
       subscriptionConsumers: resourceCount(subscriptionConsumers),
@@ -878,6 +890,120 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     this.scanGroup = null
     console.error(`${this.diagnosticTag('handleScanFailure')} Native scan failed:`, safeMessage)
   }
+  /**
+   * Every lease record for one native peer. Joins share the single native
+   * link; see the `connectionsById` invariant.
+   */
+  private recordsForNativePeer(nativePeerId: string): ConnectionRecord[] {
+    return [...this.connectionsById.values()].filter(record => record.nativePeerId === nativePeerId)
+  }
+
+  /**
+   * The peer's live link, if any: a `connected` record whose lease still
+   * holds it. A connect joins this link with an independent generation
+   * instead of re-dialling the radio.
+   */
+  private liveSharedLink(nativePeerId: string): ConnectionRecord | null {
+    for (const record of this.connectionsById.values()) {
+      if (record.nativePeerId !== nativePeerId) continue
+      if (record.state === 'connected' && record.lease !== null) return record
+    }
+    return null
+  }
+
+  /**
+   * Live holders of the peer's link besides `except`: `connected`,
+   * `disconnecting` or `cleanup-failed` records still name the native link.
+   * A non-final release ends locally while any holder remains.
+   */
+  private liveLinkHolders(nativePeerId: string, except: ConnectionRecord): ConnectionRecord[] {
+    return this.recordsForNativePeer(nativePeerId).filter(record => record !== except && linkHeld(record))
+  }
+
+  private joinSharedLink(
+    peerId: PeerId<string>,
+    clientId: ClientId<string, string>,
+    shared: ConnectionRecord
+  ): ConnectionLease<string, string, string> {
+    const identifiers = this.identifiers()
+    const record: ConnectionRecord = {
+      nativePeerId: shared.nativePeerId,
+      peerId,
+      connectionId: identifiers.connectionId(`corebluetooth-connection-${this.nextConnection}`),
+      connectionGeneration: opaqueId(
+        `corebluetooth-connection-generation-${this.nextConnection}`,
+        'connection-generation',
+        'corebluetooth'
+      ),
+      ownerLeaseId: identifiers.leaseId(`corebluetooth-connection-lease-${this.nextLease}`),
+      ownerClientId: clientId,
+      state: 'connected',
+      database: null,
+      lease: null,
+      readinessWatchClosures: new Set(),
+      nativeDisconnect: null
+    }
+    this.nextConnection += 1
+    this.nextLease += 1
+    this.connectionsById.set(String(record.connectionId), record)
+    const connection = new CoreBluetoothConnection(this, record)
+    const lease = new CoreBluetoothConnectionLease(this, record, connection)
+    record.lease = lease
+    return lease
+  }
+
+  /**
+   * Ends one joined lease locally: only its own subscription consumers are
+   * removed (a shared physical enablement stays up while another lease
+   * consumes it); the native link is untouched.
+   */
+  private async releaseSharedLease(record: ConnectionRecord): Promise<CleanupRecord> {
+    const subscriptionCleanup = await this.removeLeaseSubscriptions(record, 'owner-released')
+    if (subscriptionCleanup.state === 'release-failed') {
+      return subscriptionCleanup
+    }
+    this.closeConnectionReadinessWatches(record)
+    record.database?.invalidate()
+    record.database = null
+    record.state = 'disconnected'
+    record.lease?.markReleased()
+    record.lease = null
+    this.connectionsById.delete(String(record.connectionId))
+    return releasedCleanup
+  }
+
+  private async removeLeaseSubscriptions(
+    record: ConnectionRecord,
+    reason: 'connection-lost' | 'owner-released'
+  ): Promise<CleanupRecord> {
+    const failures: CleanupFailure[] = []
+    for (const physical of [...this.subscriptions.values()]) {
+      if (physical.address.nativePeerId !== record.nativePeerId) {
+        continue
+      }
+      let owned = false
+      for (const consumer of [...physical.consumers]) {
+        if (String(consumer.path.connectionId) !== String(record.connectionId)) {
+          continue
+        }
+        owned = true
+        consumer.stream.closeWithReason(reason)
+        consumer.removed = true
+        physical.consumers.delete(consumer)
+      }
+      if (!owned) {
+        continue
+      }
+      if (physical.consumers.size === 0) {
+        const cleanup = await this.gattOperations.stopPhysicalSubscription(physical)
+        failures.push(...cleanup.failures)
+      }
+    }
+    return failures.length === 0
+      ? releasedCleanup
+      : Object.freeze({ state: 'release-failed', failures: Object.freeze(failures) })
+  }
+
   private async connect(
     peerId: PeerId<string>,
     clientId: ClientId<string, string>,
@@ -890,23 +1016,36 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     }
     this.operationLifecycle.assertAdmission(options, 'direct-gatt.connect')
     const nativePeerId = this.nativePeerIdForPeerId(peerId, 'direct-gatt.connect.peer')
-    let existing = this.connectionsByNativeId.get(nativePeerId)
-    if (existing?.state === 'cleanup-failed') {
+    const quarantined = this.recordsForNativePeer(nativePeerId).find(record => record.state === 'cleanup-failed')
+    if (quarantined !== undefined) {
       try {
-        const released = await releaseLateCoreBluetoothConnection(this.boundary, this.connectionsByNativeId, existing)
+        const released = await releaseLateCoreBluetoothConnection(this.boundary, this.connectionsById, quarantined)
         if (!released) {
           console.error(
             `${this.diagnosticTag('connect')} Late connection cleanup remains active:`,
-            existing.nativePeerId
+            quarantined.nativePeerId
           )
         }
       } catch (error) {
         console.error(`${this.diagnosticTag('connect')} Late connection cleanup retry failed:`, error)
       }
-      existing = this.connectionsByNativeId.get(nativePeerId)
     }
-    if (existing !== undefined && existing.state !== 'disconnected' && existing.state !== 'lost') {
+    // Same-peer join (UNIFIED_SEMANTICS §3/§8, FX1B, Android reference): a
+    // live link is leased, never re-dialled. Only a peer with no live link
+    // reaches the radio; a transitional record arbitrates
+    // `connection.already-owned` until its teardown completes.
+    const shared = this.liveSharedLink(nativePeerId)
+    if (shared !== null) {
+      return this.joinSharedLink(peerId, clientId, shared)
+    }
+    const transitional = this.recordsForNativePeer(nativePeerId).find(
+      record => record.state !== 'disconnected' && record.state !== 'lost'
+    )
+    if (transitional !== undefined) {
       throw contractError('connection.already-owned', 'connection', 'direct-gatt.connect.owner')
+    }
+    for (const terminal of this.recordsForNativePeer(nativePeerId)) {
+      this.connectionsById.delete(String(terminal.connectionId))
     }
     const identifiers = this.identifiers()
     const record: ConnectionRecord = {
@@ -928,7 +1067,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     }
     this.nextConnection += 1
     this.nextLease += 1
-    this.connectionsByNativeId.set(nativePeerId, record)
+    this.connectionsById.set(String(record.connectionId), record)
     const cleanupCancelledConnection = async (): Promise<void> => {
       // A caller may abort before the boundary has dispatched the native
       // connect. Preserve the quarantine record in that case so a late native
@@ -936,7 +1075,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       // releaseLateCoreBluetoothConnection cancels both connecting and
       // connected states through the boundary.
       if (this.boundary.connectionState(nativePeerId) === 'disconnected') return
-      const released = await releaseLateCoreBluetoothConnection(this.boundary, this.connectionsByNativeId, record)
+      const released = await releaseLateCoreBluetoothConnection(this.boundary, this.connectionsById, record)
       if (!released) {
         console.info(
           `${this.diagnosticTag('connect')} Cancelled native connection cleanup is not yet confirmed; quarantine retained:`,
@@ -950,7 +1089,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
         'direct-gatt.connect',
         () => this.boundary.connect(nativePeerId, intent),
         async () => {
-          const released = await releaseLateCoreBluetoothConnection(this.boundary, this.connectionsByNativeId, record)
+          const released = await releaseLateCoreBluetoothConnection(this.boundary, this.connectionsById, record)
           if (!released) {
             console.error(
               `${this.diagnosticTag('connect')} Late native connection remains active:`,
@@ -971,13 +1110,13 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
           error.normalized.code === 'operation.timed-out' ||
           error.normalized.code === 'operation.cancelled-by-destroy')
       if (!terminalCancellation) {
-        this.connectionsByNativeId.delete(nativePeerId)
+        this.connectionsById.delete(String(record.connectionId))
       }
       throw error
     }
     if (this.admissionClosed) {
       await this.boundary.disconnect(nativePeerId)
-      this.connectionsByNativeId.delete(nativePeerId)
+      this.connectionsById.delete(String(record.connectionId))
       throw contractError('operation.cancelled-by-destroy', 'connection', 'direct-gatt.connect.destroyed')
     }
     record.state = 'connected'
@@ -990,6 +1129,11 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     const record = lease.record
     if (record.lease !== lease) {
       return releasedCleanup
+    }
+    // A lease that shares its peer's link with other live leases ends
+    // locally without radio work; the final holder drives the radio.
+    if (this.liveLinkHolders(record.nativePeerId, record).length > 0) {
+      return this.releaseSharedLease(record)
     }
     return this.disconnect(record, 'direct-gatt.connection.release')
   }
@@ -1010,9 +1154,17 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     const failures: CleanupFailure[] = [...subscriptionCleanup.failures]
     const nativeCleanup = await this.disconnectNative(record, operation, false)
     failures.push(...nativeCleanup.failures)
-    return failures.length === 0
-      ? releasedCleanup
-      : Object.freeze({ state: 'release-failed', failures: Object.freeze(failures) })
+    if (failures.length !== 0) {
+      return Object.freeze({ state: 'release-failed', failures: Object.freeze(failures) })
+    }
+    // An explicit disconnect drops the shared link: every joined lease ends
+    // with it. The radio fired once above; siblings end locally.
+    for (const sibling of this.recordsForNativePeer(record.nativePeerId)) {
+      if (sibling !== record) {
+        this.invalidateRecord(sibling, true)
+      }
+    }
+    return releasedCleanup
   }
   private async disconnectNative(
     record: ConnectionRecord,
@@ -1051,10 +1203,24 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     )
   }
   private handleDisconnect(nativePeerId: string, _safeMessage: string | null): void {
-    const record = this.connectionsByNativeId.get(nativePeerId)
-    if (record === undefined || record.state === 'disconnected' || record.state === 'lost') {
-      return
+    // A link drop ends every lease with `connection.lost`: each live record
+    // of the peer runs the same invalidation and broadcasts its own event
+    // naming its independent generation. Subscription teardown is peer-wide
+    // and idempotent, so the first record settles it for all.
+    const live = this.recordsForNativePeer(nativePeerId).filter(
+      record => record.state !== 'disconnected' && record.state !== 'lost'
+    )
+    for (const record of live) {
+      this.handleRecordDisconnect(record)
     }
+    // Link loss is a normal, typed lifecycle outcome (notably for
+    // when-available sensors such as Dexcom). Consumers receive it through the
+    // canonical event and terminal streams above. Logging it as console.error
+    // made every expected sensor wake-cycle termination an application error
+    // and, in Expo development builds, a blocking LogBox.
+  }
+
+  private handleRecordDisconnect(record: ConnectionRecord): void {
     if (this.adapterLossActive || this.adapterLossPending) {
       const previous = record.state === 'disconnecting' ? 'disconnecting' : 'connected'
       this.terminalizeAdapterLossConnection(record, previous)
@@ -1086,11 +1252,6 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       ingressOrdinal: this.nextIngressOrdinal
     })
     this.nextIngressOrdinal += 1
-    // Link loss is a normal, typed lifecycle outcome (notably for
-    // when-available sensors such as Dexcom). Consumers receive it through the
-    // canonical event and terminal streams above. Logging it as console.error
-    // made every expected sensor wake-cycle termination an application error
-    // and, in Expo development builds, a blocking LogBox.
   }
   private terminalizeAdapterLossConnection(record: ConnectionRecord, previous: 'connected' | 'disconnecting'): void {
     if (this.adapterLossTerminalizedConnections.has(record)) return
@@ -1116,35 +1277,49 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     if (this.admissionClosed || this.destroyed) {
       return
     }
-    const record = this.connectionsByNativeId.get(nativePeerId)
-    const database = record?.database
-    if (record === undefined || database === null || database === undefined || record.state !== 'connected') {
+    // Services changed on the shared link: every connected lease's snapshot
+    // ends. Subscription teardown stays peer-wide and idempotent.
+    const live = this.recordsForNativePeer(nativePeerId).filter(
+      record => record.state === 'connected' && record.database !== null
+    )
+    if (live.length === 0) {
       return
     }
-    database.invalidate()
-    record.database = null
-    this.removeConnectionSubscriptions(record, 'connection-lost').then(
+    const invalidated: CoreBluetoothGattDatabase[] = []
+    for (const record of live) {
+      const database = record.database
+      if (database === null) continue
+      database.invalidate()
+      record.database = null
+      invalidated.push(database)
+    }
+    const primary = live[0]
+    if (primary === undefined) return
+    this.removeConnectionSubscriptions(primary, 'connection-lost').then(
       cleanup => {
         if (cleanup.state === 'release-failed') {
-          this.scheduleConnectionLossSubscriptionRetry(record)
+          for (const record of live) this.scheduleConnectionLossSubscriptionRetry(record)
         }
       },
       error => {
         console.error(`${this.diagnosticTag('database-changed')} Subscription cleanup rejected:`, error)
-        this.scheduleConnectionLossSubscriptionRetry(record)
+        for (const record of live) this.scheduleConnectionLossSubscriptionRetry(record)
       }
     )
     const attachment = this.attachment()
-    this.broadcastEvent({
-      attachment,
-      attachmentId: attachment.attachmentId,
-      kind: 'database-changed',
-      database: database.path,
-      ingressOrdinal: this.nextIngressOrdinal
-    })
-    this.nextIngressOrdinal += 1
+    for (const database of invalidated) {
+      this.broadcastEvent({
+        attachment,
+        attachmentId: attachment.attachmentId,
+        kind: 'database-changed',
+        database: database.path,
+        ingressOrdinal: this.nextIngressOrdinal
+      })
+      this.nextIngressOrdinal += 1
+    }
   }
   private handleAdapterState(state: CoreBluetoothAdapterSnapshot): void {
+    const previous = this.attachmentLifecycle.adapterState()
     this.attachmentLifecycle.updateAdapterState(state)
     if (this.admissionClosed || this.destroyed) {
       return
@@ -1157,9 +1332,20 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       this.adapterLossActive = false
     }
     const snapshot = this.attachmentLifecycle.adapterState()
-    for (const stream of [...this.stateStreams]) {
-      if (stream.emit(snapshot, 96, String(snapshot.backendGeneration)).terminated) {
-        this.stateStreams.delete(stream)
+    // A re-announced state that changes nothing observable is not a
+    // transition: emitting it would duplicate the watch's initial snapshot
+    // for every subscriber. Bookkeeping, the backend event, loss cleanup and
+    // generation advances are untouched.
+    const unchanged =
+      snapshot.availability === previous.availability &&
+      snapshot.authorization === previous.authorization &&
+      snapshot.power === previous.power &&
+      snapshot.safeReason === previous.safeReason
+    if (!unchanged) {
+      for (const stream of [...this.stateStreams]) {
+        if (stream.emit(snapshot, 96, String(snapshot.backendGeneration)).terminated) {
+          this.stateStreams.delete(stream)
+        }
       }
     }
     const attachment = this.attachment()
@@ -1243,7 +1429,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     const pendingSettlements = [
       this.scanGroup?.nativeStop,
       ...[...this.subscriptions.values()].map(physical => physical.nativeRemoval),
-      ...[...this.connectionsByNativeId.values()].map(record => record.nativeDisconnect)
+      ...[...this.connectionsById.values()].map(record => record.nativeDisconnect)
     ].filter((settlement): settlement is Promise<void> => settlement !== null && settlement !== undefined)
     if (pendingSettlements.length === 0) {
       return
@@ -1265,7 +1451,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     return releaseCoreBluetoothAdapterLossResources({
       scanGroup: this.scanGroup,
       subscriptions: this.subscriptions,
-      connections: this.connectionsByNativeId,
+      connections: this.connectionsById,
       gattOperations: this.gattOperations,
       stopNativeScan: (group, operation) => this.stopNativeScan(group, operation),
       disconnectNative: (record, operation, preservePhysicalSubscriptions) =>
@@ -1305,7 +1491,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     record.database = null
     record.lease?.markReleased()
     record.lease = null
-    this.connectionsByNativeId.delete(record.nativePeerId)
+    this.connectionsById.delete(String(record.connectionId))
     for (const physical of preservePhysicalSubscriptions ? [] : [...this.subscriptions.values()]) {
       if (physical.address.nativePeerId !== record.nativePeerId) {
         continue
@@ -1374,7 +1560,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     const record = connection.record
     if (
       record.state !== 'connected' ||
-      this.connectionsByNativeId.get(record.nativePeerId) !== record ||
+      this.connectionsById.get(String(connection.connectionId)) !== record ||
       !attachmentRecordsEqual(connection.attachment, this.attachment())
     ) {
       throw contractError('connection.stale', 'connection', operation)
@@ -1385,7 +1571,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     operation: string
   ): CoreBluetoothGattDatabase {
-    for (const record of this.connectionsByNativeId.values()) {
+    for (const record of this.connectionsById.values()) {
       const database = record.database
       if (database !== null && database.matchesPath(path)) {
         database.assertCurrent(operation)
@@ -1399,7 +1585,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     connectionGeneration: string,
     operation: string
   ): string {
-    for (const record of this.connectionsByNativeId.values()) {
+    for (const record of this.connectionsById.values()) {
       if (
         String(record.connectionId) === connectionId &&
         String(record.connectionGeneration) === connectionGeneration &&
@@ -1598,7 +1784,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       const cleanup = await this.gattOperations.stopPhysicalSubscription(physical)
       failures.push(...cleanup.failures)
     }
-    for (const record of [...this.connectionsByNativeId.values()]) {
+    for (const record of [...this.connectionsById.values()]) {
       const cleanup = await this.disconnect(record, 'direct-gatt.destroy.connection')
       failures.push(...cleanup.failures)
     }

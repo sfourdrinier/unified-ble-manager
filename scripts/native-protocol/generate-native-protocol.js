@@ -415,7 +415,7 @@ export interface NativeCompanionAssociationRequest {
 }
 
 export interface NativeCompanionAssociationResult {
-  source: 'associated'
+  source: 'associated' | 'already-associated'
   associationId: number
   peerId: string | null
   displayName: string | null

@@ -98,6 +98,20 @@ describe('dbus-next BlueZ boundary', () => {
     jest.clearAllMocks()
   })
 
+  test('an error emitted while the bus opens rejects cleanly instead of crashing the process', async () => {
+    const fixture = createBus()
+    fixture.bus.getProxyObject.mockImplementationOnce(() => new Promise(() => {}))
+    buses.push(fixture.bus)
+
+    const opening = new DbusNextBluezBoundaryFactory().open('system')
+    const busError = new Error('system bus socket missing')
+    queueMicrotask(() => fixture.bus.emit('error', busError))
+
+    await expect(opening).rejects.toThrow('system bus socket missing')
+    expect(fixture.bus.listenerCount('error')).toBe(0)
+    expect(fixture.bus.disconnect).toHaveBeenCalledTimes(1)
+  })
+
   it('dispatches Device1.Pair (regression: was rejected as unsupported)', async () => {
     const fixture = createBus()
     buses.push(fixture.bus)

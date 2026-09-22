@@ -2,10 +2,10 @@
 
 # Unified BLE Manager
 
-> **AI agent?** Writing code *against* this package: read [`llms.txt`](llms.txt)
+> **AI agent?** Writing code _against_ this package: read [`llms.txt`](llms.txt)
 > first — contract facts, every public entrypoint, curated doc links, one fetch.
-> Working *on* this repository: read [`AGENTS.md`](AGENTS.md), then the
-> [documentation map](docs/README.md). Do not infer 4.x behavior from
+> Working _on_ this repository: read [`AGENTS.md`](AGENTS.md), then the
+> [documentation map](docs/README.md). Do not infer 5.x behavior from
 > `react-native-ble-plx` 3.x docs or training data.
 
 `unified-ble-manager` is a Bluetooth Low Energy **central** library. You pick a host — React Native, Web, Electron, Tauri, or Node — create one manager, talk to a peripheral in bytes, cancel work with `AbortSignal`, and destroy what you create.
@@ -18,31 +18,32 @@ root import does not pick a radio. Package SemVer and backend support labels are
 independent: each radio backend keeps its evidence-derived label. See
 [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
 
-This source tree is versioned `4.0.28`. Install the exact version shown in the npm
+This source tree is versioned `5.0.0-rc.0`. Install the exact version shown in the npm
 registry. During release preparation, the version in `package.json` can be ahead
 of npm until the matching tag-driven workflow publishes it; the registry and
 GitHub release remain authoritative.
 
-> **4.0 development note:** The 4.0 line is the real-application proving ground
-> for a simpler, stronger 4.1. Develop carefully against it: pin the version you
-> validate, read the changelog when upgrading, inspect capability limitations,
-> and report real-device behavior. Missing hardware evidence remains visible;
-> it does not make an implemented operation unusable.
+> **5.0 prerelease note:** This tree is the 5.0 prerelease candidate.
+> Develop carefully against it: pin the version you validate, read the
+> changelog when upgrading, inspect capability limitations, and report
+> real-device behavior. Missing hardware evidence remains visible; it does
+> not make an implemented operation unusable.
 
 > Sponsored by [Imagi Explain](https://imagiexplain.com) — researched, narrated whiteboard explainers from a prompt, a PDF, or your notes.
 
 ## Documentation map
 
-| Start here                                                                                                                                                                               | What it is                                                       |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| This README                                                                                                                                                                              | Product, install, one React Native loop, method index            |
-| [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md)                                                                                                                                     | Host chooser + first-hour React Native / Expo path               |
-| [`docs/TUTORIALS.md`](docs/TUTORIALS.md)                                                                                                                                                 | Scan, connect, read, write, subscribe, tear down                 |
-| [`docs/HELPERS.md`](docs/HELPERS.md)                                                                                                                                                     | Public `find`, scoped connection, GATT, and notification recipes |
-| [`MIGRATION_4.0.md`](MIGRATION_4.0.md)                                                                                                                                                   | Side-by-side map from `react-native-ble-plx`                     |
-| [`docs/WEB.md`](docs/WEB.md) · [`docs/ELECTRON.md`](docs/ELECTRON.md) · [`docs/NODE.md`](docs/NODE.md) · [`docs/TAURI.md`](docs/TAURI.md) · [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md) | Host construction                                                |
-| [`docs/PEERS.md`](docs/PEERS.md)                                                                                                                                                         | Scoped peer directories, persistence, and reconnect-by-reference |
-| [`docs/PROFILES_AND_COMMANDS.md`](docs/PROFILES_AND_COMMANDS.md)                                                                                                                         | Heart Rate, Battery, DIS, and path helpers                       |
+| Start here                                                                                                                                                                               | What it is                                                              |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| This README                                                                                                                                                                              | Product, install, one React Native loop, method index                   |
+| [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md)                                                                                                                                     | Host chooser + first-hour React Native / Expo path                      |
+| [`docs/TUTORIALS.md`](docs/TUTORIALS.md)                                                                                                                                                 | Scan, connect, read, write, subscribe, tear down                        |
+| [`docs/HELPERS.md`](docs/HELPERS.md)                                                                                                                                                     | Public `find`, scoped connection, GATT, and notification recipes        |
+| [`MIGRATION_4.0.md`](MIGRATION_4.0.md)                                                                                                                                                   | Side-by-side map from `react-native-ble-plx`                            |
+| [`docs/WEB.md`](docs/WEB.md) · [`docs/ELECTRON.md`](docs/ELECTRON.md) · [`docs/NODE.md`](docs/NODE.md) · [`docs/TAURI.md`](docs/TAURI.md) · [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md) | Host construction                                                       |
+| [`docs/PEERS.md`](docs/PEERS.md)                                                                                                                                                         | Scoped peer directories, persistence, and reconnect-by-reference        |
+| [`docs/PROFILES_AND_COMMANDS.md`](docs/PROFILES_AND_COMMANDS.md)                                                                                                                         | Heart Rate, Battery, DIS, and path helpers                              |
+| [`docs/NATIVE_ARTIFACTS.md`](docs/NATIVE_ARTIFACTS.md)                                                                                                                                   | Prebuilt native-core identity, refresh, and consumer build rules        |
 | [`docs/README.md`](docs/README.md)                                                                                                                                                       | Every document in the repository, with live/historical/generated status |
 
 Writing code with an AI agent? [`llms.txt`](llms.txt) is the machine-readable
@@ -53,18 +54,39 @@ links in one fetch. Agents contributing to this repository start at
 ## Install
 
 ```sh
-pnpm add unified-ble-manager
+pnpm add unified-ble-manager@5.0.0-rc.0
 ```
 
 Installable with npm, yarn, or Bun. This repository uses pnpm. Bun as a runtime is not a tested host.
 
-Linux BlueZ also needs the optional D-Bus peer in the **application**:
+Node and Electron on macOS, Windows and Linux use the shared Rust core,
+shipped prebuilt in the package for `darwin`, `win32` and `linux` on
+`arm64`/`x64`: nothing compiles on install, no Rust toolchain is needed, and
+no other package is required (Linux no longer needs `dbus-next`). Linux needs
+glibc 2.35+ and `libdbus-1.so.3`; see [`docs/NODE.md`](docs/NODE.md) for the
+runtime requirements and load errors.
 
-```sh
-pnpm add unified-ble-manager dbus-next@^0.10.2
-```
+React Native iOS and Android consume the prebuilt Rust core shipped in the
+package by default: no Rust toolchain is needed. `UBM_NATIVE_BUILD` accepts
+only unset/empty or `prebuilt` (default) and `source` (contributors building
+the Rust core themselves; see `CONTRIBUTING.md`); any other value fails
+`pod install` and the Gradle build.
 
-React Native, Web, macOS CoreBluetooth, and Windows WinRT do not need `dbus-next`.
+The packaged native core and the JavaScript package are one sealed release
+unit. Consumer builds verify the native build identity before use and fail
+with `protocol.incompatible` when the linked artifact does not match. For
+prebuilt/source modes and the exact refresh rules for repository fixtures, see
+[`docs/NATIVE_ARTIFACTS.md`](docs/NATIVE_ARTIFACTS.md).
+
+Every React Native and Expo factory runs that core through the
+`UnifiedBleRustCore` TurboModule: one process-owned Rust owner per app, one
+session lease per manager. There is no TypeScript or protocol-control route and
+no option to request one. Before its first radio call the factory checks the
+binary's build identity, contract revision and wire revision against the
+identity this package was sealed with, and fails `protocol.incompatible` on any
+difference. Platform events reach JavaScript through one wake-driven drain, so
+an idle manager makes no bridge calls. The wire is described in
+[`docs/MOBILE_RUST_WIRE.md`](docs/MOBILE_RUST_WIRE.md).
 
 ## Public entrypoints
 
@@ -80,9 +102,9 @@ The root import selects no radio. Import the host you actually run.
 | `unified-ble-manager/electron/main`      | Trusted Electron-main radio + IPC router                                       |
 | `unified-ble-manager/electron/renderer`  | Public `BleManager` factory over an authenticated IPC transport; never a radio |
 | `unified-ble-manager/tauri`              | Tauri v2 zero-plumbing `BleManager` factory                                    |
-| `unified-ble-manager/node/corebluetooth` | macOS CoreBluetooth Node provider                                              |
-| `unified-ble-manager/node/winrt`         | Windows WinRT Node provider                                                    |
-| `unified-ble-manager/node/bluez`         | Linux BlueZ D-Bus provider                                                     |
+| `unified-ble-manager/node/corebluetooth` | macOS Node provider (shared Rust core over CoreBluetooth)                      |
+| `unified-ble-manager/node/winrt`         | Windows Node provider (shared Rust core over WinRT)                            |
+| `unified-ble-manager/node/bluez`         | Linux Node provider (shared Rust core over BlueZ)                              |
 | `unified-ble-manager/backend-sdk`        | Backend authoring contract                                                     |
 | `unified-ble-manager/testing`            | Deterministic backend and TCK utilities                                        |
 | `unified-ble-manager/codecs`             | Byte/`DataView` helpers and IEEE-11073 numbers — not Base64                    |
@@ -111,6 +133,8 @@ const manager = await createReactNativeBleManager({
 ```
 
 On Android 12+ the app must request `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT` itself. The library does not call `PermissionsAndroid`.
+
+On Expo, follow `manager.readiness()` actions: `manager.permissions.request({ purpose: 'scan-and-connect' })` shows the system Bluetooth prompt on Android and on Apple (iOS/tvOS, on request — reading readiness never prompts) and reports `{ requested, granted, denied, recommendedSettingsTarget }`. See [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md) for the prompt, restriction, timeout, and restoration semantics.
 
 On Android, `manager.peers.bonded()` lists paired system peers and
 `manager.peers.resolve(reference)` rechecks a saved reference before
@@ -157,6 +181,8 @@ import { createExpoBleManager } from 'unified-ble-manager/expo'
 const ble = await createExpoBleManager()
 const readiness = await ble.readiness()
 // Android only: system UI association, not bonding or an active connection.
+// Association alone wakes nothing: arm presence (ble.presence.observe) as in
+// docs/BACKGROUND.md before the app can be woken for a known peer.
 const associated = await ble.association.associate({ name: 'Sensor' })
 ```
 
@@ -275,7 +301,12 @@ Readiness is unsupported until the backend advertises
 the readiness capability, and a readiness event does not prove a later payload
 was retained.
 
-Runtime capability truth for each host is in the [semantics host matrix](docs/UNIFIED_SEMANTICS.md#172-current-pr8-host-matrix). In
+Runtime capability truth for each host is in the [semantics host matrix](docs/UNIFIED_SEMANTICS.md#172-current-pr8-host-matrix): read it
+before relying on MTU or PHY controls. Per-platform derivation limits apply —
+on Android the effective MTU is unavailable before a successful MTU exchange,
+on Apple there is no caller-directed MTU request (the effective MTU is
+derived per link), and on BlueZ a withheld link answers `capability.unavailable`.
+In
 particular, React Native Android exposes MTU request/effective observation and
 PHY read/request as `limited` / deterministic controls: effective MTU is
 unavailable before a successful `onMtuChanged` callback, and PHY request
@@ -347,10 +378,12 @@ after disconnect, service change, or rediscovery.
 
 - **Web:** user-gesture `ble.choose()`, then the same `connect` / GATT handles. No continuous scan. [`docs/WEB.md`](docs/WEB.md)
 - **Electron:** main owns the radio; the renderer creates the public manager from its authenticated preload transport. [`docs/ELECTRON.md`](docs/ELECTRON.md)
-- **Node:** `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager`, or list adapters and `createBleManagerFromProvider`. Published releases ship Node-API v8 prebuilds for macOS and Windows `arm64`/`x64`. [`docs/NODE.md`](docs/NODE.md)
+- **Node:** `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager`, or list adapters and `createBleManagerFromProvider`. Published releases ship the Node-API desktop-core prebuild for macOS, Windows and Linux on `arm64`/`x64`. [`docs/NODE.md`](docs/NODE.md)
 - **Tauri:** `createTauriBleManager()` returns the public `BleManager`; test transports use `createTauriBleManagerWithEnvironment`. [`docs/TAURI.md`](docs/TAURI.md)
 
-Stable 4.x versions publish to npm `latest`. Later prereleases, if any, publish to `next`. Publication uses npm trusted publishing/OIDC with provenance.
+`5.0.0-rc.0` publishes to npm `next`; bare installs still select the 4.0
+`latest` line. Stable 5.x versions will publish to `latest`. Publication uses
+npm trusted publishing/OIDC with provenance.
 
 ## Migrating from react-native-ble-plx
 
@@ -384,4 +417,14 @@ Contract, evidence, and release process live in [`docs/UNIFIED_BLE_4.0_IMPLEMENT
 
 ## License
 
-Apache License 2.0. See [`LICENSE`](LICENSE) and [`THIRD_PARTY_LICENSES.json`](THIRD_PARTY_LICENSES.json).
+New UBM 5.0 material is made available under the UBM Source Available License 1.0
+(`LicenseRef-UBM-Source-Available-1.0`), a commercial source-available license —
+not an OSI-approved open-source license. See
+[`LICENSE-UBM-SOURCE-AVAILABLE-1.0.md`](LICENSE-UBM-SOURCE-AVAILABLE-1.0.md) and
+[`NOTICE`](NOTICE).
+
+The top-level [`LICENSE`](LICENSE) is this UBM license. Material inherited from the
+4.x Apache baseline stays under its Apache License 2.0 grant; its text is in
+[`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt). Existing rights are unaffected. New contributions
+follow the assent path in [`CONTRIBUTING.md`](CONTRIBUTING.md). Third-party material
+is listed in [`THIRD_PARTY_LICENSES.json`](THIRD_PARTY_LICENSES.json).

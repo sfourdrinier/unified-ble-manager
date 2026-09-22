@@ -111,6 +111,21 @@ export class CoreBoundedStream<Value> implements BoundedAsyncStream<Value> {
     this.flushPendingConsumers()
   }
 
+  /**
+   * An upstream `error`-policy overflow ends this stream: the upstream loss
+   * joins this stream's counters and the stream ends `overflow` at once,
+   * exactly as a local `error` overflow does (no separate overflow notice).
+   */
+  closeWithSourceOverflow(notice: StreamOverflowNotice): void {
+    if (this.isTerminal()) {
+      return
+    }
+    this.sourceDroppedItems = Math.max(this.sourceDroppedItems, Number(notice.droppedItems))
+    this.sourceDroppedBytes = Math.max(this.sourceDroppedBytes, Number(notice.droppedBytes))
+    this.sourceReplacedItems = Math.max(this.sourceReplacedItems, Number(notice.replacedItems))
+    this.closeWithReason('overflow')
+  }
+
   close(): Promise<CleanupRecord> {
     this.closeWithReason('closed')
     return Promise.resolve({ state: 'released', failures: [] })

@@ -121,6 +121,15 @@ export const baseTckScenarios: readonly TckScenarioDefinition[] = [
     requiredControllerActions: ['trigger-services-changed']
   },
   {
+    id: 'gatt.duplicate-uuid-occurrences-route-exactly',
+    execution: 'base',
+    requiredFacts: [
+      'gatt-duplicate-uuid-occurrences-are-indexed-per-parent',
+      'gatt-duplicate-uuid-notifications-route-to-exact-instance'
+    ],
+    requiredControllerActions: ['emit-notification']
+  },
+  {
     id: 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation',
     execution: 'base',
     requiredFacts: [
@@ -182,6 +191,12 @@ export const baseTckScenarios: readonly TckScenarioDefinition[] = [
       'restoration-rejection-is-non-consuming'
     ],
     requiredControllerActions: ['seed-restoration-journal']
+  },
+  {
+    id: 'restoration.presence-observation-arms-known-peer',
+    execution: 'feature',
+    requiredFacts: ['presence-observation-arms-known-peer', 'presence-unobserve-disarms-known-peer'],
+    requiredControllerActions: []
   },
   {
     id: 'electron.trusted-sender-envelope-generations-and-quotas',

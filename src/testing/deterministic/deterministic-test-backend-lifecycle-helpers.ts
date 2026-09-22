@@ -162,9 +162,13 @@ export function deterministicResourceCounters(input: {
   }
   let connectionLeases = 0
   let databaseSnapshots = 0
+  // A physical link is per peer: several connection records (leases) may
+  // share one peer's link, so the counter counts distinct peers, never records.
+  const linkedPeers = new Set<string>()
   for (const record of input.connections.values()) {
     connectionLeases += record.leases.size
     databaseSnapshots += record.databases.size
+    linkedPeers.add(String(record.peerId))
   }
   let subscriptionConsumers = 0
   let subscriptionBytes = 0
@@ -183,7 +187,7 @@ export function deterministicResourceCounters(input: {
     scanConsumers: resourceCount(scanConsumers),
     chooserSessions: resourceCount(0),
     connectionLeases: resourceCount(connectionLeases),
-    physicalLinks: resourceCount(input.connections.size),
+    physicalLinks: resourceCount(linkedPeers.size),
     databaseSnapshots: resourceCount(databaseSnapshots),
     physicalCccdEnablements: resourceCount(physicalCccdEnablements),
     subscriptionConsumers: resourceCount(subscriptionConsumers),

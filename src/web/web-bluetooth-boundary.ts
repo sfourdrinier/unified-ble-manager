@@ -72,6 +72,13 @@ export interface WebBluetoothGattServerBoundary {
 
 export interface WebBluetoothDeviceBoundary {
   readonly id: string
+  /**
+   * The browser's `BluetoothDevice.name` for the chooser-selected peer.
+   * Web Bluetooth exposes no advertisement payload for chooser devices, so
+   * this is the only name source; `null` means the browser withheld it
+   * (Chrome reports it, other browsers may not).
+   */
+  readonly name: string | null
   readonly gatt: WebBluetoothGattServerBoundary
   addDisconnectListener(listener: WebBluetoothDisconnectListener): void
   removeDisconnectListener(listener: WebBluetoothDisconnectListener): void

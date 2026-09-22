@@ -48,7 +48,12 @@ import type {
 } from '../backend-contract/connection-controls'
 import type { DiagnosticTraceDocument } from '../diagnostics/trace-format'
 import { DEFAULT_CORE_MAXIMUM_VALUE_BYTES, UnifiedBleCore } from '../core/unified-ble-core'
-import type { CoreDeadlineHandle, CoreScanSession, UnifiedBleCoreOptions } from '../core/unified-ble-core'
+import type {
+  AttachmentAdvanceListener,
+  CoreDeadlineHandle,
+  CoreScanSession,
+  UnifiedBleCoreOptions
+} from '../core/unified-ble-core'
 import { CoreConnection, CoreGattDatabase } from '../core/core-gatt-handles'
 import { CoreSubscription } from '../core/subscription-registry'
 import {
@@ -159,6 +164,15 @@ export class BleManager<Attachment extends string, Identity extends BackendIdent
 
   get attachmentId(): AttachmentId<Attachment> {
     return this.core.attachmentId
+  }
+
+  /**
+   * Observes the manager following its backend to a new attachment after an
+   * adapter loss (`previous`, `current`). A host that serves renderers (Electron
+   * main) rebinds them here. Answers the unsubscribe.
+   */
+  onAttachmentAdvanced(listener: AttachmentAdvanceListener<Attachment>): () => void {
+    return this.core.onAttachmentAdvanced(listener)
   }
 
   get managerId(): ManagerConstruction<Attachment, Identity>['managerId'] {
@@ -678,8 +692,8 @@ export class Connection<Attachment extends string, Identity extends BackendIdent
     return this.connection.requestMtu(requestedMtu, toPublicOperationOptions(options))
   }
 
-  effectiveMtu() {
-    return this.connection.effectiveMtu({ signal: null, deadline: null })
+  effectiveMtu(options?: PortableOperationOptions) {
+    return this.connection.effectiveMtu(toPublicOperationOptions(options ?? { signal: null, deadline: null }))
   }
 
   requestPriority(priority: ConnectionPriority, options: PortableOperationOptions) {
@@ -743,6 +757,10 @@ export class DiscoveredGattDatabase<Attachment extends string, Identity extends 
   }
 
   async read(path: PortableCurrentCharacteristicPath, options: PortableOperationOptions) {
+    return (await this.readReceipt(path, options)).value
+  }
+
+  async readReceipt(path: PortableCurrentCharacteristicPath, options: PortableOperationOptions) {
     return this.database.read(this.resolveCharacteristicPath(path), toPublicOperationOptions(options))
   }
 

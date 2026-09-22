@@ -2,6 +2,11 @@
 #import <UIKit/UIKit.h>
 #import <ReactCommon/RCTTurboModule.h>
 #import <CommonCrypto/CommonDigest.h>
+#import <CoreBluetooth/CoreBluetooth.h>
+
+#if __has_include("BlePlx-Swift.h")
+#import "BlePlx-Swift.h"
+#endif
 
 #ifdef RCT_NEW_ARCH_ENABLED
 #import <UnifiedBleProtocolSpec/UnifiedBleProtocolSpec.h>
@@ -27,6 +32,18 @@ NSString *configuredBackgroundModes(void) {
       }]];
   modes = [modes sortedArrayUsingSelector:@selector(compare:)];
   return [modes componentsJoinedByString:@","];
+}
+
+/// Finding 179: the owned-radio permission error codes
+/// (OwnedCoreBluetoothProtocolRadio) as the TypeScript boundary words.
+NSString *ApplePermissionErrorCode(NSInteger code) {
+  switch (code) {
+    case 1035: return @"permissionRestricted";
+    case 1036: return @"permissionUnavailable";
+    case 1037: return @"permissionInProgress";
+    case 1038: return @"permissionTimeout";
+    default: return @"permissionRequestFailed";
+  }
 }
 
 NSString *sha256Hex(NSString *value) {
@@ -92,11 +109,39 @@ RCT_EXPORT_MODULE(UnifiedBleExpoRuntime)
 - (void)requestPermissions:(JS::NativeUnifiedBleExpoRuntime::NativeExpoPermissionRequest &)request
                    resolve:(RCTPromiseResolveBlock)resolve
                     reject:(RCTPromiseRejectBlock)reject {
-  (void)request;
-  (void)resolve;
-  reject(@"unsupportedPermissionPrompt",
-         @"iOS has no standalone Bluetooth permission prompt; invoke a Bluetooth action first, then re-read readiness.",
+  // Finding 179: like Android's Expo module, this presents the system
+  // Bluetooth prompt and reports the decision in the Android result shape
+  // ({requested, granted, denied, recommendedSettingsTarget}). The prompt is
+  // the process-owned central's first allocation (same radio the Rust owner
+  // drives, so there is exactly one central); a decided authorization
+  // answers at once, a restriction refuses with its reason, and an
+  // unanswered prompt is bounded by kApplePermissionTimeoutMs. The caller
+  // races its own timeout/signal in TypeScript; a late native answer is
+  // discarded there.
+  static const double kApplePermissionTimeoutMs = 300000;
+  if (![request.purpose() isEqualToString:@"scan-and-connect"]) {
+    reject(@"permissionInvalidPurpose",
+           @"The Expo permission purpose must be scan-and-connect.",
+           nil);
+    return;
+  }
+#if __has_include("BlePlx-Swift.h")
+  OwnedCoreBluetoothProtocolRadio *radio = [UnifiedBleRustCoreSessions radioForPermissionPrompt];
+  [radio requestPermissionWithTimeoutMs:[NSNumber numberWithDouble:kApplePermissionTimeoutMs]
+                              completion:^(NSDictionary *result, NSError *error) {
+                  if (error != nil) {
+                    reject(ApplePermissionErrorCode(error.code),
+                           error.localizedDescription,
+                           nil);
+                    return;
+                  }
+                  resolve(result);
+                }];
+#else
+  reject(@"permissionUnavailable",
+         @"The Apple permission prompt needs the process radio, which is unavailable in this build.",
          nil);
+#endif
 }
 
 - (void)openSettings:(JS::NativeUnifiedBleExpoRuntime::NativeExpoSettingsRequest &)request

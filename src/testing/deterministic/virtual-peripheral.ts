@@ -1,7 +1,7 @@
 // src/testing/deterministic/virtual-peripheral.ts
 
 import type { BleErrorCode } from '../../backend-contract/errors'
-import type { WriteMode } from '../../backend-contract/operations'
+import type { ReadProvenance, WriteMode } from '../../backend-contract/operations'
 import { opaqueId, type Uuid } from '../../backend-contract/primitives'
 
 export type VirtualPeripheralOperation =
@@ -83,6 +83,7 @@ export class VirtualPeripheral {
   private readonly descriptors = new Map<string, MutableDescriptor>()
   private readonly recordedWriteEntries: VirtualWriteRecord[] = []
   private readonly injectedFailures = new Map<VirtualPeripheralOperation, BleErrorCode>()
+  private scriptedReadProvenance: ReadProvenance = 'read-response'
 
   constructor(readonly definition: VirtualPeripheralDefinition) {
     if (definition.key.length === 0) {
@@ -96,6 +97,7 @@ export class VirtualPeripheral {
     this.descriptors.clear()
     this.recordedWriteEntries.length = 0
     this.injectedFailures.clear()
+    this.scriptedReadProvenance = 'read-response'
     this.loadDefinition(this.definition)
   }
 
@@ -135,6 +137,19 @@ export class VirtualPeripheral {
         }))
       }))
     }))
+  }
+
+  /**
+   * Scripts what the platform says characteristic reads are: `read-or-notification`
+   * models a radio that reports read responses and notifications through one
+   * callback (CoreBluetooth reading a notifying characteristic).
+   */
+  setReadProvenance(provenance: ReadProvenance): void {
+    this.scriptedReadProvenance = provenance
+  }
+
+  readProvenance(): ReadProvenance {
+    return this.scriptedReadProvenance
   }
 
   readCharacteristic(address: VirtualCharacteristicAddress): Uint8Array {
@@ -313,6 +328,8 @@ export function createDefaultVirtualPeripheral(): VirtualPeripheral {
   const batteryService = canonicalUuid('180f')
   const batteryLevel = canonicalUuid('2a19')
   const userDescription = canonicalUuid('2901')
+  const heartRateService = canonicalUuid('180d')
+  const heartRateMeasurement = canonicalUuid('2a37')
   return new VirtualPeripheral({
     key: 'default-virtual-peripheral',
     services: [
@@ -366,6 +383,53 @@ export function createDefaultVirtualPeripheral(): VirtualPeripheral {
             writableWithResponse: true,
             writableWithoutResponse: true,
             notifying: false,
+            indicating: false,
+            descriptors: []
+          }
+        ]
+      },
+      // A second service UUID after the battery services, with a repeated
+      // characteristic UUID and a repeated descriptor UUID
+      // (docs/UNIFIED_SEMANTICS.md §9 occurrences).
+      {
+        uuid: heartRateService,
+        occurrence: 0,
+        primary: true,
+        characteristics: [
+          {
+            uuid: heartRateMeasurement,
+            occurrence: 0,
+            initialValue: new Uint8Array([0, 60]),
+            readable: true,
+            writableWithResponse: false,
+            writableWithoutResponse: false,
+            notifying: true,
+            indicating: false,
+            descriptors: [
+              {
+                uuid: userDescription,
+                occurrence: 0,
+                initialValue: new Uint8Array([104, 114]),
+                readable: true,
+                writable: false
+              },
+              {
+                uuid: userDescription,
+                occurrence: 1,
+                initialValue: new Uint8Array([98, 112, 109]),
+                readable: true,
+                writable: false
+              }
+            ]
+          },
+          {
+            uuid: heartRateMeasurement,
+            occurrence: 1,
+            initialValue: new Uint8Array([0, 61]),
+            readable: true,
+            writableWithResponse: false,
+            writableWithoutResponse: false,
+            notifying: true,
             indicating: false,
             descriptors: []
           }

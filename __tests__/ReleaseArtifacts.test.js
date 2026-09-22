@@ -29,6 +29,9 @@ describe('open-source release policies and dependency artifacts', () => {
     expect(contributing).toContain('canonical package checks')
     expect(dependencyPolicy).toContain('CycloneDX 1.6')
     expect(dependencyPolicy).toContain('unresolved license')
+    expect(dependencyPolicy).toContain('`/` in place of `OR`')
+    expect(dependencyPolicy).toContain('exact package version and SHA-256')
+    expect(dependencyPolicy).toContain('explicitly partitions terms')
     expect(dependencyPolicy).toContain('kind-specific source-file digests')
     expect(read('RELEASE.md')).not.toContain('private vulnerability reporting is\ndisabled')
   })
@@ -48,9 +51,15 @@ describe('open-source release policies and dependency artifacts', () => {
     expect(sbom.metadata.component.version).toBe(require('../package.json').version)
     expect(sbom.components.length).toBeGreaterThan(0)
     expect(new Set(sbom.components.map(component => component['bom-ref'])).size).toBe(sbom.components.length)
-    expect(sbom.components.every(component => component.purl.startsWith('pkg:npm/'))).toBe(true)
+    expect(
+      sbom.components.every(
+        component => component.purl.startsWith('pkg:npm/') || component.purl.startsWith('pkg:cargo/')
+      )
+    ).toBe(true)
     expect(inventory.schema).toBe('unified-ble-manager/third-party-license-inventory')
-    expect(inventory.source.method).toBe('pnpm-lock production graph with installed-manifest license audit')
+    expect(inventory.source.method).toBe(
+      'pnpm-lock production graph with installed-manifest license audit + cargo-metadata workspace graph (declared metadata plus exact reviewed cargo license-file evidence)'
+    )
     expect(inventory.unresolved).toEqual([])
     expect(inventory.packages.length).toBe(sbom.components.length)
     expect(sbom.dependencies).toHaveLength(sbom.components.length + 1)

@@ -33,7 +33,6 @@ const requiredPackedOptionalHostDependencies = Object.freeze({
   'node-gyp': '12.4.0'
 })
 const requiredPackedOptionalPeerHostDependencies = Object.freeze({
-  'dbus-next': '^0.10.2',
   expo: '^57.0.0'
 })
 const browserBundleForbiddenHostDependencies = Object.freeze([
@@ -614,7 +613,9 @@ function verifyInstalledNativeTooling(consumer) {
     "assert.strictEqual(typeof loader.tryLoadNative, 'function', 'packed CoreBluetooth loader exposes direct addon lookup');",
     "assert.strictEqual(typeof loader.createContractBoundary, 'function', 'packed CoreBluetooth loader exposes its boundary factory');",
     "const coreBluetooth = require('unified-ble-manager/node/corebluetooth');",
-    "assert.strictEqual(typeof coreBluetooth.createNativeCoreBluetoothBoundary, 'function', 'node/corebluetooth boundary factory');",
+    "assert.strictEqual(typeof coreBluetooth.createDesktopRustCoreBackendProvider, 'function', 'node/corebluetooth shared Rust core provider');",
+    "assert.strictEqual('createNativeCoreBluetoothBoundary' in coreBluetooth, false, 'node/corebluetooth exposes no legacy boundary (PR210-02)');",
+    "assert.ok(fs.existsSync(path.join(packageRoot, 'native', 'desktop-core', 'index.js')), 'packed consumer includes the desktop-core loader');",
     "assert.strictEqual(typeof coreBluetooth.createNativeCoreBluetoothBackendProvider, 'function', 'node/corebluetooth provider factory');",
     "console.log('pack+install native tooling assertions ok');"
   ].join('\n')
@@ -641,7 +642,9 @@ function buildAndLoadInstalledCoreBluetoothAddon(consumer) {
     "const loader = require(path.join(packageRoot, 'native', 'electron', 'corebluetooth'));",
     'const native = loader.tryLoadNative();',
     "assert.strictEqual(typeof native?.createNativeRadio, 'function', `installed CoreBluetooth loader loads the node-gyp output; exports: ${Object.keys(native ?? {}).join(',')}`);",
-    "const { createNativeCoreBluetoothBoundary } = require('unified-ble-manager/node/corebluetooth');",
+    // LEGACY (Phase 4 deletion): the node-gyp boundary is unreachable from
+    // public entrypoints; its build/load leg loads the internal module.
+    "const { createNativeCoreBluetoothBoundary } = require(path.join(packageRoot, 'lib', 'commonjs', 'backends', 'corebluetooth', 'corebluetooth-native-boundary.js'));",
     'const boundary = createNativeCoreBluetoothBoundary();',
     "for (const method of ['adapterSnapshot', 'startScan', 'stopScan', 'connect', 'disconnect', 'connectionState', 'discover', 'read', 'write', 'startNotify', 'stopNotify', 'onDisconnect', 'onAdapterState', 'destroy']) {",
     "  assert.strictEqual(typeof boundary[method], 'function', `installed CoreBluetooth boundary exposes ${method}`);",
@@ -884,6 +887,12 @@ function main(options = {}) {
       ...g6aPreflightOptions
     })
 
+    // UBM 5.0 PACKAGING slice: napi-artifact/dev-only-surface proof on the packed tarball.
+    run(process.execPath, ['scripts/ci/check-napi-artifact-packaging.js', '--tarball', rootTgz], {
+      cwd: root,
+      ...g6aPreflightOptions
+    })
+
     if (options.g6aOnly === true) {
       const proof = runG6APackedConsumerProof({
         tmp,
@@ -963,7 +972,13 @@ function main(options = {}) {
       "const reactNativeModuleEntry = path.join(packageRoot, 'lib/module/react-native.js');",
       "const nativeProtocolControl = path.join(packageRoot, 'lib/module/NativeUnifiedBleProtocolControl.js');",
       "assert.ok(fs.existsSync(nativeProtocolControl), 'packed React Native host includes Metro-resolvable NativeUnifiedBleProtocolControl');",
-      "assert.ok(fs.readFileSync(reactNativeModuleEntry, 'utf8').includes(\"require('./NativeUnifiedBleProtocolControl')\"), 'public React Native host keeps the generated control import');",
+      // PR210 (ca017247) removed the legacy protocol-control route from the
+      // public React Native entry: the host goes through the Rust core, and
+      // `getNativeUnifiedBleProtocolControl` is gone. __tests__/PackageSurface4
+      // pins its absence from the source surface; this pins it in what a
+      // consumer actually installs. The generated spec is still packed above,
+      // because React Native Codegen resolves it at build time.
+      "assert.ok(!fs.readFileSync(reactNativeModuleEntry, 'utf8').includes('getNativeUnifiedBleProtocolControl'), 'public React Native host does not reintroduce the removed protocol-control accessor');",
       "const electronNativeBuildDependency = require('node-addon-api/package.json');",
       "assert.strictEqual(electronNativeBuildDependency.name, 'node-addon-api', 'packed Electron native build dependency resolves');",
       "const electronNativeBuildTool = require('node-gyp/package.json');",
@@ -1077,6 +1092,10 @@ function main(options = {}) {
       "console.log('pack+install ESM imports ok: root, backend-sdk, cli, testing, codecs, profiles, web, react-native, node/bluez, node/corebluetooth, node/winrt, electron/main, electron/renderer');"
     ].join('\n')
     run(process.execPath, ['--input-type=module', '-e', esmAssertScript], { cwd: consumer })
+    // UBM 5.0 PACKAGING slice: napi-artifact consumer check against the installed packed tree.
+    run(process.execPath, ['scripts/ci/check-napi-artifact-packaging.js', '--consumer', consumer], {
+      cwd: root
+    })
     verifyInstalledPublishedHostDependencies(consumer)
     verifyInstalledNativeTooling(consumer)
     buildAndLoadInstalledCoreBluetoothAddon(consumer)

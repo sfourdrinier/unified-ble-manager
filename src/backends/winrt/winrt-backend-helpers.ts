@@ -2,7 +2,7 @@
 
 import type { BackendEvent } from '../../backend-contract/backend'
 import type { ResourceCounters } from '../../backend-contract/backend'
-import { contractError, type CleanupRecord } from '../../backend-contract/errors'
+import { BackendContractError, contractError, type CleanupRecord } from '../../backend-contract/errors'
 import type { PublicOperationOptions } from '../../backend-contract/operations'
 import type { SerializableRecord, SerializableValue } from '../../backend-contract/primitives'
 import { CoreBoundedStream } from '../../core/bounded-stream'
@@ -97,12 +97,20 @@ export function winRtPlatformError(
     return error
   }
   const detail = winRtNativeErrorDetail(error)
-  return contractError(code, domain, operation, {
+  const normalized = contractError(code, domain, operation, {
     domain: 'winrt',
     code: detail.code,
     safeMessage: detail.safeMessage,
     metadata: detail.metadata
   })
+  // RV1 finding 2: a radio-failure connect commits nothing, so repeating it
+  // is the caller's policy (`caller-decides`), matching the event vocabulary
+  // (`connect-not-established`) and the recovery catalog. Every other code
+  // keeps the derivation's `never`.
+  if (code === 'connection.failed') {
+    return new BackendContractError({ ...normalized.normalized, retryability: 'caller-decides' })
+  }
+  return normalized
 }
 
 interface WinRtNativeErrorDetail {
@@ -156,6 +164,7 @@ interface WinRtCounterConnection {
   readonly lease: object | null
   readonly state: 'connecting' | 'connected' | 'disconnecting' | 'disconnected' | 'lost'
   readonly database: object | null
+  readonly nativePeerId: string
 }
 
 interface WinRtCounterSubscription {
@@ -170,16 +179,20 @@ export function winRtResourceCounters(
   dispatchedOperations: number
 ): ResourceCounters {
   let connectionLeases = 0
-  let physicalLinks = 0
+  const linkedPeers = new Set<string>()
   let databaseSnapshots = 0
   let physicalCccdEnablements = 0
   let subscriptionConsumers = 0
   let retainedByteBuffers = 0
   for (const connection of connections) {
     connectionLeases += connection.lease === null ? 0 : 1
-    physicalLinks += connection.state === 'disconnected' || connection.state === 'lost' ? 0 : 1
+    // One physical link per peer no matter how many leases share it (FX1B).
+    if (connection.state !== 'disconnected' && connection.state !== 'lost') {
+      linkedPeers.add(connection.nativePeerId)
+    }
     databaseSnapshots += connection.database === null ? 0 : 1
   }
+  const physicalLinks = linkedPeers.size
   for (const subscription of subscriptions) {
     physicalCccdEnablements += 1
     subscriptionConsumers += subscription.consumers.size

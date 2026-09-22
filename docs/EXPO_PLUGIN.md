@@ -7,7 +7,7 @@ start a radio, request runtime permissions during prebuild, or prove physical
 radio/restoration reliability. Expo Go is not a supported BLE execution
 environment because it cannot contain this native module.
 
-Use the v2 plugin options in this `4.0.28` source. Those options match
+Use the v2 plugin options in this `5.0.0-rc.0` source. Those options match
 the schema introduced at `4.0.0-rc.4`. Expo Go cannot load this native module.
 
 ## Installation and development build
@@ -61,6 +61,9 @@ Tauri consumers do not resolve Expo tooling.
           },
           "android": {
             "mode": "none"
+          },
+          "continuation": {
+            "onAppearance": "record-only"
           }
         },
         "diagnostics": {
@@ -89,6 +92,32 @@ false, the plugin does not manage that feature declaration.
 
 The plugin never requests runtime permission during import or prebuild.
 
+### runtime permission prompt
+
+`manager.permissions.request({ purpose: 'scan-and-connect' })` performs the
+readiness `request-permission` action on every platform and reports the same
+shape: `{ requested, granted, denied, recommendedSettingsTarget }`.
+
+- Android shows the runtime prompt (`BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT` on
+  API 31+, legacy location below) and answers at once when decided.
+- Apple (iOS and tvOS) presents the CoreBluetooth prompt on request: the
+  process central is allocated by the request itself, never at startup, so
+  reading `manager.readiness()` never prompts. A decided authorization
+  answers at once; the request waits for the user's decision otherwise, and
+  accepts an optional `timeoutMs` and `signal` (`operation.timed-out` /
+  `operation.aborted`; without them it waits like bonding). A restriction
+  (parental controls/MDM) is genuinely unpromptable and refuses
+  `capability.unsupported` with its reason instead of a denial, matching the
+  `unavailable` readiness it maps to.
+- Apple decides from `CBManager.authorization` (iOS 13.1+, tvOS 13.0+): the
+  class property reads the state without allocating a manager, allocation
+  prompts while undecided, and updates arrive via
+  `centralManagerDidUpdateState`. The prompt needs the managed
+  `NSBluetoothAlwaysUsageDescription` (`bluetoothAlways` above).
+- With a restoration id configured the central is allocated at startup, as
+  `willRestoreState` requires, and the prompt may appear there; without one
+  it waits for the first explicit need.
+
 The Expo host also exposes an Android-only Companion Device Manager ceremony:
 `ble.association.associate({ name, serviceUuid })`. It launches Android system
 UI and returns an `associated` peer-directory record. Association is not a
@@ -107,6 +136,21 @@ hosts fail explicitly.
   requires a complete notification (channelId, channelName, and title) and may
   set body, icon, and an explicit restart policy. Background is absent by
   default; restart is `never` by default.
+
+- continuation declares the background standing order a wake may execute
+  before any JavaScript runs (`background.continuation`). `onAppearance` is
+  one of `record-only` (the default, and today's behaviour), `native`,
+  `headless-task` or `foreground-service`; `peerId` is an optional MAC subject
+  and `resubscribe` an optional list of service/characteristic selectors with
+  optional occurrences. `headlessTaskName` is required for `headless-task` and
+  rejected for anything else; `foregroundService` is required for
+  `foreground-service` and rejected for anything else — a declaration that
+  could not execute is refused at prebuild rather than at 3 a.m. on a user's
+  phone. The plugin writes the validated declaration as the Android manifest
+  meta-data `com.sfourdrinier.unifiedblemanager.BACKGROUND_CONTINUATION`, and
+  removes it again when the option is dropped. The strategies, what the wake
+  does, and how an app reads the outcome and drains the backlog are in
+  [`BACKGROUND.md`](BACKGROUND.md).
 
 When the Android connected-device service is active, applications can publish
 current user-facing state without changing service ownership:
@@ -138,6 +182,30 @@ Foreground-service declarations do not acquire a runtime lease or guarantee
 background reliability. The application must explicitly acquire and release
 the runtime background lease exposed by the host when that surface is
 available.
+
+When `background.android` is `connected-device-foreground-service`, the
+plugin also declares the library's Companion Device Manager presence
+endpoint, `com.sfourdrinier.unifiedblemanager.presence.UbmCompanionPresenceService`:
+exported, permission-gated to holders of
+`android.permission.BIND_COMPANION_DEVICE_SERVICE`, with the
+`android.companion.CompanionDeviceService` intent filter. Only the system
+can bind it; it adds no `uses-permission`. Under `background.android` mode
+`none` the plugin entry is removed again. A host-declared entry with
+different attributes is left untouched on enable and preserved on disable —
+the host owns that declaration. See `docs/BACKGROUND.md` for the
+known-peer restoration behavior it serves.
+
+### Apple TV (tvOS)
+
+TV builds are selected by the documented Expo switch `EXPO_TV=1` at prebuild
+time (with `@react-native-tvos/config-tv`); phone prebuilds are unchanged.
+tvOS has no background Bluetooth mode and no state restoration, so a TV
+prebuild never writes `bluetooth-central` to `UIBackgroundModes` nor the
+restoration id/generation keys — even when `background.ios` is configured.
+The runtime then reports both capabilities as `capability.unsupported` with
+the native reason instead of claiming something tvOS cannot honor. The
+configuration marker and the Bluetooth usage description are still written,
+so the native configuration check keeps passing.
 
 ### diagnostics
 

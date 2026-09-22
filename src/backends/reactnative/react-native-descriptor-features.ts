@@ -7,7 +7,7 @@ import {
 } from '../../backend-contract/capabilities'
 import { contractError } from '../../backend-contract/errors'
 import { version, versionRange, type SerializableRecord } from '../../backend-contract/primitives'
-import { MAXIMUM_BINARY_PAYLOAD_BYTES } from '../../native-protocol/generated/native-protocol-v2-schema'
+import { MAXIMUM_BINARY_PAYLOAD_BYTES } from './react-native-protocol-limits'
 
 const descriptorOperationsScenarioId = 'gatt.descriptor-discovery-read-write'
 

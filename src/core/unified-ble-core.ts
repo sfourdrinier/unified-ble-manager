@@ -20,9 +20,11 @@ import {
   isAuthorizationBlocking,
   type AdapterStateSnapshot,
   type AdapterStateWatch,
+  type AttachmentRecord,
   type BackendIdentity
 } from '../backend-contract/identity'
 import type {
+  CharacteristicRead,
   PublicOperationOptions,
   SubscriptionOptions,
   WritePolicy,
@@ -68,6 +70,7 @@ import {
   cleanupFailure,
   cloneObservation,
   deactivateScanLifetime,
+  recordBackendDiagnostic,
   retryableCleanup,
   scheduleCoreDeadline,
   type CoreDeadlineHandle,
@@ -91,6 +94,24 @@ export type { CoreDeadlineHandle, CoreDeadlineScheduler } from './unified-ble-co
 const QUARANTINE_DRAIN_TIMEOUT_MS = 1_000
 // Non-cancellable backend probes remain owned until they settle. Bound their accumulation.
 const MAX_PENDING_ADAPTER_WATCH_ACQUISITIONS = 64
+
+/**
+ * Finding 161: a dispatched connect whose deadline expires before any link
+ * came up is the peer not answering — `connection.failed`
+ * (`caller-decides`) on every host, the same physical event as a
+ * controller-given-up establishment failure. The deadline fact rides in
+ * `platform`; a connect commits nothing, so the caller decides the retry. A
+ * caller-supplied AbortSignal abort stays `operation.aborted`.
+ */
+function connectDeadlineError(deadlineMs: number): BackendContractError {
+  const normalized = contractError('connection.failed', 'connection', 'connect', {
+    domain: 'core',
+    code: 'deadline-expired',
+    safeMessage: `The ${deadlineMs} ms connect deadline expired before any link came up.`,
+    metadata: Object.freeze({ deadlineMs })
+  })
+  return new BackendContractError({ ...normalized.normalized, retryability: 'caller-decides' })
+}
 
 export interface UnifiedBleCoreOptions {
   readonly now: () => number
@@ -139,10 +160,17 @@ interface TrackedAdapterStateWatch<Attachment extends string> {
  * One attached core owns the portable policy for one manager. It delegates only
  * radio mechanics to the negotiated backend and never imports a host runtime.
  */
+/** Observes a manager following its backend to a new attachment after an adapter loss. */
+export type AttachmentAdvanceListener<Attachment extends string> = (
+  previous: AttachmentRecord<Attachment>,
+  current: AttachmentRecord<Attachment>
+) => void
+
 export class UnifiedBleCore<Attachment extends string, Identity extends BackendIdentity<Attachment>> {
   private coreState: 'new' | 'ready' | 'destroying' | 'destroyed' | 'failed' = 'new'
   private attachment: BackendAttachment<Attachment, Identity> | null = null
   private idFactory: AttachmentBoundIdFactory<Attachment> | null = null
+  private readonly attachmentListeners = new Set<AttachmentAdvanceListener<Attachment>>()
   private readonly resourceLedger = new ResourceLedger()
   private readonly trace: CoreTraceRecorder
   private readonly lifecycleObserver: CoreLifecycleObserver
@@ -227,6 +255,13 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
 
   get attachmentId(): AttachmentId<Attachment> {
     return this.requireAttachment().attachment.attachmentId
+  }
+
+  onAttachmentAdvanced(listener: AttachmentAdvanceListener<Attachment>): () => void {
+    this.attachmentListeners.add(listener)
+    return () => {
+      this.attachmentListeners.delete(listener)
+    }
   }
 
   get backend(): BleCentralBackend<Attachment, Identity> {
@@ -535,6 +570,13 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     return new Promise((resolve, reject) => {
       let cancelled = false
       let deadlineHandle: CoreDeadlineHandle | null = null
+      // Finding 194: the backend contract's cancel path for a connect
+      // acquisition is the AbortSignal in ConnectionOptions. The core owns a
+      // linked controller per acquisition: caller abort and core deadline
+      // both abort it, so the backend call is cancelled instead of abandoned
+      // in flight with a live Connecting claim. A late backend settlement is
+      // still compensated below, never adopted.
+      const backendAbort = new AbortController()
       const cancel = (error: BackendContractError) => {
         if (cancelled) {
           return
@@ -542,15 +584,17 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
         cancelled = true
         deadlineHandle?.cancel()
         options.signal?.removeEventListener('abort', onAbort)
+        backendAbort.abort()
         reject(error)
       }
       const onAbort = () => cancel(contractError('operation.aborted', 'core', 'connect'))
       this.pendingConnectAcquisitions.add(cancel)
       options.signal?.addEventListener('abort', onAbort, { once: true })
       if (options.deadline !== null) {
+        const deadlineMs = Number(options.deadline)
         deadlineHandle = scheduleCoreDeadline(
-          Number(options.deadline),
-          () => cancel(contractError('operation.timed-out', 'core', 'connect')),
+          deadlineMs,
+          () => cancel(connectDeadlineError(deadlineMs)),
           this.options.timer,
           this.options.now
         )
@@ -559,11 +603,21 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
         try {
           let lease: ConnectionLease<Attachment, string, string>
           try {
-            lease = await this.backend.connections.connect(peerId, this.construction.clientId, options)
+            lease = await this.backend.connections.connect(peerId, this.construction.clientId, {
+              ...options,
+              signal: backendAbort.signal
+            })
           } catch (error) {
-            throw error instanceof BackendContractError
-              ? error
-              : contractError('connection.failed', 'connection', 'unified-core.connect')
+            if (error instanceof BackendContractError) {
+              throw error
+            }
+            // RV1 finding 2: a backend that rejects connect without a
+            // contract error lost the radio race — nothing was committed, so
+            // repeating the attempt is the caller's policy
+            // (`caller-decides`), matching the event vocabulary
+            // (`connect-not-established`) and the recovery catalog.
+            const normalized = contractError('connection.failed', 'connection', 'unified-core.connect')
+            throw new BackendContractError({ ...normalized.normalized, retryability: 'caller-decides' })
           }
           const closed = this.admissionClosedError(admissionEpoch, options, 'connect')
           if (cancelled || closed !== null) {
@@ -782,7 +836,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     database: CoreGattDatabase<Attachment, Identity>,
     path: CurrentCharacteristicPath<Attachment>,
     options: PublicOperationOptions
-  ): Promise<OwnedBytes> {
+  ): Promise<CharacteristicRead> {
     return readCoreCharacteristic(
       this.backend,
       this.operationCoordinator,
@@ -1072,14 +1126,28 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
   }
 
   private applyBackendEvent(event: BackendEvent<Attachment>): void {
+    if (event.kind === 'diagnostic-warning') {
+      recordBackendDiagnostic(this.trace, this.options.now, event)
+      return
+    }
     if (event.kind === 'backend-restarted' || event.kind === 'backend-restarting') {
-      if (event.attachment.adapter.adapterId === this.requireAttachment().attachment.adapter.adapterId) {
+      if (
+        event.attachment.adapter.adapterId === this.requireAttachment().attachment.adapter.adapterId &&
+        !this.followBackendGeneration()
+      ) {
+        // A different backend instance replaced this one: nothing the manager
+        // holds survives it, so it ends as legacy did.
         this.lifecycleObserver.observeCleanup(this.releaseResources('backend-restart'), 'backend-restarted-cleanup')
       }
       return
     }
     if (event.attachmentId !== this.attachmentId) {
-      return
+      // A backend that advanced its generation without announcing a restart
+      // (WinRT's adapter loss) reports under its new attachment.
+      this.followBackendGeneration()
+      if (event.attachmentId !== this.attachmentId) {
+        return
+      }
     }
     if (event.kind === 'database-changed') {
       for (const connection of this.connections.values()) {
@@ -1145,10 +1213,65 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     }
   }
 
+  /**
+   * A lost adapter ends every live connection `adapter-loss`. 5.0 keeps the
+   * manager ready so a connection can follow the adapter's return (legacy
+   * released every resource and ended the manager here).
+   */
   private async applyAdapterStateEvent(): Promise<void> {
     const state = await this.backend.adapter.currentState()
     if (state.availability !== 'available' || isAuthorizationBlocking(state.authorization) || state.power !== 'on') {
-      await this.releaseResources('adapter-loss')
+      this.releaseLiveConnections('adapter-loss')
+    }
+  }
+
+  /**
+   * The backend advanced its generation after an adapter loss: the manager
+   * binds the backend's new attachment and releases the connections of the
+   * old one (5.0; legacy `releaseResources('backend-restart')` ended the
+   * manager). Only the same backend instance on the same adapter is followed;
+   * answers whether the manager is bound to the backend's current attachment.
+   */
+  private followBackendGeneration(): boolean {
+    const attached = this.requireAttachment()
+    const current = this.backend.identity.attachment
+    if (current.attachmentId === attached.attachment.attachmentId) {
+      return true
+    }
+    if (
+      current.backendInstanceId !== attached.attachment.backendInstanceId ||
+      current.adapter.adapterId !== attached.attachment.adapter.adapterId
+    ) {
+      return false
+    }
+    const previous = attached.attachment
+    this.attachment = Object.freeze({ ...attached, attachment: current, identity: this.backend.identity })
+    this.idFactory = createAttachmentBoundIdFactory({
+      attachmentId: current.attachmentId,
+      backendInstanceId: current.backendInstanceId,
+      backendGeneration: current.backendGeneration,
+      adapterId: current.adapter.adapterId,
+      adapterGeneration: current.adapter.adapterGeneration
+    })
+    this.releaseLiveConnections('adapter-loss')
+    for (const listener of [...this.attachmentListeners]) {
+      try {
+        listener(previous, current)
+      } catch (error) {
+        console.error('[UnifiedBleCore.followBackendGeneration] An attachment listener failed:', error)
+      }
+    }
+    return true
+  }
+
+  /** Every connection ends `cause` and is released; a failed release is retained and reported. */
+  private releaseLiveConnections(cause: ConnectionLifecycleTerminalCause): void {
+    for (const connection of [...this.connections.values()]) {
+      connection.finishLifecycle(cause, null)
+      this.lifecycleObserver.observeCleanup(
+        this.releaseConnection(connection, cause),
+        'adapter-loss-connection-cleanup'
+      )
     }
   }
 

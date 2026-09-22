@@ -50,7 +50,7 @@ Before a stable release tag is pushed:
 5. `SBOM.cdx.json` and `THIRD_PARTY_LICENSES.json` are generated from the same package metadata/lockfile.
 6. canonical CI is green for the release commit.
 7. package/repository/homepage/bug URLs point at `sfourdrinier/unified-ble-manager`.
-8. the license metadata and root `LICENSE` agree.
+8. the license metadata (`package.json` license field, Cargo `license-file` pointers, SBOM expression) and the license documents (`LICENSE` — the UBM text —, `LICENSE-UBM-SOURCE-AVAILABLE-1.0.md`, `LICENSES/Apache-2.0.txt` for retained Apache material, `NOTICE`) agree.
 9. the npm trusted publisher points at this repository/workflow/environment.
 10. GitHub private vulnerability reporting is enabled for the canonical repository.
 11. the complete macOS/Windows `arm64`/`x64` Node-API prebuild matrix is produced from the release tag and verified under Node and Electron.
@@ -75,7 +75,7 @@ npm pack --dry-run
 
 CI additionally owns the platform-specific native compilation and ABI lanes.
 
-## Releasing 4.0.0-rc.*
+## Releasing 4.0.0-rc.\*
 
 Active `4.0.0-rc.*` release-train candidates publish to npm `latest` so a bare `pnpm add unified-ble-manager` installs the current 4.0 line. The GitHub Release is marked prerelease. Each candidate is cut from the exact current `main` merge commit; the workflow verifies tag/package version equality.
 
@@ -84,7 +84,7 @@ release plan. RC2, RC3, RC4, `4.0.0-rc.4.1`, and RC5 are already immutable
 once tagged. Stable `4.0.0` through `4.0.20` are immutable. The unpublished
 `v4.0.21` tag is also immutable after its cancelled workflow. `4.0.22`,
 `4.0.23`, `4.0.24`, `4.0.25`, `4.0.26`, and `4.0.27` are immutable tagged
-history. This branch prepares `4.0.28`.
+history. `4.0.28` is immutable tagged history. This branch prepares `5.0.0-rc.0`.
 
 ```sh
 release_candidate=4.0.0-rc.N
@@ -112,13 +112,24 @@ The first stable tag `v4.0.0` is immutable published history. Do not recreate or
 git tag -a v4.0.0 -m "v4.0.0"
 ```
 
+## Releasing 5.0.0-rc.0
+
+Integrate the `5.0.0` release branch into `main`, then release
+`v5.0.0-rc.0` only from that exact current `main` commit after canonical CI
+succeeds. This matches the publish workflow's immutable main-source gate.
+Verify `package.json` is `5.0.0-rc.0`, the worktree is clean, and release-note
+extraction finds `## [5.0.0-rc.0]`. Push a new
+annotated `v5.0.0-rc.0` tag with the GitHub Release marked prerelease and the
+npm dist-tag `next` (never `latest` for a 5.0 RC). The candidate must pack
+the Rust workspace sources plus the committed Android native prebuilds, and
+the F01 runtime proof must pass against the packed artifact. Follow the
+required local validation, publish workflow, and registry verification below.
+
 ## Releasing 4.0.28
 
-Release `v4.0.28` only from the exact current `main` commit after its canonical
-CI succeeds. Verify `package.json` is `4.0.28`, the worktree is clean, and
-release-note extraction finds `## [4.0.28]`. Push a new annotated `v4.0.28`
-tag; never move the immutable `v4.0.27` tag. Follow the required local validation,
-publish workflow, and registry verification below.
+`v4.0.28` is immutable tagged history. It was released only from the exact
+current `main` commit after its canonical CI succeeded. Never move the
+immutable `v4.0.28` tag.
 
 ## Releasing 4.0.27
 
@@ -496,6 +507,26 @@ git push origin v4.0.6
 
 Do not push another commit to `main` between the final verification and the tag push.
 
+## Native build identity gates (5.x)
+
+Mobile native artifacts are bound to their sources by
+`scripts/release/native-build-identity.js` (see
+`docs/5.0.0-DISTRIBUTION_CONTRACT.md` §4). Before tagging a 5.x release:
+
+- `node scripts/release/native-build-identity.js --check` passes (`prepack`
+  runs it);
+- the committed Android prebuilts were refreshed from the tagged sources with
+  `sh android/refresh-prebuilt-jniLibs.sh` (pinned toolchain, NDK 27.x) and
+  `node scripts/release/native-build-identity.js --check-android-prebuilts`
+  passes — any Rust, lockfile, toolchain or JNI declaration change since the
+  last refresh fails it.
+
+The publish workflow's macOS `native-rustcore` job builds `ios/RustCore` with
+`ios/build-rust-core.sh` and verifies it with `ios/verify-rust-core.sh` and
+`--check-apple`; the publish job re-runs `--check-apple` on the downloaded
+staging and `--check-android-prebuilts` before packing. None of these gates
+may be bypassed to make a release pass.
+
 ## What the publish workflow does
 
 For a valid version tag, `.github/workflows/publish.yml`:
@@ -508,7 +539,7 @@ For a valid version tag, `.github/workflows/publish.yml`:
 6. before any initial publication, verifies the tag commit equals the current `main` commit;
 7. validates evidence-record syntax/integrity without manufacturing support claims;
 8. runs package, plugin, lint/typecheck, generated-artifact, packed-consumer, and deterministic Electron checks;
-9. runs the required Android/Expo/native-host gates;
+9. runs the required Android/Expo/native-host gates, including the native build identity gates above;
 10. verifies package contents and generated dependency artifacts;
 11. publishes the exact prebuild-bearing tarball through npm trusted publishing with provenance;
 12. waits for the registry artifact and verifies the published tarball/digest path;
@@ -524,7 +555,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=4.0.28
+version=5.0.0-rc.0
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -535,16 +566,17 @@ npm view "unified-ble-manager@$version" dist.integrity
 
 Then verify:
 
-- npm `latest` resolves to the released version (a stable release moves
-  `latest`; a prerelease must leave it alone and publish to `next`);
+- npm `next` resolves to `5.0.0-rc.0`, while `latest` remains on the 4.0 stable
+  line; a stable release moves `latest`;
 - the npm package page shows provenance for the published artifact;
 - the GitHub Release exists at that tag, and is marked prerelease only if the
   version is one;
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager` with no version pin and import the documented host
-  entrypoints. This is the check that catches a packaging gap the repository's
+  `unified-ble-manager@5.0.0-rc.0` explicitly and import the documented host
+  entrypoints. A bare install still selects `latest` (the 4.0 line). This
+  catches a packaging gap the repository's
   own tests cannot see: `@babel/runtime` shipped undeclared in 4.0.4 and only a
   real external consumer surfaced it.
 
@@ -558,7 +590,8 @@ Never move or recreate a published version tag to hide a failed release.
 
 ## Prereleases after 4.0.0
 
-Future prereleases use normal SemVer suffixes such as `4.1.0-alpha.1`. They publish to `next` and must never replace `latest` until a final version is released.
+Prereleases such as `5.0.0-rc.0` use normal SemVer suffixes. They publish to
+`next` and must never replace `latest` until a final version is released.
 
 ## Release artifacts and evidence
 
@@ -568,4 +601,9 @@ The release process must never synthesize, backdate, or relabel hardware evidenc
 
 ## Architecture authority
 
-The normative 4.0 architecture and public-contract decisions are recorded in [`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md). This release procedure controls publication mechanics; it does not override those architecture decisions.
+The 4.0 baseline architecture is recorded in
+[`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md);
+the 5.0 distribution contract is in
+[`docs/5.0.0-DISTRIBUTION_CONTRACT.md`](docs/5.0.0-DISTRIBUTION_CONTRACT.md).
+This release procedure controls publication mechanics; it does not override
+those contracts.

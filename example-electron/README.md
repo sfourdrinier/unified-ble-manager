@@ -2,7 +2,7 @@
 
 # Electron deterministic L1 smoke
 
-This repository fixture verifies the published 4.0 contract surface without
+This repository fixture verifies the packed 5.0.0-rc.0 contract surface without
 claiming live Electron-radio support. It runs a deterministic scan, connect,
 discover, read, notify, and destroy journey through the packed package. It does
 not create an Electron application, load a native addon, or validate a physical
@@ -35,3 +35,13 @@ published package/IPC surface only; it cannot promote Electron, CoreBluetooth,
 WinRT, or BlueZ to a live support label. See [`../docs/ELECTRON.md`](../docs/ELECTRON.md)
 for ABI and main/renderer integration, and [`../docs/PLATFORMS.md`](../docs/PLATFORMS.md)
 for the current Experimental evidence boundary.
+
+## Shared test driver (live Electron host)
+
+`driver/` is a runnable Electron app that hosts the cross-host test scenarios.
+Main (`driver/main.cjs`) selects one desktop backend explicitly, owns the radio
+and installs `ElectronMainBleRouter` with `ElectronMainBleBinding`. The preload
+(`driver/preload.cjs`) exposes only the versioned transport. The sandboxed
+renderer runs the shared scenarios through `createElectronRendererBleManager`.
+Running it is a manual live check, not a support label or evidence receipt.
+Launch commands are in [`../examples-shared/driver/README.md`](../examples-shared/driver/README.md).

@@ -82,30 +82,65 @@ describe('Tauri v2 Rust plugin boundary', () => {
     expect(plugin).not.toContain('BleManager')
   })
 
-  test('scan follows adapter events, polls peripherals as a fallback, and drops observations instead of aborting when the event quota is full', () => {
+  test('scan executes the shared core, keeps quota-drop/schema/runtime/heard behavior, and carries no second scan authority', () => {
     const dispatcher = read('native/tauri/src/btleplug_dispatcher.rs')
+    const executor = read('crates/ubm-desktop/src/executor.rs')
 
-    expect(dispatcher).toContain('scan_adapter.events()')
-    expect(dispatcher).toContain('DeviceDiscovered')
-    expect(dispatcher).toContain('drop_if_full')
-    expect(dispatcher).toContain('SCAN_POLL_INTERVAL')
-    expect(dispatcher).toContain('peripherals()')
-    expect(dispatcher).toContain('for service in peripheral.services()')
+    // R03 contract update (justified): scan admission, duplicate/merge
+    // policy, and observation production moved to the shared core
+    // (CoreAuthority/DesktopCore). The dispatcher-side adapter event
+    // stream, peripheral poll fallback, and scan policy are deleted with
+    // the second scheduling authority — the negative pins below prove
+    // they cannot silently return. Preserved behavior stays pinned:
+    // quota-drop (never abort), wire schema v2, the retained runtime
+    // shape and identity, the heard peer count, and the passive
+    // power-state read.
+    expect(dispatcher).toContain('.start_scan(&key')
+    expect(dispatcher).toContain('take_advertisement')
+    expect(dispatcher).toContain('CoreAuthority')
+    expect(dispatcher).toContain('core_scan_observation')
+    expect(dispatcher).toContain('Err(error) if error.code == BleErrorCode::StreamQuota')
     expect(dispatcher).toContain('("schemaVersion", number(2))')
-    expect(dispatcher).toContain('ubm-btleplug')
-    expect(dispatcher).toContain('new_multi_thread')
-    expect(dispatcher).toContain('btleplug_runtime().spawn')
+    expect(dispatcher).not.toContain('scan_adapter.events()')
+    expect(dispatcher).not.toContain('DeviceDiscovered')
+    expect(dispatcher).not.toContain('SCAN_POLL_INTERVAL')
+    expect(dispatcher).not.toContain('for service in peripheral.services()')
+    // Runtime construction moved to the shared desktop executor
+    // (HOST-DESKTOP extraction, then the F01 authority migration from the
+    // tauri-local seam to the real `ubm-desktop` crate dependency); the
+    // dispatcher must delegate and the executor must preserve the retained
+    // runtime shape and identity. F01 contract update (justified): only the
+    // owner moved (same thread, same two workers) — the delegation
+    // requirement itself is unchanged and still pinned here.
+    expect(dispatcher).toContain('ubm_desktop::executor::desktop_runtime()')
+    expect(executor).toContain('new_multi_thread')
+    expect(executor).toContain('worker_threads(2)')
+    expect(executor).toContain('ubm-btleplug')
+    expect(executor).toContain('ubm-btleplug-worker')
+    expect(dispatcher).toContain('fn btleplug_runtime()')
+    // Finding 43: attachment identity and adapter.state come from the one
+    // shared central (its own adapter selection, ambiguity refused); the
+    // plugin opens no second btleplug Manager (a second CBCentralManager).
+    expect(dispatcher).toContain('DesktopCentral::open_btleplug(profile)')
+    expect(dispatcher).toContain('authority.attachment()')
     expect(dispatcher).toContain('heard')
-    expect(dispatcher).toContain('adapter.adapter_state()')
+    expect(dispatcher).toContain('authority.adapter_state(ctl)')
+    expect(dispatcher).not.toContain('Manager::new()')
+    expect(dispatcher).not.toContain('open_btleplug_adapter')
   })
 
   test('preserves native scan emission diagnostics on the shared terminal contract', () => {
     const dispatcher = read('native/tauri/src/btleplug_dispatcher.rs')
 
-    expect(dispatcher).toContain('if let Err(error) = dispatcher')
+    expect(dispatcher).toContain('Err(error) => ("source-failed", Some(error))')
     expect(dispatcher).toMatch(/"source-failed",\s+Some\(&error\)/)
     expect(dispatcher).toContain('fn normalized_error(&self) -> IpcValue')
     expect(dispatcher).toContain('item.insert("error".to_owned(), error.normalized_error())')
+    // R03 (restored contract): forwarder failures thread the real error —
+    // verbatim core verdicts via from_core, never None, never silent —
+    // while quota-drop still sheds observations without aborting the scan.
+    expect(dispatcher).toContain('DispatchError::from_core(&error)')
+    expect(dispatcher).toContain('error.code == BleErrorCode::StreamQuota')
   })
 
   test('runs Rust formatting, tests, and a clippy warning gate in CI', () => {

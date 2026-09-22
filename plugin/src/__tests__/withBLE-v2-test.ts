@@ -1,4 +1,4 @@
-import { reconcileExpoInfoPlist, validateUnifiedBleExpoPluginOptions } from '../withBLE'
+import { isExpoTvosPrebuild, reconcileExpoInfoPlist, validateUnifiedBleExpoPluginOptions } from '../withBLE'
 import {
   deriveIosNativeProtocolRestoration as canonicalDeriveIosNativeProtocolRestoration,
   validateUnifiedBleExpoPluginOptions as canonicalValidateUnifiedBleExpoPluginOptions
@@ -181,6 +181,32 @@ describe('Expo iOS reconciliation', () => {
       UnifiedBlePluginConfigurationMarker: 'unified-ble-expo-v1'
     })
     expect(removed.UnifiedBlePluginBluetoothAlwaysUsageDescriptionOwnership).toBeUndefined()
+  })
+})
+
+describe('Expo tvOS reconciliation', () => {
+  it('omits background-central and restoration keys on tvOS while keeping phone behavior', () => {
+    const infoPlist: Record<string, unknown> = {
+      UIBackgroundModes: ['audio', 'bluetooth-central']
+    }
+
+    const tv = reconcileExpoInfoPlist({ ...infoPlist }, validOptions, 'com.example.app', 'tvos')
+    expect(tv.UIBackgroundModes).toEqual(['audio'])
+    expect(tv.UnifiedBleProtocolRestorationId).toBeUndefined()
+    expect(tv.UnifiedBleProtocolRestorationGeneration).toBeUndefined()
+    expect(tv.UnifiedBlePluginConfigurationMarker).toBe('unified-ble-expo-v1')
+
+    const phone = reconcileExpoInfoPlist({ ...infoPlist }, validOptions, 'com.example.app')
+    expect(phone.UIBackgroundModes).toEqual(['audio', 'bluetooth-central'])
+    expect(phone.UnifiedBleProtocolRestorationId).toBe('primary')
+    expect(phone.UnifiedBleProtocolRestorationGeneration).toBe('1')
+  })
+
+  it('detects a TV prebuild from EXPO_TV=1 only', () => {
+    expect(isExpoTvosPrebuild({ EXPO_TV: '1' })).toBe(true)
+    expect(isExpoTvosPrebuild({})).toBe(false)
+    expect(isExpoTvosPrebuild({ EXPO_TV: '0' })).toBe(false)
+    expect(isExpoTvosPrebuild({ EXPO_TV: '' })).toBe(false)
   })
 })
 

@@ -1,0 +1,73 @@
+// emulator-probe/five0/probe-app/app/build.gradle
+apply plugin: "com.android.application"
+apply plugin: "org.jetbrains.kotlin.android"
+
+android {
+  namespace = "com.ubmfive0probe"
+  compileSdk = 34
+
+  defaultConfig {
+    applicationId = "com.ubmfive0probe"
+    minSdk = 24
+    targetSdk = 34
+    versionCode = 1
+    versionName = "5.0.0-five0"
+  }
+  buildTypes {
+    release {
+      minifyEnabled = false
+    }
+  }
+  compileOptions {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+  }
+  kotlinOptions {
+    jvmTarget = "17"
+  }
+  sourceSets {
+    main {
+      // JNI Java sources are single-owned by bindings/jni: referenced, never
+      // copied, so the APK always exercises the committed bridge surface.
+      java.srcDirs += ["../../../../bindings/jni/java"]
+    }
+  }
+}
+
+dependencies {
+  implementation "org.jetbrains.kotlin:kotlin-stdlib:2.1.20"
+}
+
+// HOST-ANDROID (UBM 5.0): stage the Rust cdylib for the emulator ABI list
+// before mergeNativeLibs, using the shared android/build-rust-cdylib.sh
+// (same single source of truth as the library's buildUbmRustCdylib task).
+def ubmRustAbis = ["x86_64"]
+def ubmRustScript = rootDir.toPath()
+  .resolve("../../../android/build-rust-cdylib.sh").normalize().toFile()
+
+tasks.register("buildUbmFive0RustCdylib") {
+  description = "Stages the UBM 5.0 Rust cdylib for ${ubmRustAbis} into probe-app jniLibs."
+  doLast {
+    ubmRustAbis.each { abi ->
+      def libDir = file("src/main/jniLibs/${abi}")
+      def proc = ["sh", ubmRustScript.absolutePath,
+        "--abi", abi,
+        "--profile", "debug",
+        "--libdir", libDir.absolutePath].execute(null, rootDir)
+      def out = new StringBuffer()
+      def err = new StringBuffer()
+      proc.waitForProcessOutput(out, err)
+      println(out.toString())
+      if (proc.exitValue() != 0) {
+        throw new GradleException(
+          "buildUbmFive0RustCdylib FAILED for ABI ${abi} (exit ${proc.exitValue()}):\n${err}\n" +
+          "Run sh ${ubmRustScript} --abi ${abi} --profile debug --libdir <dir> " +
+          "from the repo root for the actionable diagnostic.")
+      }
+    }
+  }
+}
+
+tasks.named("preBuild").configure {
+  dependsOn("buildUbmFive0RustCdylib")
+}

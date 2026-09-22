@@ -12,6 +12,7 @@ import type {
   BackendConnection,
   BleCentralBackend,
   ConnectionLease,
+  ConnectionOptions,
   GattBackend,
   ResourceCounters
 } from '../../backend-contract/backend'
@@ -23,6 +24,8 @@ import type {
   OperationTerminalRecord,
   PublicOperationOptions,
   ReadRequest,
+  CharacteristicReadResult,
+  ReadProvenance,
   ReadResult,
   SubscribeRequest,
   SubscriptionOptions,
@@ -104,7 +107,7 @@ export class DeterministicTestBackend
 {
   readonly gatt: GattBackend<string>
   readonly security: DeterministicSecurityBackend
-  private readonly connectionsByPeer = new Map<string, ConnectionRecord>()
+  private readonly connectionsById = new Map<string, ConnectionRecord>()
   private readonly databasesByKey = new Map<string, DeterministicGattDatabase>()
   private readonly physicalSubscriptions = new Map<string, PhysicalSubscription>()
   private readonly subscriptionsById = new Map<string, DeterministicSubscription>()
@@ -127,12 +130,12 @@ export class DeterministicTestBackend
     return retainedSubscriptionReservationBytes(this.physicalSubscriptions) + this.security.reservedBytes()
   }
   protected handleAdapterUnavailable(): void {
-    invalidateDeterministicConnections(this.connectionsByPeer, record =>
+    invalidateDeterministicConnections(this.connectionsById, record =>
       this.invalidateConnection(record, 'operation.adapter-unavailable')
     )
   }
   protected handleReset(): void {
-    invalidateDeterministicConnections(this.connectionsByPeer, record =>
+    invalidateDeterministicConnections(this.connectionsById, record =>
       this.invalidateConnection(record, 'operation.reset')
     )
   }
@@ -147,7 +150,7 @@ export class DeterministicTestBackend
         const owned = ownBytes(value, this.maximumOperationBytes)
         const outcome = this.pushWithinAggregateQuota(
           subscription.stream,
-          { value: owned, indication },
+          { value: owned, delivery: indication ? ('indication' as const) : ('notification' as const) },
           owned.byteLength
         )
         if (outcome.terminated) {
@@ -162,20 +165,43 @@ export class DeterministicTestBackend
     }
   }
 
+  /**
+   * Scripts what characteristic reads report: `read-or-notification` models a
+   * radio that fuses read responses and notifications (CoreBluetooth reading a
+   * notifying characteristic).
+   */
+  setReadProvenance(provenance: ReadProvenance): void {
+    this.assertUsable('set-read-provenance')
+    this.peripheral.setReadProvenance(provenance)
+  }
+
   injectAttError(operation: VirtualPeripheralOperation, code: BleErrorCode): void {
     this.assertUsable('inject-att-error')
     this.peripheral.injectFailure(operation, code)
   }
 
+  /** Every live connection of one peer (joined leases share the peer's link). */
+  private activeRecordsForPeer(peerId: PeerId<string>): ConnectionRecord[] {
+    return [...this.connectionsById.values()].filter(
+      record => record.active && String(record.peerId) === String(peerId)
+    )
+  }
+
   forceDisconnect(peerId: PeerId<string>): ConnectionPath<string, string> {
-    const record = this.connectionsByPeer.get(String(peerId))
-    if (record === undefined || !record.active) {
+    const records = this.activeRecordsForPeer(peerId)
+    if (records.length === 0) {
       throw contractError('connection.not-found', 'connection', 'deterministic.force-disconnect')
     }
-    const connection = connectionPathForRecord(record, this.attachment())
-    this.invalidateConnection(record, 'connection-lost')
+    const first = records[0]
+    if (first === undefined) {
+      throw contractError('connection.not-found', 'connection', 'deterministic.force-disconnect')
+    }
+    const connection = connectionPathForRecord(first, this.attachment())
+    for (const record of records) {
+      this.invalidateConnection(record, 'connection-lost')
+      this.replayConnectionLoss(connectionPathForRecord(record, this.attachment()))
+    }
     this.recordTrace('resource', 'connection-lost', 'connection.lost')
-    this.replayConnectionLoss(connection)
     return connection
   }
 
@@ -192,15 +218,17 @@ export class DeterministicTestBackend
   }
 
   triggerServicesChanged(peerId: PeerId<string>): void {
-    const record = this.connectionsByPeer.get(String(peerId))
-    if (record === undefined || !record.active) {
+    const records = this.activeRecordsForPeer(peerId)
+    if (records.length === 0) {
       return
     }
-    for (const database of [...record.databases]) {
-      this.ingressOrdinal = broadcastDatabaseChanged(this.attachment(), database.path, this.ingressOrdinal, event =>
-        this.broadcastEvent(event)
-      )
-      this.invalidateDatabase(database)
+    for (const record of records) {
+      for (const database of [...record.databases]) {
+        this.ingressOrdinal = broadcastDatabaseChanged(this.attachment(), database.path, this.ingressOrdinal, event =>
+          this.broadcastEvent(event)
+        )
+        this.invalidateDatabase(database)
+      }
     }
     this.recordTrace('resource', 'services-changed', null)
   }
@@ -208,7 +236,7 @@ export class DeterministicTestBackend
   resourceCounters(): ResourceCounters {
     return deterministicResourceCounters({
       scanGroup: this.scanGroup,
-      connections: this.connectionsByPeer,
+      connections: this.connectionsById,
       physicalSubscriptions: this.physicalSubscriptions,
       operation: this.operations.snapshot(),
       eventStreams: this.eventStreams,
@@ -266,7 +294,7 @@ export class DeterministicTestBackend
       )
       failures.push(...cleanup.failures)
     }
-    for (const record of [...this.connectionsByPeer.values()]) {
+    for (const record of [...this.connectionsById.values()]) {
       this.invalidateConnection(record, 'operation.cancelled-by-destroy')
     }
     for (const watcher of [...this.stateWatchers]) {
@@ -296,13 +324,17 @@ export class DeterministicTestBackend
   protected async connect<Connection extends string, Lease extends string>(
     peerId: PeerId<string>,
     _clientId: ClientId<string, string>,
-    optionsValue: PublicOperationOptions
+    optionsValue: ConnectionOptions
   ): Promise<ConnectionLease<string, Connection, Lease>> {
     this.assertUsable('connection.connect')
     this.assertAdapterReady('connection.connect')
-    if (this.connectionsByPeer.has(String(peerId))) {
-      throw contractError('connection.already-owned', 'connection', 'connection.connect')
+    if (optionsValue.intent === 'when-available') {
+      throw contractError('capability.unsupported', 'connection', 'connection.connect.when-available')
     }
+    // Same-peer joins (UNIFIED_SEMANTICS §3/§8): every admitted connect mints
+    // a new connection generation with its own lease, even when the peer
+    // already has a live link — the Android reference behaviour. One peer's
+    // link is shared; `physicalLinks` still counts the peer once.
     const record = await this.operations.run(
       'connect',
       optionsValue,
@@ -310,7 +342,7 @@ export class DeterministicTestBackend
       false,
       () => this.createConnectionRecord(peerId),
       created => {
-        this.connectionsByPeer.delete(created.key)
+        this.connectionsById.delete(created.key)
       }
     )
     const lease = this.createConnectionLease<Connection, Lease>(record.value)
@@ -368,7 +400,7 @@ export class DeterministicTestBackend
   >(
     path: CharacteristicPath<string, Connection, Database, Service, Characteristic, 'current'>,
     request: ReadRequest<string, Operation>
-  ): Promise<ReadResult<string, Operation>> {
+  ): Promise<CharacteristicReadResult<string, Operation>> {
     this.requireDatabase(path, 'gatt.read')
     const result = await this.operations.run(
       'read',
@@ -378,13 +410,16 @@ export class DeterministicTestBackend
       () => {
         this.requireDatabase(path, 'gatt.read')
         takePeripheralFailure(this.peripheral, 'read', 'gatt.read-failed')
-        return ownBytes(this.peripheral.readCharacteristic(characteristicAddress(path)), this.maximumOperationBytes)
+        return Object.freeze({
+          value: ownBytes(this.peripheral.readCharacteristic(characteristicAddress(path)), this.maximumOperationBytes),
+          provenance: this.peripheral.readProvenance()
+        })
       },
       null,
       null,
       String(path.connectionId)
     )
-    return { value: result.value, terminal: result.terminal }
+    return { ...result.value, terminal: result.terminal }
   }
 
   async write<
@@ -515,10 +550,12 @@ export class DeterministicTestBackend
   }
 
   private createConnectionRecord(peerId: PeerId<string>): ConnectionRecord {
-    const key = String(peerId)
     const attachment = this.attachment()
     const identifiers = this.idFactory(attachment)
     const connectionId = identifiers.connectionId(`connection-${this.nextConnection}`)
+    // Keyed by connection, not by peer: one peer may hold several joined
+    // connections, each with its own generation.
+    const key = String(connectionId)
     const generation = opaqueId(
       String(this.nextConnection),
       'connection-generation',
@@ -539,7 +576,7 @@ export class DeterministicTestBackend
       currentDatabase: null,
       discovery: null
     }
-    this.connectionsByPeer.set(key, record)
+    this.connectionsById.set(key, record)
     return record
   }
 
@@ -636,7 +673,7 @@ export class DeterministicTestBackend
     }
     this.operations.cancelScopeForDisconnect(String(record.connectionId))
     record.active = false
-    this.connectionsByPeer.delete(record.key)
+    this.connectionsById.delete(record.key)
     for (const database of [...record.databases]) {
       this.invalidateDatabase(database)
     }
@@ -670,11 +707,13 @@ export class DeterministicTestBackend
     connection: BackendConnection<string, Connection>,
     operation: string
   ): ConnectionRecord {
-    const record = this.connectionsByPeer.get(String(connection.peerId))
+    // Keyed by connection: one peer may hold several joined connections.
+    const record = this.connectionsById.get(String(connection.connectionId))
     if (
       record === undefined ||
       !record.active ||
       record.connection !== connection ||
+      String(record.peerId) !== String(connection.peerId) ||
       String(connection.attachment.backendInstanceId) !== String(this.attachment().backendInstanceId)
     ) {
       throw contractError('connection.stale', 'connection', operation)

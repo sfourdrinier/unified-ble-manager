@@ -1,0 +1,27 @@
+{
+  "name": "two straps in parallel: core scenarios on two hosts at once, one Polar H10 each",
+  "target": ["android", "ios"],
+  "devices": { "android": "Polar H10 E997042F", "ios": "Polar H10 E9B93D29" },
+  "defaultTimeoutMs": 60000,
+  "steps": [
+    { "run": "h10-stream", "command": "start", "capture": ["device", "peer", "effectiveDelivery"] },
+    { "waitForEvent": "h10-stream", "kind": "value", "count": 10, "timeoutMs": 30000 },
+    { "expectSnapshot": "h10-stream", "match": { "phase": "streaming", "valueCount": { "$gte": 10 } }, "capture": ["valueCount", "maxGapMs", "bpm"] },
+    { "run": "h10-stream", "command": "stop", "always": true, "capture": ["cleanup"] },
+    { "run": "device-info", "command": "read", "expect": { "ok": true, "result": { "reads": { "batteryLevelPercent": { "ok": true }, "manufacturerName": { "ok": true } } } } },
+    { "expectSnapshot": "device-info", "match": { "phase": "done" }, "capture": ["peer", "cleanup"] },
+    { "run": "mtu", "command": "probe", "args": { "mtu": 517 } },
+    { "expectSnapshot": "mtu", "match": { "phase": "done" }, "capture": ["peer", "probes"] },
+    { "run": "ecg", "command": "start", "capture": ["peer", "mtu", "features"] },
+    { "waitForEvent": "ecg", "kind": "ecg-rate", "count": 10, "since": "step", "timeoutMs": 30000 },
+    { "expectSnapshot": "ecg", "match": { "phase": "streaming", "parseFailures": 0, "samplesLastSecond": { "$gte": 100 } }, "capture": ["frames", "samples", "missingNotifications", "droppedItems"] },
+    { "run": "ecg", "command": "stop", "always": true, "capture": ["cleanup"] },
+    { "run": "link-loss", "command": "start", "capture": ["peer", "reconnectTarget"] },
+    { "waitForEvent": "link-loss", "kind": "value", "count": 5 },
+    { "run": "link-loss", "command": "force-disconnect" },
+    { "waitForEvent": "link-loss", "kind": "outage-detected", "since": "previous-step" },
+    { "waitForEvent": "link-loss", "kind": "outage-recovered", "since": "previous-step", "timeoutMs": 60000 },
+    { "expectSnapshot": "link-loss", "match": { "scansAfterInitialFind": 0, "outages": { "$length": { "$gte": 1 } } }, "capture": ["outages"] },
+    { "run": "link-loss", "command": "stop", "always": true, "capture": ["cleanup"] }
+  ]
+}

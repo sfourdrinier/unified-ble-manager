@@ -1,179 +1,40 @@
 // src/node-winrt.ts
+//
+// Windows Node entrypoint. The factories execute the shared Rust core
+// (`DesktopCentral` over btleplug's WinRT radio) through the packaged N-API
+// addon, identity-checked before any radio call. A missing or mismatched
+// core fails loudly; nothing falls back to another backend.
 
-import { BackendContractError, contractError } from './backend-contract/errors'
 import type { BackendProvider, HostNeutralBackendIdentity } from './backend-contract/identity'
-import type { WinRtBoundary } from './backends/winrt/winrt-boundary'
 import {
-  createWinRtBackendProvider,
-  winRtCompatibility,
-  type WinRtBackendProviderOptions
-} from './backends/winrt/winrt-provider'
-import { createNodeBleManagerFromProvider, type NodeBleManagerAppOptions } from './node-host-manager'
-import { createPublicBleManager } from './public/ble-manager'
+  createDesktopCoreBleManager,
+  createDesktopCoreProvider,
+  type DesktopCoreManagerOptions,
+  type DesktopCoreProviderOptions
+} from './node-desktop-manager'
 import type { BleManager } from './public/ble-manager'
-
-interface WinRtNativeModule {
-  readonly boundaryVersion: 2
-  createContractBoundary(): WinRtBoundary
-}
-
-const requiredNativeBoundaryMethods = [
-  'listAdapters',
-  'selectAdapter',
-  'adapterSnapshot',
-  'startScan',
-  'stopScan',
-  'connect',
-  'disconnect',
-  'discover',
-  'read',
-  'write',
-  'readDescriptor',
-  'writeDescriptor',
-  'startNotify',
-  'stopNotify',
-  'onConnectionLost',
-  'onDatabaseChanged',
-  'onAdapterState',
-  'onSecurityState',
-  'onScanTerminal',
-  'securityState',
-  'pair',
-  'cancelPairing',
-  'unpair',
-  'ingressTelemetry',
-  'destroy'
-]
-
-function missingNativeBoundaryMethod(boundary: WinRtBoundary): string | null {
-  for (const method of requiredNativeBoundaryMethods) {
-    if (typeof Reflect.get(boundary, method) !== 'function') {
-      return method
-    }
-  }
-  return null
-}
 
 export {
   WINRT_BACKEND_ID,
   WINRT_IMPLEMENTATION_VERSION,
   WINRT_PLATFORM_ID,
-  createWinRtBackendProvider,
   winRtCompatibility
-} from './backends/winrt/winrt-provider'
-export type {
-  WinRtAdapterRecord,
-  WinRtAdapterSnapshot,
-  WinRtAdvertisement,
-  WinRtAsyncOperation,
-  WinRtBoundary,
-  WinRtCancellationState,
-  WinRtCharacteristicAddress,
-  WinRtCharacteristicRecord,
-  WinRtDescriptorAddress,
-  WinRtDescriptorRecord,
-  WinRtGattSnapshot,
-  WinRtIngressTelemetry,
-  WinRtScanTerminalError,
-  WinRtScanTerminalRecord,
-  WinRtScanTerminalStatus,
-  WinRtServiceRecord,
-  WinRtPairResult,
-  WinRtSecurityState,
-  WinRtSecurityStateChangedRecord
-} from './backends/winrt/winrt-boundary'
-export type { WinRtSecurityBoundary } from './backends/winrt/winrt-security'
-export type { WinRtBackendProviderOptions } from './backends/winrt/winrt-provider'
+} from './backends/desktop/platform-identity'
+export * from './desktop-rust-core-exports'
+export type { NodeBleManagerAppOptions } from './node-host-manager'
+export type { DesktopCoreManagerOptions, DesktopCoreProviderOptions } from './node-desktop-manager'
 
-export interface NativeWinRtProviderOptions {
-  readonly now: () => number
+export type WinRtBleManagerAppOptions = DesktopCoreManagerOptions
+export type NativeWinRtProviderOptions = DesktopCoreProviderOptions
+
+/** One-call Node WinRT manager over the shared Rust core. Does not fall back to another backend. */
+export async function createWinRtBleManager(options: WinRtBleManagerAppOptions = {}): Promise<BleManager> {
+  return createDesktopCoreBleManager('winrt', options)
 }
 
-function nativeArtifactUnavailable(operation: string, code: string, safeMessage: string): BackendContractError {
-  return contractError('capability.unavailable', 'platform', operation, {
-    domain: 'winrt',
-    code,
-    safeMessage,
-    metadata: Object.freeze({})
-  })
-}
-
-/** Loads only the package-controlled Windows Node-API artifact and never substitutes a test radio. */
-export function createNativeWinRtBoundary(): WinRtBoundary {
-  if (process.platform !== 'win32') {
-    throw contractError('capability.unavailable', 'platform', 'winrt.native-boundary.load', {
-      domain: 'winrt',
-      code: 'windows-required',
-      safeMessage: 'The WinRT backend is available only on Windows',
-      metadata: Object.freeze({})
-    })
-  }
-  let nativeModule: WinRtNativeModule
-  try {
-    nativeModule = require('../../native/electron/winrt')
-  } catch (error) {
-    if (error instanceof BackendContractError) {
-      throw error
-    }
-    throw nativeArtifactUnavailable(
-      'winrt.native-boundary.load',
-      'native-artifact-unavailable',
-      'The packaged WinRT native artifact could not be loaded for this Node or Electron runtime'
-    )
-  }
-  if (nativeModule.boundaryVersion !== 2 || typeof nativeModule.createContractBoundary !== 'function') {
-    throw contractError('protocol.incompatible', 'boundary', 'winrt.native-boundary.version', {
-      domain: 'winrt',
-      code: 'native-protocol-version',
-      safeMessage: 'The packaged WinRT native artifact does not implement boundary protocol v2',
-      metadata: Object.freeze({})
-    })
-  }
-  try {
-    const boundary = nativeModule.createContractBoundary()
-    const missingMethod = missingNativeBoundaryMethod(boundary)
-    if (missingMethod !== null) {
-      throw contractError('protocol.incompatible', 'boundary', 'winrt.native-boundary.surface', {
-        domain: 'winrt',
-        code: 'native-boundary-surface',
-        safeMessage: `The packaged WinRT native boundary is missing required protocol v2 method ${missingMethod}`,
-        metadata: Object.freeze({ missingMethod })
-      })
-    }
-    return boundary
-  } catch (error) {
-    if (error instanceof BackendContractError) {
-      throw error
-    }
-    throw nativeArtifactUnavailable(
-      'winrt.native-boundary.create',
-      'native-boundary-unavailable',
-      'The WinRT native boundary could not be created for this Windows process'
-    )
-  }
-}
-
-export type { NodeBleManagerAppOptions }
-
-/** One-call Node WinRT manager. Does not fall back to another backend. */
-export async function createWinRtBleManager(options: NodeBleManagerAppOptions = {}): Promise<BleManager> {
-  const now = options.now ?? (() => performance.now())
-  const internal = await createNodeBleManagerFromProvider(
-    createNativeWinRtBackendProvider({ now }),
-    winRtCompatibility,
-    options
-  )
-  return createPublicBleManager(internal, now)
-}
-
-/** Creates a strict Node provider for one explicitly selected Windows BLE adapter. */
+/** Creates the production Node WinRT provider over the shared Rust core (adapters selectable by id). */
 export function createNativeWinRtBackendProvider(
   options: NativeWinRtProviderOptions
 ): BackendProvider<string, HostNeutralBackendIdentity<string>> {
-  const providerOptions: WinRtBackendProviderOptions = {
-    boundaryFactory: createNativeWinRtBoundary,
-    now: options.now,
-    hostKind: 'node'
-  }
-  return createWinRtBackendProvider(providerOptions)
+  return createDesktopCoreProvider('winrt', options, 'node')
 }

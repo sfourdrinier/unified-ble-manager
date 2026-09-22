@@ -30,10 +30,29 @@
           },
           "background": {
             "ios": {
-              "mode": "central"
+              "mode": "central",
+              "restoration": {
+                "id": "example-expo-primary",
+                "generation": "1"
+              }
             },
             "android": {
-              "mode": "none"
+              "mode": "connected-device-foreground-service",
+              "notification": {
+                "channelId": "example_expo_ble",
+                "channelName": "Example BLE",
+                "title": "Example BLE active",
+                "body": "Bluetooth activity in progress"
+              }
+            },
+            "continuation": {
+              "onAppearance": "native",
+              "resubscribe": [
+                {
+                  "serviceUuid": "0000180d-0000-1000-8000-00805f9b34fb",
+                  "characteristicUuid": "00002a37-0000-1000-8000-00805f9b34fb"
+                }
+              ]
             }
           }
         }

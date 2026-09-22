@@ -429,7 +429,9 @@ describe('WebBluetoothBackend availability and attachment lifecycle', () => {
     available = false
 
     await backend.adapter.currentState()
-    await expect(inFlightRead).rejects.toMatchObject({ normalized: { code: 'operation.disconnected' } })
+    // Owner decision (5.0): an adapter loss ends in-flight work with
+    // `operation.reset` on every host.
+    await expect(inFlightRead).rejects.toMatchObject({ normalized: { code: 'operation.reset' } })
     expectConsoleErrorMatching(
       '[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:',
       expect.objectContaining({ message: 'The browser refused disconnect cleanup' })
@@ -525,7 +527,10 @@ describe('WebBluetoothBackend availability and attachment lifecycle', () => {
       power: 'unknown'
     })
     expect(backend.resourceCounters()).toMatchObject({ connectionLeases: 1, physicalLinks: 1 })
-    await expect(database.read(path, noDeadline())).resolves.toEqual(new Uint8Array([0, 72]))
+    await expect(database.read(path, noDeadline())).resolves.toEqual({
+      value: new Uint8Array([0, 72]),
+      provenance: 'read-response'
+    })
     await backend.destroy()
   })
 
@@ -551,7 +556,10 @@ describe('WebBluetoothBackend availability and attachment lifecycle', () => {
       power: 'unknown'
     })
     expect(backend.resourceCounters()).toMatchObject({ connectionLeases: 1, physicalLinks: 1 })
-    await expect(database.read(path, noDeadline())).resolves.toEqual(new Uint8Array([0, 72]))
+    await expect(database.read(path, noDeadline())).resolves.toEqual({
+      value: new Uint8Array([0, 72]),
+      provenance: 'read-response'
+    })
     await backend.destroy()
   })
 

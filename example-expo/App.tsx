@@ -4,3 +4,5 @@ import { AppComponent } from './src/AppComponent'
 export function App() {
   return <AppComponent />
 }
+
+export default App

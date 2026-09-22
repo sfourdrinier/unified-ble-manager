@@ -300,7 +300,10 @@ describe('WebBluetoothBackend', () => {
     const database = await backend.gatt.discover(lease.connection, noDeadline())
     const characteristic = (await database.snapshot()).characteristics[0]
     if (characteristic === undefined) throw new Error('expected deterministic Web characteristic')
-    await expect(database.read(characteristic.path, noDeadline())).resolves.toEqual(new Uint8Array([0, 72]))
+    await expect(database.read(characteristic.path, noDeadline())).resolves.toEqual({
+      value: new Uint8Array([0, 72]),
+      provenance: 'read-response'
+    })
 
     await lease.release()
     await backend.destroy()
@@ -361,9 +364,14 @@ describe('WebBluetoothBackend', () => {
     expect(String(snapshot.services[0].path.serviceOccurrence)).toBe('0')
     expect(String(snapshot.characteristics[0].path.characteristicOccurrence)).toBe('0')
 
-    const value = await database.read(snapshot.characteristics[0].path, { signal: null, deadline: null })
+    const { value, provenance } = await database.read(snapshot.characteristics[0].path, {
+      signal: null,
+      deadline: null
+    })
     mock.readBuffer[1] = 99
     expect([...value]).toEqual([0, 72])
+    // Web Bluetooth `readValue()` answers with the read's own response.
+    expect(provenance).toBe('read-response')
 
     await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
     await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
@@ -429,6 +437,51 @@ describe('WebBluetoothBackend', () => {
       notificationDeliveries: 1
     })
     await backend.destroy()
+  })
+
+  // Owner decision (5.0): Web Bluetooth's `gatt.connect()` rejects with a
+  // NetworkError when the browser could not establish the link — the same
+  // fact as Android GATT 133 or CBError.connectionFailed — so the connect is
+  // `caller-decides` with the browser's answer kept. The backend never
+  // retries it; any other rejection stays `never`.
+  test.each([
+    ['NetworkError', 'connection.failed', 'caller-decides'],
+    ['SecurityError', 'platform.security', 'never']
+  ])('a connect rejected with %s is %s / %s', async (name, code, retryability) => {
+    const mock = createBoundary()
+    let connectCalls = 0
+    mock.device.gatt.connect = async () => {
+      connectCalls += 1
+      const error = new Error('Connection attempt failed.')
+      error.name = name
+      throw error
+    }
+    const provider = createWebBluetoothProvider(mock.boundary)
+    const [adapter] = await provider.listAdapters()
+    const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
+    await backend.attach({ coreCompatibility: provider.descriptor.compatibility })
+    const selection = await backend.choose(
+      {
+        filters: [{ serviceUuids: [HEART_RATE_SERVICE], manufacturerData: [], localNamePrefix: null }],
+        acceptAllDevices: false,
+        optionalServices: [HEART_RATE_SERVICE]
+      },
+      noDeadline()
+    )
+    await expect(
+      backend.connections.connect(selection.peerId, 'test-client', { signal: null, deadline: null })
+    ).rejects.toMatchObject({
+      normalized: {
+        code,
+        retryability,
+        platform: { domain: 'web-bluetooth', code: name }
+      }
+    })
+    expect(connectCalls).toBe(1)
+    expectConsoleErrorMatching(
+      '[WebBluetoothBackend.connect] Browser connect rejected:',
+      expect.objectContaining({ name })
+    )
   })
 
   test('invalidates the old database generation after rediscovery', async () => {
@@ -589,7 +642,7 @@ describe('WebBluetoothBackend', () => {
     await flushWebTckMicrotasks()
     await expect(
       backend.connections.connect(opaqueId('missing', 'peer', 'web'), 'test-client', noDeadline())
-    ).rejects.toMatchObject({ normalized: { code: 'connection.not-found' } })
+    ).rejects.toMatchObject({ normalized: { code: 'peer.not-found', domain: 'connection' } })
     expect(backend.resourceCounters().chooserSessions).toBe(0)
     await backend.destroy()
   })
@@ -765,6 +818,61 @@ describe('WebBluetoothBackend', () => {
     }
   })
 
+  // Owner decision (5.0): one word per event on every host. An operation in
+  // flight when the browser reports the link gone is `connection.lost`; the
+  // same operation cut off by the app's own release is
+  // `operation.disconnected`; a GATT call the browser fails with
+  // NetworkError (GATT server disconnected) is a link loss too.
+  describe('an operation cut off by the end of the link', () => {
+    async function pendingRead(readValue) {
+      const mock = createBoundary()
+      const provider = createWebBluetoothProvider(mock.boundary)
+      const [adapter] = await provider.listAdapters()
+      const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
+      await backend.attach({ coreCompatibility: provider.descriptor.compatibility })
+      const selected = await backend.choose(chooserRequest(), noDeadline())
+      const lease = await backend.connections.connect(selected.peerId, 'link-end-client', noDeadline())
+      const database = await backend.gatt.discover(lease.connection, noDeadline())
+      const path = (await database.snapshot()).characteristics[0].path
+      mock.characteristic.readValue = readValue
+      const read = database.read(path, noDeadline())
+      await flushWebTckMicrotasks()
+      return { mock, backend, lease, read }
+    }
+
+    test('the browser reports the link gone: connection.lost', async () => {
+      const { mock, backend, read } = await pendingRead(() => new Promise(() => undefined))
+      mock.device.gatt.disconnect()
+      await expect(read).rejects.toMatchObject({ normalized: { code: 'connection.lost', domain: 'connection' } })
+      await backend.destroy()
+    })
+
+    test("the app's own release: operation.disconnected", async () => {
+      const { backend, lease, read } = await pendingRead(() => new Promise(() => undefined))
+      await lease.release()
+      await expect(read).rejects.toMatchObject({
+        normalized: { code: 'operation.disconnected', domain: 'connection' }
+      })
+      await backend.destroy()
+    })
+
+    test('a GATT call the browser fails with NetworkError: connection.lost, answer kept', async () => {
+      const { backend, read } = await pendingRead(async () => {
+        const error = new Error('GATT Server is disconnected. Cannot perform GATT operations.')
+        error.name = 'NetworkError'
+        throw error
+      })
+      await expect(read).rejects.toMatchObject({
+        normalized: {
+          code: 'connection.lost',
+          domain: 'connection',
+          platform: { domain: 'web-bluetooth', code: 'NetworkError' }
+        }
+      })
+      await backend.destroy()
+    })
+  })
+
   test('locally releasing a connection suppresses the browser disconnect event and preserves retry ownership', async () => {
     const mock = createBoundary()
     const provider = createWebBluetoothProvider(mock.boundary)
@@ -850,6 +958,34 @@ describe('WebBluetoothBackend', () => {
     const connection = await manager.connect(selection.peerId, noDeadline())
     expect(connection.peerId).toBe(selection.peerId)
     await connection.release()
+    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
+  // One vocabulary: a portable application asks the shared discovery ids. Web
+  // Bluetooth has a system chooser and no continuous scan, and says so in the
+  // same words every other backend uses.
+  test('reports its discovery capabilities in the shared vocabulary', async () => {
+    const mock = createBoundary()
+    const provider = createWebBluetoothProvider(mock.boundary)
+    const [adapter] = await provider.listAdapters()
+    const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
+    const attachedBackend = await attachBleBackend(backend, provider.descriptor.compatibility)
+    const manager = await createBleManager(
+      {
+        attachedBackend,
+        clientId: opaqueId('web-test-client', 'client', 'web-test'),
+        managerId: opaqueId('web-test-manager', 'manager', 'web-test'),
+        ownerMode: 'owning'
+      },
+      createManagerOwnershipAuthority(attachedBackend),
+      DEFAULT_BLE_MANAGER_OPTIONS
+    )
+    expect(manager.supports('discovery:system-chooser')).toBe(true)
+    expect(manager.supports('discovery:continuous-scan')).toBe(false)
+    expect(manager.capability('discovery:continuous-scan')).toMatchObject({
+      state: 'unsupported',
+      limitations: [expect.objectContaining({ code: 'web-chooser-is-not-continuous-scan' })]
+    })
     await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 
@@ -1108,7 +1244,8 @@ describe('InMemoryWebBluetoothTckBoundary', () => {
       optionalServices: []
     })
     boundary.resolveChooser()
-    await expect(choosing).resolves.toMatchObject({ grantedServices: [HEART_RATE_SERVICE] })
+    // A browser grants only the services a request names; this one names none.
+    await expect(choosing).resolves.toMatchObject({ grantedServices: [] })
   })
 })
 

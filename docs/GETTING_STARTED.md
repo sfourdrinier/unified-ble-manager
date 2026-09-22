@@ -4,7 +4,7 @@
 
 This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are linked at the bottom. The root import does not turn Bluetooth on.
 
-This source targets `4.0.28`; verify the published version in the npm registry.
+This source targets `5.0.0-rc.0`; verify the published version in the npm registry.
 
 ## Pick a host
 
@@ -38,11 +38,11 @@ request runtime permissions on Android 12+, add
 #### Expo / CNG v2
 
 The Expo v2 schema and `unified-ble-manager/expo` factory are in this source.
-After the npm registry lists `4.0.28`, install that exact version and keep it in
+After the npm registry lists `5.0.0-rc.0`, install that exact version and keep it in
 your lockfile while validating the native build:
 
 ```sh
-pnpm add unified-ble-manager@4.0.28
+pnpm add unified-ble-manager@5.0.0-rc.0
 ```
 
 The package does not run in Expo Go.
@@ -205,8 +205,20 @@ Each `timeoutMs` is scoped to its public operation. More recipes: [`TUTORIALS.md
 - Android 12 without the runtime permission fails the first scan with `permission.denied`. Android 11 and below need `ACCESS_FINE_LOCATION`. `neverForLocation: true` is only honest if you do not use BLE for location.
 - Bare React Native still needs `NSBluetoothAlwaysUsageDescription` in Info.plist. The Expo plugin writes that for Expo apps.
 - Creating a new manager on every render leaks the radio. Create one, await `destroy()` when the session ends.
-- On Apple / Electron CoreBluetooth, do not `read()` a characteristic while it is notifying. `didUpdateValueFor` cannot tell a read response from a notification, so the read is `gatt.read-failed`. Use the subscription stream, or unsubscribe, wait until notify is off, then read. Android and WinRT still allow read-while-notifying.
+- Reading a characteristic while it notifies works on every platform, but on Apple CoreBluetooth (iOS, macOS Node/Electron) the value cannot be told apart from a notification: `didUpdateValueFor` reports both. Use `characteristic.readReceipt()` when it matters: `provenance` is `read-response` when the platform attributed the value to your read, and `read-or-notification` when it may be a notification. Subscribers receive that value too. Android, WinRT, BlueZ and Web always answer `read-response`.
 - `requiredHardware: true` only marks the Android BLE hardware feature. It does not start a foreground service.
+
+### Reconnecting after the app was gone (restoration)
+
+A known peer reconnects without a scan, but the wake-up differs per
+platform: on Android associate (`ble.association.associate`), arm presence
+(`ble.presence.observe({ peerId })`), then read `ble.peers.restored()` and
+`connect` with intent `'when-available'`; on iOS configure
+`background.ios.restoration` and adopt with `restoration.claim()`. iOS
+reconnects directly through a durable restored `PeerReference`, never through
+Android-only `'when-available'`; the shared driver now accepts that reference,
+but its physical direct-reconnect qualification is still open. The full task-ordered chain, and what API<31,
+tvOS, desktop and Web answer instead, is in [`BACKGROUND.md`](BACKGROUND.md).
 
 ## Coming from react-native-ble-plx
 

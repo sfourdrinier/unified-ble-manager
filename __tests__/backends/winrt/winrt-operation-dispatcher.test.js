@@ -75,6 +75,9 @@ function loadDispatcherWithConsole(diagnosticConsole) {
     })
     const loadRequiredModule = request =>
       request.startsWith('.') ? loadTypeScriptModule(resolveTypeScriptModule(filePath, request)) : require(request)
+    // Test-local TS loader: compiles the dispatcher source and executes it in a
+    // controlled scope. Deliberate use of the Function constructor.
+    // eslint-disable-next-line no-new-func
     const execute = new Function('require', 'module', 'exports', 'console', compiled.outputText)
     execute(loadRequiredModule, module, module.exports, diagnosticConsole)
     return module.exports

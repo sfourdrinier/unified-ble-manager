@@ -47,7 +47,7 @@ function withWindowsPlatform(run) {
 function loadBoundary() {
   let createNativeWinRtBoundary
   jest.isolateModules(() => {
-    ;({ createNativeWinRtBoundary } = require('../../../src/node-winrt'))
+    ;({ createNativeWinRtBoundary } = require('../../../src/backends/winrt/winrt-native-boundary'))
   })
   return createNativeWinRtBoundary
 }

@@ -19,6 +19,7 @@ import type {
 } from '../backend-contract/gatt'
 import type { BackendIdentity } from '../backend-contract/identity'
 import type {
+  CharacteristicRead,
   LongWritePolicy,
   LongWriteReceipt,
   PublicOperationOptions,
@@ -464,7 +465,7 @@ export class CoreGattDatabase<Attachment extends string, Identity extends Backen
     return snapshot
   }
 
-  read(path: CurrentCharacteristicPath<Attachment>, options: PublicOperationOptions): Promise<OwnedBytes> {
+  read(path: CurrentCharacteristicPath<Attachment>, options: PublicOperationOptions): Promise<CharacteristicRead> {
     return this.core.read(this, path, options)
   }
 

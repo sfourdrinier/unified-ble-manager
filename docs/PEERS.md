@@ -21,6 +21,8 @@ if (saved !== null) {
 
 `PeerReference` persistence belongs to the application. The library does not write storage or silently migrate references. Future reference versions fail with `peer.reference-version-unsupported`; malformed references fail before radio work.
 
+Restoration directories: `peers.restored()` lists the peers the OS handed back after the app was gone — claimed on iOS via `restoration.claim()`, read directly on Android after `presence.observe({ peerId })` armed a Companion Device Manager wake for an associated peer. The task-ordered chain is in [`BACKGROUND.md`](BACKGROUND.md).
+
 `manager.peers` exposes separate `known`, `connected`, `bonded`, `authorized`, and `restored` queries. A backend may report an individual category as unsupported. Web Bluetooth reports origin-authorized devices only when the browser exposes `navigator.bluetooth.getDevices()`; those references are origin-scoped and may represent disconnected or out-of-range devices. Tauri reports the directory unsupported until its host boundary can provide truthful references.
 
 React Native Android supports `bonded()` and `resolve()` through the Android system bond table. The app must request `BLUETOOTH_CONNECT` (and `BLUETOOTH_SCAN` for scanning) before calling them. A bonded peer is paired metadata, not proof that the radio is reachable: Android reports reachability as `unknown` and only reports `connection: 'connected'` when the manager already owns that live connection. Save the returned version-1, system-scoped reference and resolve it again before reconnecting:

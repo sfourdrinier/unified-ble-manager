@@ -295,7 +295,8 @@ describe('stable public GATT object model (PR3 TDD)', () => {
     const { connection, database } = await connectAndDiscover(fixture, manager)
 
     expect(database.generation).toEqual(expect.any(String))
-    expect(database.services).toHaveLength(2)
+    // Two battery services, then the heart-rate service of the duplicate-UUID world.
+    expect(database.services).toHaveLength(3)
     expect(Object.isFrozen(database.services)).toBe(true)
     expect(database.servicesByUuid('180f').map(service => service.occurrence)).toEqual([0, 1])
 
@@ -337,6 +338,37 @@ describe('stable public GATT object model (PR3 TDD)', () => {
     await expect(settle(fixture, characteristic.read())).resolves.toEqual(new Uint8Array())
     await expect(settle(fixture, connection.release())).resolves.toMatchObject({ state: 'released' })
     await expect(characteristic.read()).rejects.toMatchObject({ code: 'gatt.stale-handle' })
+    await expect(settle(fixture, manager.destroy())).resolves.toMatchObject({ state: 'released' })
+  })
+
+  test('readReceipt reports the platform provenance; a read on a subscribed characteristic runs and the subscriber still receives values', async () => {
+    const { fixture, manager } = await createPublicFixture()
+    const { connection, database } = await connectAndDiscover(fixture, manager)
+    const characteristic = database.service('180f', { occurrence: 0 }).characteristic('2a19')
+    const idle = await settle(fixture, characteristic.readReceipt())
+    expect(idle.provenance).toBe('read-response')
+    expect(Object.isFrozen(idle)).toBe(true)
+    const subscription = await settle(fixture, characteristic.subscribe())
+    const next = subscription.values[Symbol.asyncIterator]().next()
+    fixture.controller.setReadProvenance('read-or-notification')
+    const fused = await settle(fixture, characteristic.readReceipt())
+    expect(fused.provenance).toBe('read-or-notification')
+    await expect(settle(fixture, characteristic.read())).resolves.toEqual(fused.value)
+    fixture.controller.emitNotification(
+      {
+        serviceUuid: '0000180f-0000-1000-8000-00805f9b34fb',
+        serviceOccurrence: 0,
+        characteristicUuid: '00002a19-0000-1000-8000-00805f9b34fb',
+        characteristicOccurrence: 0
+      },
+      new Uint8Array([0x0f])
+    )
+    await expect(next).resolves.toMatchObject({
+      value: { kind: 'value', value: { delivery: 'notification', value: new Uint8Array([0x0f]) } }
+    })
+    await settle(fixture, subscription.remove())
+    await expect(settle(fixture, connection.release())).resolves.toMatchObject({ state: 'released' })
+    await expect(characteristic.readReceipt()).rejects.toMatchObject({ code: 'gatt.stale-handle' })
     await expect(settle(fixture, manager.destroy())).resolves.toMatchObject({ state: 'released' })
   })
 

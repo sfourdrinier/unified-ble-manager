@@ -1,6 +1,9 @@
-jest.mock('../src/react-native', () => ({
-  createReactNativeBleManager: jest.fn(),
-  createReactNativeBleManagerWithEnvironment: jest.fn()
+jest.mock('../src/react-native-app-manager', () => ({
+  createReactNativeApplicationHost: jest.fn()
+}))
+
+jest.mock('../src/public/ble-manager', () => ({
+  createPublicBleManager: jest.fn(async internal => internal)
 }))
 
 jest.mock('../src/expo-native-runtime', () => ({
@@ -8,11 +11,12 @@ jest.mock('../src/expo-native-runtime', () => ({
 }))
 
 jest.mock('react-native', () => ({
-  Platform: { OS: 'android', Version: 35 }
+  Platform: { OS: 'android', Version: 35 },
+  TurboModuleRegistry: { get: name => (name === 'UnifiedBleRustCore' ? {} : null) }
 }))
 
 const { createExpoBleManager, mapExpoReadiness } = require('../src/expo')
-const { createReactNativeBleManager } = require('../src/react-native')
+const { createReactNativeApplicationHost } = require('../src/react-native-app-manager')
 const { getNativeUnifiedBleExpoRuntime } = require('../src/expo-native-runtime')
 const { Platform } = require('react-native')
 
@@ -61,7 +65,7 @@ describe('Expo readiness surface', () => {
 
   test('returns the delegated React Native manager with additive readiness', async () => {
     const manager = managerFor(adapterState())
-    createReactNativeBleManager.mockResolvedValue(manager)
+    createReactNativeApplicationHost.mockResolvedValue({ manager: manager, services: {}, claimRestoration: jest.fn() })
 
     const result = await createExpoBleManager()
 
@@ -99,7 +103,7 @@ describe('Expo readiness surface', () => {
     ['unsupported adapter', adapterState({ availability: 'unsupported' }), 'unavailable', []]
   ])('maps %s from trusted adapter state', async (_name, state, expectedState, expectedActions) => {
     const manager = managerFor(state)
-    createReactNativeBleManager.mockResolvedValue(manager)
+    createReactNativeApplicationHost.mockResolvedValue({ manager: manager, services: {}, claimRestoration: jest.fn() })
 
     const result = await createExpoBleManager()
 
@@ -112,7 +116,7 @@ describe('Expo readiness surface', () => {
 
   test('uses the trusted native permission bridge for a pending adapter permission action', async () => {
     const manager = managerFor(adapterState({ authorization: 'not-determined' }))
-    createReactNativeBleManager.mockResolvedValue(manager)
+    createReactNativeApplicationHost.mockResolvedValue({ manager: manager, services: {}, claimRestoration: jest.fn() })
 
     const result = await createExpoBleManager()
     const readiness = await result.readiness()
@@ -135,7 +139,7 @@ describe('Expo readiness surface', () => {
 
   test('direct Android factory does not report API 24-30 ready when runtime config omits legacy location policy', async () => {
     const manager = managerFor(adapterState())
-    createReactNativeBleManager.mockResolvedValue(manager)
+    createReactNativeApplicationHost.mockResolvedValue({ manager: manager, services: {}, claimRestoration: jest.fn() })
     const originalVersion = Platform.Version
     Platform.Version = 30
 
@@ -181,7 +185,7 @@ describe('Expo readiness surface', () => {
 
   test('openSettings uses the trusted native settings bridge explicitly', async () => {
     const manager = managerFor(adapterState())
-    createReactNativeBleManager.mockResolvedValue(manager)
+    createReactNativeApplicationHost.mockResolvedValue({ manager: manager, services: {}, claimRestoration: jest.fn() })
 
     const result = await createExpoBleManager()
 

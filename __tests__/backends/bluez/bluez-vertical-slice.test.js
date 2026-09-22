@@ -420,7 +420,8 @@ describe('BlueZ contract-v1 vertical slice', () => {
 
     const read = await database.read(characteristic, operation())
     source[0] = 99
-    expect([...read]).toEqual([7, 8, 9])
+    expect([...read.value]).toEqual([7, 8, 9])
+    expect(read.provenance).toBe('read-response')
 
     let releaseWrite
     const writeGate = new Promise(resolve => {
@@ -707,7 +708,10 @@ describe('BlueZ contract-v1 vertical slice', () => {
       'ReadValue',
       async () => new Uint8Array([41])
     )
-    await expect(database.read(characteristic, operation())).resolves.toEqual(new Uint8Array([41]))
+    await expect(database.read(characteristic, operation())).resolves.toEqual({
+      value: new Uint8Array([41]),
+      provenance: 'read-response'
+    })
     await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 

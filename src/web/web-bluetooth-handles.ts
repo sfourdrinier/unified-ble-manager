@@ -16,6 +16,7 @@ import type {
 } from '../backend-contract/gatt'
 import { attachmentRecordsEqual, type AttachmentRecord } from '../backend-contract/identity'
 import type {
+  CharacteristicRead,
   OperationTerminalRecord,
   PublicOperationOptions,
   SubscriptionOptions,
@@ -51,7 +52,7 @@ export interface WebGattDatabaseHost {
     database: WebGattDatabase,
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     options: PublicOperationOptions
-  ): Promise<OwnedBytes>
+  ): Promise<CharacteristicRead>
   writeDirect(
     database: WebGattDatabase,
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
@@ -76,6 +77,12 @@ export interface WebGattDatabaseHost {
   ): Promise<import('../backend-contract/gatt').Subscription<string, string, string, string, string, string>>
 }
 
+/**
+ * Why a Web link ended, one word per event (5.0): the browser reported it
+ * gone, the app released it, or Bluetooth became unavailable.
+ */
+export type WebLinkEnd = 'connection-lost' | 'owner-released' | 'adapter-loss'
+
 export interface WebConnectionRecord {
   readonly peerId: PeerId<string>
   readonly device: WebBluetoothDeviceBoundary
@@ -83,9 +90,11 @@ export interface WebConnectionRecord {
   readonly connection: WebBackendConnection
   readonly leaseId: LeaseId<string, string>
   readonly disconnectListener: WebBluetoothDisconnectListener
-  readonly disconnectWaiters: Set<() => void>
+  readonly disconnectWaiters: Set<(end: WebLinkEnd) => void>
   database: WebGattDatabase | null
   valid: boolean
+  /** Why the link ended, once it has. */
+  end: WebLinkEnd | null
   subscriptionReleased: boolean
   physicalReleased: boolean
   disconnectPromise: Promise<CleanupRecord> | null
@@ -212,7 +221,7 @@ export class WebGattDatabase implements GattDatabase<string, string, string> {
   read(
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     options: PublicOperationOptions
-  ): Promise<OwnedBytes> {
+  ): Promise<CharacteristicRead> {
     return this.backend.readDirect(this, path, options)
   }
 

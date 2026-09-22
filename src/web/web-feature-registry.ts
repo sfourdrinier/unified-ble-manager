@@ -151,9 +151,12 @@ function originAuthorizedPeerRegistration(
   }
 }
 
-function chooserDiscoveryRegistration(implementationVersion: string): FeatureRegistry['registrations'][number] {
+function chooserDiscoveryRegistration(
+  id: FeatureId,
+  implementationVersion: string
+): FeatureRegistry['registrations'][number] {
   return {
-    id: 'web:chooser-discovery',
+    id,
     state: 'limited',
     selectedSchemaRange: capabilityRange,
     implementationOrigin: 'backend-native',
@@ -198,7 +201,18 @@ export function createWebBluetoothFeatureRegistry(
       tckSuiteId: WEB_CHOOSER_TCK_SUITE_ID,
       requiredScenarioIds: [WEB_CHOOSER_TCK_SCENARIO_ID]
     }),
-    chooserDiscoveryRegistration(implementationVersion),
+    // The shared discovery vocabulary every backend answers (5.0), beside
+    // the Web-specific ids kept for existing callers.
+    chooserDiscoveryRegistration(BUILT_IN_FEATURE_IDS.discoverySystemChooser, implementationVersion),
+    unsupportedRegistration(
+      BUILT_IN_FEATURE_IDS.discoveryContinuousScan,
+      continuousScanLimitation,
+      implementationVersion,
+      {
+        concurrentScanSessions: { maximum: 0, minimum: null, unit: 'sessions' }
+      }
+    ),
+    chooserDiscoveryRegistration('web:chooser-discovery', implementationVersion),
     originAuthorizedPeerRegistration(implementationVersion, authorizedPeerSupport),
     unsupportedRegistration('web:background-operation', backgroundLimitation, implementationVersion, {
       backgroundDuration: { maximum: 0, minimum: null, unit: 'milliseconds' }

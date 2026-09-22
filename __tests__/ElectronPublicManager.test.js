@@ -63,16 +63,16 @@ function bootstrap() {
   }
   const version = axis => ({
     axis,
-    selected: { axis, value: axis === 'ipc-protocol' ? 2 : 1 },
+    selected: { axis, value: axis === 'ipc-protocol' ? 4 : 1 },
     localRange: {
       axis,
-      minimum: { axis, value: axis === 'ipc-protocol' ? 2 : 1 },
-      maximum: { axis, value: axis === 'ipc-protocol' ? 2 : 1 }
+      minimum: { axis, value: axis === 'ipc-protocol' ? 4 : 1 },
+      maximum: { axis, value: axis === 'ipc-protocol' ? 4 : 1 }
     },
     remoteRange: {
       axis,
-      minimum: { axis, value: axis === 'ipc-protocol' ? 2 : 1 },
-      maximum: { axis, value: axis === 'ipc-protocol' ? 2 : 1 }
+      minimum: { axis, value: axis === 'ipc-protocol' ? 4 : 1 },
+      maximum: { axis, value: axis === 'ipc-protocol' ? 4 : 1 }
     }
   })
   return {
@@ -203,6 +203,11 @@ describe('Electron public manager façade', () => {
     await expect(database.characteristic('180d', '2a37').read({ timeoutMs: 1_000 })).resolves.toEqual(
       new Uint8Array([1, 2, 3])
     )
+    // A host answer that does not say what the value is cannot back a receipt:
+    // the renderer refuses it instead of assuming a read response.
+    await expect(database.characteristic('180d', '2a37').readReceipt({ timeoutMs: 1_000 })).rejects.toMatchObject({
+      code: 'protocol.malformed'
+    })
     await expect(connection.release()).resolves.toMatchObject({ state: 'released' })
     await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
     expect(commands).toEqual(

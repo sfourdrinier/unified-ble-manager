@@ -4,6 +4,9 @@ const { opaqueId } = require('../../src/backend-contract/primitives')
 
 const WEB_BLUETOOTH_TCK_SERVICE_UUID = '0000180d-0000-1000-8000-00805f9b34fb'
 const WEB_BLUETOOTH_TCK_CHARACTERISTIC_UUID = '00002a37-0000-1000-8000-00805f9b34fb'
+const WEB_BLUETOOTH_TCK_BATTERY_SERVICE_UUID = '0000180f-0000-1000-8000-00805f9b34fb'
+const WEB_BLUETOOTH_TCK_BATTERY_LEVEL_UUID = '00002a19-0000-1000-8000-00805f9b34fb'
+const WEB_BLUETOOTH_TCK_USER_DESCRIPTION_UUID = '00002901-0000-1000-8000-00805f9b34fb'
 const DEFAULT_READ_VALUE = new Uint8Array([0, 72])
 const DEFAULT_INITIAL_NOTIFICATION_VALUE = new Uint8Array([0, 73])
 
@@ -45,14 +48,57 @@ class InMemoryWebBluetoothTckBoundary {
     this.lastPageLifecycleReason = null
     this.nextNotificationStopFailure = null
     this.nextDisconnectFailure = null
-    this.notificationListeners = new Set()
     this.disconnectListeners = new Set()
     this.pageLifecycleListeners = new Set()
     this.timers = new Map()
-    this.characteristic = this.createCharacteristic()
+    this.characteristic = this.createCharacteristic({
+      uuid: this.characteristicUuid,
+      readValue: () => this.readValue,
+      initialNotification: () => this.initialNotificationValue,
+      descriptors: []
+    })
     this.service = {
       uuid: this.serviceUuid,
       getCharacteristics: async () => [this.characteristic]
+    }
+    // The duplicate-UUID world (docs/UNIFIED_SEMANTICS.md §9), after the
+    // chooser service in discovery order: a second service UUID that repeats,
+    // a repeated characteristic UUID under one service, and a repeated
+    // descriptor UUID under one characteristic.
+    const batteryLevel = descriptors =>
+      this.createCharacteristic({
+        uuid: WEB_BLUETOOTH_TCK_BATTERY_LEVEL_UUID,
+        readValue: () => new Uint8Array([0x50]),
+        initialNotification: null,
+        descriptors
+      })
+    const batteryServiceCharacteristics = [
+      [
+        batteryLevel([userDescription(new Uint8Array([0x61])), userDescription(new Uint8Array([0x62]))]),
+        batteryLevel([])
+      ],
+      [batteryLevel([])]
+    ]
+    const batteryServices = batteryServiceCharacteristics.map(characteristics => ({
+      uuid: WEB_BLUETOOTH_TCK_BATTERY_SERVICE_UUID,
+      getCharacteristics: async () => characteristics
+    }))
+    this.services = [this.service, ...batteryServices]
+    this.instances = []
+    const serviceOccurrences = new Map()
+    for (const [index, service] of this.services.entries()) {
+      const characteristics = index === 0 ? [this.characteristic] : batteryServiceCharacteristics[index - 1]
+      const serviceOccurrence = nextOccurrence(serviceOccurrences, service.uuid)
+      const characteristicOccurrences = new Map()
+      for (const characteristic of characteristics) {
+        this.instances.push({
+          serviceUuid: service.uuid,
+          serviceOccurrence,
+          characteristicUuid: characteristic.uuid,
+          characteristicOccurrence: nextOccurrence(characteristicOccurrences, characteristic.uuid),
+          characteristic
+        })
+      }
     }
     this.gatt = this.createGatt()
     this.device = {
@@ -133,7 +179,14 @@ class InMemoryWebBluetoothTckBoundary {
   resolveChooser() {
     const pending = this.requirePendingChooser('resolveChooser')
     this.pendingChooser = null
-    pending.resolve({ device: this.device, grantedServices: [this.serviceUuid] })
+    pending.resolve({ device: this.device, grantedServices: this.grantedServices(pending.request) })
+  }
+
+  /** As a browser grants: the device's services the request names, by filter or as optional. */
+  grantedServices(request) {
+    const requested = new Set([...request.filters.flatMap(filter => filter.services), ...request.optionalServices])
+    const offered = [...new Set(this.services.map(service => service.uuid))]
+    return offered.filter(uuid => requested.has(uuid))
   }
 
   rejectChooser(error = new Error('In-memory Web Bluetooth chooser rejected')) {
@@ -146,9 +199,9 @@ class InMemoryWebBluetoothTckBoundary {
   }
 
   emitNotification(input) {
-    this.assertNotificationAddress(input)
+    const characteristic = this.addressedCharacteristic(input)
     const value = copyBytes(input.value, 'notification value')
-    this.deliverNotification(value)
+    this.deliverNotification(characteristic, value)
   }
 
   emitPageLifecycle(reason) {
@@ -214,7 +267,7 @@ class InMemoryWebBluetoothTckBoundary {
       connectCalls: this.connectCalls,
       disconnectCalls: this.disconnectCalls,
       disconnectListeners: this.disconnectListeners.size,
-      notificationListeners: this.notificationListeners.size,
+      notificationListeners: this.notificationListenerCount(),
       notificationStarts: this.notificationStarts,
       notificationStops: this.notificationStops,
       notificationEmissions: this.notificationEmissions,
@@ -250,13 +303,14 @@ class InMemoryWebBluetoothTckBoundary {
           listener()
         }
       },
-      getPrimaryServices: async () => [this.service]
+      getPrimaryServices: async () => [...this.services]
     }
   }
 
-  createCharacteristic() {
-    return {
-      uuid: this.characteristicUuid,
+  createCharacteristic({ uuid, readValue, initialNotification, descriptors }) {
+    const listeners = new Set()
+    const characteristic = {
+      uuid,
       properties: Object.freeze({
         read: true,
         write: false,
@@ -264,8 +318,9 @@ class InMemoryWebBluetoothTckBoundary {
         notify: true,
         indicate: false
       }),
-      getDescriptors: async () => [],
-      readValue: async () => new Uint8Array(this.readValue),
+      listeners,
+      getDescriptors: async () => descriptors,
+      readValue: async () => new Uint8Array(readValue()),
       writeValueWithResponse: async () => {
         throw new Error('In-memory Web Bluetooth TCK characteristic does not support writes with response')
       },
@@ -274,7 +329,9 @@ class InMemoryWebBluetoothTckBoundary {
       },
       startNotifications: async () => {
         this.notificationStarts += 1
-        this.deliverNotification(this.initialNotificationValue)
+        if (initialNotification !== null) {
+          this.deliverNotification(characteristic, initialNotification())
+        }
       },
       stopNotifications: async () => {
         this.notificationStops += 1
@@ -285,20 +342,25 @@ class InMemoryWebBluetoothTckBoundary {
         }
       },
       addNotificationListener: listener => {
-        this.notificationListeners.add(listener)
+        listeners.add(listener)
       },
       removeNotificationListener: listener => {
-        this.notificationListeners.delete(listener)
+        listeners.delete(listener)
       }
     }
+    return characteristic
   }
 
-  deliverNotification(value) {
+  deliverNotification(characteristic, value) {
     this.notificationEmissions += 1
-    for (const listener of [...this.notificationListeners]) {
+    for (const listener of [...characteristic.listeners]) {
       this.notificationDeliveries += 1
       listener(new Uint8Array(value))
     }
+  }
+
+  notificationListenerCount() {
+    return this.instances.reduce((count, instance) => count + instance.characteristic.listeners.size, 0)
   }
 
   requirePendingChooser(operation) {
@@ -308,17 +370,36 @@ class InMemoryWebBluetoothTckBoundary {
     return this.pendingChooser
   }
 
-  assertNotificationAddress(input) {
+  addressedCharacteristic(input) {
     if (input === null || typeof input !== 'object') {
       throw new Error('In-memory Web Bluetooth notification input must be an object')
     }
-    if (
-      input.serviceUuid !== this.serviceUuid ||
-      input.serviceOccurrence !== 0 ||
-      input.characteristicUuid !== this.characteristicUuid ||
-      input.characteristicOccurrence !== 0
-    ) {
-      throw new Error('In-memory Web Bluetooth notification input does not address the deterministic characteristic')
+    const instance = this.instances.find(
+      candidate =>
+        candidate.serviceUuid === input.serviceUuid &&
+        candidate.serviceOccurrence === input.serviceOccurrence &&
+        candidate.characteristicUuid === input.characteristicUuid &&
+        candidate.characteristicOccurrence === input.characteristicOccurrence
+    )
+    if (instance === undefined) {
+      throw new Error('In-memory Web Bluetooth notification input does not address a deterministic characteristic')
+    }
+    return instance.characteristic
+  }
+}
+
+function nextOccurrence(occurrences, uuid) {
+  const occurrence = occurrences.get(uuid) ?? 0
+  occurrences.set(uuid, occurrence + 1)
+  return occurrence
+}
+
+function userDescription(value) {
+  return {
+    uuid: WEB_BLUETOOTH_TCK_USER_DESCRIPTION_UUID,
+    readValue: async () => new Uint8Array(value),
+    writeValue: async () => {
+      throw new Error('In-memory Web Bluetooth TCK descriptors are read-only')
     }
   }
 }
@@ -394,6 +475,7 @@ function copyChooserRequest(options) {
 }
 
 module.exports = {
+  WEB_BLUETOOTH_TCK_BATTERY_SERVICE_UUID,
   DEFAULT_INITIAL_NOTIFICATION_VALUE,
   DEFAULT_READ_VALUE,
   InMemoryWebBluetoothTckBoundary,

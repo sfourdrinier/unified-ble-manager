@@ -7,6 +7,7 @@ import type {
   OperationOptions,
   OperationTerminalRecord,
   ReadRequest,
+  CharacteristicReadResult,
   ReadResult,
   SubscribeRequest,
   WriteRequest,
@@ -27,7 +28,7 @@ export interface DeterministicGattRuntime {
   >(
     path: CharacteristicPath<string, Connection, Database, Service, Characteristic, 'current'>,
     request: ReadRequest<string, Operation>
-  ): Promise<ReadResult<string, Operation>>
+  ): Promise<CharacteristicReadResult<string, Operation>>
   write<
     Connection extends string,
     Database extends string,

@@ -10,6 +10,7 @@ import {
   type NormalizedBleError
 } from '../backend-contract/errors'
 import type { BackendIdentity } from '../backend-contract/identity'
+import type { PublicOperationOptions } from '../backend-contract/operations'
 import {
   capacity,
   canonicalBleAddress,
@@ -205,7 +206,7 @@ export interface WriteReadinessEvent extends BleControlObservationMetadata {
 
 export interface BleConnectionControls {
   readRssi(options?: OperationOptions): Promise<RssiObservation>
-  effectiveMtu(): Promise<MtuObservation>
+  effectiveMtu(options?: OperationOptions): Promise<MtuObservation>
   requestMtu(mtu: number, options?: OperationOptions): Promise<MtuNegotiation>
   maximumWriteLength(mode: WriteMode): Promise<MaximumWriteLengthObservation>
   requestPriority(priority: ConnectionPriority, options?: OperationOptions): Promise<ConnectionPriorityResult>
@@ -231,6 +232,8 @@ export type {
   GattValueStream,
   GattDatabaseChangedEvent,
   GattWriteReceipt,
+  GattReadReceipt,
+  GattReadProvenance,
   GattLongWriteReceipt,
   GattCharacteristicProperties,
   GattAccessRequirements,
@@ -279,6 +282,17 @@ export type {
 // Public peer — opaque backend-scoped identifier, no generic.
 export interface BlePeer {
   readonly id: string
+  /**
+   * The name the platform supplied with this record, or null when it
+   * supplied none. Null is a truthful answer, never a missing field: a
+   * restored peer has no advertisement observation in this process, so its
+   * name is whatever name the OS handed back with the restoration (Apple
+   * `CBPeripheral.name`) or null (Android presence wake hands back a bare
+   * address). The Companion Device Manager association label is NOT merged
+   * here — it is an association-time label, not a radio observation.
+   * Display `reference.opaqueId` (the address on Android) or your own stored
+   * label when this is null; `lastAdvertisement` is null on the same record.
+   */
   readonly name: string | null
   readonly rssi: number | null
   readonly reference: PeerReference | null
@@ -571,18 +585,36 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
       stream.closeWithReason(this.terminal.reason)
     }
     const iterator = stream[Symbol.asyncIterator]()
+    const delivery = this.delivery
     return {
       next: async () => {
-        const item = await iterator.next()
-        if (item.done) return { done: true, value: undefined }
-        if (item.value.kind === 'value') return { done: false, value: item.value.value }
-        if (item.value.kind === 'overflow') {
-          throw rehydratePublicError(contractError('stream.overflow', 'scan', 'public-scan.events'))
+        while (true) {
+          const item = await iterator.next()
+          if (item.done) return { done: true, value: undefined }
+          if (item.value.kind === 'value') return { done: false, value: item.value.value }
+          if (item.value.kind === 'overflow') {
+            // F8: a drop-policy notice is loss accounting, not session
+            // failure — skip it and keep delivering, as the observation pump
+            // does. Only an error-policy overflow fail-closes the events.
+            if (item.value.policy !== 'error') continue
+            throw rehydratePublicError(scanStreamOverflowError('public-scan.events', item.value, delivery))
+          }
+          if (item.value.reason === 'overflow') {
+            throw rehydratePublicError(
+              scanStreamOverflowError(
+                'public-scan.events',
+                {
+                  policy: delivery.overflowPolicy,
+                  droppedItems: Number(item.value.droppedItems),
+                  droppedBytes: Number(item.value.droppedBytes),
+                  replacedItems: Number(item.value.replacedItems)
+                },
+                delivery
+              )
+            )
+          }
+          return { done: true, value: undefined }
         }
-        if (item.value.reason === 'overflow') {
-          throw rehydratePublicError(contractError('stream.overflow', 'scan', 'public-scan.events'))
-        }
-        return { done: true, value: undefined }
       },
       return: async () => {
         this.subscribers.delete(stream)
@@ -983,7 +1015,7 @@ type InternalPublicConnection<Attachment extends string, Identity extends Backen
 >
 
 interface OptionalInternalControlConnection<Attachment extends string> {
-  readonly effectiveMtu?: () => Promise<{
+  readonly effectiveMtu?: (options: PublicOperationOptions) => Promise<{
     readonly connectionId: string
     readonly connectionGeneration: string
     readonly attMtu: number | null
@@ -1111,11 +1143,10 @@ function publicWriteReadinessStream<Attachment extends string, Identity extends 
 
       const open = async (): Promise<void> => {
         if (watch !== null) return
-        const observe = connection.writeWithoutResponseReadiness
-        if (observe === undefined) {
+        if (connection.writeWithoutResponseReadiness === undefined) {
           throw contractError('capability.unsupported', 'connection', 'public-connection.controls.write-readiness')
         }
-        watch = await observe()
+        watch = await connection.writeWithoutResponseReadiness()
         iterator = watch.events[Symbol.asyncIterator]()
       }
 
@@ -1285,18 +1316,18 @@ function createPublicConnectionControls<Attachment extends string, Identity exte
       })
     })
 
-  const effectiveMtu = (): Promise<MtuObservation> =>
+  const effectiveMtu = (options: OperationOptions = {}): Promise<MtuObservation> =>
     runPublicControl(async () => {
       const descriptor = requireControlCapability(
         internal,
         'connection:effective-mtu',
         'public-connection.controls.effective-mtu'
       )
-      const observe = connection.effectiveMtu
-      if (observe === undefined) {
+      const normalized = normalizeOperationOptions(options, now)
+      if (connection.effectiveMtu === undefined) {
         throw contractError('capability.unsupported', 'connection', 'public-connection.controls.effective-mtu')
       }
-      const result = await observe()
+      const result = await connection.effectiveMtu({ signal: normalized.signal, deadline: normalized.deadline })
       assertPublicConnectionIdentity(connection, result, 'public-connection.controls.effective-mtu.identity')
       if (result.attMtu !== null) {
         if (
@@ -2130,6 +2161,8 @@ async function waitForPublicAdapter<Attachment extends string, Identity extends 
       throw error
     })
     const iterator = watch.values[Symbol.asyncIterator]()
+    const readinessOperation = options.operation ?? 'scan'
+    if (readinessOperation === 'choose') assertChooserSupported(internal)
     return await runWithCleanup(
       async () => {
         let current = watch.initial
@@ -2138,8 +2171,8 @@ async function waitForPublicAdapter<Attachment extends string, Identity extends 
             throw contractError('operation.aborted', 'adapter', 'public-adapter.wait-until-ready')
           if (now() >= deadline)
             throw contractError('operation.timed-out', 'adapter', 'public-adapter.wait-until-ready')
-          assertAdapterCanBecomeReady(current, options.operation ?? 'scan')
-          if (adapterIsReady(current)) return snapshotPublicAdapterState(current)
+          assertAdapterCanBecomeReady(current, readinessOperation)
+          if (adapterIsReady(current, readinessOperation)) return snapshotPublicAdapterState(current)
           const item = await nextAdapterState(iterator, deadline - now(), controller.signal, () =>
             contractError(
               timedOut ? 'operation.timed-out' : 'operation.aborted',
@@ -2190,8 +2223,31 @@ async function stopAdapterWatch(
   return cleanup
 }
 
-function adapterIsReady<Attachment extends string>(state: AdapterStateSnapshot<Attachment>): boolean {
-  return state.availability === 'available' && state.power === 'on' && !isAuthorizationBlocking(state.authorization)
+/**
+ * Finding 187: chooser readiness is "available plus a supported chooser".
+ * An explicitly unsupported chooser fails closed at once instead of timing
+ * out; an unregistered one stays the chooser call's own answer.
+ */
+function assertChooserSupported<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  internal: PublicInternalManager<Attachment, Identity>
+): void {
+  const descriptor = internal.capability('discovery:system-chooser')
+  if (descriptor !== null && descriptor.state === 'unsupported') {
+    throw contractError('capability.unsupported', 'adapter', 'public-adapter.choose')
+  }
+}
+
+function adapterIsReady<Attachment extends string>(
+  state: AdapterStateSnapshot<Attachment>,
+  operation: string
+): boolean {
+  if (state.availability !== 'available' || isAuthorizationBlocking(state.authorization)) return false
+  // Finding 187: the system chooser is itself the permission step (Web
+  // Bluetooth grants access per device through it) and the browser reports
+  // no radio power, so chooser readiness is availability plus a supported
+  // chooser — never power. Every other operation still needs power on.
+  if (operation === 'choose') return true
+  return state.power === 'on'
 }
 
 function assertAdapterCanBecomeReady<Attachment extends string>(
@@ -2803,6 +2859,40 @@ function assertChooseUuid(value: unknown): void {
   }
 }
 
+/**
+ * F8: a scan observation overflow names what overflowed — the drop policy,
+ * the accounted loss, and the budget that was exceeded — instead of a bare
+ * code with null platform detail. Retryability comes from the code
+ * (`caller-decides`: observations commit nothing, so repeating the scan is
+ * the caller's policy) and the catalog already advises retry with backoff.
+ */
+function scanStreamOverflowError(
+  operation: string,
+  notice: {
+    readonly policy: string
+    readonly droppedItems: number
+    readonly droppedBytes: number
+    readonly replacedItems: number
+  },
+  budget: { readonly itemCapacity: number; readonly byteCapacity: number }
+): BackendContractError {
+  return contractError('stream.overflow', 'scan', operation, {
+    domain: 'scan',
+    code: 'scan-observation-overflow',
+    safeMessage:
+      `The scan observation stream overflowed its ${String(budget.itemCapacity)}-item budget ` +
+      `under ${notice.policy} and dropped ${String(notice.droppedItems)} observations.`,
+    metadata: Object.freeze({
+      policy: notice.policy,
+      droppedItems: notice.droppedItems,
+      droppedBytes: notice.droppedBytes,
+      replacedItems: notice.replacedItems,
+      itemCapacity: budget.itemCapacity,
+      byteCapacity: budget.byteCapacity
+    })
+  })
+}
+
 export async function findPeerInScan(
   scan: ScanSession,
   select: FindOptions['select'],
@@ -2829,7 +2919,15 @@ export async function findPeerInScan(
       throw rehydratePublicError(contractError('stream.closed', 'scan', 'public-ble-manager.find'))
     }
     if (item.value.kind === 'overflow') {
-      throw rehydratePublicError(contractError('stream.overflow', 'scan', 'public-ble-manager.find'))
+      // F8: a drop-policy notice is loss accounting, not session failure (the
+      // desktop N-API path filters per-consumer before bounding, so a burst of
+      // non-matching cached peripherals never reaches its capacity-1 stream).
+      // Skip it and wait for the match; only an error-policy overflow
+      // fail-closes the find.
+      if (item.value.policy !== 'error') continue
+      throw rehydratePublicError(
+        scanStreamOverflowError('public-ble-manager.find', item.value, scan.observations.limits)
+      )
     }
     const peer = peerFromPublicObservation(item.value.value)
     if (select === undefined || select === 'first' || select(peer)) return peer

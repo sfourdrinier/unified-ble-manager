@@ -15,6 +15,7 @@ import {
   BATTERY_SERVICE,
   parseBatteryLevel
 } from 'unified-ble-manager/profiles/battery-service'
+import { parseHeartRateMeasurement } from 'unified-ble-manager/profiles/heart-rate'
 import {
   decodeDeviceInformationString,
   DEVICE_INFORMATION_SERVICE,
@@ -28,6 +29,14 @@ import {
 } from 'unified-ble-manager/profiles/device-information'
 
 type CanonicalManager = Awaited<ReturnType<typeof createExpoBleManager>>
+
+function decodeContinuationHeartRate(value: Uint8Array): number | null {
+  try {
+    return parseHeartRateMeasurement(value).beatsPerMinute
+  } catch {
+    return null
+  }
+}
 type CanonicalConnection = BleConnection
 type CanonicalDatabase = GattDatabase
 type CanonicalSubscription = GattSubscription
@@ -111,6 +120,38 @@ class CanonicalBleExampleService {
     return (await this.ensureManager()).restoration.claim()
   }
 
+  async restoredPeers() {
+    return (await this.ensureManager()).peers.restored()
+  }
+
+  async observePresence(peerId: string) {
+    return (await this.ensureManager()).presence.observe({ peerId })
+  }
+
+  async continuationStatus() {
+    return (await this.ensureManager()).continuation.status()
+  }
+
+  async claimContinuationBacklog() {
+    const backlog = await (await this.ensureManager()).continuation.claim()
+    // The demo reports values as heart-rate readings where they decode as
+    // such; the loss accounting travels verbatim.
+    return {
+      values: backlog.values.map(record => ({
+        consumer: record.consumer,
+        delivery: record.delivery,
+        heartRate: decodeContinuationHeartRate(record.value)
+      })),
+      streamEnds: backlog.streamEnds,
+      controlLost: backlog.controlLost,
+      disposed: backlog.disposed
+    }
+  }
+
+  async unobservePresence(peerId: string) {
+    return (await this.ensureManager()).presence.unobserve({ peerId })
+  }
+
   async associateCompanionDevice(name?: string, serviceUuid?: string) {
     const manager = await this.ensureManager()
     if (name === undefined && serviceUuid === undefined) return manager.association.associate()
@@ -118,6 +159,14 @@ class CanonicalBleExampleService {
       ...(name === undefined ? {} : { name }),
       ...(serviceUuid === undefined ? {} : { serviceUuid })
     })
+  }
+
+  async listCompanionAssociations() {
+    return (await this.ensureManager()).association.list()
+  }
+
+  async disassociateCompanionDevice(associationId: number) {
+    return (await this.ensureManager()).association.disassociate({ associationId })
   }
 
   diagnosticsSnapshot() {

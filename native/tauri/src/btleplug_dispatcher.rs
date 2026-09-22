@@ -1,28 +1,31 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     future::Future,
+    pin::Pin,
     sync::{
         atomic::{AtomicI64, AtomicU64, Ordering},
-        Arc, Mutex as SyncMutex, OnceLock,
+        Arc, Mutex as SyncMutex,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use btleplug::{
-    api::{
-        Central, CentralEvent, CharPropFlags, Characteristic, Descriptor, Manager as _,
-        Peripheral as _, ScanFilter, WriteType,
-    },
-    platform::{Adapter, Manager, Peripheral},
-};
-use futures_util::StreamExt;
+#[cfg(test)]
+use btleplug::api::CharPropFlags;
 use serde_json::Number;
 use tauri::async_runtime::JoinHandle as TauriJoinHandle;
-use tokio::sync::Mutex;
-use tokio_util::sync::CancellationToken;
+use tokio::sync::{broadcast, watch, Mutex};
+use ubm_core::contracts::{AttachmentTuple, BleErrorCode, CommitState};
+use ubm_desktop::{
+    AdapterAuthorization, AdapterAvailability, AdapterPowerState, Budget, CancelAck, CancelRequest,
+    CentralProfile, CompletionOutcome, DeliveryMode, DesktopCentral, DesktopError,
+    InvalidationCause, LifecycleEvent, LifecycleKind, NotificationPoll, ObservedDelivery,
+    OpControl, OpTicket, OperationId, PlatformDetail, PlatformValue, Retryability,
+    ScanTerminalEvent, ShutdownReport,
+};
 use uuid::Uuid;
 
 use crate::capabilities;
+use crate::desktop_core::{CoreAuthority, CoreSelector};
 use crate::scan_plan::{decode_normalized_scan_query, diagnostic_scan_plan};
 use crate::ATTACH_REQUEST_KIND;
 use crate::{AuthenticatedCaller, DispatchFuture, IpcDispatcher, IpcEventSink, IpcValue};
@@ -30,132 +33,87 @@ use crate::{AuthenticatedCaller, DispatchFuture, IpcDispatcher, IpcEventSink, Ip
 const MAX_PENDING_EVENTS: usize = 256;
 const MAX_CORRELATIONS: usize = 256;
 const COMPLETED_CORRELATION_TTL: Duration = Duration::from_secs(30);
-const MAX_QUARANTINE_WORKERS: usize = 4;
-const MAX_QUARANTINE_ATTEMPTS: u32 = 8;
-const SCAN_POLL_INTERVAL: Duration = Duration::from_secs(2);
-/// Safety bound, not host policy.
-///
-/// btleplug's CoreBluetooth `disconnect()` never resolves when the peripheral
-/// has already been dropped from its internal map, so an unbounded await hangs
-/// the caller forever. This deadline converts that hang into a bounded,
-/// classified outcome, and its expiry is reported as a cleanup failure rather
-/// than swallowed.
-///
-/// It is deliberately not caller-tunable: it does not pace a peer's work, it
-/// caps a wait on a future that may never complete. A slow-but-progressing
-/// teardown is not misjudged by it, because btleplug maps a peripheral in the
-/// disconnecting state to `is_connected() == false`, which this code treats as
-/// released.
-const DISCONNECT_COMPLETION_TIMEOUT: Duration = Duration::from_secs(1);
+/// Delivery pacing between core polls (scan observations and notification
+/// forwarders). This paces delivery only: admission, deadlines, overflow,
+/// and teardown all stay core-owned.
+const FORWARD_POLL_INTERVAL: Duration = Duration::from_millis(10);
+/// Largest integer JavaScript represents exactly (`Number.MAX_SAFE_INTEGER`):
+/// the upper bound of a well-formed `budgetMs`.
+const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 fn btleplug_runtime() -> tokio::runtime::Handle {
-    static HANDLE: OnceLock<tokio::runtime::Handle> = OnceLock::new();
-    HANDLE
-        .get_or_init(|| {
-            let (tx, rx) = std::sync::mpsc::channel();
-            std::thread::Builder::new()
-                .name("ubm-btleplug".to_owned())
-                .spawn(move || {
-                    let runtime = tokio::runtime::Builder::new_multi_thread()
-                        .enable_all()
-                        .worker_threads(2)
-                        .thread_name("ubm-btleplug-worker")
-                        .build()
-                        .expect("unified-ble-manager btleplug runtime");
-                    tx.send(runtime.handle().clone())
-                        .expect("unified-ble-manager btleplug handle");
-                    runtime.block_on(std::future::pending::<()>());
-                })
-                .expect("unified-ble-manager btleplug thread");
-            rx.recv().expect("unified-ble-manager btleplug handle")
-        })
-        .clone()
+    // One shared desktop executor per process, owned by `ubm-desktop`: the
+    // central and its radio open and run there, never on Tauri's runtime.
+    ubm_desktop::executor::desktop_runtime()
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct BtleplugDispatcherOptions {
-    /// Exact `Adapter::adapter_info()` value to select when multiple adapters exist.
+    /// The adapter the shared central runs on, by its selectable identity
+    /// (`ubm_desktop::btleplug_backend::list_adapters` labels; BlueZ `hci0`,
+    /// the Windows device id, `CoreBluetooth` on macOS). `None` selects the
+    /// sole adapter; with several adapters and no name the open fails
+    /// `adapter.ambiguous`, and a name that matches none fails
+    /// `adapter.selection-required` — never a silent first pick.
     pub adapter_id: Option<String>,
 }
 
-/// Production Tauri dispatcher backed by btleplug's CoreBluetooth, WinRT, and BlueZ hosts.
+/// Production Tauri dispatcher: IPC transport over the shared Rust core.
+///
+/// BLE scheduling executes one shared [`DesktopCentral`] through
+/// [`CoreAuthority`]; this struct owns no scan policy, no retry, no timeout
+/// timers, and no ownership generations — only IPC envelope admission,
+/// caller leases, transport-handle mapping, and event delivery. Attachment
+/// identity and `adapter.state` facts come from that same central: the
+/// plugin opens no radio of its own (finding 43).
 #[derive(Clone)]
 pub struct BtleplugDispatcher {
     inner: Arc<Mutex<DispatcherState>>,
     bootstrap_admission: Arc<Mutex<()>>,
     next_id: Arc<AtomicU64>,
+    next_internal_id: Arc<AtomicU64>,
     next_revocation: Arc<AtomicU64>,
     started_at: Arc<Instant>,
     revoked_callers: Arc<SyncMutex<HashMap<String, u64>>>,
-    options: BtleplugDispatcherOptions,
+    authority: Arc<Mutex<AuthoritySlot>>,
+    lifecycle_pump: Arc<SyncMutex<Option<TauriJoinHandle<()>>>>,
+}
+
+type AuthorityOpenFuture =
+    Pin<Box<dyn Future<Output = Result<Arc<dyn CoreAuthority>, DispatchError>> + Send>>;
+
+/// Opens the scheduling authority exactly once per dispatcher.
+type AuthorityOpener = Arc<dyn Fn() -> AuthorityOpenFuture + Send + Sync>;
+
+/// Which scheduling authority the dispatcher serves. `Unopened` opens the
+/// production core (btleplug radio) on the first BLE op and fails loudly
+/// (`adapter.unavailable`) where no radio exists — never legacy direct
+/// ownership. `ShutDown` refuses loudly after an explicit shutdown.
+enum AuthoritySlot {
+    Unopened(AuthorityOpener),
+    Open(Arc<dyn CoreAuthority>),
+    ShutDown,
 }
 
 struct DispatcherState {
-    manager: Option<Manager>,
-    adapter: Option<Adapter>,
-    attachment: Option<Attachment>,
+    /// The adapter's display label, read once through the central's
+    /// boundary: a reset keeps the adapter (finding 57), only its
+    /// generations move.
+    adapter_name: Option<String>,
     callers: HashMap<String, CallerState>,
-    scan_owner: Option<String>,
-    stopping_scan: Option<StoppingScan>,
-    next_scan_stop_attempt: u64,
-    peer_owners: HashMap<String, String>,
-    orphan_connections: HashMap<String, OrphanConnectionOwner>,
-    orphan_subscription_owners: HashMap<String, OrphanSubscriptionOwner>,
-    orphan_subscription_resources: HashMap<String, SubscriptionResource>,
+    /// Core resources admitted for a caller that could not take ownership
+    /// (released, lease replaced, duplicate) and whose compensating
+    /// release failed (PR210-08). Retried and reported by the owning
+    /// caller key's next release and by authority shutdown; never dropped
+    /// silently.
+    orphan_debt: Vec<OrphanDebt>,
+    /// Attachments an adapter reset replaced (IPC protocol 4). Work naming
+    /// one is refused `backend.reset`, releases excepted; renderers route
+    /// under the attachment the dispatcher rebound them to and announced.
+    replaced_attachment_ids: HashSet<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ScanStopAttempt {
-    caller_key: String,
-    lease_id: String,
-    lease_generation: String,
-    handle: String,
-    attempt_id: u64,
-}
-
-#[derive(Clone)]
-struct StoppingScan {
-    caller_key: String,
-    lease_id: String,
-    lease_generation: String,
-    handle: String,
-    attempt_id: u64,
-    in_flight: bool,
-}
-
-impl StoppingScan {
-    fn attempt(&self) -> ScanStopAttempt {
-        ScanStopAttempt {
-            caller_key: self.caller_key.clone(),
-            lease_id: self.lease_id.clone(),
-            lease_generation: self.lease_generation.clone(),
-            handle: self.handle.clone(),
-            attempt_id: self.attempt_id,
-        }
-    }
-}
-
-#[derive(Clone)]
-struct OrphanConnectionOwner {
-    caller_key: String,
-    #[allow(dead_code)]
-    lease_id: String,
-    lease_generation: String,
-    peer_id: String,
-    peripheral: Option<Peripheral>,
-    attempts: u32,
-}
-
-struct OrphanSubscriptionOwner {
-    caller_key: String,
-    #[allow(dead_code)]
-    lease_id: String,
-    lease_generation: String,
-    stream_id: String,
-    attempts: u32,
-}
-
-#[derive(Clone)]
 struct Attachment {
     attachment_id: String,
     backend_instance_id: String,
@@ -169,176 +127,177 @@ struct CallerState {
     lease_id: String,
     lease_generation: String,
     versions: IpcValue,
+    /// The attachment this caller bound at attach. Every route must name
+    /// it; once an adapter reset replaced it, only releases pass (finding
+    /// 57) and everything else fails `backend.reset`.
+    attachment: Attachment,
     event_sink: IpcEventSink,
-    scan_admitting: bool,
+    /// Set when a release begins. A retired caller admits no new work and
+    /// receives no events, while its resources stay mapped until their
+    /// native release is confirmed (PR210-09): a failed release keeps them
+    /// so the next release calls native again.
+    retired: bool,
     scan: Option<ScanResource>,
-    connections: HashMap<String, ConnectionResource>,
-    databases: HashMap<String, DatabaseResource>,
-    subscriptions: HashMap<String, SubscriptionResource>,
+    connections: HashMap<String, CoreConnection>,
+    databases: HashMap<String, CoreDatabase>,
+    subscriptions: HashMap<String, CoreSubscription>,
     connection_events: HashMap<String, ConnectionEventResource>,
-    operations: HashMap<String, CancellationToken>,
+    operations: HashMap<String, TrackedOperation>,
     completed_correlations: HashMap<String, Instant>,
     pending_events: HashSet<String>,
-    quarantine: QuarantineScheduler,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct QuarantineKey {
-    command: String,
-    handle: String,
+/// One live IPC correlation: the caller's budget (admitted on the plugin
+/// clock when the route arrived) and the ticket that receives the core
+/// operation id at admission, so `operation.cancel` targets exactly that
+/// core operation — or is recorded before it exists (PR210-05).
+struct TrackedOperation {
+    control: OpControl,
 }
 
-struct QuarantineScheduler {
-    keys: HashSet<QuarantineKey>,
-    queue: std::collections::VecDeque<QuarantineKey>,
-    jobs: HashMap<QuarantineKey, BTreeMap<String, IpcValue>>,
-    attempts: HashMap<QuarantineKey, u32>,
-    active_workers: usize,
-    cancelled: bool,
-    failures: Vec<QuarantineKey>,
+/// The answer one native release produced, shared with every concurrent
+/// release of the same resource.
+type ReleaseAnswer = Option<Result<(), DispatchError>>;
+
+/// Ownership phase of one released resource (PR210-09). Delivery runs only
+/// while `Active`; the mapping — and with it the native identity needed to
+/// retry — is removed only after the core confirms the release or answers
+/// that the resource is already gone.
+#[derive(Clone)]
+enum ReleasePhase {
+    Active,
+    /// A release is in flight; concurrent releases wait for its answer.
+    Releasing(watch::Receiver<ReleaseAnswer>),
+    /// The last release failed; the next release calls native again.
+    ReleaseFailed,
 }
 
-enum QuarantineAdmit {
-    Start,
-    Coalesced,
-    Queued,
-    Cancelled,
-}
-
-impl QuarantineScheduler {
-    fn new() -> Self {
-        Self {
-            keys: HashSet::new(),
-            queue: std::collections::VecDeque::new(),
-            jobs: HashMap::new(),
-            attempts: HashMap::new(),
-            active_workers: 0,
-            cancelled: false,
-            failures: Vec::new(),
-        }
-    }
-
-    fn enqueue(
-        &mut self,
-        key: QuarantineKey,
-        payload: BTreeMap<String, IpcValue>,
-        queue_cap: usize,
-    ) -> QuarantineAdmit {
-        if self.cancelled {
-            return QuarantineAdmit::Cancelled;
-        }
-        if self.keys.contains(&key) {
-            return QuarantineAdmit::Coalesced;
-        }
-        self.keys.insert(key.clone());
-        self.jobs.insert(key.clone(), payload);
-        if self.active_workers >= MAX_QUARANTINE_WORKERS {
-            let _ = queue_cap;
-            self.queue.push_back(key);
-            return QuarantineAdmit::Queued;
-        }
-        self.active_workers += 1;
-        QuarantineAdmit::Start
-    }
-
-    fn record_attempt(&mut self, key: &QuarantineKey) -> u32 {
-        let attempts = self.attempts.entry(key.clone()).or_insert(0);
-        *attempts = attempts.saturating_add(1);
-        *attempts
-    }
-
-    fn exhaust(
-        &mut self,
-        key: QuarantineKey,
-    ) -> Option<(QuarantineKey, BTreeMap<String, IpcValue>)> {
-        self.keys.remove(&key);
-        self.attempts.remove(&key);
-        self.jobs.remove(&key);
-        self.failures.push(key);
-        self.finish_worker()
-    }
-
-    fn succeed(
-        &mut self,
-        key: &QuarantineKey,
-    ) -> Option<(QuarantineKey, BTreeMap<String, IpcValue>)> {
-        self.keys.remove(key);
-        self.attempts.remove(key);
-        self.jobs.remove(key);
-        self.failures.retain(|failure| failure != key);
-        self.finish_worker()
-    }
-
-    fn finish_worker(&mut self) -> Option<(QuarantineKey, BTreeMap<String, IpcValue>)> {
-        if self.active_workers > 0 {
-            self.active_workers -= 1;
-        }
-        if self.cancelled {
-            return None;
-        }
-        let next = self.queue.pop_front()?;
-        let payload = self.jobs.get(&next).cloned()?;
-        self.active_workers += 1;
-        Some((next, payload))
-    }
-
-    fn cancel(&mut self) {
-        self.cancelled = true;
-        self.queue.clear();
-        self.keys.clear();
-        self.active_workers = 0;
+impl ReleasePhase {
+    fn is_active(&self) -> bool {
+        matches!(self, Self::Active)
     }
 }
 
+/// Whether a release call leads the native release or joins one in flight.
+enum ReleaseStep {
+    Lead(watch::Sender<ReleaseAnswer>),
+    Join(watch::Receiver<ReleaseAnswer>),
+}
+
+/// Transport mapping for one live scan: the IPC handle the caller holds
+/// plus the core scan operation id every stop addresses, so a stop can only
+/// ever stop this caller's own scan. The forwarder only delivers core
+/// observations verbatim — it filters, merges, and paces nothing.
 struct ScanResource {
     handle: String,
-    task: tokio::task::JoinHandle<()>,
+    core_operation_id: OperationId,
+    task: Option<TauriJoinHandle<()>>,
+    phase: ReleasePhase,
 }
 
+/// Transport mapping for one core-owned connection: the IPC handle plus the
+/// exact `(peer_id, lease)` the core addresses. Lifecycle (generations,
+/// ownership, timeouts) lives in the core; the generation here is the core's
+/// own, echoed for wire compatibility.
 #[derive(Clone)]
-struct ConnectionResource {
+struct CoreConnection {
     peer_id: String,
+    lease: String,
     connection_id: String,
     owner_lease_id: String,
+    /// The 4.x public generation (`connection-generation-{n}`).
     connection_generation: String,
-    peripheral: Peripheral,
+    /// The core's generation of this link, which its lifecycle events carry.
+    core_generation: String,
+    phase: ReleasePhase,
 }
 
-struct DatabaseResource {
+/// One discovered characteristic: the exact core path plus the GATT
+/// property bits the core registered for it.
+#[derive(Clone)]
+struct CoreCharacteristic {
+    selector: CoreSelector,
+    properties: u8,
+}
+
+/// Transport mapping for one core-registered discovery tree: the IPC handle
+/// plus the per-handle selectors resolved from the whole-tree paths the
+/// core registered. Later ops resolve against these stored selectors —
+/// never against a parallel radio handle.
+struct CoreDatabase {
     connection_handle: String,
     database_id: String,
     database_generation: String,
     valid: bool,
-    characteristics: HashMap<String, Characteristic>,
-    descriptors: HashMap<String, Descriptor>,
+    characteristics: HashMap<String, CoreCharacteristic>,
+    descriptors: HashMap<String, CoreSelector>,
 }
 
-struct SubscriptionResource {
-    database_handle: String,
-    body: SubscriptionBody,
-    task: TauriJoinHandle<()>,
+/// Transport mapping for one core-arbitrated subscription: the exact
+/// `(peer_id, selector, consumer)` triple the core addresses, served by a
+/// verbatim notification forwarder.
+struct CoreSubscription {
+    connection_handle: String,
+    peer_id: String,
+    selector: CoreSelector,
+    consumer: String,
+    /// The delivery mode the radio reported for this enablement.
+    delivery: ObservedDelivery,
+    task: Option<TauriJoinHandle<()>>,
+    phase: ReleasePhase,
 }
 
-enum SubscriptionBody {
-    Native {
-        peripheral: Peripheral,
-        characteristic: Characteristic,
-    },
-    #[cfg(test)]
-    StandIn,
+/// How one link ended, as a connection-lifecycle transition plus the
+/// terminal reason of the stream that reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LinkTransition {
+    previous: &'static str,
+    current: &'static str,
+    cause: &'static str,
+    terminal: &'static str,
 }
 
-impl SubscriptionResource {
-    fn native(&self) -> Option<(&Peripheral, &Characteristic)> {
-        match &self.body {
-            SubscriptionBody::Native {
-                peripheral,
-                characteristic,
-            } => Some((peripheral, characteristic)),
-            #[cfg(test)]
-            SubscriptionBody::StandIn => None,
-        }
-    }
+const LINK_LOST: LinkTransition = LinkTransition {
+    previous: "connected",
+    current: "lost",
+    cause: "peer-link-loss",
+    terminal: "connection-lost",
+};
+
+const LINK_RELEASED: LinkTransition = LinkTransition {
+    previous: "disconnecting",
+    current: "disconnected",
+    cause: "requested-disconnect",
+    terminal: "owner-released",
+};
+
+const LINK_ENDED_UNREQUESTED: LinkTransition = LinkTransition {
+    previous: "connected",
+    current: "disconnected",
+    cause: "backend-transition",
+    terminal: "connection-lost",
+};
+
+/// The adapter took the link (finding 57; legacy CoreBluetooth/WinRT
+/// `connection-state-changed` reason `adapter`, `connected → lost`).
+const LINK_ADAPTER_LOST: LinkTransition = LinkTransition {
+    previous: "connected",
+    current: "lost",
+    cause: "adapter-loss",
+    terminal: "connection-lost",
+};
+
+/// Whether a connection-event stream still waits for its end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StreamEnd {
+    Open,
+    /// The link ended before the stream was ready; `ready` delivers it.
+    Pending(LinkTransition),
+    /// The core event lagged past the broadcast bound before the stream
+    /// was ready; `ready` ends it with `overflow`.
+    PendingOverflow,
+    /// A delivery task owns the stream's end.
+    Claimed,
 }
 
 struct ConnectionEventResource {
@@ -347,9 +306,14 @@ struct ConnectionEventResource {
     peer_id: String,
     connection_id: String,
     connection_generation: String,
+    /// The core's generation of the link (lifecycle-event matching only).
+    core_generation: String,
+    /// The attachment the link lives on. A rebind (IPC protocol 4) moves
+    /// the caller, never a link the adapter reset already ended.
+    attachment: Attachment,
     active: bool,
     sequence: u64,
-    task: Option<TauriJoinHandle<()>>,
+    end: StreamEnd,
 }
 
 struct ConnectionEventIdentity<'a> {
@@ -359,32 +323,127 @@ struct ConnectionEventIdentity<'a> {
     connection_generation: &'a str,
 }
 
-struct ScanObservation<'a> {
-    owner: &'a str,
-    expected_lease: (&'a str, &'a str),
-    stream_handle: &'a str,
-    requested_services: &'a [Uuid],
-    local_name_prefix: Option<&'a str>,
-    manufacturer_filters: &'a [ManufacturerFilter],
+/// A core resource nobody owns whose compensating release failed. It is
+/// retried automatically on the Tauri 4.x quarantine schedule (finding
+/// 114) and stays here, observable, until a release lands; the owning
+/// window's release and authority shutdown retry it too.
+struct OrphanDebt {
+    /// Stable identity for the automatic retries.
+    id: u64,
+    caller_key: String,
+    resource: OrphanResource,
+    /// Automatic release attempts so far, the compensation's own included.
+    attempts: u32,
+    /// Every automatic attempt was refused: no further automatic retry;
+    /// releases report it as `tauri.quarantine.exhausted`.
+    exhausted: bool,
 }
 
-#[derive(Debug)]
+/// Automatic release attempts per orphan, the compensation included
+/// (Tauri 4.x `MAX_QUARANTINE_ATTEMPTS`).
+const ORPHAN_RELEASE_ATTEMPTS: u32 = 8;
+/// First retry delay; each later one doubles, capped at
+/// [`ORPHAN_RETRY_MAX_DELAY`] (Tauri 4.x quarantine backoff).
+const ORPHAN_RETRY_FIRST_DELAY: Duration = Duration::from_millis(100);
+const ORPHAN_RETRY_MAX_DELAY: Duration = Duration::from_secs(5);
+
+/// One orphan whose release failed, as a release or shutdown reports it.
+struct OrphanFailure {
+    resource: OrphanResource,
+    error: DispatchError,
+    exhausted: bool,
+    attempts: u32,
+}
+
+impl OrphanFailure {
+    /// The cleanup-record operation: an orphan whose automatic retries were
+    /// exhausted keeps the Tauri 4.x name.
+    fn operation(&self) -> &'static str {
+        if self.exhausted {
+            "tauri.quarantine.exhausted"
+        } else {
+            "tauri.release.orphan"
+        }
+    }
+
+    fn describe(&self) -> String {
+        if self.exhausted {
+            format!(
+                "{} automatic release attempts were refused; this release was refused too: {}",
+                self.attempts,
+                self.error.describe()
+            )
+        } else {
+            self.error.describe()
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum OrphanResource {
+    Scan(OperationId),
+    Link {
+        peer_id: String,
+        lease: String,
+    },
+    Subscription {
+        peer_id: String,
+        selector: CoreSelector,
+        consumer: String,
+    },
+}
+
+impl OrphanResource {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Scan(_) => "scan",
+            Self::Link { .. } => "connection",
+            Self::Subscription { .. } => "subscription",
+        }
+    }
+}
+
+/// What [`BtleplugDispatcher::authority_shutdown`] released and what it
+/// could not: the core's own report plus every orphan whose final release
+/// failed.
+pub struct AuthorityShutdown {
+    pub core: Option<ShutdownReport>,
+    pub orphan_failures: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 struct DispatchError {
-    code: &'static str,
+    // F01: the frozen code identity is single-owned by `ubm-core`
+    // (`BleErrorCode`); the plugin never spells code strings. The domain
+    // stays plugin-local (`ipc` has no frozen member).
+    code: BleErrorCode,
     domain: &'static str,
     operation: String,
     platform: Option<String>,
-    retryable: bool,
+    /// The OS's own answer behind the failure, as the core typed it
+    /// (finding 116): the error's platform identity on the wire, the same
+    /// per-OS identity the Node desktop path reports.
+    native: Option<Box<PlatformDetail>>,
+    /// The core's answer about repeating the operation (PR210-22); the
+    /// dispatcher never derives it from the code. `never` unless the core
+    /// said otherwise.
+    retryability: Retryability,
+    /// The core's commit state for the failed operation, when it knows it
+    /// (PR210-37): `not-dispatched` before any radio call, `unknown` for an
+    /// operation that may have reached the peer.
+    commit: Option<CommitState>,
 }
 
 impl DispatchError {
-    fn new(code: &'static str, domain: &'static str, operation: impl Into<String>) -> Self {
+    fn new(code: BleErrorCode, domain: &'static str, operation: impl Into<String>) -> Self {
         Self {
             code,
             domain,
             operation: operation.into(),
             platform: None,
-            retryable: matches!(code, "operation.aborted" | "operation.timed-out"),
+            native: None,
+            retryability: Retryability::Never,
+            commit: None,
         }
     }
 
@@ -393,33 +452,77 @@ impl DispatchError {
         self
     }
 
-    fn retryable(mut self) -> Self {
-        self.retryable = true;
-        self
+    /// Lift a shared-core failure into an IPC failure without substitution:
+    /// the frozen `code`, `domain`, and `operation` cross verbatim, the core
+    /// transport detail (when present) rides as platform evidence, and the
+    /// core's retryability and commit state cross unchanged.
+    pub(crate) fn from_core(error: &ubm_desktop::DesktopError) -> Self {
+        let mut dispatch = Self::new(error.code(), error.domain().as_str(), error.operation());
+        if let Some(detail) = error.detail() {
+            dispatch = dispatch.platform(detail);
+        }
+        dispatch.retryability = error.retryability();
+        dispatch.commit = error.commit();
+        dispatch.native = error.platform().cloned().map(Box::new);
+        dispatch
     }
 
-    fn normalized_error(&self) -> IpcValue {
-        let platform = self.platform.as_ref().map_or(IpcValue::Null, |message| {
+    /// Frozen identity triple for tests: `(code, domain, operation)`.
+    #[cfg(test)]
+    pub(crate) fn identity(&self) -> (&'static str, &'static str, String) {
+        (self.code.as_str(), self.domain, self.operation.clone())
+    }
+
+    /// The wire `platform`: the OS's own identity when the core carried
+    /// one (its message, else the core's detail, as the safe message), else
+    /// the Tauri 4.x `btleplug` / `native-error` shape around the detail,
+    /// else `null`.
+    fn platform_wire(&self) -> IpcValue {
+        if let Some(native) = &self.native {
+            return object([
+                ("domain", string(native.domain.clone())),
+                ("code", string(native.code.clone())),
+                (
+                    "safeMessage",
+                    string(
+                        native
+                            .message
+                            .clone()
+                            .or_else(|| self.platform.clone())
+                            .unwrap_or_default(),
+                    ),
+                ),
+                (
+                    "metadata",
+                    IpcValue::Object(
+                        native
+                            .metadata
+                            .iter()
+                            .map(|(key, value)| (key.clone(), platform_value(value)))
+                            .collect(),
+                    ),
+                ),
+            ]);
+        }
+        self.platform.as_ref().map_or(IpcValue::Null, |message| {
             object([
                 ("domain", string("btleplug")),
                 ("code", string("native-error")),
                 ("safeMessage", string(message.clone())),
                 ("metadata", object([])),
             ])
-        });
+        })
+    }
+
+    fn normalized_error(&self) -> IpcValue {
+        let platform = self.platform_wire();
         object([
-            ("code", string(self.code)),
+            ("code", string(self.code.as_str())),
             ("domain", string(self.domain)),
             ("operation", string(self.operation.clone())),
             ("platform", platform),
-            (
-                "retryability",
-                string(if self.retryable {
-                    "caller-decides"
-                } else {
-                    "never"
-                }),
-            ),
+            ("retryability", string(self.retryability.as_str())),
+            ("commit", commit_wire(self.commit)),
         ])
     }
 
@@ -429,6 +532,258 @@ impl DispatchError {
             ("error", self.normalized_error()),
         ])
     }
+
+    /// One-line identity for cleanup receipts and debt reports.
+    fn describe(&self) -> String {
+        match &self.platform {
+            Some(detail) => format!(
+                "{}:{}:{} ({detail})",
+                self.code.as_str(),
+                self.domain,
+                self.operation
+            ),
+            None => format!("{}:{}:{}", self.code.as_str(), self.domain, self.operation),
+        }
+    }
+}
+
+/// One typed platform fact on the wire. An integer JavaScript cannot hold
+/// exactly crosses as its decimal text (as on the Node desktop path).
+fn platform_value(value: &PlatformValue) -> IpcValue {
+    match value {
+        PlatformValue::Int(integer) if integer.unsigned_abs() <= MAX_SAFE_INTEGER => {
+            IpcValue::Number(Number::from(*integer))
+        }
+        PlatformValue::Int(integer) => string(integer.to_string()),
+        PlatformValue::Text(text) => string(text.clone()),
+        PlatformValue::Bool(flag) => IpcValue::Bool(*flag),
+    }
+}
+
+/// The wire word for a core commit state on a failed operation, shared with
+/// the mobile wire (`not-dispatched` / `uncertain`). A commit state that says
+/// nothing about repeating the failed operation crosses as `null`.
+fn commit_wire(commit: Option<CommitState>) -> IpcValue {
+    match commit {
+        Some(CommitState::NotDispatched) => string("not-dispatched"),
+        Some(CommitState::Unknown) => string("uncertain"),
+        Some(CommitState::Committed | CommitState::Released) | None => IpcValue::Null,
+    }
+}
+
+/// The caller's budget for one route: `budgetMs` milliseconds from the
+/// instant the route arrived on the plugin clock (PR210-06). Absent or
+/// `null` means the caller gave no budget; anything but a non-negative safe
+/// integer is malformed. The webview's own clock never crosses the wire.
+fn parse_budget(
+    payload: &BTreeMap<String, IpcValue>,
+    admitted_at: tokio::time::Instant,
+) -> Result<Budget, DispatchError> {
+    match payload.get("budgetMs") {
+        None | Some(IpcValue::Null) => Ok(Budget::unbounded()),
+        Some(IpcValue::Number(value)) => value
+            .as_u64()
+            .filter(|milliseconds| *milliseconds <= MAX_SAFE_INTEGER)
+            .map(|milliseconds| Budget::from_ms_at(admitted_at, milliseconds))
+            .ok_or_else(|| {
+                DispatchError::new(BleErrorCode::ProtocolMalformed, "ipc", "tauri.route-budget")
+            }),
+        Some(_) => Err(DispatchError::new(
+            BleErrorCode::ProtocolMalformed,
+            "ipc",
+            "tauri.route-budget",
+        )),
+    }
+}
+
+/// Start a release of one resource: lead it, or join the one in flight. A
+/// release whose leader vanished without answering is led again.
+fn begin_release(phase: &mut ReleasePhase) -> ReleaseStep {
+    if let ReleasePhase::Releasing(receiver) = phase {
+        if receiver.has_changed().is_ok() {
+            return ReleaseStep::Join(receiver.clone());
+        }
+    }
+    let (sender, receiver) = watch::channel(None);
+    *phase = ReleasePhase::Releasing(receiver);
+    ReleaseStep::Lead(sender)
+}
+
+/// Wait for the answer of a release led elsewhere.
+async fn join_release(mut receiver: watch::Receiver<ReleaseAnswer>) -> Result<(), DispatchError> {
+    loop {
+        if let Some(answer) = receiver.borrow_and_update().clone() {
+            return answer;
+        }
+        if receiver.changed().await.is_err() {
+            return receiver.borrow().clone().unwrap_or_else(|| {
+                Err(DispatchError::new(
+                    BleErrorCode::PlatformFailure,
+                    "cleanup",
+                    "tauri.release-abandoned",
+                ))
+            });
+        }
+    }
+}
+
+/// Core disconnect verdicts that mean "no link to release": the core holds
+/// no record of the peer or of a connection to it. A link that already
+/// ended is the core's `LinkRelease::AlreadyReleased` answer, not an error;
+/// every error — including a radio failure worded `connection.lost` — keeps
+/// the link owned for a real retry.
+fn is_released_link(error: &DispatchError) -> bool {
+    matches!(
+        error.code,
+        BleErrorCode::PeerNotFound | BleErrorCode::ConnectionNotFound
+    )
+}
+
+/// Core unsubscribe verdicts that mean "no consumer to release": the core
+/// no longer resolves the path (a service change invalidated the database
+/// the consumer was registered in) or holds no record of the peer or of a
+/// connection to it. A consumer on an ended link is the core's `Ok`, not an
+/// error.
+fn is_released_subscription(error: &DispatchError) -> bool {
+    matches!(
+        error.code,
+        BleErrorCode::GattNotFound | BleErrorCode::PeerNotFound | BleErrorCode::ConnectionNotFound
+    )
+}
+
+/// The IPC answer to `operation.cancel` for what the core did with it.
+fn cancel_state(ack: &CancelAck) -> &'static str {
+    match ack {
+        CancelAck::RecordedBeforeAdmission
+        | CancelAck::Forwarded {
+            outcome: CompletionOutcome::Settled { .. },
+            ..
+        } => "cancellation-requested",
+        CancelAck::Forwarded {
+            outcome: CompletionOutcome::ContenderIgnored,
+            ..
+        } => "not-cancellable",
+        CancelAck::Forwarded {
+            outcome: CompletionOutcome::DuplicateSuppressed { .. },
+            ..
+        }
+        | CancelAck::AlreadySettled => "already-terminal",
+    }
+}
+
+/// The Tauri 4.x scan re-read period (2 s): 4.x re-read every known
+/// peripheral on that interval while scanning.
+const TAURI_KNOWN_PEER_REFRESH: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The Tauri 4.x identity (origin/main `btleplug_dispatcher.rs:525-531`):
+/// the dispatcher's own id counter numbers, in order, the attachment, the
+/// backend instance and the backend and adapter generations; a reset takes
+/// the next three numbers for the attachment and its generations and keeps
+/// the instance.
+#[derive(Debug)]
+struct TauriIdentity {
+    next_id: Arc<AtomicU64>,
+    instance: std::sync::OnceLock<String>,
+}
+
+impl TauriIdentity {
+    fn id(&self, prefix: &str) -> String {
+        format!("{prefix}-{}", self.next_id.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+impl ubm_desktop::HostIdentity for TauriIdentity {
+    fn namespace(&self) -> &str {
+        "tauri"
+    }
+
+    fn log_tag(&self) -> &str {
+        "tauri-plugin-unified-ble-manager"
+    }
+
+    fn attachment(
+        &self,
+        epoch: ubm_desktop::AttachmentEpoch<'_>,
+    ) -> Result<AttachmentTuple, ubm_core::contracts::CoreError> {
+        use ubm_core::contracts::{
+            AdapterGeneration, AdapterId, AttachmentId, BackendGeneration, BackendInstanceId,
+        };
+        let attachment_id = self.id("tauri-attachment");
+        let instance = self
+            .instance
+            .get_or_init(|| self.id("tauri-btleplug"))
+            .clone();
+        let backend_generation = self.id("tauri-backend-generation");
+        let adapter_generation = self.id("tauri-adapter-generation");
+        Ok(AttachmentTuple::new(
+            AttachmentId::new(attachment_id)?,
+            BackendInstanceId::new(instance)?,
+            BackendGeneration::new(backend_generation)?,
+            AdapterId::new(epoch.adapter)?,
+            AdapterGeneration::new(adapter_generation)?,
+        ))
+    }
+
+    fn kernel_generation(
+        &self,
+        epoch: ubm_desktop::AttachmentEpoch<'_>,
+    ) -> Result<ubm_core::contracts::Generation, ubm_core::contracts::CoreError> {
+        ubm_core::contracts::Generation::new(format!(
+            "tauri-kernel-{}-{}",
+            epoch.ordinal, epoch.resets
+        ))
+    }
+}
+
+/// The Tauri central profile: the desktop profile under the Tauri 4.x
+/// identity, numbered by `next_id`.
+fn tauri_profile(next_id: Arc<AtomicU64>) -> CentralProfile {
+    let mut profile = CentralProfile::desktop("tauri");
+    profile.identity = Arc::new(TauriIdentity {
+        next_id,
+        instance: std::sync::OnceLock::new(),
+    });
+    profile
+}
+
+/// Opens the scheduling authority for one Tauri profile.
+type ProfiledOpener = Arc<dyn Fn(CentralProfile) -> AuthorityOpenFuture + Send + Sync>;
+
+/// The production opener: the btleplug radio and its central open on the
+/// shared desktop executor (never on Tauri's runtime), on the adapter the
+/// profile names, with the core's selection rule (ambiguity refused).
+fn btleplug_opener() -> ProfiledOpener {
+    Arc::new(move |profile| {
+        Box::pin(async move {
+            let central = btleplug_runtime()
+                .spawn(async move {
+                    let central = DesktopCentral::open_btleplug(profile).await?;
+                    // Finding 120: Tauri 4.x re-read every known peripheral
+                    // every 2 s during a scan; its observation cadence stays.
+                    central.set_known_peer_refresh(Some(TAURI_KNOWN_PEER_REFRESH));
+                    Ok(central)
+                })
+                .await
+                .map_err(|error| {
+                    DispatchError::new(
+                        BleErrorCode::AdapterUnavailable,
+                        "adapter",
+                        "tauri.core-open",
+                    )
+                    .platform(error.to_string())
+                })?
+                .map_err(|error| DispatchError::from_core(&error))?;
+            let authority: Arc<dyn CoreAuthority> = Arc::new(central);
+            Ok(authority)
+        })
+    })
+}
+
+/// Which delivery state a forwarder found its resource in.
+enum Delivery {
+    Active,
+    Paused,
+    Gone,
 }
 
 impl Default for BtleplugDispatcher {
@@ -439,31 +794,151 @@ impl Default for BtleplugDispatcher {
 
 impl BtleplugDispatcher {
     pub fn new(options: BtleplugDispatcherOptions) -> Self {
+        Self::with_profiled_opener(options.adapter_id, btleplug_opener())
+    }
+
+    /// Dispatcher whose authority opens through `open` on first use, with
+    /// the Tauri profile numbered by this dispatcher's own id counter.
+    fn with_profiled_opener(adapter_id: Option<String>, open: ProfiledOpener) -> Self {
+        let next_id = Arc::new(AtomicU64::new(1));
+        let opener: AuthorityOpener = {
+            let next_id = Arc::clone(&next_id);
+            Arc::new(move || {
+                let mut profile = tauri_profile(Arc::clone(&next_id));
+                profile.adapter_id = adapter_id.clone();
+                open(profile)
+            })
+        };
+        Self::with_slot_and_ids(AuthoritySlot::Unopened(opener), next_id)
+    }
+
+    fn with_slot(slot: AuthoritySlot) -> Self {
+        Self::with_slot_and_ids(slot, Arc::new(AtomicU64::new(1)))
+    }
+
+    fn with_slot_and_ids(slot: AuthoritySlot, next_id: Arc<AtomicU64>) -> Self {
         Self {
             inner: Arc::new(Mutex::new(DispatcherState {
-                manager: None,
-                adapter: None,
-                attachment: None,
+                adapter_name: None,
                 callers: HashMap::new(),
-                scan_owner: None,
-                stopping_scan: None,
-                next_scan_stop_attempt: 1,
-                peer_owners: HashMap::new(),
-                orphan_connections: HashMap::new(),
-                orphan_subscription_owners: HashMap::new(),
-                orphan_subscription_resources: HashMap::new(),
+                orphan_debt: Vec::new(),
+                replaced_attachment_ids: HashSet::new(),
             })),
             bootstrap_admission: Arc::new(Mutex::new(())),
-            next_id: Arc::new(AtomicU64::new(1)),
+            next_id,
+            next_internal_id: Arc::new(AtomicU64::new(1)),
             next_revocation: Arc::new(AtomicU64::new(1)),
             started_at: Arc::new(Instant::now()),
             revoked_callers: Arc::new(SyncMutex::new(HashMap::new())),
-            options,
+            authority: Arc::new(Mutex::new(slot)),
+            lifecycle_pump: Arc::new(SyncMutex::new(None)),
+        }
+    }
+
+    /// Dispatcher over an explicitly admitted scheduling authority. Tests
+    /// inject a [`DesktopCentral`] over a scripted boundary here;
+    /// production opens the btleplug-backed central lazily. Either way every
+    /// BLE verdict comes from the authority — never from direct radio
+    /// ownership.
+    pub fn with_core_authority(authority: Arc<dyn CoreAuthority>) -> Self {
+        let dispatcher = Self::with_slot(AuthoritySlot::Open(Arc::clone(&authority)));
+        dispatcher.start_lifecycle_pump(&authority);
+        dispatcher
+    }
+
+    /// Dispatcher whose authority opens through `opener` on first use.
+    #[cfg(test)]
+    fn with_authority_opener(opener: AuthorityOpener) -> Self {
+        Self::with_slot(AuthoritySlot::Unopened(opener))
+    }
+
+    /// The admitted scheduling authority, opening it on first use. The slot
+    /// stays locked across the open, so racing first calls share one radio
+    /// and one central (PR210-32). Radio failures surface verbatim —
+    /// `adapter.unavailable` where no adapter exists — never silent legacy.
+    async fn ensure_authority(&self) -> Result<Arc<dyn CoreAuthority>, DispatchError> {
+        let mut slot = self.authority.lock().await;
+        let opener = match &*slot {
+            AuthoritySlot::Open(authority) => return Ok(Arc::clone(authority)),
+            AuthoritySlot::ShutDown => {
+                return Err(DispatchError::new(
+                    BleErrorCode::AdapterUnavailable,
+                    "adapter",
+                    "tauri.core-shutdown",
+                ))
+            }
+            AuthoritySlot::Unopened(opener) => Arc::clone(opener),
+        };
+        let authority = opener().await?;
+        // The lifecycle receiver exists before any operation can run, so no
+        // transition of this central goes unobserved.
+        self.start_lifecycle_pump(&authority);
+        *slot = AuthoritySlot::Open(Arc::clone(&authority));
+        Ok(authority)
+    }
+
+    /// The authority if it is open right now. Never opens the radio and
+    /// never waits for an open in progress: while one is in progress no
+    /// operation has reached the core yet.
+    fn authority_if_open(&self) -> Option<Arc<dyn CoreAuthority>> {
+        let slot = self.authority.try_lock().ok()?;
+        match &*slot {
+            AuthoritySlot::Open(authority) => Some(Arc::clone(authority)),
+            AuthoritySlot::Unopened(_) | AuthoritySlot::ShutDown => None,
+        }
+    }
+
+    /// Shut the admitted authority down and refuse further BLE work loudly.
+    /// Orphaned core resources get a final release first; failures are
+    /// reported, never dropped. Production never calls it (the
+    /// process-lifetime central outlives every caller).
+    pub async fn authority_shutdown(&self) -> AuthorityShutdown {
+        let previous =
+            std::mem::replace(&mut *self.authority.lock().await, AuthoritySlot::ShutDown);
+        let (core, orphan_failures) = match previous {
+            AuthoritySlot::Open(authority) => {
+                let orphan_failures = self
+                    .settle_orphan_debt(&authority, None)
+                    .await
+                    .into_iter()
+                    .map(|failure| {
+                        format!(
+                            "{} ({}): {}",
+                            failure.resource.kind(),
+                            failure.operation(),
+                            failure.describe()
+                        )
+                    })
+                    .collect();
+                (Some(authority.shutdown().await), orphan_failures)
+            }
+            AuthoritySlot::Unopened(_) | AuthoritySlot::ShutDown => (None, Vec::new()),
+        };
+        let pump = self
+            .lifecycle_pump
+            .lock()
+            .expect("lifecycle pump mutex poisoned")
+            .take();
+        if let Some(pump) = pump {
+            pump.abort();
+        }
+        AuthorityShutdown {
+            core,
+            orphan_failures,
         }
     }
 
     fn id(&self, prefix: &str) -> String {
         format!("{prefix}-{}", self.next_id.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// A name only the plugin and the core see (never on the IPC surface);
+    /// numbered apart from the 4.x public counter.
+    fn internal_id(&self, prefix: &str) -> String {
+        format!(
+            "{prefix}-internal-{}",
+            self.next_internal_id.fetch_add(1, Ordering::Relaxed)
+        )
     }
 
     async fn dispatch_request(
@@ -476,7 +951,7 @@ impl BtleplugDispatcher {
         let kind = required_string(&request, "kind", "tauri.request-kind")?;
         if kind != ATTACH_REQUEST_KIND && self.is_revoked(&caller_key(&caller)) {
             return Err(DispatchError::new(
-                "ownership.denied",
+                BleErrorCode::OwnershipDenied,
                 "ipc",
                 "tauri.caller-revoked",
             ));
@@ -487,7 +962,11 @@ impl BtleplugDispatcher {
                 // caller that omits it could never receive events, so refuse
                 // rather than attach a mute lease.
                 let event_sink = event_sink.ok_or_else(|| {
-                    DispatchError::new("protocol.malformed", "ipc", "tauri.bootstrap-event-channel")
+                    DispatchError::new(
+                        BleErrorCode::ProtocolMalformed,
+                        "ipc",
+                        "tauri.bootstrap-event-channel",
+                    )
                 })?;
                 let offer = into_object(
                     required_value(&request, "offer", "tauri.bootstrap-offer")?.clone(),
@@ -499,44 +978,35 @@ impl BtleplugDispatcher {
             "event.ack" => self.acknowledge(caller, request).await,
             "release" => self.release_request(caller, request).await,
             _ => Err(DispatchError::new(
-                "protocol.malformed",
+                BleErrorCode::ProtocolMalformed,
                 "ipc",
                 "tauri.request-kind",
             )),
         }
     }
 
+    /// The shared central's current attachment (finding 43): its tuple as
+    /// the core holds it now — a reset replaces it (finding 57) — plus the
+    /// adapter's display label, read once through the same boundary.
     async fn ensure_adapter(&self) -> Result<Attachment, DispatchError> {
-        {
-            let state = self.inner.lock().await;
-            if let Some(attachment) = &state.attachment {
-                return Ok(attachment.clone());
+        let authority = self.ensure_authority().await?;
+        let cached = self.inner.lock().await.adapter_name.clone();
+        let adapter_name = match cached {
+            Some(name) => name,
+            None => {
+                let name = authority
+                    .adapter_name()
+                    .await
+                    .map_err(|error| DispatchError::from_core(&error))?;
+                self.inner
+                    .lock()
+                    .await
+                    .adapter_name
+                    .get_or_insert(name)
+                    .clone()
             }
-        }
-
-        let requested = self.options.adapter_id.clone();
-        let (manager, adapter, adapter_name) = btleplug_runtime()
-            .spawn(async move { open_btleplug_adapter(requested).await })
-            .await
-            .map_err(|error| {
-                DispatchError::new("adapter.unavailable", "adapter", "tauri.runtime")
-                    .platform(error.to_string())
-            })??;
-        let attachment = Attachment {
-            attachment_id: self.id("tauri-attachment"),
-            backend_instance_id: self.id("tauri-btleplug"),
-            backend_generation: self.id("tauri-backend-generation"),
-            adapter_id: adapter_name.clone(),
-            adapter_name,
-            adapter_generation: self.id("tauri-adapter-generation"),
         };
-        let mut state = self.inner.lock().await;
-        if state.attachment.is_none() {
-            state.manager = Some(manager);
-            state.adapter = Some(adapter);
-            state.attachment = Some(attachment.clone());
-        }
-        Ok(state.attachment.clone().unwrap_or(attachment))
+        Ok(attachment_of(&authority.attachment(), adapter_name))
     }
 
     async fn bootstrap(
@@ -552,7 +1022,7 @@ impl BtleplugDispatcher {
         let cleanup = self.release(&key).await;
         if !is_released(&cleanup) {
             return Err(DispatchError::new(
-                "platform.failure",
+                BleErrorCode::PlatformFailure,
                 "cleanup",
                 "tauri.bootstrap-prior-release",
             ));
@@ -569,8 +1039,9 @@ impl BtleplugDispatcher {
                 lease_id: lease_id.clone(),
                 lease_generation: lease_generation.clone(),
                 versions: versions.clone(),
+                attachment: attachment.clone(),
                 event_sink,
-                scan_admitting: false,
+                retired: false,
                 scan: None,
                 connections: HashMap::new(),
                 databases: HashMap::new(),
@@ -579,7 +1050,6 @@ impl BtleplugDispatcher {
                 operations: HashMap::new(),
                 completed_correlations: HashMap::new(),
                 pending_events: HashSet::new(),
-                quarantine: QuarantineScheduler::new(),
             },
         );
 
@@ -604,6 +1074,7 @@ impl BtleplugDispatcher {
                         "capabilities",
                         capabilities::snapshot(&attachment.backend_generation),
                     ),
+                    ("core", core_identity()),
                     ("discovery", object([("kind", string("continuous-scan"))])),
                     ("renderer", renderer),
                     (
@@ -623,6 +1094,9 @@ impl BtleplugDispatcher {
         caller: AuthenticatedCaller,
         request: BTreeMap<String, IpcValue>,
     ) -> Result<IpcValue, DispatchError> {
+        // The budget counts from here: queueing behind the dispatcher lock,
+        // the authority open, and the core lock all spend it (PR210-06).
+        let admitted_at = tokio::time::Instant::now();
         let envelope = into_object(
             required_value(&request, "envelope", "tauri.route-envelope")?.clone(),
             "tauri.route-envelope",
@@ -633,6 +1107,7 @@ impl BtleplugDispatcher {
             required_value(&envelope, "payload", "tauri.route-payload")?.clone(),
             "tauri.route-payload",
         )?;
+        let budget = parse_budget(&payload, admitted_at)?;
         let expected_lease = required_lease(&envelope, "tauri.route-lease")?;
         payload.insert(
             "__expectedLeaseId".to_owned(),
@@ -647,39 +1122,23 @@ impl BtleplugDispatcher {
             Some(IpcValue::Null) | None => None,
             _ => {
                 return Err(DispatchError::new(
-                    "bytes.invalid",
+                    BleErrorCode::BytesInvalid,
                     "ipc",
                     "tauri.route-binary",
                 ))
             }
         };
-        self.validate_envelope(&caller, &envelope).await?;
+        self.validate_envelope(&caller, &command, &envelope).await?;
 
         if command == "operation.cancel" {
-            let target = required_string(&payload, "targetCorrelation", "tauri.cancel")?;
-            let state = self.inner.lock().await;
-            let caller_state = state.callers.get(&caller_key(&caller)).ok_or_else(|| {
-                DispatchError::new("ownership.denied", "ipc", "tauri.cancel-owner")
-            })?;
-            let cancellation = caller_state.operations.get(&target);
-            if let Some(cancellation) = cancellation {
-                cancellation.cancel();
-            }
-            return Ok(route_response(object([(
-                "state",
-                string(if cancellation.is_some() {
-                    "cancellation-requested"
-                } else {
-                    "already-terminal"
-                }),
-            )])));
+            return self.cancel_operation(&caller, &payload).await;
         }
 
-        let cancellation = CancellationToken::new();
+        let control = OpControl::new(budget, OpTicket::new());
         {
             let mut state = self.inner.lock().await;
             let caller_state = state.callers.get_mut(&caller_key(&caller)).ok_or_else(|| {
-                DispatchError::new("ownership.denied", "ipc", "tauri.route-owner")
+                DispatchError::new(BleErrorCode::OwnershipDenied, "ipc", "tauri.route-owner")
             })?;
             admit_caller_correlation(
                 &caller_state.operations,
@@ -688,49 +1147,42 @@ impl BtleplugDispatcher {
                 &command,
                 Instant::now(),
             )?;
-            caller_state
-                .operations
-                .insert(correlation.clone(), cancellation.clone());
+            caller_state.operations.insert(
+                correlation.clone(),
+                TrackedOperation {
+                    control: control.clone(),
+                },
+            );
         }
 
+        // The operation runs to the core's settled outcome and the route
+        // reports exactly that outcome: a cancel reaches the core through
+        // the ticket (`operation.cancel`), and the core answers aborted,
+        // timed out, or the result that won the race. It runs as its own
+        // task so a dropped IPC future never drops a core operation midway.
         let operation_dispatcher = self.clone();
         let operation_caller = caller.clone();
         let operation_command = command.clone();
-        let quarantine_lease = expected_lease.clone();
-        let mut operation = tauri::async_runtime::spawn(async move {
+        let result = tauri::async_runtime::spawn(async move {
             operation_dispatcher
                 .execute(
                     &operation_caller,
                     &operation_command,
                     payload,
                     binary_payload,
+                    control,
                 )
                 .await
-        });
-        let result = tokio::select! {
-            result = &mut operation => result.map_err(|error| {
-                DispatchError::new("platform.failure", "ipc", format!("tauri.{command}.join"))
-                    .platform(error.to_string())
-            })?,
-            () = cancellation.cancelled() => {
-                let quarantine_dispatcher = self.clone();
-                let quarantine_caller = caller.clone();
-                let quarantine_command = command.clone();
-                tauri::async_runtime::spawn(async move {
-                    if let Ok(Ok(late_payload)) = operation.await {
-                        quarantine_dispatcher
-                            .quarantine_cancelled_success(
-                                &quarantine_caller,
-                                &quarantine_command,
-                                &late_payload,
-                                &quarantine_lease,
-                            )
-                            .await;
-                    }
-                });
-                Err(DispatchError::new("operation.aborted", "ipc", format!("tauri.{command}")))
-            },
-        };
+        })
+        .await
+        .map_err(|error| {
+            DispatchError::new(
+                BleErrorCode::PlatformFailure,
+                "ipc",
+                format!("tauri.{command}.join"),
+            )
+            .platform(error.to_string())
+        })?;
         if let Some(caller_state) = self
             .inner
             .lock()
@@ -752,201 +1204,65 @@ impl BtleplugDispatcher {
         result.map(route_response)
     }
 
-    async fn quarantine_cancelled_success(
+    /// Cancel one in-flight correlation through its ticket. Before the core
+    /// admitted the operation the request is recorded and the operation
+    /// ends aborted without a radio call; after admission exactly that core
+    /// operation is cancelled; after settlement nothing happens. The route
+    /// of the cancelled operation reports the core's settled outcome. An
+    /// unknown correlation is already terminal. Core failures propagate
+    /// loudly — a cancel that cannot settle is not reported as settled.
+    async fn cancel_operation(
         &self,
         caller: &AuthenticatedCaller,
-        command: &str,
-        payload: &IpcValue,
-        expected_lease: &(String, String),
-    ) {
-        let IpcValue::Object(payload) = payload else {
-            return;
-        };
-        if command == "gatt.discover" {
-            if let Some(handle) = payload.get("handle").and_then(as_string) {
-                if let Some(caller_state) =
-                    self.inner.lock().await.callers.get_mut(&caller_key(caller))
-                {
-                    if caller_state.lease_id == expected_lease.0
-                        && caller_state.lease_generation == expected_lease.1
-                    {
-                        caller_state.databases.remove(handle);
-                    }
-                }
-            }
-            return;
-        }
-        let cleanup = match command {
-            "scan.start" => payload.get("handle").and_then(as_string).map(|handle| {
-                (
-                    "scan.stop",
-                    object([("scanHandle", string(handle.to_owned()))]),
-                )
-            }),
-            "connection.connect" => connection_cleanup_payload(payload)
-                .map(|cleanup_payload| ("connection.disconnect", cleanup_payload)),
-            "gatt.subscribe" => payload.get("handle").and_then(as_string).map(|handle| {
-                (
-                    "gatt.unsubscribe",
-                    object([("subscriptionHandle", string(handle.to_owned()))]),
-                )
-            }),
-            _ => None,
-        };
-        if let Some((cleanup_command, IpcValue::Object(mut cleanup_payload))) = cleanup {
-            cleanup_payload.insert(
-                "__expectedLeaseId".to_owned(),
-                string(expected_lease.0.clone()),
-            );
-            cleanup_payload.insert(
-                "__expectedLeaseGeneration".to_owned(),
-                string(expected_lease.1.clone()),
-            );
-            let handle =
-                quarantine_handle(&cleanup_payload).unwrap_or_else(|| cleanup_command.to_owned());
-            let should_start = if let Some(caller_state) =
-                self.inner.lock().await.callers.get_mut(&caller_key(caller))
-            {
-                if caller_state.lease_id == expected_lease.0
-                    && caller_state.lease_generation == expected_lease.1
-                {
-                    let queue_cap = caller_state
-                        .connections
-                        .len()
-                        .saturating_add(caller_state.subscriptions.len())
-                        .saturating_add(usize::from(caller_state.scan.is_some()))
-                        .max(MAX_QUARANTINE_WORKERS);
-                    matches!(
-                        caller_state.quarantine.enqueue(
-                            QuarantineKey {
-                                command: cleanup_command.to_owned(),
-                                handle,
-                            },
-                            cleanup_payload.clone(),
-                            queue_cap,
-                        ),
-                        QuarantineAdmit::Start
-                    )
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-            if should_start {
-                self.spawn_quarantine_worker(caller, cleanup_command, cleanup_payload);
-            }
-        }
-    }
-
-    fn spawn_quarantine_worker(
-        &self,
-        caller: &AuthenticatedCaller,
-        command: &str,
-        payload: BTreeMap<String, IpcValue>,
-    ) {
-        let dispatcher = self.clone();
-        let caller = caller.clone();
-        let command = command.to_owned();
-        btleplug_runtime().spawn(async move {
-            dispatcher
-                .retry_quarantined_cleanup(&caller, &command, payload)
-                .await;
-        });
-    }
-
-    async fn retry_quarantined_cleanup(
-        &self,
-        caller: &AuthenticatedCaller,
-        command: &str,
-        payload: BTreeMap<String, IpcValue>,
-    ) {
-        let key = QuarantineKey {
-            command: command.to_owned(),
-            handle: quarantine_handle(&payload).unwrap_or_else(|| command.to_owned()),
-        };
-        let mut delay = Duration::ZERO;
-        loop {
-            if self.quarantine_cancelled(caller).await {
-                return;
-            }
-            if !delay.is_zero() {
-                tokio::time::sleep(delay).await;
-            }
-            match self.execute(caller, command, payload.clone(), None).await {
-                Ok(response) if cleanup_succeeded(&response) => {
-                    self.complete_quarantine(caller, &key, true).await;
-                    return;
-                }
-                Err(error) if error.code == "ownership.denied" => {
-                    self.complete_quarantine(caller, &key, true).await;
-                    return;
-                }
-                _ => {
-                    let attempts = self.record_quarantine_attempt(caller, &key).await;
-                    if attempts >= MAX_QUARANTINE_ATTEMPTS {
-                        self.complete_quarantine(caller, &key, false).await;
-                        return;
-                    }
-                    delay = if delay.is_zero() {
-                        Duration::from_millis(100)
-                    } else {
-                        std::cmp::min(delay.saturating_mul(2), Duration::from_secs(5))
-                    };
-                }
-            }
-        }
-    }
-
-    async fn quarantine_cancelled(&self, caller: &AuthenticatedCaller) -> bool {
-        self.inner
+        payload: &BTreeMap<String, IpcValue>,
+    ) -> Result<IpcValue, DispatchError> {
+        let target = required_string(payload, "targetCorrelation", "tauri.cancel")?;
+        let ticket = self
+            .inner
             .lock()
             .await
             .callers
             .get(&caller_key(caller))
-            .map(|caller_state| caller_state.quarantine.cancelled)
-            .unwrap_or(true)
+            .ok_or_else(|| {
+                DispatchError::new(BleErrorCode::OwnershipDenied, "ipc", "tauri.cancel-owner")
+            })?
+            .operations
+            .get(&target)
+            .map(|tracked| tracked.control.ticket.clone());
+        let Some(ticket) = ticket else {
+            return Ok(route_response(object([(
+                "state",
+                string("already-terminal"),
+            )])));
+        };
+        let state = self.cancel_ticket(&ticket).await?;
+        Ok(route_response(object([("state", string(state))])))
     }
 
-    async fn record_quarantine_attempt(
-        &self,
-        caller: &AuthenticatedCaller,
-        key: &QuarantineKey,
-    ) -> u32 {
-        let mut state = self.inner.lock().await;
-        let Some(caller_state) = state.callers.get_mut(&caller_key(caller)) else {
-            return MAX_QUARANTINE_ATTEMPTS;
-        };
-        caller_state.quarantine.record_attempt(key)
-    }
-
-    async fn complete_quarantine(
-        &self,
-        caller: &AuthenticatedCaller,
-        key: &QuarantineKey,
-        success: bool,
-    ) {
-        let next = {
-            let mut state = self.inner.lock().await;
-            state
-                .callers
-                .get_mut(&caller_key(caller))
-                .and_then(|caller_state| {
-                    if success {
-                        caller_state.quarantine.succeed(key)
-                    } else {
-                        caller_state.quarantine.exhaust(key.clone())
-                    }
-                })
-        };
-        if let Some((next_key, next_payload)) = next {
-            self.spawn_quarantine_worker(caller, &next_key.command, next_payload);
+    /// Cancel through the core when it is open; otherwise nothing has been
+    /// admitted yet and recording the request on the ticket is the cancel.
+    /// Answers the IPC cancel state.
+    async fn cancel_ticket(&self, ticket: &OpTicket) -> Result<&'static str, DispatchError> {
+        match self.authority_if_open() {
+            Some(authority) => authority
+                .cancel(ticket)
+                .await
+                .map(|ack| cancel_state(&ack))
+                .map_err(|error| DispatchError::from_core(&error)),
+            None => Ok(match ticket.request_cancel() {
+                CancelRequest::RecordedBeforeAdmission => "cancellation-requested",
+                // The driver observes the request and settles the abort in
+                // the core itself.
+                CancelRequest::Forward(_) => "cancellation-requested",
+                CancelRequest::AlreadySettled => "already-terminal",
+            }),
         }
     }
 
     async fn validate_envelope(
         &self,
         caller: &AuthenticatedCaller,
+        command: &str,
         envelope: &BTreeMap<String, IpcValue>,
     ) -> Result<(), DispatchError> {
         let lease = into_object(
@@ -965,53 +1281,96 @@ impl BtleplugDispatcher {
             "tauri.route-renderer",
         )?;
         let versions = required_value(envelope, "versions", "tauri.route-versions")?;
-        let mut state = self.inner.lock().await;
-        let attachment = state.attachment.as_ref().ok_or_else(|| {
-            DispatchError::new("lifecycle.invalid-state", "ipc", "tauri.route-bootstrap")
-        })?;
-        let expected_attachment = into_object(
-            attachment_record(attachment),
-            "tauri.route-attachment-authority",
-        )?;
-        if attachment.attachment_id != attachment_id
-            || !same_attachment_identity(&envelope_attachment, &expected_attachment)
+        let state = self.inner.lock().await;
         {
-            return Err(DispatchError::new(
-                "protocol.violation",
-                "ipc",
-                "tauri.route-attachment",
-            ));
+            let caller_state = state
+                .callers
+                .get(&caller_key(caller))
+                .filter(|caller_state| !caller_state.retired)
+                .ok_or_else(|| {
+                    DispatchError::new(BleErrorCode::OwnershipDenied, "ipc", "tauri.route-caller")
+                })?;
+            // Identity only: comparing the attachment never samples platform
+            // state (an adapter-state snapshot asks the OS, which must not
+            // run on every route or under the dispatcher lock).
+            // Protocol 4: an attachment the dispatcher replaced admits only
+            // releases; the renderer routes new work under the attachment it
+            // was rebound to. A renderer can never name one it was not given.
+            if state.replaced_attachment_ids.contains(&attachment_id) {
+                if !is_release_command(command) {
+                    let mut error = DispatchError::new(
+                        BleErrorCode::BackendReset,
+                        "adapter",
+                        "tauri.route-attachment",
+                    )
+                    .platform(format!(
+                        "the adapter was reset: attachment {attachment_id} ended; the dispatcher \
+                         rebound this caller to attachment {}",
+                        caller_state.attachment.attachment_id
+                    ));
+                    error.commit = Some(CommitState::NotDispatched);
+                    return Err(error);
+                }
+            } else if caller_state.attachment.attachment_id != attachment_id
+                || !attachment_identity_matches(&envelope_attachment, &caller_state.attachment)
+            {
+                return Err(DispatchError::new(
+                    BleErrorCode::ProtocolViolation,
+                    "ipc",
+                    "tauri.route-attachment",
+                ));
+            }
+            if caller_state.lease_id != lease_id
+                || caller_state.lease_generation != lease_generation
+            {
+                return Err(DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "ipc",
+                    "tauri.route-lease",
+                ));
+            }
+            if versions != &caller_state.versions
+                || required_string(&renderer, "clientId", "tauri.route-renderer")?
+                    != format!("{}:{}", caller.app_identifier, caller.window_label)
+                || required_string(&renderer, "windowScope", "tauri.route-renderer")?
+                    != caller.window_label
+                || required_string(&renderer, "sessionScope", "tauri.route-renderer")?
+                    != caller_state.lease_generation
+            {
+                return Err(DispatchError::new(
+                    BleErrorCode::ProtocolViolation,
+                    "ipc",
+                    "tauri.route-authority",
+                ));
+            }
+            // The event sink is deliberately NOT reassigned here. It is bound
+            // once by `bootstrap` and lives for the attachment; replacing it
+            // would drop the previous Tauri Channel, and that drop ends the
+            // shared JS callback which every later event depends on.
         }
-        let caller_state = state
-            .callers
-            .get_mut(&caller_key(caller))
-            .ok_or_else(|| DispatchError::new("ownership.denied", "ipc", "tauri.route-caller"))?;
-        if caller_state.lease_id != lease_id || caller_state.lease_generation != lease_generation {
-            return Err(DispatchError::new(
-                "ownership.denied",
-                "ipc",
-                "tauri.route-lease",
-            ));
+        Ok(())
+    }
+
+    /// Refuse work on an attachment an adapter reset replaced (finding 57)
+    /// before it reaches the core: `backend.reset`, nothing dispatched.
+    /// Releases stay admitted — what the renderer owes for resources the
+    /// reset ended still settles, and the core answers what is already
+    /// gone.
+    async fn refuse_stale_attachment(
+        &self,
+        caller: &AuthenticatedCaller,
+        command: &str,
+    ) -> Result<(), DispatchError> {
+        if is_release_command(command) {
+            return Ok(());
         }
-        if versions != &caller_state.versions
-            || required_string(&renderer, "clientId", "tauri.route-renderer")?
-                != format!("{}:{}", caller.app_identifier, caller.window_label)
-            || required_string(&renderer, "windowScope", "tauri.route-renderer")?
-                != caller.window_label
-            || required_string(&renderer, "sessionScope", "tauri.route-renderer")?
-                != caller_state.lease_generation
-        {
-            return Err(DispatchError::new(
-                "protocol.violation",
-                "ipc",
-                "tauri.route-authority",
-            ));
+        let bound = self
+            .bound_attachment(caller, "tauri.route-attachment")
+            .await?;
+        let current = self.ensure_authority().await?.attachment();
+        if current.attachment_id().as_str() != bound.attachment_id {
+            return Err(stale_attachment(&bound, &current));
         }
-        // The event sink is deliberately NOT reassigned here. It is bound once
-        // by `bootstrap` and lives for the attachment; replacing it would drop
-        // the previous Tauri Channel, and that drop ends the shared JS callback
-        // which every later event depends on.
-        let _ = caller_state;
         Ok(())
     }
 
@@ -1024,14 +1383,22 @@ impl BtleplugDispatcher {
         let expected_generation =
             required_string(payload, "__expectedLeaseGeneration", "tauri.execute-lease")?;
         let state = self.inner.lock().await;
-        let caller_state = state.callers.get(&caller_key(caller)).ok_or_else(|| {
-            DispatchError::new("ownership.denied", "ipc", "tauri.execute-lease-owner")
-        })?;
+        let caller_state = state
+            .callers
+            .get(&caller_key(caller))
+            .filter(|caller_state| !caller_state.retired)
+            .ok_or_else(|| {
+                DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "ipc",
+                    "tauri.execute-lease-owner",
+                )
+            })?;
         if caller_state.lease_id != expected_id
             || caller_state.lease_generation != expected_generation
         {
             return Err(DispatchError::new(
-                "ownership.denied",
+                BleErrorCode::OwnershipDenied,
                 "ipc",
                 "tauri.execute-lease-stale",
             ));
@@ -1045,14 +1412,16 @@ impl BtleplugDispatcher {
         command: &str,
         payload: BTreeMap<String, IpcValue>,
         binary_payload: Option<Vec<u8>>,
+        ctl: OpControl,
     ) -> Result<IpcValue, DispatchError> {
         self.validate_expected_lease(caller, &payload).await?;
+        self.refuse_stale_attachment(caller, command).await?;
         match command {
-            "adapter.state" => self.adapter_state().await,
-            "scan.start" => self.start_scan(caller, payload).await,
-            "scan.stop" => self.stop_scan(caller, payload).await,
-            "connection.connect" => self.connect(caller, payload).await,
-            "connection.disconnect" => self.disconnect(caller, payload).await,
+            "adapter.state" => self.adapter_state(caller, ctl).await,
+            "scan.start" => self.start_scan(caller, payload, ctl).await,
+            "scan.stop" => self.stop_scan(caller, payload, ctl).await,
+            "connection.connect" => self.connect(caller, payload, ctl).await,
+            "connection.disconnect" => self.disconnect(caller, payload, ctl).await,
             "connection.events.subscribe" => {
                 self.subscribe_connection_events(caller, payload).await
             }
@@ -1060,330 +1429,309 @@ impl BtleplugDispatcher {
             "connection.events.unsubscribe" => {
                 self.unsubscribe_connection_events(caller, payload).await
             }
-            "connection.rssi" => self.read_rssi(caller, payload).await,
-            "connection.maximum-write-length" => self.maximum_write_length(caller, payload).await,
-            "gatt.discover" => self.discover(caller, payload).await,
+            "connection.rssi" => self.read_rssi(caller, payload, ctl).await,
+            "connection.effective-mtu" => self.read_effective_mtu(caller, payload, ctl).await,
+            "connection.maximum-write-length" => {
+                self.maximum_write_length(caller, payload, ctl).await
+            }
+            "gatt.discover" => self.discover(caller, payload, ctl).await,
             "gatt.database.release" => self.release_database(caller, payload).await,
-            "gatt.read" => self.read(caller, payload).await,
-            "gatt.write" => self.write(caller, payload, binary_payload).await,
-            "gatt.subscribe" => self.subscribe(caller, payload).await,
-            "gatt.unsubscribe" => self.unsubscribe(caller, payload).await,
-            "gatt.descriptor.read" => self.read_descriptor(caller, payload).await,
-            "gatt.descriptor.write" => self.write_descriptor(caller, payload, binary_payload).await,
+            "gatt.read" => self.read(caller, payload, ctl).await,
+            "gatt.write" => self.write(caller, payload, binary_payload, ctl).await,
+            "gatt.subscribe" => self.subscribe(caller, payload, ctl).await,
+            "gatt.unsubscribe" => self.unsubscribe(caller, payload, ctl).await,
+            "gatt.descriptor.read" => self.read_descriptor(caller, payload, ctl).await,
+            "gatt.descriptor.write" => {
+                self.write_descriptor(caller, payload, binary_payload, ctl)
+                    .await
+            }
             _ => Err(DispatchError::new(
-                "argument.invalid",
+                BleErrorCode::ArgumentInvalid,
                 "ipc",
                 "tauri.route-command",
             )),
         }
     }
 
-    async fn adapter_state(&self) -> Result<IpcValue, DispatchError> {
-        let attachment = {
-            let state = self.inner.lock().await;
-            state.attachment.clone().ok_or_else(|| {
-                DispatchError::new("adapter.unavailable", "adapter", "tauri.adapter-state")
-            })?
+    /// `adapter.state` from the shared central (findings 43, 60): power
+    /// and authorization as the OS reported them through the core's radio,
+    /// availability from the core's adapter facts, heard peers from the
+    /// same boundary. A question the radio cannot answer on this platform
+    /// (`capability.unsupported`) is reported unknown with its reason; any
+    /// other failure crosses verbatim. A reset that lands during the read
+    /// is the transition it observes: the answer is the post-transition
+    /// snapshot under the current backend generation, as every legacy host
+    /// answered (finding 94). A request that arrives after the reset is
+    /// still refused `backend.reset` (finding 57).
+    async fn adapter_state(
+        &self,
+        caller: &AuthenticatedCaller,
+        ctl: OpControl,
+    ) -> Result<IpcValue, DispatchError> {
+        let bound = self.bound_attachment(caller, "tauri.adapter-state").await?;
+        let authority = self.ensure_authority().await?;
+        let mut reasons = Vec::new();
+        // The authorization read shares the caller's budget; the power read
+        // carries the caller's ticket, so a cancel reaches the radio wait.
+        let budget = ctl.budget;
+        let power = unless_unsupported(
+            authority.adapter_state(ctl).await,
+            "adapter power",
+            &mut reasons,
+        )?;
+        let authorization = unless_unsupported(
+            authority
+                .adapter_authorization(OpControl::new(budget, OpTicket::new()))
+                .await,
+            "adapter authorization",
+            &mut reasons,
+        )?;
+        let heard = authority
+            .peers()
+            .await
+            .map_err(|error| DispatchError::from_core(&error))?
+            .len();
+        let removed = authority.adapter_status().availability == AdapterAvailability::Unavailable;
+        // A reset that landed during the read is the transition the read
+        // observed: the snapshot is the post-transition state under the
+        // current generation (finding 94), never `backend.reset`.
+        let read_under = Attachment {
+            backend_generation: authority
+                .attachment()
+                .backend_generation()
+                .as_str()
+                .to_owned(),
+            ..bound
         };
-        let adapter = self.adapter().await?;
-        let power = match adapter.adapter_state().await {
-            Ok(btleplug::api::CentralState::PoweredOn) => "on",
-            Ok(btleplug::api::CentralState::PoweredOff) => "off",
-            Ok(_) => "unknown",
-            Err(error) => {
-                return Err(DispatchError::new(
-                    "adapter.unavailable",
-                    "adapter",
-                    "tauri.adapter-power",
-                )
-                .platform(error.to_string()));
+        Ok(adapter_state_payload_live(
+            &read_under,
+            &AdapterReading {
+                power,
+                authorization,
+                removed,
+                heard: i64::try_from(heard).unwrap_or(i64::MAX),
+                reasons,
+            },
+        ))
+    }
+
+    /// The attachment `caller` bound at attach.
+    async fn bound_attachment(
+        &self,
+        caller: &AuthenticatedCaller,
+        operation: &'static str,
+    ) -> Result<Attachment, DispatchError> {
+        self.inner
+            .lock()
+            .await
+            .callers
+            .get(&caller_key(caller))
+            .map(|caller_state| caller_state.attachment.clone())
+            .ok_or_else(|| DispatchError::new(BleErrorCode::OwnershipDenied, "adapter", operation))
+    }
+
+    /// Release a core resource nobody can own; a failed release becomes
+    /// orphan debt for `caller_key` (PR210-08), retried automatically on
+    /// the Tauri 4.x schedule (finding 114) and by the window's release.
+    async fn compensate(
+        &self,
+        authority: &Arc<dyn CoreAuthority>,
+        caller_key: &str,
+        resource: OrphanResource,
+    ) {
+        if release_orphan(authority, &resource).await.is_ok() {
+            return;
+        }
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.inner.lock().await.orphan_debt.push(OrphanDebt {
+            id,
+            caller_key: caller_key.to_owned(),
+            resource,
+            attempts: 1,
+            exhausted: false,
+        });
+        self.spawn_orphan_retries(Arc::clone(authority), id);
+    }
+
+    /// Retry one orphan's release automatically: 100 ms after the failed
+    /// compensation, doubling to 5 s, until a release lands or
+    /// [`ORPHAN_RELEASE_ATTEMPTS`] attempts were refused (then it is marked
+    /// exhausted and stays owed). A round that finds the debt held by a
+    /// window release in flight skips; a debt that is gone for good ends
+    /// the schedule. Runs on the ambient runtime, so it follows the
+    /// caller's clock.
+    fn spawn_orphan_retries(&self, authority: Arc<dyn CoreAuthority>, id: u64) {
+        let dispatcher = self.clone();
+        tokio::spawn(async move {
+            let mut delay = ORPHAN_RETRY_FIRST_DELAY;
+            for _ in 1..ORPHAN_RELEASE_ATTEMPTS {
+                tokio::time::sleep(delay).await;
+                delay = std::cmp::min(delay.saturating_mul(2), ORPHAN_RETRY_MAX_DELAY);
+                if dispatcher.authority_if_open().is_none() {
+                    return;
+                }
+                let debt = {
+                    let mut state = dispatcher.inner.lock().await;
+                    let Some(index) = state.orphan_debt.iter().position(|debt| debt.id == id)
+                    else {
+                        continue;
+                    };
+                    state.orphan_debt.swap_remove(index)
+                };
+                if release_orphan(&authority, &debt.resource).await.is_ok() {
+                    return;
+                }
+                let mut debt = debt;
+                debt.attempts = debt.attempts.saturating_add(1);
+                debt.exhausted = debt.attempts >= ORPHAN_RELEASE_ATTEMPTS;
+                let exhausted = debt.exhausted;
+                dispatcher.inner.lock().await.orphan_debt.push(debt);
+                if exhausted {
+                    return;
+                }
             }
+        });
+    }
+
+    /// Retry the release of every orphan owed by `caller_key` (every orphan
+    /// with `None`). Released orphans leave the debt; each failure stays in
+    /// it (its automatic retries continue unless exhausted) and is returned
+    /// with its truthful error.
+    async fn settle_orphan_debt(
+        &self,
+        authority: &Arc<dyn CoreAuthority>,
+        caller_key: Option<&str>,
+    ) -> Vec<OrphanFailure> {
+        let owed = {
+            let mut state = self.inner.lock().await;
+            let (owed, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut state.orphan_debt)
+                .into_iter()
+                .partition(|debt| caller_key.is_none_or(|key| debt.caller_key == key));
+            state.orphan_debt = kept;
+            owed
         };
-        let heard = match adapter.peripherals().await {
-            Ok(peripherals) => i64::try_from(peripherals.len()).unwrap_or(i64::MAX),
-            Err(error) => {
-                return Err(DispatchError::new(
-                    "adapter.unavailable",
-                    "adapter",
-                    "tauri.adapter-heard",
-                )
-                .platform(error.to_string()));
+        let mut failures = Vec::new();
+        for debt in owed {
+            if let Err(error) = release_orphan(authority, &debt.resource).await {
+                failures.push(OrphanFailure {
+                    resource: debt.resource.clone(),
+                    error,
+                    exhausted: debt.exhausted,
+                    attempts: debt.attempts,
+                });
+                self.inner.lock().await.orphan_debt.push(debt);
             }
-        };
-        Ok(adapter_state_payload_live(&attachment, power, heard))
+        }
+        failures
     }
 
     async fn start_scan(
         &self,
         caller: &AuthenticatedCaller,
         payload: BTreeMap<String, IpcValue>,
+        ctl: OpControl,
     ) -> Result<IpcValue, DispatchError> {
         let query_value = payload.get("query").ok_or_else(|| {
-            DispatchError::new("protocol.violation", "scan", "tauri.scan-query-required")
+            DispatchError::new(
+                BleErrorCode::ProtocolViolation,
+                "scan",
+                "tauri.scan-query-required",
+            )
         })?;
         let decoded_query = decode_normalized_scan_query(query_value).map_err(|error| {
-            DispatchError::new("protocol.malformed", "scan", "tauri.scan-query").platform(error)
+            DispatchError::new(BleErrorCode::ProtocolMalformed, "scan", "tauri.scan-query")
+                .platform(error)
         })?;
         let service_uuids = decoded_query
             .native_service_uuids
             .iter()
             .map(|value| parse_uuid(value, "tauri.scan-services"))
             .collect::<Result<Vec<_>, _>>()?;
-        let local_name_prefix: Option<String> = None;
-        let manufacturer_filters: Vec<ManufacturerFilter> = Vec::new();
         let diagnostic_plan = diagnostic_scan_plan(&decoded_query);
         let attachment = self.ensure_adapter().await?;
-        let adapter = self.adapter().await?;
         let key = caller_key(caller);
-        let expected_lease_id = required_string(&payload, "__expectedLeaseId", "tauri.scan-lease")?;
-        let expected_lease_generation =
-            required_string(&payload, "__expectedLeaseGeneration", "tauri.scan-lease")?;
-        let requested_services = service_uuids.clone();
+        let lease = expected_lease(&payload, "tauri.scan-lease")?;
         {
-            let mut state = self.inner.lock().await;
-            if scan_start_blocked(&state) {
-                return Err(DispatchError::new(
-                    "scan.already-active",
-                    "scan",
-                    "tauri.scan-global-owner",
-                ));
-            }
-            let caller_state = state.callers.get_mut(&key).ok_or_else(|| {
-                DispatchError::new("ownership.denied", "scan", "tauri.scan-owner")
+            // execute() already admitted the caller lease globally; the only
+            // remaining admission is one scan per caller. Global overlap is
+            // the core's verdict, never a dispatcher guess.
+            let state = self.inner.lock().await;
+            let caller_state = state.callers.get(&key).ok_or_else(|| {
+                DispatchError::new(BleErrorCode::OwnershipDenied, "scan", "tauri.scan-owner")
             })?;
-            if caller_state.scan_admitting || caller_state.scan.is_some() {
+            if caller_state.scan.is_some() {
                 return Err(DispatchError::new(
-                    "scan.already-active",
+                    BleErrorCode::ScanAlreadyActive,
                     "scan",
                     "tauri.scan-start",
                 ));
             }
-            caller_state.scan_admitting = true;
-            state.scan_owner = Some(key.clone());
         }
+        // Core first: admission, duplicate/merge/timeout policy, and the scan
+        // operation id are all core-owned. A concurrent scan fails here with
+        // the core's own verdict — verbatim, never a dispatcher guess.
+        let authority = self.ensure_authority().await?;
+        let service_uuid_strings: Vec<String> =
+            service_uuids.iter().map(|uuid| uuid.to_string()).collect();
+        let scan_id = authority
+            .start_scan(&key, &service_uuid_strings, ctl)
+            .await
+            .map_err(|error| DispatchError::from_core(&error))?;
         let handle = self.id("scan");
-        let dispatcher = self.clone();
-        let stream_handle = handle.clone();
-        let scan_adapter = adapter.clone();
-        let stream_owner = key.clone();
-        let stream_lease_id = expected_lease_id.clone();
-        let stream_lease_generation = expected_lease_generation.clone();
-        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-        let task = btleplug_runtime().spawn(async move {
-            let mut events = match scan_adapter.events().await {
-                Ok(events) => events,
-                Err(error) => {
-                    let _ = started_tx.send(Err(format!("tauri.scan-events: {error}")));
-                    return;
-                }
-            };
-            if let Err(error) = scan_adapter
-                .start_scan(ScanFilter {
-                    services: service_uuids,
-                })
-                .await
-            {
-                let _ = started_tx.send(Err(format!("tauri.scan-start: {error}")));
-                return;
-            }
-            if started_tx.send(Ok(())).is_err() {
-                return;
-            }
-            let mut interval = scan_poll_interval();
-            let mut events_open = true;
-            let mut polls: u32 = 0;
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        let Ok(peripherals) = scan_adapter.peripherals().await else {
-                            continue;
-                        };
-                        polls = polls.saturating_add(1);
-                        if polls % 20 == 0 {
-                            eprintln!(
-                                "ubm scan poll peripherals={} events_open={}",
-                                peripherals.len(),
-                                events_open
-                            );
-                        }
-                        for peripheral in peripherals {
-                            if let Err(error) = dispatcher
-                                .emit_scan_peripheral(
-                                    &peripheral,
-                                    ScanObservation {
-                                        owner: &stream_owner,
-                                        expected_lease: (&stream_lease_id, &stream_lease_generation),
-                                        stream_handle: &stream_handle,
-                                        requested_services: &requested_services,
-                                        local_name_prefix: local_name_prefix.as_deref(),
-                                        manufacturer_filters: &manufacturer_filters,
-                                    },
-                                )
-                                .await
-                            {
-                                dispatcher
-                                    .terminal(
-                                        &stream_owner,
-                                        (&stream_lease_id, &stream_lease_generation),
-                                        &stream_handle,
-                                        "source-failed",
-                                        Some(&error),
-                                    )
-                                    .await
-                                    .ok();
-                                dispatcher
-                                    .fail_scan_stream(
-                                        &stream_owner,
-                                        (&stream_lease_id, &stream_lease_generation),
-                                        &stream_handle,
-                                    )
-                                    .await;
-                                return;
-                            }
-                        }
-                    }
-                    event = events.next(), if events_open => {
-                        let Some(event) = event else {
-                            events_open = false;
-                            continue;
-                        };
-                        let Some(peripheral_id) = scan_event_peripheral_id(event) else {
-                            continue;
-                        };
-                        let Ok(peripheral) = scan_adapter.peripheral(&peripheral_id).await else {
-                            continue;
-                        };
-                        if let Err(error) = dispatcher
-                            .emit_scan_peripheral(
-                                &peripheral,
-                                ScanObservation {
-                                    owner: &stream_owner,
-                                    expected_lease: (&stream_lease_id, &stream_lease_generation),
-                                    stream_handle: &stream_handle,
-                                    requested_services: &requested_services,
-                                    local_name_prefix: local_name_prefix.as_deref(),
-                                    manufacturer_filters: &manufacturer_filters,
-                                },
-                            )
-                            .await
-                        {
-                            dispatcher
-                                .terminal(
-                                    &stream_owner,
-                                    (&stream_lease_id, &stream_lease_generation),
-                                    &stream_handle,
-                                    "source-failed",
-                                    Some(&error),
-                                )
-                                .await
-                                .ok();
-                            dispatcher
-                                .fail_scan_stream(
-                                    &stream_owner,
-                                    (&stream_lease_id, &stream_lease_generation),
-                                    &stream_handle,
-                                )
-                                .await;
-                            return;
-                        }
-                    }
-                }
-            }
-        });
-        match started_rx.await {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                self.abort_scan_admission(&key, (&expected_lease_id, &expected_lease_generation))
-                    .await;
-                return Err(
-                    DispatchError::new("scan.start-failed", "scan", "tauri.scan-start")
-                        .platform(error),
-                );
-            }
-            Err(_) => {
-                self.abort_scan_admission(&key, (&expected_lease_id, &expected_lease_generation))
-                    .await;
-                return Err(DispatchError::new(
-                    "scan.start-failed",
+        // Publication is one decision under the dispatcher lock, and the
+        // forwarder spawns only once its entry exists (PR210-07): it can
+        // never observe a missing entry and exit while the scan runs. Every
+        // refusal stops exactly this scan by its core id (PR210-08).
+        let refusal = {
+            let mut state = self.inner.lock().await;
+            match state.callers.get_mut(&key) {
+                None => Some(DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
                     "scan",
-                    "tauri.scan-runtime",
-                ));
-            }
-        }
-        let mut state = self.inner.lock().await;
-        let scan_owner_matches = state.scan_owner.as_deref() == Some(&key);
-        let stale_lease = state
-            .callers
-            .get(&key)
-            .is_some_and(|caller_state| !expected_lease_matches(caller_state, &payload));
-        if stale_lease {
-            task.abort();
-            if let Some(caller_state) = state.callers.get_mut(&key) {
-                caller_state.scan_admitting = false;
-            }
-            let stop_attempt = if scan_owner_matches {
-                Some(claim_stopping_scan(
-                    &mut state,
-                    key.clone(),
-                    expected_lease_id.clone(),
-                    expected_lease_generation.clone(),
-                    handle.clone(),
-                ))
-            } else {
-                None
-            };
-            drop(state);
-            if let Some(attempt) = stop_attempt {
-                let outcome = adapter.stop_scan().await.map_err(|error| error.to_string());
-                let mut state = self.inner.lock().await;
-                if let Err(error) = apply_scan_stop_outcome(&mut state, &attempt, outcome) {
-                    eprintln!(
-                        "[unified-ble:tauri] scan stop after stale-lease start failed, \
-                         resource retained for retry: {error}"
+                    "tauri.scan-owner",
+                )),
+                Some(caller_state) if caller_state.retired => Some(DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "scan",
+                    "tauri.scan-owner",
+                )),
+                Some(caller_state) if !lease_matches(caller_state, &lease) => {
+                    Some(DispatchError::new(
+                        BleErrorCode::OwnershipDenied,
+                        "scan",
+                        "tauri.scan-stale-lease",
+                    ))
+                }
+                Some(caller_state) if caller_state.scan.is_some() => Some(DispatchError::new(
+                    BleErrorCode::ScanAlreadyActive,
+                    "scan",
+                    "tauri.scan-start",
+                )),
+                Some(caller_state) => {
+                    caller_state.scan = Some(ScanResource {
+                        handle: handle.clone(),
+                        core_operation_id: scan_id.clone(),
+                        task: None,
+                        phase: ReleasePhase::Active,
+                    });
+                    let task = self.spawn_scan_forwarder(
+                        Arc::clone(&authority),
+                        key.clone(),
+                        handle.clone(),
+                        lease.clone(),
                     );
+                    if let Some(scan) = caller_state.scan.as_mut() {
+                        scan.task = Some(task);
+                    }
+                    None
                 }
             }
-            return Err(DispatchError::new(
-                "ownership.denied",
-                "scan",
-                "tauri.scan-stale-lease",
-            ));
-        }
-        let Some(caller_state) = state.callers.get_mut(&key) else {
-            task.abort();
-            let stop_attempt = if state.scan_owner.as_deref() == Some(&key) {
-                Some(claim_stopping_scan(
-                    &mut state,
-                    key.clone(),
-                    expected_lease_id.clone(),
-                    expected_lease_generation.clone(),
-                    handle.clone(),
-                ))
-            } else {
-                None
-            };
-            drop(state);
-            if let Some(attempt) = stop_attempt {
-                let outcome = adapter.stop_scan().await.map_err(|error| error.to_string());
-                let mut state = self.inner.lock().await;
-                if let Err(error) = apply_scan_stop_outcome(&mut state, &attempt, outcome) {
-                    eprintln!(
-                        "[unified-ble:tauri] scan stop after missing caller failed, \
-                         resource retained for retry: {error}"
-                    );
-                }
-            }
-            return Err(DispatchError::new(
-                "ownership.denied",
-                "scan",
-                "tauri.scan-owner",
-            ));
         };
-        caller_state.scan_admitting = false;
-        caller_state.scan = Some(ScanResource {
-            handle: handle.clone(),
-            task,
-        });
+        if let Some(refusal) = refusal {
+            self.compensate(&authority, &key, OrphanResource::Scan(scan_id))
+                .await;
+            return Err(refusal);
+        }
         Ok(object([
             ("handle", string(handle)),
             ("backendGeneration", string(attachment.backend_generation)),
@@ -1391,485 +1739,432 @@ impl BtleplugDispatcher {
         ]))
     }
 
+    /// Verbatim observation delivery: the forwarder takes core observations
+    /// and emits them unchanged. It filters, merges, and paces nothing —
+    /// duplicate/merge policy is the core's, view shaping stays TypeScript
+    /// side. It delivers only while the scan is `Active`.
+    fn spawn_scan_forwarder(
+        &self,
+        authority: Arc<dyn CoreAuthority>,
+        key: String,
+        handle: String,
+        lease: (String, String),
+    ) -> TauriJoinHandle<()> {
+        let forwarder = self.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                match forwarder.scan_delivery(&key, &handle).await {
+                    Delivery::Gone => return,
+                    Delivery::Paused => {
+                        tokio::time::sleep(FORWARD_POLL_INTERVAL).await;
+                        continue;
+                    }
+                    Delivery::Active => {}
+                }
+                match authority.take_advertisement().await {
+                    Ok(Some(snapshot)) => {
+                        let observation = core_scan_observation(&snapshot);
+                        match forwarder
+                            .emit(&key, Some((&lease.0, &lease.1)), &handle, observation)
+                            .await
+                        {
+                            Ok(()) => {}
+                            Err(error) if error.code == BleErrorCode::StreamQuota => {
+                                // Quota-drop: the observation is dropped,
+                                // never aborting the scan (the core keeps
+                                // producing).
+                            }
+                            Err(error) => {
+                                forwarder
+                                    .terminal(
+                                        &key,
+                                        (&lease.0, &lease.1),
+                                        &handle,
+                                        "source-failed",
+                                        Some(&error),
+                                    )
+                                    .await
+                                    .ok();
+                                return;
+                            }
+                        }
+                    }
+                    Ok(None) => tokio::time::sleep(FORWARD_POLL_INTERVAL).await,
+                    Err(error) => {
+                        // Core-side failure ends delivery with the verbatim
+                        // core verdict (never a guessed stream error, never
+                        // silent).
+                        let terminal_error = DispatchError::from_core(&error);
+                        forwarder
+                            .terminal(
+                                &key,
+                                (&lease.0, &lease.1),
+                                &handle,
+                                "source-failed",
+                                Some(&terminal_error),
+                            )
+                            .await
+                            .ok();
+                        return;
+                    }
+                }
+            }
+        })
+    }
+
+    async fn scan_delivery(&self, key: &str, handle: &str) -> Delivery {
+        let state = self.inner.lock().await;
+        let Some(caller_state) = state.callers.get(key).filter(|caller| !caller.retired) else {
+            return Delivery::Gone;
+        };
+        match caller_state.scan.as_ref() {
+            Some(scan) if scan.handle == handle && scan.phase.is_active() => Delivery::Active,
+            Some(scan) if scan.handle == handle => Delivery::Paused,
+            _ => Delivery::Gone,
+        }
+    }
+
     async fn stop_scan(
         &self,
         caller: &AuthenticatedCaller,
         payload: BTreeMap<String, IpcValue>,
+        ctl: OpControl,
     ) -> Result<IpcValue, DispatchError> {
         let handle = required_string(&payload, "scanHandle", "tauri.scan-stop")?;
         let key = caller_key(caller);
-        let expected_lease_id =
-            required_string(&payload, "__expectedLeaseId", "tauri.scan-stop-lease")?;
-        let expected_lease_generation = required_string(
-            &payload,
-            "__expectedLeaseGeneration",
-            "tauri.scan-stop-lease",
-        )?;
-        let attempt = {
-            let mut state = self.inner.lock().await;
-            match begin_scan_stop(
-                &mut state,
-                &key,
-                (&expected_lease_id, &expected_lease_generation),
-                &handle,
-                true,
-            )? {
-                ScanStopBegin::AlreadyReleased | ScanStopBegin::Joining => {
-                    return Ok(released());
-                }
-                ScanStopBegin::Started(attempt) => attempt,
+        {
+            let state = self.inner.lock().await;
+            if !state.callers.contains_key(&key) {
+                // A released caller owns nothing to stop.
+                return Err(DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "scan",
+                    "tauri.scan-stop-owner",
+                ));
             }
-        };
-        let outcome = self
-            .adapter()
-            .await?
-            .stop_scan()
-            .await
-            .map_err(|error| error.to_string());
-        let mut state = self.inner.lock().await;
-        apply_scan_stop_outcome(&mut state, &attempt, outcome).map_err(|error| {
-            DispatchError::new("scan.stop-failed", "scan", "tauri.scan-stop").platform(error)
-        })?;
+        }
+        self.release_scan(&key, &handle, ctl).await?;
         Ok(released())
+    }
+
+    /// Stop one mapped scan through the core by its own core id (PR210-09).
+    /// Delivery pauses while the stop runs; the mapping — and with it the
+    /// id a retry needs — is removed only when the core confirms the stop
+    /// or answers that this scan is no longer active. An unknown handle is
+    /// already released.
+    async fn release_scan(
+        &self,
+        key: &str,
+        handle: &str,
+        ctl: OpControl,
+    ) -> Result<(), DispatchError> {
+        let step = {
+            let mut state = self.inner.lock().await;
+            let Some(scan) = state
+                .callers
+                .get_mut(key)
+                .and_then(|caller_state| caller_state.scan.as_mut())
+                .filter(|scan| scan.handle == handle)
+            else {
+                return Ok(());
+            };
+            (
+                begin_release(&mut scan.phase),
+                scan.core_operation_id.clone(),
+            )
+        };
+        let (sender, scan_id) = match step {
+            (ReleaseStep::Join(receiver), _) => return join_release(receiver).await,
+            (ReleaseStep::Lead(sender), scan_id) => (sender, scan_id),
+        };
+        let result = match self.ensure_authority().await {
+            Ok(authority) => authority
+                .stop_scan(&scan_id, ctl)
+                .await
+                .map(|_| ())
+                .map_err(|error| DispatchError::from_core(&error)),
+            Err(error) => Err(error),
+        };
+        {
+            let mut state = self.inner.lock().await;
+            if let Some(caller_state) = state.callers.get_mut(key) {
+                let owned = caller_state
+                    .scan
+                    .as_ref()
+                    .is_some_and(|scan| scan.handle == handle);
+                if owned {
+                    if result.is_ok() {
+                        if let Some(task) = caller_state.scan.take().and_then(|scan| scan.task) {
+                            task.abort();
+                        }
+                    } else if let Some(scan) = caller_state.scan.as_mut() {
+                        scan.phase = ReleasePhase::ReleaseFailed;
+                    }
+                }
+            }
+        }
+        let _ = sender.send(Some(result.clone()));
+        result
     }
 
     async fn connect(
         &self,
         caller: &AuthenticatedCaller,
         payload: BTreeMap<String, IpcValue>,
+        ctl: OpControl,
     ) -> Result<IpcValue, DispatchError> {
         let peer_id = required_string(&payload, "peerId", "tauri.connect-peer")?;
-        let adapter = self.adapter().await?;
-        let peripherals = adapter.peripherals().await.map_err(|error| {
-            DispatchError::new(
-                "connection.failed",
-                "connection",
-                "tauri.connect-peripherals",
-            )
-            .platform(error.to_string())
-        })?;
-        let peripheral = peripherals
-            .into_iter()
-            .find(|peripheral| peripheral_id(peripheral) == peer_id)
-            .ok_or_else(|| {
-                DispatchError::new("connection.not-found", "connection", "tauri.connect-peer")
-            })?;
         let key = caller_key(caller);
+        let expected = expected_lease(&payload, "tauri.connect-lease")?;
         {
-            let mut state = self.inner.lock().await;
-            if state.peer_owners.contains_key(&peer_id) {
-                return Err(DispatchError::new(
-                    "connection.already-owned",
-                    "connection",
-                    "tauri.connect-peer-owner",
-                ));
-            }
+            // execute() already admitted the caller lease globally; the only
+            // remaining admission is caller presence. Peer ownership and link
+            // generations are core-owned: a doubly-owned peer fails here with
+            // the core's own verdict — verbatim, never a dispatcher guess.
+            let state = self.inner.lock().await;
             if !state.callers.contains_key(&key) {
                 return Err(DispatchError::new(
-                    "ownership.denied",
+                    BleErrorCode::OwnershipDenied,
                     "connection",
                     "tauri.connect-owner",
                 ));
             }
-            state.peer_owners.insert(peer_id.clone(), key.clone());
         }
-        let already_connected = match peripheral.is_connected().await {
-            Ok(connected) => connected,
-            Err(error) => {
-                self.clear_peer_owner(&peer_id, &key).await;
-                return Err(DispatchError::new(
-                    "connection.failed",
-                    "connection",
-                    "tauri.connect-state",
-                )
-                .platform(error.to_string()));
-            }
-        };
-        if already_connected {
-            self.clear_peer_owner(&peer_id, &key).await;
-            return Err(DispatchError::new(
-                "connection.already-owned",
-                "connection",
-                "tauri.connect-existing-link",
-            ));
-        }
-        if let Err(error) = peripheral.connect().await {
-            self.clear_peer_owner(&peer_id, &key).await;
-            return Err(
-                DispatchError::new("connection.failed", "connection", "tauri.connect")
-                    .platform(error.to_string()),
-            );
-        }
+        // Core first: the link, its generation, and the connection lease are
+        // all core-owned. The lease below is the exact string later ops must
+        // echo back to the core.
+        // The core lease is internal: it takes no number from the 4.x counter.
+        let lease = self.internal_id("lease");
+        let authority = self.ensure_authority().await?;
+        let connection = authority
+            .connect(&peer_id, &lease, ctl)
+            .await
+            .map_err(|error| DispatchError::from_core(&error))?;
         let handle = self.id("connection");
         let connection_id = self.id("connection-id");
-        let connection_generation = self.id("connection-generation");
-        let mut state = self.inner.lock().await;
-        let peer_owner_matches = state
-            .peer_owners
-            .get(&peer_id)
-            .is_some_and(|owner| owner == &key);
-        let expected_lease = (
-            payload
-                .get("__expectedLeaseId")
-                .and_then(as_string)
-                .unwrap_or_default()
-                .to_owned(),
-            payload
-                .get("__expectedLeaseGeneration")
-                .and_then(as_string)
-                .unwrap_or_default()
-                .to_owned(),
-        );
-        let Some(caller_state) = state.callers.get_mut(&key) else {
-            retain_orphan_connection(
-                &mut state,
-                OrphanConnectionOwner {
-                    caller_key: key.clone(),
-                    lease_id: expected_lease.0.clone(),
-                    lease_generation: expected_lease.1.clone(),
-                    peer_id: peer_id.clone(),
-                    peripheral: Some(peripheral.clone()),
-                    attempts: 0,
+        // The 4.x public generation; the core's travels with it for matching.
+        let public_generation = self.id("connection-generation");
+        // Publication: a link nobody can address is released through the
+        // core by its own lease, and a failed release becomes orphan debt
+        // (PR210-08) — never a `let _` discard.
+        let published = {
+            let mut state = self.inner.lock().await;
+            match state.callers.get_mut(&key) {
+                None => Err(DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "connection",
+                    "tauri.connect-owner",
+                )),
+                Some(caller_state) if caller_state.retired => Err(DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "connection",
+                    "tauri.connect-owner",
+                )),
+                Some(caller_state) if !lease_matches(caller_state, &expected) => {
+                    Err(DispatchError::new(
+                        BleErrorCode::OwnershipDenied,
+                        "connection",
+                        "tauri.connect-stale-lease",
+                    ))
+                }
+                Some(caller_state) => match connection.connection_generation.clone() {
+                    None => Err(DispatchError::new(
+                        BleErrorCode::ProtocolMalformed,
+                        "connection",
+                        "tauri.connect-generation",
+                    )),
+                    Some(core_generation) => {
+                        let owner_lease_id = caller_state.lease_id.clone();
+                        caller_state.connections.insert(
+                            handle.clone(),
+                            CoreConnection {
+                                peer_id: peer_id.clone(),
+                                lease: lease.clone(),
+                                connection_id: connection_id.clone(),
+                                owner_lease_id: owner_lease_id.clone(),
+                                connection_generation: public_generation.clone(),
+                                core_generation,
+                                phase: ReleasePhase::Active,
+                            },
+                        );
+                        Ok((owner_lease_id, public_generation.clone()))
+                    }
                 },
-            );
-            drop(state);
-            let residue = self
-                .compensate_unowned_connection(
-                    &peripheral,
-                    &peer_id,
-                    true,
-                    Some(expected_lease.1.as_str()),
-                )
-                .await;
-            return Err(compensation_failure("tauri.connect-owner", residue));
+            }
         };
-        if !expected_lease_matches(caller_state, &payload) {
-            let _ = caller_state;
-            retain_orphan_connection(
-                &mut state,
-                OrphanConnectionOwner {
-                    caller_key: key.clone(),
-                    lease_id: expected_lease.0.clone(),
-                    lease_generation: expected_lease.1.clone(),
-                    peer_id: peer_id.clone(),
-                    peripheral: Some(peripheral.clone()),
-                    attempts: 0,
-                },
-            );
-            drop(state);
-            let residue = self
-                .compensate_unowned_connection(
-                    &peripheral,
-                    &peer_id,
-                    peer_owner_matches,
-                    Some(expected_lease.1.as_str()),
-                )
-                .await;
-            return Err(compensation_failure("tauri.connect-stale-lease", residue));
+        match published {
+            Ok((owner_lease_id, connection_generation)) => Ok(object([
+                ("handle", string(handle)),
+                ("connectionId", string(connection_id)),
+                ("ownerLeaseId", string(owner_lease_id)),
+                ("peerId", string(peer_id)),
+                ("connectionGeneration", string(connection_generation)),
+            ])),
+            Err(refusal) => {
+                self.compensate(&authority, &key, OrphanResource::Link { peer_id, lease })
+                    .await;
+                Err(refusal)
+            }
         }
-        caller_state.connections.insert(
-            handle.clone(),
-            ConnectionResource {
-                peer_id: peer_id.clone(),
-                connection_id: connection_id.clone(),
-                owner_lease_id: caller_state.lease_id.clone(),
-                connection_generation: connection_generation.clone(),
-                peripheral,
-            },
-        );
-        Ok(object([
-            ("handle", string(handle)),
-            ("connectionId", string(connection_id)),
-            ("ownerLeaseId", string(caller_state.lease_id.clone())),
-            ("peerId", string(peer_id)),
-            ("connectionGeneration", string(connection_generation)),
-        ]))
     }
 
-    /// Undo a physically-successful connect whose caller can no longer own it.
+    /// Release one tracked connection through the shared core.
     ///
-    /// The peer is connected and nobody is entitled to it, so it must come down.
-    /// What matters is what happens when it will not: dropping the reservation
-    /// anyway leaves a connected peripheral with no owner and no handle, which
-    /// nothing can reach or retry until the process restarts - the peer is
-    /// stranded, and the caller is told only that admission was denied.
-    ///
-    /// So the reservation is surrendered only when the platform PROVES the link
-    /// is down, which is the rule `disconnect` already follows: a bounded wait,
-    /// then a fresh state reading, and a D-Bus error naming a vanished device
-    /// object read as evidence of release rather than as a failed question.
-    /// Genuine indeterminacy keeps the reservation so a retry can reclaim it.
-    ///
-    /// Returns the failure to report alongside the admission error, or `None`
-    /// when the peer was released cleanly.
-    async fn compensate_unowned_connection(
-        &self,
-        peripheral: &Peripheral,
-        peer_id: &str,
-        owner_matches: bool,
-        expected_generation: Option<&str>,
-    ) -> Option<String> {
-        let outcome = disconnect_with_state_check(
-            async {
-                peripheral
-                    .disconnect()
-                    .await
-                    .map_err(|error| error.to_string())
-            },
-            || connected_after_failed_disconnect(peripheral),
-        )
-        .await;
-
-        if let Some(expected_generation) = expected_generation {
-            self.settle_orphan_connection(outcome, peer_id, expected_generation)
-                .await
-        } else {
-            self.apply_compensation_outcome(outcome, peer_id, owner_matches)
-                .await
-        }
-    }
-
-    /// Settle the reservation from a compensating disconnect's outcome.
-    ///
-    /// Split from the I/O above so the rule can be tested without a live
-    /// `Peripheral`: the defect this guards against is dropping the reservation
-    /// regardless of outcome, which is a decision about state, not about radios.
-    async fn apply_compensation_outcome(
-        &self,
-        outcome: Result<(), String>,
-        peer_id: &str,
-        owner_matches: bool,
-    ) -> Option<String> {
-        let mut state = self.inner.lock().await;
-        match outcome {
-            Ok(()) => {
-                if owner_matches {
-                    state.peer_owners.remove(peer_id);
-                    state.orphan_connections.remove(peer_id);
-                }
-                None
-            }
-            Err(error) => {
-                // Deliberately NOT removing the reservation: the peer may still
-                // be connected, and an owner-less connected peer cannot be
-                // reached or retried until the process restarts.
-                if let Some(orphan) = state.orphan_connections.get_mut(peer_id) {
-                    orphan.attempts = orphan.attempts.saturating_add(1);
-                }
-                eprintln!(
-                    "[unified-ble:tauri] compensating disconnect for {peer_id} did not confirm \
-                     release, so the reservation is retained for retry: {error}"
-                );
-                Some(error)
-            }
-        }
-    }
-
-    async fn settle_orphan_connection(
-        &self,
-        outcome: Result<(), String>,
-        peer_id: &str,
-        expected_generation: &str,
-    ) -> Option<String> {
-        let mut state = self.inner.lock().await;
-        match outcome {
-            Ok(()) => {
-                let generation_matches = state
-                    .orphan_connections
-                    .get(peer_id)
-                    .is_some_and(|orphan| orphan.lease_generation == expected_generation);
-                if !generation_matches {
-                    return None;
-                }
-                let caller_key = state
-                    .orphan_connections
-                    .get(peer_id)
-                    .map(|orphan| orphan.caller_key.clone());
-                state.orphan_connections.remove(peer_id);
-                if let Some(caller_key) = caller_key {
-                    if state
-                        .peer_owners
-                        .get(peer_id)
-                        .is_some_and(|owner| owner == &caller_key)
-                    {
-                        state.peer_owners.remove(peer_id);
-                    }
-                }
-                None
-            }
-            Err(error) => {
-                if let Some(orphan) = state.orphan_connections.get_mut(peer_id) {
-                    if orphan.lease_generation == expected_generation {
-                        orphan.attempts = orphan.attempts.saturating_add(1);
-                    }
-                }
-                eprintln!(
-                    "[unified-ble:tauri] compensating disconnect for {peer_id} did not confirm \
-                     release, so the reservation is retained for retry: {error}"
-                );
-                Some(error)
-            }
-        }
-    }
-
-    async fn compensate_unowned_subscription(
-        &self,
-        peripheral: &Peripheral,
-        characteristic: &Characteristic,
-        stream_id: &str,
-        expected_generation: &str,
-    ) -> Option<String> {
-        let outcome = peripheral
-            .unsubscribe(characteristic)
-            .await
-            .map_err(|error| error.to_string());
-        self.settle_orphan_subscription(outcome, stream_id, expected_generation)
-            .await
-    }
-
-    async fn settle_orphan_subscription(
-        &self,
-        outcome: Result<(), String>,
-        stream_id: &str,
-        expected_generation: &str,
-    ) -> Option<String> {
-        let mut state = self.inner.lock().await;
-        match outcome {
-            Ok(()) => {
-                let generation_matches = state
-                    .orphan_subscription_owners
-                    .get(stream_id)
-                    .is_some_and(|orphan| orphan.lease_generation == expected_generation);
-                if !generation_matches {
-                    return None;
-                }
-                state.orphan_subscription_owners.remove(stream_id);
-                state.orphan_subscription_resources.remove(stream_id);
-                None
-            }
-            Err(error) => {
-                if let Some(orphan) = state.orphan_subscription_owners.get_mut(stream_id) {
-                    if orphan.lease_generation == expected_generation {
-                        orphan.attempts = orphan.attempts.saturating_add(1);
-                    }
-                }
-                eprintln!(
-                    "[unified-ble:tauri] compensating unsubscribe for {stream_id} did not confirm \
-                     release, so the orphan owner is retained for retry: {error}"
-                );
-                Some(error)
-            }
-        }
-    }
-
+    /// The request is validated against the mapping without mutating it
+    /// (PR210-10): a wrong identity leaves every mapping untouched and
+    /// makes no native call. The core verdict then decides — a confirmed or
+    /// already-ended release removes the connection and its GATT mappings;
+    /// a failure keeps them for a real retry (PR210-09). The resulting
+    /// `connection-lifecycle` transition reaches the connection-event
+    /// streams from the core's lifecycle event, never from here. Unknown
+    /// handle with a live caller is idempotent release; an unknown caller
+    /// owns nothing.
     async fn disconnect(
         &self,
         caller: &AuthenticatedCaller,
         payload: BTreeMap<String, IpcValue>,
+        ctl: OpControl,
     ) -> Result<IpcValue, DispatchError> {
         let handle = required_string(&payload, "connectionHandle", "tauri.disconnect")?;
         let key = caller_key(caller);
-        let connection = {
-            let state = self.inner.lock().await;
-            let caller_state = state.callers.get(&key).ok_or_else(|| {
-                DispatchError::new("ownership.denied", "connection", "tauri.disconnect-owner")
-            })?;
-            let Some(connection) = caller_state.connections.get(&handle) else {
-                return Ok(released());
-            };
-            validate_connection_identity(
-                &payload,
-                connection,
-                &caller_state.lease_id,
-                "tauri.disconnect",
-            )?;
-            connection.clone()
-        };
-        disconnect_peripheral(&connection.peripheral)
-            .await
-            .map_err(|error| {
-                DispatchError::new("platform.failure", "connection", "tauri.disconnect")
-                    .platform(error)
-            })?;
-        let resources = self
-            .remove_connection_resources(&key, &handle, &connection.peer_id)
-            .await;
-        for subscription in resources.0 {
-            subscription.task.abort();
-        }
-        for task in resources.1 {
-            task.abort();
-        }
+        self.release_connection(&key, &handle, Some(&payload), ctl)
+            .await?;
         Ok(released())
     }
 
-    async fn remove_connection_resources(
+    async fn release_connection(
         &self,
-        caller_key: &str,
-        connection_handle: &str,
-        peer_id: &str,
-    ) -> (Vec<SubscriptionResource>, Vec<TauriJoinHandle<()>>) {
-        let mut state = self.inner.lock().await;
-        let Some(caller_state) = state.callers.get_mut(caller_key) else {
-            if state
-                .peer_owners
-                .get(peer_id)
-                .is_some_and(|owner| owner == caller_key)
-            {
-                state.peer_owners.remove(peer_id);
+        key: &str,
+        handle: &str,
+        identity: Option<&BTreeMap<String, IpcValue>>,
+        ctl: OpControl,
+    ) -> Result<(), DispatchError> {
+        let step = {
+            let mut state = self.inner.lock().await;
+            let caller_state = state.callers.get_mut(key).ok_or_else(|| {
+                DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "connection",
+                    "tauri.disconnect-owner",
+                )
+            })?;
+            let owner_lease_id = caller_state.lease_id.clone();
+            let Some(connection) = caller_state.connections.get_mut(handle) else {
+                return Ok(());
+            };
+            if let Some(payload) = identity {
+                validate_connection_identity(
+                    payload,
+                    connection,
+                    &owner_lease_id,
+                    "tauri.disconnect",
+                )?;
             }
-            return (Vec::new(), Vec::new());
+            (
+                begin_release(&mut connection.phase),
+                connection.peer_id.clone(),
+                connection.lease.clone(),
+            )
         };
-        let removed_peer_id = caller_state
-            .connections
-            .remove(connection_handle)
-            .map(|connection| connection.peer_id);
-        let database_handles = caller_state
-            .databases
-            .iter()
-            .filter_map(|(database_handle, database)| {
-                (database.connection_handle == connection_handle).then_some(database_handle.clone())
-            })
-            .collect::<HashSet<_>>();
+        let (sender, peer_id, lease) = match step {
+            (ReleaseStep::Join(receiver), _, _) => return join_release(receiver).await,
+            (ReleaseStep::Lead(sender), peer_id, lease) => (sender, peer_id, lease),
+        };
+        let result = match self.ensure_authority().await {
+            Ok(authority) => match authority.disconnect(&peer_id, &lease, ctl).await {
+                Ok(_) => Ok(()),
+                Err(error) => {
+                    let error = DispatchError::from_core(&error);
+                    if is_released_link(&error) {
+                        Ok(())
+                    } else {
+                        Err(error)
+                    }
+                }
+            },
+            Err(error) => Err(error),
+        };
+        let (detached, owner_lease) = {
+            let mut state = self.inner.lock().await;
+            match state.callers.get_mut(key) {
+                Some(caller_state) if caller_state.connections.contains_key(handle) => {
+                    if result.is_ok() {
+                        caller_state.connections.remove(handle);
+                        let lease = (
+                            caller_state.lease_id.clone(),
+                            caller_state.lease_generation.clone(),
+                        );
+                        (
+                            Self::detach_connection_mappings(caller_state, handle),
+                            Some(lease),
+                        )
+                    } else {
+                        if let Some(connection) = caller_state.connections.get_mut(handle) {
+                            connection.phase = ReleasePhase::ReleaseFailed;
+                        }
+                        (Vec::new(), None)
+                    }
+                }
+                _ => (Vec::new(), None),
+            }
+        };
+        // Finding 190a: the app released the link, so every detached
+        // subscription ends with the vocabulary's requested-disconnect word
+        // (`owner-released`, as on RN iOS/Android/tvOS) — never a bare close
+        // the supervisor reads as a stop. The forwarder cannot race this:
+        // the connection left `Active` at `begin_release`, so delivery stays
+        // paused until the mappings below are gone.
+        if let Some((owner_lease_id, owner_lease_generation)) = owner_lease {
+            for (subscription_handle, _) in &detached {
+                let _ = self
+                    .terminal(
+                        key,
+                        (&owner_lease_id, &owner_lease_generation),
+                        subscription_handle,
+                        "owner-released",
+                        None,
+                    )
+                    .await;
+            }
+        }
+        for (_, subscription) in detached {
+            if let Some(task) = subscription.task {
+                task.abort();
+            }
+        }
+        let _ = sender.send(Some(result.clone()));
+        result
+    }
+
+    /// Drop the GATT mappings owned by one released connection handle and
+    /// return the detached subscriptions for the caller to stop. The link's
+    /// CCCDs ended with it in the core. Connection-event streams stay: the
+    /// core's lifecycle event ends them with the transition that happened.
+    fn detach_connection_mappings(
+        caller_state: &mut CallerState,
+        connection_handle: &str,
+    ) -> Vec<(String, CoreSubscription)> {
         let subscription_handles = caller_state
             .subscriptions
             .iter()
             .filter_map(|(subscription_handle, subscription)| {
-                database_handles
-                    .contains(&subscription.database_handle)
+                (subscription.connection_handle == connection_handle)
                     .then_some(subscription_handle.clone())
             })
             .collect::<Vec<_>>();
         let subscriptions = subscription_handles
             .into_iter()
             .filter_map(|subscription_handle| {
-                caller_state.subscriptions.remove(&subscription_handle)
+                caller_state
+                    .subscriptions
+                    .remove(&subscription_handle)
+                    .map(|subscription| (subscription_handle, subscription))
             })
             .collect::<Vec<_>>();
         caller_state
             .databases
-            .retain(|database_handle, _| !database_handles.contains(database_handle));
-        let event_handles = caller_state
-            .connection_events
-            .iter()
-            .filter_map(|(event_handle, event)| {
-                (event.connection_handle == connection_handle).then_some(event_handle.clone())
-            })
-            .collect::<Vec<_>>();
-        let event_tasks = event_handles
-            .into_iter()
-            .filter_map(|event_handle| caller_state.connection_events.remove(&event_handle))
-            .filter_map(|event| event.task)
-            .collect::<Vec<_>>();
-        if should_clear_peer_owner(
-            removed_peer_id.as_deref(),
-            peer_id,
-            state.peer_owners.get(peer_id).map(String::as_str),
-            caller_key,
-        ) {
-            state.peer_owners.remove(peer_id);
-        }
-        (subscriptions, event_tasks)
+            .retain(|_, database| database.connection_handle != connection_handle);
+        subscriptions
     }
 
     async fn subscribe_connection_events(
@@ -1889,18 +2184,19 @@ impl BtleplugDispatcher {
         let mut state = self.inner.lock().await;
         let caller_state = state.callers.get_mut(&key).ok_or_else(|| {
             DispatchError::new(
-                "ownership.denied",
+                BleErrorCode::OwnershipDenied,
                 "connection",
                 "tauri.connection-events-owner",
             )
         })?;
         if caller_state.connection_events.contains_key(&stream_handle) {
             return Err(DispatchError::new(
-                "protocol.violation",
+                BleErrorCode::ProtocolViolation,
                 "connection",
                 "tauri.connection-events-duplicate",
             ));
         }
+        let attachment = caller_state.attachment.clone();
         caller_state.connection_events.insert(
             stream_handle.clone(),
             ConnectionEventResource {
@@ -1913,9 +2209,11 @@ impl BtleplugDispatcher {
                 peer_id: connection.peer_id,
                 connection_id: connection.connection_id.clone(),
                 connection_generation: connection.connection_generation.clone(),
+                core_generation: connection.core_generation.clone(),
+                attachment,
                 active: false,
                 sequence: 0,
-                task: None,
+                end: StreamEnd::Open,
             },
         );
         Ok(object([
@@ -1940,18 +2238,11 @@ impl BtleplugDispatcher {
             "tauri.connection-events-ready-handle",
         )?;
         let key = caller_key(caller);
-        let event = {
+        let (event, pending_end) = {
             let mut state = self.inner.lock().await;
-            let attachment = state.attachment.clone().ok_or_else(|| {
-                DispatchError::new(
-                    "lifecycle.invalid-state",
-                    "connection",
-                    "tauri.connection-events-attachment",
-                )
-            })?;
             let caller_state = state.callers.get_mut(&key).ok_or_else(|| {
                 DispatchError::new(
-                    "ownership.denied",
+                    BleErrorCode::OwnershipDenied,
                     "connection",
                     "tauri.connection-events-ready-owner",
                 )
@@ -1961,42 +2252,60 @@ impl BtleplugDispatcher {
                 .get_mut(&stream_handle)
                 .ok_or_else(|| {
                     DispatchError::new(
-                        "gatt.stale-handle",
+                        BleErrorCode::GattStaleHandle,
                         "connection",
                         "tauri.connection-events-ready-handle",
                     )
                 })?;
             if resource.active {
                 return Err(DispatchError::new(
-                    "lifecycle.invalid-state",
+                    BleErrorCode::LifecycleInvalidState,
                     "connection",
                     "tauri.connection-events-ready-state",
                 ));
             }
             resource.active = true;
             resource.sequence = 1;
-            let peripheral = caller_state
+            // Events report the attachment the link lives on.
+            let attachment = resource.attachment.clone();
+            // A link that ended before the stream was ready is reported
+            // right after the initial event; the delivery claims the end.
+            let pending_end = match resource.end {
+                StreamEnd::Pending(transition) => {
+                    resource.end = StreamEnd::Claimed;
+                    Some(Some(transition))
+                }
+                StreamEnd::PendingOverflow => {
+                    resource.end = StreamEnd::Claimed;
+                    Some(None)
+                }
+                StreamEnd::Open | StreamEnd::Claimed => None,
+            };
+            // Presence, not a handle: the link itself is core-owned, so
+            // readiness only checks that the mapping still resolves. Link
+            // loss reaches this stream from the core's lifecycle event.
+            if !caller_state
                 .connections
-                .get(&resource.connection_handle)
-                .map(|connection| connection.peripheral.clone())
-                .ok_or_else(|| {
-                    DispatchError::new(
-                        "connection.stale",
-                        "connection",
-                        "tauri.connection-events-connection",
-                    )
-                })?;
+                .contains_key(&resource.connection_handle)
+            {
+                return Err(DispatchError::new(
+                    BleErrorCode::ConnectionStale,
+                    "connection",
+                    "tauri.connection-events-connection",
+                ));
+            }
             (
-                resource.stream_handle.clone(),
-                resource.peer_id.clone(),
-                resource.connection_id.clone(),
-                resource.connection_generation.clone(),
-                caller_state.lease_id.clone(),
-                resource.sequence,
-                attachment,
-                peripheral,
-                caller_state.lease_generation.clone(),
-                resource.connection_handle.clone(),
+                (
+                    resource.stream_handle.clone(),
+                    resource.peer_id.clone(),
+                    resource.connection_id.clone(),
+                    resource.connection_generation.clone(),
+                    caller_state.lease_id.clone(),
+                    resource.sequence,
+                    attachment,
+                    caller_state.lease_generation.clone(),
+                ),
+                pending_end,
             )
         };
         let initial_event = object([
@@ -2015,105 +2324,31 @@ impl BtleplugDispatcher {
             ("cause", string("connected")),
         ]);
         if let Err(error) = self
-            .emit(
-                &key,
-                Some((&event.4, &event.8)),
-                &event.0,
-                initial_event,
-                false,
-            )
+            .emit(&key, Some((&event.4, &event.7)), &event.0, initial_event)
             .await
         {
             let mut state = self.inner.lock().await;
             if let Some(caller) = state.callers.get_mut(&key) {
-                if let Some(resource) = caller.connection_events.remove(&event.0) {
-                    if let Some(task) = resource.task {
-                        task.abort();
-                    }
-                }
+                caller.connection_events.remove(&event.0);
             }
             return Err(error);
         }
-        let dispatcher = self.clone();
-        let stream_owner = key.clone();
-        let stream_id = event.0.clone();
-        let peer_id = event.1.clone();
-        let connection_id = event.2.clone();
-        let connection_generation = event.3.clone();
-        let expected_lease_id = event.4.clone();
-        let expected_lease_generation = event.8.clone();
-        let connection_handle = event.9.clone();
-        let stream_id_for_task = stream_id.clone();
-        let task = tauri::async_runtime::spawn(async move {
-            loop {
-                tokio::time::sleep(SCAN_POLL_INTERVAL).await;
-                match event.7.is_connected().await {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        let _ = dispatcher
-                            .emit_connection_lost(
-                                &stream_owner,
-                                (&expected_lease_id, &expected_lease_generation),
-                                ConnectionEventIdentity {
-                                    stream_id: &stream_id_for_task,
-                                    peer_id: &peer_id,
-                                    connection_id: &connection_id,
-                                    connection_generation: &connection_generation,
-                                },
-                            )
-                            .await;
-                        let resources = dispatcher
-                            .remove_connection_resources(
-                                &stream_owner,
-                                &connection_handle,
-                                &peer_id,
-                            )
-                            .await;
-                        for subscription in resources.0 {
-                            subscription.task.abort();
-                        }
-                        for task in resources.1 {
-                            task.abort();
-                        }
-                        break;
-                    }
-                    Err(_) => {
-                        let _ = dispatcher
-                            .emit_connection_failure(
-                                &stream_owner,
-                                (&expected_lease_id, &expected_lease_generation),
-                                ConnectionEventIdentity {
-                                    stream_id: &stream_id_for_task,
-                                    peer_id: &peer_id,
-                                    connection_id: &connection_id,
-                                    connection_generation: &connection_generation,
-                                },
-                                "backend-failure",
-                                "source-failed",
-                            )
-                            .await;
-                        break;
-                    }
-                }
-            }
-        });
-        let mut state = self.inner.lock().await;
-        if let Some(caller_state) = state.callers.get_mut(&key) {
-            let resource = caller_state.connection_events.get_mut(&stream_id);
-            match resource {
-                Some(resource)
-                    if caller_state.lease_id == event.4
-                        && caller_state.lease_generation == event.8
-                        && resource.connection_id == event.2
-                        && resource.connection_generation == event.3 =>
-                {
-                    resource.task = Some(task);
-                }
-                _ => task.abort(),
-            }
-        } else {
-            task.abort();
+        if let Some(end) = pending_end {
+            self.spawn_stream_end(
+                key,
+                (event.4, event.7),
+                StreamEndTarget {
+                    stream_id: event.0,
+                    peer_id: event.1,
+                    connection_id: event.2,
+                    connection_generation: event.3,
+                },
+                end,
+            );
         }
+        // No liveness monitor: the core senses link loss itself and
+        // publishes it as a lifecycle event, which the lifecycle pump
+        // forwards to this stream by its handle (PR210-11).
         Ok(object([("state", string("ready"))]))
     }
 
@@ -2130,121 +2365,581 @@ impl BtleplugDispatcher {
         let mut state = self.inner.lock().await;
         let caller_state = state.callers.get_mut(&caller_key(caller)).ok_or_else(|| {
             DispatchError::new(
-                "ownership.denied",
+                BleErrorCode::OwnershipDenied,
                 "connection",
                 "tauri.connection-events-unsubscribe-owner",
             )
         })?;
-        if let Some(resource) = caller_state.connection_events.remove(&stream_handle) {
-            if let Some(task) = resource.task {
-                task.abort();
+        caller_state.connection_events.remove(&stream_handle);
+        Ok(released())
+    }
+
+    /// One lifecycle pump per authority, subscribed before any operation can
+    /// run. Link loss, requested release and service changes reach the
+    /// matching connection-event streams and databases by peer and
+    /// connection generation; a stale generation matches nothing. A lagged
+    /// receiver ends every connection-event stream with `overflow` instead
+    /// of leaving a silent gap.
+    fn start_lifecycle_pump(&self, authority: &Arc<dyn CoreAuthority>) {
+        let mut events = authority.lifecycle_events();
+        let mut scan_ends = authority.scan_terminal_events();
+        let mut resets = authority.adapter_reset_events();
+        let dispatcher = self.clone();
+        let pump = tauri::async_runtime::spawn(async move {
+            let (mut lifecycle_open, mut scan_ends_open, mut resets_open) = (true, true, true);
+            while lifecycle_open || scan_ends_open || resets_open {
+                tokio::select! {
+                    reset = resets.recv(), if resets_open => match reset {
+                        Ok(reset) => {
+                            dispatcher
+                                .rebind_callers(reset.previous.attachment_id().as_str(), &reset.current)
+                                .await;
+                        }
+                        // A missed reset still left the central on its current
+                        // attachment: rebind to that.
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            dispatcher.rebind_to_current().await;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => resets_open = false,
+                    },
+                    event = events.recv(), if lifecycle_open => match event {
+                        Ok(event) => dispatcher.apply_lifecycle_event(&event).await,
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            dispatcher.overflow_connection_event_streams().await;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => lifecycle_open = false,
+                    },
+                    ended = scan_ends.recv(), if scan_ends_open => match ended {
+                        Ok(ended) => dispatcher.apply_scan_terminal(&ended).await,
+                        Err(broadcast::error::RecvError::Lagged(missed)) => {
+                            dispatcher.fail_unobserved_scans(missed).await;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => scan_ends_open = false,
+                    },
+                }
+            }
+        });
+        let previous = self
+            .lifecycle_pump
+            .lock()
+            .expect("lifecycle pump mutex poisoned")
+            .replace(pump);
+        if let Some(previous) = previous {
+            previous.abort();
+        }
+    }
+
+    /// IPC protocol 4: an adapter reset replaced `previous` with `current`.
+    /// The dispatcher (never a webview) rebinds every caller bound to
+    /// `previous` and announces it on the `attachment` stream; until then
+    /// work on `previous` is refused `backend.reset`, and afterwards too,
+    /// releases excepted.
+    async fn rebind_callers(&self, previous: &str, current: &AttachmentTuple) {
+        let rebound = {
+            let mut state = self.inner.lock().await;
+            state.replaced_attachment_ids.insert(previous.to_owned());
+            let adapter_name = state.adapter_name.clone();
+            let mut rebound = Vec::new();
+            for (key, caller_state) in &mut state.callers {
+                if caller_state.retired || caller_state.attachment.attachment_id != previous {
+                    continue;
+                }
+                let next = attachment_of(
+                    current,
+                    adapter_name
+                        .clone()
+                        .unwrap_or_else(|| caller_state.attachment.adapter_name.clone()),
+                );
+                let previous_id =
+                    std::mem::replace(&mut caller_state.attachment, next.clone()).attachment_id;
+                rebound.push((key.clone(), previous_id, next));
+            }
+            rebound
+        };
+        for (key, previous_id, next) in rebound {
+            let value = object([
+                ("kind", string("backend-restarted")),
+                ("schemaVersion", number(1)),
+                ("previousAttachmentId", string(previous_id)),
+                ("attachmentId", string(next.attachment_id.clone())),
+                ("attachment", attachment_record(&next)),
+            ]);
+            if let Err(error) = self.emit(&key, None, IPC_ATTACHMENT_STREAM_ID, value).await {
+                // The caller keeps being refused on the replaced attachment
+                // until it attaches again; the failure is reported.
+                eprintln!(
+                    "tauri-plugin-unified-ble-manager: attachment rebind for {key} was not delivered: {}",
+                    error.describe()
+                );
             }
         }
-        Ok(released())
+    }
+
+    /// A reset event was missed: rebind every caller still bound to an
+    /// attachment the central no longer holds.
+    async fn rebind_to_current(&self) {
+        let Some(authority) = self.authority_if_open() else {
+            return;
+        };
+        let current = authority.attachment();
+        let stale: HashSet<String> = {
+            let state = self.inner.lock().await;
+            state
+                .callers
+                .values()
+                .filter(|caller_state| {
+                    !caller_state.retired
+                        && caller_state.attachment.attachment_id != current.attachment_id().as_str()
+                })
+                .map(|caller_state| caller_state.attachment.attachment_id.clone())
+                .collect()
+        };
+        for previous in stale {
+            self.rebind_callers(&previous, &current).await;
+        }
+    }
+
+    /// The core ended a scan without a stop request: the OS stopped it, or
+    /// an adapter loss took it (finding 57). The core already settled it
+    /// and released its owner, so the mapping goes and the stream ends —
+    /// `source-failed` with the core's own words when the scan was aborted,
+    /// `closed` otherwise (the desktop NAPI provider's vocabulary). A scan
+    /// whose release is in flight is left to that release.
+    async fn apply_scan_terminal(&self, ended: &ScanTerminalEvent) {
+        let target = {
+            let mut state = self.inner.lock().await;
+            state.callers.iter_mut().find_map(|(key, caller_state)| {
+                let owned = caller_state.scan.as_ref().is_some_and(|scan| {
+                    scan.core_operation_id == ended.operation_id && scan.phase.is_active()
+                });
+                if !owned {
+                    return None;
+                }
+                let scan = caller_state.scan.take()?;
+                if let Some(task) = scan.task {
+                    task.abort();
+                }
+                Some((
+                    key.clone(),
+                    (
+                        caller_state.lease_id.clone(),
+                        caller_state.lease_generation.clone(),
+                    ),
+                    scan.handle,
+                ))
+            })
+        };
+        let Some((key, lease, handle)) = target else {
+            return;
+        };
+        let (reason, error) = if ended.aborted {
+            (
+                "source-failed",
+                Some(
+                    DispatchError::new(
+                        BleErrorCode::ScanStartFailed,
+                        "scan",
+                        "tauri.scan.terminated",
+                    )
+                    .platform(ended.detail.clone()),
+                ),
+            )
+        } else {
+            ("closed", None)
+        };
+        // A retired or re-leased caller has nobody left to tell.
+        let _ = self
+            .terminal(&key, (&lease.0, &lease.1), &handle, reason, error.as_ref())
+            .await;
+    }
+
+    /// Scan-end reports were missed (the receiver lagged): which scan ended
+    /// is unknown, so every mapped scan is stopped through the core by its
+    /// own id and its stream ends `source-failed` with `stream.overflow` —
+    /// never left delivering from a scan that may be gone.
+    async fn fail_unobserved_scans(&self, missed: u64) {
+        let scans: Vec<(String, (String, String), String)> = {
+            let state = self.inner.lock().await;
+            state
+                .callers
+                .iter()
+                .filter_map(|(key, caller_state)| {
+                    let scan = caller_state.scan.as_ref()?;
+                    Some((
+                        key.clone(),
+                        (
+                            caller_state.lease_id.clone(),
+                            caller_state.lease_generation.clone(),
+                        ),
+                        scan.handle.clone(),
+                    ))
+                })
+                .collect()
+        };
+        for (key, lease, handle) in scans {
+            let mut error = DispatchError::new(
+                BleErrorCode::StreamOverflow,
+                "scan",
+                "tauri.scan.terminal-events",
+            )
+            .platform(format!(
+                "{missed} scan end reports were missed; the scan was stopped"
+            ));
+            if let Err(stop) = self
+                .release_scan(&key, &handle, OpControl::unbounded())
+                .await
+            {
+                error = error.platform(format!(
+                    "{missed} scan end reports were missed; stopping the scan failed: {}",
+                    stop.describe()
+                ));
+            }
+            let _ = self
+                .terminal(
+                    &key,
+                    (&lease.0, &lease.1),
+                    &handle,
+                    "source-failed",
+                    Some(&error),
+                )
+                .await;
+        }
+    }
+
+    async fn apply_lifecycle_event(&self, event: &LifecycleEvent) {
+        // An event without a generation applied to no connection this
+        // dispatcher mapped; it matches nothing.
+        let Some(generation) = event.connection_generation.as_deref() else {
+            return;
+        };
+        let transition = match event.kind {
+            LifecycleKind::LinkLost => Some(LINK_LOST),
+            LifecycleKind::Released { requested: true } => Some(LINK_RELEASED),
+            LifecycleKind::Released { requested: false } => Some(LINK_ENDED_UNREQUESTED),
+            LifecycleKind::AdapterLost => Some(LINK_ADAPTER_LOST),
+            LifecycleKind::ServicesChanged => None,
+        };
+        let mut deliveries = Vec::new();
+        {
+            let mut state = self.inner.lock().await;
+            for (caller_key, caller_state) in &mut state.callers {
+                if caller_state.retired {
+                    continue;
+                }
+                let connection_handles: HashSet<String> = caller_state
+                    .connections
+                    .iter()
+                    .filter(|(_, connection)| {
+                        connection.peer_id == event.peer_id
+                            && connection.core_generation == generation
+                    })
+                    .map(|(handle, _)| handle.clone())
+                    .collect();
+                // The database of an ended or changed link is stale either way.
+                for database in caller_state.databases.values_mut() {
+                    if connection_handles.contains(&database.connection_handle) {
+                        database.valid = false;
+                    }
+                }
+                let Some(transition) = transition else {
+                    continue;
+                };
+                let lease = (
+                    caller_state.lease_id.clone(),
+                    caller_state.lease_generation.clone(),
+                );
+                for resource in caller_state.connection_events.values_mut() {
+                    if resource.peer_id != event.peer_id
+                        || resource.core_generation != generation
+                        || resource.end != StreamEnd::Open
+                    {
+                        continue;
+                    }
+                    if resource.active {
+                        resource.end = StreamEnd::Claimed;
+                        deliveries.push((
+                            caller_key.clone(),
+                            lease.clone(),
+                            StreamEndTarget::of(resource),
+                        ));
+                    } else {
+                        resource.end = StreamEnd::Pending(transition);
+                    }
+                }
+            }
+        }
+        if let Some(transition) = transition {
+            for (caller_key, lease, target) in deliveries {
+                self.spawn_stream_end(caller_key, lease, target, Some(transition));
+            }
+        }
+    }
+
+    async fn overflow_connection_event_streams(&self) {
+        let mut deliveries = Vec::new();
+        {
+            let mut state = self.inner.lock().await;
+            for (caller_key, caller_state) in &mut state.callers {
+                if caller_state.retired {
+                    continue;
+                }
+                let lease = (
+                    caller_state.lease_id.clone(),
+                    caller_state.lease_generation.clone(),
+                );
+                for resource in caller_state.connection_events.values_mut() {
+                    if resource.end != StreamEnd::Open {
+                        continue;
+                    }
+                    if resource.active {
+                        resource.end = StreamEnd::Claimed;
+                        deliveries.push((
+                            caller_key.clone(),
+                            lease.clone(),
+                            StreamEndTarget::of(resource),
+                        ));
+                    } else {
+                        resource.end = StreamEnd::PendingOverflow;
+                    }
+                }
+            }
+        }
+        for (caller_key, lease, target) in deliveries {
+            self.spawn_stream_end(caller_key, lease, target, None);
+        }
+    }
+
+    /// Deliver one stream's end on its own task: the transition (when
+    /// there is one) then the terminal, keyed by the stream handle the
+    /// renderer minted. `None` ends the stream with `overflow`.
+    fn spawn_stream_end(
+        &self,
+        caller_key: String,
+        lease: (String, String),
+        target: StreamEndTarget,
+        transition: Option<LinkTransition>,
+    ) {
+        let dispatcher = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let identity = ConnectionEventIdentity {
+                stream_id: &target.stream_id,
+                peer_id: &target.peer_id,
+                connection_id: &target.connection_id,
+                connection_generation: &target.connection_generation,
+            };
+            // Ownership denial means release took the stream over; there is
+            // nobody left to tell.
+            let _ = match transition {
+                Some(transition) => {
+                    dispatcher
+                        .emit_connection_transition(
+                            &caller_key,
+                            (&lease.0, &lease.1),
+                            identity,
+                            transition,
+                        )
+                        .await
+                }
+                None => {
+                    dispatcher
+                        .end_connection_event_stream(
+                            &caller_key,
+                            (&lease.0, &lease.1),
+                            &target.stream_id,
+                            "overflow",
+                        )
+                        .await
+                }
+            };
+        });
     }
 
     async fn discover(
         &self,
         caller: &AuthenticatedCaller,
         payload: BTreeMap<String, IpcValue>,
+        ctl: OpControl,
     ) -> Result<IpcValue, DispatchError> {
         let connection_handle = required_string(&payload, "connectionHandle", "tauri.discover")?;
-        let peripheral = self
-            .connection(caller, &payload, "tauri.discover")
-            .await?
-            .peripheral;
-        peripheral.discover_services().await.map_err(|error| {
-            DispatchError::new("gatt.discovery-required", "gatt", "tauri.discover")
-                .platform(error.to_string())
-        })?;
+        let connection = self.connection(caller, &payload, "tauri.discover").await?;
+        // Core first: discovery runs in the core and registers the whole
+        // tree there or fails whole (finding 95); the dispatcher only
+        // renders the registered paths into the IPC wire shape.
+        let authority = self.ensure_authority().await?;
+        authority
+            .discover(&connection.peer_id, &connection.lease, ctl)
+            .await
+            .map_err(|error| DispatchError::from_core(&error))?;
+        let paths = authority
+            .discovered_paths(&connection.peer_id)
+            .await
+            .map_err(|error| DispatchError::from_core(&error))?;
         let database_handle = self.id("database");
         let database_id = self.id("database-id");
         let database_generation = self.id("database-generation");
-        let mut characteristic_map = HashMap::new();
-        let mut descriptor_map = HashMap::new();
         let mut service_records = Vec::new();
         let mut characteristic_records = Vec::new();
         let mut descriptor_records = Vec::new();
-        let mut service_occurrences: HashMap<Uuid, usize> = HashMap::new();
-        let mut characteristic_occurrences: HashMap<(Uuid, usize, Uuid), usize> = HashMap::new();
-        for service in peripheral.services() {
-            let service_occurrence = service_occurrences.entry(service.uuid).or_default();
-            let service_uuid = service.uuid.to_string();
-            let current_service_occurrence = *service_occurrence;
-            service_records.push(object([
-                ("uuid", string(service_uuid.clone())),
-                ("occurrence", string(current_service_occurrence.to_string())),
-                ("primary", IpcValue::Bool(service.primary)),
-                ("includedServices", IpcValue::Array(Vec::new())),
-            ]));
-            *service_occurrence += 1;
-            for characteristic in &service.characteristics {
-                let occurrence = characteristic_occurrences
-                    .entry((
-                        service.uuid,
-                        current_service_occurrence,
-                        characteristic.uuid,
-                    ))
-                    .or_default();
-                let handle = self.id("characteristic");
-                characteristic_records.push(object([
-                    ("handle", string(handle.clone())),
-                    ("serviceUuid", string(service_uuid.clone())),
-                    (
-                        "serviceOccurrence",
-                        string(current_service_occurrence.to_string()),
-                    ),
-                    (
-                        "characteristicUuid",
-                        string(characteristic.uuid.to_string()),
-                    ),
-                    ("characteristicOccurrence", string(occurrence.to_string())),
-                    (
-                        "properties",
-                        characteristic_properties(characteristic.properties),
-                    ),
+        let mut characteristic_map = HashMap::new();
+        let mut descriptor_map = HashMap::new();
+        let mut seen_services = HashSet::new();
+        // One IPC handle per characteristic identity, as the desktop N-API
+        // path renders it (`groupCorePaths` merges descriptor rows into
+        // their characteristic node). Descriptor-level core paths repeat
+        // their characteristic's identity, so they must not mint a second
+        // characteristic record — that fanned every characteristic with a
+        // descriptor out once per descriptor and rejected the snapshot
+        // downstream with public-gatt.duplicate-characteristic-path
+        // (finding 182: every Polar H10 CCCD bearer).
+        let mut characteristic_handles = HashMap::new();
+        for path in &paths {
+            if seen_services.insert((path.service_uuid.clone(), path.service_occurrence)) {
+                service_records.push(object([
+                    ("uuid", string(path.service_uuid.clone())),
+                    ("occurrence", string(path.service_occurrence.to_string())),
+                    // The core does not model primary/secondary services, so
+                    // the key carries the only truthful contract value the
+                    // wire allows; the gap is a documented radio-seam
+                    // follow-up (surface `primary` through the boundary).
+                    ("primary", IpcValue::Bool(true)),
+                    ("includedServices", IpcValue::Array(Vec::new())),
                 ]));
-                *occurrence += 1;
-                for (index, descriptor) in characteristic.descriptors.iter().enumerate() {
-                    let descriptor_handle = self.id("descriptor");
-                    descriptor_records.push(object([
-                        ("handle", string(descriptor_handle.clone())),
-                        ("characteristicHandle", string(handle.clone())),
-                        ("uuid", string(descriptor.uuid.to_string())),
-                        ("occurrence", string(index.to_string())),
-                    ]));
-                    descriptor_map.insert(descriptor_handle, descriptor.clone());
+            }
+        }
+        // Characteristic rows render only from characteristic-level core
+        // paths, so the record carries the characteristic's own property
+        // bits (descriptor-level rows repeat the identity with the
+        // descriptor row's bits). Two passes keep this independent of row
+        // order in the whole-tree read.
+        for path in &paths {
+            let Some(characteristic_uuid) = path.characteristic_uuid.clone() else {
+                continue;
+            };
+            if path.descriptor_uuid.is_some() {
+                continue;
+            }
+            let characteristic_occurrence = path.characteristic_occurrence.unwrap_or(0);
+            let key = (
+                path.service_uuid.clone(),
+                path.service_occurrence,
+                characteristic_uuid.clone(),
+                characteristic_occurrence,
+            );
+            if characteristic_handles.contains_key(&key) {
+                continue;
+            }
+            let characteristic_handle = self.id("characteristic");
+            let selector = CoreSelector {
+                service_uuid: path.service_uuid.clone(),
+                service_occurrence: Some(path.service_occurrence),
+                characteristic_uuid: Some(characteristic_uuid.clone()),
+                characteristic_occurrence: Some(characteristic_occurrence),
+                descriptor_uuid: None,
+                descriptor_occurrence: None,
+            };
+            characteristic_records.push(object([
+                ("handle", string(characteristic_handle.clone())),
+                ("serviceUuid", string(path.service_uuid.clone())),
+                (
+                    "serviceOccurrence",
+                    string(path.service_occurrence.to_string()),
+                ),
+                ("characteristicUuid", string(characteristic_uuid)),
+                (
+                    "characteristicOccurrence",
+                    string(characteristic_occurrence.to_string()),
+                ),
+                (
+                    "properties",
+                    core_characteristic_properties(path.properties),
+                ),
+            ]));
+            characteristic_map.insert(
+                characteristic_handle.clone(),
+                CoreCharacteristic {
+                    selector,
+                    properties: path.properties,
+                },
+            );
+            characteristic_handles.insert(key, characteristic_handle);
+        }
+        for path in &paths {
+            let Some(descriptor_uuid) = path.descriptor_uuid.clone() else {
+                continue;
+            };
+            let Some(characteristic_uuid) = path.characteristic_uuid.clone() else {
+                continue;
+            };
+            let characteristic_occurrence = path.characteristic_occurrence.unwrap_or(0);
+            let key = (
+                path.service_uuid.clone(),
+                path.service_occurrence,
+                characteristic_uuid.clone(),
+                characteristic_occurrence,
+            );
+            let Some(characteristic_handle) = characteristic_handles.get(&key).cloned() else {
+                // The whole-tree read registers a descriptor under its
+                // characteristic, so a descriptor row without one is a core
+                // invariant violation, never an empty record: fail closed.
+                return Err(DispatchError::new(
+                    BleErrorCode::ProtocolViolation,
+                    "gatt",
+                    "tauri.discover-descriptor-parent",
+                ));
+            };
+            let descriptor_occurrence = path.descriptor_occurrence.unwrap_or(0);
+            let descriptor_handle = self.id("descriptor");
+            descriptor_records.push(object([
+                ("handle", string(descriptor_handle.clone())),
+                ("characteristicHandle", string(characteristic_handle)),
+                ("uuid", string(descriptor_uuid.clone())),
+                ("occurrence", string(descriptor_occurrence.to_string())),
+            ]));
+            descriptor_map.insert(
+                descriptor_handle,
+                CoreSelector {
+                    service_uuid: path.service_uuid.clone(),
+                    service_occurrence: Some(path.service_occurrence),
+                    characteristic_uuid: Some(characteristic_uuid),
+                    characteristic_occurrence: Some(characteristic_occurrence),
+                    descriptor_uuid: Some(descriptor_uuid),
+                    descriptor_occurrence: Some(descriptor_occurrence),
+                },
+            );
+        }
+        {
+            let mut state = self.inner.lock().await;
+            let caller_state = state.callers.get_mut(&caller_key(caller)).ok_or_else(|| {
+                DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "gatt",
+                    "tauri.discover-owner",
+                )
+            })?;
+            if !expected_lease_matches(caller_state, &payload) {
+                return Err(DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "gatt",
+                    "tauri.discover-stale-lease",
+                ));
+            }
+            for database in caller_state.databases.values_mut() {
+                if database.connection_handle == connection_handle {
+                    database.valid = false;
                 }
-                characteristic_map.insert(handle, characteristic.clone());
             }
+            caller_state.databases.insert(
+                database_handle.clone(),
+                CoreDatabase {
+                    connection_handle,
+                    database_id: database_id.clone(),
+                    database_generation: database_generation.clone(),
+                    valid: true,
+                    characteristics: characteristic_map,
+                    descriptors: descriptor_map,
+                },
+            );
         }
-        let mut state = self.inner.lock().await;
-        let caller_state = state.callers.get_mut(&caller_key(caller)).ok_or_else(|| {
-            DispatchError::new("ownership.denied", "gatt", "tauri.discover-owner")
-        })?;
-        if !expected_lease_matches(caller_state, &payload) {
-            return Err(DispatchError::new(
-                "ownership.denied",
-                "gatt",
-                "tauri.discover-stale-lease",
-            ));
-        }
-        for database in caller_state.databases.values_mut() {
-            if database.connection_handle == connection_handle {
-                database.valid = false;
-            }
-        }
-        caller_state.databases.insert(
-            database_handle.clone(),
-            DatabaseResource {
-                connection_handle,
-                database_id: database_id.clone(),
-                database_generation: database_generation.clone(),
-                valid: true,
-                characteristics: characteristic_map,
-                descriptors: descriptor_map,
-            },
-        );
         Ok(object([
             ("schemaVersion", number(2)),
             ("handle", string(database_handle)),
@@ -2261,11 +2956,19 @@ impl BtleplugDispatcher {
         caller: &AuthenticatedCaller,
         payload: BTreeMap<String, IpcValue>,
     ) -> Result<IpcValue, DispatchError> {
+        // Mapping-only: discovery trees live in the core, so releasing is
+        // dropping the transport mapping — nothing native can fail, and the
+        // caller is validated before anything is removed. Unknown handle
+        // with a live caller is idempotent release.
         let handle = required_string(&payload, "databaseHandle", "tauri.database-release")?;
         let key = caller_key(caller);
         let mut state = self.inner.lock().await;
         let caller_state = state.callers.get_mut(&key).ok_or_else(|| {
-            DispatchError::new("ownership.denied", "gatt", "tauri.database-release-owner")
+            DispatchError::new(
+                BleErrorCode::OwnershipDenied,
+                "gatt",
+                "tauri.database-release-owner",
+            )
         })?;
         caller_state.databases.remove(&handle);
         Ok(released())
@@ -2275,13 +2978,18 @@ impl BtleplugDispatcher {
         &self,
         caller: &AuthenticatedCaller,
         payload: BTreeMap<String, IpcValue>,
+        ctl: OpControl,
     ) -> Result<IpcValue, DispatchError> {
-        let (peripheral, characteristic) = self.characteristic(caller, &payload).await?;
-        let value = peripheral.read(&characteristic).await.map_err(|error| {
-            DispatchError::new("gatt.read-failed", "gatt", "tauri.gatt-read")
-                .platform(error.to_string())
-        })?;
-        Ok(object([("value", IpcValue::Bytes(value))]))
+        let target = self.gatt_target(caller, &payload).await?;
+        let authority = self.ensure_authority().await?;
+        let read = authority
+            .read(&target.peer_id, &target.characteristic.selector, ctl)
+            .await
+            .map_err(|error| DispatchError::from_core(&error))?;
+        Ok(object([
+            ("value", IpcValue::Bytes(read.value)),
+            ("provenance", string(read.provenance.as_str())),
+        ]))
     }
 
     async fn write(
@@ -2289,34 +2997,39 @@ impl BtleplugDispatcher {
         caller: &AuthenticatedCaller,
         payload: BTreeMap<String, IpcValue>,
         bytes: Option<Vec<u8>>,
+        ctl: OpControl,
     ) -> Result<IpcValue, DispatchError> {
-        let bytes = bytes
-            .ok_or_else(|| DispatchError::new("bytes.invalid", "gatt", "tauri.gatt-write-bytes"))?;
+        let bytes = bytes.ok_or_else(|| {
+            DispatchError::new(BleErrorCode::BytesInvalid, "gatt", "tauri.gatt-write-bytes")
+        })?;
         let mode = required_string(&payload, "mode", "tauri.gatt-write-mode")?;
-        let write_type = match mode.as_str() {
-            "with-response" => WriteType::WithResponse,
-            "without-response" => WriteType::WithoutResponse,
-            _ => {
-                return Err(DispatchError::new(
-                    "argument.invalid",
-                    "gatt",
-                    "tauri.gatt-write-mode",
-                ))
-            }
-        };
-        let (peripheral, characteristic) = self.characteristic(caller, &payload).await?;
-        peripheral
-            .write(&characteristic, &bytes, write_type)
+        if mode != "with-response" && mode != "without-response" {
+            return Err(DispatchError::new(
+                BleErrorCode::ArgumentInvalid,
+                "gatt",
+                "tauri.gatt-write-mode",
+            ));
+        }
+        let target = self.gatt_target(caller, &payload).await?;
+        // Core first: MTU, properties, and the deadline are all core-owned.
+        let authority = self.ensure_authority().await?;
+        authority
+            .write(
+                &target.peer_id,
+                &target.characteristic.selector,
+                bytes.clone(),
+                &mode,
+                ctl,
+            )
             .await
-            .map_err(|error| {
-                DispatchError::new("gatt.write-failed", "gatt", "tauri.gatt-write")
-                    .platform(error.to_string())
-            })?;
+            .map_err(|error| DispatchError::from_core(&error))?;
         let write_correlation = self.id("write-operation");
+        // The contract `WriteReceipt` allows only `confirmed`/`unknown`: an
+        // unconfirmed write reports `unknown` on every host (findings F1/F2).
         let commit_state = if mode == "with-response" {
             "confirmed"
         } else {
-            "accepted"
+            "unknown"
         };
         Ok(object([
             (
@@ -2333,287 +3046,390 @@ impl BtleplugDispatcher {
         ]))
     }
 
+    /// Subscribe one consumer through the core.
+    ///
+    /// Delivery mode (FIX-PLAN decision 3, the 4.x contract): preferences
+    /// ride through without a requirement; a hard requirement is refused
+    /// with `gatt.property-not-supported` only when the characteristic lacks
+    /// that property, and is otherwise carried to the core, which has the
+    /// radio write that CCCD mode or refuse it before any effect. The
+    /// response reports the delivery the radio observed.
     async fn subscribe(
         &self,
         caller: &AuthenticatedCaller,
         payload: BTreeMap<String, IpcValue>,
+        ctl: OpControl,
     ) -> Result<IpcValue, DispatchError> {
-        let database_handle =
-            required_string(&payload, "databaseHandle", "tauri.subscribe-database")?;
-        let (peripheral, characteristic) = self.characteristic(caller, &payload).await?;
-        if let Some(delivery_mode) = payload.get("deliveryMode").and_then(as_string) {
-            match delivery_mode {
-                "require-notification"
-                    if !characteristic.properties.contains(CharPropFlags::NOTIFY) =>
-                {
-                    return Err(DispatchError::new(
-                        "gatt.property-not-supported",
-                        "gatt",
-                        "tauri.subscribe.notification",
-                    ));
-                }
-                "require-indication" => {
-                    return Err(DispatchError::new(
-                        "capability.limited",
-                        "gatt",
-                        "tauri.subscribe.indication-selection",
-                    ));
-                }
-                "prefer-notification" | "prefer-indication" | "require-notification" => {}
+        let requirement = match payload.get("deliveryMode") {
+            None | Some(IpcValue::Null) => None,
+            Some(value) => match as_string(value) {
+                Some("prefer-notification" | "prefer-indication") => None,
+                Some("require-notification") => Some(DeliveryMode::Notification),
+                Some("require-indication") => Some(DeliveryMode::Indication),
                 _ => {
                     return Err(DispatchError::new(
-                        "argument.invalid",
+                        BleErrorCode::ArgumentInvalid,
                         "gatt",
                         "tauri.subscribe.delivery-mode",
                     ));
                 }
-            }
-        }
-        let mut notifications = peripheral.notifications().await.map_err(|error| {
-            DispatchError::new("gatt.subscribe-failed", "gatt", "tauri.notifications")
-                .platform(error.to_string())
-        })?;
-        peripheral
-            .subscribe(&characteristic)
-            .await
-            .map_err(|error| {
-                DispatchError::new("gatt.subscribe-failed", "gatt", "tauri.subscribe")
-                    .platform(error.to_string())
-            })?;
-        let handle = self.id("subscription");
-        let stream_handle = handle.clone();
-        let key = caller_key(caller);
-        let expected_lease_id =
-            required_string(&payload, "__expectedLeaseId", "tauri.subscribe-lease")?;
-        let expected_lease_generation = required_string(
-            &payload,
-            "__expectedLeaseGeneration",
-            "tauri.subscribe-lease",
-        )?;
-        let subscription_lease_id = expected_lease_id.clone();
-        let subscription_lease_generation = expected_lease_generation.clone();
-        let uuid = characteristic.uuid;
-        let dispatcher = self.clone();
-        let task = tauri::async_runtime::spawn(async move {
-            let mut sequence = 0_u64;
-            while let Some(notification) = notifications.next().await {
-                if notification.uuid != uuid {
-                    continue;
-                }
-                sequence = sequence.saturating_add(1);
-                let observed_at_monotonic_ms =
-                    i64::try_from(dispatcher.started_at.elapsed().as_millis()).unwrap_or(i64::MAX);
-                if dispatcher
-                    .emit(
-                        &key,
-                        Some((&subscription_lease_id, &subscription_lease_generation)),
-                        &stream_handle,
-                        object([
-                            ("value", IpcValue::Bytes(notification.value)),
-                            ("delivery", string("unknown")),
-                            ("observedAtMonotonicMs", number(observed_at_monotonic_ms)),
-                            ("sequence", number(sequence as i64)),
-                        ]),
-                        false,
-                    )
-                    .await
-                    .is_err()
-                {
-                    dispatcher
-                        .terminal(
-                            &key,
-                            (&subscription_lease_id, &subscription_lease_generation),
-                            &stream_handle,
-                            "source-failed",
-                            None,
-                        )
-                        .await
-                        .ok();
-                    dispatcher
-                        .fail_subscription_stream(
-                            &key,
-                            (&subscription_lease_id, &subscription_lease_generation),
-                            &stream_handle,
-                        )
-                        .await;
-                    return;
-                }
-            }
-            dispatcher
-                .terminal(
-                    &key,
-                    (&subscription_lease_id, &subscription_lease_generation),
-                    &stream_handle,
-                    "source-failed",
-                    None,
-                )
-                .await
-                .ok();
-            dispatcher
-                .fail_subscription_stream(
-                    &key,
-                    (&subscription_lease_id, &subscription_lease_generation),
-                    &stream_handle,
-                )
-                .await;
-        });
-        let mut state = self.inner.lock().await;
-        let Some(caller_state) = state.callers.get_mut(&caller_key(caller)) else {
-            task.abort();
-            retain_orphan_subscription(
-                &mut state,
-                OrphanSubscriptionOwner {
-                    caller_key: caller_key(caller),
-                    lease_id: expected_lease_id.clone(),
-                    lease_generation: expected_lease_generation.clone(),
-                    stream_id: handle.clone(),
-                    attempts: 0,
-                },
-                Some(SubscriptionResource {
-                    database_handle: database_handle.clone(),
-                    body: SubscriptionBody::Native {
-                        peripheral: peripheral.clone(),
-                        characteristic: characteristic.clone(),
-                    },
-                    task,
-                }),
-            );
-            drop(state);
-            let residue = self
-                .compensate_unowned_subscription(
-                    &peripheral,
-                    &characteristic,
-                    &handle,
-                    &expected_lease_generation,
-                )
-                .await;
-            return Err(subscription_compensation_failure(
-                "tauri.subscribe-owner",
-                residue,
-            ));
-        };
-        if !expected_lease_matches(caller_state, &payload) {
-            let _ = caller_state;
-            task.abort();
-            retain_orphan_subscription(
-                &mut state,
-                OrphanSubscriptionOwner {
-                    caller_key: caller_key(caller),
-                    lease_id: expected_lease_id.clone(),
-                    lease_generation: expected_lease_generation.clone(),
-                    stream_id: handle.clone(),
-                    attempts: 0,
-                },
-                Some(SubscriptionResource {
-                    database_handle: database_handle.clone(),
-                    body: SubscriptionBody::Native {
-                        peripheral: peripheral.clone(),
-                        characteristic: characteristic.clone(),
-                    },
-                    task,
-                }),
-            );
-            drop(state);
-            let residue = self
-                .compensate_unowned_subscription(
-                    &peripheral,
-                    &characteristic,
-                    &handle,
-                    &expected_lease_generation,
-                )
-                .await;
-            return Err(subscription_compensation_failure(
-                "tauri.subscribe-stale-lease",
-                residue,
-            ));
-        }
-        caller_state.subscriptions.insert(
-            handle.clone(),
-            SubscriptionResource {
-                database_handle,
-                body: SubscriptionBody::Native {
-                    peripheral,
-                    characteristic,
-                },
-                task,
             },
-        );
-        Ok(object([("handle", string(handle))]))
+        };
+        let target = self.gatt_target(caller, &payload).await?;
+        if let Some(required) = requirement {
+            let (property, operation) = match required {
+                DeliveryMode::Notification => (
+                    ubm_core::central::GATT_PROP_NOTIFY,
+                    "tauri.subscribe.notification",
+                ),
+                DeliveryMode::Indication => (
+                    ubm_core::central::GATT_PROP_INDICATE,
+                    "tauri.subscribe.indication",
+                ),
+            };
+            if target.characteristic.properties & property == 0 {
+                return Err(DispatchError::new(
+                    BleErrorCode::GattPropertyNotSupported,
+                    "gatt",
+                    operation,
+                ));
+            }
+        }
+        let key = caller_key(caller);
+        let lease = expected_lease(&payload, "tauri.subscribe-lease")?;
+        // Core first: enablement is core-arbitrated (concurrent subscribers
+        // share one physical enable); the consumer below addresses it.
+        let authority = self.ensure_authority().await?;
+        // The core consumer is internal: it takes no number from the 4.x counter.
+        let consumer = self.internal_id("consumer");
+        let selector = target.characteristic.selector.clone();
+        let delivery = authority
+            .subscribe(&target.peer_id, &selector, &consumer, requirement, ctl)
+            .await
+            .map_err(|error| DispatchError::from_core(&error))?;
+        let handle = self.id("subscription");
+        // Publication is one decision under the dispatcher lock, and the
+        // pump spawns only once its entry exists (PR210-07). An enablement
+        // nobody can own is released by its exact consumer (PR210-08).
+        let refusal = {
+            let mut state = self.inner.lock().await;
+            match state.callers.get_mut(&key) {
+                None => Some(DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "gatt",
+                    "tauri.subscribe-owner",
+                )),
+                Some(caller_state) if caller_state.retired => Some(DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "gatt",
+                    "tauri.subscribe-owner",
+                )),
+                Some(caller_state) if !lease_matches(caller_state, &lease) => {
+                    Some(DispatchError::new(
+                        BleErrorCode::OwnershipDenied,
+                        "gatt",
+                        "tauri.subscribe-stale-lease",
+                    ))
+                }
+                Some(caller_state)
+                    if !caller_state
+                        .connections
+                        .get(&target.connection_handle)
+                        .is_some_and(|connection| connection.phase.is_active()) =>
+                {
+                    Some(DispatchError::new(
+                        BleErrorCode::ConnectionStale,
+                        "connection",
+                        "tauri.subscribe-connection",
+                    ))
+                }
+                Some(caller_state) => {
+                    caller_state.subscriptions.insert(
+                        handle.clone(),
+                        CoreSubscription {
+                            connection_handle: target.connection_handle.clone(),
+                            peer_id: target.peer_id.clone(),
+                            selector: selector.clone(),
+                            consumer: consumer.clone(),
+                            delivery,
+                            task: None,
+                            phase: ReleasePhase::Active,
+                        },
+                    );
+                    let task = self.spawn_notification_forwarder(
+                        Arc::clone(&authority),
+                        key.clone(),
+                        handle.clone(),
+                        lease.clone(),
+                    );
+                    if let Some(subscription) = caller_state.subscriptions.get_mut(&handle) {
+                        subscription.task = Some(task);
+                    }
+                    None
+                }
+            }
+        };
+        if let Some(refusal) = refusal {
+            self.compensate(
+                &authority,
+                &key,
+                OrphanResource::Subscription {
+                    peer_id: target.peer_id,
+                    selector,
+                    consumer,
+                },
+            )
+            .await;
+            return Err(refusal);
+        }
+        Ok(object([
+            ("handle", string(handle)),
+            ("delivery", string(delivery.as_str())),
+        ]))
+    }
+
+    /// Verbatim notification delivery: the pump polls the core with a
+    /// typed outcome and emits values unchanged, each carrying the
+    /// delivery the radio reported for the enablement. The stream ends
+    /// with the core's own reason — `service-changed`, `connection-lost`,
+    /// `overflow`, or `source-failed` when the core closed a stream that is
+    /// still mapped. Sequence numbers are transport-side delivery ordinals,
+    /// not radio facts. It delivers only while the subscription and its
+    /// connection are `Active`.
+    fn spawn_notification_forwarder(
+        &self,
+        authority: Arc<dyn CoreAuthority>,
+        key: String,
+        handle: String,
+        lease: (String, String),
+    ) -> TauriJoinHandle<()> {
+        let dispatcher = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut sequence = 0_u64;
+            loop {
+                let target = match dispatcher
+                    .subscription_delivery(&key, &handle, &lease)
+                    .await
+                {
+                    (Delivery::Gone, _) => return,
+                    (Delivery::Paused, _) | (Delivery::Active, None) => {
+                        tokio::time::sleep(FORWARD_POLL_INTERVAL).await;
+                        continue;
+                    }
+                    (Delivery::Active, Some(target)) => target,
+                };
+                let (peer_id, selector, consumer, delivery) = target;
+                let ending = match authority
+                    .poll_notification(&peer_id, &selector, &consumer)
+                    .await
+                {
+                    Ok(NotificationPoll::Value(value)) => {
+                        sequence = sequence.saturating_add(1);
+                        let observed_at_monotonic_ms =
+                            i64::try_from(dispatcher.started_at.elapsed().as_millis())
+                                .unwrap_or(i64::MAX);
+                        match dispatcher
+                            .emit(
+                                &key,
+                                Some((&lease.0, &lease.1)),
+                                &handle,
+                                object([
+                                    ("value", IpcValue::Bytes(value)),
+                                    ("delivery", string(delivery.as_str())),
+                                    ("observedAtMonotonicMs", number(observed_at_monotonic_ms)),
+                                    ("sequence", number(sequence as i64)),
+                                ]),
+                            )
+                            .await
+                        {
+                            Ok(()) => continue,
+                            Err(error) => ("source-failed", Some(error)),
+                        }
+                    }
+                    Ok(NotificationPoll::Empty) => {
+                        tokio::time::sleep(FORWARD_POLL_INTERVAL).await;
+                        continue;
+                    }
+                    Ok(NotificationPoll::Terminal(_)) => ("overflow", None),
+                    Ok(NotificationPoll::Invalidated(InvalidationCause::ServicesChanged)) => {
+                        ("service-changed", None)
+                    }
+                    Ok(NotificationPoll::Invalidated(InvalidationCause::LinkEnded)) => {
+                        ("connection-lost", None)
+                    }
+                    // The adapter was lost under the stream (finding 57):
+                    // the source failed, with the core's answer for live
+                    // work a reset ended.
+                    Ok(NotificationPoll::Invalidated(InvalidationCause::AdapterReset)) => (
+                        "source-failed",
+                        Some(
+                            DispatchError::new(
+                                BleErrorCode::OperationReset,
+                                "adapter",
+                                "tauri.notifications",
+                            )
+                            .platform("the adapter was lost under the subscription"),
+                        ),
+                    ),
+                    Ok(NotificationPoll::Closed) => (
+                        "source-failed",
+                        Some(DispatchError::new(
+                            BleErrorCode::StreamClosed,
+                            "stream",
+                            "tauri.notifications",
+                        )),
+                    ),
+                    // Core-side failure ends delivery with the verbatim core
+                    // verdict (never a guessed stream error, never silent).
+                    Err(error) => ("source-failed", Some(DispatchError::from_core(&error))),
+                };
+                let (reason, error) = ending;
+                dispatcher
+                    .terminal(&key, (&lease.0, &lease.1), &handle, reason, error.as_ref())
+                    .await
+                    .ok();
+                return;
+            }
+        })
+    }
+
+    async fn subscription_delivery(
+        &self,
+        key: &str,
+        handle: &str,
+        lease: &(String, String),
+    ) -> (
+        Delivery,
+        Option<(String, CoreSelector, String, ObservedDelivery)>,
+    ) {
+        let state = self.inner.lock().await;
+        let Some(caller_state) = state
+            .callers
+            .get(key)
+            .filter(|caller| !caller.retired && lease_matches(caller, lease))
+        else {
+            return (Delivery::Gone, None);
+        };
+        let Some(subscription) = caller_state.subscriptions.get(handle) else {
+            return (Delivery::Gone, None);
+        };
+        let connection_active = caller_state
+            .connections
+            .get(&subscription.connection_handle)
+            .is_some_and(|connection| connection.phase.is_active());
+        if !subscription.phase.is_active() || !connection_active {
+            return (Delivery::Paused, None);
+        }
+        (
+            Delivery::Active,
+            Some((
+                subscription.peer_id.clone(),
+                subscription.selector.clone(),
+                subscription.consumer.clone(),
+                subscription.delivery,
+            )),
+        )
     }
 
     async fn unsubscribe(
         &self,
         caller: &AuthenticatedCaller,
         payload: BTreeMap<String, IpcValue>,
+        ctl: OpControl,
     ) -> Result<IpcValue, DispatchError> {
         let handle = required_string(&payload, "subscriptionHandle", "tauri.unsubscribe")?;
         let key = caller_key(caller);
-        let expected_lease_id =
-            required_string(&payload, "__expectedLeaseId", "tauri.unsubscribe-lease")?;
-        let expected_lease_generation = required_string(
-            &payload,
-            "__expectedLeaseGeneration",
-            "tauri.unsubscribe-lease",
-        )?;
-        let subscription = {
+        {
             let state = self.inner.lock().await;
-            let caller_state = state.callers.get(&key).ok_or_else(|| {
-                DispatchError::new("ownership.denied", "gatt", "tauri.unsubscribe-owner")
-            })?;
-            if caller_state.lease_id != expected_lease_id
-                || caller_state.lease_generation != expected_lease_generation
-            {
+            if !state.callers.contains_key(&key) {
                 return Err(DispatchError::new(
-                    "ownership.denied",
+                    BleErrorCode::OwnershipDenied,
                     "gatt",
-                    "tauri.unsubscribe-stale-lease",
+                    "tauri.unsubscribe-owner",
                 ));
             }
-            caller_state
-                .subscriptions
-                .get(&handle)
-                .and_then(|subscription| {
-                    subscription.native().map(|(peripheral, characteristic)| {
-                        (peripheral.clone(), characteristic.clone())
-                    })
-                })
-        };
-        if let Some(subscription) = subscription {
-            subscription
-                .0
-                .unsubscribe(&subscription.1)
-                .await
-                .map_err(|error| {
-                    DispatchError::new("gatt.subscribe-failed", "gatt", "tauri.unsubscribe")
-                        .platform(error.to_string())
-                })?;
-            let mut state = self.inner.lock().await;
-            if let Some(caller_state) = state.callers.get_mut(&key) {
-                if caller_state.lease_id == expected_lease_id
-                    && caller_state.lease_generation == expected_lease_generation
-                {
-                    if let Some(subscription) = caller_state.subscriptions.remove(&handle) {
-                        subscription.task.abort();
-                    }
-                }
-            }
         }
+        self.release_subscription(&key, &handle, ctl).await?;
         Ok(released())
+    }
+
+    /// Remove one mapped consumer through the core (PR210-09). Delivery
+    /// pauses while the release runs; the mapping is removed only when the
+    /// core confirms it or answers that the consumer is already gone, so a
+    /// failed disable keeps the exact consumer a retry needs. An unknown
+    /// handle is already released.
+    async fn release_subscription(
+        &self,
+        key: &str,
+        handle: &str,
+        ctl: OpControl,
+    ) -> Result<(), DispatchError> {
+        let step = {
+            let mut state = self.inner.lock().await;
+            let Some(subscription) = state
+                .callers
+                .get_mut(key)
+                .and_then(|caller_state| caller_state.subscriptions.get_mut(handle))
+            else {
+                return Ok(());
+            };
+            (
+                begin_release(&mut subscription.phase),
+                subscription.peer_id.clone(),
+                subscription.selector.clone(),
+                subscription.consumer.clone(),
+            )
+        };
+        let (sender, peer_id, selector, consumer) = match step {
+            (ReleaseStep::Join(receiver), ..) => return join_release(receiver).await,
+            (ReleaseStep::Lead(sender), peer_id, selector, consumer) => {
+                (sender, peer_id, selector, consumer)
+            }
+        };
+        let result = match self.ensure_authority().await {
+            Ok(authority) => {
+                release_consumer(&authority, &peer_id, &selector, &consumer, ctl).await
+            }
+            Err(error) => Err(error),
+        };
+        let finished = {
+            let mut state = self.inner.lock().await;
+            state
+                .callers
+                .get_mut(key)
+                .and_then(|caller_state| {
+                    if result.is_ok() {
+                        caller_state.subscriptions.remove(handle)
+                    } else {
+                        if let Some(subscription) = caller_state.subscriptions.get_mut(handle) {
+                            subscription.phase = ReleasePhase::ReleaseFailed;
+                        }
+                        None
+                    }
+                })
+                .and_then(|subscription| subscription.task)
+        };
+        if let Some(task) = finished {
+            task.abort();
+        }
+        let _ = sender.send(Some(result.clone()));
+        result
     }
 
     async fn read_descriptor(
         &self,
         caller: &AuthenticatedCaller,
         payload: BTreeMap<String, IpcValue>,
+        ctl: OpControl,
     ) -> Result<IpcValue, DispatchError> {
-        let (peripheral, descriptor) = self.descriptor(caller, &payload).await?;
-        let value = peripheral
-            .read_descriptor(&descriptor)
+        let (peer_id, selector) = self
+            .descriptor_target(caller, &payload, "tauri.descriptor-read")
+            .await?;
+        let authority = self.ensure_authority().await?;
+        let value = authority
+            .read_descriptor(&peer_id, &selector, ctl)
             .await
-            .map_err(|error| {
-                DispatchError::new("gatt.read-failed", "gatt", "tauri.descriptor-read")
-                    .platform(error.to_string())
-            })?;
+            .map_err(|error| DispatchError::from_core(&error))?;
         Ok(object([("value", IpcValue::Bytes(value))]))
     }
 
@@ -2622,26 +3438,31 @@ impl BtleplugDispatcher {
         caller: &AuthenticatedCaller,
         payload: BTreeMap<String, IpcValue>,
         bytes: Option<Vec<u8>>,
+        ctl: OpControl,
     ) -> Result<IpcValue, DispatchError> {
         let mode = required_string(&payload, "mode", "tauri.descriptor-write-mode")?;
         if mode != "with-response" {
             return Err(DispatchError::new(
-                "argument.invalid",
+                BleErrorCode::ArgumentInvalid,
                 "gatt",
                 "tauri.descriptor-write-mode",
             ));
         }
         let bytes = bytes.ok_or_else(|| {
-            DispatchError::new("bytes.invalid", "gatt", "tauri.descriptor-write-bytes")
+            DispatchError::new(
+                BleErrorCode::BytesInvalid,
+                "gatt",
+                "tauri.descriptor-write-bytes",
+            )
         })?;
-        let (peripheral, descriptor) = self.descriptor(caller, &payload).await?;
-        peripheral
-            .write_descriptor(&descriptor, &bytes)
+        let (peer_id, selector) = self
+            .descriptor_target(caller, &payload, "tauri.descriptor-write")
+            .await?;
+        let authority = self.ensure_authority().await?;
+        authority
+            .write_descriptor(&peer_id, &selector, bytes.clone(), ctl)
             .await
-            .map_err(|error| {
-                DispatchError::new("gatt.write-failed", "gatt", "tauri.descriptor-write")
-                    .platform(error.to_string())
-            })?;
+            .map_err(|error| DispatchError::from_core(&error))?;
         Ok(object([
             (
                 "terminal",
@@ -2657,53 +3478,88 @@ impl BtleplugDispatcher {
         ]))
     }
 
+    /// Connected RSSI through the core, for the lease holding the link: the
+    /// OS measurement, never a cached advertisement value. A radio that
+    /// cannot measure it answers `capability.unsupported` verbatim.
     async fn read_rssi(
         &self,
         caller: &AuthenticatedCaller,
         payload: BTreeMap<String, IpcValue>,
+        ctl: OpControl,
     ) -> Result<IpcValue, DispatchError> {
-        let peripheral = self
-            .connection(caller, &payload, "tauri.rssi")
-            .await?
-            .peripheral;
-        let rssi = peripheral.read_rssi().await.map_err(|error| {
-            DispatchError::new("platform.failure", "connection", "tauri.rssi")
-                .platform(error.to_string())
-        })?;
+        let connection = self.connection(caller, &payload, "tauri.rssi").await?;
+        let authority = self.ensure_authority().await?;
+        let rssi = authority
+            .read_rssi(&connection.peer_id, &connection.lease, ctl)
+            .await
+            .map_err(|error| DispatchError::from_core(&error))?;
         Ok(object([("rssi", number(i64::from(rssi)))]))
     }
 
+    /// Effective ATT MTU of the link held under the caller's lease, as the
+    /// OS reports it (finding 217 follow-up): macOS derives
+    /// `maximumWriteValueLength(.withResponse) + 3`, Windows reads
+    /// `GattSession.MaxPduSize`, Linux reads the BlueZ characteristic MTU.
+    /// A withheld measurement answers `capability.unsupported` verbatim,
+    /// never a guessed 23.
+    async fn read_effective_mtu(
+        &self,
+        caller: &AuthenticatedCaller,
+        payload: BTreeMap<String, IpcValue>,
+        ctl: OpControl,
+    ) -> Result<IpcValue, DispatchError> {
+        let connection = self
+            .connection(caller, &payload, "tauri.effective-mtu")
+            .await?;
+        let authority = self.ensure_authority().await?;
+        let mtu = authority
+            .read_effective_mtu(&connection.peer_id, &connection.lease, ctl)
+            .await
+            .map_err(|error| DispatchError::from_core(&error))?;
+        Ok(object([("mtu", number(i64::from(mtu)))]))
+    }
+
+    /// The largest single write the OS accepts on this link for the
+    /// requested mode, answered by the core (finding 90): the same limit a
+    /// write of that mode is admitted against, so the reported maximum is
+    /// never refused. With an OS long write (Windows, Linux) a
+    /// with-response write reaches 512 bytes; without response it stays one
+    /// ATT payload. An unmeasured limit fails loudly, never guessed.
     async fn maximum_write_length(
         &self,
         caller: &AuthenticatedCaller,
         payload: BTreeMap<String, IpcValue>,
+        ctl: OpControl,
     ) -> Result<IpcValue, DispatchError> {
-        let peripheral = self
+        let with_response =
+            match required_string(&payload, "mode", "tauri.maximum-write-length")?.as_str() {
+                "with-response" => true,
+                "without-response" => false,
+                _ => {
+                    return Err(DispatchError::new(
+                        BleErrorCode::ArgumentInvalid,
+                        "gatt",
+                        "tauri.maximum-write-length-mode",
+                    ))
+                }
+            };
+        let connection = self
             .connection(caller, &payload, "tauri.maximum-write-length")
-            .await?
-            .peripheral;
-        let bytes = peripheral.mtu().saturating_sub(3);
-        Ok(object([("bytes", number(i64::from(bytes)))]))
-    }
-
-    async fn adapter(&self) -> Result<Adapter, DispatchError> {
-        self.inner
-            .lock()
+            .await?;
+        let authority = self.ensure_authority().await?;
+        let bytes = authority
+            .connection_maximum_write_length(
+                &connection.peer_id,
+                &connection.lease,
+                with_response,
+                ctl,
+            )
             .await
-            .adapter
-            .clone()
-            .ok_or_else(|| DispatchError::new("adapter.unavailable", "adapter", "tauri.adapter"))
-    }
-
-    async fn clear_peer_owner(&self, peer_id: &str, owner: &str) {
-        let mut state = self.inner.lock().await;
-        if state
-            .peer_owners
-            .get(peer_id)
-            .is_some_and(|value| value == owner)
-        {
-            state.peer_owners.remove(peer_id);
-        }
+            .map_err(|error| DispatchError::from_core(&error))?;
+        Ok(object([(
+            "bytes",
+            number(i64::try_from(bytes).unwrap_or(i64::MAX)),
+        )]))
     }
 
     async fn connection(
@@ -2711,26 +3567,29 @@ impl BtleplugDispatcher {
         caller: &AuthenticatedCaller,
         payload: &BTreeMap<String, IpcValue>,
         operation: &str,
-    ) -> Result<ConnectionResource, DispatchError> {
+    ) -> Result<CoreConnection, DispatchError> {
         let handle = required_string(payload, "connectionHandle", operation)?;
         let state = self.inner.lock().await;
-        let caller_state = state
-            .callers
-            .get(&caller_key(caller))
-            .ok_or_else(|| DispatchError::new("ownership.denied", "connection", operation))?;
-        let connection = caller_state
-            .connections
-            .get(&handle)
-            .ok_or_else(|| DispatchError::new("connection.not-found", "connection", operation))?;
+        let caller_state = state.callers.get(&caller_key(caller)).ok_or_else(|| {
+            DispatchError::new(BleErrorCode::OwnershipDenied, "connection", operation)
+        })?;
+        let connection = caller_state.connections.get(&handle).ok_or_else(|| {
+            DispatchError::new(BleErrorCode::ConnectionNotFound, "connection", operation)
+        })?;
         validate_connection_identity(payload, connection, &caller_state.lease_id, operation)?;
         Ok(connection.clone())
     }
 
-    async fn characteristic(
+    /// Resolve `(databaseHandle, characteristicHandle)` to the exact
+    /// `(peer_id, selector)` the core addresses plus the characteristic's
+    /// registered properties, after full identity admission (database
+    /// identity, database validity, connection presence, connection
+    /// identity). Every failure pins its own per-path identity.
+    async fn gatt_target(
         &self,
         caller: &AuthenticatedCaller,
         payload: &BTreeMap<String, IpcValue>,
-    ) -> Result<(Peripheral, Characteristic), DispatchError> {
+    ) -> Result<GattTarget, DispatchError> {
         let database_handle =
             required_string(payload, "databaseHandle", "tauri.characteristic-database")?;
         let characteristic_handle = required_string(
@@ -2740,17 +3599,25 @@ impl BtleplugDispatcher {
         )?;
         let state = self.inner.lock().await;
         let caller_state = state.callers.get(&caller_key(caller)).ok_or_else(|| {
-            DispatchError::new("ownership.denied", "gatt", "tauri.characteristic-owner")
+            DispatchError::new(
+                BleErrorCode::OwnershipDenied,
+                "gatt",
+                "tauri.characteristic-owner",
+            )
         })?;
         let database = caller_state
             .databases
             .get(&database_handle)
             .ok_or_else(|| {
-                DispatchError::new("gatt.stale-handle", "gatt", "tauri.characteristic-database")
+                DispatchError::new(
+                    BleErrorCode::GattStaleHandle,
+                    "gatt",
+                    "tauri.characteristic-database",
+                )
             })?;
         if !database.valid {
             return Err(DispatchError::new(
-                "gatt.stale-handle",
+                BleErrorCode::GattStaleHandle,
                 "gatt",
                 "tauri.characteristic-database-generation",
             ));
@@ -2761,14 +3628,18 @@ impl BtleplugDispatcher {
             .get(&characteristic_handle)
             .cloned()
             .ok_or_else(|| {
-                DispatchError::new("gatt.not-found", "gatt", "tauri.characteristic-handle")
+                DispatchError::new(
+                    BleErrorCode::GattNotFound,
+                    "gatt",
+                    "tauri.characteristic-handle",
+                )
             })?;
         let connection = caller_state
             .connections
             .get(&database.connection_handle)
             .ok_or_else(|| {
                 DispatchError::new(
-                    "connection.stale",
+                    BleErrorCode::ConnectionStale,
                     "connection",
                     "tauri.characteristic-connection",
                 )
@@ -2779,49 +3650,68 @@ impl BtleplugDispatcher {
             &caller_state.lease_id,
             "tauri.characteristic-connection",
         )?;
-        Ok((connection.peripheral.clone(), characteristic))
+        Ok(GattTarget {
+            peer_id: connection.peer_id.clone(),
+            characteristic,
+            connection_handle: database.connection_handle.clone(),
+        })
     }
 
-    async fn descriptor(
+    async fn descriptor_target(
         &self,
         caller: &AuthenticatedCaller,
         payload: &BTreeMap<String, IpcValue>,
-    ) -> Result<(Peripheral, Descriptor), DispatchError> {
+        // Reserved: every failure below pins its own per-path identity, so
+        // the caller's operation name never renames a wire error.
+        _operation: &str,
+    ) -> Result<(String, CoreSelector), DispatchError> {
         let database_handle =
             required_string(payload, "databaseHandle", "tauri.descriptor-database")?;
         let descriptor_handle =
             required_string(payload, "descriptorHandle", "tauri.descriptor-handle")?;
         let state = self.inner.lock().await;
         let caller_state = state.callers.get(&caller_key(caller)).ok_or_else(|| {
-            DispatchError::new("ownership.denied", "gatt", "tauri.descriptor-owner")
+            DispatchError::new(
+                BleErrorCode::OwnershipDenied,
+                "gatt",
+                "tauri.descriptor-owner",
+            )
         })?;
         let database = caller_state
             .databases
             .get(&database_handle)
             .ok_or_else(|| {
-                DispatchError::new("gatt.stale-handle", "gatt", "tauri.descriptor-database")
+                DispatchError::new(
+                    BleErrorCode::GattStaleHandle,
+                    "gatt",
+                    "tauri.descriptor-database",
+                )
             })?;
         if !database.valid {
             return Err(DispatchError::new(
-                "gatt.stale-handle",
+                BleErrorCode::GattStaleHandle,
                 "gatt",
                 "tauri.descriptor-database-generation",
             ));
         }
         validate_database_identity(payload, database, "tauri.descriptor-database")?;
-        let descriptor = database
+        let selector = database
             .descriptors
             .get(&descriptor_handle)
             .cloned()
             .ok_or_else(|| {
-                DispatchError::new("gatt.not-found", "gatt", "tauri.descriptor-handle")
+                DispatchError::new(
+                    BleErrorCode::GattNotFound,
+                    "gatt",
+                    "tauri.descriptor-handle",
+                )
             })?;
         let connection = caller_state
             .connections
             .get(&database.connection_handle)
             .ok_or_else(|| {
                 DispatchError::new(
-                    "connection.stale",
+                    BleErrorCode::ConnectionStale,
                     "connection",
                     "tauri.descriptor-connection",
                 )
@@ -2832,7 +3722,7 @@ impl BtleplugDispatcher {
             &caller_state.lease_id,
             "tauri.descriptor-connection",
         )?;
-        Ok((connection.peripheral.clone(), descriptor))
+        Ok((connection.peer_id.clone(), selector))
     }
 
     async fn acknowledge(
@@ -2844,12 +3734,16 @@ impl BtleplugDispatcher {
         let lease = required_lease(&request, "tauri.event-ack-lease")?;
         let mut state = self.inner.lock().await;
         let caller_state = state.callers.get_mut(&caller_key(&caller)).ok_or_else(|| {
-            DispatchError::new("ownership.denied", "ipc", "tauri.event-ack-owner")
+            DispatchError::new(
+                BleErrorCode::OwnershipDenied,
+                "ipc",
+                "tauri.event-ack-owner",
+            )
         })?;
         validate_lease(caller_state, &lease, "tauri.event-ack-lease")?;
         if !caller_state.pending_events.remove(&event_id) {
             return Err(DispatchError::new(
-                "protocol.violation",
+                BleErrorCode::ProtocolViolation,
                 "ipc",
                 "tauri.event-ack-id",
             ));
@@ -2868,34 +3762,12 @@ impl BtleplugDispatcher {
         {
             let state = self.inner.lock().await;
             let caller_state = state.callers.get(&key).ok_or_else(|| {
-                DispatchError::new("ownership.denied", "ipc", "tauri.release-owner")
+                DispatchError::new(BleErrorCode::OwnershipDenied, "ipc", "tauri.release-owner")
             })?;
             validate_lease(caller_state, &lease, "tauri.release-lease")?;
         }
         let cleanup = self.release(&key).await;
         Ok(object([("kind", string("release")), ("cleanup", cleanup)]))
-    }
-
-    async fn abort_scan_admission(&self, key: &str, expected_lease: (&str, &str)) {
-        let mut state = self.inner.lock().await;
-        if let Some(caller_state) = state.callers.get_mut(key) {
-            if caller_state.lease_id != expected_lease.0
-                || caller_state.lease_generation != expected_lease.1
-            {
-                return;
-            }
-            caller_state.scan_admitting = false;
-        }
-        if state
-            .stopping_scan
-            .as_ref()
-            .is_some_and(|stopping| stopping.caller_key == key)
-        {
-            return;
-        }
-        if state.scan_owner.as_deref() == Some(key) {
-            state.scan_owner = None;
-        }
     }
 
     async fn emit(
@@ -2904,32 +3776,30 @@ impl BtleplugDispatcher {
         expected_lease: Option<(&str, &str)>,
         stream_id: &str,
         value: IpcValue,
-        drop_if_full: bool,
     ) -> Result<(), DispatchError> {
         let (sink, lease_id, lease_generation, event_id) = {
             let mut state = self.inner.lock().await;
-            let caller_state = state.callers.get_mut(caller_key).ok_or_else(|| {
-                DispatchError::new("ownership.denied", "stream", "tauri.event-owner")
-            })?;
+            let caller_state = state
+                .callers
+                .get_mut(caller_key)
+                .filter(|caller_state| !caller_state.retired)
+                .ok_or_else(|| {
+                    DispatchError::new(BleErrorCode::OwnershipDenied, "stream", "tauri.event-owner")
+                })?;
             if expected_lease.is_some_and(|lease| {
                 caller_state.lease_id != lease.0 || caller_state.lease_generation != lease.1
             }) {
                 return Err(DispatchError::new(
-                    "ownership.denied",
+                    BleErrorCode::OwnershipDenied,
                     "stream",
                     "tauri.event-stale-lease",
                 ));
             }
             if caller_state.pending_events.len() >= MAX_PENDING_EVENTS {
-                if drop_if_full {
-                    return Err(DispatchError::new(
-                        "stream.quota",
-                        "stream",
-                        "tauri.event-retention",
-                    ));
-                }
+                // Scan forwarders treat quota as a dropped observation;
+                // every other stream ends on it.
                 return Err(DispatchError::new(
-                    "stream.quota",
+                    BleErrorCode::StreamQuota,
                     "stream",
                     "tauri.event-retention",
                 ));
@@ -2969,64 +3839,52 @@ impl BtleplugDispatcher {
             }
         }
         send_result.map_err(|error| {
-            DispatchError::new("platform.transport", "stream", "tauri.event-send")
-                .platform(error.to_string())
+            DispatchError::new(
+                BleErrorCode::PlatformTransport,
+                "stream",
+                "tauri.event-send",
+            )
+            .platform(error.to_string())
         })
     }
 
-    async fn emit_connection_lost(
+    /// Report one link transition on one connection-event stream, keyed by
+    /// the stream handle the renderer minted (PR210-11: never the
+    /// connection handle), then end the stream with the transition's
+    /// terminal reason.
+    async fn emit_connection_transition(
         &self,
         caller_key: &str,
         expected_lease: (&str, &str),
         identity: ConnectionEventIdentity<'_>,
-    ) -> Result<(), DispatchError> {
-        self.emit_connection_failure(
-            caller_key,
-            expected_lease,
-            identity,
-            "peer-link-loss",
-            "connection-lost",
-        )
-        .await
-    }
-
-    async fn emit_connection_failure(
-        &self,
-        caller_key: &str,
-        expected_lease: (&str, &str),
-        identity: ConnectionEventIdentity<'_>,
-        cause: &str,
-        terminal_reason: &str,
+        transition: LinkTransition,
     ) -> Result<(), DispatchError> {
         let event = {
             let mut state = self.inner.lock().await;
-            let attachment = state.attachment.clone().ok_or_else(|| {
-                DispatchError::new(
-                    "lifecycle.invalid-state",
-                    "connection",
-                    "tauri.connection-events-attachment",
-                )
-            })?;
             let caller = state.callers.get_mut(caller_key).ok_or_else(|| {
                 DispatchError::new(
-                    "ownership.denied",
+                    BleErrorCode::OwnershipDenied,
                     "connection",
                     "tauri.connection-events-owner",
                 )
             })?;
+            // The transition reports the attachment the link lived on (an
+            // adapter loss ends it there, not on the attachment that
+            // replaced it), and the record reads nothing from the OS.
             if caller.lease_id != expected_lease.0 || caller.lease_generation != expected_lease.1 {
                 return Err(DispatchError::new(
-                    "ownership.denied",
+                    BleErrorCode::OwnershipDenied,
                     "connection",
                     "tauri.connection-events-stale-lease",
                 ));
             }
+            let owner_lease_id = caller.lease_id.clone();
             let resource = caller
                 .connection_events
                 .get_mut(identity.stream_id)
                 .ok_or_else(|| {
                     DispatchError::new(
-                        "gatt.stale-handle",
+                        BleErrorCode::GattStaleHandle,
                         "connection",
                         "tauri.connection-events-stream",
                     )
@@ -3038,119 +3896,78 @@ impl BtleplugDispatcher {
             object([
                 ("kind", string("connection-lifecycle")),
                 ("schemaVersion", number(2)),
-                ("attachment", attachment_record(&attachment)),
-                ("attachmentId", string(attachment.attachment_id)),
+                ("attachment", attachment_record(&resource.attachment)),
+                (
+                    "attachmentId",
+                    string(resource.attachment.attachment_id.clone()),
+                ),
                 ("peerId", string(identity.peer_id)),
                 ("connectionId", string(identity.connection_id)),
                 (
                     "connectionGeneration",
                     string(identity.connection_generation),
                 ),
-                ("ownerLeaseId", string(caller.lease_id.clone())),
+                ("ownerLeaseId", string(owner_lease_id)),
                 ("sequence", number(resource.sequence as i64)),
                 ("backendIngressOrdinal", IpcValue::Null),
-                ("previous", string("connected")),
-                ("current", string("lost")),
-                ("cause", string(cause)),
+                ("previous", string(transition.previous)),
+                ("current", string(transition.current)),
+                ("cause", string(transition.cause)),
             ])
         };
         let send_result = self
-            .emit(
-                caller_key,
-                Some(expected_lease),
-                identity.stream_id,
-                event,
-                false,
-            )
+            .emit(caller_key, Some(expected_lease), identity.stream_id, event)
             .await;
-        // A full event acknowledgement queue cannot silently remove the
-        // lifecycle source. Keep retrying the terminal until it is delivered
-        // or the renderer explicitly revokes the lease and ownership denial
-        // proves that cleanup has taken over.
+        // An event the queue could not take still ends the stream: with
+        // `overflow`, so the renderer knows it missed the transition.
         let terminal_reason = if send_result.is_ok() {
-            terminal_reason
+            transition.terminal
         } else {
             "overflow"
         };
+        self.end_connection_event_stream(
+            caller_key,
+            expected_lease,
+            identity.stream_id,
+            terminal_reason,
+        )
+        .await?;
+        send_result
+    }
+
+    /// End one connection-event stream with `reason`, then drop its
+    /// mapping. A full acknowledgement queue cannot silently remove the
+    /// lifecycle source: the terminal is retried until it is delivered or
+    /// ownership denial proves release has taken over.
+    async fn end_connection_event_stream(
+        &self,
+        caller_key: &str,
+        expected_lease: (&str, &str),
+        stream_id: &str,
+        reason: &str,
+    ) -> Result<(), DispatchError> {
         let mut terminal_delay = Duration::from_millis(100);
-        let terminal_result = loop {
+        loop {
             match self
-                .terminal(
-                    caller_key,
-                    expected_lease,
-                    identity.stream_id,
-                    terminal_reason,
-                    None,
-                )
+                .terminal(caller_key, expected_lease, stream_id, reason, None)
                 .await
             {
-                Ok(()) => break Ok(()),
-                Err(error) if error.code == "ownership.denied" => break Err(error),
+                Ok(()) => break,
+                Err(error) if error.code == BleErrorCode::OwnershipDenied => return Err(error),
                 Err(_error) => {
                     tokio::time::sleep(terminal_delay).await;
                     terminal_delay =
                         std::cmp::min(terminal_delay.saturating_mul(2), Duration::from_secs(5));
                 }
             }
-        };
-        terminal_result?;
+        }
         let mut state = self.inner.lock().await;
         if let Some(caller) = state.callers.get_mut(caller_key) {
             if caller.lease_id == expected_lease.0 && caller.lease_generation == expected_lease.1 {
-                if let Some(resource) = caller.connection_events.remove(identity.stream_id) {
-                    if let Some(task) = resource.task {
-                        task.abort();
-                    }
-                }
+                caller.connection_events.remove(stream_id);
             }
         }
-        send_result
-    }
-
-    async fn emit_scan_peripheral(
-        &self,
-        peripheral: &Peripheral,
-        request: ScanObservation<'_>,
-    ) -> Result<(), DispatchError> {
-        {
-            let state = self.inner.lock().await;
-            let caller = state.callers.get(request.owner).ok_or_else(|| {
-                DispatchError::new("ownership.denied", "stream", "tauri.scan-event-owner")
-            })?;
-            if caller.lease_id != request.expected_lease.0
-                || caller.lease_generation != request.expected_lease.1
-            {
-                return Err(DispatchError::new(
-                    "ownership.denied",
-                    "stream",
-                    "tauri.scan-event-stale-lease",
-                ));
-            }
-            if caller.scan_admitting {
-                return Ok(());
-            }
-        }
-        let properties = peripheral.properties().await.ok().flatten();
-        if !scan_properties_match_optional(
-            properties.as_ref(),
-            request.requested_services,
-            request.local_name_prefix,
-            request.manufacturer_filters,
-        ) {
-            return Ok(());
-        }
-        let Some(properties) = properties else {
-            return Ok(());
-        };
-        let observation = peripheral_observation(peripheral, properties);
-        self.emit(
-            request.owner,
-            Some(request.expected_lease),
-            request.stream_handle,
-            observation,
-            true,
-        )
-        .await
+        Ok(())
     }
 
     async fn terminal(
@@ -3163,14 +3980,22 @@ impl BtleplugDispatcher {
     ) -> Result<(), DispatchError> {
         let (sink, lease_id, lease_generation, event_id) = {
             let mut state = self.inner.lock().await;
-            let caller_state = state.callers.get_mut(caller_key).ok_or_else(|| {
-                DispatchError::new("ownership.denied", "stream", "tauri.terminal-owner")
-            })?;
+            let caller_state = state
+                .callers
+                .get_mut(caller_key)
+                .filter(|caller_state| !caller_state.retired)
+                .ok_or_else(|| {
+                    DispatchError::new(
+                        BleErrorCode::OwnershipDenied,
+                        "stream",
+                        "tauri.terminal-owner",
+                    )
+                })?;
             if caller_state.lease_id != expected_lease.0
                 || caller_state.lease_generation != expected_lease.1
             {
                 return Err(DispatchError::new(
-                    "ownership.denied",
+                    BleErrorCode::OwnershipDenied,
                     "stream",
                     "tauri.terminal-stale-lease",
                 ));
@@ -3211,91 +4036,68 @@ impl BtleplugDispatcher {
             }
         }
         send_result.map_err(|error| {
-            DispatchError::new("platform.transport", "stream", "tauri.terminal-send")
-                .platform(error.to_string())
+            DispatchError::new(
+                BleErrorCode::PlatformTransport,
+                "stream",
+                "tauri.terminal-send",
+            )
+            .platform(error.to_string())
         })
     }
 
-    async fn fail_scan_stream(
-        &self,
-        caller_key: &str,
-        expected_lease: (&str, &str),
-        stream_id: &str,
-    ) {
-        let attempt = {
-            let mut state = self.inner.lock().await;
-            match begin_scan_stop(&mut state, caller_key, expected_lease, stream_id, false) {
-                Ok(ScanStopBegin::Started(attempt)) => attempt,
-                _ => return,
-            }
-        };
-        let outcome = match self.adapter().await {
-            Ok(adapter) => adapter.stop_scan().await.map_err(|error| error.to_string()),
-            Err(error) => Err(error
-                .platform
-                .unwrap_or_else(|| "adapter unavailable".to_owned())),
-        };
-        let mut state = self.inner.lock().await;
-        if let Err(error) = apply_scan_stop_outcome(&mut state, &attempt, outcome) {
-            eprintln!(
-                "[unified-ble:tauri] scan stream stop failed, resource retained for retry: {error}"
-            );
-        }
-    }
-
-    async fn fail_subscription_stream(
-        &self,
-        caller_key: &str,
-        expected_lease: (&str, &str),
-        stream_id: &str,
-    ) {
-        let subscription = {
-            let mut state = self.inner.lock().await;
-            let Some(caller) = state.callers.get_mut(caller_key) else {
-                return;
-            };
-            if caller.lease_id != expected_lease.0 || caller.lease_generation != expected_lease.1 {
-                return;
-            }
-            caller.subscriptions.remove(stream_id)
-        };
-        if let Some(subscription) = subscription {
-            let native = subscription
-                .native()
-                .map(|(peripheral, characteristic)| (peripheral.clone(), characteristic.clone()));
-            let failed = match native {
-                Some((peripheral, characteristic)) => {
-                    peripheral.unsubscribe(&characteristic).await.is_err()
-                }
-                None => true,
-            };
-            if failed {
-                let mut state = self.inner.lock().await;
-                retain_failed_subscription(
-                    &mut state,
-                    caller_key,
-                    expected_lease,
-                    stream_id,
-                    Some(subscription),
-                );
-            }
-        }
-    }
-
+    /// Release everything one caller owns, through the shared core.
+    ///
+    /// The caller is retired first — it admits no new work and receives no
+    /// events — but stays mapped with its resources until each native
+    /// release is confirmed (PR210-09). A failed release keeps the failed
+    /// resources and the caller, so the next release really calls native
+    /// again; orphan debt owed by this caller key is retried and reported
+    /// here too (PR210-08). The caller leaves the map only when nothing
+    /// failed.
     async fn release(&self, key: &str) -> IpcValue {
-        let caller = self.inner.lock().await.callers.remove(key);
-        let caller_cleanup = if let Some(mut caller) = caller {
-            let cleanup = self.settle_caller(key, &mut caller).await;
-            if !is_released(&cleanup) {
-                let mut state = self.inner.lock().await;
-                state.callers.entry(key.to_owned()).or_insert(caller);
+        let present = {
+            let mut state = self.inner.lock().await;
+            match state.callers.get_mut(key) {
+                Some(caller_state) => {
+                    caller_state.retired = true;
+                    true
+                }
+                None => false,
             }
-            cleanup
-        } else {
-            released()
         };
-        let orphan_cleanup = self.settle_orphans(key).await;
-        merge_cleanup(caller_cleanup, orphan_cleanup)
+        let mut failures = Vec::new();
+        if present {
+            failures.extend(self.settle_caller(key).await);
+        }
+        let owes_debt = self
+            .inner
+            .lock()
+            .await
+            .orphan_debt
+            .iter()
+            .any(|debt| debt.caller_key == key);
+        if owes_debt {
+            match self.ensure_authority().await {
+                Ok(authority) => {
+                    for failure in self.settle_orphan_debt(&authority, Some(key)).await {
+                        failures.push(cleanup_failure(
+                            failure.resource.kind(),
+                            failure.operation(),
+                            failure.describe(),
+                        ));
+                    }
+                }
+                Err(error) => failures.push(cleanup_failure(
+                    "release",
+                    "tauri.release.authority",
+                    error.describe(),
+                )),
+            }
+        }
+        if present && failures.is_empty() {
+            self.inner.lock().await.callers.remove(key);
+        }
+        cleanup_record(failures)
     }
 
     fn is_revoked(&self, key: &str) -> bool {
@@ -3329,467 +4131,179 @@ impl BtleplugDispatcher {
         }
     }
 
-    async fn settle_caller(&self, key: &str, caller: &mut CallerState) -> IpcValue {
+    /// Tear down everything one retired caller owns, through the shared
+    /// core: cancel its in-flight operations, stop its scan, remove its
+    /// consumers, release its links. Every radio verdict is core-made and
+    /// each resource's mapping is removed only on a confirmed or
+    /// already-gone release; every other outcome is returned as an explicit
+    /// cleanup failure with the resource kept, never silence.
+    async fn settle_caller(&self, key: &str) -> Vec<IpcValue> {
+        let (tickets, scan, subscriptions, connections) = {
+            let mut state = self.inner.lock().await;
+            let Some(caller_state) = state.callers.get_mut(key) else {
+                return Vec::new();
+            };
+            // Delivery-only mappings: the renderer they serve is leaving.
+            caller_state.connection_events.clear();
+            (
+                caller_state
+                    .operations
+                    .values()
+                    .map(|tracked| tracked.control.ticket.clone())
+                    .collect::<Vec<_>>(),
+                caller_state.scan.as_ref().map(|scan| scan.handle.clone()),
+                caller_state
+                    .subscriptions
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                caller_state.connections.keys().cloned().collect::<Vec<_>>(),
+            )
+        };
         let mut failures = Vec::new();
-        caller.quarantine.cancel();
-        for exhausted in caller.quarantine.failures.drain(..) {
-            failures.push(cleanup_failure(
-                "cleanup",
-                "tauri.quarantine.exhausted",
-                format!("{}:{}", exhausted.command, exhausted.handle),
-            ));
-        }
-        for cancellation in caller.operations.values() {
-            cancellation.cancel();
-        }
-        caller.operations.clear();
-        if caller.scan_admitting {
-            caller.scan_admitting = false;
-            let stop_attempt = {
-                let mut state = self.inner.lock().await;
-                if state
-                    .stopping_scan
-                    .as_ref()
-                    .is_some_and(|stopping| stopping.caller_key == key)
-                {
-                    None
-                } else if state.scan_owner.as_deref() == Some(key) {
-                    Some(claim_stopping_scan(
-                        &mut state,
-                        key.to_owned(),
-                        caller.lease_id.clone(),
-                        caller.lease_generation.clone(),
-                        String::new(),
-                    ))
-                } else {
-                    None
-                }
-            };
-            if let Some(attempt) = stop_attempt {
-                let outcome = match self.adapter().await {
-                    Ok(adapter) => adapter.stop_scan().await.map_err(|error| error.to_string()),
-                    Err(error) => Err(error
-                        .platform
-                        .unwrap_or_else(|| "adapter unavailable".to_owned())),
-                };
-                let mut state = self.inner.lock().await;
-                if let Err(error) = apply_scan_stop_outcome(&mut state, &attempt, outcome) {
-                    failures.push(cleanup_failure(
-                        "scan",
-                        "tauri.release.scan-admitting",
-                        error,
-                    ));
-                }
+        for ticket in tickets {
+            if let Err(error) = self.cancel_ticket(&ticket).await {
+                failures.push(cleanup_failure(
+                    "operation",
+                    "tauri.release.operation",
+                    error.describe(),
+                ));
             }
         }
-        for resource in caller.connection_events.values_mut() {
-            if let Some(task) = resource.task.take() {
-                task.abort();
-            }
-        }
-        caller.connection_events.clear();
-        if let Some(scan) = caller.scan.as_ref() {
-            scan.task.abort();
-            match self.adapter().await {
-                Ok(adapter) => match adapter.stop_scan().await {
-                    Ok(()) => {
-                        caller.scan.take();
-                        let mut state = self.inner.lock().await;
-                        if state.scan_owner.as_deref() == Some(key) {
-                            state.scan_owner = None;
-                        }
-                    }
-                    Err(error) => failures.push(cleanup_failure(
-                        "scan",
-                        "tauri.release.scan",
-                        error.to_string(),
-                    )),
-                },
-                Err(error) => failures.push(cleanup_failure(
+        if let Some(handle) = scan {
+            if let Err(error) = self
+                .release_scan(key, &handle, OpControl::unbounded())
+                .await
+            {
+                failures.push(cleanup_failure(
                     "scan",
-                    "tauri.release.scan-adapter",
-                    error
-                        .platform
-                        .unwrap_or_else(|| "adapter unavailable".to_owned()),
-                )),
+                    "tauri.release.scan",
+                    error.describe(),
+                ));
             }
         }
-        let subscription_handles = caller.subscriptions.keys().cloned().collect::<Vec<_>>();
-        for handle in subscription_handles {
-            let Some(subscription) = caller.subscriptions.get(&handle) else {
-                continue;
-            };
-            subscription.task.abort();
-            match subscription.native() {
-                Some((peripheral, characteristic)) => {
-                    match peripheral.unsubscribe(characteristic).await {
-                        Ok(()) => {
-                            caller.subscriptions.remove(&handle);
-                        }
-                        Err(error) => failures.push(cleanup_failure(
-                            "subscription",
-                            "tauri.release.subscription",
-                            error.to_string(),
-                        )),
-                    }
-                }
-                None => failures.push(cleanup_failure(
+        for handle in subscriptions {
+            if let Err(error) = self
+                .release_subscription(key, &handle, OpControl::unbounded())
+                .await
+            {
+                failures.push(cleanup_failure(
                     "subscription",
                     "tauri.release.subscription",
-                    "pending subscription has no native resource to release".to_owned(),
-                )),
+                    format!("{handle}: {}", error.describe()),
+                ));
             }
         }
-        let connection_handles = caller.connections.keys().cloned().collect::<Vec<_>>();
-        for handle in connection_handles {
-            let Some(connection) = caller.connections.get(&handle).cloned() else {
-                continue;
-            };
-            match disconnect_peripheral(&connection.peripheral).await {
-                Ok(()) => {
-                    caller.connections.remove(&handle);
-                    caller
-                        .databases
-                        .retain(|_, database| database.connection_handle != handle);
-                    self.clear_peer_owner(&connection.peer_id, key).await;
-                }
-                Err(error) => failures.push(cleanup_failure(
+        for handle in connections {
+            if let Err(error) = self
+                .release_connection(key, &handle, None, OpControl::unbounded())
+                .await
+            {
+                failures.push(cleanup_failure(
                     "connection",
                     "tauri.release.connection",
-                    error.to_string(),
-                )),
+                    format!("{handle}: {}", error.describe()),
+                ));
             }
         }
-        cleanup_record(failures)
+        failures
     }
+}
 
-    async fn settle_orphans(&self, key: &str) -> IpcValue {
-        let mut failures = Vec::new();
-        let stop_attempt = {
-            let mut state = self.inner.lock().await;
-            let retry_identity = state.stopping_scan.as_ref().and_then(|stopping| {
-                if stopping.caller_key == key && !stopping.in_flight {
-                    Some((
-                        stopping.caller_key.clone(),
-                        stopping.lease_id.clone(),
-                        stopping.lease_generation.clone(),
-                        stopping.handle.clone(),
-                    ))
-                } else {
-                    None
-                }
-            });
-            retry_identity.map(|(caller_key, lease_id, lease_generation, handle)| {
-                claim_stopping_scan(&mut state, caller_key, lease_id, lease_generation, handle)
-            })
-        };
-        if let Some(attempt) = stop_attempt {
-            let outcome = match self.adapter().await {
-                Ok(adapter) => adapter.stop_scan().await.map_err(|error| error.to_string()),
-                Err(error) => Err(error
-                    .platform
-                    .unwrap_or_else(|| "adapter unavailable".to_owned())),
-            };
-            let mut state = self.inner.lock().await;
-            if let Err(error) = apply_scan_stop_outcome(&mut state, &attempt, outcome) {
-                failures.push(cleanup_failure("scan", "tauri.release.scan", error));
-            }
+/// One resolved characteristic target for a GATT verb.
+struct GattTarget {
+    peer_id: String,
+    characteristic: CoreCharacteristic,
+    connection_handle: String,
+}
+
+/// The owned identity of one connection-event stream whose end is being
+/// delivered.
+struct StreamEndTarget {
+    stream_id: String,
+    peer_id: String,
+    connection_id: String,
+    connection_generation: String,
+}
+
+impl StreamEndTarget {
+    fn of(resource: &ConnectionEventResource) -> Self {
+        Self {
+            stream_id: resource.stream_handle.clone(),
+            peer_id: resource.peer_id.clone(),
+            connection_id: resource.connection_id.clone(),
+            connection_generation: resource.connection_generation.clone(),
         }
-        let orphans = {
-            let state = self.inner.lock().await;
-            state
-                .orphan_connections
-                .values()
-                .filter(|orphan| orphan.caller_key == key)
-                .cloned()
-                .collect::<Vec<_>>()
-        };
-        for orphan in orphans {
-            if let Some(peripheral) = orphan.peripheral.clone() {
-                let outcome = disconnect_with_state_check(
-                    async {
-                        peripheral
-                            .disconnect()
-                            .await
-                            .map_err(|error| error.to_string())
-                    },
-                    || connected_after_failed_disconnect(&peripheral),
-                )
-                .await;
-                if let Some(error) = self
-                    .settle_orphan_connection(outcome, &orphan.peer_id, &orphan.lease_generation)
-                    .await
-                {
-                    failures.push(cleanup_failure(
-                        "connection",
-                        "tauri.release.orphan-connection",
-                        error,
-                    ));
-                }
+    }
+}
+
+/// Remove one consumer through the core. A consumer the core no longer
+/// resolves is already released.
+async fn release_consumer(
+    authority: &Arc<dyn CoreAuthority>,
+    peer_id: &str,
+    selector: &CoreSelector,
+    consumer: &str,
+    ctl: OpControl,
+) -> Result<(), DispatchError> {
+    match authority
+        .unsubscribe(peer_id, selector, consumer, ctl)
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            let error = DispatchError::from_core(&error);
+            if is_released_subscription(&error) {
+                Ok(())
             } else {
-                failures.push(cleanup_failure(
-                    "connection",
-                    "tauri.release.orphan-connection",
-                    format!(
-                        "pending connection for {} has no peripheral to release",
-                        orphan.peer_id
-                    ),
-                ));
+                Err(error)
             }
         }
-        let subscription_orphans = {
-            let state = self.inner.lock().await;
-            state
-                .orphan_subscription_owners
-                .values()
-                .filter(|orphan| orphan.caller_key == key)
-                .map(|orphan| orphan.stream_id.clone())
-                .collect::<Vec<_>>()
-        };
-        for stream_id in subscription_orphans {
-            let resource = {
-                let mut state = self.inner.lock().await;
-                state.orphan_subscription_resources.remove(&stream_id)
-            };
-            let Some(subscription) = resource else {
-                failures.push(cleanup_failure(
-                    "subscription",
-                    "tauri.release.orphan-subscription",
-                    format!("pending subscription {stream_id} has no resource to release"),
-                ));
-                continue;
-            };
-            let native = subscription
-                .native()
-                .map(|(peripheral, characteristic)| (peripheral.clone(), characteristic.clone()));
-            let Some((peripheral, characteristic)) = native else {
-                let mut state = self.inner.lock().await;
-                state
-                    .orphan_subscription_resources
-                    .insert(stream_id.clone(), subscription);
-                failures.push(cleanup_failure(
-                    "subscription",
-                    "tauri.release.orphan-subscription",
-                    format!("pending subscription {stream_id} has no native resource to release"),
-                ));
-                continue;
-            };
-            match peripheral.unsubscribe(&characteristic).await {
-                Ok(()) => {
-                    let generation = {
-                        let state = self.inner.lock().await;
-                        state
-                            .orphan_subscription_owners
-                            .get(&stream_id)
-                            .map(|orphan| orphan.lease_generation.clone())
-                    };
-                    if let Some(generation) = generation {
-                        let _ = self
-                            .settle_orphan_subscription(Ok(()), &stream_id, &generation)
-                            .await;
-                    }
-                }
-                Err(error) => {
-                    let mut state = self.inner.lock().await;
-                    state
-                        .orphan_subscription_resources
-                        .insert(stream_id.clone(), subscription);
-                    if let Some(owner) = state.orphan_subscription_owners.get_mut(&stream_id) {
-                        owner.attempts = owner.attempts.saturating_add(1);
-                    }
-                    failures.push(cleanup_failure(
-                        "subscription",
-                        "tauri.release.orphan-subscription",
-                        error.to_string(),
-                    ));
-                }
-            }
-        }
-        cleanup_record(failures)
     }
 }
 
-/// Disconnects a peripheral while preserving retry ownership unless the
-/// platform confirms that the physical link is already gone.
-///
-/// CoreBluetooth may report an error when its disconnect completion races the
-/// connection-event monitor. A failed command is therefore idempotent only
-/// when a fresh `is_connected` reading proves the requested end state.
-async fn disconnect_peripheral(peripheral: &Peripheral) -> Result<(), String> {
-    disconnect_with_state_check(
-        async {
-            peripheral
-                .disconnect()
-                .await
-                .map_err(|error| error.to_string())
-        },
-        || async { connected_after_failed_disconnect(peripheral).await },
-    )
-    .await
-}
-
-/// Answer "is it still connected?" after a disconnect has already failed.
-///
-/// The state check is classified *before* the error is rendered to a string,
-/// because the typed error carries the only evidence that distinguishes "the
-/// peer is gone" from "we could not tell", and stringifying first throws it
-/// away at the one call site that has it.
-///
-/// On BlueZ a removed D-Bus device object is not a failure of this question -
-/// it is the answer. `is_connected()` reads `Device1` properties, so once BlueZ
-/// has dropped the object the read errors, and treating that as indeterminate
-/// retains ownership of a peer that is provably released, permanently: the
-/// object never comes back, so every retry fails identically.
-async fn connected_after_failed_disconnect(peripheral: &Peripheral) -> Result<bool, String> {
-    match peripheral.is_connected().await {
-        Ok(connected) => Ok(connected),
-        Err(error) if error_confirms_device_released(&error) => {
-            // Reported, not swallowed: the outcome is "released", but the error
-            // is still the only account of why the disconnect failed.
-            eprintln!(
-                "[unified-ble:tauri] the peer's device object is gone, so it is released \
-                 despite the state check erroring: {error}"
-            );
-            Ok(false)
-        }
-        Err(error) => Err(error.to_string()),
-    }
-}
-
-/// The admission failure, plus what compensation could not undo.
-///
-/// A caller that is denied admission still needs to know whether a peer was
-/// left connected on its behalf - that is the difference between "try again"
-/// and "a peer is stranded until something reclaims it".
-fn compensation_failure(operation: &str, residue: Option<String>) -> DispatchError {
-    let error = DispatchError::new("ownership.denied", "connection", operation);
-    match residue {
-        None => error,
-        Some(detail) => error.platform(format!(
-            "the peer could not be confirmed released, so its reservation is retained: {detail}"
-        )),
-    }
-}
-
-fn subscription_compensation_failure(operation: &str, residue: Option<String>) -> DispatchError {
-    let error = DispatchError::new("ownership.denied", "gatt", operation);
-    match residue {
-        None => error,
-        Some(detail) => error.platform(format!(
-            "the subscription could not be confirmed released, so its orphan owner is retained: {detail}"
-        )),
-    }
-}
-
-/// True when a state-check error proves the peer is no longer present.
-///
-/// The discriminator is the D-Bus error *name*, which is a protocol constant,
-/// not rendered text - so this does not depend on how any crate in the chain
-/// formats its errors.
-#[cfg(target_os = "linux")]
-fn error_confirms_device_released(error: &btleplug::Error) -> bool {
-    let btleplug::Error::Other(inner) = error else {
-        return false;
-    };
-    let Some(bluez_async::BluetoothError::DbusError(dbus_error)) =
-        inner.downcast_ref::<bluez_async::BluetoothError>()
-    else {
-        return false;
-    };
-    matches!(
-        dbus_error.name(),
-        Some("org.freedesktop.DBus.Error.UnknownObject" | "org.bluez.Error.DoesNotExist")
-    )
-}
-
-/// No equivalent evidence exists off Linux: CoreBluetooth and WinRT report a
-/// missing peer as `Ok(false)` rather than as an error, so nothing reaches here.
-#[cfg(not(target_os = "linux"))]
-fn error_confirms_device_released(_error: &btleplug::Error) -> bool {
-    false
-}
-
-async fn disconnect_with_state_check<DisconnectFuture, StateFuture>(
-    disconnect: DisconnectFuture,
-    connected_after_failure: impl FnOnce() -> StateFuture,
-) -> Result<(), String>
-where
-    DisconnectFuture: Future<Output = Result<(), String>>,
-    StateFuture: Future<Output = Result<bool, String>>,
-{
-    let disconnect_error =
-        match tokio::time::timeout(DISCONNECT_COMPLETION_TIMEOUT, disconnect).await {
-            Ok(Ok(())) => return Ok(()),
-            Ok(Err(error)) => error,
-            Err(_) => format!(
-                "disconnect completion timed out after {} ms",
-                DISCONNECT_COMPLETION_TIMEOUT.as_millis()
-            ),
-        };
-    let connected_after_failure =
-        tokio::time::timeout(DISCONNECT_COMPLETION_TIMEOUT, connected_after_failure())
+/// Release one orphaned core resource by its exact core identity.
+async fn release_orphan(
+    authority: &Arc<dyn CoreAuthority>,
+    resource: &OrphanResource,
+) -> Result<(), DispatchError> {
+    match resource {
+        OrphanResource::Scan(scan_id) => authority
+            .stop_scan(scan_id, OpControl::unbounded())
             .await
-            .unwrap_or_else(|_| {
-                Err(format!(
-                    "post-disconnect state check timed out after {} ms",
-                    DISCONNECT_COMPLETION_TIMEOUT.as_millis()
-                ))
-            });
-    resolve_disconnect_failure(disconnect_error, connected_after_failure)
-}
-
-/// Decide whether a failed disconnect nevertheless left the peer released.
-///
-/// The `Ok(false)` arm reports success, but the underlying platform error is
-/// still the only account of why the disconnect failed in the first place.
-/// Dropping it turns a specific fault into "nothing happened" - the failure
-/// mode this repository explicitly forbids - and it is what made #145 take two
-/// physical re-test sessions to characterise. So the error is recorded on the
-/// way past even when the outcome is success.
-fn resolve_disconnect_failure(
-    disconnect_error: String,
-    connected_after_failure: Result<bool, String>,
-) -> Result<(), String> {
-    match connected_after_failure {
-        Ok(false) => {
-            eprintln!(
-                "[unified-ble:tauri] disconnect reported an error but the peer is no longer \
-                 connected; releasing anyway: {disconnect_error}"
-            );
-            Ok(())
+            .map(|_| ())
+            .map_err(|error| DispatchError::from_core(&error)),
+        OrphanResource::Link { peer_id, lease } => {
+            match authority
+                .disconnect(peer_id, lease, OpControl::unbounded())
+                .await
+            {
+                Ok(_) => Ok(()),
+                Err(error) => {
+                    let error = DispatchError::from_core(&error);
+                    if is_released_link(&error) {
+                        Ok(())
+                    } else {
+                        Err(error)
+                    }
+                }
+            }
         }
-        Ok(true) => Err(disconnect_error),
-        Err(state_error) => Err(format!(
-            "{disconnect_error}; post-disconnect state check failed: {state_error}"
-        )),
+        OrphanResource::Subscription {
+            peer_id,
+            selector,
+            consumer,
+        } => {
+            release_consumer(
+                authority,
+                peer_id,
+                selector,
+                consumer,
+                OpControl::unbounded(),
+            )
+            .await
+        }
     }
-}
-
-fn should_clear_peer_owner(
-    removed_peer_id: Option<&str>,
-    requested_peer_id: &str,
-    current_owner: Option<&str>,
-    caller_key: &str,
-) -> bool {
-    removed_peer_id == Some(requested_peer_id) && current_owner == Some(caller_key)
-}
-
-fn connection_cleanup_payload(payload: &BTreeMap<String, IpcValue>) -> Option<IpcValue> {
-    let handle = payload.get("handle").and_then(as_string)?.to_owned();
-    let peer_id = payload.get("peerId").and_then(as_string)?.to_owned();
-    let connection_id = payload.get("connectionId").and_then(as_string)?.to_owned();
-    let owner_lease_id = payload.get("ownerLeaseId").and_then(as_string)?.to_owned();
-    let connection_generation = payload
-        .get("connectionGeneration")
-        .and_then(as_string)?
-        .to_owned();
-    Some(object([
-        ("connectionHandle", string(handle)),
-        ("peerId", string(peer_id)),
-        ("connectionId", string(connection_id)),
-        ("ownerLeaseId", string(owner_lease_id)),
-        ("connectionGeneration", string(connection_generation)),
-    ]))
 }
 
 impl IpcDispatcher for BtleplugDispatcher {
@@ -3820,265 +4334,47 @@ impl IpcDispatcher for BtleplugDispatcher {
     }
 }
 
-fn quarantine_handle(payload: &BTreeMap<String, IpcValue>) -> Option<String> {
-    [
-        "scanHandle",
-        "connectionHandle",
-        "subscriptionHandle",
-        "handle",
-    ]
-    .into_iter()
-    .find_map(|key| payload.get(key).and_then(as_string).map(ToOwned::to_owned))
-}
-
-fn retain_orphan_connection(state: &mut DispatcherState, owner: OrphanConnectionOwner) {
-    state
-        .orphan_connections
-        .insert(owner.peer_id.clone(), owner);
-}
-
-fn retain_orphan_subscription(
-    state: &mut DispatcherState,
-    owner: OrphanSubscriptionOwner,
-    resource: Option<SubscriptionResource>,
-) {
-    let stream_id = owner.stream_id.clone();
-    state
-        .orphan_subscription_owners
-        .insert(stream_id.clone(), owner);
-    if let Some(resource) = resource {
-        state
-            .orphan_subscription_resources
-            .insert(stream_id, resource);
-    }
-}
-
-fn scan_start_blocked(state: &DispatcherState) -> bool {
-    state.scan_owner.is_some() || state.stopping_scan.is_some()
-}
-
-enum ScanStopBegin {
-    Started(ScanStopAttempt),
-    Joining,
-    AlreadyReleased,
-}
-
-fn claim_stopping_scan(
-    state: &mut DispatcherState,
-    caller_key: String,
-    lease_id: String,
-    lease_generation: String,
-    handle: String,
-) -> ScanStopAttempt {
-    let attempt = ScanStopAttempt {
-        caller_key: caller_key.clone(),
-        lease_id: lease_id.clone(),
-        lease_generation: lease_generation.clone(),
-        handle: handle.clone(),
-        attempt_id: state.next_scan_stop_attempt,
-    };
-    state.next_scan_stop_attempt = state.next_scan_stop_attempt.wrapping_add(1);
-    state.stopping_scan = Some(StoppingScan {
-        caller_key,
-        lease_id,
-        lease_generation,
-        handle,
-        attempt_id: attempt.attempt_id,
-        in_flight: true,
-    });
-    attempt
-}
-
-fn scan_stop_attempt_matches(stopping: &StoppingScan, attempt: &ScanStopAttempt) -> bool {
-    stopping.attempt() == *attempt
-}
-
-fn begin_scan_stop(
-    state: &mut DispatcherState,
-    caller_key: &str,
-    expected_lease: (&str, &str),
-    stream_id: &str,
-    abort_pump: bool,
-) -> Result<ScanStopBegin, DispatchError> {
-    let mut retry_failed_stop = false;
-    if let Some(stopping) = state.stopping_scan.as_ref() {
-        let same_scan = stopping.caller_key == caller_key
-            && stopping.lease_id == expected_lease.0
-            && stopping.lease_generation == expected_lease.1
-            && stopping.handle == stream_id;
-        if same_scan {
-            if stopping.in_flight {
-                return Ok(ScanStopBegin::Joining);
-            }
-            retry_failed_stop = true;
-        } else if stopping.caller_key == caller_key && stopping.handle != stream_id {
-            return Err(DispatchError::new(
-                "ownership.denied",
-                "scan",
-                "tauri.scan-stop-handle",
-            ));
-        } else {
-            return Err(DispatchError::new(
-                "scan.already-active",
-                "scan",
-                "tauri.scan-stop-in-progress",
-            ));
-        }
-    }
-    if retry_failed_stop {
-        let attempt = claim_stopping_scan(
-            state,
-            caller_key.to_owned(),
-            expected_lease.0.to_owned(),
-            expected_lease.1.to_owned(),
-            stream_id.to_owned(),
-        );
-        return Ok(ScanStopBegin::Started(attempt));
-    }
-    let scan = {
-        let Some(caller) = state.callers.get_mut(caller_key) else {
-            return Err(DispatchError::new(
-                "ownership.denied",
-                "scan",
-                "tauri.scan-stop-owner",
-            ));
-        };
-        if caller.lease_id != expected_lease.0 || caller.lease_generation != expected_lease.1 {
-            return Err(DispatchError::new(
-                "ownership.denied",
-                "scan",
-                "tauri.scan-stop-owner",
-            ));
-        }
-        caller.scan.take()
-    };
-    match scan {
-        Some(scan) if scan.handle == stream_id => {
-            if abort_pump {
-                scan.task.abort();
-            }
-            let attempt = claim_stopping_scan(
-                state,
-                caller_key.to_owned(),
-                expected_lease.0.to_owned(),
-                expected_lease.1.to_owned(),
-                stream_id.to_owned(),
-            );
-            Ok(ScanStopBegin::Started(attempt))
-        }
-        Some(scan) => {
-            if let Some(caller) = state.callers.get_mut(caller_key) {
-                caller.scan = Some(scan);
-            }
-            Err(DispatchError::new(
-                "ownership.denied",
-                "scan",
-                "tauri.scan-stop-handle",
-            ))
-        }
-        None => Ok(ScanStopBegin::AlreadyReleased),
-    }
-}
-
-fn apply_scan_stop_outcome(
-    state: &mut DispatcherState,
-    attempt: &ScanStopAttempt,
-    outcome: Result<(), String>,
-) -> Result<(), String> {
-    if !state
-        .stopping_scan
-        .as_ref()
-        .is_some_and(|stopping| scan_stop_attempt_matches(stopping, attempt))
-    {
-        return Ok(());
-    }
-    match outcome {
-        Ok(()) => {
-            let stopping = state.stopping_scan.take().expect("matched stopping scan");
-            let protect_replacement =
-                state
-                    .callers
-                    .get(&stopping.caller_key)
-                    .is_some_and(|caller| {
-                        (caller.lease_id != stopping.lease_id
-                            || caller.lease_generation != stopping.lease_generation)
-                            && caller.scan.is_some()
-                    });
-            if state.scan_owner.as_deref() == Some(stopping.caller_key.as_str())
-                && !protect_replacement
-            {
-                state.scan_owner = None;
-            }
-            if let Some(caller) = state.callers.get_mut(&stopping.caller_key) {
-                if caller.lease_id == stopping.lease_id
-                    && caller.lease_generation == stopping.lease_generation
-                    && caller
-                        .scan
-                        .as_ref()
-                        .is_some_and(|scan| scan.handle == stopping.handle)
-                {
-                    caller.scan.take();
-                }
-            }
-            Ok(())
-        }
-        Err(error) => {
-            if let Some(stopping) = state.stopping_scan.as_mut() {
-                stopping.in_flight = false;
-            }
-            Err(error)
-        }
-    }
-}
-
-fn retain_failed_subscription(
-    state: &mut DispatcherState,
-    caller_key: &str,
-    expected_lease: (&str, &str),
-    stream_id: &str,
-    subscription: Option<SubscriptionResource>,
-) {
-    let lease_matches = state.callers.get(caller_key).is_some_and(|caller| {
-        caller.lease_id == expected_lease.0 && caller.lease_generation == expected_lease.1
-    });
-    if lease_matches {
-        if let Some(subscription) = subscription {
-            if let Some(caller) = state.callers.get_mut(caller_key) {
-                caller
-                    .subscriptions
-                    .insert(stream_id.to_owned(), subscription);
-            }
-        }
-        return;
-    }
-    retain_orphan_subscription(
-        state,
-        OrphanSubscriptionOwner {
-            caller_key: caller_key.to_owned(),
-            lease_id: expected_lease.0.to_owned(),
-            lease_generation: expected_lease.1.to_owned(),
-            stream_id: stream_id.to_owned(),
-            attempts: 1,
-        },
-        subscription,
-    );
-}
-
-fn merge_cleanup(left: IpcValue, right: IpcValue) -> IpcValue {
-    let mut failures = Vec::new();
-    for value in [left, right] {
-        if let IpcValue::Object(record) = value {
-            if let Some(IpcValue::Array(existing)) = record.get("failures") {
-                failures.extend(existing.iter().cloned());
-            }
-        }
-    }
-    cleanup_record(failures)
-}
-
 fn prune_completed_correlations(completed: &mut HashMap<String, Instant>, now: Instant) {
     completed
         .retain(|_, completed_at| now.duration_since(*completed_at) < COMPLETED_CORRELATION_TTL);
+}
+
+/// Commands that only release what a caller already holds (or cancel its
+/// own in-flight work). They stay admitted for an attachment an adapter
+/// reset ended, so the renderer can settle its handles; every other
+/// command on that attachment is refused `backend.reset`.
+fn is_release_command(command: &str) -> bool {
+    matches!(
+        command,
+        "operation.cancel"
+            | "scan.stop"
+            | "gatt.unsubscribe"
+            | "gatt.database.release"
+            | "connection.disconnect"
+            | "connection.events.unsubscribe"
+    )
+}
+
+/// A route on the attachment an adapter reset replaced (finding 57): the
+/// backend the renderer bound to was reset and every handle it holds is
+/// foreign now. Refused before any native I/O; the renderer recreates its
+/// manager (re-attach) to reach the new generation.
+fn stale_attachment(bound: &Attachment, current: &AttachmentTuple) -> DispatchError {
+    let mut error = DispatchError::new(
+        BleErrorCode::BackendReset,
+        "adapter",
+        "tauri.route-attachment",
+    )
+    .platform(format!(
+        "the adapter was reset: attachment {} (backend generation {}) ended; the current \
+         attachment is {} (backend generation {}); re-attach to continue",
+        bound.attachment_id,
+        bound.backend_generation,
+        current.attachment_id().as_str(),
+        current.backend_generation().as_str(),
+    ));
+    error.commit = Some(CommitState::NotDispatched);
+    error
 }
 
 fn is_cleanup_command(command: &str) -> bool {
@@ -4089,7 +4385,7 @@ fn is_cleanup_command(command: &str) -> bool {
 }
 
 fn admit_caller_correlation(
-    operations: &HashMap<String, CancellationToken>,
+    operations: &HashMap<String, TrackedOperation>,
     completed: &mut HashMap<String, Instant>,
     correlation: &str,
     command: &str,
@@ -4098,7 +4394,7 @@ fn admit_caller_correlation(
     prune_completed_correlations(completed, now);
     if operations.contains_key(correlation) || completed.contains_key(correlation) {
         return Err(DispatchError::new(
-            "protocol.violation",
+            BleErrorCode::ProtocolViolation,
             "ipc",
             "tauri.correlation-replay",
         ));
@@ -4107,15 +4403,21 @@ fn admit_caller_correlation(
         return Ok(());
     }
     if operations.len() >= MAX_CORRELATIONS {
-        return Err(
-            DispatchError::new("stream.quota", "ipc", "tauri.correlation-busy").retryable(),
-        );
+        // Backpressure, not a protocol violation: `stream.quota` is the
+        // code whose recovery is retry-with-backoff. Retryability stays
+        // `never` — the wire vocabulary reserves `caller-decides` for an
+        // aborted or timed-out operation the core never dispatched.
+        return Err(DispatchError::new(
+            BleErrorCode::StreamQuota,
+            "ipc",
+            "tauri.correlation-busy",
+        ));
     }
     Ok(())
 }
 
 fn remember_completed_correlation(
-    operations: &mut HashMap<String, CancellationToken>,
+    operations: &mut HashMap<String, TrackedOperation>,
     completed: &mut HashMap<String, Instant>,
     correlation: String,
     now: Instant,
@@ -4144,9 +4446,30 @@ fn validate_lease(
     operation: &'static str,
 ) -> Result<(), DispatchError> {
     if caller.lease_id != lease.0 || caller.lease_generation != lease.1 {
-        return Err(DispatchError::new("ownership.denied", "ipc", operation));
+        return Err(DispatchError::new(
+            BleErrorCode::OwnershipDenied,
+            "ipc",
+            operation,
+        ));
     }
     Ok(())
+}
+
+/// The renderer lease `execute()` admitted this route under.
+fn expected_lease(
+    payload: &BTreeMap<String, IpcValue>,
+    operation: &'static str,
+) -> Result<(String, String), DispatchError> {
+    Ok((
+        required_string(payload, "__expectedLeaseId", operation)?,
+        required_string(payload, "__expectedLeaseGeneration", operation)?,
+    ))
+}
+
+/// Whether the caller still holds `lease` (a caller key survives reattach,
+/// so a live entry may belong to a newer lease).
+fn lease_matches(caller: &CallerState, lease: &(String, String)) -> bool {
+    caller.lease_id == lease.0 && caller.lease_generation == lease.1
 }
 
 fn expected_lease_matches(caller: &CallerState, payload: &BTreeMap<String, IpcValue>) -> bool {
@@ -4160,79 +4483,14 @@ fn expected_lease_matches(caller: &CallerState, payload: &BTreeMap<String, IpcVa
             .is_some_and(|generation| generation == caller.lease_generation)
 }
 
-async fn open_btleplug_adapter(
-    requested: Option<String>,
-) -> Result<(Manager, Adapter, String), DispatchError> {
-    let manager = Manager::new().await.map_err(|error| {
-        DispatchError::new("adapter.unavailable", "adapter", "tauri.manager")
-            .platform(error.to_string())
-    })?;
-    let adapters = manager.adapters().await.map_err(|error| {
-        DispatchError::new("adapter.unavailable", "adapter", "tauri.adapters")
-            .platform(error.to_string())
-    })?;
-    if adapters.is_empty() {
-        return Err(DispatchError::new(
-            "adapter.unavailable",
-            "adapter",
-            "tauri.adapters-empty",
-        ));
-    }
-    let mut candidates = Vec::with_capacity(adapters.len());
-    for adapter in adapters {
-        let info = adapter.adapter_info().await.map_err(|error| {
-            DispatchError::new("adapter.unavailable", "adapter", "tauri.adapter-info")
-                .platform(error.to_string())
-        })?;
-        candidates.push((info, adapter));
-    }
-    let (adapter_name, adapter) = match requested {
-        Some(requested) => candidates
-            .into_iter()
-            .find(|(info, _)| info == &requested)
-            .ok_or_else(|| {
-                DispatchError::new(
-                    "adapter.selection-required",
-                    "adapter",
-                    "tauri.adapter-selection",
-                )
-            })?,
-        None if candidates.len() == 1 => candidates.remove(0),
-        None => {
-            return Err(DispatchError::new(
-                "adapter.ambiguous",
-                "adapter",
-                "tauri.adapter-selection",
-            ))
-        }
-    };
-    Ok((manager, adapter, adapter_name))
-}
-
 fn caller_key(caller: &AuthenticatedCaller) -> String {
     format!("{}\0{}", caller.app_identifier, caller.window_label)
 }
 
-fn peripheral_id(peripheral: &Peripheral) -> String {
-    format!("{:?}", peripheral.id())
-}
-
-fn scan_event_peripheral_id(event: CentralEvent) -> Option<btleplug::platform::PeripheralId> {
-    match event {
-        CentralEvent::DeviceDiscovered(id) | CentralEvent::DeviceUpdated(id) => Some(id),
-        CentralEvent::ManufacturerDataAdvertisement { id, .. }
-        | CentralEvent::ServiceDataAdvertisement { id, .. }
-        | CentralEvent::ServicesAdvertisement { id, .. } => Some(id),
-        _ => None,
-    }
-}
-
-fn scan_poll_interval() -> tokio::time::Interval {
-    let mut interval = tokio::time::interval(SCAN_POLL_INTERVAL);
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    interval
-}
-
+/// Dispatcher-side scan matching, kept as unit-pinned semantics for the
+/// transport's fails-closed filter contract. No live path calls these: scan
+/// admission crosses into the core and view shaping stays TypeScript-side.
+#[cfg(test)]
 fn scan_properties_match(
     properties: &btleplug::api::PeripheralProperties,
     requested_services: &[Uuid],
@@ -4263,11 +4521,12 @@ fn scan_properties_match(
                 filter
                     .data_prefix
                     .as_ref()
-                    .map_or(true, |prefix| data.starts_with(prefix))
+                    .is_none_or(|prefix| data.starts_with(prefix))
             })
     })
 }
 
+#[cfg(test)]
 fn scan_properties_match_optional(
     properties: Option<&btleplug::api::PeripheralProperties>,
     requested_services: &[Uuid],
@@ -4284,55 +4543,57 @@ fn scan_properties_match_optional(
     })
 }
 
-fn peripheral_observation(
-    peripheral: &Peripheral,
-    properties: btleplug::api::PeripheralProperties,
-) -> IpcValue {
-    let manufacturer_data = properties
+/// Verbatim core observation mapping: a [`PeerSnapshot`] becomes the exact
+/// IPC observation wire shape (`peerId`, `localName`, `rssi`,
+/// `txPowerLevel`, `serviceUuids`, `manufacturerData`, `serviceData`) with
+/// no filtering, merging, or re-sampling. The radio facts cross unchanged;
+/// delivery policy is the core's.
+fn core_scan_observation(snapshot: &ubm_desktop::PeerSnapshot) -> IpcValue {
+    let manufacturer_data = snapshot
         .manufacturer_data
-        .into_iter()
-        .map(|(company_id, data)| {
+        .iter()
+        .map(|section| {
             object([
-                ("companyId", number(i64::from(company_id))),
-                ("data", IpcValue::Bytes(data)),
+                ("companyId", number(i64::from(section.company_id))),
+                ("data", IpcValue::Bytes(section.payload.clone())),
             ])
         })
         .collect();
-    let service_data = properties
+    let service_data = snapshot
         .service_data
-        .into_iter()
-        .map(|(uuid, data)| {
+        .iter()
+        .map(|section| {
             object([
-                ("uuid", string(uuid.to_string())),
-                ("data", IpcValue::Bytes(data)),
+                ("uuid", string(section.uuid.clone())),
+                ("data", IpcValue::Bytes(section.payload.clone())),
             ])
         })
         .collect();
     object([
-        ("peerId", string(peripheral_id(peripheral))),
+        ("peerId", string(snapshot.id.clone())),
         (
             "localName",
-            properties.local_name.map_or(IpcValue::Null, string),
+            snapshot.local_name.clone().map_or(IpcValue::Null, string),
         ),
         (
             "rssi",
-            properties
+            snapshot
                 .rssi
                 .map_or(IpcValue::Null, |value| number(i64::from(value))),
         ),
         (
             "txPowerLevel",
-            properties
+            snapshot
                 .tx_power_level
                 .map_or(IpcValue::Null, |value| number(i64::from(value))),
         ),
         (
             "serviceUuids",
             IpcValue::Array(
-                properties
-                    .services
-                    .into_iter()
-                    .map(|uuid| string(uuid.to_string()))
+                snapshot
+                    .service_uuids
+                    .iter()
+                    .map(|uuid| string(uuid.clone()))
                     .collect(),
             ),
         ),
@@ -4341,6 +4602,29 @@ fn peripheral_observation(
     ])
 }
 
+/// Core GATT property bits (`GATT_PROP_*` in `ubm-core`) rendered as the IPC
+/// property-name array. Same names as the legacy btleplug mapping; only the
+/// source changed (core-registered bits, not a peripheral handle read).
+fn core_characteristic_properties(bits: u8) -> IpcValue {
+    let mut values = Vec::new();
+    for (flag, name) in [
+        (ubm_core::central::GATT_PROP_READ, "read"),
+        (ubm_core::central::GATT_PROP_WRITE, "write"),
+        (
+            ubm_core::central::GATT_PROP_WRITE_NO_RESPONSE,
+            "write-without-response",
+        ),
+        (ubm_core::central::GATT_PROP_NOTIFY, "notify"),
+        (ubm_core::central::GATT_PROP_INDICATE, "indicate"),
+    ] {
+        if bits & flag != 0 {
+            values.push(string(name));
+        }
+    }
+    IpcValue::Array(values)
+}
+
+#[cfg(test)]
 fn characteristic_properties(properties: CharPropFlags) -> IpcValue {
     let mut values = Vec::new();
     for (flag, name) in [
@@ -4367,12 +4651,61 @@ fn parse_uuid(value: &str, operation: &'static str) -> Result<Uuid, DispatchErro
         _ => value.to_owned(),
     };
     Uuid::parse_str(&canonical)
-        .map_err(|_| DispatchError::new("scan.filter-invalid", "scan", operation))
+        .map_err(|_| DispatchError::new(BleErrorCode::ScanFilterInvalid, "scan", operation))
 }
 
+#[cfg(test)]
 struct ManufacturerFilter {
     company_id: u16,
     data_prefix: Option<Vec<u8>>,
+}
+
+/// F01 shared-core identity reported at bootstrap: the linked `ubm-core`
+/// contract revision plus this plugin's implementation version. The
+/// TypeScript factory admits the exact pinned pair and fails loudly
+/// otherwise, so a silently substituted (non-candidate) native host cannot
+/// serve traffic.
+fn core_identity() -> IpcValue {
+    object([
+        (
+            "contractRevision",
+            string(ubm_core::contracts::CONTRACT_REVISION),
+        ),
+        ("implementationVersion", string(env!("CARGO_PKG_VERSION"))),
+    ])
+}
+
+/// A core fact read: the value, or `None` with the radio's reason when it
+/// cannot answer that question on this platform. Every other failure
+/// crosses verbatim.
+fn unless_unsupported<T>(
+    outcome: Result<T, DesktopError>,
+    what: &str,
+    reasons: &mut Vec<String>,
+) -> Result<Option<T>, DispatchError> {
+    match outcome {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.code() == BleErrorCode::CapabilityUnsupported => {
+            reasons.push(format!(
+                "The {what} is not readable on this radio: {}.",
+                error.detail().unwrap_or("unsupported")
+            ));
+            Ok(None)
+        }
+        Err(error) => Err(DispatchError::from_core(&error)),
+    }
+}
+
+/// The IPC attachment for one core attachment tuple.
+fn attachment_of(tuple: &AttachmentTuple, adapter_name: String) -> Attachment {
+    Attachment {
+        attachment_id: tuple.attachment_id().as_str().to_owned(),
+        backend_instance_id: tuple.backend_instance_id().as_str().to_owned(),
+        backend_generation: tuple.backend_generation().as_str().to_owned(),
+        adapter_id: tuple.adapter_id().as_str().to_owned(),
+        adapter_name,
+        adapter_generation: tuple.adapter_generation().as_str().to_owned(),
+    }
 }
 
 fn attachment_record(attachment: &Attachment) -> IpcValue {
@@ -4404,14 +4737,14 @@ fn attachment_record(attachment: &Attachment) -> IpcValue {
 
 /// Adapter limitations this host can state as fact.
 ///
-/// Both are properties of this dispatcher, verifiable in this file:
-/// `open_btleplug_adapter` selects one adapter when the attachment is created
-/// and nothing re-selects it afterwards, and the only messages this host pushes
-/// through an event sink are stream `value` and `terminal` messages, never an
-/// adapter-state change.
+/// Both are properties of this dispatcher, verifiable in this file: the
+/// shared central opens on one adapter (`btleplug_opener`) and an adapter
+/// reset keeps that adapter, moving only its generations; the only messages
+/// this host pushes through an event sink are stream `value` and `terminal`
+/// messages, never an adapter-state change.
 const ADAPTER_LIMITATIONS: [&str; 2] = [
     "This host binds one adapter for the lifetime of the attachment; the adapter is selected when the attachment is created and other adapters are not reachable through it.",
-    "This host does not observe adapter-state changes; every adapter.state response is a fresh sample and no adapter-state event is emitted.",
+    "This host emits no adapter-state event; every adapter.state response is a fresh sample. An adapter loss ends every stream of the attachment and replaces the attachment: later requests on it fail backend.reset until the renderer attaches again.",
 ];
 
 fn adapter_limitations() -> IpcValue {
@@ -4423,59 +4756,31 @@ fn adapter_limitations() -> IpcValue {
     )
 }
 
-/// What an adapter-state snapshot was actually able to observe.
-enum AdapterSample<'a> {
-    /// Attachment identity only: nothing was read from the adapter.
-    Unsampled,
-    /// Values read from the adapter while building this snapshot.
-    Live { power: &'a str, heard: i64 },
-}
-
 const UNSAMPLED_SNAPSHOT_REASON: &str =
-    "This snapshot carries attachment identity only; availability, power, and the heard peer count are not sampled here, so route adapter.state for a live reading.";
+    "This snapshot carries attachment identity only; availability, authorization, power, and the heard peer count are not sampled here, so route adapter.state for a live reading.";
+
+/// What one `adapter.state` read measured through the shared central.
+/// `None` means the radio cannot answer that question on this platform;
+/// its reason says why and rides in `safeReason`.
+struct AdapterReading {
+    power: Option<AdapterPowerState>,
+    authorization: Option<AdapterAuthorization>,
+    /// Whether the adapter object is gone (the core's availability fact).
+    removed: bool,
+    heard: i64,
+    reasons: Vec<String>,
+}
 
 /// Snapshot for the attachment record, which reads nothing from the adapter.
 fn adapter_state(attachment: &Attachment) -> IpcValue {
-    adapter_state_snapshot(attachment, AdapterSample::Unsampled)
-}
-
-/// Snapshot for `adapter.state`, built from values just read from the adapter.
-fn live_adapter_state(attachment: &Attachment, power: &str, heard: i64) -> IpcValue {
-    adapter_state_snapshot(attachment, AdapterSample::Live { power, heard })
-}
-
-/// Builds an adapter-state snapshot in which every field is either observed or
-/// explicitly absent.
-///
-/// `availability` and `power` are asserted only from a live read: the caller of
-/// [`live_adapter_state`] reaches it only after `Adapter::adapter_state`
-/// succeeded, which proves the platform still hands this process the adapter.
-/// The unsampled path observes nothing and says so. `authorization` comes from
-/// [`platform_authorization`], `updatedAt` from [`sample_epoch_millis`], and
-/// `safeReason` is the joined set of caveats those readings actually carry, or
-/// null when there are none.
-fn adapter_state_snapshot(attachment: &Attachment, sample: AdapterSample<'_>) -> IpcValue {
     let clock = sample_epoch_millis();
-    let authorization = platform_authorization();
-    let (availability, power, heard) = match sample {
-        AdapterSample::Live { power, heard } => (string("available"), string(power), number(heard)),
-        AdapterSample::Unsampled => (string("unknown"), string("unknown"), IpcValue::Null),
-    };
-    let mut caveats: Vec<&str> = Vec::new();
-    if matches!(sample, AdapterSample::Unsampled) {
-        caveats.push(UNSAMPLED_SNAPSHOT_REASON);
-    }
-    if let Some(reason) = authorization.reason {
-        caveats.push(reason);
-    }
-    if let Some(reason) = clock.reason {
-        caveats.push(reason);
-    }
+    let mut caveats = vec![UNSAMPLED_SNAPSHOT_REASON.to_owned()];
+    caveats.extend(clock.reason.map(str::to_owned));
     object([
-        ("availability", availability),
-        ("authorization", string(authorization.value)),
-        ("power", power),
-        ("heard", heard),
+        ("availability", string("unknown")),
+        ("authorization", string(AUTHORIZATION_UNKNOWN)),
+        ("power", string("unknown")),
+        ("heard", IpcValue::Null),
         (
             "backendGeneration",
             string(attachment.backend_generation.clone()),
@@ -4485,7 +4790,70 @@ fn adapter_state_snapshot(attachment: &Attachment, sample: AdapterSample<'_>) ->
     ])
 }
 
-fn safe_reason(caveats: &[&str]) -> IpcValue {
+/// Snapshot for `adapter.state`, in the IPC vocabulary the desktop NAPI
+/// provider also speaks (one vocabulary): `unsupported` power makes the
+/// adapter unsupported and its authorization unavailable; CoreBluetooth's
+/// `Unauthorized` is the legacy `authorization: denied` with power
+/// unknown; a removed adapter is unavailable; an unreadable power is
+/// unknown availability, never assumed available.
+fn live_adapter_state(attachment: &Attachment, reading: &AdapterReading) -> IpcValue {
+    let clock = sample_epoch_millis();
+    let mut caveats = reading.reasons.clone();
+    let (availability, authorization, power) = match reading.power {
+        Some(AdapterPowerState::Unsupported) => {
+            caveats.push("The OS reports Bluetooth LE is unsupported on this host.".to_owned());
+            ("unsupported", "unavailable", "unsupported")
+        }
+        Some(AdapterPowerState::Unauthorized) => {
+            caveats.push("The OS denies this process the Bluetooth adapter.".to_owned());
+            (availability_of(reading), "denied", "unknown")
+        }
+        power => (
+            availability_of(reading),
+            reading
+                .authorization
+                .map_or(AUTHORIZATION_UNKNOWN, AdapterAuthorization::as_str),
+            power.map_or("unknown", power_wire),
+        ),
+    };
+    caveats.extend(clock.reason.map(str::to_owned));
+    object([
+        ("availability", string(availability)),
+        ("authorization", string(authorization)),
+        ("power", string(power)),
+        ("heard", number(reading.heard)),
+        (
+            "backendGeneration",
+            string(attachment.backend_generation.clone()),
+        ),
+        ("updatedAt", number(clock.epoch_millis)),
+        ("safeReason", safe_reason(&caveats)),
+    ])
+}
+
+fn availability_of(reading: &AdapterReading) -> &'static str {
+    if reading.removed {
+        "unavailable"
+    } else if reading.power.is_none() {
+        "unknown"
+    } else {
+        "available"
+    }
+}
+
+/// The IPC power token for a power state the OS reported (`Unsupported`
+/// and `Unauthorized` are mapped by [`live_adapter_state`]).
+fn power_wire(power: AdapterPowerState) -> &'static str {
+    match power {
+        AdapterPowerState::PoweredOn => "on",
+        AdapterPowerState::PoweredOff => "off",
+        AdapterPowerState::Resetting => "resetting",
+        AdapterPowerState::Unsupported => "unsupported",
+        AdapterPowerState::Unauthorized | AdapterPowerState::Unknown => "unknown",
+    }
+}
+
+fn safe_reason(caveats: &[String]) -> IpcValue {
     if caveats.is_empty() {
         IpcValue::Null
     } else {
@@ -4493,139 +4861,9 @@ fn safe_reason(caveats: &[&str]) -> IpcValue {
     }
 }
 
-/// One platform authorization reading.
-///
-/// `value` is always a wire token from the adapter-state vocabulary
-/// (`granted | denied | restricted | not-determined | unavailable | unknown`).
-/// `unknown` is reported when this host obtained no reading — because the
-/// platform exposes no per-application authorization concept, or because it was
-/// not queried. It matches how the sibling `availability` and `power`
-/// vocabularies already spell "not determined by this host", and it is never a
-/// denial: readiness must not gate on it. `reason` carries the caveat that
-/// belongs in `safeReason`, and is set only when the reading needs one.
-struct AuthorizationReport {
-    value: &'static str,
-    reason: Option<&'static str>,
-}
-
 /// The adapter-state token meaning "this host obtained no authorization
 /// reading". Never a denial.
 const AUTHORIZATION_UNKNOWN: &str = "unknown";
-
-/// `CBManagerAuthorization` raw values, macOS 10.15+ / iOS 13+.
-#[cfg(any(target_os = "macos", test))]
-const CORE_BLUETOOTH_AUTHORIZATION_NOT_DETERMINED: isize = 0;
-#[cfg(any(target_os = "macos", test))]
-const CORE_BLUETOOTH_AUTHORIZATION_RESTRICTED: isize = 1;
-#[cfg(any(target_os = "macos", test))]
-const CORE_BLUETOOTH_AUTHORIZATION_DENIED: isize = 2;
-#[cfg(any(target_os = "macos", test))]
-const CORE_BLUETOOTH_AUTHORIZATION_ALLOWED_ALWAYS: isize = 3;
-
-#[cfg(any(target_os = "macos", test))]
-const CORE_BLUETOOTH_AUTHORIZATION_UNRECOGNIZED_REASON: &str =
-    "CoreBluetooth reported an authorization value this host does not recognize, so adapter authorization is reported absent.";
-
-/// Maps a raw `CBManagerAuthorization` to the adapter-state wire vocabulary.
-///
-/// Values outside the documented enum are not forced into a token: they are
-/// reported absent, because this host cannot say what such a value means.
-#[cfg(any(target_os = "macos", test))]
-fn map_core_bluetooth_authorization(raw: isize) -> AuthorizationReport {
-    let value = match raw {
-        CORE_BLUETOOTH_AUTHORIZATION_ALLOWED_ALWAYS => "granted",
-        CORE_BLUETOOTH_AUTHORIZATION_DENIED => "denied",
-        CORE_BLUETOOTH_AUTHORIZATION_RESTRICTED => "restricted",
-        CORE_BLUETOOTH_AUTHORIZATION_NOT_DETERMINED => "not-determined",
-        _ => {
-            return AuthorizationReport {
-                value: AUTHORIZATION_UNKNOWN,
-                reason: Some(CORE_BLUETOOTH_AUTHORIZATION_UNRECOGNIZED_REASON),
-            }
-        }
-    };
-    AuthorizationReport {
-        value,
-        reason: None,
-    }
-}
-
-/// Reads the live CoreBluetooth authorization state.
-///
-/// `+[CBManager authorization]` is macOS 10.15+, so both the class and the
-/// class method are checked before the message is sent; on an older system the
-/// value is reported absent instead of crashing on an unrecognized selector.
-/// Reading the property does not prompt the user; only radio use does.
-#[cfg(target_os = "macos")]
-fn platform_authorization() -> AuthorizationReport {
-    use objc2::{runtime::AnyClass, sel};
-    use objc2_core_bluetooth::CBManager;
-
-    let Some(class) = AnyClass::get("CBManager") else {
-        return AuthorizationReport {
-            value: AUTHORIZATION_UNKNOWN,
-            reason: Some(
-                "CoreBluetooth is not loaded in this process, so adapter authorization is reported absent.",
-            ),
-        };
-    };
-    if !class.metaclass().responds_to(sel!(authorization)) {
-        return AuthorizationReport {
-            value: AUTHORIZATION_UNKNOWN,
-            reason: Some(
-                "This macOS version does not expose +[CBManager authorization], so adapter authorization is reported absent.",
-            ),
-        };
-    }
-    // SAFETY: `+[CBManager authorization]` was just verified to exist on the
-    // metaclass. It takes no arguments and returns `CBManagerAuthorization`,
-    // which is an `NSInteger` with the encoding this binding declares.
-    let authorization = unsafe { CBManager::authorization_class() };
-    map_core_bluetooth_authorization(authorization.0)
-}
-
-/// Reports the BlueZ authorization model.
-///
-/// BlueZ has no per-application Bluetooth authorization state to read: access
-/// is decided by D-Bus policy when a process reaches the adapter, and a refusal
-/// surfaces as a failure to obtain the adapter rather than as a state.
-///
-/// Reporting `granted` here would be a derivation rather than a measurement, so
-/// the value is absent. Absence means "this platform exposes no such state", it
-/// is never a denial, and readiness must not gate on it.
-#[cfg(target_os = "linux")]
-fn platform_authorization() -> AuthorizationReport {
-    AuthorizationReport {
-        value: AUTHORIZATION_UNKNOWN,
-        reason: Some(
-            "BlueZ exposes no per-application Bluetooth authorization state, so adapter authorization is reported absent; on this platform a refusal surfaces as a failure to obtain the adapter rather than as an authorization value.",
-        ),
-    }
-}
-
-/// Reports Windows authorization as absent.
-///
-/// Windows does have an authorization concept for radio access, and this host
-/// does not query it, so no value is claimed for it.
-#[cfg(target_os = "windows")]
-fn platform_authorization() -> AuthorizationReport {
-    AuthorizationReport {
-        value: AUTHORIZATION_UNKNOWN,
-        reason: Some(
-            "Windows decides Bluetooth radio access through settings this host does not query, so adapter authorization is reported absent.",
-        ),
-    }
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-fn platform_authorization() -> AuthorizationReport {
-    AuthorizationReport {
-        value: AUTHORIZATION_UNKNOWN,
-        reason: Some(
-            "This host does not query a Bluetooth authorization state on this platform, so adapter authorization is reported absent.",
-        ),
-    }
-}
 
 /// Newest wall-clock reading this host has reported, in milliseconds since the
 /// Unix epoch. It makes `updatedAt` non-decreasing across snapshots and across
@@ -4677,9 +4915,19 @@ fn resolve_sample_clock(raw: Option<i64>, floor: i64) -> SampleClock {
     }
 }
 
-fn adapter_state_payload_live(attachment: &Attachment, power: &str, heard: i64) -> IpcValue {
-    object([("state", live_adapter_state(attachment, power, heard))])
+fn adapter_state_payload_live(attachment: &Attachment, reading: &AdapterReading) -> IpcValue {
+    object([("state", live_adapter_state(attachment, reading))])
 }
+
+/// The webview IPC protocol this plugin speaks. Version 3 carries the caller
+/// deadline as a relative `budgetMs`, `commit` on every normalized error,
+/// `delivery` on subscriptions and connection-lifecycle events; a webview
+/// offering only 2 is refused at bootstrap as `protocol.incompatible`.
+pub(crate) const IPC_PROTOCOL_VERSION: i64 = 4;
+
+/// The reserved stream of attachment rebinds (IPC protocol 4; TypeScript
+/// `IPC_ATTACHMENT_STREAM_ID`).
+const IPC_ATTACHMENT_STREAM_ID: &str = "attachment";
 
 fn negotiate_ipc_versions(
     remote_offer: &BTreeMap<String, IpcValue>,
@@ -4696,7 +4944,7 @@ fn negotiate_ipc_versions(
         .all(|key| remote_offer.contains_key(*key))
     {
         return Err(DispatchError::new(
-            "protocol.malformed",
+            BleErrorCode::ProtocolMalformed,
             "ipc",
             "tauri.bootstrap-offer-shape",
         ));
@@ -4720,7 +4968,12 @@ fn negotiate_ipc_versions(
         ),
         (
             "ipcProtocol",
-            negotiate_axis(remote_offer, "ipc-protocol", "ipcProtocol", 2)?,
+            negotiate_axis(
+                remote_offer,
+                "ipc-protocol",
+                "ipcProtocol",
+                IPC_PROTOCOL_VERSION,
+            )?,
         ),
     ]))
 }
@@ -4737,7 +4990,7 @@ fn negotiate_axis(
     )?;
     if range.len() != 3 || required_string(&range, "axis", "tauri.bootstrap-offer-axis")? != axis {
         return Err(DispatchError::new(
-            "protocol.malformed",
+            BleErrorCode::ProtocolMalformed,
             "ipc",
             "tauri.bootstrap-offer-range",
         ));
@@ -4746,14 +4999,14 @@ fn negotiate_axis(
     let maximum = offered_version(&range, "maximum", axis)?;
     if minimum > maximum {
         return Err(DispatchError::new(
-            "protocol.malformed",
+            BleErrorCode::ProtocolMalformed,
             "ipc",
             "tauri.bootstrap-offer-range-order",
         ));
     }
     if local_value < minimum || local_value > maximum {
         return Err(DispatchError::new(
-            "protocol.incompatible",
+            BleErrorCode::ProtocolIncompatible,
             "ipc",
             format!("tauri.bootstrap-version-{axis}"),
         ));
@@ -4794,7 +5047,7 @@ fn offered_version(
         || required_string(&version, "axis", "tauri.bootstrap-offer-version")? != axis
     {
         return Err(DispatchError::new(
-            "protocol.malformed",
+            BleErrorCode::ProtocolMalformed,
             "ipc",
             "tauri.bootstrap-offer-version",
         ));
@@ -4802,11 +5055,15 @@ fn offered_version(
     match version.get("value") {
         Some(IpcValue::Number(value)) => {
             value.as_i64().filter(|value| *value >= 0).ok_or_else(|| {
-                DispatchError::new("protocol.malformed", "ipc", "tauri.bootstrap-offer-version")
+                DispatchError::new(
+                    BleErrorCode::ProtocolMalformed,
+                    "ipc",
+                    "tauri.bootstrap-offer-version",
+                )
             })
         }
         _ => Err(DispatchError::new(
-            "protocol.malformed",
+            BleErrorCode::ProtocolMalformed,
             "ipc",
             "tauri.bootstrap-offer-version",
         )),
@@ -4826,14 +5083,6 @@ fn released() -> IpcValue {
         ("state", string("released")),
         ("failures", IpcValue::Array(Vec::new())),
     ])
-}
-
-fn cleanup_succeeded(value: &IpcValue) -> bool {
-    let IpcValue::Object(record) = value else {
-        return false;
-    };
-    matches!(record.get("state"), Some(IpcValue::String(state)) if state == "released")
-        && matches!(record.get("failures"), Some(IpcValue::Array(failures)) if failures.is_empty())
 }
 
 fn cleanup_record(failures: Vec<IpcValue>) -> IpcValue {
@@ -4856,7 +5105,7 @@ fn cleanup_failure(resource_kind: &str, operation: &str, message: String) -> Ipc
         (
             "error",
             object([
-                ("code", string("platform.failure")),
+                ("code", string(BleErrorCode::PlatformFailure.as_str())),
                 ("domain", string("cleanup")),
                 ("operation", string(operation)),
                 (
@@ -4868,7 +5117,11 @@ fn cleanup_failure(resource_kind: &str, operation: &str, message: String) -> Ipc
                         ("metadata", object([])),
                     ]),
                 ),
-                ("retryability", string("caller-decides")),
+                // A failed release is retried by releasing again, which
+                // calls native again; the wire vocabulary reserves
+                // `caller-decides` for undispatched aborts and timeouts.
+                ("retryability", string("never")),
+                ("commit", IpcValue::Null),
             ]),
         ),
     ])
@@ -4902,40 +5155,40 @@ fn as_string(value: &IpcValue) -> Option<&str> {
     }
 }
 
-fn same_attachment_identity(
-    left: &BTreeMap<String, IpcValue>,
-    right: &BTreeMap<String, IpcValue>,
+/// Whether the attachment a route names is the one this dispatcher holds:
+/// the identity fields of the attachment record, compared field by field
+/// without building (and sampling) a record.
+fn attachment_identity_matches(
+    envelope: &BTreeMap<String, IpcValue>,
+    attachment: &Attachment,
 ) -> bool {
-    let left_adapter = left.get("adapter").and_then(|value| match value {
+    let field = |record: &BTreeMap<String, IpcValue>, key: &str, expected: &str| {
+        record.get(key).and_then(as_string) == Some(expected)
+    };
+    let adapter = envelope.get("adapter").and_then(|value| match value {
         IpcValue::Object(record) => Some(record),
         _ => None,
     });
-    let right_adapter = right.get("adapter").and_then(|value| match value {
-        IpcValue::Object(record) => Some(record),
-        _ => None,
-    });
-    ["attachmentId", "backendInstanceId", "backendGeneration"]
-        .iter()
-        .all(|key| string_field_equal(left, right, key))
-        && left_adapter.is_some_and(|left_adapter| {
-            right_adapter.is_some_and(|right_adapter| {
-                string_field_equal(left_adapter, right_adapter, "adapterId")
-                    && string_field_equal(left_adapter, right_adapter, "adapterGeneration")
-            })
+    field(envelope, "attachmentId", &attachment.attachment_id)
+        && field(
+            envelope,
+            "backendInstanceId",
+            &attachment.backend_instance_id,
+        )
+        && field(
+            envelope,
+            "backendGeneration",
+            &attachment.backend_generation,
+        )
+        && adapter.is_some_and(|adapter| {
+            field(adapter, "adapterId", &attachment.adapter_id)
+                && field(adapter, "adapterGeneration", &attachment.adapter_generation)
         })
-}
-
-fn string_field_equal(
-    left: &BTreeMap<String, IpcValue>,
-    right: &BTreeMap<String, IpcValue>,
-    key: &str,
-) -> bool {
-    left.get(key).and_then(as_string) == right.get(key).and_then(as_string)
 }
 
 fn validate_connection_identity(
     payload: &BTreeMap<String, IpcValue>,
-    connection: &ConnectionResource,
+    connection: &CoreConnection,
     owner_lease_id: &str,
     operation: &str,
 ) -> Result<(), DispatchError> {
@@ -4952,7 +5205,7 @@ fn validate_connection_identity(
         Ok(())
     } else {
         Err(DispatchError::new(
-            "protocol.violation",
+            BleErrorCode::ProtocolViolation,
             "connection",
             operation,
         ))
@@ -4961,7 +5214,7 @@ fn validate_connection_identity(
 
 fn validate_database_identity(
     payload: &BTreeMap<String, IpcValue>,
-    database: &DatabaseResource,
+    database: &CoreDatabase,
     operation: &str,
 ) -> Result<(), DispatchError> {
     let matches = required_string(payload, "databaseId", operation)? == database.database_id
@@ -4971,7 +5224,11 @@ fn validate_database_identity(
     if matches {
         Ok(())
     } else {
-        Err(DispatchError::new("protocol.violation", "gatt", operation))
+        Err(DispatchError::new(
+            BleErrorCode::ProtocolViolation,
+            "gatt",
+            operation,
+        ))
     }
 }
 
@@ -4985,7 +5242,11 @@ fn into_object(
 ) -> Result<BTreeMap<String, IpcValue>, DispatchError> {
     match value {
         IpcValue::Object(object) => Ok(object),
-        _ => Err(DispatchError::new("protocol.malformed", "ipc", operation)),
+        _ => Err(DispatchError::new(
+            BleErrorCode::ProtocolMalformed,
+            "ipc",
+            operation,
+        )),
     }
 }
 
@@ -4996,7 +5257,7 @@ fn required_value<'a>(
 ) -> Result<&'a IpcValue, DispatchError> {
     object
         .get(key)
-        .ok_or_else(|| DispatchError::new("protocol.malformed", "ipc", operation))
+        .ok_or_else(|| DispatchError::new(BleErrorCode::ProtocolMalformed, "ipc", operation))
 }
 
 fn required_string(
@@ -5006,24 +5267,22 @@ fn required_string(
 ) -> Result<String, DispatchError> {
     match object.get(key) {
         Some(IpcValue::String(value)) if !value.is_empty() => Ok(value.clone()),
-        _ => Err(DispatchError::new("protocol.malformed", "ipc", operation)),
+        _ => Err(DispatchError::new(
+            BleErrorCode::ProtocolMalformed,
+            "ipc",
+            operation,
+        )),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    #[cfg(target_os = "linux")]
-    use super::error_confirms_device_released;
     use super::{
-        characteristic_properties, disconnect_with_state_check, negotiate_ipc_versions, object,
-        released, resolve_disconnect_failure, scan_poll_interval, scan_properties_match_optional,
-        should_clear_peer_owner, string, BtleplugDispatcher, BtleplugDispatcherOptions,
-        CallerState, DispatchError, IpcEventSink, QuarantineScheduler,
-        DISCONNECT_COMPLETION_TIMEOUT,
+        characteristic_properties, core_identity, negotiate_ipc_versions, object, released,
+        scan_properties_match_optional, string, DispatchError,
     };
     use btleplug::api::CharPropFlags;
-    use std::collections::{HashMap, HashSet};
-    use std::{cell::Cell, cell::RefCell, rc::Rc};
+    use ubm_core::contracts::BleErrorCode;
 
     #[test]
     fn capability_projection_is_data_only() {
@@ -5033,19 +5292,14 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn scan_inventory_polling_is_paced_without_catch_up_bursts() {
-        assert_eq!(super::SCAN_POLL_INTERVAL, std::time::Duration::from_secs(2));
-        assert_eq!(
-            scan_poll_interval().missed_tick_behavior(),
-            tokio::time::MissedTickBehavior::Delay
-        );
-    }
-
     #[test]
     fn native_dispatch_error_keeps_structured_platform_diagnostics_for_terminals() {
-        let error = DispatchError::new("platform.transport", "stream", "tauri.event-send")
-            .platform("native channel closed");
+        let error = DispatchError::new(
+            BleErrorCode::PlatformTransport,
+            "stream",
+            "tauri.event-send",
+        )
+        .platform("native channel closed");
         let super::IpcValue::Object(record) = error.normalized_error() else {
             panic!("normalized error must be an object");
         };
@@ -5064,991 +5318,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn disconnect_failure_checks_state_once_and_releases_an_already_disconnected_peer() {
-        let state_checks = Cell::new(0);
-        assert_eq!(
-            disconnect_with_state_check(
-                async { Err("already disconnected".to_owned()) },
-                || async {
-                    state_checks.set(state_checks.get() + 1);
-                    Ok(false)
-                }
-            )
-            .await,
-            Ok(())
-        );
-        assert_eq!(state_checks.get(), 1);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn disconnect_timeout_checks_state_and_releases_an_already_disconnected_peer() {
-        let state_checks = Cell::new(0);
-        let events = Rc::new(RefCell::new(Vec::new()));
-        let disconnect_events = Rc::clone(&events);
-        let state_events = Rc::clone(&events);
-        assert_eq!(
-            disconnect_with_state_check(
-                async move {
-                    disconnect_events.borrow_mut().push("disconnect-started");
-                    std::future::pending().await
-                },
-                || async {
-                    state_events.borrow_mut().push("state-checked");
-                    state_checks.set(state_checks.get() + 1);
-                    Ok(false)
-                }
-            )
-            .await,
-            Ok(())
-        );
-        assert_eq!(state_checks.get(), 1);
-        assert_eq!(
-            events.borrow().as_slice(),
-            ["disconnect-started", "state-checked"]
-        );
-    }
-
-    /// A caller with no live connections, as it looks after its handle has
-    /// already been torn down.
-    fn caller_state_with_no_connections() -> CallerState {
-        CallerState {
-            lease_id: "lease-1".to_owned(),
-            lease_generation: "generation-1".to_owned(),
-            versions: object([]),
-            event_sink: IpcEventSink::new(tauri::ipc::Channel::new(|_| Ok(()))),
-            scan_admitting: false,
-            scan: None,
-            connections: HashMap::new(),
-            databases: HashMap::new(),
-            subscriptions: HashMap::new(),
-            connection_events: HashMap::new(),
-            operations: HashMap::new(),
-            completed_correlations: HashMap::new(),
-            pending_events: HashSet::new(),
-            quarantine: QuarantineScheduler::new(),
-        }
-    }
-
-    /// Exercises the guard through the dispatcher rather than through the pure
-    /// predicate, which is the part a revert would actually break.
-    ///
-    /// The scenario is the one the fix exists for: a stale cleanup for handle
-    /// `h1` arrives after the peer has been reconnected as `h2`. Because `h1`
-    /// is already gone, `connections.remove` yields `None`, so the removed peer
-    /// is `None` and ownership must be left alone. Passing the *requested* peer
-    /// where the *removed* peer belongs - the original bug - makes the guard
-    /// true here and clears an owner that a newer connection still holds, so
-    /// this test fails if those arguments are ever swapped back.
-    #[tokio::test]
-    async fn a_stale_cleanup_does_not_clear_a_reconnected_peers_owner() {
-        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
-        {
-            let mut state = dispatcher.inner.lock().await;
-            state
-                .callers
-                .insert("caller-a".to_owned(), caller_state_with_no_connections());
-            state
-                .peer_owners
-                .insert("peer-1".to_owned(), "caller-a".to_owned());
-        }
-
-        let (subscriptions, event_tasks) = dispatcher
-            .remove_connection_resources("caller-a", "h1", "peer-1")
-            .await;
-
-        assert!(subscriptions.is_empty());
-        assert!(event_tasks.is_empty());
-        let state = dispatcher.inner.lock().await;
-        assert_eq!(
-            state.peer_owners.get("peer-1").map(String::as_str),
-            Some("caller-a"),
-            "a stale handle's cleanup must not release a peer a newer connection owns"
-        );
-    }
-
-    /// A compensating disconnect that cannot confirm the link is down must keep
-    /// the reservation. Dropping it leaves a connected peripheral with no owner
-    /// and no handle - nothing can reach or retry it until the process
-    /// restarts, and the caller is told only that admission was denied.
-    ///
-    /// The original code removed the reservation BEFORE attempting the
-    /// disconnect and discarded its result, so this fails on a revert.
-    #[tokio::test]
-    async fn an_unconfirmed_compensating_disconnect_keeps_the_reservation() {
-        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
-        {
-            let mut state = dispatcher.inner.lock().await;
-            state
-                .peer_owners
-                .insert("peer-1".to_owned(), "caller-a".to_owned());
-        }
-
-        let residue = dispatcher
-            .apply_compensation_outcome(Err("still connected".to_owned()), "peer-1", true)
-            .await;
-
-        assert_eq!(residue.as_deref(), Some("still connected"));
-        let state = dispatcher.inner.lock().await;
-        assert_eq!(
-            state.peer_owners.get("peer-1").map(String::as_str),
-            Some("caller-a"),
-            "a peer that may still be connected must keep its reservation so a retry can reclaim it"
-        );
-    }
-
-    /// The other half: a disconnect the platform confirms DOES surrender the
-    /// reservation, so retaining it is evidence-driven rather than a blanket
-    /// refusal to clean up.
-    #[tokio::test]
-    async fn a_confirmed_compensating_disconnect_releases_the_reservation() {
-        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
-        {
-            let mut state = dispatcher.inner.lock().await;
-            state
-                .peer_owners
-                .insert("peer-1".to_owned(), "caller-a".to_owned());
-        }
-
-        let residue = dispatcher
-            .apply_compensation_outcome(Ok(()), "peer-1", true)
-            .await;
-
-        assert!(residue.is_none());
-        let state = dispatcher.inner.lock().await;
-        assert!(
-            !state.peer_owners.contains_key("peer-1"),
-            "a confirmed release must not leave a stale reservation behind"
-        );
-    }
-
-    /// A reservation held by someone else is never touched, confirmed release
-    /// or not - the same guard `remove_connection_resources` already applies.
-    #[tokio::test]
-    async fn compensation_never_clears_another_callers_reservation() {
-        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
-        {
-            let mut state = dispatcher.inner.lock().await;
-            state
-                .peer_owners
-                .insert("peer-1".to_owned(), "caller-b".to_owned());
-        }
-
-        dispatcher
-            .apply_compensation_outcome(Ok(()), "peer-1", false)
-            .await;
-
-        let state = dispatcher.inner.lock().await;
-        assert_eq!(
-            state.peer_owners.get("peer-1").map(String::as_str),
-            Some("caller-b"),
-            "compensation must not release a peer another caller owns"
-        );
-    }
-
-    fn orphan_owner(peer_id: &str, generation: &str) -> super::OrphanConnectionOwner {
-        super::OrphanConnectionOwner {
-            caller_key: "caller-a".to_owned(),
-            lease_id: "lease-1".to_owned(),
-            lease_generation: generation.to_owned(),
-            peer_id: peer_id.to_owned(),
-            peripheral: None,
-            attempts: 0,
-        }
-    }
-
-    /// Failed compensating disconnect must keep both the reservation and an
-    /// inspectable cleanup owner. The original path retained `peer_owners`
-    /// while dropping the Peripheral, so later release could not retry.
-    #[tokio::test]
-    async fn failed_compensation_keeps_an_inspectable_orphan_owner() {
-        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
-        {
-            let mut state = dispatcher.inner.lock().await;
-            state
-                .peer_owners
-                .insert("peer-1".to_owned(), "caller-a".to_owned());
-            super::retain_orphan_connection(&mut state, orphan_owner("peer-1", "generation-1"));
-        }
-
-        let residue = dispatcher
-            .settle_orphan_connection(Err("still connected".to_owned()), "peer-1", "generation-1")
-            .await;
-
-        assert_eq!(residue.as_deref(), Some("still connected"));
-        let state = dispatcher.inner.lock().await;
-        assert_eq!(
-            state.peer_owners.get("peer-1").map(String::as_str),
-            Some("caller-a"),
-            "a peer that may still be connected must keep its reservation"
-        );
-        let orphan = state
-            .orphan_connections
-            .get("peer-1")
-            .expect("failed compensation must keep an inspectable pending cleanup owner");
-        assert_eq!(orphan.lease_id, "lease-1");
-        assert_eq!(orphan.lease_generation, "generation-1");
-        assert!(
-            orphan.attempts >= 1,
-            "failed compensation must record retry state"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_later_cleanup_retry_releases_the_orphan_and_reservation() {
-        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
-        {
-            let mut state = dispatcher.inner.lock().await;
-            state
-                .peer_owners
-                .insert("peer-1".to_owned(), "caller-a".to_owned());
-            super::retain_orphan_connection(&mut state, orphan_owner("peer-1", "generation-1"));
-        }
-
-        let residue = dispatcher
-            .settle_orphan_connection(Ok(()), "peer-1", "generation-1")
-            .await;
-
-        assert!(residue.is_none());
-        let state = dispatcher.inner.lock().await;
-        assert!(
-            !state.peer_owners.contains_key("peer-1"),
-            "proven release must drop the reservation"
-        );
-        assert!(
-            !state.orphan_connections.contains_key("peer-1"),
-            "proven release must drop the orphan owner together with the reservation"
-        );
-    }
-
-    #[tokio::test]
-    async fn old_orphan_cleanup_does_not_release_a_newer_generations_reservation() {
-        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
-        {
-            let mut state = dispatcher.inner.lock().await;
-            state
-                .peer_owners
-                .insert("peer-1".to_owned(), "caller-a".to_owned());
-            super::retain_orphan_connection(&mut state, orphan_owner("peer-1", "generation-2"));
-        }
-
-        dispatcher
-            .settle_orphan_connection(Ok(()), "peer-1", "generation-1")
-            .await;
-
-        let state = dispatcher.inner.lock().await;
-        assert_eq!(
-            state.peer_owners.get("peer-1").map(String::as_str),
-            Some("caller-a"),
-            "old cleanup must not release a newer generation's reservation"
-        );
-        let orphan = state
-            .orphan_connections
-            .get("peer-1")
-            .expect("newer generation orphan must remain");
-        assert_eq!(orphan.lease_generation, "generation-2");
-    }
-
-    #[tokio::test]
-    async fn release_without_a_caller_still_observes_orphan_connections() {
-        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
-        {
-            let mut state = dispatcher.inner.lock().await;
-            state
-                .peer_owners
-                .insert("peer-1".to_owned(), "caller-a".to_owned());
-            super::retain_orphan_connection(&mut state, orphan_owner("peer-1", "generation-1"));
-        }
-
-        let cleanup = dispatcher.release("caller-a").await;
-        let state = dispatcher.inner.lock().await;
-        assert!(
-            state.orphan_connections.contains_key("peer-1"),
-            "release must keep an orphan whose physical release is unproven"
-        );
-        assert_eq!(
-            state.peer_owners.get("peer-1").map(String::as_str),
-            Some("caller-a")
-        );
-        assert!(
-            !super::is_released(&cleanup),
-            "unproven orphan cleanup cannot report a clean release that forgets the resource"
-        );
-    }
-
-    fn caller_state_with_scan(handle: &str) -> CallerState {
-        let mut caller = caller_state_with_no_connections();
-        caller.scan = Some(super::ScanResource {
-            handle: handle.to_owned(),
-            task: tokio::spawn(std::future::pending()),
-        });
-        caller
-    }
-
-    /// fail_scan_stream used to take the scan, clear scan_owner, then
-    /// `stop_scan().await.ok()`. The owner must stay until native stop
-    /// settles so a second scan cannot cover an outstanding stop.
-    #[tokio::test]
-    async fn fail_scan_keeps_owner_until_native_stop_completes() {
-        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
-        let mut state = dispatcher.inner.lock().await;
-        state
-            .callers
-            .insert("caller-a".to_owned(), caller_state_with_scan("scan-1"));
-        state.scan_owner = Some("caller-a".to_owned());
-
-        super::begin_scan_stop(
-            &mut state,
-            "caller-a",
-            ("lease-1", "generation-1"),
-            "scan-1",
-            true,
-        )
-        .expect("owned scan must be claimable for stop");
-
-        assert_eq!(
-            state.scan_owner.as_deref(),
-            Some("caller-a"),
-            "must not clear scan_owner before native stop completes"
-        );
-        assert!(
-            super::scan_start_blocked(&state),
-            "a second scan must not be admitted over an outstanding stop"
-        );
-        assert!(
-            state.stopping_scan.is_some(),
-            "the exact scan owner must remain in a stopping state"
-        );
-    }
-
-    /// fail_scan_stream runs on the stored pump JoinHandle. Aborting that
-    /// handle inside begin_scan_stop cancels adapter()/stop_scan() at the next
-    /// await, so apply_scan_stop_outcome never runs and the radio stays up.
-    #[tokio::test]
-    async fn fail_scan_stream_does_not_abort_the_pump_before_native_stop() {
-        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
-        let (armed_tx, armed_rx) = tokio::sync::oneshot::channel::<()>();
-        let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
-        let dispatcher_task = dispatcher.clone();
-        let task = tokio::spawn(async move {
-            let _ = armed_rx.await;
-            dispatcher_task
-                .fail_scan_stream("caller-a", ("lease-1", "generation-1"), "scan-1")
-                .await;
-            tokio::task::yield_now().await;
-            let _ = done_tx.send(());
-        });
-        {
-            let mut state = dispatcher.inner.lock().await;
-            let mut caller = caller_state_with_no_connections();
-            caller.scan = Some(super::ScanResource {
-                handle: "scan-1".to_owned(),
-                task,
-            });
-            state.callers.insert("caller-a".to_owned(), caller);
-            state.scan_owner = Some("caller-a".to_owned());
-        }
-        armed_tx.send(()).expect("pump must be waiting to fail");
-        done_rx
-            .await
-            .expect("fail_scan_stream must finish native stop on the pump instead of aborting it");
-        let state = dispatcher.inner.lock().await;
-        assert!(
-            super::scan_start_blocked(&state),
-            "adapter-unavailable stop must keep the scan blocked for retry"
-        );
-    }
-
-    #[tokio::test]
-    async fn fail_subscription_stream_does_not_abort_the_pump_before_unsubscribe() {
-        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
-        let (armed_tx, armed_rx) = tokio::sync::oneshot::channel::<()>();
-        let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
-        let dispatcher_task = dispatcher.clone();
-        let task = tauri::async_runtime::spawn(async move {
-            let _ = armed_rx.await;
-            dispatcher_task
-                .fail_subscription_stream("caller-a", ("lease-1", "generation-1"), "sub-1")
-                .await;
-            tokio::task::yield_now().await;
-            let _ = done_tx.send(());
-        });
-        {
-            let mut state = dispatcher.inner.lock().await;
-            let mut caller = caller_state_with_no_connections();
-            caller.subscriptions.insert(
-                "sub-1".to_owned(),
-                super::SubscriptionResource {
-                    database_handle: "db-stand-in".to_owned(),
-                    body: super::SubscriptionBody::StandIn,
-                    task,
-                },
-            );
-            state.callers.insert("caller-a".to_owned(), caller);
-        }
-        armed_tx.send(()).expect("pump must be waiting to fail");
-        done_rx.await.expect(
-            "fail_subscription_stream must finish unsubscribe on the pump instead of aborting it",
-        );
-    }
-
-    #[tokio::test]
-    async fn release_during_scan_admission_keeps_the_scan_blocked_until_stop() {
-        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
-        {
-            let mut state = dispatcher.inner.lock().await;
-            let mut caller = caller_state_with_no_connections();
-            caller.scan_admitting = true;
-            state.callers.insert("caller-a".to_owned(), caller);
-            state.scan_owner = Some("caller-a".to_owned());
-        }
-
-        let _cleanup = dispatcher.release("caller-a").await;
-        let state = dispatcher.inner.lock().await;
-        assert!(
-            super::scan_start_blocked(&state),
-            "release while a scan is still admitting must keep a stopping owner, not clear scan_owner"
-        );
-    }
-
-    #[tokio::test]
-    async fn failed_scan_stop_remains_retryable() {
-        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
-        let mut state = dispatcher.inner.lock().await;
-        state
-            .callers
-            .insert("caller-a".to_owned(), caller_state_with_scan("scan-1"));
-        state.scan_owner = Some("caller-a".to_owned());
-        let super::ScanStopBegin::Started(attempt) = super::begin_scan_stop(
-            &mut state,
-            "caller-a",
-            ("lease-1", "generation-1"),
-            "scan-1",
-            true,
-        )
-        .expect("owned scan must be claimable for stop") else {
-            panic!("first stop request must start the native stop");
-        };
-
-        let error =
-            super::apply_scan_stop_outcome(&mut state, &attempt, Err("adapter busy".to_owned()))
-                .expect_err("failed stop must be retained, not discarded");
-        assert_eq!(error, "adapter busy");
-        assert_eq!(state.scan_owner.as_deref(), Some("caller-a"));
-        assert!(
-            state.stopping_scan.is_some(),
-            "failed stop must keep the original resource available for retry"
-        );
-        assert!(
-            state
-                .stopping_scan
-                .as_ref()
-                .is_some_and(|stopping| !stopping.in_flight),
-            "a failed attempt must settle before a retry can start another native stop"
-        );
-
-        let retry = super::begin_scan_stop(
-            &mut state,
-            "caller-a",
-            ("lease-1", "generation-1"),
-            "scan-1",
-            true,
-        )
-        .expect("failed stop must become retryable after it settles");
-        assert!(
-            matches!(retry, super::ScanStopBegin::Started(_)),
-            "retry after a failed settle must start a new native stop"
-        );
-    }
-
-    #[tokio::test]
-    async fn successful_scan_stop_releases_owner() {
-        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
-        let mut state = dispatcher.inner.lock().await;
-        state
-            .callers
-            .insert("caller-a".to_owned(), caller_state_with_scan("scan-1"));
-        state.scan_owner = Some("caller-a".to_owned());
-        let super::ScanStopBegin::Started(attempt) = super::begin_scan_stop(
-            &mut state,
-            "caller-a",
-            ("lease-1", "generation-1"),
-            "scan-1",
-            true,
-        )
-        .expect("owned scan must be claimable for stop") else {
-            panic!("first stop request must start the native stop");
-        };
-
-        super::apply_scan_stop_outcome(&mut state, &attempt, Ok(()))
-            .expect("confirmed stop must release the stopping owner");
-        assert!(state.scan_owner.is_none());
-        assert!(state.stopping_scan.is_none());
-        assert!(!super::scan_start_blocked(&state));
-    }
-
-    fn stand_in_subscription() -> super::SubscriptionResource {
-        super::SubscriptionResource {
-            database_handle: "db-stand-in".to_owned(),
-            body: super::SubscriptionBody::StandIn,
-            task: tauri::async_runtime::spawn(async {}),
-        }
-    }
-
-    fn subscription_orphan(stream_id: &str, generation: &str) -> super::OrphanSubscriptionOwner {
-        super::OrphanSubscriptionOwner {
-            caller_key: "caller-a".to_owned(),
-            lease_id: "lease-1".to_owned(),
-            lease_generation: generation.to_owned(),
-            stream_id: stream_id.to_owned(),
-            attempts: 0,
-        }
-    }
-
-    /// After native subscribe succeeds, a gone/replaced caller must keep an
-    /// inspectable orphan so a failed compensating unsubscribe can retry.
-    /// The original path discarded that outcome with `.await.ok()`.
-    #[tokio::test]
-    async fn failed_subscribe_compensation_keeps_an_inspectable_orphan_subscription() {
-        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
-        {
-            let mut state = dispatcher.inner.lock().await;
-            super::retain_orphan_subscription(
-                &mut state,
-                subscription_orphan("sub-1", "generation-1"),
-                Some(stand_in_subscription()),
-            );
-        }
-
-        let residue = dispatcher
-            .settle_orphan_subscription(
-                Err("cccd still enabled".to_owned()),
-                "sub-1",
-                "generation-1",
-            )
-            .await;
-
-        assert_eq!(residue.as_deref(), Some("cccd still enabled"));
-        let state = dispatcher.inner.lock().await;
-        let orphan = state
-            .orphan_subscription_owners
-            .get("sub-1")
-            .expect("failed compensating unsubscribe must keep an inspectable orphan owner");
-        assert_eq!(orphan.lease_generation, "generation-1");
-        assert!(
-            orphan.attempts >= 1,
-            "failed compensating unsubscribe must record retry state"
-        );
-        assert!(
-            state.orphan_subscription_resources.contains_key("sub-1"),
-            "the native subscription resource must remain with the orphan for retry"
-        );
-        assert!(
-            state
-                .callers
-                .get("caller-a")
-                .map_or(true, |caller| caller.subscriptions.is_empty()),
-            "compensation must not insert the old subscription into a replacement caller"
-        );
-    }
-
-    #[tokio::test]
-    async fn successful_subscribe_compensation_releases_the_matching_orphan_subscription() {
-        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
-        {
-            let mut state = dispatcher.inner.lock().await;
-            super::retain_orphan_subscription(
-                &mut state,
-                subscription_orphan("sub-1", "generation-1"),
-                Some(stand_in_subscription()),
-            );
-        }
-
-        let residue = dispatcher
-            .settle_orphan_subscription(Ok(()), "sub-1", "generation-1")
-            .await;
-
-        assert!(residue.is_none());
-        let state = dispatcher.inner.lock().await;
-        assert!(
-            !state.orphan_subscription_owners.contains_key("sub-1"),
-            "proven unsubscribe must drop the orphan owner"
-        );
-        assert!(
-            !state.orphan_subscription_resources.contains_key("sub-1"),
-            "proven unsubscribe must drop the orphan resource"
-        );
-    }
-
-    #[tokio::test]
-    async fn old_subscribe_compensation_does_not_drop_a_newer_generation_orphan() {
-        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
-        {
-            let mut state = dispatcher.inner.lock().await;
-            super::retain_orphan_subscription(
-                &mut state,
-                subscription_orphan("sub-1", "generation-2"),
-                Some(stand_in_subscription()),
-            );
-        }
-
-        dispatcher
-            .settle_orphan_subscription(Ok(()), "sub-1", "generation-1")
-            .await;
-
-        let state = dispatcher.inner.lock().await;
-        let orphan = state
-            .orphan_subscription_owners
-            .get("sub-1")
-            .expect("newer generation orphan must remain");
-        assert_eq!(orphan.lease_generation, "generation-2");
-        assert!(
-            state.orphan_subscription_resources.contains_key("sub-1"),
-            "old cleanup must not drop a newer generation's subscription resource"
-        );
-    }
-
-    /// After unsubscribe fails, the old subscription must not land in a
-    /// replacement lease. The original fail_subscription_stream reinserted
-    /// into `callers[key]` with no generation check after the await.
-    #[tokio::test]
-    async fn failed_unsubscribe_does_not_reinsert_into_a_replacement_lease() {
-        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
-        let mut state = dispatcher.inner.lock().await;
-        let mut replacement = caller_state_with_no_connections();
-        replacement.lease_id = "lease-2".to_owned();
-        replacement.lease_generation = "generation-2".to_owned();
-        state.callers.insert("caller-a".to_owned(), replacement);
-
-        super::retain_failed_subscription(
-            &mut state,
-            "caller-a",
-            ("lease-1", "generation-1"),
-            "sub-1",
-            Some(stand_in_subscription()),
-        );
-
-        let caller = state
-            .callers
-            .get("caller-a")
-            .expect("replacement caller remains");
-        assert!(
-            caller.subscriptions.is_empty(),
-            "must not insert an old-generation subscription into the replacement caller"
-        );
-        assert_eq!(caller.lease_id, "lease-2");
-        let orphan = state
-            .orphan_subscription_owners
-            .get("sub-1")
-            .expect("old resource must keep a retry owner on the old generation");
-        assert_eq!(orphan.lease_id, "lease-1");
-        assert_eq!(orphan.lease_generation, "generation-1");
-        assert!(
-            state.orphan_subscription_resources.contains_key("sub-1"),
-            "the stand-in resource must stay on the old generation, not the replacement caller"
-        );
-    }
-
-    #[tokio::test]
-    async fn failed_unsubscribe_reinserts_only_when_the_same_lease_still_owns_the_caller() {
-        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
-        let mut state = dispatcher.inner.lock().await;
-        state
-            .callers
-            .insert("caller-a".to_owned(), caller_state_with_no_connections());
-
-        super::retain_failed_subscription(
-            &mut state,
-            "caller-a",
-            ("lease-1", "generation-1"),
-            "sub-1",
-            Some(stand_in_subscription()),
-        );
-
-        assert!(
-            !state.orphan_subscription_owners.contains_key("sub-1"),
-            "a still-current lease must not quarantine its own live subscription"
-        );
-        assert!(
-            state
-                .callers
-                .get("caller-a")
-                .is_some_and(|caller| caller.subscriptions.contains_key("sub-1")),
-            "the still-current lease must keep the live subscription resource"
-        );
-    }
-
-    #[tokio::test]
-    async fn stop_scan_after_await_does_not_steal_a_replacement_callers_scan() {
-        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
-        let mut state = dispatcher.inner.lock().await;
-        state
-            .callers
-            .insert("caller-a".to_owned(), caller_state_with_scan("scan-1"));
-        state.scan_owner = Some("caller-a".to_owned());
-        let super::ScanStopBegin::Started(attempt) = super::begin_scan_stop(
-            &mut state,
-            "caller-a",
-            ("lease-1", "generation-1"),
-            "scan-1",
-            true,
-        )
-        .expect("owned scan must be claimable for stop") else {
-            panic!("first stop request must start the native stop");
-        };
-
-        let mut replacement = caller_state_with_scan("scan-2");
-        replacement.lease_id = "lease-2".to_owned();
-        replacement.lease_generation = "generation-2".to_owned();
-        state.callers.insert("caller-a".to_owned(), replacement);
-
-        super::apply_scan_stop_outcome(&mut state, &attempt, Ok(()))
-            .expect("old stop success must not fail closed on a replaced lease");
-        let caller = state.callers.get("caller-a").expect("replacement remains");
-        assert_eq!(
-            caller.scan.as_ref().map(|scan| scan.handle.as_str()),
-            Some("scan-2"),
-            "successful old stop must not take a replacement caller's scan"
-        );
-    }
-
-    /// Overlapping stop(A) used to return Started twice, so two native
-    /// adapter.stop_scan() calls ran. The first completion took A's
-    /// stopping_scan; a replacement scan B could then begin stopping; the
-    /// late A completion took B's record and cleared B's owner.
-    #[tokio::test]
-    async fn overlapping_scan_stops_must_not_clear_a_replacement_scans_owner() {
-        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
-        let mut state = dispatcher.inner.lock().await;
-        state
-            .callers
-            .insert("caller-a".to_owned(), caller_state_with_scan("scan-1"));
-        state.scan_owner = Some("caller-a".to_owned());
-
-        let super::ScanStopBegin::Started(first_attempt) = super::begin_scan_stop(
-            &mut state,
-            "caller-a",
-            ("lease-1", "generation-1"),
-            "scan-1",
-            true,
-        )
-        .expect("owned scan must be claimable for stop") else {
-            panic!("first stop request must start the native stop");
-        };
-
-        let second = super::begin_scan_stop(
-            &mut state,
-            "caller-a",
-            ("lease-1", "generation-1"),
-            "scan-1",
-            true,
-        )
-        .expect("overlapping stop of the same scan must join, not error");
-        assert!(
-            matches!(second, super::ScanStopBegin::Joining),
-            "overlapping stop must not start a second native stop"
-        );
-        assert_eq!(
-            state
-                .stopping_scan
-                .as_ref()
-                .map(super::StoppingScan::attempt),
-            Some(first_attempt.clone()),
-            "overlapping stop must join the in-flight attempt, not mint a new token"
-        );
-        assert!(
-            super::scan_start_blocked(&state),
-            "scan start must stay blocked while a stop is outstanding"
-        );
-
-        super::apply_scan_stop_outcome(&mut state, &first_attempt, Ok(()))
-            .expect("first A completion must settle the in-flight stop");
-
-        let mut replacement = caller_state_with_scan("scan-2");
-        replacement.lease_id = "lease-2".to_owned();
-        replacement.lease_generation = "generation-2".to_owned();
-        state.callers.insert("caller-a".to_owned(), replacement);
-        state.scan_owner = Some("caller-a".to_owned());
-        let super::ScanStopBegin::Started(b_attempt) = super::begin_scan_stop(
-            &mut state,
-            "caller-a",
-            ("lease-2", "generation-2"),
-            "scan-2",
-            true,
-        )
-        .expect("replacement scan must be claimable for stop") else {
-            panic!("replacement scan stop must start a native stop");
-        };
-        assert_ne!(
-            b_attempt, first_attempt,
-            "B's stop must carry a distinct attempt token from A"
-        );
-        assert_eq!(
-            state.scan_owner.as_deref(),
-            Some("caller-a"),
-            "B must own the scan while its stop is outstanding"
-        );
-        let stopping_b = state
-            .stopping_scan
-            .as_ref()
-            .expect("B must be in a stopping state");
-        assert_eq!(stopping_b.handle, "scan-2");
-        assert_eq!(stopping_b.lease_id, "lease-2");
-        assert_eq!(stopping_b.lease_generation, "generation-2");
-        assert_eq!(stopping_b.attempt_id, b_attempt.attempt_id);
-
-        super::apply_scan_stop_outcome(&mut state, &first_attempt, Ok(()))
-            .expect("late A completion must not fail closed on B's stop");
-
-        assert_eq!(
-            state.scan_owner.as_deref(),
-            Some("caller-a"),
-            "late A stop must not clear B's scan_owner"
-        );
-        let stopping = state
-            .stopping_scan
-            .as_ref()
-            .expect("B's outstanding stop must survive a late A completion");
-        assert_eq!(stopping.handle, "scan-2");
-        assert_eq!(stopping.lease_id, "lease-2");
-        assert_eq!(stopping.lease_generation, "generation-2");
-        assert_eq!(stopping.attempt_id, b_attempt.attempt_id);
-        assert!(
-            super::scan_start_blocked(&state),
-            "B's outstanding stop must keep scan start blocked"
-        );
-    }
-
-    /// Builds the error btleplug actually delivers when BlueZ has dropped a
-    /// device object, by the same conversions the real path uses.
-    ///
-    /// This doubles as a version tripwire. It constructs the value through the
-    /// *direct* bluez-async dependency and hands it to btleplug's `From`, so if
-    /// that copy and btleplug's transitive copy ever diverge across a semver
-    /// bump, this stops compiling - instead of the downcast silently returning
-    /// None and the classification quietly reverting in production.
-    #[cfg(target_os = "linux")]
-    fn bluez_dbus_error(name: &str) -> btleplug::Error {
-        let dbus_error = dbus::Error::new_custom(name, "device object is gone");
-        btleplug::Error::from(bluez_async::BluetoothError::DbusError(dbus_error))
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_removed_bluez_device_object_confirms_the_peer_is_released() {
-        assert!(error_confirms_device_released(&bluez_dbus_error(
-            "org.freedesktop.DBus.Error.UnknownObject"
-        )));
-        assert!(error_confirms_device_released(&bluez_dbus_error(
-            "org.bluez.Error.DoesNotExist"
-        )));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_transport_failure_is_not_evidence_that_the_peer_was_released() {
-        // The distinction that matters: these mean "we could not tell", so
-        // ownership must be retained rather than released.
-        for name in [
-            "org.freedesktop.DBus.Error.Timeout",
-            "org.freedesktop.DBus.Error.NoReply",
-            "org.freedesktop.DBus.Error.ServiceUnknown",
-        ] {
-            assert!(
-                !error_confirms_device_released(&bluez_dbus_error(name)),
-                "{name} does not prove the peer is gone"
-            );
-        }
-        assert!(!error_confirms_device_released(
-            &btleplug::Error::NotConnected
-        ));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn disconnect_timeout_is_preserved_when_the_peer_remains_connected() {
-        assert_eq!(
-            disconnect_with_state_check(std::future::pending(), || async { Ok(true) }).await,
-            Err(format!(
-                "disconnect completion timed out after {} ms",
-                DISCONNECT_COMPLETION_TIMEOUT.as_millis()
-            ))
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn disconnect_and_state_timeouts_are_both_reported() {
-        assert_eq!(
-            disconnect_with_state_check(
-                std::future::pending(),
-                std::future::pending::<Result<bool, String>>,
-            )
-            .await,
-            Err(format!(
-                "disconnect completion timed out after {ms} ms; post-disconnect state check \
-                 failed: post-disconnect state check timed out after {ms} ms",
-                ms = DISCONNECT_COMPLETION_TIMEOUT.as_millis()
-            ))
-        );
-    }
-
-    #[tokio::test]
-    async fn successful_disconnect_does_not_query_connection_state() {
-        let state_checks = Cell::new(0);
-        assert_eq!(
-            disconnect_with_state_check(async { Ok(()) }, || async {
-                state_checks.set(state_checks.get() + 1);
-                Ok(true)
-            })
-            .await,
-            Ok(())
-        );
-        assert_eq!(state_checks.get(), 0);
-    }
-
-    #[test]
-    fn disconnect_failure_is_preserved_when_the_peripheral_remains_connected() {
-        assert_eq!(
-            resolve_disconnect_failure("transport failed".to_owned(), Ok(true)),
-            Err("transport failed".to_owned())
-        );
-    }
-
-    #[test]
-    fn disconnect_failure_includes_an_indeterminate_post_failure_state() {
-        assert_eq!(
-            resolve_disconnect_failure(
-                "transport failed".to_owned(),
-                Err("state unavailable".to_owned())
-            ),
-            Err(
-                "transport failed; post-disconnect state check failed: state unavailable"
-                    .to_owned()
-            )
-        );
-    }
-
-    #[test]
-    fn stale_connection_cleanup_does_not_clear_a_new_peer_owner() {
-        assert!(!should_clear_peer_owner(
-            None,
-            "peer-1",
-            Some("caller-1"),
-            "caller-1"
-        ));
-        assert!(!should_clear_peer_owner(
-            Some("peer-1"),
-            "peer-1",
-            Some("caller-2"),
-            "caller-1"
-        ));
-        assert!(should_clear_peer_owner(
-            Some("peer-1"),
-            "peer-1",
-            Some("caller-1"),
-            "caller-1"
-        ));
-    }
-
     #[test]
     fn scan_filtering_fails_closed_when_properties_are_unavailable() {
         assert!(!scan_properties_match_optional(None, &[], None, &[]));
@@ -6064,7 +5333,7 @@ mod tests {
             adapter_name: "CoreBluetooth".into(),
             adapter_generation: "1".into(),
         };
-        let payload = super::adapter_state_payload_live(&attachment, "on", 3);
+        let payload = super::adapter_state_payload_live(&attachment, &powered_on_reading());
         let super::IpcValue::Object(record) = payload else {
             panic!("adapter.state payload must be an object");
         };
@@ -6077,6 +5346,16 @@ mod tests {
         assert!(
             matches!(state.get("heard"), Some(super::IpcValue::Number(value) ) if value.as_i64() == Some(3))
         );
+    }
+
+    fn powered_on_reading() -> super::AdapterReading {
+        super::AdapterReading {
+            power: Some(ubm_desktop::AdapterPowerState::PoweredOn),
+            authorization: Some(ubm_desktop::AdapterAuthorization::Granted),
+            removed: false,
+            heard: 3,
+            reasons: Vec::new(),
+        }
     }
 
     fn test_attachment() -> super::Attachment {
@@ -6111,64 +5390,28 @@ mod tests {
     ];
 
     #[test]
-    fn core_bluetooth_authorization_maps_to_the_wire_vocabulary() {
-        for (raw, expected) in [
-            (0isize, "not-determined"),
-            (1, "restricted"),
-            (2, "denied"),
-            (3, "granted"),
+    fn every_core_authorization_is_a_wire_token() {
+        use ubm_desktop::AdapterAuthorization;
+        for authorization in [
+            AdapterAuthorization::Granted,
+            AdapterAuthorization::Denied,
+            AdapterAuthorization::Restricted,
+            AdapterAuthorization::NotDetermined,
         ] {
-            let report = super::map_core_bluetooth_authorization(raw);
-            assert_eq!(report.value, expected, "raw {raw} must map to {expected}");
-            assert_eq!(
-                report.reason, None,
-                "a real CoreBluetooth reading carries no caveat"
-            );
-            assert!(WIRE_AUTHORIZATION_TOKENS.contains(&expected));
-        }
-    }
-
-    #[test]
-    fn unrecognized_core_bluetooth_authorization_is_reported_unknown() {
-        for raw in [-1isize, 4, 99] {
-            let report = super::map_core_bluetooth_authorization(raw);
-            assert_eq!(
-                report.value,
-                super::AUTHORIZATION_UNKNOWN,
-                "raw {raw} has no known meaning and must not be forced into a decision"
-            );
-            assert!(report.reason.is_some(), "an unknown value must say why");
-        }
-    }
-
-    #[test]
-    fn platform_authorization_is_always_a_wire_token() {
-        let report = super::platform_authorization();
-        assert!(
-            WIRE_AUTHORIZATION_TOKENS.contains(&report.value),
-            "{} is not part of the adapter authorization vocabulary",
-            report.value
-        );
-        if report.value == super::AUTHORIZATION_UNKNOWN {
+            let reading = super::AdapterReading {
+                authorization: Some(authorization),
+                ..powered_on_reading()
+            };
+            let state = state_object(super::live_adapter_state(&test_attachment(), &reading));
+            let Some(super::IpcValue::String(token)) = state.get("authorization") else {
+                panic!("authorization must be a string");
+            };
             assert!(
-                report.reason.is_some(),
-                "an unknown authorization must carry the reason this host has no reading"
+                WIRE_AUTHORIZATION_TOKENS.contains(&token.as_str()),
+                "{token}"
             );
+            assert_eq!(token, authorization.as_str());
         }
-    }
-
-    // Spec change: this arm previously derived `granted` from the fact that
-    // D-Bus handed this process an adapter. That is an inference, not a
-    // measurement, and it made Linux the one platform reporting a value it had
-    // never queried. It now reports `unknown`, with the reason disclosed.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn bluez_authorization_is_unknown_because_the_platform_exposes_no_such_state() {
-        let report = super::platform_authorization();
-        assert_eq!(report.value, super::AUTHORIZATION_UNKNOWN);
-        assert!(report
-            .reason
-            .is_some_and(|reason| reason.contains("BlueZ exposes no per-application")));
     }
 
     #[test]
@@ -6203,7 +5446,10 @@ mod tests {
 
     #[test]
     fn live_adapter_state_reports_only_what_it_observed() {
-        let state = state_object(super::live_adapter_state(&test_attachment(), "on", 3));
+        let state = state_object(super::live_adapter_state(
+            &test_attachment(),
+            &powered_on_reading(),
+        ));
 
         assert_eq!(state.get("availability"), Some(&string("available")));
         assert_eq!(state.get("power"), Some(&string("on")));
@@ -6219,13 +5465,8 @@ mod tests {
             "updatedAt must be stamped when the state is sampled"
         );
 
-        match state.get("authorization") {
-            Some(super::IpcValue::String(value)) => {
-                assert!(WIRE_AUTHORIZATION_TOKENS.contains(&value.as_str()))
-            }
-            Some(super::IpcValue::Null) => {}
-            other => panic!("authorization must be a wire token or null, got {other:?}"),
-        }
+        assert_eq!(state.get("authorization"), Some(&string("granted")));
+        assert_eq!(state.get("safeReason"), Some(&super::IpcValue::Null));
     }
 
     #[test]
@@ -6245,7 +5486,7 @@ mod tests {
     fn safe_reason_is_null_when_nothing_needs_disclosing() {
         assert_eq!(super::safe_reason(&[]), super::IpcValue::Null);
         assert_eq!(
-            super::safe_reason(&["first.", "second."]),
+            super::safe_reason(&["first.".to_owned(), "second.".to_owned()]),
             string("first. second.")
         );
     }
@@ -6276,11 +5517,47 @@ mod tests {
             ("capabilitySchema", offer_range("capability-schema", 1)),
             ("eventSchema", offer_range("event-schema", 1)),
             ("traceFormat", offer_range("trace-format", 1)),
-            ("ipcProtocol", offer_range("ipc-protocol", 2)),
+            ("ipcProtocol", offer_range("ipc-protocol", 4)),
         ]) else {
             panic!("the version offer must be an object");
         };
         offer
+    }
+
+    // IPC protocol 4 adds the host-announced attachment rebind (the
+    // `attachment` stream, `backend-restarted`) after an adapter reset; a
+    // protocol-3 webview would keep routing on a replaced attachment, so the
+    // plugin speaks 4 only. An older or newer-only webview fails at bootstrap
+    // as protocol.incompatible, before any operation can be admitted.
+    #[test]
+    fn version_offer_requires_ipc_protocol_4_and_refuses_an_old_webview() {
+        assert_eq!(super::IPC_PROTOCOL_VERSION, 4);
+        let mut old = current_offer();
+        old.insert("ipcProtocol".to_owned(), offer_range("ipc-protocol", 3));
+        let error = negotiate_ipc_versions(&old).expect_err("an old webview must be refused");
+        assert_eq!(error.code, BleErrorCode::ProtocolIncompatible);
+
+        let mut newer = current_offer();
+        newer.insert("ipcProtocol".to_owned(), offer_range("ipc-protocol", 5));
+        let error =
+            negotiate_ipc_versions(&newer).expect_err("a newer-only webview must be refused");
+        assert_eq!(error.code, BleErrorCode::ProtocolIncompatible);
+
+        let super::IpcValue::Object(versions) =
+            negotiate_ipc_versions(&current_offer()).expect("protocol 4 must negotiate")
+        else {
+            panic!("the negotiated versions must be an object");
+        };
+        let Some(super::IpcValue::Object(ipc)) = versions.get("ipcProtocol") else {
+            panic!("the negotiated IPC protocol must be an object");
+        };
+        assert_eq!(
+            ipc.get("selected"),
+            Some(&object([
+                ("axis", string("ipc-protocol")),
+                ("value", super::number(4))
+            ]))
+        );
     }
 
     #[test]
@@ -6288,12 +5565,30 @@ mod tests {
         let mut incompatible = current_offer();
         incompatible.insert("ipcProtocol".to_owned(), offer_range("ipc-protocol", 1));
         let error = negotiate_ipc_versions(&incompatible).expect_err("disjoint offers must fail");
-        assert_eq!(error.code, "protocol.incompatible");
+        assert_eq!(error.code, BleErrorCode::ProtocolIncompatible);
 
         let mut malformed = current_offer();
         malformed.remove("traceFormat");
         let error = negotiate_ipc_versions(&malformed).expect_err("missing axes must fail");
-        assert_eq!(error.code, "protocol.malformed");
+        assert_eq!(error.code, BleErrorCode::ProtocolMalformed);
+    }
+
+    #[test]
+    fn bootstrap_core_identity_reports_the_linked_contract() {
+        // F01: the revision is the LINKED ubm-core value, never a
+        // plugin-spelled string; a drifted literal fails here.
+        let identity = core_identity();
+        let super::IpcValue::Object(fields) = &identity else {
+            panic!("core identity must be an object");
+        };
+        assert_eq!(
+            fields.get("contractRevision"),
+            Some(&string(ubm_core::contracts::CONTRACT_REVISION))
+        );
+        assert_eq!(
+            fields.get("implementationVersion"),
+            Some(&string(env!("CARGO_PKG_VERSION")))
+        );
     }
 
     #[test]
@@ -6313,7 +5608,7 @@ mod tests {
                     "selected",
                     object([
                         ("axis", string("ipc-protocol")),
-                        ("value", super::number(2))
+                        ("value", super::number(4))
                     ])
                 ),
                 (
@@ -6324,14 +5619,14 @@ mod tests {
                             "minimum",
                             object([
                                 ("axis", string("ipc-protocol")),
-                                ("value", super::number(2))
+                                ("value", super::number(4))
                             ])
                         ),
                         (
                             "maximum",
                             object([
                                 ("axis", string("ipc-protocol")),
-                                ("value", super::number(2))
+                                ("value", super::number(4))
                             ])
                         )
                     ])
@@ -6344,14 +5639,14 @@ mod tests {
                             "minimum",
                             object([
                                 ("axis", string("ipc-protocol")),
-                                ("value", super::number(2))
+                                ("value", super::number(4))
                             ])
                         ),
                         (
                             "maximum",
                             object([
                                 ("axis", string("ipc-protocol")),
-                                ("value", super::number(2))
+                                ("value", super::number(4))
                             ])
                         )
                     ])
@@ -6374,7 +5669,7 @@ mod tests {
         let error =
             super::admit_caller_correlation(&operations, &mut completed, "c1", "gatt.read", now)
                 .expect_err("completed correlation replay must fail");
-        assert_eq!(error.code, "protocol.violation");
+        assert_eq!(error.code, BleErrorCode::ProtocolViolation);
         assert_eq!(error.operation, "tauri.correlation-replay");
     }
 
@@ -6397,10 +5692,16 @@ mod tests {
         }
     }
 
+    fn tracked_operation() -> super::TrackedOperation {
+        super::TrackedOperation {
+            control: ubm_desktop::OpControl::unbounded(),
+        }
+    }
+
     #[test]
     fn in_flight_duplicate_correlation_is_still_rejected() {
         let mut operations = std::collections::HashMap::new();
-        operations.insert("c1".to_owned(), tokio_util::sync::CancellationToken::new());
+        operations.insert("c1".to_owned(), tracked_operation());
         let mut completed = std::collections::HashMap::new();
         let error = super::admit_caller_correlation(
             &operations,
@@ -6501,7 +5802,7 @@ mod tests {
             now,
         )
         .expect_err("replay of an old correlation must still reject");
-        assert_eq!(error.code, "protocol.violation");
+        assert_eq!(error.code, BleErrorCode::ProtocolViolation);
         assert_eq!(error.operation, "tauri.correlation-replay");
     }
 
@@ -6511,10 +5812,7 @@ mod tests {
         let mut completed = std::collections::HashMap::new();
         let now = std::time::Instant::now();
         for index in 0..super::MAX_CORRELATIONS {
-            operations.insert(
-                format!("live-{index}"),
-                tokio_util::sync::CancellationToken::new(),
-            );
+            operations.insert(format!("live-{index}"), tracked_operation());
         }
         let error = super::admit_caller_correlation(
             &operations,
@@ -6524,12 +5822,13 @@ mod tests {
             now,
         )
         .expect_err("live exhaustion must reject new ordinary work");
-        assert_eq!(error.code, "stream.quota");
+        assert_eq!(error.code, BleErrorCode::StreamQuota);
         assert_eq!(error.operation, "tauri.correlation-busy");
-        assert!(
-            error.retryable,
-            "live exhaustion is backpressure, not a protocol violation"
-        );
+        // Backpressure is carried by the code (`stream.quota` recovers with
+        // retry-with-backoff); the wire reserves `caller-decides` for
+        // undispatched aborts and timeouts, and the TypeScript transport
+        // rejects it on any other code as malformed.
+        assert_eq!(error.retryability, ubm_desktop::Retryability::Never);
         assert_eq!(operations.len(), super::MAX_CORRELATIONS);
     }
 
@@ -6539,10 +5838,7 @@ mod tests {
         let mut completed = std::collections::HashMap::new();
         let now = std::time::Instant::now();
         for index in 0..super::MAX_CORRELATIONS {
-            operations.insert(
-                format!("live-{index}"),
-                tokio_util::sync::CancellationToken::new(),
-            );
+            operations.insert(format!("live-{index}"), tracked_operation());
         }
         super::admit_caller_correlation(
             &operations,
@@ -6570,140 +5866,269 @@ mod tests {
         .expect("connection.disconnect must reserve admission when live work is at capacity");
     }
 
-    fn quarantine_key(command: &str, handle: &str) -> super::QuarantineKey {
-        super::QuarantineKey {
-            command: command.to_owned(),
-            handle: handle.to_owned(),
+    // R03 cutover: BLE scheduling executes the shared core. These tests
+    // drive the live dispatcher over one shared `DesktopCentral` on a
+    // scripted `FakeRadio` boundary: connect verdicts equal a direct core
+    // drive bit-for-bit, scans start headless, and a shut-down core fails
+    // loudly instead of falling back to silent legacy radio ownership.
+    mod core_authority_cutover {
+        use std::collections::BTreeMap;
+        use std::sync::Arc;
+
+        use ubm_desktop::{DesktopCentral, FakeRadio, OpControl};
+
+        use crate::desktop_core::CoreAuthority;
+        use crate::{AuthenticatedCaller, IpcValue};
+
+        use super::super::{
+            caller_key, object, string, Attachment, BtleplugDispatcher, CallerState, IpcEventSink,
+        };
+
+        const HRM_SERVICE: &str = "0000180d-0000-1000-8000-00805f9b34fb";
+
+        fn caller() -> AuthenticatedCaller {
+            AuthenticatedCaller::new("test-app".to_owned(), "main".to_owned())
         }
-    }
 
-    fn quarantine_payload() -> std::collections::BTreeMap<String, super::IpcValue> {
-        std::collections::BTreeMap::new()
-    }
-
-    #[test]
-    fn persistent_cleanup_failure_stops_after_eight_attempts() {
-        let mut scheduler = super::QuarantineScheduler::new();
-        let key = quarantine_key("scan.stop", "scan-1");
-        assert!(matches!(
-            scheduler.enqueue(key.clone(), quarantine_payload(), 8),
-            super::QuarantineAdmit::Start
-        ));
-        for _ in 0..super::MAX_QUARANTINE_ATTEMPTS {
-            scheduler.record_attempt(&key);
+        fn test_caller_state(attachment: Attachment) -> CallerState {
+            CallerState {
+                lease_id: "lease-1".to_owned(),
+                lease_generation: "generation-1".to_owned(),
+                versions: object([]),
+                attachment,
+                event_sink: IpcEventSink::new(tauri::ipc::Channel::new(|_| Ok(()))),
+                retired: false,
+                scan: None,
+                connections: std::collections::HashMap::new(),
+                databases: std::collections::HashMap::new(),
+                subscriptions: std::collections::HashMap::new(),
+                connection_events: std::collections::HashMap::new(),
+                operations: std::collections::HashMap::new(),
+                completed_correlations: std::collections::HashMap::new(),
+                pending_events: std::collections::HashSet::new(),
+            }
         }
-        scheduler.exhaust(key.clone());
-        assert_eq!(scheduler.failures.len(), 1);
-        assert!(!scheduler.keys.contains(&key));
-    }
 
-    #[test]
-    fn repeated_cancelled_success_for_same_handle_coalesces_to_one_worker() {
-        let mut scheduler = super::QuarantineScheduler::new();
-        let key = quarantine_key("scan.stop", "scan-1");
-        assert!(matches!(
-            scheduler.enqueue(key.clone(), quarantine_payload(), 8),
-            super::QuarantineAdmit::Start
-        ));
-        assert!(matches!(
-            scheduler.enqueue(key, quarantine_payload(), 8),
-            super::QuarantineAdmit::Coalesced
-        ));
-        assert_eq!(scheduler.active_workers, 1);
-    }
-
-    #[test]
-    fn lease_drop_cancels_quarantine_workers() {
-        let mut scheduler = super::QuarantineScheduler::new();
-        scheduler.enqueue(
-            quarantine_key("scan.stop", "scan-1"),
-            quarantine_payload(),
-            8,
-        );
-        scheduler.cancel();
-        assert!(scheduler.cancelled);
-        assert_eq!(scheduler.active_workers, 0);
-        assert!(matches!(
-            scheduler.enqueue(
-                quarantine_key("scan.stop", "scan-2"),
-                quarantine_payload(),
-                8
-            ),
-            super::QuarantineAdmit::Cancelled
-        ));
-    }
-
-    #[test]
-    fn worker_count_per_lease_capped_at_four() {
-        let mut scheduler = super::QuarantineScheduler::new();
-        for index in 0..4 {
-            assert!(matches!(
-                scheduler.enqueue(
-                    quarantine_key("scan.stop", &format!("scan-{index}")),
-                    quarantine_payload(),
-                    8,
-                ),
-                super::QuarantineAdmit::Start
-            ));
-        }
-        assert_eq!(scheduler.active_workers, 4);
-        assert!(matches!(
-            scheduler.enqueue(
-                quarantine_key("scan.stop", "scan-4"),
-                quarantine_payload(),
-                8
-            ),
-            super::QuarantineAdmit::Queued
-        ));
-        assert_eq!(scheduler.active_workers, 4);
-    }
-
-    #[test]
-    fn fifth_distinct_cleanup_waits_in_the_bounded_queue_rather_than_disappearing() {
-        let mut scheduler = super::QuarantineScheduler::new();
-        for index in 0..4 {
-            scheduler.enqueue(
-                quarantine_key("scan.stop", &format!("scan-{index}")),
-                quarantine_payload(),
-                8,
+        fn lease_payload() -> BTreeMap<String, IpcValue> {
+            let mut payload = BTreeMap::new();
+            payload.insert("__expectedLeaseId".to_owned(), string("lease-1"));
+            payload.insert(
+                "__expectedLeaseGeneration".to_owned(),
+                string("generation-1"),
             );
+            payload
         }
-        assert!(matches!(
-            scheduler.enqueue(
-                quarantine_key("scan.stop", "scan-4"),
-                quarantine_payload(),
-                8
-            ),
-            super::QuarantineAdmit::Queued
-        ));
-        assert_eq!(scheduler.queue.len(), 1);
-        assert!(scheduler
-            .keys
-            .contains(&quarantine_key("scan.stop", "scan-4")));
-        let first = quarantine_key("scan.stop", "scan-0");
-        let next = scheduler.succeed(&first);
-        assert!(next.is_some());
-        assert_eq!(next.unwrap().0.handle, "scan-4");
-    }
 
-    #[test]
-    fn exhausted_cleanup_appears_in_release_failed_and_is_retried_by_release() {
-        let mut scheduler = super::QuarantineScheduler::new();
-        let key = quarantine_key("connection.disconnect", "connection-1");
-        scheduler.enqueue(key.clone(), quarantine_payload(), 8);
-        scheduler.exhaust(key.clone());
-        assert_eq!(scheduler.failures.len(), 1);
-        scheduler.succeed(&key);
-        assert!(scheduler.failures.is_empty());
-    }
+        /// Canonical empty normalized scan query (`{"anyOf":null,"exclude":null}`)
+        /// with a valid digest (FNV-1a over UTF-16, `scan-query-v1:` prefixed).
+        fn empty_scan_query() -> IpcValue {
+            let canonical = "{\"anyOf\":null,\"exclude\":null}";
+            let mut hash = 0xcbf29ce484222325_u64;
+            for code_unit in canonical.encode_utf16() {
+                hash ^= u64::from(code_unit);
+                hash = hash.wrapping_mul(0x100000001b3_u64);
+            }
+            let mut fields = BTreeMap::new();
+            fields.insert("anyOf".to_owned(), IpcValue::Null);
+            fields.insert("exclude".to_owned(), IpcValue::Null);
+            fields.insert(
+                "digest".to_owned(),
+                string(format!("scan-query-v1:{hash:016x}")),
+            );
+            IpcValue::Object(fields)
+        }
 
-    #[test]
-    fn ownership_denied_stops_retry_without_resurrecting_the_resource() {
-        let mut scheduler = super::QuarantineScheduler::new();
-        let key = quarantine_key("gatt.unsubscribe", "sub-1");
-        scheduler.enqueue(key.clone(), quarantine_payload(), 8);
-        scheduler.succeed(&key);
-        assert!(!scheduler.keys.contains(&key));
-        assert!(scheduler.failures.is_empty());
+        async fn open_central(owner: &'static str) -> DesktopCentral<FakeRadio> {
+            ubm_desktop::executor::desktop_runtime()
+                .spawn(DesktopCentral::open(FakeRadio::new(), owner))
+                .await
+                .expect("open task joins")
+                .expect("fake radio opens without hardware")
+        }
+
+        async fn dispatcher_with_caller() -> (BtleplugDispatcher, AuthenticatedCaller) {
+            let authority: Arc<dyn CoreAuthority> = Arc::new(open_central("tauri-test").await);
+            let dispatcher = BtleplugDispatcher::with_core_authority(authority);
+            let caller = caller();
+            let attachment = dispatcher
+                .ensure_adapter()
+                .await
+                .expect("the central's attachment");
+            dispatcher
+                .inner
+                .lock()
+                .await
+                .callers
+                .insert(caller_key(&caller), test_caller_state(attachment));
+            (dispatcher, caller)
+        }
+
+        /// BLE work executes the core: connecting headless succeeds through
+        /// the admitted authority and records the core-owned mapping. The
+        /// legacy path cannot do this: it reads `adapter.peripherals()`
+        /// from raw btleplug first, which fails without hardware.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn core_authority_connects_without_radio_hardware() {
+            let (dispatcher, caller) = dispatcher_with_caller().await;
+            let mut payload = lease_payload();
+            payload.insert("peerId".to_owned(), string("peer-unknown"));
+
+            let response = dispatcher
+                .connect(&caller, payload, OpControl::budget_ms(5000))
+                .await
+                .expect("core connects without hardware");
+            let IpcValue::Object(fields) = response else {
+                panic!("connect must answer an object");
+            };
+            let handle = fields
+                .get("handle")
+                .and_then(|value| match value {
+                    IpcValue::String(handle) => Some(handle.clone()),
+                    _ => None,
+                })
+                .expect("core-backed connect must mint a handle");
+            let state = dispatcher.inner.lock().await;
+            let stored = state
+                .callers
+                .get(&caller_key(&caller))
+                .and_then(|caller_state| caller_state.connections.get(&handle))
+                .expect("connect must record the core-owned mapping");
+            assert_eq!(stored.peer_id, "peer-unknown");
+        }
+
+        /// Core verdicts cross verbatim: a second scan owner is refused by
+        /// core arbitration, and the dispatcher's failure equals a direct
+        /// core drive — code, domain, and operation.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn core_arbitration_verdicts_cross_verbatim() {
+            let (dispatcher, caller_a) = dispatcher_with_caller().await;
+            let caller_b = AuthenticatedCaller::new("test-app".to_owned(), "second".to_owned());
+            let attachment = dispatcher
+                .ensure_adapter()
+                .await
+                .expect("the central's attachment");
+            dispatcher
+                .inner
+                .lock()
+                .await
+                .callers
+                .insert(caller_key(&caller_b), test_caller_state(attachment));
+            let mut first = lease_payload();
+            first.insert("query".to_owned(), empty_scan_query());
+            let started = dispatcher
+                .start_scan(&caller_a, first, OpControl::budget_ms(5000))
+                .await
+                .expect("first owner starts through the core");
+            let IpcValue::Object(started_fields) = started else {
+                panic!("scan.start must answer an object");
+            };
+            let first_handle = started_fields
+                .get("handle")
+                .and_then(|value| match value {
+                    IpcValue::String(handle) => Some(handle.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+
+            let mut second = lease_payload();
+            second.insert("query".to_owned(), empty_scan_query());
+            let error = dispatcher
+                .start_scan(&caller_b, second, OpControl::budget_ms(5000))
+                .await
+                .expect_err("second owner is refused by core arbitration");
+            let (code, domain, operation) = error.identity();
+
+            let direct = {
+                let core = open_central("tauri-direct").await;
+                core.start_scan("owner-a", &[], OpControl::budget_ms(5000))
+                    .await
+                    .expect("first");
+                core.start_scan("owner-b", &[], OpControl::budget_ms(5000))
+                    .await
+                    .expect_err("direct core verdict")
+            };
+            let (direct_code, direct_domain, _, _) = crate::desktop_core::error_identity(&direct);
+            assert_eq!(
+                code, direct_code,
+                "dispatcher verdict must equal the core verdict"
+            );
+            assert_eq!(
+                domain, direct_domain,
+                "dispatcher domain must equal the core domain"
+            );
+            assert_eq!(code, "scan.already-active");
+            assert_eq!(operation, direct.operation());
+
+            let mut stop = lease_payload();
+            stop.insert("scanHandle".to_owned(), string(first_handle));
+            dispatcher
+                .stop_scan(&caller_a, stop, OpControl::budget_ms(5000))
+                .await
+                .expect("first scan stops");
+        }
+
+        /// Scan admission and execution run through the core without touching
+        /// raw btleplug: start succeeds headless and mints a handle.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn core_authority_starts_scans_without_radio_hardware() {
+            let (dispatcher, caller) = dispatcher_with_caller().await;
+            let mut payload = lease_payload();
+            payload.insert("query".to_owned(), empty_scan_query());
+
+            let response = dispatcher
+                .start_scan(&caller, payload, OpControl::budget_ms(5000))
+                .await
+                .expect("core admits scans without hardware");
+            let IpcValue::Object(fields) = response else {
+                panic!("scan.start must answer an object");
+            };
+            let handle = fields.get("handle").and_then(|value| match value {
+                IpcValue::String(handle) => Some(handle.as_str()),
+                _ => None,
+            });
+            assert!(
+                handle.is_some_and(|handle| !handle.is_empty()),
+                "core-backed scan.start must mint a scan handle"
+            );
+
+            let mut stop = lease_payload();
+            stop.insert("scanHandle".to_owned(), string(handle.unwrap_or_default()));
+            let stopped = dispatcher
+                .stop_scan(&caller, stop, OpControl::budget_ms(5000))
+                .await;
+            assert!(
+                stopped.is_ok(),
+                "core-backed scan.stop must release the scan"
+            );
+            let _ = HRM_SERVICE;
+        }
+
+        /// A missing core fails loudly with `adapter.unavailable`, never by
+        /// falling back to silent legacy radio ownership. `connect` always
+        /// reaches the authority (unlike idempotent release paths), so it
+        /// is the proof op.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn missing_core_fails_loudly_never_silent_legacy() {
+            let (dispatcher, caller) = dispatcher_with_caller().await;
+            dispatcher.authority_shutdown().await;
+            let mut payload = lease_payload();
+            payload.insert("peerId".to_owned(), string("peer-1"));
+
+            let error = dispatcher
+                .connect(&caller, payload, OpControl::budget_ms(5000))
+                .await
+                .expect_err("post-shutdown ops must fail loudly");
+            let (code, domain, operation) = error.identity();
+            assert_eq!(code, "adapter.unavailable");
+            assert_eq!(domain, "adapter");
+            assert_eq!(operation, "tauri.core-shutdown");
+        }
     }
 }
+
+#[cfg(test)]
+#[path = "dispatcher_packet_b_tests.rs"]
+mod dispatcher_packet_b_tests;
+#[cfg(test)]
+#[path = "tauri_identity_tests.rs"]
+mod tauri_identity_tests;

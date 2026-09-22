@@ -1,17 +1,17 @@
 // src/expo.ts — thin Expo-aware composition over the React Native factory
 
-import { contractError } from './backend-contract/errors'
+import { BackendContractError, contractError } from './backend-contract/errors'
 import type { BleErrorCode } from './backend-contract/errors'
-import { Platform } from 'react-native'
+import type { RestorationAdoptionResult } from './backend-contract/restoration'
+import type { BackgroundContinuationResubscribeSelector } from './backend-contract/background-continuation'
+import { Platform, TurboModuleRegistry } from 'react-native'
 import { rehydratePublicError } from './public/error-bridge'
+import { BleError } from './public/errors'
 import type { BleAdapterState } from './public/ble-adapter'
 import { createPublicBleManager, type BleManager } from './public/ble-manager'
 import { normalizeBleManagerCreateOptions, type BleManagerCreateOptions } from './public/host-identity'
-import {
-  createReactNativeBleManager,
-  createReactNativeBleManagerWithEnvironment,
-  getNativeUnifiedBleProtocolControl
-} from './react-native'
+import { createReactNativeApplicationHost } from './react-native-app-manager'
+import { createReactNativeManagerHost, type ReactNativeManagerHost } from './react-native-manager'
 import { getNativeUnifiedBleExpoRuntime } from './expo-native-runtime'
 import type {
   NativeExpoPermissionRequest,
@@ -42,6 +42,14 @@ export interface BleReadiness {
 
 export interface ExpoPermissionRequest {
   readonly purpose: 'scan-and-connect'
+  /**
+   * Bounds the wait for the user's decision. Without one the request waits
+   * until the platform answers or the signal aborts: the prompt is
+   * user-facing UI, like bonding, and legacy waited it out too.
+   */
+  readonly timeoutMs?: number
+  /** Aborts a pending request; the late platform answer is then discarded. */
+  readonly signal?: AbortSignal
 }
 
 export interface ExpoPermissionResult {
@@ -71,10 +79,96 @@ export interface ExpoCompanionAssociationRequest {
 }
 
 export interface ExpoCompanionAssociationResult {
-  readonly source: 'associated'
+  readonly source: 'associated' | 'already-associated'
   readonly associationId: number
   readonly peerId: string | null
   readonly displayName: string | null
+}
+
+export interface ExpoCompanionAssociationRecord {
+  readonly associationId: number
+  readonly peerId: string | null
+  readonly displayName: string | null
+}
+
+export interface ExpoCompanionDisassociationRequest {
+  readonly associationId: number
+}
+
+export interface ExpoCompanionDisassociationResult {
+  readonly state: 'disassociated'
+  readonly associationId: number
+}
+
+export interface ExpoPresenceObservationRequest {
+  readonly peerId: string
+}
+
+export interface ExpoContinuationWakeReport {
+  readonly observedAtMs: number
+  readonly event: 'continuation.completed' | 'continuation.failed'
+  readonly strategy: string
+  readonly peerAddress: string | null
+  readonly code: string | null
+  readonly reason: string | null
+}
+
+export interface ExpoContinuationStatus {
+  readonly strategy: string
+  readonly peerId: string | null
+  readonly resubscribe: number
+  readonly malformedDeclarations: number
+  readonly lastWake: ExpoContinuationWakeReport | null
+  /**
+   * The host's own qualification of the declaration, when it has one — for
+   * example that a declared strategy is validated but not implemented in this
+   * release. Null when the host adds nothing.
+   */
+  readonly detail: string | null
+}
+
+export interface ExpoContinuationValue {
+  readonly consumer: string
+  readonly value: Uint8Array
+  readonly delivery: 'notification' | 'indication' | 'unknown'
+}
+
+export interface ExpoContinuationStreamEnd {
+  readonly consumer: string
+  readonly reason: 'overflow' | 'invalidated' | 'closed'
+  readonly droppedItems: number
+  readonly droppedBytes: number
+}
+
+export interface ExpoContinuationBacklog {
+  /** Immutable selector identity for each numeric continuation consumer. */
+  readonly selectors: readonly BackgroundContinuationResubscribeSelector[]
+  readonly values: readonly ExpoContinuationValue[]
+  readonly streamEnds: readonly ExpoContinuationStreamEnd[]
+  readonly controlLost: number
+  /** Native intake observed after the continuation handoff cutoff. */
+  readonly afterCutoffLoss: { readonly items: number; readonly bytes: number }
+  readonly disposed: boolean
+  /**
+   * Why the wake's session could not be released, when it could not. The
+   * session is kept for the next claim rather than abandoned, so an
+   * application that sees `disposed: false` with a reason here must claim
+   * again; null when the release was clean.
+   */
+  readonly disposeFailure: string | null
+}
+
+export interface ExpoContinuationClaimRequest {
+  readonly maxItems?: number
+  readonly maxBytes?: number
+}
+
+export interface ExpoPresenceObservationResult {
+  readonly state: 'observing'
+}
+
+export interface ExpoPresenceReleaseResult {
+  readonly state: 'idle'
 }
 
 export interface ExpoRestoredRecord {
@@ -107,9 +201,25 @@ export interface ExpoBleManager extends BleManager {
   }
   readonly association: {
     readonly associate: (request?: ExpoCompanionAssociationRequest) => Promise<ExpoCompanionAssociationResult>
+    readonly list: () => Promise<readonly ExpoCompanionAssociationRecord[]>
+    readonly disassociate: (request: ExpoCompanionDisassociationRequest) => Promise<ExpoCompanionDisassociationResult>
   }
   readonly restoration: {
     readonly claim: () => Promise<ExpoRestorationClaimResult>
+  }
+  readonly presence: {
+    readonly observe: (request: ExpoPresenceObservationRequest) => Promise<ExpoPresenceObservationResult>
+    readonly unobserve: (request: ExpoPresenceObservationRequest) => Promise<ExpoPresenceReleaseResult>
+  }
+  /**
+   * Background continuation (BGS4): the declared standing order's posture
+   * and backlog. `claim` drains what the wake queued with its loss
+   * accounting; a native module without the claim answers
+   * `capability.unsupported`, never an invented empty backlog.
+   */
+  readonly continuation: {
+    readonly status: () => Promise<ExpoContinuationStatus>
+    readonly claim: (request?: ExpoContinuationClaimRequest) => Promise<ExpoContinuationBacklog>
   }
 }
 
@@ -143,8 +253,7 @@ export type ExpoBleManagerEnvironment = ReactNativeBleManagerOptions & {
   readonly expo?: ExpoRuntimeConfiguration
 }
 
-const EXPO_GO_MESSAGE =
-  'Expo Go is not supported; create an Expo development build that includes UnifiedBleProtocolControl.'
+const EXPO_GO_MESSAGE = 'Expo Go is not supported; create an Expo development build that includes UnifiedBleRustCore.'
 
 /** Creates the same RN manager and adds only Expo host ergonomics to it. */
 export async function createExpoBleManager(
@@ -171,13 +280,12 @@ export async function createExpoBleManager(
         : { permissionBridge: runtimeConfiguration.permissionBridge })
     })
     assertExpoRuntimeConfiguration(readinessConfiguration)
+    const host = await createReactNativeApplicationHost(options)
     return withExpoRuntime(
-      await createReactNativeBleManager(options),
+      await createPublicBleManager(host.manager, () => performance.now()),
+      host,
       readinessConfiguration?.settingsBridge ?? nativeSettingsBridge(nativeRuntime),
       readinessConfiguration?.permissionBridge ?? nativePermissionBridge(nativeRuntime),
-      nativeBackgroundControl(),
-      nativeAssociationControl(),
-      nativeRestorationControl(),
       readinessConfiguration
     )
   } catch (error) {
@@ -192,14 +300,12 @@ export async function createExpoBleManagerWithEnvironment(
     const expo = environment.expo
     assertExpoRuntimeConfiguration(expo)
     const readinessConfiguration = environmentExpoRuntimeConfiguration(environment.platform, expo)
-    const internal = await createReactNativeBleManagerWithEnvironment(environment)
+    const host = await createReactNativeManagerHost(environment)
     return withExpoRuntime(
-      await createPublicBleManager(internal, environment.now),
+      await createPublicBleManager(host.manager, environment.now),
+      host,
       expo?.settingsBridge,
       expo?.permissionBridge,
-      environment.control,
-      environment.control,
-      environment.control,
       readinessConfiguration
     )
   } catch (error) {
@@ -412,14 +518,9 @@ function readiness(
 
 function withExpoRuntime(
   manager: BleManager,
+  host: ReactNativeManagerHost,
   settingsBridge?: ExpoSettingsBridge,
   permissionBridge?: ExpoPermissionBridge,
-  backgroundControl?: Pick<
-    import('./NativeUnifiedBleProtocolControl').Spec,
-    'acquireBackground' | 'releaseBackground' | 'updateBackgroundNotification'
-  >,
-  associationControl?: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'associateCompanionDevice'>,
-  restorationControl?: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'claimRestoration'>,
   runtimeConfiguration?: ExpoRuntimeConfiguration
 ): ExpoBleManager {
   const activeBackgroundLeases = new Set<string>()
@@ -431,7 +532,7 @@ function withExpoRuntime(
     openSettings: (target: ExpoSettingsTarget) => openExpoSettings(target, settingsBridge),
     background: Object.freeze({
       acquire: async (request: ExpoBackgroundRequest) => {
-        const lease = await acquireExpoBackground(request, backgroundControl)
+        const lease = await acquireExpoBackground(request, host)
         activeBackgroundLeases.add(lease.leaseId)
         return Object.freeze({
           release: async () => {
@@ -441,14 +542,23 @@ function withExpoRuntime(
         })
       },
       updateNotification: (request: ExpoBackgroundNotificationUpdate) =>
-        updateExpoBackgroundNotification(request, backgroundControl, activeBackgroundLeases)
+        updateExpoBackgroundNotification(request, host, activeBackgroundLeases)
     }),
     association: Object.freeze({
-      associate: (request: ExpoCompanionAssociationRequest = {}) =>
-        associateExpoCompanionDevice(request, associationControl)
+      associate: (request: ExpoCompanionAssociationRequest = {}) => associateExpoCompanionDevice(request, host),
+      list: () => listExpoCompanionAssociations(host),
+      disassociate: (request: ExpoCompanionDisassociationRequest) => disassociateExpoCompanionDevice(request, host)
     }),
     restoration: Object.freeze({
-      claim: () => claimExpoRestoration(restorationControl)
+      claim: () => claimExpoRestoration(host)
+    }),
+    presence: Object.freeze({
+      observe: (request: ExpoPresenceObservationRequest) => observeExpoPresence(request, host),
+      unobserve: (request: ExpoPresenceObservationRequest) => unobserveExpoPresence(request, host)
+    }),
+    continuation: Object.freeze({
+      status: () => readExpoContinuationStatus(host),
+      claim: (request: ExpoContinuationClaimRequest = {}) => claimExpoContinuationBacklog(request, host)
     })
   })
 }
@@ -460,6 +570,11 @@ async function requestExpoPermissions(
   if (request.purpose !== 'scan-and-connect') {
     throw rehydratePublicError(contractError('argument.invalid', 'capability', 'expo.permissions.purpose'))
   }
+  assertValidPermissionTimeout(request.timeoutMs)
+  assertValidPermissionSignal(request.signal)
+  if (request.signal?.aborted === true) {
+    throwExpoRuntimeError('operation.aborted', 'expo.permissions.request', 'The permission request was aborted.')
+  }
   if (permissionBridge === undefined) {
     throwExpoRuntimeError(
       'capability.unavailable',
@@ -468,8 +583,9 @@ async function requestExpoPermissions(
     )
   }
   try {
-    return parseExpoPermissionResult(await permissionBridge(request))
+    return parseExpoPermissionResult(await racePermissionBridge(request, permissionBridge))
   } catch (error) {
+    if (error instanceof BleError) throw error
     if (isExpoBoundaryError(error, 'expo.permissions.result')) throw error
     const nativeCode = errorCode(error)
     throwExpoRuntimeError(
@@ -481,58 +597,124 @@ async function requestExpoPermissions(
   }
 }
 
+/**
+ * Races the platform prompt against the caller's timeout and signal. The
+ * bridge promise always settles — a late answer after a timeout or abort is
+ * discarded, with a no-op rejection guard so it never surfaces as an
+ * unhandled rejection. The result still reports what happened: the platform
+ * answer on success, `operation.timed-out` or `operation.aborted` otherwise.
+ */
+function racePermissionBridge(
+  request: ExpoPermissionRequest,
+  permissionBridge: ExpoPermissionBridge
+): Promise<ExpoPermissionResult> {
+  const pending = permissionBridge(request)
+  // A settled race must not turn a late bridge failure into an unhandled
+  // rejection: the operation already reported its outcome.
+  pending.then(undefined, () => undefined)
+  if (request.signal === undefined && request.timeoutMs === undefined) return pending
+  return new Promise<ExpoPermissionResult>((resolve, reject) => {
+    let settled = false
+    const settle = (): boolean => {
+      if (settled) return false
+      settled = true
+      if (timer !== undefined) clearTimeout(timer)
+      request.signal?.removeEventListener('abort', onAbort)
+      return true
+    }
+    const fail = (code: BleErrorCode, message: string): void => {
+      if (!settle()) return
+      try {
+        throwExpoRuntimeError(code, 'expo.permissions.request', message)
+      } catch (error) {
+        reject(error)
+      }
+    }
+    const timer =
+      request.timeoutMs === undefined
+        ? undefined
+        : setTimeout(() => {
+            fail(
+              'operation.timed-out',
+              `The permission request was not answered within ${String(request.timeoutMs)}ms.`
+            )
+          }, request.timeoutMs)
+    const onAbort = (): void => {
+      fail('operation.aborted', 'The permission request was aborted.')
+    }
+    request.signal?.addEventListener('abort', onAbort, { once: true })
+    pending.then(
+      value => {
+        if (settle()) resolve(value)
+      },
+      error => {
+        if (settle()) reject(error)
+      }
+    )
+  })
+}
+
+/** Mirrors the shared operation-options timeout bounds for this entrypoint. */
+function assertValidPermissionTimeout(value: unknown): void {
+  if (value === undefined) return
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isSafeInteger(value) || value <= 0) {
+    throw rehydratePublicError(contractError('argument.invalid', 'capability', 'expo.permissions.timeout'))
+  }
+}
+
+function assertValidPermissionSignal(value: unknown): void {
+  if (value === undefined) return
+  const abortLike =
+    typeof value === 'object' &&
+    value !== null &&
+    'aborted' in value &&
+    typeof value.aborted === 'boolean' &&
+    'addEventListener' in value &&
+    typeof value.addEventListener === 'function' &&
+    'removeEventListener' in value &&
+    typeof value.removeEventListener === 'function'
+  if (!abortLike) {
+    throw rehydratePublicError(contractError('argument.invalid', 'capability', 'expo.permissions.signal'))
+  }
+}
+
 async function acquireExpoBackground(
   request: ExpoBackgroundRequest,
-  control: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'acquireBackground' | 'releaseBackground'> | undefined
+  host: ReactNativeManagerHost
 ): Promise<ExpoBackgroundLease & { readonly leaseId: string }> {
   if (request.kind !== 'connected-device' || request.reason.trim().length === 0) {
     throwExpoRuntimeError('argument.invalid', 'expo.background.acquire', 'A non-empty background reason is required.')
   }
-  if (control === undefined) {
-    throwExpoRuntimeError(
-      'capability.unavailable',
-      'expo.background.acquire',
-      'Connected-device background execution is unavailable until the native Expo service is configured and rebuilt.'
-    )
-  }
+  let result: { readonly leaseId: string }
   try {
-    const result = parseNativeBackgroundLeaseResult(
-      await control.acquireBackground({ kind: request.kind, reason: request.reason })
-    )
-    return backgroundLease(control, result)
+    result = await host.services.acquireBackground({ kind: request.kind, reason: request.reason })
   } catch (error) {
-    if (isExpoBoundaryError(error, 'expo.background.acquire.result')) throw error
-    const nativeCode = errorCode(error)
-    throwExpoRuntimeError(
-      normalizedBackgroundErrorCode(nativeCode),
-      'expo.background.acquire',
-      errorMessage(error),
-      nativeCode
-    )
+    throwBackgroundOwnerError(error, 'expo.background.acquire')
   }
+  return backgroundLease(host, result.leaseId)
 }
 
 function backgroundLease(
-  control: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'acquireBackground' | 'releaseBackground'>,
-  result: import('./NativeUnifiedBleProtocolControl').NativeBackgroundLeaseResult
+  host: ReactNativeManagerHost,
+  leaseId: string
 ): ExpoBackgroundLease & { readonly leaseId: string } {
   let releasePromise: Promise<void> | undefined
   return Object.freeze({
-    leaseId: result.leaseId,
+    leaseId,
     release: () => {
       if (releasePromise !== undefined) return releasePromise
       releasePromise = (async () => {
         try {
-          await control.releaseBackground({ leaseId: result.leaseId })
+          const cleanup = await host.services.releaseBackground(leaseId)
+          const failure = cleanup.failures[0]
+          if (cleanup.state !== 'released' || failure !== undefined) {
+            throw failure === undefined
+              ? contractError('lifecycle.invariant-violation', 'cleanup', 'expo.background.release')
+              : new BackendContractError(failure.error)
+          }
         } catch (error) {
           releasePromise = undefined
-          const nativeCode = errorCode(error)
-          throwExpoRuntimeError(
-            normalizedBackgroundErrorCode(nativeCode),
-            'expo.background.release',
-            errorMessage(error),
-            nativeCode
-          )
+          throwBackgroundOwnerError(error, 'expo.background.release')
         }
       })()
       return releasePromise
@@ -544,7 +726,7 @@ const MAXIMUM_NOTIFICATION_TEXT_LENGTH = 256
 
 async function updateExpoBackgroundNotification(
   request: ExpoBackgroundNotificationUpdate,
-  control: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'updateBackgroundNotification'> | undefined,
+  host: ReactNativeManagerHost,
   activeLeases: ReadonlySet<string>
 ): Promise<void> {
   const operation = 'expo.background.update-notification'
@@ -563,23 +745,14 @@ async function updateExpoBackgroundNotification(
       'An active connected-device background lease is required to update its notification.'
     )
   }
-  if (control === undefined || typeof control.updateBackgroundNotification !== 'function') {
-    throwExpoRuntimeError('capability.unavailable', operation, 'Connected-device notification updates are unavailable.')
-  }
   try {
-    await control.updateBackgroundNotification({
+    await host.services.updateBackgroundNotification({
       leaseId,
       title: request.title,
       ...(request.body === undefined ? {} : { body: request.body })
     })
   } catch (error) {
-    if (isExpoBoundaryError(error, operation)) throw error
-    throwExpoRuntimeError(
-      normalizedBackgroundErrorCode(errorCode(error)),
-      operation,
-      errorMessage(error),
-      errorCode(error)
-    )
+    throwBackgroundOwnerError(error, operation)
   }
 }
 
@@ -609,7 +782,7 @@ async function openExpoSettings(target: ExpoSettingsTarget, settingsBridge?: Exp
 
 async function associateExpoCompanionDevice(
   request: ExpoCompanionAssociationRequest,
-  control: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'associateCompanionDevice'> | undefined
+  host: ReactNativeManagerHost
 ): Promise<ExpoCompanionAssociationResult> {
   if (request.name !== undefined && (request.name.trim().length === 0 || request.name.length > 128)) {
     throwExpoRuntimeError(
@@ -625,61 +798,165 @@ async function associateExpoCompanionDevice(
       'Association serviceUuid must be non-empty.'
     )
   }
-  if (control === undefined) {
+  let result: unknown
+  try {
+    result = await host.services.associateCompanion(request)
+  } catch (error) {
+    // Legacy Expo reported every association failure as capability.unavailable.
+    throwUnavailableOwnerError(error, 'expo.association.associate')
+  }
+  return parseExpoAssociationResult(result)
+}
+
+async function listExpoCompanionAssociations(
+  host: ReactNativeManagerHost
+): Promise<readonly ExpoCompanionAssociationRecord[]> {
+  const operation = 'expo.association.list'
+  let result: unknown
+  try {
+    result = await host.services.listCompanionAssociations()
+  } catch (error) {
+    // Association administration is new in 5.x with no legacy Expo code to
+    // preserve: the owner's answer keeps its code
+    // (capability.unsupported where the platform has no companion-device
+    // concept), never a wrapped fake.
+    throwOwnerError(error, operation)
+  }
+  return parseExpoAssociationList(result)
+}
+
+async function disassociateExpoCompanionDevice(
+  request: ExpoCompanionDisassociationRequest,
+  host: ReactNativeManagerHost
+): Promise<ExpoCompanionDisassociationResult> {
+  const operation = 'expo.association.disassociate'
+  if (!isRecord(request) || !isSafePositiveInteger(request.associationId)) {
     throwExpoRuntimeError(
-      'capability.unavailable',
-      'expo.association.associate',
-      'Companion Device Manager association is unavailable on this Expo host.'
+      'argument.invalid',
+      operation,
+      'A positive association id is required to remove its association.'
     )
   }
+  const associationId = request.associationId
+  let result: unknown
   try {
-    return parseExpoAssociationResult(await control.associateCompanionDevice(request))
+    result = await host.services.disassociateCompanion({ associationId })
   } catch (error) {
-    if (isExpoBoundaryError(error, 'expo.association.result')) throw error
-    throwExpoRuntimeError('capability.unavailable', 'expo.association.associate', errorMessage(error), errorCode(error))
+    throwOwnerError(error, operation)
+  }
+  const record = expoRecord(result, 'expo.association.result')
+  if (record.state !== 'disassociated' || !isSafePositiveInteger(record.associationId)) {
+    throwExpoMalformedResult('expo.association.result')
+  }
+  return Object.freeze({ state: 'disassociated', associationId: record.associationId })
+}
+
+function expoPresencePeerId(request: ExpoPresenceObservationRequest, operation: string): string {
+  if (!isRecord(request) || typeof request.peerId !== 'string' || request.peerId.length === 0) {
+    throwExpoRuntimeError('argument.invalid', operation, 'A known peer id is required to observe its presence.')
+  }
+  return request.peerId
+}
+
+async function observeExpoPresence(
+  request: ExpoPresenceObservationRequest,
+  host: ReactNativeManagerHost
+): Promise<ExpoPresenceObservationResult> {
+  const operation = 'expo.presence.observe'
+  const peerId = expoPresencePeerId(request, operation)
+  let result: unknown
+  try {
+    result = await host.services.observePresence({ peerId })
+  } catch (error) {
+    // Presence is new in 5.0 with no legacy Expo code to preserve: the
+    // owner's answer keeps its code (capability.unsupported on Apple, with
+    // the platform reason), never a wrapped fake.
+    throwOwnerError(error, operation)
+  }
+  const record = expoRecord(result, 'expo.presence.result')
+  if (record.state !== 'observing') throwExpoMalformedResult('expo.presence.result')
+  return Object.freeze({ state: 'observing' })
+}
+
+async function unobserveExpoPresence(
+  request: ExpoPresenceObservationRequest,
+  host: ReactNativeManagerHost
+): Promise<ExpoPresenceReleaseResult> {
+  const operation = 'expo.presence.unobserve'
+  const peerId = expoPresencePeerId(request, operation)
+  let result: unknown
+  try {
+    result = await host.services.unobservePresence({ peerId })
+  } catch (error) {
+    throwOwnerError(error, operation)
+  }
+  const record = expoRecord(result, 'expo.presence.result')
+  if (record.state !== 'idle') throwExpoMalformedResult('expo.presence.result')
+  return Object.freeze({ state: 'idle' })
+}
+
+async function readExpoContinuationStatus(host: ReactNativeManagerHost): Promise<ExpoContinuationStatus> {
+  const operation = 'expo.continuation.status'
+  try {
+    const status = await host.services.continuationStatus()
+    return Object.freeze({
+      strategy: status.strategy,
+      peerId: status.peerId,
+      resubscribe: status.resubscribe,
+      malformedDeclarations: status.malformedDeclarations,
+      lastWake: status.lastWake === null ? null : Object.freeze({ ...status.lastWake }),
+      detail: status.detail
+    })
+  } catch (error) {
+    throwOwnerError(error, operation)
   }
 }
 
-async function claimExpoRestoration(
-  control: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'claimRestoration'> | undefined
-): Promise<ExpoRestorationClaimResult> {
-  if (control === undefined) {
-    throwExpoRuntimeError(
-      'capability.unavailable',
-      'expo.restoration.claim',
-      'Native restoration adoption is unavailable on this Expo host.'
-    )
-  }
+async function claimExpoContinuationBacklog(
+  request: ExpoContinuationClaimRequest,
+  host: ReactNativeManagerHost
+): Promise<ExpoContinuationBacklog> {
+  const operation = 'expo.continuation.claim'
   try {
-    return parseExpoRestorationClaimResult(await control.claimRestoration())
+    const backlog = await host.services.claimContinuationBacklog({ ...request })
+    return Object.freeze({
+      selectors: Object.freeze(backlog.selectors.map(selector => Object.freeze({ ...selector }))),
+      values: Object.freeze(backlog.values.map(record => Object.freeze({ ...record }))),
+      streamEnds: Object.freeze(backlog.streamEnds.map(record => Object.freeze({ ...record }))),
+      controlLost: backlog.controlLost,
+      afterCutoffLoss: Object.freeze({ ...backlog.afterCutoffLoss }),
+      disposed: backlog.disposed,
+      disposeFailure: backlog.disposeFailure
+    })
   } catch (error) {
-    if (
-      isExpoBoundaryError(error, 'expo.restoration.result') ||
-      isExpoBoundaryError(error, 'expo.restoration.native-outcome')
-    ) {
-      throw error
-    }
-    throwExpoRuntimeError('capability.unavailable', 'expo.restoration.claim', errorMessage(error), errorCode(error))
+    throwOwnerError(error, operation)
   }
 }
 
-function restorationOutcome(outcome: unknown): ExpoRestorationClaimResult['outcome'] {
-  switch (outcome) {
-    case 'alreadyConsumed':
-      return 'already-consumed'
-    case 'attachmentMismatch':
-      return 'attachment-mismatch'
-    case 'backendMismatch':
-      return 'backend-mismatch'
-    case 'namespaceMismatch':
-      return 'namespace-mismatch'
-    case 'epochMismatch':
-      return 'epoch-mismatch'
-    case 'adopted':
-      return 'adopted'
-    default:
-      throw rehydratePublicError(contractError('protocol.malformed', 'restoration', 'expo.restoration.native-outcome'))
+async function claimExpoRestoration(host: ReactNativeManagerHost): Promise<ExpoRestorationClaimResult> {
+  let result: RestorationAdoptionResult<string>
+  try {
+    result = await host.claimRestoration()
+  } catch (error) {
+    // Legacy Expo wrapped every restoration claim failure as capability.unavailable.
+    throwUnavailableOwnerError(error, 'expo.restoration.claim')
   }
+  return Object.freeze({
+    outcome: result.outcome,
+    replayRecordCount: result.replayedRecords.length,
+    records: Object.freeze(
+      result.replayedRecords.map(record => {
+        if (record.kind !== 'adapter' && record.kind !== 'connection') {
+          throwExpoMalformedResult('expo.restoration.result')
+        }
+        return Object.freeze({
+          kind: record.kind,
+          ordinal: record.ordinal,
+          peerId: record.peerId === null ? null : String(record.peerId)
+        })
+      })
+    )
+  })
 }
 
 function parseExpoPermissionResult(value: unknown): ExpoPermissionResult {
@@ -699,58 +976,50 @@ function parseExpoPermissionResult(value: unknown): ExpoPermissionResult {
   })
 }
 
-function parseNativeBackgroundLeaseResult(
-  value: unknown
-): import('./NativeUnifiedBleProtocolControl').NativeBackgroundLeaseResult {
-  const result = expoRecord(value, 'expo.background.acquire.result')
-  if (!nonEmptyString(result.leaseId)) throwExpoMalformedResult('expo.background.acquire.result')
-  return Object.freeze({ leaseId: result.leaseId })
-}
-
 function parseExpoAssociationResult(value: unknown): ExpoCompanionAssociationResult {
   const result = expoRecord(value, 'expo.association.result')
   if (
-    result.source !== 'associated' ||
+    (result.source !== 'associated' && result.source !== 'already-associated') ||
     !isSafePositiveInteger(result.associationId) ||
     !nullableString(result.peerId) ||
     !nullableString(result.displayName)
   ) {
     throwExpoMalformedResult('expo.association.result')
   }
+  // Finding 236: the result reports what happened — a fresh association or
+  // the already-held record — so the caller can tell.
+  const source: ExpoCompanionAssociationResult['source'] =
+    result.source === 'already-associated' ? 'already-associated' : 'associated'
   return Object.freeze({
-    source: 'associated',
+    source,
     associationId: result.associationId,
     peerId: result.peerId,
     displayName: result.displayName
   })
 }
 
-function parseExpoRestorationClaimResult(value: unknown): ExpoRestorationClaimResult {
-  const result = expoRecord(value, 'expo.restoration.result')
-  const outcome = restorationOutcome(result.outcome)
-  const replayRecordCount = result.replayRecordCount
-  if (!isSafeNonNegativeInteger(replayRecordCount) || !Array.isArray(result.records)) {
-    throwExpoMalformedResult('expo.restoration.result')
+function parseExpoAssociationRecord(value: unknown): ExpoCompanionAssociationRecord {
+  const operation = 'expo.association.result'
+  const result = expoRecord(value, operation)
+  if (
+    !isSafePositiveInteger(result.associationId) ||
+    !nullableString(result.peerId) ||
+    !nullableString(result.displayName)
+  ) {
+    throwExpoMalformedResult(operation)
   }
-  if (replayRecordCount !== result.records.length) throwExpoMalformedResult('expo.restoration.result')
-  const records = result.records.map(record => parseExpoRestoredRecord(record))
   return Object.freeze({
-    outcome,
-    replayRecordCount,
-    records: Object.freeze(records)
+    associationId: result.associationId,
+    peerId: result.peerId,
+    displayName: result.displayName
   })
 }
 
-function parseExpoRestoredRecord(value: unknown): ExpoRestoredRecord {
-  const record = expoRecord(value, 'expo.restoration.result')
-  if (
-    (record.kind !== 'adapter' && record.kind !== 'connection') ||
-    !isSafeNonNegativeInteger(record.ordinal) ||
-    !nullableString(record.peerId)
-  ) {
-    throwExpoMalformedResult('expo.restoration.result')
-  }
-  return Object.freeze({ kind: record.kind, ordinal: record.ordinal, peerId: record.peerId })
+function parseExpoAssociationList(value: unknown): readonly ExpoCompanionAssociationRecord[] {
+  const operation = 'expo.association.result'
+  const result = expoRecord(value, operation)
+  if (!Array.isArray(result.associations)) throwExpoMalformedResult(operation)
+  return Object.freeze(result.associations.map((entry: unknown) => parseExpoAssociationRecord(entry)))
 }
 
 function expoPermissionList(value: unknown, operation: string): BlePermission[] {
@@ -808,49 +1077,100 @@ function isExpoBoundaryError(error: unknown, operation: string): boolean {
 }
 
 function assertDirectExpoRuntime(): void {
-  if (typeof getNativeUnifiedBleProtocolControl !== 'function') return
-  try {
-    getNativeUnifiedBleProtocolControl()
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    if (/UnifiedBleProtocolControl|TurboModuleRegistry|NativeModules/.test(message)) {
-      throwExpoRuntimeError('capability.unavailable', 'expo.runtime.development-build', EXPO_GO_MESSAGE)
+  if (TurboModuleRegistry.get('UnifiedBleRustCore') == null) {
+    throwExpoRuntimeError('capability.unavailable', 'expo.runtime.development-build', EXPO_GO_MESSAGE)
+  }
+}
+
+/**
+ * Re-raises an owner failure under the Expo operation: the owner's code
+ * (`capability.unsupported`, `permission.denied`, ...) is kept, with its
+ * operation and detail as platform data.
+ */
+/**
+ * Legacy Expo's code for a native foreground-service failure (4.x
+ * `src/expo.ts` `normalizedBackgroundErrorCode`, finding 133).
+ */
+function normalizedBackgroundErrorCode(nativeCode: string): BleErrorCode {
+  switch (nativeCode) {
+    case 'foregroundServiceNotConfigured':
+    case 'foregroundServiceNotRunning':
+      return 'capability.unavailable'
+    case 'foregroundServicePermissionDenied':
+      return 'permission.denied'
+    case 'invalidBackgroundRequest':
+      return 'argument.invalid'
+    case 'invalidBackgroundLease':
+      return 'lifecycle.invalid-state'
+    case 'unsupportedBackground':
+      return 'capability.unsupported'
+    default:
+      return 'platform.failure'
+  }
+}
+
+/**
+ * The native code legacy's background module would have rejected with: the
+ * Android registry's own code, or the owner's refusal of an unknown lease,
+ * a malformed request or a platform without the service. `null` for an
+ * owner failure legacy had no native code for (a timeout, a destroyed
+ * session), which keeps its own contract code.
+ */
+function backgroundNativeCode(error: BackendContractError): string | null {
+  const normalized = error.normalized
+  if (normalized.platform?.domain === 'android') return normalized.platform.code
+  switch (normalized.code) {
+    case 'ownership.denied':
+      return 'invalidBackgroundLease'
+    case 'argument.invalid':
+      return 'invalidBackgroundRequest'
+    case 'capability.unsupported':
+      return 'unsupportedBackground'
+    default:
+      return null
+  }
+}
+
+function throwBackgroundOwnerError(error: unknown, operation: string): never {
+  if (error instanceof BackendContractError) {
+    const nativeCode = backgroundNativeCode(error)
+    if (nativeCode !== null) {
+      throwExpoRuntimeError(
+        normalizedBackgroundErrorCode(nativeCode),
+        operation,
+        error.normalized.platform?.safeMessage ?? error.normalized.operation,
+        nativeCode
+      )
     }
-    throw error
   }
+  throwOwnerError(error, operation)
 }
 
-function nativeBackgroundControl():
-  | Pick<
-      import('./NativeUnifiedBleProtocolControl').Spec,
-      'acquireBackground' | 'releaseBackground' | 'updateBackgroundNotification'
-    >
-  | undefined {
-  try {
-    return getNativeUnifiedBleProtocolControl()
-  } catch {
-    return undefined
+/** `capability.unavailable` carrying the native (or owner) code, as legacy Expo reported it. */
+function throwUnavailableOwnerError(error: unknown, operation: string): never {
+  if (error instanceof BackendContractError) {
+    const normalized = error.normalized
+    throwExpoRuntimeError(
+      'capability.unavailable',
+      operation,
+      normalized.platform?.safeMessage ?? normalized.operation,
+      normalized.platform?.domain === 'android' ? normalized.platform.code : normalized.code
+    )
   }
+  throwExpoRuntimeError('capability.unavailable', operation, errorMessage(error), errorCode(error))
 }
 
-function nativeAssociationControl():
-  | Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'associateCompanionDevice'>
-  | undefined {
-  try {
-    return getNativeUnifiedBleProtocolControl()
-  } catch {
-    return undefined
+function throwOwnerError(error: unknown, operation: string): never {
+  if (error instanceof BackendContractError) {
+    const normalized = error.normalized
+    throwExpoRuntimeError(
+      normalized.code,
+      operation,
+      normalized.platform?.safeMessage ?? normalized.operation,
+      normalized.operation
+    )
   }
-}
-
-function nativeRestorationControl():
-  | Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'claimRestoration'>
-  | undefined {
-  try {
-    return getNativeUnifiedBleProtocolControl()
-  } catch {
-    return undefined
-  }
+  throwExpoRuntimeError('platform.failure', operation, errorMessage(error), errorCode(error))
 }
 
 function assertExpoRuntimeConfiguration(configuration: ExpoRuntimeConfiguration | undefined): void {
@@ -916,32 +1236,24 @@ function errorCode(error: unknown): string {
   return 'native-failure'
 }
 
-function normalizedBackgroundErrorCode(nativeCode: string): BleErrorCode {
-  switch (nativeCode) {
-    case 'foregroundServiceNotConfigured':
-    case 'foregroundServiceNotRunning':
-      return 'capability.unavailable'
-    case 'foregroundServicePermissionDenied':
-      return 'permission.denied'
-    case 'invalidBackgroundRequest':
-      return 'argument.invalid'
-    case 'invalidBackgroundLease':
-      return 'lifecycle.invalid-state'
-    case 'unsupportedBackground':
-      return 'capability.unsupported'
-    default:
-      return 'platform.failure'
-  }
-}
-
 function normalizedPermissionErrorCode(nativeCode: string): BleErrorCode {
   switch (nativeCode) {
     case 'unsupportedPermissionPrompt':
       return 'capability.unsupported'
+    case 'permissionRestricted':
+      // iOS parental/MDM restrictions: the user cannot change this, so it is
+      // unsupported with the platform reason rather than a denial that would
+      // send the app to settings it cannot fix (finding 179).
+      return 'capability.unsupported'
     case 'permissionNotDeclared':
+    case 'permissionUnavailable':
       return 'capability.unavailable'
     case 'permissionDenied':
       return 'permission.denied'
+    case 'permissionTimeout':
+      return 'operation.timed-out'
+    case 'permissionInvalidPurpose':
+      return 'argument.invalid'
     default:
       return 'platform.failure'
   }

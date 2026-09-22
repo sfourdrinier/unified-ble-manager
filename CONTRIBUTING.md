@@ -85,6 +85,36 @@ Keep native lifecycle ownership explicit and preserve cancellation, late-complet
 
 Do not rename inherited native fixture/scheme/module identifiers merely for branding unless the rename has an explicit compatibility/build rationale and complete platform coverage.
 
+### Native build modes (React Native iOS/Android)
+
+`UBM_NATIVE_BUILD` selects how the Rust core reaches the app, identically for
+the pod and the Gradle library: unset or empty means `prebuilt` (the
+committed/CI-staged artifacts, no Rust needed), `prebuilt` and `source` are
+explicit, and any other value stops `pod install` / Gradle configuration.
+Nothing is inferred from `.git` or installed tools. To work on the Rust
+sources:
+
+```sh
+# Apple: build ios/RustCore BEFORE pod install (CocoaPods never runs a pod
+# hook for :path pods, so this step is always explicit)
+UBM_NATIVE_BUILD=source pnpm --dir <ubm checkout> native:apple:prepare
+cd example/ios && UBM_NATIVE_BUILD=source pod install
+
+# Android: Gradle builds each profile from source in this mode;
+# native:android:prepare pre-builds every ABI and proves the NDK toolchain
+UBM_NATIVE_BUILD=source pnpm native:android:prepare
+cd example/android && UBM_NATIVE_BUILD=source ./gradlew assembleDebug
+```
+
+Both builders seal the build identity (`scripts/release/native-build-identity.js`)
+into the binary and regenerate `src/generated/native-build-identity.ts`; run
+`pnpm prepack` afterwards so `lib/` expects the same identity. In source mode
+the pod phase rejects an `ios/RustCore` built from older sources and prints
+the prepare command. The committed Android prebuilts go stale with every Rust
+change; maintainers refresh them with `sh android/refresh-prebuilt-jniLibs.sh`
+before a release (the publish workflow fails otherwise). See
+`docs/5.0.0-DISTRIBUTION_CONTRACT.md`.
+
 ## Documentation
 
 Prefer current product terminology: **Unified BLE Manager** for the product and `unified-ble-manager` for the npm package. References to `react-native-ble-plx` should be historical or migration-specific.
@@ -97,6 +127,23 @@ Do not open a public issue containing vulnerability details. Follow [`SECURITY.m
 
 ## Licensing
 
-The project is licensed under the **Apache License 2.0**. Unless explicitly agreed otherwise, contributions intentionally submitted for inclusion in this repository are provided under the same Apache-2.0 terms, consistent with the repository [`LICENSE`](LICENSE).
+The 4.x line is licensed under the **Apache License 2.0**; see
+[`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt) and [`NOTICE`](NOTICE). The
+top-level [`LICENSE`](LICENSE) is the UBM Source Available License 1.0, which governs
+the 5.0 line. Unless explicitly agreed otherwise, contributions
+intentionally submitted for inclusion in the 4.x line are provided under the
+same Apache-2.0 terms. That Apache default is retained for 4.x material.
+
+New UBM 5.0 material is made available under the **UBM Source Available
+License 1.0** (`LicenseRef-UBM-Source-Available-1.0`); see
+[`LICENSE-UBM-SOURCE-AVAILABLE-1.0.md`](LICENSE-UBM-SOURCE-AVAILABLE-1.0.md)
+and [`NOTICE`](NOTICE). Contributions intended for the 5.0 line are accepted
+only under [`UBM-CONTRIBUTION-TERMS-1.0.md`](UBM-CONTRIBUTION-TERMS-1.0.md)
+and only with an explicit assent record identifying the contributor, the
+contribution, and the terms version. A DCO sign-off alone is not assent to
+those additional commercial sublicensing terms: the retained record must show
+the contributor agreed to UBM-CONTRIBUTION-TERMS-1.0 for that contribution.
+Existing contributions remain governed by their original grants unless their
+rightsholders separately agree otherwise.
 
 By contributing, you confirm that you have the right to submit the contribution and that required third-party attribution/license notices are preserved.

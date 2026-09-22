@@ -1,0 +1,8 @@
+{
+  "name": "battery + device information",
+  "defaultTimeoutMs": 60000,
+  "steps": [
+    { "run": "device-info", "command": "read", "expect": { "ok": true, "result": { "reads": { "batteryLevelPercent": { "ok": true }, "manufacturerName": { "ok": true } } } } },
+    { "expectSnapshot": "device-info", "match": { "phase": "done" }, "capture": ["peer", "reads", "cleanup"] }
+  ]
+}

@@ -29,6 +29,19 @@ jobs:
       - name: Setup JS package
         uses: ./.github/actions/setup-js-package
 
+      - name: Install pinned Rust + Apple targets
+        # Source mode builds ios/RustCore/RustCore.xcframework with the
+        # explicit `native:apple:prepare` step (ios/build-rust-core.sh)
+        # before pod install; it needs the pinned toolchain plus the Apple device/simulator matrix
+        # (aarch64-ios, aarch64-sim, x86_64-sim, aarch64-tvos,
+        # aarch64-tvos-sim). Pin single-sourced from rust-toolchain.toml
+        # (cargo --version resolves it via rustup).
+        run: |
+          cargo --version
+          PINNED_TOOLCHAIN="$(grep -E '^channel[[:space:]]*=' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/' || true)"
+          test -n "$PINNED_TOOLCHAIN" || { echo "could not parse pinned toolchain channel from rust-toolchain.toml"; exit 1; }
+          rustup target add --toolchain "$PINNED_TOOLCHAIN" aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios aarch64-apple-tvos aarch64-apple-tvos-sim
+
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
@@ -42,7 +55,16 @@ jobs:
 
       - name: Install CocoaPods
         working-directory: example/ios
-        run: BUNDLE_GEMFILE="$GITHUB_WORKSPACE/example/Gemfile" bundle exec pod install
+        # Source checkout without CI-staged prebuilts: explicit source mode
+        # (PR210-19). ios/RustCore is prepared BEFORE pod install by the
+        # canonical builder (CocoaPods never runs prepare_command for :path
+        # pods); the pod phase then rejects a stale staging.
+        env:
+          UBM_NATIVE_BUILD: source
+        run: |
+          set -euo pipefail
+          pnpm --dir "$GITHUB_WORKSPACE" native:apple:prepare
+          BUNDLE_GEMFILE="$GITHUB_WORKSPACE/example/Gemfile" bundle exec pod install
 
       # Executes host C++ protocol tests plus the Swift CoreBluetooth parser harness.
       # It does not boot a simulator or establish a physical BLE radio/peripheral session.
@@ -80,12 +102,36 @@ jobs:
       - name: Setup JS package
         uses: ./.github/actions/setup-js-package
 
+      - name: Install pinned Rust + Apple targets
+        # Source mode builds ios/RustCore/RustCore.xcframework with the
+        # explicit `native:apple:prepare` step (ios/build-rust-core.sh)
+        # before pod install; it needs the pinned toolchain plus the Apple device/simulator matrix
+        # (aarch64-ios, aarch64-sim, x86_64-sim, aarch64-tvos,
+        # aarch64-tvos-sim). Pin single-sourced from rust-toolchain.toml
+        # (cargo --version resolves it via rustup).
+        run: |
+          cargo --version
+          PINNED_TOOLCHAIN="$(grep -E '^channel[[:space:]]*=' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/' || true)"
+          test -n "$PINNED_TOOLCHAIN" || { echo "could not parse pinned toolchain channel from rust-toolchain.toml"; exit 1; }
+          rustup target add --toolchain "$PINNED_TOOLCHAIN" aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios aarch64-apple-tvos aarch64-apple-tvos-sim
+
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.3'
           bundler-cache: true
           working-directory: example
+
+      - name: Prepare RustCore from source (before the example copies the package)
+        # example-expo depends on `file:..`: pnpm copies the package files at
+        # install time and Expo autolinking compiles the pod from that copy,
+        # so ios/RustCore must be staged BEFORE the install. F9: refresh the
+        # canonical builder only when the staging is stale (a no-op when
+        # fresh); PR210-19 explicit source mode still applies downstream
+        # (CocoaPods never runs prepare_command for :path pods).
+        env:
+          UBM_NATIVE_BUILD: source
+        run: pnpm native:refresh --only apple
 
       - name: Install Expo example dependencies
         run: pnpm --dir example-expo install --no-frozen-lockfile
@@ -94,15 +140,27 @@ jobs:
         working-directory: example-expo
         run: npx expo install --fix
 
+      - name: Verify and refresh the package copy Expo will link
+        env:
+          UBM_NATIVE_BUILD: source
+        run: node examples-shared/dev/prepare-example-ios.js example-expo
+
       - name: Prebuild Expo native projects
         working-directory: example-expo
         run: NODE_ENV=development npx expo prebuild --clean --no-install --platform ios
 
+      - name: Verify generated iOS restoration configuration
+        run: node examples-shared/dev/verify-expo-ios-restoration.js example-expo
+
       - name: Install CocoaPods
         working-directory: example-expo/ios
-        run: |
-          set -euo pipefail
-          BUNDLE_GEMFILE="$GITHUB_WORKSPACE/example/Gemfile" bundle exec pod install
+        # Source checkout without CI-staged prebuilts: explicit source mode
+        # (PR210-19). ios/RustCore was prepared before the example install
+        # (above), so the package copy the pod compiles carries it; the pod
+        # phase then rejects a stale staging.
+        env:
+          UBM_NATIVE_BUILD: source
+        run: BUNDLE_GEMFILE="$GITHUB_WORKSPACE/example/Gemfile" bundle exec pod install
 
       - name: Build Expo iOS app (iphonesimulator, New Arch)
         working-directory: example-expo/ios

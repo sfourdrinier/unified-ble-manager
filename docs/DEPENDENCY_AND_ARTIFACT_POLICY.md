@@ -8,7 +8,9 @@ The package publishes a reproducible **CycloneDX 1.6** software bill of material
 
 Production and optional runtime dependencies must have a reviewed, redistributable license. The generator fails on an unresolved license, a license outside the explicit allowlist, conflicting metadata, a missing installed package, or drift in reviewed license-file evidence.
 
-When upstream package metadata omits its license, an override is permitted only for an exact package version and the SHA-256 of the installed license file. A new version or changed license text fails closed and requires human review. Overrides do not reinterpret ambiguous terms.
+When npm package metadata omits its license, an override is permitted only for an exact package version and the SHA-256 of the installed license file. A new version or changed license text fails closed and requires human review.
+
+[Cargo's manifest style guide](https://doc.rust-lang.org/style-guide/cargo.html) permits legacy `/` in place of `OR` in the `license` field, so the generator canonically records nonempty, allowlisted slash-separated terms as a parenthesized SPDX `OR` expression. Empty or unknown terms fail closed. This is Cargo syntax normalization, not a license override. An exact reviewed Cargo license-file refinement is permitted only when that file explicitly partitions terms more specifically than the manifest declaration; it records the exact package version and SHA-256 and fails closed on either change. It does not authorize a broad reinterpretation of ambiguous or unverified terms.
 
 ## Artifact gate
 

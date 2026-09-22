@@ -1,0 +1,5 @@
+$ am start com.ubmprobe/.MainActivity
+[exit=0]
+Starting: Intent { cmp=com.ubmprobe/.MainActivity }
+
+

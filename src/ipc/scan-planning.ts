@@ -77,6 +77,12 @@ function encodeClauseList(clauses: readonly NormalizedScanClause[] | null): read
 function encodeClause(clause: NormalizedScanClause): SerializableRecord {
   return Object.freeze({
     peers: clause.peers === null ? null : Object.freeze(clause.peers.map(encodePeerReference)),
+    // Addresses are omitted (not null) when the clause targets none, so a
+    // webview that knows addresses still produces the exact pre-addresses
+    // wire shape for every other query: an older native decoder keeps
+    // admitting those queries, while an address-targeted query fails closed
+    // there instead of silently scanning without its address predicate.
+    ...(clause.addresses === null ? {} : { addresses: Object.freeze([...clause.addresses]) }),
     services:
       clause.services === null ? null : Object.freeze({ any: [...clause.services.any], all: [...clause.services.all] }),
     names:
@@ -178,12 +184,19 @@ function decodeClauseList(value: unknown, operation: string): readonly ScanClaus
 
 function decodeClause(value: unknown, operation: string): ScanClause {
   const record = requiredRecord(value, operation)
+  // `addresses` is optional on the wire (a pre-addresses encoder omits the
+  // key); every other key keeps its exact shape so older and newer peers
+  // meet the same key set for queries without address predicates.
+  const carriesAddresses = Object.prototype.hasOwnProperty.call(record, 'addresses')
   assertExactKeys(
     record,
-    ['peers', 'services', 'names', 'manufacturerData', 'serviceData', 'rssi', 'connectable'],
+    carriesAddresses
+      ? ['peers', 'addresses', 'services', 'names', 'manufacturerData', 'serviceData', 'rssi', 'connectable']
+      : ['peers', 'services', 'names', 'manufacturerData', 'serviceData', 'rssi', 'connectable'],
     operation
   )
   const peers = decodePeers(record.peers, operation)
+  const addresses = decodeAddresses(carriesAddresses ? record.addresses : undefined, operation)
   const services = decodeUuidField(record.services, operation)
   const names = decodeNames(record.names, operation)
   const manufacturerData = decodeManufacturerField(record.manufacturerData, operation)
@@ -192,6 +205,7 @@ function decodeClause(value: unknown, operation: string): ScanClause {
   const connectable = decodeConnectable(record.connectable, operation)
   return {
     ...(peers === null ? {} : { peers }),
+    ...(addresses === undefined ? {} : { addresses }),
     ...(services === null ? {} : { services }),
     ...(names === null ? {} : { names }),
     ...(manufacturerData === null ? {} : { manufacturerData }),
@@ -199,6 +213,17 @@ function decodeClause(value: unknown, operation: string): ScanClause {
     ...(rssi === null ? {} : { rssi }),
     ...(connectable === null ? {} : { connectable })
   }
+}
+
+function decodeAddresses(value: unknown, operation: string): readonly string[] | undefined {
+  if (value === undefined || value === null) return undefined
+  if (!Array.isArray(value)) throw malformed(operation)
+  return Object.freeze(
+    value.map(item => {
+      if (typeof item !== 'string') throw malformed(operation)
+      return item
+    })
+  )
 }
 
 function decodePeers(value: unknown, operation: string): readonly PeerReference[] | undefined {

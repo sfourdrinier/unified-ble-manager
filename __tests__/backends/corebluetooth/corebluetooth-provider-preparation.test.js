@@ -5,7 +5,7 @@
 const {
   createCoreBluetoothBackendProvider
 } = require('../../../src/backends/corebluetooth/corebluetooth-provider')
-const { prepareNativeCoreBluetoothBoundary } = require('../../../src/node-corebluetooth')
+const { prepareNativeCoreBluetoothBoundary } = require('../../../src/backends/corebluetooth/corebluetooth-native-boundary')
 
 function poweredOn() {
   return { availability: 'available', authorization: 'granted', power: 'on', safeReason: null }

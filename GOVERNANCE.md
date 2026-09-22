@@ -2,7 +2,7 @@
 
 # Project governance
 
-`unified-ble-manager` is an open-source, host-neutral BLE library. Decisions optimize the public ecosystem rather than any one first-party consumer.
+`unified-ble-manager` is a source-available, host-neutral BLE library; see `NOTICE` for the Apache-2.0 / UBM Source Available License 1.0 arrangement. Decisions optimize the public ecosystem rather than any one first-party consumer.
 
 ## Roles and decisions
 

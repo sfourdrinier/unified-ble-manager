@@ -34,6 +34,7 @@ and coding agents should read [`../AGENTS.md`](../AGENTS.md) first.
 | [`PEERS.md`](PEERS.md) | `PeerReference` peer directories, persistence, resolve-then-reconnect semantics | Current |
 | [`CONNECTION_MANAGER.md`](CONNECTION_MANAGER.md) | Connection ownership, leases, generations, application-owned reconnect policy | Current |
 | [`BONDING.md`](BONDING.md) | Pairing, bonding, encryption, and authentication semantics via `manager.security` | Current |
+| [`BACKGROUND.md`](BACKGROUND.md) | Background execution and the known-peer restoration how-to: Android presence chain, iOS claim, per-platform refusals | Current |
 | [`../MIGRATION_4.0.md`](../MIGRATION_4.0.md) | Side-by-side migration map from `react-native-ble-plx` 3.x to 4.0 | Current |
 
 ## Host guides
@@ -41,7 +42,7 @@ and coding agents should read [`../AGENTS.md`](../AGENTS.md) first.
 | Document | What it is | Status |
 | --- | --- | --- |
 | [`WEB.md`](WEB.md) | Web Bluetooth host: chooser, HTTPS, user activation, lifecycle | Current |
-| [`NODE.md`](NODE.md) | Node hosts: CoreBluetooth, WinRT, and BlueZ entrypoints, prebuilds, `dbus-next` peer | Current |
+| [`NODE.md`](NODE.md) | Node hosts: CoreBluetooth, WinRT, and BlueZ entrypoints over the shared Rust core, prebuilds, runtime requirements | Current |
 | [`ELECTRON.md`](ELECTRON.md) | Electron main/renderer split, IPC router, composition sequence | Current |
 | [`ELECTRON_SECURITY_MODEL.md`](ELECTRON_SECURITY_MODEL.md) | Electron ownership and threat boundary; renderer permission snapshot rules | Current |
 | [`TAURI.md`](TAURI.md) | Tauri v2 host: `createTauriBleManager()` and the Rust plugin install recipe | Current |
@@ -54,6 +55,7 @@ and coding agents should read [`../AGENTS.md`](../AGENTS.md) first.
 | --- | --- | --- |
 | [`UNIFIED_SEMANTICS.md`](UNIFIED_SEMANTICS.md) | Normative behavior contract (MUST/MUST NOT) for any conforming unified BLE implementation | Current |
 | [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md) | Clean-baseline architecture authority for the 4.0 package | Current |
+| [`MOBILE_RUST_WIRE.md`](MOBILE_RUST_WIRE.md) | React Native Rust owner: process host, session leases, `ubm-mobile-wire/1` op table, drain records, platform radio interface | Current |
 | [`BACKEND_AUTHORING.md`](BACKEND_AUTHORING.md) | Authoring a third-party backend against `unified-ble-manager/backend-sdk` | Current |
 | [`TCK.md`](TCK.md) | Backend TCK: required scenarios and running `runBackendAuthorTck` externally | Current |
 | [`DISCOVERY_AND_PROFILES.md`](DISCOVERY_AND_PROFILES.md) | Discovery helpers and the profile subpath import map (inherited helpers marked transitional) | Current |
@@ -66,6 +68,8 @@ and coding agents should read [`../AGENTS.md`](../AGENTS.md) first.
 | [`ADR/2026-07-4.0-public-api.md`](ADR/2026-07-4.0-public-api.md) | ADR: clean-baseline public API, no 3.x emulation | Current |
 | [`ADR/2026-07-4.0-rn-restoration-bootstrap.md`](ADR/2026-07-4.0-rn-restoration-bootstrap.md) | ADR: native-owned Apple restoration bootstrap before JS manager construction | Current |
 | [`ADR/2026-08-4.0-public-contract-reset.md`](ADR/2026-08-4.0-public-contract-reset.md) | ADR: stable application boundary; supersedes RC1 provisional names | Current |
+| [`ADR/2026-09-5.0-pr210-review-cutover-scope.md`](ADR/2026-09-5.0-pr210-review-cutover-scope.md) | ADR (Draft, 5.0 lane): PR210 review cutover + distribution scope (D1/D2) | Current |
+| [`ADR/2026-09-5.0-restoration-known-peer-reconnect.md`](ADR/2026-09-5.0-restoration-known-peer-reconnect.md) | ADR: 5.0 known-peer restoration on iOS and Android (issue #212) | Current |
 
 ## Platform support, evidence, and performance
 
@@ -78,6 +82,7 @@ and coding agents should read [`../AGENTS.md`](../AGENTS.md) first.
 | [`PERFORMANCE.md`](PERFORMANCE.md) | Performance and resource verification harness and its evidence limits | Current |
 | [`evidence/react-native-apple-physical-device-readiness.md`](evidence/react-native-apple-physical-device-readiness.md) | What is proven before Apple hardware exists; what a live-radio receipt adds | Current |
 | [`platforms/META_QUEST_4.1_SCOPE.md`](platforms/META_QUEST_4.1_SCOPE.md) | Maintainer decision deferring Meta Quest support to 4.1 | Current |
+| [`NATIVE_ARTIFACTS.md`](NATIVE_ARTIFACTS.md) | Precompiled Rust artifact lifecycle: status, one-command refresh, and where the checks run | Current |
 
 ## Policy, security, and process
 
@@ -91,11 +96,22 @@ and coding agents should read [`../AGENTS.md`](../AGENTS.md) first.
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | Dev setup, canonical pre-PR checks, branch and PR flow | Current |
 | [`../GOVERNANCE.md`](../GOVERNANCE.md) | Maintainer roles, decision process, ADR requirement | Current |
 | [`../RELEASE.md`](../RELEASE.md) | Canonical tag-driven release procedure and invariants | Current |
+| [`5.0.0-LANE.md`](5.0.0-LANE.md) | Historical 5.0 integration-lane rules before the owner authorized the RC release path | Historical |
+| [`5.0.0-U0-BASELINE.md`](5.0.0-U0-BASELINE.md) | UBM 5.0 U0 baseline manifest: retained entrypoints/targets/capabilities, identities, toolchain, boundary | Current |
+| [`5.0.0-GATE-LEDGER.md`](5.0.0-GATE-LEDGER.md) | Historical U-LICENSE and U0–U12 gate receipts; live release status is in `RELEASE.md` | Historical |
+| [`5.0.0-FIX-PLAN.md`](5.0.0-FIX-PLAN.md) | PR #210 fix plan and physical-test ledger: findings, owner decisions, device results | Current |
+| [`5.0.0-U12-HANDOFF.md`](5.0.0-U12-HANDOFF.md) | Historical U12 candidate handoff: identity, gate mapping, reproduction, and blockers at that snapshot | Historical |
+| [`5.0.0-PACKAGING.md`](5.0.0-PACKAGING.md) | Current 5.0 packaging behavior plus historical U8 evidence and migration notes | Current |
+| [`5.0.0-DISTRIBUTION_CONTRACT.md`](5.0.0-DISTRIBUTION_CONTRACT.md) | UBM 5.0 D2(i) distribution contract: prebuilt/source modes, Apple/Android artifact + identity rules, verification gates | Current |
+| [`NATIVE_ARTIFACTS.md`](NATIVE_ARTIFACTS.md) | Native artifact lifecycle: producer authority, prebuilt/source modes, identity checks, and example refresh rules | Current |
+| [`5.0.0-R16-REGRESSION-MATRIX.md`](5.0.0-R16-REGRESSION-MATRIX.md) | UBM 5.0 R16 acceptance layer: 22-row regression matrix dispositions with evidence, relabeled synthetic legs, sequenced follow-ups | Current |
 | [`../SECURITY.md`](../SECURITY.md) | Vulnerability reporting policy | Current |
 | [`../SUPPORT.md`](../SUPPORT.md) | Support policy: package SemVer vs evidence-backed backend labels | Current |
+| [`../LICENSE-UBM-SOURCE-AVAILABLE-1.0.md`](../LICENSE-UBM-SOURCE-AVAILABLE-1.0.md) | UBM Source Available License 1.0 text, package authority for new 5.0 material (source-available, not OSI-approved open source) | Current |
+| [`../UBM-CONTRIBUTION-TERMS-1.0.md`](../UBM-CONTRIBUTION-TERMS-1.0.md) | Contribution terms 1.0 for new 5.0 contributions with explicit assent record | Current |
 | [`security/UNIFIED_BLE_4.0_THREAT_MODEL.md`](security/UNIFIED_BLE_4.0_THREAT_MODEL.md) | Repo-wide threat model: trust boundaries, attacker classes, objectives | Current |
 | [`DEPENDENCY_AND_ARTIFACT_POLICY.md`](DEPENDENCY_AND_ARTIFACT_POLICY.md) | SBOM and third-party license generation and policy | Current |
-| [`../CHANGELOG.md`](../CHANGELOG.md) | Active 4.x changelog | Current |
+| [`../CHANGELOG.md`](../CHANGELOG.md) | Package changelog: Unreleased section plus release history | Current |
 
 ## Historical records
 
@@ -112,7 +128,6 @@ Kept as evidence of how the project got here. Nothing below is guidance.
 | [`../TVOS_SUPPORT_SPEC.md`](../TVOS_SUPPORT_SPEC.md) | Spec for adding tvOS support to the 3.x fork | Historical |
 | [`README_V1.md`](README_V1.md) | Original `react-native-ble-plx` v1 README | Historical |
 | [`MIGRATION_V1.md`](MIGRATION_V1.md) | 1.1.0 → 2.0.0 Podfile migration note | Historical |
-| [`BACKGROUND.md`](BACKGROUND.md) | Background/restoration behavior characterization of inherited source; transitional, not 4.0 semantics | Historical |
 | [`TVOS.md`](TVOS.md) | tvOS current-source characterization; not a 4.0 support claim | Historical |
 
 ### Fix trackers and review rounds
@@ -177,5 +192,8 @@ The `review/` directory also holds machine-readable findings data
 | [`superpowers/plans/2026-08-24-pr-c-react-hooks.md`](superpowers/plans/2026-08-24-pr-c-react-hooks.md) | Plan C: React hooks and adapter store ownership fixes | Historical |
 | [`superpowers/plans/2026-08-30-web-bluetooth-example.md`](superpowers/plans/2026-08-30-web-bluetooth-example.md) | Plan: TypeScript/Vite Web Bluetooth example and `docs/WEB.md` | Historical |
 | [`superpowers/plans/2026-09-05-release-4.0.25-reliability.md`](superpowers/plans/2026-09-05-release-4.0.25-reliability.md) | Plan: 4.0.25 reliability fixes for BLE-01..BLE-18 | Historical |
+| [`superpowers/plans/2026-09-17-r01-binding-producer.md`](superpowers/plans/2026-09-17-r01-binding-producer.md) | Plan: R01 binding producer (Codegen spec, Kotlin/Swift facades, TS producer, emulator leg) | Historical |
+| [`superpowers/plans/2026-09-17-r01-flip.md`](superpowers/plans/2026-09-17-r01-flip.md) | Plan: R01 RN factory flip (factory default, native-owned manager, poison acceptance) | Historical |
+| [`superpowers/plans/2026-09-18-h10-sim-round2.md`](superpowers/plans/2026-09-18-h10-sim-round2.md) | Plan: H10 simulator full Linux fidelity + remote control (owner) | Current |
 | [`superpowers/specs/2026-07-23-ios-tvos-ci-design.md`](superpowers/specs/2026-07-23-ios-tvos-ci-design.md) | Design spec: CI iOS and tvOS compile checks | Historical |
 | [`superpowers/specs/2026-08-30-web-bluetooth-example-design.md`](superpowers/specs/2026-08-30-web-bluetooth-example-design.md) | Design spec for the Web Bluetooth TypeScript example | Historical |

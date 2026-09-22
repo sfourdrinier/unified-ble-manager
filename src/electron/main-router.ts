@@ -3,6 +3,7 @@
 import {
   BackendContractError,
   contractError,
+  serializeNormalizedError,
   type CleanupFailure,
   type CleanupRecord
 } from '../backend-contract/errors'
@@ -21,7 +22,7 @@ import type {
   GattDatabaseChangedEvent,
   GattDescriptorProperties
 } from '../backend-contract/gatt'
-import type { HostNeutralBackendIdentity } from '../backend-contract/identity'
+import type { AttachmentRecord, HostNeutralBackendIdentity } from '../backend-contract/identity'
 import {
   byteLimit,
   capacity,
@@ -44,6 +45,7 @@ import { snapshotSerializableRecord } from '../backend-contract/serializable'
 import { snapshotScanPlan } from '../backend-contract/scan-planning'
 import type { ScanPlan } from '../backend-contract/scan-planning'
 import { decodeIpcScanQuery, encodeIpcScanPlan } from '../ipc/scan-planning'
+import { IPC_ATTACHMENT_STREAM_ID, IPC_CLIENT_COMPATIBILITY_OFFER, ipcAttachmentRecordV2 } from '../ipc/protocol'
 import { BleManager, Connection, DiscoveredGattDatabase } from '../manager/ble-manager'
 import type {
   ElectronBleIpcEvent,
@@ -112,6 +114,13 @@ interface RendererResources {
   readonly operations: Map<string, ManagedOperation>
   readonly preCancelledOperations: Map<string, number>
   readonly settledOperations: Map<string, number>
+  /**
+   * Handles removed after a successful release (finding 211): the registries
+   * tombstone here on every released removal, including source-terminal
+   * auto-removals, so an explicit re-release reports `released` instead of
+   * `ownership.denied`. Dies with the scope; never consulted across leases.
+   */
+  readonly releasedHandles: Set<string>
   lifecycle: 'active' | 'releasing'
   releaseResult: Promise<CleanupRecord> | null
 }
@@ -143,6 +152,9 @@ interface RendererResourceSnapshot {
  */
 export class ElectronMainBleRouter {
   private readonly manager: MainManager
+  private readonly detachAttachmentListener: () => void
+  /** The attachment renderers route under; main rebinds it after an adapter loss. */
+  private attachment: AttachmentRecord<string>
   private publish: ElectronMainBleRouterOptions['publish']
   private readonly maximumMessageBytes: number
   private readonly maximumOutstandingOperations: number
@@ -175,6 +187,7 @@ export class ElectronMainBleRouter {
       createEvent: (rendererLease, streamId, item) => this.event(rendererLease, streamId, item)
     })
     const attachment = this.manager.attachedBackend.attachment.attachment
+    this.attachment = attachment
     const versions = createElectronHostIpcVersionAxes(this.manager.identity.versions)
     this.arbiter = new ElectronMainArbiterContext(
       {
@@ -191,6 +204,48 @@ export class ElectronMainBleRouter {
         release: (_identity, lease) => this.releaseResources(lease.leaseId)
       }
     )
+    this.detachAttachmentListener = this.manager.onAttachmentAdvanced((previous, current) =>
+      this.rebindRenderers(previous, current)
+    )
+  }
+
+  /**
+   * IPC protocol 4: the manager followed its backend to a new attachment after
+   * an adapter loss. Main (never a renderer) rebinds: later routes must name
+   * the new attachment, the replaced one is refused `backend.reset` (releases
+   * excepted), and every active renderer lease is told on the attachment
+   * stream.
+   */
+  private rebindRenderers(previous: AttachmentRecord<string>, current: AttachmentRecord<string>): void {
+    this.arbiter.rebindAttachment(current)
+    this.attachment = current
+    const item = Object.freeze({
+      kind: 'value',
+      value: Object.freeze({
+        kind: 'backend-restarted',
+        schemaVersion: 1,
+        previousAttachmentId: String(previous.attachmentId),
+        attachmentId: String(current.attachmentId),
+        attachment: ipcAttachmentRecordV2(current)
+      })
+    })
+    for (const resources of this.resources.values()) {
+      if (resources.lifecycle !== 'active') continue
+      const event = this.event(resources.rendererLease, IPC_ATTACHMENT_STREAM_ID, item)
+      this.publish(String(resources.rendererLease.leaseId), event).then(
+        delivery => {
+          if (delivery !== 'delivered') {
+            console.error('[ElectronMainBleRouter] Attachment rebind was not delivered:', {
+              rendererLease: String(resources.rendererLease.leaseId),
+              delivery
+            })
+          }
+        },
+        error => {
+          console.error('[ElectronMainBleRouter] Attachment rebind delivery failed:', error)
+        }
+      )
+    }
   }
 
   async dispatch<Renderer extends string, Operation extends string>(
@@ -265,6 +320,7 @@ export class ElectronMainBleRouter {
   }
 
   async destroy(): Promise<CleanupRecord> {
+    this.detachAttachmentListener()
     const rendererFailures: CleanupFailure[] = []
     for (const clientId of [...this.resources.keys()]) {
       try {
@@ -302,7 +358,7 @@ export class ElectronMainBleRouter {
     rendererLease: RendererLeaseIdentity,
     versions: IpcVersionAxes
   ): ElectronRendererBootstrap<string, Renderer> {
-    const attachment = this.manager.attachedBackend.attachment.attachment
+    const attachment = this.attachment
     const capabilities = this.manager.capabilities()
     return Object.freeze({
       attachment,
@@ -316,8 +372,11 @@ export class ElectronMainBleRouter {
   }
 
   private async route<Renderer extends string, Operation extends string>(
-    envelope: IpcEnvelope<string, Renderer, Operation>
+    received: IpcEnvelope<string, Renderer, Operation>
   ): Promise<SerializableRecord> {
+    let receivedAt: number | null = null
+    const receiptClock = (): number => (receivedAt ??= this.manager.monotonicNow())
+    const envelope = { ...received, payload: admitRelativeBudget(received.payload, receiptClock) }
     const resources = this.resourcesFor(envelope.rendererLease)
     if (resources.lifecycle !== 'active') {
       throw contractError('lifecycle.invalid-state', 'ipc', 'electron-main-router.renderer-releasing')
@@ -342,7 +401,7 @@ export class ElectronMainBleRouter {
       const preAdmissionFailure = operationAdmissionFailure(
         controller,
         envelope.payload,
-        () => this.manager.monotonicNow(),
+        receiptClock,
         envelope.command
       )
       if (preAdmissionFailure !== null) {
@@ -359,6 +418,8 @@ export class ElectronMainBleRouter {
         response = await this.adapterState(controller)
       } else if (envelope.command === 'connection.rssi') {
         response = await this.readRssi(resources, envelope.payload, controller)
+      } else if (envelope.command === 'connection.effective-mtu') {
+        response = await this.effectiveMtu(resources, envelope.payload, controller)
       } else if (envelope.command === 'connection.maximum-write-length') {
         response = await this.maximumWriteLength(resources, envelope.payload, controller)
       } else if (envelope.command === 'connection.disconnect') {
@@ -388,7 +449,7 @@ export class ElectronMainBleRouter {
       } else {
         throw contractError('argument.invalid', 'ipc', 'electron-main-router.command')
       }
-      if (!isDestructiveCleanupCommand(envelope.command)) {
+      if (!reportsCompletedEffect(envelope.command)) {
         const admissionFailure = operationAdmissionFailure(
           controller,
           envelope.payload,
@@ -460,7 +521,7 @@ export class ElectronMainBleRouter {
     this.streams.registerScan(resources, envelope.rendererLease, handle, scan)
     return Object.freeze({
       handle,
-      backendGeneration: String(this.manager.attachedBackend.attachment.attachment.backendGeneration),
+      backendGeneration: String(this.attachment.backendGeneration),
       plan: encodeIpcScanPlan(plan)
     })
   }
@@ -550,6 +611,25 @@ export class ElectronMainBleRouter {
     )
     const result = await connection.readRssi(operationOptions(payload, controller))
     return Object.freeze({ rssi: result.rssi })
+  }
+
+  private async effectiveMtu(
+    resources: RendererResources,
+    payload: SerializableRecord,
+    controller: AbortController
+  ): Promise<SerializableRecord> {
+    const connection = requiredResource(
+      resources.connections,
+      requiredString(payload, 'connectionHandle'),
+      'connection'
+    )
+    // The main-side measurement carries the ATT MTU; the renderer builds its
+    // MtuObservation (payloadBytes = mtu - 3) exactly like the Tauri route.
+    // An unmeasured snapshot stays fail-closed upstream with its own reason,
+    // so a null here would be a backend contract violation, surfaced by the
+    // renderer's required-number check rather than a silent null.
+    const result = await connection.effectiveMtu(operationOptions(payload, controller))
+    return Object.freeze({ mtu: result.attMtu })
   }
 
   private async discover(
@@ -651,8 +731,8 @@ export class ElectronMainBleRouter {
   ): Promise<SerializableRecord> {
     const database = this.database(resources, payload)
     const path = this.characteristic(database, payload)
-    const value = await database.database.read(path, operationOptions(payload, controller))
-    return Object.freeze({ value: ownBytes(value, byteLimit(value.byteLength)) })
+    const { value, provenance } = await database.database.readReceipt(path, operationOptions(payload, controller))
+    return Object.freeze({ value: ownBytes(value, byteLimit(value.byteLength)), provenance })
   }
 
   private async write(
@@ -736,7 +816,11 @@ export class ElectronMainBleRouter {
 
   private async disconnect(resources: RendererResources, payload: SerializableRecord): Promise<SerializableRecord> {
     const handle = requiredString(payload, 'connectionHandle')
-    const connection = requiredResource(resources.connections, handle, 'connection')
+    const connection = resources.connections.get(handle)
+    if (connection === undefined) {
+      if (releasedHandleTombstone(resources, handle)) return alreadyReleasedCleanup()
+      throw contractError('ownership.denied', 'ipc', 'electron-main-router.connection-ownership')
+    }
     const lifecycleCleanup = await this.releaseConnectionEventSubscriptionsForConnection(resources, handle)
     if (lifecycleCleanup.state === 'release-failed') {
       return cleanupRecord(lifecycleCleanup)
@@ -762,13 +846,7 @@ export class ElectronMainBleRouter {
     if (!isElectronConnectionEventsStreamHandle(handle)) {
       throw contractError('argument.invalid', 'ipc', 'electron-main-router.connection-events-handle')
     }
-    return this.connectionEvents.register(
-      resources,
-      handle,
-      connectionHandle,
-      connection,
-      this.manager.attachedBackend.attachment.attachment
-    )
+    return this.connectionEvents.register(resources, handle, connectionHandle, connection, this.attachment)
   }
 
   private readyConnectionEvents(resources: RendererResources, payload: SerializableRecord): SerializableRecord {
@@ -782,14 +860,22 @@ export class ElectronMainBleRouter {
     payload: SerializableRecord
   ): Promise<SerializableRecord> {
     const handle = requiredString(payload, 'connectionEventsHandle')
-    const resource = requiredResource(resources.connectionEventSubscriptions, handle, 'connection-events')
+    const resource = resources.connectionEventSubscriptions.get(handle)
+    if (resource === undefined) {
+      if (releasedHandleTombstone(resources, handle)) return alreadyReleasedCleanup()
+      throw contractError('ownership.denied', 'ipc', 'electron-main-router.connection-events-ownership')
+    }
     const cleanup = await this.connectionEvents.remove(resources, handle, resource, true)
     return cleanupRecord(cleanup)
   }
 
   private async unsubscribe(resources: RendererResources, payload: SerializableRecord): Promise<SerializableRecord> {
     const handle = requiredString(payload, 'subscriptionHandle')
-    const resource = requiredResource(resources.subscriptions, handle, 'subscription')
+    const resource = resources.subscriptions.get(handle)
+    if (resource === undefined) {
+      if (releasedHandleTombstone(resources, handle)) return alreadyReleasedCleanup()
+      throw contractError('ownership.denied', 'ipc', 'electron-main-router.subscription-ownership')
+    }
     const cleanup = await this.streams.removeSubscription(resources, handle, resource, true)
     return cleanupRecord(cleanup)
   }
@@ -1026,6 +1112,7 @@ export class ElectronMainBleRouter {
       return { state: 'release-failed', failures }
     }
     resources.connections.delete(handle)
+    resources.releasedHandles.add(handle)
     return { state: 'released', failures: [] }
   }
 
@@ -1155,6 +1242,7 @@ export class ElectronMainBleRouter {
       operations: new Map(),
       preCancelledOperations: new Map(),
       settledOperations: new Map(),
+      releasedHandles: new Set(),
       lifecycle: 'active',
       releaseResult: null
     }
@@ -1217,7 +1305,7 @@ export class ElectronMainBleRouter {
 
 function createElectronHostIpcVersionAxes(core: HostNeutralBackendIdentity<string>['versions']): IpcVersionAxes {
   const coreOffer = coreCompatibilityOffer(core)
-  const ipcOffer = versionRange(version('ipc-protocol', 2), version('ipc-protocol', 2))
+  const ipcOffer = IPC_CLIENT_COMPATIBILITY_OFFER.ipcProtocol
   return Object.freeze({
     ...negotiateCoreVersions(coreOffer, coreOffer),
     ipcProtocol: negotiateVersion(ipcOffer, ipcOffer)
@@ -1229,7 +1317,7 @@ export function createElectronIpcVersionAxes(
   remoteOffer: IpcCompatibilityOffer
 ): IpcVersionAxes {
   const coreOffer = coreCompatibilityOffer(core)
-  const ipcOffer = versionRange(version('ipc-protocol', 2), version('ipc-protocol', 2))
+  const ipcOffer = IPC_CLIENT_COMPATIBILITY_OFFER.ipcProtocol
   return Object.freeze({
     ...negotiateCoreVersions(coreOffer, remoteOffer),
     ipcProtocol: negotiateVersion(ipcOffer, remoteOffer.ipcProtocol)
@@ -1254,7 +1342,7 @@ function coreCompatibilityOffer(core: HostNeutralBackendIdentity<string>['versio
       version('trace-format', core.traceFormat.selected.value),
       version('trace-format', core.traceFormat.selected.value)
     ),
-    ipcProtocol: versionRange(version('ipc-protocol', 2), version('ipc-protocol', 2))
+    ipcProtocol: IPC_CLIENT_COMPATIBILITY_OFFER.ipcProtocol
   }
 }
 
@@ -1349,6 +1437,26 @@ function deliveryFromPayload(payload: SerializableRecord): SubscriptionOptions['
   }
 }
 
+/**
+ * Admits the renderer's relative `budgetMs` against main's own monotonic clock,
+ * read once when the request is received, and returns the payload with the
+ * resulting main-clock `deadline`. The renderer's clock has a different time
+ * origin, so an absolute renderer `deadline` is rejected rather than compared
+ * with main's clock. Everything after receipt, including queueing, is charged
+ * to the admitted budget.
+ */
+function admitRelativeBudget(payload: SerializableRecord, receiptClock: () => number): SerializableRecord {
+  const { budgetMs, ...withoutBudget } = payload
+  if (withoutBudget.deadline !== undefined && withoutBudget.deadline !== null) {
+    throw contractError('protocol.malformed', 'ipc', 'electron-main-router.budget')
+  }
+  if (budgetMs === undefined) return payload
+  if (typeof budgetMs !== 'number' || !Number.isSafeInteger(budgetMs) || budgetMs < 0) {
+    throw contractError('protocol.malformed', 'ipc', 'electron-main-router.budget')
+  }
+  return { ...withoutBudget, deadline: receiptClock() + budgetMs }
+}
+
 function deadlineFromPayload(payload: SerializableRecord) {
   const value = payload.deadline
   if (value === null || value === undefined) {
@@ -1386,6 +1494,17 @@ function isDestructiveCleanupCommand(command: string): boolean {
   )
 }
 
+/**
+ * Commands whose completed result is reported even when cancellation or the
+ * deadline arrived after dispatch. Their effect cannot be rolled back: a
+ * cleanup has released its resource, and a write has committed at the
+ * peripheral. Reporting either as aborted/timed-out would invite the caller to
+ * repeat an effect that already happened.
+ */
+function reportsCompletedEffect(command: string): boolean {
+  return isDestructiveCleanupCommand(command) || command === 'gatt.write' || command === 'gatt.descriptor.write'
+}
+
 function operationOptions(payload: SerializableRecord, controller: AbortController) {
   return Object.freeze({ signal: controller.signal, deadline: deadlineFromPayload(payload) })
 }
@@ -1417,6 +1536,23 @@ function requiredResource<Value>(resources: Map<string, Value>, handle: string, 
     throw contractError('ownership.denied', 'ipc', `electron-main-router.${kind}-ownership`)
   }
   return resource
+}
+
+/**
+ * Finding 211: the resource is gone because main already released it — a
+ * source-terminal auto-removal (link loss ends the stream) or an earlier
+ * explicit release. Releasing it again reports `released`: the end state
+ * the caller asked for already holds. A handle main never issued is still
+ * foreign and stays `ownership.denied`, so idempotence never blesses
+ * guesses. Like `releaseDatabase`, which already answers `released` for an
+ * unknown database.
+ */
+function releasedHandleTombstone(resources: RendererResources, handle: string): boolean {
+  return resources.releasedHandles.has(handle)
+}
+
+function alreadyReleasedCleanup(): SerializableRecord {
+  return Object.freeze({ state: 'released', failures: Object.freeze([]) })
 }
 
 function characteristicKey(path: {
@@ -1513,24 +1649,6 @@ function cleanupRecord(cleanup: CleanupRecord): SerializableRecord {
         })
       )
     )
-  })
-}
-
-function serializeNormalizedError(error: CleanupRecord['failures'][number]['error']): SerializableRecord {
-  return Object.freeze({
-    code: error.code,
-    domain: error.domain,
-    operation: error.operation,
-    retryability: error.retryability,
-    platform:
-      error.platform === null
-        ? null
-        : Object.freeze({
-            domain: error.platform.domain,
-            code: error.platform.code,
-            safeMessage: error.platform.safeMessage,
-            metadata: error.platform.metadata
-          })
   })
 }
 

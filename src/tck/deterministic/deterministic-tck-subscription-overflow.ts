@@ -28,25 +28,34 @@ export async function deterministicSubscriptionOverflowFacts(
     throw new Error('deterministic TCK snapshot has no subscribable characteristic')
   }
   const address = characteristicAddress(characteristic.path)
+  // Post-R12 limits: byte budgets must exceed the 64-byte control reserve
+  // (frozen validateStreamLimits fails closed with stream.quota otherwise).
+  // Item capacity 1 still forces the item overflow with the same 1-byte
+  // values and exact terminal counts.
   const itemCapacityProbe = await proveLocalSubscriptionOverflow(
     fixture,
     connected.database,
     characteristic.path,
     address,
-    subscriptionOptions('error', 1, 8),
+    subscriptionOptions('error', 1, 128),
     [new Uint8Array([4]), new Uint8Array([5])],
     1,
     1
   )
+  // Post-R12 limits as above. The byte probe shares its corpus with the
+  // runner-owned overflow scenario on central: one 128-byte value against a
+  // (4, 128) budget, so the overflow stays byte-triggered (a single item
+  // never trips the item capacity) with exact droppedItems/droppedBytes on
+  // both backends.
   const byteCapacityProbe = await proveLocalSubscriptionOverflow(
     fixture,
     connected.database,
     characteristic.path,
     address,
-    subscriptionOptions('error', 4, 3),
-    [new Uint8Array([6, 7, 8])],
+    subscriptionOptions('error', 4, 128),
+    [new Uint8Array(128)],
     1,
-    3
+    128
   )
   const aggregateQuotaProbe = await proveAggregateSubscriptionQuota()
   await releaseConnection(fixture, connected.lease)
@@ -138,7 +147,10 @@ async function proveAggregateSubscriptionQuota(): Promise<boolean> {
     if (characteristic === undefined) {
       throw new Error('aggregate quota probe has no subscribable characteristic')
     }
-    const subscriptionPromise = connected.database.subscribe(characteristic.path, subscriptionOptions('error', 4, 8))
+    // Post-R12 limits: the stream budget stays above the 64-byte control
+    // reserve; the quota overflow still comes from aggregateStreamByteQuota 1
+    // alone, with the same exact terminal counts and stream.quota trace cause.
+    const subscriptionPromise = connected.database.subscribe(characteristic.path, subscriptionOptions('error', 4, 128))
     quotaFixture.controller.clock.runUntilIdle()
     const subscription = await subscriptionPromise
     const traceStart = quotaFixture.controller.traceSnapshot().length

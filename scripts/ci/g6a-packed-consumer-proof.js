@@ -138,6 +138,13 @@ const thirdPartyBaseProfile = Object.freeze([
     ])
   }),
   Object.freeze({
+    id: 'gatt.duplicate-uuid-occurrences-route-exactly',
+    facts: Object.freeze([
+      'gatt-duplicate-uuid-occurrences-are-indexed-per-parent',
+      'gatt-duplicate-uuid-notifications-route-to-exact-instance'
+    ])
+  }),
+  Object.freeze({
     id: 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation',
     facts: Object.freeze([
       'gatt-read-and-descriptor-return-owned-bytes',

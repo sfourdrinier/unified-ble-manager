@@ -215,7 +215,14 @@ async function twoClientArbitrationAndRetryableCleanup<
   requireCondition(!observed.done && observed.value.kind === 'value', 'owner scan did not observe a peer')
   const peerId = observed.value.value.device.id
   const { connection, database, characteristic } = await connectedDatabase(context, peerId)
-  await expectError(borrower.connect(peerId, operation()), 'connection.already-owned')
+  // Same-peer join (UNIFIED_SEMANTICS §3/§8, Android reference): the borrower
+  // leases the peer's link with an independent generation, then releases it.
+  const borrowerConnection = await context.controller.settle(borrower.connect(peerId, operation()))
+  requireCondition(
+    String(borrowerConnection.connectionGeneration) !== String(connection.connectionGeneration),
+    'second client did not join with an independent generation'
+  )
+  await context.controller.settle(borrowerConnection.release())
   const subscription = await context.controller.settle(database.subscribe(characteristic, subscriptionOptions()))
   context.controller.injectUnsubscribeFailure()
   const failedRemoval = await context.controller.settle(subscription.remove())

@@ -18,6 +18,7 @@ import type {
   OperationTerminalRecord,
   PublicOperationOptions,
   ReadRequest,
+  CharacteristicReadResult,
   ReadResult,
   SubscribeRequest,
   WriteRequest,
@@ -117,6 +118,13 @@ export interface BackendPeerQuery extends PublicOperationOptions {
 export interface BackendPeerRecord<Attachment extends string> {
   readonly reference: PeerReference
   readonly peerId: PeerId<Attachment>
+  /**
+   * The name the platform supplied with this record, or null when it
+   * supplied none. A `restored` record carries no advertisement observation
+   * from this process: Apple hands back the `CBPeripheral.name` the OS
+   * retained, Android presence wake hands back a bare address and reports
+   * null. Association-time labels are never merged here.
+   */
   readonly name: string | null
   readonly rssi: number | null
   readonly source: PeerSource
@@ -240,7 +248,7 @@ export interface GattBackend<Attachment extends string> {
   >(
     path: CharacteristicPath<Attachment, Connection, Database, Service, Characteristic, 'current'>,
     request: ReadRequest<Attachment, Operation>
-  ): BackendOperationDispatch<Attachment, ReadResult<Attachment, Operation>>
+  ): BackendOperationDispatch<Attachment, CharacteristicReadResult<Attachment, Operation>>
   write<
     Connection extends string,
     Database extends string,

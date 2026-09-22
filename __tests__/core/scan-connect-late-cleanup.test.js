@@ -255,6 +255,9 @@ const acquisitions = [
     name: 'connect',
     resourceKind: 'connection',
     operation: 'connect-stale-admission-release',
+    // Finding 161: a dispatched connect whose deadline expires is the peer
+    // not answering — connection.failed, never operation.timed-out.
+    expectedDeadlineCode: 'connection.failed',
     install: installConnectAcquisition,
     start: (manager, signal) => manager.connect(peer(), operation(signal))
   }
@@ -367,7 +370,9 @@ describe('pending scan/connect acquisition ownership', () => {
       await settle(fixture.controller, gate.leaseCreated)
       const result = await settle(fixture.controller, outcome)
       expect(result.state).toBe('rejected')
-      expect(result.error).toMatchObject({ normalized: { code: 'operation.timed-out' } })
+      expect(result.error).toMatchObject({
+        normalized: { code: acquisition.expectedDeadlineCode ?? 'operation.timed-out' }
+      })
       expect(Number(manager.localResourceCounters().connectionLeases)).toBe(0)
       expect(Number(manager.localResourceCounters().scanConsumers)).toBe(0)
       await awaitSignal(closer.firstAttempt, `the late ${acquisition.name} deadline cleanup to run`)

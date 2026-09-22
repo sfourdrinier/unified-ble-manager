@@ -1,7 +1,7 @@
 // src/backends/bluez/bluez-connection-runtime.ts
 
 import type { OwnerScanOptions } from '../../backend-contract/advertisement'
-import type { PeerAddressDescriptor } from '../../backend-contract/backend'
+import type { ConnectionOptions, PeerAddressDescriptor } from '../../backend-contract/backend'
 import {
   BackendContractError,
   contractError,
@@ -55,10 +55,13 @@ export async function connectBluezConnection(
   runtime: BluezBackendRuntime,
   peerId: PeerId<string>,
   clientId: ClientId<string, string>,
-  options: PublicOperationOptions
+  options: ConnectionOptions
 ): Promise<BluezConnectionLease> {
   runtime.assertUsable('bluez.connect')
   assertConnectAdmission(runtime, options)
+  if (options.intent === 'when-available') {
+    throw contractError('capability.unsupported', 'connection', 'bluez.connect.when-available')
+  }
   const devicePath = runtime.devicePathForPeer(peerId)
   if (!devicePath.startsWith(`${String(runtime.selectedAdapter.adapterId)}/`)) {
     throw contractError('connection.not-found', 'connection', 'bluez.connect')
@@ -676,7 +679,25 @@ async function connectBluezSharedRecord(
   const ids = runtime.identifiers()
   const leaseId = ids.leaseId(`bluez-connection-lease-${runtime.nextLease}`)
   runtime.nextLease += 1
-  const lease = new BluezConnectionLease(runtime, record, leaseId, requireRecordConnection(record))
+  // Every joined lease carries an independent connection identity over the
+  // shared link (FX1B); the first lease keeps the record's dialling-owner
+  // connection, which link-level events continue to name.
+  let connection = requireRecordConnection(record)
+  if (record.leases.size > 0) {
+    connection = new BluezConnection(
+      runtime,
+      record,
+      peerId,
+      ids.connectionId(`bluez-connection-${runtime.nextConnection}`),
+      opaqueId(
+        String(runtime.nextConnection),
+        'connection-generation',
+        `${String(runtime.attachment().attachmentId)}:${devicePath}`
+      )
+    )
+    runtime.nextConnection += 1
+  }
+  const lease = new BluezConnectionLease(runtime, record, leaseId, connection)
   record.leases.add(lease)
   if (record.ownerLeaseId === null) {
     record.ownerLeaseId = leaseId

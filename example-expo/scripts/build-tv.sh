@@ -1,0 +1,415 @@
+#!/usr/bin/env bash
+# example-expo/scripts/build-tv.sh — Apple TV (tvOS) variant of example-expo.
+#
+# One source tree, not a fork: this stages a generated copy of example-expo at
+# example-expo/ios-tv (gitignored, like ios/ and android/), applies only the
+# TV build inputs (react-native-tvos alias, @react-native-tvos/config-tv,
+# Metro shared-driver path), and prebuilds with EXPO_TV=1 so the native
+# project targets tvOS.
+#
+# It NEVER touches example-expo/ios or example-expo/android: the phones keep
+# building from those directories while the TV builds from ios-tv/.
+#
+# TV dependency versions (pinned here, sources in docs):
+# - react-native via npm:react-native-tvos@0.86-stable (== 0.86.3-0), the
+#   tvOS fork release matching Expo SDK 57 / React Native 0.86.3.
+#   Source: Expo guide "Build Expo apps for TV" (SDK-version match rule) and
+#   the 0.86-stable dist-tag on npm.
+# - @react-native-tvos/config-tv pinned below (peer: expo >= 52).
+#   Source: npm @react-native-tvos/config-tv dist-tags (latest).
+#
+# Usage:
+#   bash example-expo/scripts/build-tv.sh stage     # rsync sources -> ios-tv, apply TV inputs, drop the staged library copy
+#   bash example-expo/scripts/build-tv.sh install   # pnpm install in ios-tv (re-resolves the library from the repo)
+#   bash example-expo/scripts/build-tv.sh verify-identity # staged library identity equals the repo (finding 176)
+#   bash example-expo/scripts/build-tv.sh prebuild  # EXPO_TV=1 expo prebuild --platform ios + pod install
+#   bash example-expo/scripts/build-tv.sh bundle-url # point staged AppDelegate at the TV Metro (TV_METRO_PORT wins)
+#   bash example-expo/scripts/build-tv.sh build     # Debug .app for a real Apple TV (needs DEVELOPMENT_TEAM)
+#   bash example-expo/scripts/build-tv.sh metro     # serve the staged TV bundle (TV_METRO_PORT)
+#   bash example-expo/scripts/build-tv.sh all       # stage..build
+#
+# Env (defaults match this repo's LAN setup; the phone Metro stays on 8082,
+# the TV tree gets its own Metro because it resolves react-native-tvos):
+#   TV_METRO_PORT=8081 TV_LAN_HOST=192.168.68.116 DEVELOPMENT_TEAM=<team> (build only)
+#
+# Signing: DEVELOPMENT_TEAM is passed on the xcodebuild command line only and
+# is never written into any file.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ROOT="$(cd "${APP_DIR}/.." && pwd)"
+STAGE="${TV_STAGE_DIR:-${APP_DIR}/ios-tv}"
+
+TV_METRO_PORT="${TV_METRO_PORT:-8081}"
+TV_LAN_HOST="${TV_LAN_HOST:-192.168.68.116}"
+TVOS_ALIAS="${TVOS_ALIAS:-npm:react-native-tvos@0.86-stable}"
+CONFIG_TV_VERSION="${CONFIG_TV_VERSION:-0.1.6}"
+# The Apple TV this repo builds for ("Office", Apple TV 4K 3rd gen).
+TV_DEVICE_ID="${TV_DEVICE_ID:-27C3EE87-9EB5-54C1-8CAB-52D33CB077C9}"
+TV_BUNDLE_ID="${TV_BUNDLE_ID:-com.sfourdrinier.bleplxexample}"
+# `python` is the canonical executable name on Windows while POSIX setups
+# only provide `python3`. Prefer python3, fall back to python, fail loudly
+# when neither exists. Overridable via PYTHON3 for hermetic tests.
+# Resolved lazily: `metro`, `install` and `launch` need no interpreter, and
+# refusing to run them on a host without one would be a refusal of something
+# the host can do.
+PYTHON3="${PYTHON3:-}"
+require_python() {
+  if [[ -z "${PYTHON3}" ]]; then
+    PYTHON3="$(command -v python3 || true)"
+  fi
+  # `python3` on Windows may name the Microsoft Store stub (0 bytes: opens
+  # the Store instead of running). Only a candidate that executes counts;
+  # otherwise fall back to `python`. An explicit PYTHON3 that works is kept.
+  if [[ -z "${PYTHON3}" ]] || ! "${PYTHON3}" -c 'pass' >/dev/null 2>&1; then
+    PYTHON3="$(command -v python || true)"
+  fi
+  if [[ -z "${PYTHON3}" ]] || ! "${PYTHON3}" -c 'pass' >/dev/null 2>&1; then
+    echo "error: ${1} needs python3 (or python); neither is on PATH" >&2
+    exit 1
+  fi
+}
+
+if [[ -n "${TV_STAGE_DIR:-}" ]]; then
+  # Test/CI override: an absolute tmp dir, never the real tree. The host's
+  # real temp dir, whatever it is: TMPDIR on POSIX, TEMP/TMP on Windows
+  # (Git Bash leaves TMPDIR unset while the test passes in the TEMP path,
+  # in backslash form). Compare with backslashes normalised so a Windows
+  # temp dir matches its own prefix.
+  _tv_stage_norm="${STAGE//\\//}"
+  case "${_tv_stage_norm}" in
+    /[A-Za-z]/*) _tv_stage_norm="${_tv_stage_norm:1:1}:${_tv_stage_norm:2}" ;;
+  esac
+  _tv_stage_ok=0
+  _tv_tmps=()
+  for _tv_tmp in "${TMPDIR:-}" "${TEMP:-}" "${TMP:-}" /tmp; do
+    [[ -n "${_tv_tmp:-}" ]] || continue
+    _tv_tmps+=("${_tv_tmp}")
+  done
+  # Git Bash (MSYS) resets TEMP/TMP to /tmp, hiding the Windows temp dir the
+  # caller staged under (observed: cmd sees C:\...\Temp while bash sees /tmp,
+  # and TV_STAGE_DIR arrives unconverted). Recover the Windows temps from
+  # Windows itself; a no-op where cmd.exe is absent (POSIX keeps its own).
+  if command -v cmd >/dev/null 2>&1; then
+    _tv_win_temps="$(cmd //c set TEMP 2>/dev/null | tr -d '\r')"
+    while IFS= read -r _tv_line; do
+      case "${_tv_line}" in
+        TEMP=*|TMP=*|TMPDIR=*) _tv_tmps+=("${_tv_line#*=}") ;;
+      esac
+    done <<< "${_tv_win_temps}"
+  fi
+  for _tv_tmp in "${_tv_tmps[@]}"; do
+    _tv_tmp="${_tv_tmp//\\//}"
+    case "${_tv_tmp}" in
+      /[A-Za-z]/*) _tv_tmp="${_tv_tmp:1:1}:${_tv_tmp:2}" ;;
+    esac
+    _tv_tmp="${_tv_tmp%/}"
+    case "${_tv_stage_norm}" in
+      "${_tv_tmp}"/*) _tv_stage_ok=1; break ;;
+    esac
+  done
+  unset _tv_tmp _tv_stage_norm _tv_tmps _tv_line _tv_win_temps
+  if [[ "${_tv_stage_ok}" != 1 ]]; then
+    echo "error: TV_STAGE_DIR must be an absolute tmp dir (${STAGE})" >&2; exit 1
+  fi
+  unset _tv_stage_ok
+  # A Windows-form stage dir (C:\...) is unusable as-is for rsync, which
+  # reads the drive colon as a remote host. Normalise to the msys form
+  # (/c/...) where cygpath exists; a no-op everywhere else.
+  if command -v cygpath >/dev/null 2>&1; then
+    case "${STAGE}" in
+      [A-Za-z]:*) STAGE="$(cygpath -u "${STAGE}")" ;;
+    esac
+  fi
+elif [[ "${STAGE}" != "${APP_DIR}"/* ]]; then
+  echo "error: stage dir escaped the app dir (${STAGE})" >&2
+  exit 1
+fi
+
+cmd_stage() {
+  require_python stage
+  mkdir -p "${STAGE}"
+  # Sources only: the stage owns its node_modules (tvos alias) and its ios/
+  # (tvOS prebuild). Excluded entries are protected from deletion, so a
+  # re-stage never wipes a previous prebuild or install.
+  #
+  # No rsync: Git for Windows does not ship it, so the sync is spelled with
+  # POSIX tools present in Git Bash and on macOS/Linux — drop every
+  # top-level stage entry except the protected ones (rsync's --delete), then
+  # copy the sources over without the protected names (rsync's --exclude).
+  find "${STAGE}" -mindepth 1 -maxdepth 1 \
+    ! -name 'node_modules' \
+    ! -name 'ios' \
+    ! -name 'ios-tv' \
+    ! -name 'android' \
+    ! -name '.expo' \
+    ! -name 'dist' \
+    ! -name 'web-build' \
+    -exec rm -rf {} +
+  # macOS' system tar can report a write error when its archive is piped
+  # directly into another tar process. Write the short-lived archive into
+  # the stage instead; this is also portable to Git Bash on Windows.
+  local stage_archive="${STAGE}/.ubm-stage-source.tar"
+  rm -f "${stage_archive}"
+  if ! (cd "${APP_DIR}" && tar cf "${stage_archive}" \
+    --exclude='./node_modules' \
+    --exclude='./ios' \
+    --exclude='./ios-tv' \
+    --exclude='./android' \
+    --exclude='./.expo' \
+    --exclude='./dist' \
+    --exclude='./web-build' \
+    .); then
+    rm -f "${stage_archive}"
+    return 1
+  fi
+  if ! (cd "${STAGE}" && tar xf "${stage_archive}"); then
+    rm -f "${stage_archive}"
+    return 1
+  fi
+  rm -f "${stage_archive}"
+
+  # Finding 176: pnpm reuses a present `file:` dependency directory, so a
+  # re-stage must drop the staged unified-ble-manager copy. The next
+  # `install` then resolves it fresh from the current repo instead of
+  # keeping a stale build that fails closed with protocol.incompatible
+  # native-identity.
+  rm -rf "${STAGE}/node_modules/unified-ble-manager"
+
+  # TV build inputs, applied to the staged copy only.
+  node -e '
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const stage = process.argv[1];
+    const root = process.argv[2];
+    const tvosAlias = process.argv[3];
+    const configTv = process.argv[4];
+    const pkgPath = path.join(stage, "package.json");
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+    pkg.dependencies["react-native"] = tvosAlias;
+    pkg.dependencies["unified-ble-manager"] = `file:${root}`;
+    pkg.devDependencies = pkg.devDependencies ?? {};
+    pkg.devDependencies["@react-native-tvos/config-tv"] = configTv;
+    fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
+    const appPath = path.join(stage, "app.json");
+    const app = JSON.parse(fs.readFileSync(appPath, "utf8"));
+    app.expo.plugins = app.expo.plugins ?? [];
+    if (!app.expo.plugins.includes("@react-native-tvos/config-tv")) {
+      app.expo.plugins.push("@react-native-tvos/config-tv");
+    }
+    fs.writeFileSync(appPath, JSON.stringify(app, null, 2) + "\n");
+  ' "${STAGE}" "${ROOT}" "${TVOS_ALIAS}" "${CONFIG_TV_VERSION}"
+
+  # The staged Metro still serves the shared driver, but from the repo path:
+  # a relative ../examples-shared would resolve inside example-expo.
+  "${PYTHON3}" - "${STAGE}/metro.config.js" "${ROOT}/examples-shared" <<'EOF'
+import sys
+path, shared = sys.argv[1], sys.argv[2]
+text = open(path).read()
+needle = "path.resolve(projectRoot, '../examples-shared')"
+assert needle in text, "metro shared-driver anchor not found"
+open(path, "w").write(text.replace(needle, f"path.resolve('{shared}')"))
+EOF
+  # The stage sits one level deeper than example-expo, so the staged
+  # src/driver/shared.ts must climb one more level to reach the same
+  # shared driver. Without this both tsc and the TV Metro bundle resolve a
+  # path that does not exist.
+  "${PYTHON3}" - "${STAGE}/src/driver/shared.ts" <<'EOF'
+import sys
+path = sys.argv[1]
+text = open(path).read()
+needle = "from '../../../examples-shared/driver/index.ts'"
+assert needle in text, "shared.ts examples-shared anchor not found"
+open(path, "w").write(text.replace(needle, "from '../../../../examples-shared/driver/index.ts'", 1))
+EOF
+  echo "staged TV app at ${STAGE}"
+}
+
+cmd_install() {
+  # Packing the unified-ble-manager file: dep enumerates the whole checkout
+  # (which currently holds hundreds of thousands of build-output files), so
+  # the resolver needs heap headroom. No tree state is changed by this.
+  # Without a TTY pnpm's modules-purge prompt empties node_modules and exits 0
+  # without reinstalling, so the purge is confirmed up front and the library's
+  # presence is checked rather than assumed.
+  (cd "${STAGE}" && NODE_OPTIONS=--max-old-space-size=8192 pnpm install --no-frozen-lockfile --config.confirm-modules-purge=false)
+  if [ ! -f "${STAGE}/node_modules/unified-ble-manager/package.json" ]; then
+    echo "error: pnpm install left no ${STAGE}/node_modules/unified-ble-manager/package.json" >&2
+    exit 1
+  fi
+}
+
+cmd_verify_identity() {
+  # Finding 176: the staged build identity must equal the repo's, or the TV
+  # app fails closed at runtime with protocol.incompatible native-identity.
+  # Check it here — right after install — instead of on the Apple TV.
+  local staged_lib="${STAGE}/node_modules/unified-ble-manager"
+  local staged_identity="${staged_lib}/src/generated/native-build-identity.ts"
+  local repo_identity="${ROOT}/src/generated/native-build-identity.ts"
+  if [[ ! -f "${staged_identity}" ]]; then
+    echo "error: staged unified-ble-manager has no src/generated/native-build-identity.ts (${staged_identity}): run install first" >&2
+    exit 1
+  fi
+  if ! cmp -s "${repo_identity}" "${staged_identity}"; then
+    echo "error: staged unified-ble-manager build identity is stale (diff ${repo_identity} ${staged_identity}): re-run stage, then install" >&2
+    exit 1
+  fi
+  # MSYS (Git Bash) converts path-looking ARGUMENTS for a native binary but
+  # never rewrites a path embedded in the quoted -e program, so Node for
+  # Windows cannot resolve it. Pass every path as an argument instead.
+  local repo_version staged_version
+  repo_version="$(node -e 'console.log(require(process.argv[1]).version)' "${ROOT}/package.json")"
+  staged_version="$(node -e 'console.log(require(process.argv[1]).version)' "${staged_lib}/package.json")"
+  if [[ "${repo_version}" != "${staged_version}" ]]; then
+    echo "error: staged unified-ble-manager version ${staged_version} != repo ${repo_version}: re-run stage, then install" >&2
+    exit 1
+  fi
+  echo "staged unified-ble-manager identity matches the repo (version ${repo_version})"
+}
+
+cmd_prebuild() {
+  (cd "${STAGE}" && EXPO_TV=1 npx expo prebuild --platform ios --clean --no-install)
+  # react-native-tvos ships React-Core as a prebuilt tarball that pod install
+  # caches under ~/Library/Caches/ReactNative (not writable from here), so
+  # fetch it once to a writable cache and hand pod install the local file via
+  # the fork's own RCT_TESTONLY_RNCORE_TARBALL_PATH switch. Debug tarball: this
+  # script only builds Debug.
+  local tv_version tarball_name tarball_url tarball_path
+  tv_version="$(node -e 'console.log(require(process.argv[1]).version)' "${STAGE}/node_modules/react-native/package.json")"
+  tarball_name="reactnative-core-${tv_version}-debug.tar.gz"
+  tarball_url="https://repo1.maven.org/maven2/io/github/react-native-tvos/react-native-artifacts/${tv_version}/react-native-artifacts-${tv_version}-reactnative-core-debug.tar.gz"
+  tarball_path="/tmp/tv-prebuilt-cache/${tarball_name}"
+  mkdir -p "$(dirname "${tarball_path}")"
+  if [[ ! -f "${tarball_path}" ]]; then
+    curl -sSL -o "${tarball_path}" "${tarball_url}"
+    curl -sSL "${tarball_url}.sha1" -o "${tarball_path}.sha1"
+  fi
+  # CocoaPods' home (~/.cocoapods) and download cache
+  # (~/Library/Caches/CocoaPods) are not writable from here either.
+  export CP_HOME_DIR="/tmp/tv-prebuilt-cache/cocoapods-home"
+  export CP_CACHE_DIR="${CP_HOME_DIR}/cache"
+  mkdir -p "${CP_HOME_DIR}"
+  (cd "${STAGE}/ios" && RCT_TESTONLY_RNCORE_TARBALL_PATH="${tarball_path}" pod install)
+}
+
+cmd_bundle_url() {
+  require_python bundle-url
+  local delegate
+  delegate="$(find "${STAGE}/ios" -maxdepth 2 -name AppDelegate.swift | head -1)"
+  if [[ -z "${delegate}" ]]; then
+    echo "error: no AppDelegate.swift under ${STAGE}/ios (run prebuild first)" >&2
+    exit 1
+  fi
+  # Same mechanism as the phone build (example-expo/ios AppDelegate bundle URL
+  # override), pointed at the TV Metro: the staged tree resolves
+  # react-native-tvos, so it needs its own packager, while the driver server
+  # stays shared on 8795 (derived from the bundle host).
+  # Finding 176: TV_METRO_PORT wins every time. A stale override from a
+  # previous run (for example the default 8081) is replaced, never kept.
+  if grep -q 'jsLocation = "' "${delegate}"; then
+    if grep -q "jsLocation = \"${TV_LAN_HOST}:${TV_METRO_PORT}\"" "${delegate}"; then
+      echo "bundle URL override already present in ${delegate}"
+      return 0
+    fi
+    "${PYTHON3}" - "${delegate}" "${TV_LAN_HOST}:${TV_METRO_PORT}" <<'EOF'
+import sys
+path, location = sys.argv[1], sys.argv[2]
+import re
+text = open(path).read()
+updated, count = re.subn(r'jsLocation = "[^"]*"', f'jsLocation = "{location}"', text, count=1)
+assert count == 1, "bundle URL override not found"
+open(path, "w").write(updated)
+EOF
+    echo "bundle URL override -> ${TV_LAN_HOST}:${TV_METRO_PORT} in ${delegate}"
+    return 0
+  fi
+  "${PYTHON3}" - "${delegate}" "${TV_LAN_HOST}:${TV_METRO_PORT}" <<'EOF'
+import sys
+path, location = sys.argv[1], sys.argv[2]
+text = open(path).read()
+anchor = "return RCTBundleURLProvider.sharedSettings().jsBundleURL(forBundleRoot:"
+assert anchor in text, "AppDelegate bundleURL anchor not found"
+insert = f'    RCTBundleURLProvider.sharedSettings().jsLocation = "{location}"\n    '
+open(path, "w").write(text.replace(anchor, insert + anchor, 1))
+EOF
+  echo "bundle URL override -> ${TV_LAN_HOST}:${TV_METRO_PORT} in ${delegate}"
+}
+
+xcode_scheme() {
+  require_python xcode-scheme
+  local schemes scheme
+  schemes="$(xcodebuild -list -json -project "${STAGE}/ios/"*.xcodeproj 2>/dev/null | "${PYTHON3}" -c 'import json,sys; print("\n".join(json.load(sys.stdin)["project"]["schemes"]))')"
+  scheme="$(printf '%s\n' "${schemes}" | grep -i -m1 'tv' || true)"
+  if [[ -z "${scheme}" ]]; then
+    scheme="$(printf '%s\n' "${schemes}" | head -1)"
+  fi
+  printf '%s' "${scheme}"
+}
+
+cmd_build() {
+  require_python build
+  if [[ -z "${DEVELOPMENT_TEAM:-}" ]]; then
+    echo "error: DEVELOPMENT_TEAM is required (passed on the command line only)" >&2
+    exit 1
+  fi
+  # F9: Apple RustCore is gitignored — refresh it (a no-op when fresh)
+  # before the TV link. A failed refresh aborts the build; never link a
+  # stale core. UBM_NATIVE_REFRESH=off switches to check-only.
+  node "${ROOT}/scripts/native/ensure-native.js" apple || exit 1
+  local scheme
+  scheme="$(xcode_scheme)"
+  echo "building scheme ${scheme} for Apple TV"
+  (cd "${STAGE}/ios" && xcodebuild \
+    -workspace ./*.xcworkspace \
+    -scheme "${scheme}" \
+    -configuration Debug \
+    -destination 'generic/platform=tvOS' \
+    -derivedDataPath build/tv-device \
+    -allowProvisioningUpdates \
+    "DEVELOPMENT_TEAM=${DEVELOPMENT_TEAM}" \
+    build)
+}
+
+cmd_metro() {
+  # Finding 241: the staged TV app is pointed at TV_LAN_HOST:TV_METRO_PORT, so a
+  # port another project already serves hands it that project's bundle. React
+  # Native then throws on every native call without bound. Refuse first.
+  #
+  # The project root here is the STAGE, not the repo: this server runs from the
+  # stage, and the stage is what owns the port. Passing the repo root instead
+  # got it wrong twice over — it refused the TV's own server whenever the stage
+  # sat outside the repo, and it accepted any other server started from a repo
+  # subdirectory (the bare example on the same default 8081), which is exactly
+  # the collision the guard exists to catch.
+  node "${ROOT}/examples-shared/dev/metro-port-guard.js" "${TV_METRO_PORT}" "${STAGE}"
+  (cd "${STAGE}" && npx expo start --port "${TV_METRO_PORT}")
+}
+
+cmd_install_tv() {
+  local app
+  app="$(find "${STAGE}/ios/build/tv-device" -maxdepth 4 -name '*.app' -type d | head -1)"
+  if [[ -z "${app}" ]]; then
+    echo "error: no .app under ${STAGE}/ios/build/tv-device (run build first)" >&2
+    exit 1
+  fi
+  xcrun devicectl device install app --device "${TV_DEVICE_ID}" "${app}"
+}
+
+cmd_launch_tv() {
+  xcrun devicectl device process launch --device "${TV_DEVICE_ID}" "${TV_BUNDLE_ID}"
+}
+
+case "${1:-all}" in
+  stage) cmd_stage ;;
+  install) cmd_install ;;
+  verify-identity) cmd_verify_identity ;;
+  prebuild) cmd_prebuild ;;
+  bundle-url) cmd_bundle_url ;;
+  build) cmd_build ;;
+  metro) cmd_metro ;;
+  install-tv) cmd_install_tv ;;
+  launch-tv) cmd_launch_tv ;;
+  all) cmd_stage; cmd_install; cmd_verify_identity; cmd_prebuild; cmd_bundle_url; cmd_build ;;
+  *) echo "usage: $0 [stage|install|verify-identity|prebuild|bundle-url|build|metro|install-tv|launch-tv|all]" >&2; exit 1 ;;
+esac

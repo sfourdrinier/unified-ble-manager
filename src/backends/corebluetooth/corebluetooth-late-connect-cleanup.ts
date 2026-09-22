@@ -13,7 +13,7 @@ export async function releaseLateCoreBluetoothConnection(
 ): Promise<boolean> {
   record.state = 'cleanup-failed'
   if (boundary.connectionState(record.nativePeerId) === 'disconnected') {
-    if (connections.get(record.nativePeerId) === record) connections.delete(record.nativePeerId)
+    if (connections.get(String(record.connectionId)) === record) connections.delete(String(record.connectionId))
     return true
   }
   let nativeDisconnect = record.nativeDisconnect
@@ -38,6 +38,6 @@ export async function releaseLateCoreBluetoothConnection(
     throw error
   }
   if (boundary.connectionState(record.nativePeerId) === 'connected') return false
-  if (connections.get(record.nativePeerId) === record) connections.delete(record.nativePeerId)
+  if (connections.get(String(record.connectionId)) === record) connections.delete(String(record.connectionId))
   return true
 }

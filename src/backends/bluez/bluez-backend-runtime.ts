@@ -4,6 +4,7 @@ import type {
   AdapterBackend,
   BackendEvent,
   ConnectionBackend,
+  ConnectionOptions,
   GattBackend,
   PeerAddressDescriptor,
   ResourceCounters,
@@ -184,6 +185,8 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
   private backendGeneration = 1
   private adapterGeneration = 1
   private adapterStateUpdatedAt: MonotonicTimestamp
+  /** Last adapter snapshot emitted to watchers; same-state signals are not transitions. */
+  private lastWatcherAdapterState: AdapterStateSnapshot<string> | null = null
   nextScan = 1
   nextConnection = 1
   nextLease = 1
@@ -202,6 +205,7 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     this.now = construction.now
     this.pairingGeneration = construction.pairingGeneration ?? null
     this.adapterStateUpdatedAt = monotonicTimestamp(this.now())
+    this.lastWatcherAdapterState = this.adapterState()
     this.backendInstanceId = construction.backendInstanceId
     this.dispatcher = new BluezOperationDispatcher(this.now)
     this.observer = this.store.addObserver(this)
@@ -488,6 +492,11 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
       if (record.connection !== null && String(record.connection.connectionId) === connectionId) {
         return record
       }
+      for (const lease of record.leases) {
+        if (String(lease.connection.connectionId) === connectionId) {
+          return record
+        }
+      }
     }
     return null
   }
@@ -649,7 +658,7 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
   private async connect(
     peerId: PeerId<string>,
     clientId: ClientId<string, string>,
-    options: PublicOperationOptions
+    options: ConnectionOptions
   ): Promise<BluezConnectionLease> {
     return connectBluezConnection(this, peerId, clientId, options)
   }
@@ -771,7 +780,12 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     }
     for (const consumer of [...physical.consumers]) {
       const owned = ownBytes(value, maximumOperationBytes)
-      const result = consumer.stream.emit({ value: owned, indication: false }, owned.byteLength, null, owned.byteLength)
+      const result = consumer.stream.emit(
+        { value: owned, delivery: 'unknown' },
+        owned.byteLength,
+        null,
+        owned.byteLength
+      )
       if (result.terminated) {
         observeBluezCleanup(
           this.removeSubscription(consumer),
@@ -785,14 +799,11 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     connection: import('../../backend-contract/backend').BackendConnection<string, string>,
     operation: string
   ): BluezConnectionRecord {
-    if (
-      !(connection instanceof BluezConnection) ||
-      connection.record.connection !== connection ||
-      !connection.record.active
-    ) {
+    const record = connection instanceof BluezConnection ? connection.record : null
+    if (record === null || !bluezConnectionOwned(record, connection) || !record.active) {
       throw contractError('connection.stale', 'connection', operation)
     }
-    return connection.record
+    return record
   }
 
   private requireDatabaseForPath(
@@ -822,7 +833,16 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     record: BluezConnectionRecord,
     cause: import('../../backend-contract/errors').BleErrorCode
   ): void {
-    const connection = cause === 'connection.lost' ? this.connectionPathFor(record) : null
+    // A link drop ends every lease: each live lease connection broadcasts
+    // its own `connection.lost` naming its independent generation (FX1B),
+    // so the core ends every public lease of the link. A released owner's
+    // connection no live lease references is not named.
+    const lostConnections =
+      cause === 'connection.lost'
+        ? [...record.leases]
+            .map(lease => lease.connection)
+            .filter((connection, index, all) => all.indexOf(connection) === index)
+        : []
     record.active = false
     record.physicalLinkMayExist = false
     record.state = cause === 'connection.lost' ? 'lost' : 'disconnected'
@@ -844,7 +864,11 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     if (this.connectionRecords.get(record.devicePath) === record) {
       this.connectionRecords.delete(record.devicePath)
     }
-    if (connection !== null) {
+    for (const leaseConnection of lostConnections) {
+      const connection = this.connectionPathForConnection(record, leaseConnection)
+      if (connection === null) {
+        continue
+      }
       this.broadcastEvent({
         attachment: connection.attachment,
         attachmentId: connection.attachmentId,
@@ -913,20 +937,23 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     record.currentDatabase = null
   }
 
-  private connectionPathFor(record: BluezConnectionRecord): ConnectionPath<string, string> | null {
-    const connection = record.connection
-    const ownerLeaseId = record.ownerLeaseId
-    if (connection === null || ownerLeaseId === null) {
+  private connectionPathForConnection(
+    record: BluezConnectionRecord,
+    leaseConnection: import('./bluez-backend-handles').BluezConnection
+  ): ConnectionPath<string, string> | null {
+    const joinOwner = [...record.leases].find(lease => lease.connection === leaseConnection)?.leaseId
+    const ownerLease = record.connection === leaseConnection ? record.ownerLeaseId : (joinOwner ?? null)
+    if (ownerLease === null) {
       return null
     }
     const attachment = this.attachment()
     return Object.freeze({
       attachment,
       attachmentId: attachment.attachmentId,
-      peerId: connection.peerId,
-      connectionId: connection.connectionId,
-      ownerLeaseId,
-      connectionGeneration: connection.connectionGeneration
+      peerId: leaseConnection.peerId,
+      connectionId: leaseConnection.connectionId,
+      ownerLeaseId: ownerLease,
+      connectionGeneration: leaseConnection.connectionGeneration
     })
   }
 
@@ -1069,10 +1096,25 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
 
   private broadcastAdapterState(): void {
     const state = this.adapterState()
-    for (const stream of [...this.stateStreams]) {
-      if (stream.emit(state, 64, String(state.backendGeneration)).terminated) {
-        this.stateStreams.delete(stream)
+    // An adapter-path signal that changes nothing observable (for example
+    // another D-Bus client toggling Discovering) is not a transition:
+    // emitting it would duplicate the watch's initial snapshot for every
+    // subscriber. A generation advance still emits: it is new information.
+    const previous = this.lastWatcherAdapterState
+    const unchanged =
+      previous !== null &&
+      state.availability === previous.availability &&
+      state.authorization === previous.authorization &&
+      state.power === previous.power &&
+      state.safeReason === previous.safeReason &&
+      String(state.backendGeneration) === String(previous.backendGeneration)
+    if (!unchanged) {
+      for (const stream of [...this.stateStreams]) {
+        if (stream.emit(state, 64, String(state.backendGeneration)).terminated) {
+          this.stateStreams.delete(stream)
+        }
       }
+      this.lastWatcherAdapterState = state
     }
     const attachment = this.attachment()
     this.broadcastEvent({
@@ -1181,4 +1223,21 @@ function observeBluezCleanup(cleanup: Promise<CleanupRecord>, context: string): 
   cleanup.catch(error => {
     console.error(context, error)
   })
+}
+
+/**
+ * Joined leases carry their own connection identity over the shared link
+ * (FX1B): the record's dialling-owner connection or any live lease's.
+ */
+function bluezConnectionOwned(
+  record: import('./bluez-runtime-types').BluezConnectionRecord,
+  connection: import('../../backend-contract/backend').BackendConnection<string, string>
+): boolean {
+  if (!(connection instanceof BluezConnection)) {
+    return false
+  }
+  if (record.connection === connection) {
+    return true
+  }
+  return [...record.leases].some(lease => lease.connection === connection)
 }

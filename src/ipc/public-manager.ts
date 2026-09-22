@@ -80,6 +80,7 @@ import type { PeerReference } from '../public/peer-reference'
 import { createPublicSecurity } from '../public/security'
 import type { BleSecurity } from '../public/security'
 import { rehydratePublicError, rehydratePublicPromise, runWithCleanup } from '../public/error-bridge'
+import { BleError } from '../public/errors'
 import { toPublicCleanupRecord, type CleanupRecord as PublicCleanupRecord } from '../public/cleanup'
 import { mapPublicBoundedAsyncStream, type PublicBoundedAsyncStream } from '../public/streams'
 import { resolveStreamPolicy } from '../public/stream-presets'
@@ -474,6 +475,34 @@ function requireIpcControlCapability(
   return descriptor
 }
 
+/**
+ * Finding 190b: a fail-closed control error that carries the snapshot's own
+ * reason, mirroring the public layer — so the renderer learns the platform
+ * words (for example `effective-mtu-boundary-unavailable`) instead of a
+ * bare `capability.unsupported`.
+ */
+function ipcControlCapabilityError(capabilities: BleCapabilities, id: `${string}:${string}`, operation: string): Error {
+  const descriptor = capabilities.get(id)
+  const limitations = descriptor?.limitations ?? []
+  const primary = limitations[0]
+  if (descriptor === undefined || primary === undefined) {
+    return contractError('capability.unsupported', 'connection', operation)
+  }
+  return new BleError('capability.unsupported', 'connection', operation, {
+    limitations,
+    platform: {
+      domain: 'capability',
+      code: primary.code,
+      safeMessage: limitations.map(limitation => limitation.explanation).join(' '),
+      metadata: {
+        featureId: descriptor.id,
+        state: descriptor.state,
+        limitationCodes: limitations.map(limitation => limitation.code)
+      }
+    }
+  })
+}
+
 function ipcControlMetadata(
   generation: string,
   capabilities: CapabilityDescriptor,
@@ -530,7 +559,7 @@ class UnsupportedIpcControlIterator<Value> implements AsyncIterator<Value> {
 }
 
 function createIpcConnectionControls(
-  connection: Pick<IpcConnection, 'readRssi' | 'maximumWriteLength'>,
+  connection: Pick<IpcConnection, 'readRssi' | 'effectiveMtu' | 'maximumWriteLength'>,
   capabilities: BleCapabilities,
   generation: string
 ): BleConnectionControls {
@@ -579,9 +608,40 @@ function createIpcConnectionControls(
       throw contractError('capability.unsupported', 'connection', operation)
     })
 
+  // Finding 217 follow-up: measured through the host like every desktop
+  // host (macOS derives maximumWriteValueLength(.withResponse) + 3,
+  // Windows reads GattSession.MaxPduSize, Linux reads the BlueZ
+  // characteristic MTU). A snapshot that does not report it stays
+  // fail-closed with the snapshot's own reason (for example
+  // `effective-mtu-boundary-unavailable`), never a bare unsupported.
+  const effectiveMtu = (options: OperationOptions = {}): Promise<MtuObservation> =>
+    runIpcControl(async () => {
+      const descriptor = capabilities.get(BUILT_IN_FEATURE_IDS.connectionEffectiveMtu)
+      if (descriptor === undefined || descriptor.state !== 'limited') {
+        throw ipcControlCapabilityError(
+          capabilities,
+          BUILT_IN_FEATURE_IDS.connectionEffectiveMtu,
+          'ipc-public-manager.controls.effective-mtu'
+        )
+      }
+      const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
+      const mtu = await connection.effectiveMtu({
+        signal: normalized.signal ?? undefined,
+        deadline: normalized.deadline
+      })
+      const observation: MtuObservation = Object.freeze({
+        ...ipcControlMetadata(generation, descriptor, globalThis.performance.now()),
+        state: 'measured',
+        attMtu: mtu,
+        payloadBytes: mtu - 3,
+        platformPduBytes: null
+      })
+      return observation
+    })
+
   return Object.freeze({
     readRssi,
-    effectiveMtu: (): Promise<MtuObservation> => unsupportedPromise('ipc-public-manager.controls.effective-mtu'),
+    effectiveMtu,
     requestMtu: (_mtu: number, _options: OperationOptions = {}): Promise<MtuNegotiation> =>
       unsupportedPromise('ipc-public-manager.controls.request-mtu'),
     maximumWriteLength,
@@ -625,6 +685,8 @@ function createIpcGattSource(
     scheduleDeadline: (deadline, action) => database.scheduleDeadline(deadline, action),
     snapshot: () => database.snapshot(),
     read: (path: PortableCurrentCharacteristicPath, options: PortableOperationOptions) => database.read(path, options),
+    readReceipt: (path: PortableCurrentCharacteristicPath, options: PortableOperationOptions) =>
+      database.readReceipt(path, options),
     write: async (path: PortableCurrentCharacteristicPath, value: Readonly<Uint8Array>, options: PortableWritePolicy) =>
       toPortableWriteReceipt(await database.write(path, value, options)),
     maximumWriteLength: async () => {
@@ -672,7 +734,6 @@ function toPortableNotificationStream(
 ): PortableBoundedAsyncStream<PortableNotificationValue> {
   return mapPublicBoundedAsyncStream(source, value => ({
     value: new Uint8Array(value.value),
-    indication: value.delivery === 'indication',
     delivery: value.delivery,
     observedAtMonotonicMs: value.observedAtMonotonicMs,
     sequence: value.sequence
