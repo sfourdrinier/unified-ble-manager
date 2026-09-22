@@ -94,9 +94,22 @@ function describeLibraryOutcome(outcome) {
   }
 }
 
+/**
+ * The sealed digests, not the file. Comparing the whole text called a copy
+ * stale over a trailing newline — a refusal the developer cannot act on,
+ * because nothing about the identity actually differs. What matters is the
+ * digests the runtime check compares.
+ */
+function readIdentityDigests(identityPath) {
+  if (!fs.existsSync(identityPath)) return null
+  const text = fs.readFileSync(identityPath, 'utf8')
+  const digests = [...text.matchAll(/\b(?:sourceDigest|bindingSchema):\s*'([0-9a-f]{16,})'/g)].map(match => match[1])
+  return digests.length === 0 ? null : digests.join(',')
+}
+
 function readRepoFacts(root) {
   return {
-    identity: fs.readFileSync(path.join(root, 'src', 'generated', 'native-build-identity.ts'), 'utf8'),
+    identity: readIdentityDigests(path.join(root, 'src', 'generated', 'native-build-identity.ts')),
     version: JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version
   }
 }
@@ -109,7 +122,7 @@ function readCopyFacts(exampleDir) {
   const identityPath = path.join(copyRoot, 'src', 'generated', 'native-build-identity.ts')
   return {
     present: true,
-    identity: fs.existsSync(identityPath) ? fs.readFileSync(identityPath, 'utf8') : null,
+    identity: readIdentityDigests(identityPath),
     version: JSON.parse(fs.readFileSync(path.join(copyRoot, 'package.json'), 'utf8')).version,
     hasBuiltLib: fs.existsSync(path.join(copyRoot, 'lib', 'module', 'index.js'))
   }

@@ -51,11 +51,19 @@ TV_BUNDLE_ID="${TV_BUNDLE_ID:-com.sfourdrinier.bleplxexample}"
 # `python` is the canonical executable name on Windows while POSIX setups
 # only provide `python3`. Prefer python3, fall back to python, fail loudly
 # when neither exists. Overridable via PYTHON3 for hermetic tests.
-PYTHON3="${PYTHON3:-$(command -v python3 || command -v python || true)}"
-if [[ -z "${PYTHON3}" ]]; then
-  echo "error: no python3 or python on PATH" >&2
-  exit 1
-fi
+# Resolved lazily: `metro`, `install` and `launch` need no interpreter, and
+# refusing to run them on a host without one would be a refusal of something
+# the host can do.
+PYTHON3="${PYTHON3:-}"
+require_python() {
+  if [[ -z "${PYTHON3}" ]]; then
+    PYTHON3="$(command -v python3 || command -v python || true)"
+  fi
+  if [[ -z "${PYTHON3}" ]]; then
+    echo "error: ${1} needs python3 (or python); neither is on PATH" >&2
+    exit 1
+  fi
+}
 
 if [[ -n "${TV_STAGE_DIR:-}" ]]; then
   # Test/CI override: an absolute tmp dir, never the real tree. The host's
@@ -92,6 +100,7 @@ elif [[ "${STAGE}" != "${APP_DIR}"/* ]]; then
 fi
 
 cmd_stage() {
+  require_python stage
   mkdir -p "${STAGE}"
   # Sources only: the stage owns its node_modules (tvos alias) and its ios/
   # (tvOS prebuild). Excluded entries are protected from --delete, so a
@@ -230,6 +239,7 @@ cmd_prebuild() {
 }
 
 cmd_bundle_url() {
+  require_python bundle-url
   local delegate
   delegate="$(find "${STAGE}/ios" -maxdepth 2 -name AppDelegate.swift | head -1)"
   if [[ -z "${delegate}" ]]; then
@@ -272,6 +282,7 @@ EOF
 }
 
 xcode_scheme() {
+  require_python xcode-scheme
   local schemes scheme
   schemes="$(xcodebuild -list -json -project "${STAGE}/ios/"*.xcodeproj 2>/dev/null | "${PYTHON3}" -c 'import json,sys; print("\n".join(json.load(sys.stdin)["project"]["schemes"]))')"
   scheme="$(printf '%s\n' "${schemes}" | grep -i -m1 'tv' || true)"
@@ -282,6 +293,7 @@ xcode_scheme() {
 }
 
 cmd_build() {
+  require_python build
   if [[ -z "${DEVELOPMENT_TEAM:-}" ]]; then
     echo "error: DEVELOPMENT_TEAM is required (passed on the command line only)" >&2
     exit 1
