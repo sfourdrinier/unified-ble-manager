@@ -36,6 +36,7 @@ const ingressExecutable = path.join(temporaryDirectory, 'AppleNativeIngressOrdin
 const borrowerOwnerExecutable = path.join(temporaryDirectory, 'AppleCoreBluetoothBorrowerOwnerHarness')
 const executionExecutable = path.join(temporaryDirectory, 'AppleNativeProtocolExecutionHarness')
 const rustRadioAdapterExecutable = path.join(temporaryDirectory, 'AppleRustRadioAdapterHarness')
+const continuationExecutable = path.join(temporaryDirectory, 'AppleContinuationStatusHarness')
 const uniffiSwiftDirectory = path.join(root, 'bindings/uniffi/generated/swift')
 
 // The Apple Rust route harness links the REAL mobile host: the host-platform
@@ -137,6 +138,33 @@ try {
   run('xcrun', [
     '--sdk',
     'macosx',
+    'swiftc',
+    '-parse-as-library',
+    '-Xcc',
+    `-fmodule-map-file=${path.join(uniffiSwiftDirectory, 'ubm_echoFFI.modulemap')}`,
+    '-I',
+    uniffiSwiftDirectory,
+    path.join(uniffiSwiftDirectory, 'ubm_echo.swift'),
+    ...ownedRadioSources,
+    path.join(root, 'ios/UnifiedBleRustRadioAdapter.swift'),
+    path.join(root, 'ios/UnifiedBleRustCoreSessions.swift'),
+    path.join(root, 'ios/__tests__/AppleContinuationStatusHarness.swift'),
+    '-L',
+    path.join(cargoTargetDirectory(), 'debug'),
+    '-lubm5_uniffi_echo',
+    '-framework',
+    'Security',
+    '-framework',
+    'CoreBluetooth',
+    '-framework',
+    'SystemConfiguration',
+    '-o',
+    continuationExecutable
+  ])
+  run(continuationExecutable, [])
+  run('xcrun', [
+    '--sdk',
+    'macosx',
     'clang++',
     '-x',
     'objective-c++',
@@ -177,7 +205,7 @@ try {
     run(executionExecutable, [])
   }
   console.log(
-    '[test-apple-native-protocol] C++ protocol tests, the Apple CoreBluetooth parser, the CoreBluetooth read/notify provenance harness, the Rust mobile host ↔ Swift radio adapter harness, and the Apple execution CallInvoker/JSI terminal harness passed. No physical BLE radio or peripheral behavior was exercised.'
+    '[test-apple-native-protocol] C++ protocol tests, the Apple CoreBluetooth parser, the CoreBluetooth read/notify provenance harness, the Rust mobile host ↔ Swift radio adapter harness, the Apple continuation declare/status harness, and the Apple execution CallInvoker/JSI terminal harness passed. No physical BLE radio or peripheral behavior was exercised.'
   )
 } catch (error) {
   console.error('[test-apple-native-protocol] Apple Native Protocol executable harness failed:', error)
