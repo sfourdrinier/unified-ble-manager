@@ -11,7 +11,7 @@
 // TV_STAGE_DIR redirects the stage to a temporary directory so these tests
 // never touch the real example-expo/ios-tv tree.
 
-const { execFileSync, spawnSync } = require('node:child_process')
+const { execFileSync } = require('node:child_process')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
@@ -37,15 +37,70 @@ function stageDir() {
 }
 
 // PATH with every python3-bearing directory removed and `python` shimmed to
-// the real python3, re-shimming any tool the exercised path needs from a
+// a real interpreter, re-shimming any tool the exercised path needs from a
 // removed directory. `command -v python3` fails while `command -v python`
 // succeeds, so only the ${PYTHON3} fallback can satisfy the script.
+//
+// Discovery runs in Node, not through `bash -lc 'command -v ...'`: on
+// Windows that prints MSYS paths (/c/...) Node cannot resolve, and the
+// first `python3` hit may be the 0-byte Microsoft Store stub. PATH entries
+// are scanned directly, zero-byte stubs are skipped, and entries are copied
+// (never symlinked — file symlinks need privilege on Windows).
+function findOnPath(names) {
+  const extensions = process.platform === 'win32' ? ['', '.exe', '.cmd', '.bat'] : ['']
+  for (const entry of process.env.PATH.split(path.delimiter)) {
+    if (entry === '') continue
+    for (const name of names) {
+      for (const extension of extensions) {
+        const candidate = path.join(entry, name + extension)
+        try {
+          const stat = fs.statSync(candidate)
+          if (stat.isFile() && stat.size > 0) return candidate
+        } catch {
+          // Missing or unreadable: keep scanning.
+        }
+      }
+    }
+  }
+  return ''
+}
+
+function shimIntoDir(shim, source, name) {
+  const target = path.join(shim, name ?? path.basename(source))
+  if (process.platform === 'win32') {
+    // File symlinks need privilege on Windows; copies run fine there.
+    fs.copyFileSync(source, target)
+    try {
+      fs.chmodSync(target, 0o755)
+    } catch {
+      // Best-effort: chmod is a no-op on Windows, where the extension resolves.
+    }
+  } else {
+    // Copies of platform-signed binaries are killed on exec; symlinking
+    // keeps the original (and needs no privilege here).
+    fs.symlinkSync(fs.realpathSync(source), target)
+  }
+  return target
+}
+
+function dirProvidesPython3(entry) {
+  const names = process.platform === 'win32' ? ['python3', 'python3.exe'] : ['python3']
+  return names.some(name => {
+    try {
+      fs.accessSync(path.join(entry, name), fs.constants.X_OK)
+      return true
+    } catch {
+      return false
+    }
+  })
+}
+
 function pythonFallbackPath(tools) {
   const shim = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-py-shim-'))
-  const discoveredPy3 = spawnSync('bash', ['-lc', 'command -v python3'], { encoding: 'utf8' })
-    .stdout.trim()
-    .split('\n')[0]
-  expect(discoveredPy3).not.toBe('')
+  // A real interpreter to expose as `python` (on Windows there is no
+  // python3 beyond the Store stub, so the real `python` is the source).
+  const discovered = findOnPath(process.platform === 'win32' ? ['python'] : ['python3'])
+  expect(discovered).not.toBe('')
   const resolved = p => {
     try {
       return fs.realpathSync(p)
@@ -53,19 +108,11 @@ function pythonFallbackPath(tools) {
       return p
     }
   }
-  const isExec = p => {
-    try {
-      fs.accessSync(p, fs.constants.X_OK)
-      return true
-    } catch {
-      return false
-    }
-  }
-  fs.symlinkSync(fs.realpathSync(discoveredPy3), path.join(shim, 'python'))
+  shimIntoDir(shim, discovered, process.platform === 'win32' ? 'python.exe' : 'python')
   const excluded = new Set()
   const kept = process.env.PATH.split(path.delimiter).filter(entry => {
     if (entry === '') return false
-    if (isExec(path.join(entry, 'python3'))) {
+    if (dirProvidesPython3(entry)) {
       excluded.add(resolved(entry))
       return false
     }
@@ -73,11 +120,9 @@ function pythonFallbackPath(tools) {
   })
   expect(excluded.size).toBeGreaterThan(0)
   for (const tool of tools) {
-    const found = spawnSync('bash', ['-lc', `command -v ${tool}`], { encoding: 'utf8' })
-      .stdout.trim()
-      .split('\n')[0]
+    const found = findOnPath([tool])
     if (found !== '' && excluded.has(resolved(path.dirname(found)))) {
-      fs.symlinkSync(fs.realpathSync(found), path.join(shim, tool))
+      shimIntoDir(shim, found)
     }
   }
   return { shim, pathValue: `${shim}${path.delimiter}${kept.join(path.delimiter)}` }
@@ -99,21 +144,30 @@ describe('build-tv.sh PYTHON3 fallback beyond bundle-url', () => {
         line.includes('needs python3')
       expect(throughResolver).toBe(true)
     }
-    // The resolver's five lines, four `require_python` declarations, and five
-    // call sites: two in stage, two in bundle-url, one in xcode_scheme. A new
-    // bare-python site breaks the assertion above; a removed fallback site or
-    // an unguarded command breaks this count.
-    expect(uses).toHaveLength(15)
+    // The resolver's eight lines (default, definition, two candidate
+    // resolutions, two execute-checks, fail-closed guard, error), four
+    // `require_python` declarations, and five call sites: two in stage, two
+    // in bundle-url, one in xcode_scheme. A new bare-python site breaks the
+    // assertion above; a removed fallback site or an unguarded command
+    // breaks this count.
+    expect(uses).toHaveLength(17)
   })
 
   test('stage rewrites the staged tree through the python fallback', () => {
     const stage = stageDir()
-    const { shim, pathValue } = pythonFallbackPath(['bash', 'dirname', 'rsync', 'node', 'rm', 'mkdir'])
+    // find/tar are the stage sync itself (no rsync on Windows); node
+    // runs the staged package.json rewrite.
+    const { shim, pathValue } = pythonFallbackPath(['bash', 'dirname', 'node', 'rm', 'mkdir', 'find', 'tar'])
     try {
       const result = run(['stage'], { TV_STAGE_DIR: stage, PATH: pathValue })
       expect(result.exit).toBe(0)
       const metro = fs.readFileSync(path.join(stage, 'metro.config.js'), 'utf8')
-      expect(metro).toContain(path.join(ROOT, 'examples-shared'))
+      // The staged path arrives via a native Windows python, whose argv
+      // MSYS reports with forward slashes (C:/...), while path.join uses
+      // backslashes — compare separator-insensitively (forward slashes are
+      // also the safe spelling inside the staged JS string literal).
+      const forward = s => s.replace(/\\/g, '/')
+      expect(forward(metro)).toContain(forward(path.join(ROOT, 'examples-shared')))
       expect(metro).not.toContain("path.resolve(projectRoot, '../examples-shared')")
       const shared = fs.readFileSync(path.join(stage, 'src', 'driver', 'shared.ts'), 'utf8')
       expect(shared).toContain("from '../../../../examples-shared/driver/index.ts'")

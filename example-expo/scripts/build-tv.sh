@@ -57,9 +57,15 @@ TV_BUNDLE_ID="${TV_BUNDLE_ID:-com.sfourdrinier.bleplxexample}"
 PYTHON3="${PYTHON3:-}"
 require_python() {
   if [[ -z "${PYTHON3}" ]]; then
-    PYTHON3="$(command -v python3 || command -v python || true)"
+    PYTHON3="$(command -v python3 || true)"
   fi
-  if [[ -z "${PYTHON3}" ]]; then
+  # `python3` on Windows may name the Microsoft Store stub (0 bytes: opens
+  # the Store instead of running). Only a candidate that executes counts;
+  # otherwise fall back to `python`. An explicit PYTHON3 that works is kept.
+  if [[ -z "${PYTHON3}" ]] || ! "${PYTHON3}" -c 'pass' >/dev/null 2>&1; then
+    PYTHON3="$(command -v python || true)"
+  fi
+  if [[ -z "${PYTHON3}" ]] || ! "${PYTHON3}" -c 'pass' >/dev/null 2>&1; then
     echo "error: ${1} needs python3 (or python); neither is on PATH" >&2
     exit 1
   fi
@@ -72,16 +78,38 @@ if [[ -n "${TV_STAGE_DIR:-}" ]]; then
   # in backslash form). Compare with backslashes normalised so a Windows
   # temp dir matches its own prefix.
   _tv_stage_norm="${STAGE//\\//}"
+  case "${_tv_stage_norm}" in
+    /[A-Za-z]/*) _tv_stage_norm="${_tv_stage_norm:1:1}:${_tv_stage_norm:2}" ;;
+  esac
   _tv_stage_ok=0
+  _tv_tmps=()
   for _tv_tmp in "${TMPDIR:-}" "${TEMP:-}" "${TMP:-}" /tmp; do
     [[ -n "${_tv_tmp:-}" ]] || continue
+    _tv_tmps+=("${_tv_tmp}")
+  done
+  # Git Bash (MSYS) resets TEMP/TMP to /tmp, hiding the Windows temp dir the
+  # caller staged under (observed: cmd sees C:\...\Temp while bash sees /tmp,
+  # and TV_STAGE_DIR arrives unconverted). Recover the Windows temps from
+  # Windows itself; a no-op where cmd.exe is absent (POSIX keeps its own).
+  if command -v cmd >/dev/null 2>&1; then
+    _tv_win_temps="$(cmd //c set TEMP 2>/dev/null | tr -d '\r')"
+    while IFS= read -r _tv_line; do
+      case "${_tv_line}" in
+        TEMP=*|TMP=*|TMPDIR=*) _tv_tmps+=("${_tv_line#*=}") ;;
+      esac
+    done <<< "${_tv_win_temps}"
+  fi
+  for _tv_tmp in "${_tv_tmps[@]}"; do
     _tv_tmp="${_tv_tmp//\\//}"
+    case "${_tv_tmp}" in
+      /[A-Za-z]/*) _tv_tmp="${_tv_tmp:1:1}:${_tv_tmp:2}" ;;
+    esac
     _tv_tmp="${_tv_tmp%/}"
     case "${_tv_stage_norm}" in
       "${_tv_tmp}"/*) _tv_stage_ok=1; break ;;
     esac
   done
-  unset _tv_tmp _tv_stage_norm
+  unset _tv_tmp _tv_stage_norm _tv_tmps _tv_line _tv_win_temps
   if [[ "${_tv_stage_ok}" != 1 ]]; then
     echo "error: TV_STAGE_DIR must be an absolute tmp dir (${STAGE})" >&2; exit 1
   fi
@@ -103,17 +131,31 @@ cmd_stage() {
   require_python stage
   mkdir -p "${STAGE}"
   # Sources only: the stage owns its node_modules (tvos alias) and its ios/
-  # (tvOS prebuild). Excluded entries are protected from --delete, so a
+  # (tvOS prebuild). Excluded entries are protected from deletion, so a
   # re-stage never wipes a previous prebuild or install.
-  rsync -a --delete \
-    --exclude '/node_modules' \
-    --exclude '/ios' \
-    --exclude '/ios-tv' \
-    --exclude '/android' \
-    --exclude '/.expo' \
-    --exclude '/dist' \
-    --exclude '/web-build' \
-    "${APP_DIR}/" "${STAGE}/"
+  #
+  # No rsync: Git for Windows does not ship it, so the sync is spelled with
+  # POSIX tools present in Git Bash and on macOS/Linux — drop every
+  # top-level stage entry except the protected ones (rsync's --delete), then
+  # copy the sources over without the protected names (rsync's --exclude).
+  find "${STAGE}" -mindepth 1 -maxdepth 1 \
+    ! -name 'node_modules' \
+    ! -name 'ios' \
+    ! -name 'ios-tv' \
+    ! -name 'android' \
+    ! -name '.expo' \
+    ! -name 'dist' \
+    ! -name 'web-build' \
+    -exec rm -rf {} +
+  (cd "${APP_DIR}" && tar cf - \
+    --exclude='./node_modules' \
+    --exclude='./ios' \
+    --exclude='./ios-tv' \
+    --exclude='./android' \
+    --exclude='./.expo' \
+    --exclude='./dist' \
+    --exclude='./web-build' \
+    .) | (cd "${STAGE}" && tar xf -)
 
   # Finding 176: pnpm reuses a present `file:` dependency directory, so a
   # re-stage must drop the staged unified-ble-manager copy. The next
