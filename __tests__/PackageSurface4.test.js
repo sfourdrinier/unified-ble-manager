@@ -255,6 +255,7 @@ describe('4.0 public package surface', () => {
       './expo'
     ])
     expect(packageJson.files).toContain('src')
+    expect(packageJson.files).toContain('llms.txt')
     expect(packageJson.codegenConfig.jsSrcsDir).toBe('src')
   })
 

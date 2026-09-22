@@ -19,9 +19,14 @@ pnpm --dir example-expo android
 ```
 
 On macOS with the required Xcode and CocoaPods environment, use
-`pnpm --dir example-expo ios` after prebuild. `expo prebuild --clean` regenerates
-the fixture's ignored native project directories; it does not validate a live
-Bluetooth journey.
+`pnpm --dir example-expo ios` after prebuild. That command refreshes the root
+Apple RustCore if stale, reinstalls this example's `file:..` package copy if
+needed, and verifies the copied framework before Xcode links it. It also checks that the
+generated `Info.plist` still carries this fixture's restoration ID, generation,
+and `bluetooth-central` mode before Xcode starts. If it reports a mismatch, run
+`pnpm --dir example-expo exec expo prebuild --clean --no-install` and rerun the
+build. `expo prebuild --clean` regenerates the fixture's ignored native project
+directories; it does not validate a live Bluetooth journey.
 
 The fixture exercises the current source-tree CNG/plugin contract. Its
 `app.json` opts into the restoration paths — the iOS

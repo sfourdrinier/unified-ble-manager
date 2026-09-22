@@ -96,13 +96,14 @@ and coding agents should read [`../AGENTS.md`](../AGENTS.md) first.
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | Dev setup, canonical pre-PR checks, branch and PR flow | Current |
 | [`../GOVERNANCE.md`](../GOVERNANCE.md) | Maintainer roles, decision process, ADR requirement | Current |
 | [`../RELEASE.md`](../RELEASE.md) | Canonical tag-driven release procedure and invariants | Current |
-| [`5.0.0-LANE.md`](5.0.0-LANE.md) | UBM 5.0 lane rules: `codex/ubm5-*` workers on the `5.0.0` base, no merge to `main`, no `v*` tags, no publish | Current |
+| [`5.0.0-LANE.md`](5.0.0-LANE.md) | Historical 5.0 integration-lane rules before the owner authorized the RC release path | Historical |
 | [`5.0.0-U0-BASELINE.md`](5.0.0-U0-BASELINE.md) | UBM 5.0 U0 baseline manifest: retained entrypoints/targets/capabilities, identities, toolchain, boundary | Current |
-| [`5.0.0-GATE-LEDGER.md`](5.0.0-GATE-LEDGER.md) | UBM 5.0 gate ledger: U-LICENSE + U0–U12 owners, states, evidence, limitations | Current |
+| [`5.0.0-GATE-LEDGER.md`](5.0.0-GATE-LEDGER.md) | Historical U-LICENSE and U0–U12 gate receipts; live release status is in `RELEASE.md` | Historical |
 | [`5.0.0-FIX-PLAN.md`](5.0.0-FIX-PLAN.md) | PR #210 fix plan and physical-test ledger: findings, owner decisions, device results | Current |
-| [`5.0.0-U12-HANDOFF.md`](5.0.0-U12-HANDOFF.md) | UBM 5.0 U12 candidate handoff: identity, gate mapping, reproduction, honest blockers | Current |
-| [`5.0.0-PACKAGING.md`](5.0.0-PACKAGING.md) | UBM 5.0 packaging slice: ship/dev-only surface decisions, license inclusion, SBOM/Rust status, 4.x→5.0 migration notes | Current |
+| [`5.0.0-U12-HANDOFF.md`](5.0.0-U12-HANDOFF.md) | Historical U12 candidate handoff: identity, gate mapping, reproduction, and blockers at that snapshot | Historical |
+| [`5.0.0-PACKAGING.md`](5.0.0-PACKAGING.md) | Current 5.0 packaging behavior plus historical U8 evidence and migration notes | Current |
 | [`5.0.0-DISTRIBUTION_CONTRACT.md`](5.0.0-DISTRIBUTION_CONTRACT.md) | UBM 5.0 D2(i) distribution contract: prebuilt/source modes, Apple/Android artifact + identity rules, verification gates | Current |
+| [`NATIVE_ARTIFACTS.md`](NATIVE_ARTIFACTS.md) | Native artifact lifecycle: producer authority, prebuilt/source modes, identity checks, and example refresh rules | Current |
 | [`5.0.0-R16-REGRESSION-MATRIX.md`](5.0.0-R16-REGRESSION-MATRIX.md) | UBM 5.0 R16 acceptance layer: 22-row regression matrix dispositions with evidence, relabeled synthetic legs, sequenced follow-ups | Current |
 | [`../SECURITY.md`](../SECURITY.md) | Vulnerability reporting policy | Current |
 | [`../SUPPORT.md`](../SUPPORT.md) | Support policy: package SemVer vs evidence-backed backend labels | Current |
@@ -193,7 +194,6 @@ The `review/` directory also holds machine-readable findings data
 | [`superpowers/plans/2026-09-05-release-4.0.25-reliability.md`](superpowers/plans/2026-09-05-release-4.0.25-reliability.md) | Plan: 4.0.25 reliability fixes for BLE-01..BLE-18 | Historical |
 | [`superpowers/plans/2026-09-17-r01-binding-producer.md`](superpowers/plans/2026-09-17-r01-binding-producer.md) | Plan: R01 binding producer (Codegen spec, Kotlin/Swift facades, TS producer, emulator leg) | Historical |
 | [`superpowers/plans/2026-09-17-r01-flip.md`](superpowers/plans/2026-09-17-r01-flip.md) | Plan: R01 RN factory flip (factory default, native-owned manager, poison acceptance) | Historical |
-| [`superpowers/plans/2026-09-18-h10-sim-round2.md`](superpowers/plans/2026-09-18-h10-sim-round2.md) | Plan: h10-sim round 2 (profiles, auth, Linux fidelity, peripheral-sim driver host, sequences, CI) | Current |
 | [`superpowers/plans/2026-09-18-h10-sim-round2.md`](superpowers/plans/2026-09-18-h10-sim-round2.md) | Plan: H10 simulator full Linux fidelity + remote control (owner) | Current |
 | [`superpowers/specs/2026-07-23-ios-tvos-ci-design.md`](superpowers/specs/2026-07-23-ios-tvos-ci-design.md) | Design spec: CI iOS and tvOS compile checks | Historical |
 | [`superpowers/specs/2026-08-30-web-bluetooth-example-design.md`](superpowers/specs/2026-08-30-web-bluetooth-example-design.md) | Design spec for the Web Bluetooth TypeScript example | Historical |

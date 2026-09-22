@@ -178,9 +178,9 @@ export const EVENT_VOCABULARY: readonly PhysicalEventEntry[] = Object.freeze([
   {
     event: 'restoration-received',
     description:
-      'The OS handed back known peers after the app was gone: iOS relaunched the app on a BLE event and delivered restored peripherals through `willRestoreState`; Android woke the process through Companion Device Manager device presence (API 31+) for an armed associated peer. The library surfaces the same restored peer records on both phones (`peers.restored`, `restoration-received`, `restoration.claim()`). No operation failed and no link transitioned yet — the app reconnects through the public `connect` (Android `when-available`, a restored iOS link the OS still holds completing at once) and replays subscriptions through `subscribe`. Presence observation below API 31 has no wake; it reports `capability.unsupported`.',
+      'The OS handed back known peers after the app was gone: iOS relaunched the app on a BLE event and delivered restored peripherals through `willRestoreState`; Android woke the process through Companion Device Manager device presence (API 31+) for an armed associated peer. Both phones report `restoration-received` and list the peer under `peers.restored`; a restored record does not prove that a link is live. Reconnect remains app-controlled: Android may call public `connect` with Android `when-available`; iOS may call `connect` with iOS `direct` with the restored `PeerReference`, because Apple rejects `when-available`. After a connection succeeds, the app replays subscriptions through `subscribe`. Presence observation below API 31 has no wake; it reports `capability.unsupported`.',
     names: names({}),
-    supervisor: { context: 'restore', decision: 'reconnect' },
+    supervisor: { context: 'restore', decision: 'stop' },
     differs: {
       'desktop-macos': {
         names: {},

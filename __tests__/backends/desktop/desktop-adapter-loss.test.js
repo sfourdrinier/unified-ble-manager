@@ -269,8 +269,11 @@ describe('adapter loss follows the legacy per-OS sequence (LEGACY-AUDIT-1 #57)',
       const watch = await backend.adapter.watchState()
       const transitions = watch.transitions[Symbol.asyncIterator]()
       await stage.stageAdapterState('powered-off', true)
-      await stage.stageAdapterState('powered-on', true)
       await deferredEvents.waitForReset()
+      // The reset is now held while the recovery is staged. This makes the
+      // intended native interleaving explicit: reset/off must publish at the
+      // new generation before the queued on recovery can be observed.
+      await stage.stageAdapterState('powered-on', true)
       deferredEvents.release()
       await backend.settleCoreEvents()
       const off = await nextItem(transitions, 5000)

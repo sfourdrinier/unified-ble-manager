@@ -60,20 +60,33 @@ The committed Android tree is refreshed the same way: the refresh leaves the
 
 ## Where the checks run (fully automated — no hand rebuilds)
 
-| Consumer                                               | What it refreshes      | Entry point                                                                 |
-| ------------------------------------------------------ | ---------------------- | --------------------------------------------------------------------------- |
-| `examples-shared/driver/hosts.sh up` (electron/node)   | `desktop`              | `scripts/native/ensure-native.js` before spawn; Tauri is exempt (own build) |
-| `example-expo/scripts/build-tv.sh build`               | `apple`                | `ensure-native.js` before the TV link                                       |
-| Phone Expo iOS (`pnpm --dir example-expo ios`)         | `apple`                | `example-expo/package.json` `ios` script                                    |
-| Phone Expo Android (`pnpm --dir example-expo android`) | `android`              | `example-expo/package.json` `android` script                                |
-| Apple CI phone job                                     | `apple`                | `pnpm native:refresh --only apple` before install                           |
-| Linux/Android CI Expo job                              | `android` (check-only) | `pnpm native:status --only android` before prebuild                         |
-| Publish release job                                    | everything assembled   | `pnpm native:status` after the `--check-*` gates                            |
-| Pre-push filter                                        | `android` (check-only) | `pnpm native:status --only android` in `scripts/ci/preflight.sh`            |
-| Canonical gate                                         | everything applicable  | `pnpm native:status` in [`../AGENTS.md`](../AGENTS.md)                      |
+| Consumer                                               | What it refreshes                 | Entry point                                                                 |
+| ------------------------------------------------------ | --------------------------------- | --------------------------------------------------------------------------- |
+| `examples-shared/driver/hosts.sh up` (electron/node)   | `desktop`                         | `scripts/native/ensure-native.js` before spawn; Tauri is exempt (own build) |
+| `example-expo/scripts/build-tv.sh build`               | `apple`                           | `ensure-native.js` before the TV link                                       |
+| Phone Expo iOS (`pnpm --dir example-expo ios`)         | `apple`, then Expo's package copy | `prepare-example-ios.js` refreshes and verifies the exact copy Xcode links  |
+| Phone Expo Android (`pnpm --dir example-expo android`) | `android`                         | `example-expo/package.json` `android` script                                |
+| Apple CI phone job                                     | `apple`                           | `pnpm native:refresh --only apple` before install                           |
+| Linux/Android CI Expo job                              | `android` (check-only)            | `pnpm native:status --only android` before prebuild                         |
+| Publish release job                                    | everything assembled              | `pnpm native:status` after the `--check-*` gates                            |
+| Pre-push filter                                        | `android` (check-only)            | `pnpm native:status --only android` in `scripts/ci/preflight.sh`            |
+| Canonical gate                                         | everything applicable             | `pnpm native:status` in [`../AGENTS.md`](../AGENTS.md)                      |
 
 A refresh failure aborts the consumer with the builder's error. Nothing —
 local script, CI job, or release — continues on a stale artifact.
+
+The iOS example's `file:..` dependency is a pnpm snapshot, so root RustCore
+freshness alone cannot prove what its pod links. The iOS command first refreshes
+the root if needed, then verifies the installed JavaScript identity and the
+copied XCFramework hash chain against that copy's sources. A stale copy is
+reinstalled and checked again before Xcode runs. The generated app `Info.plist`
+is checked separately against `example-expo/app.json` for the configured
+restoration keys and background mode. A stale generated project needs
+`expo prebuild --clean --no-install` before the build.
+
+Publishing does not consume the example copy. The tag workflow builds RustCore
+from the tagged source on macOS, transfers that staging to the publish job,
+and verifies its identity and hash chain before packing the release tarball.
 
 Clean checkouts (CI fresh clones, `preflight.sh` worktrees) have no
 gitignored stagings by design, so those gates check only what can be there:

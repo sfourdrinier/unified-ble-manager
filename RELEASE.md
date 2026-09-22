@@ -555,7 +555,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=4.0.28
+version=5.0.0-rc.0
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -566,16 +566,17 @@ npm view "unified-ble-manager@$version" dist.integrity
 
 Then verify:
 
-- npm `latest` resolves to the released version (a stable release moves
-  `latest`; a prerelease must leave it alone and publish to `next`);
+- npm `next` resolves to `5.0.0-rc.0`, while `latest` remains on the 4.0 stable
+  line; a stable release moves `latest`;
 - the npm package page shows provenance for the published artifact;
 - the GitHub Release exists at that tag, and is marked prerelease only if the
   version is one;
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager` with no version pin and import the documented host
-  entrypoints. This is the check that catches a packaging gap the repository's
+  `unified-ble-manager@5.0.0-rc.0` explicitly and import the documented host
+  entrypoints. A bare install still selects `latest` (the 4.0 line). This
+  catches a packaging gap the repository's
   own tests cannot see: `@babel/runtime` shipped undeclared in 4.0.4 and only a
   real external consumer surfaced it.
 
@@ -589,7 +590,8 @@ Never move or recreate a published version tag to hide a failed release.
 
 ## Prereleases after 4.0.0
 
-Future prereleases use normal SemVer suffixes such as `4.1.0-alpha.1`. They publish to `next` and must never replace `latest` until a final version is released.
+Prereleases such as `5.0.0-rc.0` use normal SemVer suffixes. They publish to
+`next` and must never replace `latest` until a final version is released.
 
 ## Release artifacts and evidence
 
@@ -599,4 +601,9 @@ The release process must never synthesize, backdate, or relabel hardware evidenc
 
 ## Architecture authority
 
-The normative 4.0 architecture and public-contract decisions are recorded in [`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md). This release procedure controls publication mechanics; it does not override those architecture decisions.
+The 4.0 baseline architecture is recorded in
+[`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md);
+the 5.0 distribution contract is in
+[`docs/5.0.0-DISTRIBUTION_CONTRACT.md`](docs/5.0.0-DISTRIBUTION_CONTRACT.md).
+This release procedure controls publication mechanics; it does not override
+those contracts.

@@ -100,6 +100,7 @@ export function createFakeManager({
     }
   })
   const connection = {
+    peer: { id: 'resolved-restored-peer', name: peerName, rssi: -50, reference: null, sources: ['test'] },
     connectionGeneration: 'gen-1',
     lifecycleEvents: lifecycle,
     controls: {},
@@ -228,9 +229,14 @@ export function createFakeManager({
     },
     async connect(target, options) {
       calls.push(`connect ${options.intent}`)
+      const reference = typeof target === 'object' && target !== null && 'version' in target ? target : null
+      if (reference !== null) calls.push(`connect-reference ${reference.opaqueId}`)
       const failure = pendingConnectFailures.shift()
       if (failure !== undefined) throw failure
-      return connection
+      return {
+        ...connection,
+        peer: { ...connection.peer, id: reference === null ? (target.id ?? target) : 'resolved-restored-peer' }
+      }
     },
     async destroy() {
       calls.push('manager.destroy')

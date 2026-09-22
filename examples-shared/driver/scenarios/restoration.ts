@@ -1,21 +1,27 @@
 // examples-shared/driver/scenarios/restoration.ts
 //
 // Known-peer restoration (issue #212): connect to the strap, subscribe to
-// heart rate, and record the peer id the platform will restore after the
-// process dies. The scenario then stops — the operator kills the app with
-// the platform procedure in docs/BACKGROUND.md (never a user force-quit on
-// iOS, never an Android force-stop), relaunches, and runs `reconnect` with
-// the recorded peer id. The reconnect dials that id directly (no scan) with
-// intent "when-available" and subscribes again, so both phones prove the
-// same public events with the app doing the reconnecting — the library
-// never auto-reconnects by itself.
+// heart rate, then stop it with the platform procedure in docs/BACKGROUND.md
+// (never a user force-quit on iOS, never an Android force-stop). After a
+// relaunch, `restored` reports the durable PeerReference the OS supplied.
+// `reconnect` passes that reference to the fresh manager with direct intent,
+// without a scan, then subscribes again. Android may instead opt into
+// when-available with an explicit manager-local peer id. The app reconnects;
+// the library never auto-reconnects by itself. This scenario tests the public
+// path but does not itself establish physical restoration qualification.
 //
 // The platform's own restoration/presence answers are reported verbatim:
 // `state:restoration-adoption` and `state:presence-observation` as the
 // backend's capability registry answers them (or `unregistered` where the
 // host registers neither), never invented by the scenario.
 
-import type { BleManager, ConnectionIntent, FeatureId } from 'unified-ble-manager'
+import {
+  decodePeerReference,
+  type BleManager,
+  type ConnectionIntent,
+  type FeatureId,
+  type PeerReference
+} from 'unified-ble-manager'
 import type { DriverHost, HostManager } from '../host.ts'
 import type { JsonObject, JsonValue } from '../protocol.ts'
 import { toJsonValue } from '../protocol.ts'
@@ -69,11 +75,11 @@ export class RestorationScenario extends HeartRateScenario<RestorationState> {
   readonly id = 'restoration'
   readonly title = 'Restoration / known peer'
   readonly description =
-    'Connect, subscribe, and record the known peer id; then kill the app with the docs/BACKGROUND.md procedure, relaunch, and reconnect directly to that id with intent "when-available". Same public events on every host; the app reconnects, the library never does.'
+    'Connect and subscribe; then kill the app with the docs/BACKGROUND.md procedure. After relaunch, read restored peers and reconnect with the returned peerReference using direct intent (or explicitly use Android when-available with a peer id). The app reconnects; the library never does.'
   protected readonly commands: Readonly<Record<string, ScenarioCommand>> = {
     start: defineCommand({
       label: 'Start',
-      description: `Find the strap, connect, subscribe, record the known peer id. args: {autoReconnect?: boolean (default false), intent?: "direct" | "when-available", ${DEVICE_ARGUMENT_HELP}}. Stop, kill the app per docs/BACKGROUND.md, relaunch, then run reconnect with the recorded peer id.`,
+      description: `Find the strap, connect, subscribe, and record the manager-local peer id. args: {autoReconnect?: boolean (default false), intent?: "direct" | "when-available", ${DEVICE_ARGUMENT_HELP}}. Stop, kill the app per docs/BACKGROUND.md, relaunch, run restored, then reconnect with its peerReference on iOS or an explicit Android peer id.`,
       presets: [{ label: 'Start (supervised)', args: {} }],
       acceptsDevice: true,
       parse: raw => parseHeartRateOptions(raw, { autoReconnect: false, intent: 'direct' }),
@@ -82,11 +88,12 @@ export class RestorationScenario extends HeartRateScenario<RestorationState> {
     reconnect: defineCommand({
       label: 'Reconnect',
       description:
-        'Dial a recorded known peer id directly (no scan) and subscribe again. args: {peerId: string (required, from a previous start), intent?: "direct" | "when-available" (default "when-available")}. Refused without a peer id.',
+        'Resolve a durable restored peerReference, or dial a recorded known peer id, without scanning; then subscribe again. args: {peerReference?: PeerReference (from restored), peerId?: string, intent?: "direct" | "when-available" (default "direct")}. Refused without a reference or peer id.',
       presets: [],
       parse: raw => ({
-        intent: args.oneOf<ConnectionIntent>(raw, 'intent', ['direct', 'when-available'], 'when-available'),
-        peerId: args.optionalString(raw, 'peerId')
+        intent: args.oneOf<ConnectionIntent>(raw, 'intent', ['direct', 'when-available'], 'direct'),
+        peerId: args.optionalString(raw, 'peerId'),
+        peerReference: parsePeerReference(raw)
       }),
       run: options => this.reconnectKnownPeer(options)
     }),
@@ -211,12 +218,13 @@ export class RestorationScenario extends HeartRateScenario<RestorationState> {
   private async reconnectKnownPeer(options: {
     readonly intent: ConnectionIntent
     readonly peerId: string | null
+    readonly peerReference: PeerReference | null
   }): Promise<JsonObject> {
-    const peerId = options.peerId
-    if (peerId === null || peerId.length === 0) {
+    const target = options.peerReference ?? options.peerId
+    if (target === null || (typeof target === 'string' && target.length === 0)) {
       throw new ScenarioError(
         'scenario.no-known-peer',
-        'reconnect needs a recorded known peer id (peerId); run "start" first, then pass its peer id after relaunch'
+        'reconnect needs a restored peerReference or recorded known peer id (peerId); run "restored" after relaunch, then pass its reference'
       )
     }
     return this.runJourney(async signal => {
@@ -225,9 +233,11 @@ export class RestorationScenario extends HeartRateScenario<RestorationState> {
       const manager = hosted.manager
       this.patchBase({ phase: 'connecting' })
       const startedAt = this.runtime.now()
-      // The known peer id goes straight to connect: no scan, no chooser.
-      // A failure is the library's typed error and ends the run here.
-      const connection = await manager.connect(peerId, { signal, timeoutMs: OPERATION_TIMEOUT_MS, intent: options.intent })
+      // A durable reference resolves through this manager before connection;
+      // a manager-local id is used only when the caller explicitly supplied it.
+      // Neither path scans or opens a chooser. A failure is the library's typed
+      // error and ends the run here.
+      const connection = await manager.connect(target, { signal, timeoutMs: OPERATION_TIMEOUT_MS, intent: options.intent })
       this.own('connection.release', () => connection.release())
       this.emit('connected', {
         connectionGeneration: connection.connectionGeneration,
@@ -238,6 +248,7 @@ export class RestorationScenario extends HeartRateScenario<RestorationState> {
       await this.configureLink(connection, signal)
       this.patchBase({ phase: 'streaming' })
       const snapshot = this.snapshot()
+      const peerId = connection.peer.id
       this.patchRestoration({ knownPeerId: peerId, reconnects: snapshot.reconnects + 1 })
       this.emit('restoration-reconnected', {
         peerId,
@@ -254,4 +265,12 @@ export class RestorationScenario extends HeartRateScenario<RestorationState> {
   }
 }
 
-
+function parsePeerReference(raw: JsonObject): PeerReference | null {
+  const value = raw.peerReference
+  if (value === undefined || value === null) return null
+  try {
+    return decodePeerReference(JSON.stringify(value))
+  } catch {
+    throw new ScenarioError('scenario.invalid-argument', 'argument "peerReference" must be a valid PeerReference')
+  }
+}

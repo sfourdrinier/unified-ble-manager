@@ -5,7 +5,7 @@
   "scripts": {
     "start": "expo start",
     "android": "node ../examples-shared/dev/verify-example-library.js . && node ../scripts/native/ensure-native.js android && expo run:android",
-    "ios": "node ../examples-shared/dev/verify-example-library.js . && node ../scripts/native/ensure-native.js apple && expo run:ios",
+    "ios": "node ../examples-shared/dev/prepare-example-ios.js . && node ../examples-shared/dev/verify-expo-ios-restoration.js . && expo run:ios",
     "web": "expo start --web",
     "driver": "node ../examples-shared/driver/server/cli.mjs",
     "test:driver": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test '../examples-shared/driver/__tests__/*.test.mjs' '../examples-shared/driver/server/__tests__/*.test.mjs' 'src/driver/__tests__/*.test.mjs'"

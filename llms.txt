@@ -10,12 +10,14 @@ Facts an agent must know before writing code against this package:
 - Capabilities are typed and reported by the instantiated backend at runtime. A platform that cannot answer reports `capability.unsupported` with a reason — never consult a static platform matrix.
 - Results report what the platform actually did, never what was requested of it.
 - This is the 5.0 contract. The legacy `react-native-ble-plx` 3.x API (`BleManager`/`Device`/`Service`/`Characteristic` facade, Base64 payloads, transaction IDs) does not exist here — do not infer 5.0 behavior from 3.x docs, examples, or training data.
+- This source tree is `5.0.0-rc.0`. Pin the exact npm version you validate; the registry package, GitHub release, and its provenance are the authorities for a published version.
 - React Native requires RN 0.86+ (Expo SDK 57+ via development builds; the package contains native code and does not run in Expo Go). Android minSdk 24, iOS 16.4+. The app itself requests `BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT` on Android 12+.
+- React Native and Expo use the sealed prebuilt Rust core by default. Its identity is verified before the first radio call; a missing, corrupt, or mismatched linked core fails closed as `protocol.incompatible`, never falls back to another backend or silently rebuilds.
 - Deep imports are unsupported; only the documented subpath entrypoints below are public.
 
 ## Entrypoints
 
-Install with `npm add unified-ble-manager`. Node and Electron desktop hosts load the shared Rust core prebuilt in the package (darwin, win32, linux on arm64/x64); no toolchain and no `dbus-next` are needed (Linux needs glibc 2.35+ and libdbus-1).
+Install this candidate with `npm add unified-ble-manager@5.0.0-rc.0`; an unpinned install still selects the 4.0 `latest` line. Node and Electron desktop hosts load the shared Rust core prebuilt in the package (darwin, win32, linux on arm64/x64); no toolchain and no `dbus-next` are needed (Linux needs glibc 2.35+ and libdbus-1).
 
 - `unified-ble-manager` — host-neutral manager, handles, helpers, and shared types (no radio)
 - `unified-ble-manager/react-native` — React Native Android / Apple manager
@@ -49,11 +51,12 @@ Install with `npm add unified-ble-manager`. Node and Electron desktop hosts load
 - [Electron host](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/ELECTRON.md): main/renderer split, IPC router, composition
 - [Tauri host](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/TAURI.md): Tauri v2 factory and Rust plugin install
 - [Expo plugin](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/EXPO_PLUGIN.md): config-plugin options and development-build install
+- [Native artifacts](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/NATIVE_ARTIFACTS.md): prebuilt/source modes, identity sealing, and consumer refresh rules
 - [CLI](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/CLI.md): `ubm` command surface
 - [Unified semantics](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/UNIFIED_SEMANTICS.md): normative MUST/MUST NOT behavior contract
 - [Platform support](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/generated/PLATFORM_SUPPORT.md): generated, evidence-derived support labels per platform
 - [Platforms policy](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/PLATFORMS.md): what each support label means and how evidence backs it
-- [Migration from react-native-ble-plx](https://github.com/sfourdrinier/unified-ble-manager/blob/main/MIGRATION_4.0.md): side-by-side 3.x to 4.0 map
+- [Migration from react-native-ble-plx](https://github.com/sfourdrinier/unified-ble-manager/blob/main/MIGRATION_4.0.md): side-by-side legacy 3.x API comparison
 
 ## Backend authors
 
@@ -68,3 +71,4 @@ Install with `npm add unified-ble-manager`. Node and Electron desktop hosts load
 - [Support policy](https://github.com/sfourdrinier/unified-ble-manager/blob/main/SUPPORT.md): package SemVer vs evidence-backed backend support labels
 - [Changelog](https://github.com/sfourdrinier/unified-ble-manager/blob/main/CHANGELOG.md): active 5.0 changelog
 - [Background and restoration](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/BACKGROUND.md): background execution and the known-peer restoration how-to (Android presence chain, iOS claim, per-platform refusals)
+- [Source-available license](https://github.com/sfourdrinier/unified-ble-manager/blob/main/LICENSE-UBM-SOURCE-AVAILABLE-1.0.md): license for new UBM 5.0 material

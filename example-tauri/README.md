@@ -5,9 +5,10 @@ This small checkout app uses `createTauriBleManager()` from
 `scan()`, then `stop()` and `destroy()`. It does not connect, discover, or
 subscribe. A successful click is not live-radio evidence.
 
-The Cargo recipe you can copy today is the checkout path
-(`path = "../../native/tauri"`). `cargo add tauri-plugin-unified-ble-manager@5.0.0-rc.0`
-is the published recipe once the crate exists; it fails until then.
+The Cargo registry crate is not published. Use the checkout path for local
+development (`path = "../../native/tauri"`). A future crates.io publication may
+use `cargo add tauri-plugin-unified-ble-manager@5.0.0-rc.0`; it is not part of
+the npm release candidate.
 See [`../docs/TAURI.md`](../docs/TAURI.md).
 
 `src/main.ts` is the source of the button handler. `frontend/index.html` is a
@@ -27,4 +28,3 @@ development, run the webview frontend with
 `cargo run --manifest-path example-tauri/src-tauri/Cargo.toml` (debug builds load
 `build.devUrl`), then open the driver from the window. Launch commands and the
 protocol are in [`../examples-shared/driver/README.md`](../examples-shared/driver/README.md).
-

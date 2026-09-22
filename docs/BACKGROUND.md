@@ -83,8 +83,11 @@ Configure `background.ios.restoration` (`{ id, generation }` in the Expo
 plugin, or the `restoration` manager option) and rebuild: the system
 relaunches the terminated app on a BLE event, delivers the peripherals
 through `willRestoreState`, and the app adopts them with
-`restoration.claim()`. Then the same app-owned `connect` + `subscribe`
-as on Android.
+`restoration.claim()`. iOS does not implement `intent: 'when-available'`.
+After a relaunch, a direct app-owned reconnect must target a durable restored
+`PeerReference`, not a peer id retained by the former manager instance, then
+the app resubscribes. The shared driver accepts that reference for a direct
+reconnect; the fresh-manager iOS path still needs a physical qualification run.
 
 ### What the other platforms answer instead
 
@@ -115,18 +118,29 @@ iOS (iPhone 16 Pro Max):
 
 1. From the Mac, terminate the app: `xcrun devicectl device process terminate --device <device-id> <bundle-id>`. Never swipe-kill the app: a user force-quit disables restoration.
 2. Produce a BLE event (the strap sends heart rate or comes into range); the system relaunches the app and delivers `willRestoreState`.
-3. Run `restoration` `reconnect` with the recorded peer id and verify the same public events as a fresh connect (`connected` with a new connection generation, `subscribed`, `value`) in the same vocabulary.
+3. Run `restoration` `restored` and verify that the relaunch reports the
+   native-restored peer once. This proves wake and adoption; it does not prove
+   a fresh-manager reconnect.
+4. Pass the restored peer's `reference` to `restoration` `reconnect` as
+   `{ "peerReference": <reference>, "intent": "direct" }`, then verify a new
+   connection and subscription values. Do not use `when-available` on iOS or
+   pass a previous manager-local peer id to a fresh manager. This physical
+   direct-reconnect proof remains open.
 
 Android (Samsung SM-A376U1):
 
 1. Kill the app process: `adb shell am kill <package>`. Never `adb shell am force-stop`: a force-stop disables presence wake.
 2. Move the strap out of range and back; Companion Device Manager binds `UbmCompanionPresenceService` on appearance, which installs the process radio owner and surfaces the associated peer as a `restored` record at once, rather than only persisting it for the next session open.
-3. Run `restoration` `reconnect` with the recorded peer id and verify the same public events as iOS.
+3. Run `restoration` `reconnect` with the recorded peer id and
+   `{ "intent": "when-available" }`; verify the same public connection and
+   subscription event vocabulary as iOS.
 
-Expected on both phones: the reconnected peer id matches the recorded
-known peer id, adoption happens once per process, nothing reconnected or
-resumed before the app's `reconnect` call, and a platform that cannot
-restore says so with `capability.unsupported` instead of failing silently.
+Expected on both phones: adoption happens once per process, nothing reconnects
+or resumes before an app call, and a platform that cannot restore says so with
+`capability.unsupported` instead of failing silently. Android additionally
+qualifies reconnect with its recorded known-peer id and
+`intent: 'when-available'`; iOS direct reconnect qualification remains open
+until the updated driver is run against the physical restoration path.
 
 ## 5.0 background continuation (the declared standing order)
 

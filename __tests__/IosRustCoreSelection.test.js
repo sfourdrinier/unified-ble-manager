@@ -76,6 +76,13 @@ test('Apple core builder attests the real session symbols in every assembled arc
   expect(builder).toContain('carries no defined core symbol')
 })
 
+test('Apple core builder uses Xcode llvm-nm for pinned Rust archives', () => {
+  const builder = fs.readFileSync(path.join(root, 'ios', 'build-rust-core.sh'), 'utf8')
+  expect(builder).toContain('xcrun llvm-nm --no-llvm-bc -g "$1"')
+  expect(builder).toContain('symbols="$(xcrun llvm-nm --no-llvm-bc -g "$1")"')
+  expect(builder).not.toContain('if ! nm -g "$1"')
+})
+
 test('Apple core builder uses the exact pinned rustc and Cargo target directory', () => {
   const builder = fs.readFileSync(path.join(root, 'ios', 'build-rust-core.sh'), 'utf8')
   expect(builder).toContain('rustup which --toolchain "$PINNED_TOOLCHAIN" rustc')

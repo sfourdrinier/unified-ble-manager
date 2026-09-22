@@ -609,6 +609,7 @@ jobs:
               - '.github/actions/**'
             apple:
               - 'ios/**'
+              - 'examples-shared/dev/**'
               - 'native/protocol/**'
               - 'scripts/native-protocol/**'
               - 'example/ios/**'

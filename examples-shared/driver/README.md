@@ -13,30 +13,30 @@ retained, checksum-bound records described in [`evidence/v1/`](../../evidence/).
 
 ## Layout
 
-| Path | What it is |
-| --- | --- |
-| `protocol.ts` | Wire contract `ubm-test-driver/1`, loaded by every host and by the server |
-| `scenario-core.ts` | `ScenarioController`, `ScenarioRegistry` (including `stopAll`), typed command arguments, console runtime |
-| `scenarios/*.ts` | `h10-stream`, `link-loss`, `device-info`, `mtu`, `scan-details`, `ecg`, `background`, `restoration`, `h10-capture`, `live-dashboard` |
-| `polar-pmd.ts` | Polar PMD (ECG) framing, from Polar's BLE SDK |
-| `host.ts` | The host-adapter seam (`DriverHost`), peer acquisition, adapter readiness, capability lease |
-| `user-gesture.ts` | The explicit pending-user-gesture gate (Web Bluetooth chooser) |
-| `remote-channel.ts`, `create-driver.ts`, `driver-url.ts` | Host → server channel, registry factory, `disposeDriver` (hot-reload teardown), URL rules |
-| `browser/` | Shared by the Web, Tauri and Electron renderer hosts: WebSocket, visibility app state, the scenario panel |
-| `server/` | Control server and CLI (`cli.mjs`), hub, sequences |
+| Path                                                     | What it is                                                                                                                           |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `protocol.ts`                                            | Wire contract `ubm-test-driver/1`, loaded by every host and by the server                                                            |
+| `scenario-core.ts`                                       | `ScenarioController`, `ScenarioRegistry` (including `stopAll`), typed command arguments, console runtime                             |
+| `scenarios/*.ts`                                         | `h10-stream`, `link-loss`, `device-info`, `mtu`, `scan-details`, `ecg`, `background`, `restoration`, `h10-capture`, `live-dashboard` |
+| `polar-pmd.ts`                                           | Polar PMD (ECG) framing, from Polar's BLE SDK                                                                                        |
+| `host.ts`                                                | The host-adapter seam (`DriverHost`), peer acquisition, adapter readiness, capability lease                                          |
+| `user-gesture.ts`                                        | The explicit pending-user-gesture gate (Web Bluetooth chooser)                                                                       |
+| `remote-channel.ts`, `create-driver.ts`, `driver-url.ts` | Host → server channel, registry factory, `disposeDriver` (hot-reload teardown), URL rules                                            |
+| `browser/`                                               | Shared by the Web, Tauri and Electron renderer hosts: WebSocket, visibility app state, the scenario panel                            |
+| `server/`                                                | Control server and CLI (`cli.mjs`), hub, sequences                                                                                   |
 
 A host adapter supplies only the manager factory and readiness step, the
 platform label, the WebSocket, the app-state source and driver-URL discovery:
 
-| Host | Adapter | Manager | App state | WebSocket | Driver URL |
-| --- | --- | --- | --- | --- | --- |
-| Expo | `example-expo/src/driver/app-driver.ts` | `createExpoBleManager` + readiness/permission | React Native `AppState` | RN `WebSocket` | Metro bundle host, or `EXPO_PUBLIC_UBM_DRIVER_URL` |
-| Expo (Apple TV) | same adapter (`platform: tvos`, `backend: expo/tvos`) | same                                                                                  | React Native `AppState` | RN `WebSocket`   | TV Metro bundle host, or `EXPO_PUBLIC_UBM_DRIVER_URL` |
-| Expo (Android TV) | same adapter (`platform: android`, `backend: expo/android`; phone APK installed as-is, launched via `adb shell am start`) | same | React Native `AppState` | RN `WebSocket` | reversed Metro (emulator `localhost:8081` -> host `8082`), or `EXPO_PUBLIC_UBM_DRIVER_URL` |
-| Web | `example-web/src/driver.ts` | `createWebBleManager` | page visibility | browser | page host, or `?driver=` |
-| Tauri | `example-tauri/src/driver.ts` | `createTauriBleManager` (Tauri IPC) | page visibility | browser | local server, or `?driver=` |
-| Electron | `example-electron/driver/` | main: desktop provider + router/binding; renderer: `createElectronRendererBleManager` | page visibility | browser | local server, or `--driver-url` |
-| Node | `example-node/host.ts` | `unified-ble-manager/node/{corebluetooth,winrt,bluez}` | none (`untracked`) | Node `WebSocket` | local server, or `--driver-url` / `UBM_DRIVER_URL` |
+| Host              | Adapter                                                                                                                   | Manager                                                                               | App state               | WebSocket        | Driver URL                                                                                 |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | ----------------------- | ---------------- | ------------------------------------------------------------------------------------------ |
+| Expo              | `example-expo/src/driver/app-driver.ts`                                                                                   | `createExpoBleManager` + readiness/permission                                         | React Native `AppState` | RN `WebSocket`   | Metro bundle host, or `EXPO_PUBLIC_UBM_DRIVER_URL`                                         |
+| Expo (Apple TV)   | same adapter (`platform: tvos`, `backend: expo/tvos`)                                                                     | same                                                                                  | React Native `AppState` | RN `WebSocket`   | TV Metro bundle host, or `EXPO_PUBLIC_UBM_DRIVER_URL`                                      |
+| Expo (Android TV) | same adapter (`platform: android`, `backend: expo/android`; phone APK installed as-is, launched via `adb shell am start`) | same                                                                                  | React Native `AppState` | RN `WebSocket`   | reversed Metro (emulator `localhost:8081` -> host `8082`), or `EXPO_PUBLIC_UBM_DRIVER_URL` |
+| Web               | `example-web/src/driver.ts`                                                                                               | `createWebBleManager`                                                                 | page visibility         | browser          | page host, or `?driver=`                                                                   |
+| Tauri             | `example-tauri/src/driver.ts`                                                                                             | `createTauriBleManager` (Tauri IPC)                                                   | page visibility         | browser          | local server, or `?driver=`                                                                |
+| Electron          | `example-electron/driver/`                                                                                                | main: desktop provider + router/binding; renderer: `createElectronRendererBleManager` | page visibility         | browser          | local server, or `--driver-url`                                                            |
+| Node              | `example-node/host.ts`                                                                                                    | `unified-ble-manager/node/{corebluetooth,winrt,bluez}`                                | none (`untracked`)      | Node `WebSocket` | local server, or `--driver-url` / `UBM_DRIVER_URL`                                         |
 
 ## Protocol `ubm-test-driver/1`
 
@@ -86,11 +86,11 @@ Every peer-acquiring command (`h10-stream start`, `link-loss start`,
 optional `device` argument, so two hosts can each run against their own strap
 at the same time:
 
-| `device` | `find()` query (`names`) | Web chooser filter |
-| --- | --- | --- |
-| absent | `prefixes: ["Polar H10"]` (the first H10 found, as before) | `localNamePrefix: "Polar H10"` |
-| `"Polar H10 E997042F"` (exact advertised name) | `exact: ["Polar H10 E997042F"]` | `localNamePrefix: "Polar H10 E997042F"`, then the pick must be exactly that name or the run fails with `scenario.device-mismatch` |
-| `"Polar H10 E99*"` (prefix, trailing `*`) | `prefixes: ["Polar H10 E99"]` | `localNamePrefix: "Polar H10 E99"` |
+| `device`                                               | `find()` query (`names`)                                   | Web chooser filter                                                                                                                |
+| ------------------------------------------------------ | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| absent                                                 | `prefixes: ["Polar H10"]` (the first H10 found, as before) | `localNamePrefix: "Polar H10"`                                                                                                    |
+| `"Polar H10 A1B2C3D4"` (example exact advertised name) | `exact: ["Polar H10 A1B2C3D4"]`                            | `localNamePrefix: "Polar H10 A1B2C3D4"`, then the pick must be exactly that name or the run fails with `scenario.device-mismatch` |
+| `"Polar H10 A1B*"` (example prefix, trailing `*`)      | `prefixes: ["Polar H10 A1B"]`                              | `localNamePrefix: "Polar H10 A1B"`                                                                                                |
 
 Web Bluetooth filters names by prefix only, which is why an exact name is
 checked after the pick. The acquired peer is reported everywhere as
@@ -156,7 +156,7 @@ node examples-shared/driver/server/cli.mjs serve            # listens on 0.0.0.0
 node examples-shared/driver/server/cli.mjs hosts
 node examples-shared/driver/server/cli.mjs describe all
 node examples-shared/driver/server/cli.mjs run all h10-stream start '{"autoReconnect":true}'
-node examples-shared/driver/server/cli.mjs run android h10-stream start '{"device":"Polar H10 E997042F"}'
+node examples-shared/driver/server/cli.mjs run android h10-stream start '{"device":"Polar H10 A1B2C3D4"}'
 node examples-shared/driver/server/cli.mjs run macos mtu probe
 node examples-shared/driver/server/cli.mjs run expo-android-google-pixel-9 ecg stop
 node examples-shared/driver/server/cli.mjs sequence examples-shared/driver/server/sequences/h10-stream.json --out /tmp/h10.json
@@ -178,7 +178,7 @@ line `--target android,ios`) and a `devices` map from a host id, host kind or
 platform to a device name (exact, or a prefix ending in `*`):
 
 ```json
-{ "target": ["android", "ios"], "devices": { "android": "Polar H10 E997042F", "ios": "Polar H10 E9B93D29" } }
+{ "target": ["android", "ios"], "devices": { "android": "Polar H10 A1B2C3D4", "ios": "Polar H10 E5F6A7B8" } }
 ```
 
 For each host the most specific key wins: host id, then host kind, then
@@ -203,8 +203,8 @@ equivalence check). The `capture` CLI command runs it on every targeted host
 and saves each fingerprint:
 
 ```sh
-node examples-shared/driver/server/cli.mjs capture android --device "Polar H10 E997042F"
-node examples-shared/driver/server/cli.mjs capture all --device "Polar H10 E9B93D29" --out /tmp/h10
+node examples-shared/driver/server/cli.mjs capture android --device "Polar H10 A1B2C3D4"
+node examples-shared/driver/server/cli.mjs capture all --device "Polar H10 E5F6A7B8" --out /tmp/h10
 node examples-shared/driver/server/cli.mjs capture tauri --scan-ms 10000 --hr-ms 60000 --ecg-frames 30 --mtu 517
 ```
 
@@ -214,23 +214,14 @@ defaults (10 s scan + 60 s HR stream + 30 ECG frames). The HR window must stay
 at `--hr-ms 60000` or above on real straps; shorter windows are for the sim
 and unit tests only.
 
-Tonight's captures (server on the Mac, all hosts joined — check with `hosts`):
+For a repeatable multi-host capture, first obtain the current host IDs, then
+capture each assigned strap explicitly. Keep the resulting records outside the
+repository until they are validated and retained as release evidence:
 
 ```sh
 node examples-shared/driver/server/cli.mjs hosts
-# Samsung (Expo Android) — strap E997042F, then strap E9B93D29:
-node examples-shared/driver/server/cli.mjs capture <expo-android-host-id> --device "Polar H10 E997042F"
-node examples-shared/driver/server/cli.mjs capture <expo-android-host-id> --device "Polar H10 E9B93D29"
-# iPhone (Expo iOS) — strap E997042F, then strap E9B93D29:
-node examples-shared/driver/server/cli.mjs capture <expo-ios-host-id> --device "Polar H10 E997042F"
-node examples-shared/driver/server/cli.mjs capture <expo-ios-host-id> --device "Polar H10 E9B93D29"
-# macOS Tauri host — strap E997042F, then strap E9B93D29:
-node examples-shared/driver/server/cli.mjs capture <tauri-macos-host-id> --device "Polar H10 E997042F"
-node examples-shared/driver/server/cli.mjs capture <tauri-macos-host-id> --device "Polar H10 E9B93D29"
+node examples-shared/driver/server/cli.mjs capture <host-id> --device "Polar H10 <advertised-suffix>" --out /tmp/ubm-h10-captures
 ```
-
-Use the exact host ids from `hosts` (for example
-`expo-android-google-pixel-9`). Six files, one per host per strap.
 
 ### Live dashboard (`live-dashboard`)
 
@@ -257,7 +248,7 @@ buffer is bounded (10 s), so the BLE delivery path is never blocked.
 
 ```sh
 node examples-shared/driver/server/cli.mjs run android live-dashboard start '{"devices":"all-polar","ecg":true}'
-node examples-shared/driver/server/cli.mjs run android live-dashboard start '{"devices":["Polar H10 E997042F"],"ecg":false}'
+node examples-shared/driver/server/cli.mjs run android live-dashboard start '{"devices":["Polar H10 A1B2C3D4"],"ecg":false}'
 node examples-shared/driver/server/cli.mjs run android live-dashboard snapshot
 node examples-shared/driver/server/cli.mjs run android live-dashboard stop
 ```
@@ -265,16 +256,25 @@ node examples-shared/driver/server/cli.mjs run android live-dashboard stop
 ## Launching each host
 
 Every host below except Expo runs from the repository root after `pnpm prepack`,
-because it imports the checkout's own built package.
+because it imports the checkout's own built package. Expo installs the same
+packed checkout through its `file:..` dependency; its iOS command refreshes and
+verifies the copied RustCore before invoking Xcode.
 
 ### Expo (Android, iOS)
 
 ```sh
+pnpm prepack
 pnpm --dir example-expo install --no-frozen-lockfile
-pnpm --dir example-expo exec expo prebuild --clean --no-install     # native projects, once
 pnpm --dir example-expo android                                     # or: pnpm --dir example-expo ios
 adb reverse tcp:8795 tcp:8795                                       # Android over USB with Metro on localhost
 ```
+
+`pnpm --dir example-expo ios` is the supported local iOS entrypoint. It
+refreshes the checked-out package copy when its Apple native artifact is stale,
+checks the copied framework identity, and verifies the generated restoration
+configuration before Xcode builds. Run `expo prebuild --clean --no-install`
+only when intentionally regenerating native projects; run the `ios` command
+afterward so the same checks protect the build.
 
 Development builds connect to `ws://<Metro host>:8795/host` on launch. The badge
 on the **Test scenarios** screens shows the connection. Set
@@ -370,17 +370,23 @@ the terminal needs Bluetooth permission.
 The library answers each call itself. The rows below are what the source says
 to expect. They are not hardware evidence.
 
-| Scenario | Expo Android | Expo iOS | Web | Tauri / Electron / Node (desktop core) |
-| --- | --- | --- | --- | --- |
-| `h10-stream`, `device-info` | runs | runs | runs after the chooser click | runs |
-| `link-loss` | runs (reconnect by peer reference) | runs | runs after the chooser click | runs |
-| `h10-stream` / `link-loss` with `intent: "when-available"` | runs | `capability.unsupported` from `connect` | answered by `connect` | answered by `connect` |
-| `mtu` | runs | `requestMtu`, `effectiveMtu`, `readPhy` report unsupported (CoreBluetooth negotiates the MTU); write length measured | each probe reports the backend's answer | each probe reports the backend's answer (macOS: CoreBluetooth rows unsupported) |
-| `scan-details` | runs | runs | `scan()` refuses: Web Bluetooth has no continuous scan (`web:continuous-scan` unsupported) | runs |
-| `ecg` | runs | reads the PMD control point while it is notifying, which exercises the library's read-while-notifying path | runs after the chooser click (PMD is in `optionalServices`) | runs |
-| `background` | Expo lease API; app state from `AppState` | same | lease: `web:background-operation` descriptor (unsupported); app state from page visibility | lease: `background:desktop-maintain-connection` descriptor (registered on WinRT only); Tauri/Electron use page visibility; Node reports `untracked` (a CLI has no app lifecycle), so `sequences/background.json` cannot pass there |
-| `restoration` (`start` / `reconnect` / `restored`) | runs: associate, `presence.observe`, then `peers.restored` and a `when-available` reconnect with no scan | runs: `restoration.claim()`, then `peers.restored` and a direct reconnect with no scan | `capability.unsupported`: no background relaunch or presence wake; `restored` reports the owner's own answer | `capability.unsupported`: no OS restoration journal for a terminated app and no presence wake |
-| `restoration` (`observe-presence` / `unobserve-presence`) | runs: arms `presence.observe` for the known peer id | `capability.unsupported` from the owner: Apple restores through `willRestoreState` and there is nothing to arm | no presence API (`scenario.presence-unavailable`); arm presence from an Expo/RN host | no presence API (`scenario.presence-unavailable`); arm presence from an Expo/RN host |
+| Scenario                                                   | Expo Android                                                                                             | Expo iOS                                                                                                             | Web                                                                                                          | Tauri / Electron / Node (desktop core)                                                                                                                                                                                             |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `h10-stream`, `device-info`                                | runs                                                                                                     | runs                                                                                                                 | runs after the chooser click                                                                                 | runs                                                                                                                                                                                                                               |
+| `link-loss`                                                | runs (reconnect by peer reference)                                                                       | runs                                                                                                                 | runs after the chooser click                                                                                 | runs                                                                                                                                                                                                                               |
+| `h10-stream` / `link-loss` with `intent: "when-available"` | runs                                                                                                     | `capability.unsupported` from `connect`                                                                              | answered by `connect`                                                                                        | answered by `connect`                                                                                                                                                                                                              |
+| `mtu`                                                      | runs                                                                                                     | `requestMtu`, `effectiveMtu`, `readPhy` report unsupported (CoreBluetooth negotiates the MTU); write length measured | each probe reports the backend's answer                                                                      | each probe reports the backend's answer (macOS: CoreBluetooth rows unsupported)                                                                                                                                                    |
+| `scan-details`                                             | runs                                                                                                     | runs                                                                                                                 | `scan()` refuses: Web Bluetooth has no continuous scan (`web:continuous-scan` unsupported)                   | runs                                                                                                                                                                                                                               |
+| `ecg`                                                      | runs                                                                                                     | reads the PMD control point while it is notifying, which exercises the library's read-while-notifying path           | runs after the chooser click (PMD is in `optionalServices`)                                                  | runs                                                                                                                                                                                                                               |
+| `background`                                               | Expo lease API; app state from `AppState`                                                                | same                                                                                                                 | lease: `web:background-operation` descriptor (unsupported); app state from page visibility                   | lease: `background:desktop-maintain-connection` descriptor (registered on WinRT only); Tauri/Electron use page visibility; Node reports `untracked` (a CLI has no app lifecycle), so `sequences/background.json` cannot pass there |
+| `restoration` (`start` / `reconnect` / `restored`)         | runs: associate, `presence.observe`, then `peers.restored` and a `when-available` reconnect with no scan | runs: `restoration.claim()`, then `peers.restored` and a direct reconnect with no scan                               | `capability.unsupported`: no background relaunch or presence wake; `restored` reports the owner's own answer | `capability.unsupported`: no OS restoration journal for a terminated app and no presence wake                                                                                                                                      |
+| `restoration` (`observe-presence` / `unobserve-presence`)  | runs: arms `presence.observe` for the known peer id                                                      | `capability.unsupported` from the owner: Apple restores through `willRestoreState` and there is nothing to arm       | no presence API (`scenario.presence-unavailable`); arm presence from an Expo/RN host                         | no presence API (`scenario.presence-unavailable`); arm presence from an Expo/RN host                                                                                                                                               |
+
+After iOS relaunch, run `restoration restored`, then pass a returned peer's
+`reference` to `restoration reconnect` as `peerReference` with `intent: "direct"`.
+For Android's presence path, pass its known `peerId` with explicit
+`intent: "when-available"`. The driver supports both inputs; the physical iOS
+fresh-manager direct-reconnect qualification remains open.
 
 On Apple TV (`platform: tvos`) every scenario runs the same code as on the
 iPhone, with two platform answers: tvOS has no background Bluetooth mode, so

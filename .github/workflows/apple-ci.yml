@@ -140,9 +140,17 @@ jobs:
         working-directory: example-expo
         run: npx expo install --fix
 
+      - name: Verify and refresh the package copy Expo will link
+        env:
+          UBM_NATIVE_BUILD: source
+        run: node examples-shared/dev/prepare-example-ios.js example-expo
+
       - name: Prebuild Expo native projects
         working-directory: example-expo
         run: NODE_ENV=development npx expo prebuild --clean --no-install --platform ios
+
+      - name: Verify generated iOS restoration configuration
+        run: node examples-shared/dev/verify-expo-ios-restoration.js example-expo
 
       - name: Install CocoaPods
         working-directory: example-expo/ios

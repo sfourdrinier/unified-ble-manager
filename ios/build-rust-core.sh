@@ -151,7 +151,7 @@ if [ "$(uname -s)" != "Darwin" ]; then
 fi
 need xcodebuild
 need lipo
-need nm
+need xcrun
 need plutil
 
 # PR210-18: seal the identity the binary carries. The digests are computed
@@ -180,11 +180,17 @@ echo "build-rust-core: identity sourceDigest=$UBM_BUILD_SOURCE_DIGEST bindingSch
 CORE_FFI_ANCHORS="ffi_ubm5_uniffi_echo_fn_constructor_echosession_new ffi_ubm5_uniffi_echo_fn_method_echosession_close ffi_ubm5_uniffi_echo_fn_method_echosession_central_status ffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_start"
 
 attest_core_symbols() {
-  # $1 = staticlib path. nm exits nonzero on an unrecognized archive; the
-  # anchor loop rejects a well-formed archive carrying the wrong object
-  # code (no defined core symbol, no XCFramework assembly).
+  # $1 = staticlib path. System nm rejects pinned rustc archives; Xcode
+  # llvm-nm reads their native symbols. Skip Rust LLVM bitcode members:
+  # Xcode's older bitcode reader rejects their newer attributes even though
+  # the native archive is valid. Require llvm-nm's clean exit before checking
+  # the defined core anchors.
+  symbols="$(xcrun llvm-nm --no-llvm-bc -g "$1")" || {
+    echo "build-rust-core: llvm-nm could not read $1" >&2
+    exit 1
+  }
   for anchor in $CORE_FFI_ANCHORS; do
-    if ! nm -g "$1" 2>/dev/null | grep -q "T .*$anchor"; then
+    if ! printf '%s\n' "$symbols" | grep -q "T .*$anchor"; then
       echo "build-rust-core: $1 carries no defined core symbol $anchor (not the ubm-core UniFFI staticlib?)" >&2
       exit 1
     fi

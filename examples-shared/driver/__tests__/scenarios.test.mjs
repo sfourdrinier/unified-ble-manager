@@ -171,6 +171,26 @@ test('restoration reconnect dials the recorded peer id directly with no new scan
   await registry.dispatch('restoration', 'stop', {})
 })
 
+test('restoration reconnect resolves a restored reference into this manager before a direct connection', async () => {
+  const { manager, calls } = createFakeManager()
+  const registry = createScenarioRegistry(createFakeHost({ manager, adapterHostManager }))
+  const restoredReference = {
+    version: 1,
+    backendId: 'expo/fake',
+    scope: 'origin',
+    opaqueId: 'restored-peripheral'
+  }
+
+  await registry.dispatch('restoration', 'reconnect', { peerReference: restoredReference })
+
+  assert.ok(calls.includes('connect-reference restored-peripheral'))
+  assert.ok(calls.includes('connect direct'))
+  const scenario = registry.get('restoration')
+  assert.equal(scenario.snapshot().knownPeerId, 'resolved-restored-peer')
+  assert.ok(eventsOf(scenario).includes('restoration-reconnected'))
+  await registry.dispatch('restoration', 'stop', {})
+})
+
 test('restoration reconnect without a known peer is refused, never silently skipped', async () => {
   const { manager } = createFakeManager()
   const registry = createScenarioRegistry(createFakeHost({ manager, adapterHostManager }))

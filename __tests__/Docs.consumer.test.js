@@ -216,7 +216,7 @@ describe('consumer documentation matches the published package', () => {
       const document = read(relativePath)
 
       expect(document.split('\n')[0]).toBe(`<!-- ${relativePath} -->`)
-      expect(document).toContain('4.0 clean-baseline Web Bluetooth example')
+      expect(document).toContain('5.0 clean-baseline Web Bluetooth example')
       expect(document).toMatch(/does not itself create a\s+release evidence receipt/u)
       expect(document).not.toMatch(/legacy manager|transitional source/i)
     }
@@ -356,7 +356,7 @@ describe('consumer documentation matches the published package', () => {
     expect(readme).toContain(packageVersion)
     expect(readme).not.toContain('4.0.0 is the first stable release')
     expect(readme).toContain('pnpm add unified-ble-manager')
-    expect(readme).not.toContain(`pnpm add unified-ble-manager@${packageVersion}`)
+    expect(readme).toContain(`pnpm add unified-ble-manager@${packageVersion}`)
     expect(changelog).toContain('## [4.0.0-rc.0]')
     expect(history).toContain('## [4.0.0-alpha.40]')
     expect(readme).toContain('createReactNativeBleManager')
@@ -383,12 +383,8 @@ describe('consumer documentation matches the published package', () => {
     expect(release).toContain('git tag -a v4.0.0')
     expect(release).toContain('npm trusted publishing/OIDC')
     expect(release).toContain('publishes with provenance')
-    expect(platforms).toContain(
-      'The version in `package.json` identifies the source being prepared or released;'
-    )
-    expect(platforms).toContain(
-      'and the tag-driven release workflow are the publication authorities.'
-    )
+    expect(platforms).toContain('The version in `package.json` identifies the source being prepared or released;')
+    expect(platforms).toContain('and the tag-driven release workflow are the publication authorities.')
     expect(platforms).toContain(
       'WinRT compilation or ABI loading, for example, is not by itself a Windows live-radio claim'
     )
@@ -432,12 +428,8 @@ describe('consumer documentation matches the published package', () => {
   test('advanced-only profile helpers are imported from the advanced entrypoint', () => {
     const commands = read('docs/PROFILES_AND_COMMANDS.md')
 
-    expect(commands).toContain(
-      "import { defaultScanDelivery, firstNotification } from 'unified-ble-manager/advanced'"
-    )
-    expect(commands).not.toContain(
-      "import { defaultScanDelivery, firstNotification } from 'unified-ble-manager'"
-    )
+    expect(commands).toContain("import { defaultScanDelivery, firstNotification } from 'unified-ble-manager/advanced'")
+    expect(commands).not.toContain("import { defaultScanDelivery, firstNotification } from 'unified-ble-manager'")
   })
 
   test('README is a human teaching front door for the current package', () => {

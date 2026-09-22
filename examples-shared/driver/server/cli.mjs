@@ -52,7 +52,7 @@ const HELP = `ubm-driver — run the shared test scenarios on every connected ho
   <target> is "all", a host id from \`hosts\`, a host kind (expo | web | tauri | electron | node)
   or a platform (android | ios | macos | windows | linux).
   Every peer-acquiring command takes {"device": "<exact advertised name>"} or {"device": "<prefix>*"},
-  e.g. run android h10-stream start '{"device":"Polar H10 E997042F"}'.
+  e.g. run android h10-stream start '{"device":"Polar H10 1234"}'.
   --server ws://HOST:PORT/control selects the server for client commands (default ws://127.0.0.1:${DEFAULT_DRIVER_PORT}/control).`
 
 function parseArgs(argv) {

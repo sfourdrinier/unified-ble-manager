@@ -86,7 +86,10 @@ describe('consumer refresh guards', () => {
 
   test('phone Expo builds refresh what they consume (ios: apple, android: android)', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'example-expo', 'package.json'), 'utf8'))
-    expect(pkg.scripts.ios).toMatch(/ensure-native\.js.*apple/)
+    expect(pkg.scripts.ios).toContain('prepare-example-ios.js')
+    const prepare = fs.readFileSync(path.join(ROOT, 'examples-shared', 'dev', 'prepare-example-ios.js'), 'utf8')
+    expect(prepare).toContain("ensureNative(['apple'])")
+    expect(prepare).toContain('checkAppleStaging(copyRoot)')
     expect(pkg.scripts.android).toMatch(/ensure-native\.js.*android/)
   })
 

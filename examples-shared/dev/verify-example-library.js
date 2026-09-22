@@ -143,4 +143,4 @@ function main(argv) {
 
 if (require.main === module) main(process.argv.slice(2))
 
-module.exports = { inspectExampleLibrary, describeLibraryOutcome }
+module.exports = { inspectExampleLibrary, describeLibraryOutcome, readRepoFacts, readCopyFacts }

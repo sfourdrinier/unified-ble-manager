@@ -131,12 +131,16 @@ if (known === undefined) {
 const connection = await ble.connect(known.id, { intent: 'when-available', timeoutMs: 15_000 })
 ```
 
-On iOS the same reconnect follows `restoration.claim()` after the system
-relaunches the app (see [`BACKGROUND.md`](BACKGROUND.md) for the
-configuration). Below API 31, and on tvOS, desktop and Web, presence
-observation reports `capability.unsupported` with a reason instead of
-waking anything. The task-ordered Android chain, the iOS counterpart, and
-the per-platform refusals are in [`BACKGROUND.md`](BACKGROUND.md).
+On iOS, `restoration.claim()` adopts the OS journal after the system
+relaunches the app. `when-available` is Android-only: use a durable restored
+`PeerReference` with `intent: 'direct'` when reconnecting from a fresh iOS
+manager. The shared restoration driver accepts the reference, but has not yet
+physically qualified that fresh-manager iOS path; its current receipt proves
+wake/adoption only. Below API 31,
+and on tvOS, desktop and Web, presence observation reports
+`capability.unsupported` with a reason instead of waking anything. The
+task-ordered Android chain, iOS counterpart, and platform refusals are in
+[`BACKGROUND.md`](BACKGROUND.md).
 
 ## MTU and read provenance (per-platform limits)
 

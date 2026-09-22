@@ -230,8 +230,11 @@
               (<code>ble.association.associate</code>), arm presence (<code>ble.presence.observe({ peerId })</code>),
               then read <code>ble.peers.restored()</code> and <code>connect</code> with intent
               <code>'when-available'</code>; on iOS configure <code>background.ios.restoration</code> and adopt with
-              <code>restoration.claim()</code>. The full task-ordered chain, and what API&#x3C;31, tvOS, desktop and Web
-              answer instead, is in <a href="BACKGROUND.md"><code>BACKGROUND.md</code></a
+              <code>restoration.claim()</code>. iOS reconnects directly through a durable restored
+              <code>PeerReference</code>, never through Android-only <code>'when-available'</code>; the shared driver
+              now accepts that reference, but its physical direct-reconnect qualification is still open. The full
+              task-ordered chain, and what API&#x3C;31, tvOS, desktop and Web answer instead, is in
+              <a href="BACKGROUND.md"><code>BACKGROUND.md</code></a
               >.
             </p>
             <h2>Coming from react-native-ble-plx</h2>
@@ -297,11 +300,14 @@
               and every step is app-owned:
             </p>
             <p>
-              On iOS the same reconnect follows <code>restoration.claim()</code> after the system relaunches the app
-              (see <a href="BACKGROUND.md"><code>BACKGROUND.md</code></a> for the configuration). Below API 31, and on
-              tvOS, desktop and Web, presence observation reports <code>capability.unsupported</code> with a reason
-              instead of waking anything. The task-ordered Android chain, the iOS counterpart, and the per-platform
-              refusals are in <a href="BACKGROUND.md"><code>BACKGROUND.md</code></a
+              On iOS, <code>restoration.claim()</code> adopts the OS journal after the system relaunches the app.
+              <code>when-available</code> is Android-only: use a durable restored <code>PeerReference</code> with
+              <code>intent: 'direct'</code> when reconnecting from a fresh iOS manager. The shared restoration driver
+              accepts the reference, but has not yet physically qualified that fresh-manager iOS path; its current
+              receipt proves wake/adoption only. Below API 31, and on tvOS, desktop and Web, presence observation
+              reports <code>capability.unsupported</code> with a reason instead of waking anything. The task-ordered
+              Android chain, iOS counterpart, and platform refusals are in
+              <a href="BACKGROUND.md"><code>BACKGROUND.md</code></a
               >.
             </p>
             <h2>MTU and read provenance (per-platform limits)</h2>

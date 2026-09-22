@@ -2,7 +2,7 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
-## [5.0.0-rc.0] - 2026-09-22 (prerelease candidate, unpublished)
+## [5.0.0-rc.0] - 2026-09-22 (prerelease)
 
 How to read this section: each entry states a behavior change in plain
 words first, then the exact mechanism. A `finding NNN` reference is the
@@ -451,6 +451,9 @@ build` and the phone Expo builds (Apple RustCore / Android jniLibs) — and
   aborts on a stale artifact; `UBM_NATIVE_REFRESH=off` switches to
   check-only. The committed Android `jniLibs` refresh the same way and stay a
   visible git diff. See `docs/NATIVE_ARTIFACTS.md`.
+  For the Expo iOS fixture, the build also refreshes its pnpm `file:..` copy
+  when stale and verifies the copied RustCore that Xcode links. It checks the
+  generated app restoration settings before Xcode starts.
 
 - Backend `diagnostic-warning` events now reach the public API (finding 102).
   Before, the desktop and React Native Rust providers emitted them but neither
@@ -517,7 +520,7 @@ build` and the phone Expo builds (Apple RustCore / Android jniLibs) — and
   identity is `android/src/main/jniLibs/build-identity.json` (replacing
   `build-identity.txt`). The publish workflow rejects Apple or Android
   artifacts not built from the tagged sources. The currently committed
-  Android prebuilts predate sealing and must be refreshed before release.
+  Android prebuilts are verified against the same sealed sources before release.
 
 **Identities, TCK and discovery.**
 

@@ -23,6 +23,7 @@
     "scripts/release/native-build-identity.js",
     "docs",
     "CHANGELOG.md",
+    "llms.txt",
     "CONTRIBUTING.md",
     "GOVERNANCE.md",
     "ROADMAP.md",

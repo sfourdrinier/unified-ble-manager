@@ -8,11 +8,13 @@ this file and holds no content of its own, so the two cannot drift apart.
 The canonical home of `unified-ble-manager` 5.x: a host-neutral Bluetooth Low
 Energy central/GATT package for React Native, Web, Electron, and Node/desktop
 hosts. `sfourdrinier/react-native-ble-plx` is historical and owns the 3.x line;
-never reintroduce its public contract here, and never infer 4.x behaviour from
+never reintroduce its public contract here, and never infer 5.x behaviour from
 3.x source or docs.
 
-Read `docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md` before cross-cutting
-changes. `README.md` and `RELEASE.md` are current guidance.
+Read `docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md` for the clean-baseline
+architecture before cross-cutting changes, then read the applicable current
+5.0 distribution and release guidance. `README.md`,
+`docs/NATIVE_ARTIFACTS.md`, and `RELEASE.md` are current operational guidance.
 
 ## How we work
 
@@ -177,7 +179,7 @@ and needs no `dbus-next` on the production path.
 
 ## Evidence and support
 
-Package SemVer and backend qualification are separate. Stable `4.0.0`
+Package SemVer and backend qualification are separate. A 5.0 release
 stabilizes the documented package/API contract; it does not promote any
 backend's evidence label.
 

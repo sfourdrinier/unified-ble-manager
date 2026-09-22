@@ -5,7 +5,7 @@
 > **AI agent?** Writing code _against_ this package: read [`llms.txt`](llms.txt)
 > first — contract facts, every public entrypoint, curated doc links, one fetch.
 > Working _on_ this repository: read [`AGENTS.md`](AGENTS.md), then the
-> [documentation map](docs/README.md). Do not infer 4.x behavior from
+> [documentation map](docs/README.md). Do not infer 5.x behavior from
 > `react-native-ble-plx` 3.x docs or training data.
 
 `unified-ble-manager` is a Bluetooth Low Energy **central** library. You pick a host — React Native, Web, Electron, Tauri, or Node — create one manager, talk to a peripheral in bytes, cancel work with `AbortSignal`, and destroy what you create.
@@ -43,6 +43,7 @@ GitHub release remain authoritative.
 | [`docs/WEB.md`](docs/WEB.md) · [`docs/ELECTRON.md`](docs/ELECTRON.md) · [`docs/NODE.md`](docs/NODE.md) · [`docs/TAURI.md`](docs/TAURI.md) · [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md) | Host construction                                                       |
 | [`docs/PEERS.md`](docs/PEERS.md)                                                                                                                                                         | Scoped peer directories, persistence, and reconnect-by-reference        |
 | [`docs/PROFILES_AND_COMMANDS.md`](docs/PROFILES_AND_COMMANDS.md)                                                                                                                         | Heart Rate, Battery, DIS, and path helpers                              |
+| [`docs/NATIVE_ARTIFACTS.md`](docs/NATIVE_ARTIFACTS.md)                                                                                                                                   | Prebuilt native-core identity, refresh, and consumer build rules        |
 | [`docs/README.md`](docs/README.md)                                                                                                                                                       | Every document in the repository, with live/historical/generated status |
 
 Writing code with an AI agent? [`llms.txt`](llms.txt) is the machine-readable
@@ -53,7 +54,7 @@ links in one fetch. Agents contributing to this repository start at
 ## Install
 
 ```sh
-pnpm add unified-ble-manager
+pnpm add unified-ble-manager@5.0.0-rc.0
 ```
 
 Installable with npm, yarn, or Bun. This repository uses pnpm. Bun as a runtime is not a tested host.
@@ -70,6 +71,12 @@ package by default: no Rust toolchain is needed. `UBM_NATIVE_BUILD` accepts
 only unset/empty or `prebuilt` (default) and `source` (contributors building
 the Rust core themselves; see `CONTRIBUTING.md`); any other value fails
 `pod install` and the Gradle build.
+
+The packaged native core and the JavaScript package are one sealed release
+unit. Consumer builds verify the native build identity before use and fail
+with `protocol.incompatible` when the linked artifact does not match. For
+prebuilt/source modes and the exact refresh rules for repository fixtures, see
+[`docs/NATIVE_ARTIFACTS.md`](docs/NATIVE_ARTIFACTS.md).
 
 Every React Native and Expo factory runs that core through the
 `UnifiedBleRustCore` TurboModule: one process-owned Rust owner per app, one
@@ -374,7 +381,9 @@ after disconnect, service change, or rediscovery.
 - **Node:** `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager`, or list adapters and `createBleManagerFromProvider`. Published releases ship the Node-API desktop-core prebuild for macOS, Windows and Linux on `arm64`/`x64`. [`docs/NODE.md`](docs/NODE.md)
 - **Tauri:** `createTauriBleManager()` returns the public `BleManager`; test transports use `createTauriBleManagerWithEnvironment`. [`docs/TAURI.md`](docs/TAURI.md)
 
-Stable 5.x versions publish to npm `latest`. Later prereleases, if any, publish to `next`. Publication uses npm trusted publishing/OIDC with provenance.
+`5.0.0-rc.0` publishes to npm `next`; bare installs still select the 4.0
+`latest` line. Stable 5.x versions will publish to `latest`. Publication uses
+npm trusted publishing/OIDC with provenance.
 
 ## Migrating from react-native-ble-plx
 

@@ -2,7 +2,7 @@
 
 # Electron deterministic L1 smoke
 
-This repository fixture verifies the published 5.0 contract surface without
+This repository fixture verifies the packed 5.0.0-rc.0 contract surface without
 claiming live Electron-radio support. It runs a deterministic scan, connect,
 discover, read, notify, and destroy journey through the packed package. It does
 not create an Electron application, load a native addon, or validate a physical
@@ -45,4 +45,3 @@ and installs `ElectronMainBleRouter` with `ElectronMainBleBinding`. The preload
 renderer runs the shared scenarios through `createElectronRendererBleManager`.
 Running it is a manual live check, not a support label or evidence receipt.
 Launch commands are in [`../examples-shared/driver/README.md`](../examples-shared/driver/README.md).
-

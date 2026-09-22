@@ -447,6 +447,7 @@ function isRootArchiveEntryAllowed(
   const allowedFiles = new Set([
     'package/package.json',
     'package/README.md',
+    'package/llms.txt',
     'package/CHANGELOG.md',
     'package/CONTRIBUTING.md',
     'package/GOVERNANCE.md',
@@ -666,6 +667,9 @@ function verifyRootTarball(tarballPath) {
   }
   if (!files.has('package/bin/ubm.js')) {
     throw new Error('Packed canonical package is missing CLI entrypoint bin/ubm.js')
+  }
+  if (!files.has('package/llms.txt')) {
+    throw new Error('Packed canonical package is missing llms.txt referenced by README.md')
   }
   for (const required of ['package/Cargo.toml', 'package/Cargo.lock', 'package/rust-toolchain.toml']) {
     if (!files.has(required)) {

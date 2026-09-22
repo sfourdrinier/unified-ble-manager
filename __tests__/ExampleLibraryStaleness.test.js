@@ -22,6 +22,7 @@ const path = require('node:path')
 
 const guardPath = path.join(__dirname, '..', 'examples-shared', 'dev', 'verify-example-library.js')
 const { inspectExampleLibrary, describeLibraryOutcome } = require(guardPath)
+const { prepareExampleIos } = require('../examples-shared/dev/prepare-example-ios')
 
 const ROOT = path.join(__dirname, '..')
 
@@ -92,9 +93,80 @@ describe('example library staleness guard', () => {
 describe('the Expo example runs the guard before it builds a native host', () => {
   const expo = JSON.parse(fs.readFileSync(path.join(ROOT, 'example-expo', 'package.json'), 'utf8'))
 
-  test('ios and android verify the copy before ensure-native', () => {
-    for (const script of ['ios', 'android']) {
-      expect(expo.scripts[script]).toContain('verify-example-library.js')
-    }
+  test('iOS prepares its copy and generated configuration; Android retains its copy guard', () => {
+    expect(expo.scripts.ios).toContain('prepare-example-ios.js')
+    expect(expo.scripts.ios).toContain('verify-expo-ios-restoration.js')
+    expect(expo.scripts.android).toContain('verify-example-library.js')
+  })
+
+  test('Apple CI exercises both guards and triggers when they change', () => {
+    const workflow = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'apple-ci.yml'), 'utf8')
+    const changes = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8')
+    const install = workflow.indexOf('pnpm --dir example-expo install --no-frozen-lockfile')
+    const peerAlign = workflow.indexOf('npx expo install --fix')
+    const prepare = workflow.indexOf('node examples-shared/dev/prepare-example-ios.js example-expo')
+    const prebuild = workflow.indexOf('npx expo prebuild --clean --no-install --platform ios')
+    const restoration = workflow.indexOf('node examples-shared/dev/verify-expo-ios-restoration.js example-expo')
+    expect(prepare).toBeGreaterThan(install)
+    expect(prepare).toBeGreaterThan(peerAlign)
+    expect(restoration).toBeGreaterThan(prebuild)
+    expect(changes).toContain("- 'examples-shared/dev/**'")
+  })
+})
+
+describe('iOS example preparation', () => {
+  test('a fresh installed copy needs no package refresh', () => {
+    const steps = []
+    prepareExampleIos({
+      verifyRootIdentity: () => {},
+      ensureApple: () => steps.push('apple'),
+      inspectCopy: () => ({ ok: true, state: 'current' }),
+      verifyCopyApple: () => steps.push('verify-apple'),
+      refreshCopy: () => steps.push('refresh')
+    })
+    expect(steps).toEqual(['apple', 'verify-apple'])
+  })
+
+  test('a stale generated root identity stops the build before it trusts the copy', () => {
+    const steps = []
+    expect(() => prepareExampleIos({
+      verifyRootIdentity: () => { throw new Error('generated identity is stale') },
+      ensureApple: () => steps.push('apple'),
+      inspectCopy: () => ({ ok: true, state: 'current' }),
+      verifyCopyApple: () => steps.push('verify-apple'),
+      refreshCopy: () => steps.push('refresh')
+    })).toThrow(/generated identity is stale/)
+    expect(steps).toEqual([])
+  })
+
+  test('a copy with current JavaScript identity but stale RustCore is refreshed and verified', () => {
+    const steps = []
+    let stale = true
+    prepareExampleIos({
+      verifyRootIdentity: () => {},
+      ensureApple: () => steps.push('apple'),
+      inspectCopy: () => ({ ok: true, state: 'current' }),
+      verifyCopyApple: () => {
+        steps.push('verify-apple')
+        if (stale) throw new Error('stale RustCore')
+      },
+      refreshCopy: () => {
+        steps.push('refresh')
+        stale = false
+      }
+    })
+    expect(steps).toEqual(['apple', 'verify-apple', 'refresh', 'verify-apple'])
+  })
+
+  test('a stale library copy refreshes once and fails closed if still stale', () => {
+    const steps = []
+    expect(() => prepareExampleIos({
+      verifyRootIdentity: () => {},
+      ensureApple: () => steps.push('apple'),
+      inspectCopy: () => ({ ok: false, state: 'stale-identity' }),
+      verifyCopyApple: () => steps.push('verify-apple'),
+      refreshCopy: () => steps.push('refresh')
+    })).toThrow(/stale-identity/)
+    expect(steps).toEqual(['apple', 'refresh'])
   })
 })
