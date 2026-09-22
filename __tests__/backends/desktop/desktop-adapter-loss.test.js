@@ -109,6 +109,9 @@ function deferAdapterAndResetEvents(harness) {
     },
     release() {
       released = true
+    },
+    hold() {
+      released = false
     }
   }
 }
@@ -321,6 +324,7 @@ describe('adapter loss follows the legacy per-OS sequence (LEGACY-AUDIT-1 #57)',
   test('a direct adapter removal carries its wake-state sequence across the reset boundary', async () => {
     const harness = realBinding('bluez')
     const deferredEvents = deferAdapterAndResetEvents(harness)
+    deferredEvents.release()
     const provider = createTestDesktopRustCoreBackendProvider({
       platform: 'bluez',
       owner: 'direct-loss-reset-sequence',
@@ -333,9 +337,14 @@ describe('adapter loss follows the legacy per-OS sequence (LEGACY-AUDIT-1 #57)',
     const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
     try {
       const stage = harness.opened.at(-1)
+      // BlueZ reports its first power fact asynchronously. Let that initial
+      // fact establish the state, then hold both queues for the reset
+      // boundary so it cannot be mistaken for the reset transition.
+      await stage.stageAdapterState('powered-on', true)
+      await backend.settleCoreEvents()
+      deferredEvents.hold()
       const watch = await backend.adapter.watchState()
       const transitions = watch.transitions[Symbol.asyncIterator]()
-      await stage.stageAdapterState('powered-on', true)
       await stage.stageAdapterReset('removed')
       await deferredEvents.waitForReset()
       deferredEvents.release()
