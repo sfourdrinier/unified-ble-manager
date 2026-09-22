@@ -2068,8 +2068,9 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     }
   }
 
-  /** A new backend generation: new attachment, stale peer handles dropped, watchers told. */
+  /** A new backend generation: new attachment, stale peer handles dropped, watchers told unless stale. */
   private advanceGeneration(announceRestart: boolean): void {
+    const previous = this.adapterState
     this.generation += 1
     this.attachment = this.attachmentFor(this.attachment.adapter, this.adapterState)
     this.identifiers = this.identifiersFor(this.attachment)
@@ -2081,8 +2082,20 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       for (const stream of streams) stream.closeWithReason('source-failed')
     }
     this.securityWatches.clear()
-    for (const stream of [...this.adapterTransitions]) {
-      if (stream.emit(this.adapterState, 96).terminated) this.adapterTransitions.delete(stream)
+    // The advanced generation stays visible to adapter watchers (the loss
+    // contract), but never ahead of the adapter event behind the reset: when
+    // the core already reports a different power than this snapshot, that
+    // event is still queued and its application will emit with the new
+    // generation. Emitting now would report stale state ahead of the real
+    // transition (and duplicate the watch's initial snapshot).
+    const statusPower = this.central.adapterStatus().power ?? null
+    const reportedPower = statusPower === null ? null : adapterPower(statusPower)
+    const adapterEventInFlight =
+      reportedPower !== null && reportedPower !== 'unknown' && reportedPower !== previous.power
+    if (!adapterEventInFlight) {
+      for (const stream of [...this.adapterTransitions]) {
+        if (stream.emit(this.adapterState, 96).terminated) this.adapterTransitions.delete(stream)
+      }
     }
     if (announceRestart) {
       this.emitEvent({
@@ -2111,12 +2124,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     // A re-announced snapshot that changes nothing observable is not a
     // transition: emitting it would duplicate the watch's initial snapshot
     // (or an earlier transition) for every subscriber.
-    const unchanged =
-      this.adapterState.availability === previous.availability &&
-      this.adapterState.authorization === previous.authorization &&
-      this.adapterState.power === previous.power &&
-      this.adapterState.safeReason === previous.safeReason
-    if (!unchanged) {
+    if (!sameObservableAdapterState(previous, this.adapterState)) {
       for (const stream of [...this.adapterTransitions]) {
         if (stream.emit(this.adapterState, 96).terminated) this.adapterTransitions.delete(stream)
       }
@@ -4390,6 +4398,23 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     })()
     return this.dispatchFor(correlation, this.trackGattVerb(gattConnection, completion))
   }
+}
+
+/**
+ * Whether two adapter snapshots agree on the observable adapter state
+ * (availability, authorization, power and its reason). Generation and
+ * measurement time are compared separately by the caller that owns them.
+ */
+function sameObservableAdapterState(
+  previous: AdapterStateSnapshot<string>,
+  next: AdapterStateSnapshot<string>
+): boolean {
+  return (
+    next.availability === previous.availability &&
+    next.authorization === previous.authorization &&
+    next.power === previous.power &&
+    next.safeReason === previous.safeReason
+  )
 }
 
 function adapterPower(power: DesktopRustCoreAdapterPower | null): 'on' | 'off' | 'resetting' | 'unknown' {

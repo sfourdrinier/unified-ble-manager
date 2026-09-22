@@ -252,24 +252,47 @@ describe('React Native Android canonical protocol vertical slice', () => {
   })
 
   test('an expired connect deadline admits a same-peer retry instead of already-owned (194)', async () => {
-    const fixture = await createAndroidPeerDirectoryFixture(
-      [{ nativePeerId: 'AA:BB', displayName: 'Heart Strap' }],
-      { holdWhenAvailableConnect: true, publicNow: Date.now, providerNow: Date.now }
-    )
-    const peers = await fixture.manager.peers.bonded()
-    const [firstPeer] = peers
-    if (firstPeer === undefined) throw new Error('Expected bonded peer is missing')
+    // A wall-clock 20 ms deadline races the event loop: under load the
+    // provider observes it already expired at entry (`operation.timed-out`
+    // with nothing dispatched) instead of expiring while held
+    // (`connection.failed` with a backend cancel). Fake timers plus one
+    // frozen clock in every layer make the ordering explicit: dispatch is
+    // proven first, then the deadline is expired. The 20 ms bound itself is
+    // unchanged.
+    jest.useFakeTimers()
+    try {
+      const now = () => 20
+      const fixture = await createAndroidPeerDirectoryFixture(
+        [{ nativePeerId: 'AA:BB', displayName: 'Heart Strap' }],
+        { holdWhenAvailableConnect: true, publicNow: now, providerNow: now, managerNow: now }
+      )
+      const peers = await fixture.manager.peers.bonded()
+      const [firstPeer] = peers
+      if (firstPeer === undefined) throw new Error('Expected bonded peer is missing')
 
-    // No caller signal: the deadline is the only answer, so the acquisition
-    // must be cancelled through the backend contract path, never abandoned.
-    const pending = fixture.manager.connect(firstPeer, { intent: 'when-available', timeoutMs: 20 })
-    await expect(pending).rejects.toMatchObject({ code: 'connection.failed' })
-    expect(fixture.runtime.commandKinds).toEqual(expect.arrayContaining(['connect', 'disconnect']))
+      // No caller signal: the deadline is the only answer, so the acquisition
+      // must be cancelled through the backend contract path, never abandoned.
+      const pending = fixture.manager.connect(firstPeer, { intent: 'when-available', timeoutMs: 20 })
+      // Attach the rejection assertion before advancing fake timers: the
+      // expiry settles a macrotask before an `await expect` below would
+      // attach, which the runtime would flag as an unhandled rejection.
+      const rejection = expect(pending).rejects.toMatchObject({ code: 'connection.failed' })
+      for (let turn = 0; turn < 50 && fixture.runtime.pendingConnectCommand === null; turn += 1) {
+        await jest.advanceTimersByTimeAsync(0)
+      }
+      expect(fixture.runtime.pendingConnectCommand).not.toBeNull()
+      await jest.advanceTimersByTimeAsync(25)
+      await rejection
+      expect(fixture.runtime.commandKinds).toEqual(expect.arrayContaining(['connect', 'disconnect']))
+      jest.useRealTimers()
 
-    fixture.runtime.holdWhenAvailableConnect = false
-    const retry = await fixture.manager.connect(firstPeer, { intent: 'when-available' })
-    await retry.release()
-    await expect(fixture.manager.destroy()).resolves.toMatchObject({ state: 'released', failures: [] })
+      fixture.runtime.holdWhenAvailableConnect = false
+      const retry = await fixture.manager.connect(firstPeer, { intent: 'when-available' })
+      await retry.release()
+      await expect(fixture.manager.destroy()).resolves.toMatchObject({ state: 'released', failures: [] })
+    } finally {
+      jest.useRealTimers()
+    }
   })
 
   test.each([
@@ -1898,8 +1921,10 @@ async function createAndroidPeerDirectoryFixture(bondedPeers, options = {}) {
   runtime.holdWhenAvailableConnect = options.holdWhenAvailableConnect === true
   global.__unifiedBleNativeProtocolV2 = runtime
   // The provider clock defaults to the legacy fixed value; a test exercising
-  // a caller deadline passes a live clock so backend deadline timers compute
-  // a sane delay instead of overflowing setTimeout and firing at once.
+  // a caller deadline passes its clock explicitly so backend deadline timers
+  // share the public and manager clocks instead of racing the wall clock.
+  // The internal manager clock defaults likewise; pass managerNow to align
+  // all three (a frozen clock with fake timers expires only when advanced).
   const provider = createReactNativeAndroidBackendProvider({
     control,
     now: options.providerNow ?? (() => 20),
@@ -1917,7 +1942,9 @@ async function createAndroidPeerDirectoryFixture(bondedPeers, options = {}) {
         ownerMode: 'owning'
       }
     },
-    DEFAULT_BLE_MANAGER_OPTIONS
+    options.managerNow === undefined
+      ? DEFAULT_BLE_MANAGER_OPTIONS
+      : { ...DEFAULT_BLE_MANAGER_OPTIONS, now: options.managerNow }
   )
   // The public clock defaults to the legacy fixed value; a test exercising a
   // caller deadline passes its own clock so the public deadline shares the
