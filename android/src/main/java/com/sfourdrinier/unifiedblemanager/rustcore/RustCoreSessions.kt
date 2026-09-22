@@ -147,6 +147,9 @@ class RustCoreSessions(
       reply.resolve(
         RustCoreJson.write(
           linkedMapOf(
+            // Session-pinned authority for the consumer names in these
+            // batches. The standing declaration may change before claim.
+            "consumerCount" to claim.consumerCount,
             "batches" to claim.batches,
             "disposed" to claim.disposed,
             // Why the session is still alive (null when disposed or when no

@@ -143,9 +143,29 @@ function installAddon(built, destination) {
   }
 }
 
+function resolveCargoTargetRoot(root, configuredTargetDir) {
+  return configuredTargetDir === undefined || configuredTargetDir === ''
+    ? path.join(root, 'target')
+    : path.resolve(root, configuredTargetDir)
+}
+
+function resolvePinnedRustc(toolchain, execute = execFileSync) {
+  const resolved = execute('rustup', ['which', '--toolchain', toolchain, 'rustc'], {
+    encoding: 'utf8'
+  }).trim()
+  if (resolved === '') throw new Error(`rustup returned no rustc path for ${toolchain}`)
+  return resolved
+}
+
 function main() {
   const options = parseArguments(process.argv.slice(2))
   const toolchain = pinnedToolchain()
+  let rustc
+  try {
+    rustc = resolvePinnedRustc(toolchain)
+  } catch (error) {
+    fail(`could not resolve rustc from pinned toolchain ${toolchain}: ${error.message}`)
+  }
   const identity = identityEnvironment()
   const cargoArgs = ['run', toolchain, 'cargo', 'build', '-p', 'ubm5_napi_echo', '--locked']
   if (options.profile === 'release') cargoArgs.push('--release')
@@ -161,6 +181,7 @@ function main() {
       env: {
         ...process.env,
         ...identity,
+        RUSTC: rustc,
         ...(options.profile === 'release' ? { CARGO_PROFILE_RELEASE_STRIP: 'symbols' } : {})
       }
     })
@@ -172,7 +193,11 @@ function main() {
   }
 
   const library = options.target === null ? hostLibrary() : TARGET_LIBRARIES[options.target]
-  const targetDir = path.join(ROOT, 'target', ...(options.target === null ? [] : [options.target]), options.profile)
+  const targetDir = path.join(
+    resolveCargoTargetRoot(ROOT, process.env.CARGO_TARGET_DIR),
+    ...(options.target === null ? [] : [options.target]),
+    options.profile
+  )
   const built = path.join(targetDir, library)
   if (!fs.existsSync(built)) fail(`expected cdylib missing after a successful build: ${built}`)
 
@@ -198,4 +223,4 @@ if (require.main === module) {
   main()
 }
 
-module.exports = { installAddon }
+module.exports = { installAddon, resolveCargoTargetRoot, resolvePinnedRustc }

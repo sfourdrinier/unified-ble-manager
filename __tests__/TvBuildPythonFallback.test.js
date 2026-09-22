@@ -15,6 +15,7 @@ const { execFileSync } = require('node:child_process')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
+const { gitBashExecutableTemp } = require('./helpers/git-bash-temp')
 
 const SCRIPT = path.join(__dirname, '..', 'example-expo', 'scripts', 'build-tv.sh')
 const ROOT = path.join(__dirname, '..')
@@ -96,7 +97,7 @@ function dirProvidesPython3(entry) {
 }
 
 function pythonFallbackPath(tools) {
-  const shim = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-py-shim-'))
+  const shim = fs.mkdtempSync(path.join(gitBashExecutableTemp(), 'ubm-py-shim-'))
   // A real interpreter to expose as `python` (on Windows there is no
   // python3 beyond the Store stub, so the real `python` is the source).
   const discovered = findOnPath(process.platform === 'win32' ? ['python'] : ['python3'])
@@ -174,6 +175,43 @@ describe('build-tv.sh PYTHON3 fallback beyond bundle-url', () => {
     } finally {
       fs.rmSync(stage, { recursive: true, force: true })
       fs.rmSync(shim, { recursive: true, force: true })
+    }
+  }, 120000)
+
+  test('Windows fallback executes when TEMP is outside Git Bash /tmp', () => {
+    if (process.platform !== 'win32') return
+
+    const stage = stageDir()
+    // GitHub's Windows runners may point TEMP at D:\\a\\_temp. Git Bash can
+    // resolve that directory on PATH, but a copied python.exe cannot execute
+    // there. Exercise the same split explicitly instead of relying on the
+    // runner's TEMP layout.
+    const forcedTemp = fs.mkdtempSync(path.join(path.parse(stage).root, 'ubm-tv-non-msys-temp-'))
+    const previousTemp = process.env.TEMP
+    const previousTmp = process.env.TMP
+    process.env.TEMP = forcedTemp
+    process.env.TMP = forcedTemp
+    let shim = ''
+    try {
+      const fallback = pythonFallbackPath(['bash', 'dirname', 'node', 'rm', 'mkdir', 'find', 'tar'])
+      shim = fallback.shim
+      if (previousTemp === undefined) delete process.env.TEMP
+      else process.env.TEMP = previousTemp
+      if (previousTmp === undefined) delete process.env.TMP
+      else process.env.TMP = previousTmp
+      const result = run(['stage'], {
+        TV_STAGE_DIR: stage,
+        PATH: fallback.pathValue
+      })
+      expect(result.exit).toBe(0)
+    } finally {
+      if (previousTemp === undefined) delete process.env.TEMP
+      else process.env.TEMP = previousTemp
+      if (previousTmp === undefined) delete process.env.TMP
+      else process.env.TMP = previousTmp
+      fs.rmSync(stage, { recursive: true, force: true })
+      if (shim !== '') fs.rmSync(shim, { recursive: true, force: true })
+      fs.rmSync(forcedTemp, { recursive: true, force: true })
     }
   }, 120000)
 

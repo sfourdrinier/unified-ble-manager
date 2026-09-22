@@ -114,9 +114,11 @@ git tag -a v4.0.0 -m "v4.0.0"
 
 ## Releasing 5.0.0-rc.0
 
-Release `v5.0.0-rc.0` only from the exact `5.0.0` branch tip after its
-canonical CI succeeds. Verify `package.json` is `5.0.0-rc.0`, the worktree is
-clean, and release-note extraction finds `## [5.0.0-rc.0]`. Push a new
+Integrate the `5.0.0` release branch into `main`, then release
+`v5.0.0-rc.0` only from that exact current `main` commit after canonical CI
+succeeds. This matches the publish workflow's immutable main-source gate.
+Verify `package.json` is `5.0.0-rc.0`, the worktree is clean, and release-note
+extraction finds `## [5.0.0-rc.0]`. Push a new
 annotated `v5.0.0-rc.0` tag with the GitHub Release marked prerelease and the
 npm dist-tag `next` (never `latest` for a 5.0 RC). The candidate must pack
 the Rust workspace sources plus the committed Android native prebuilds, and

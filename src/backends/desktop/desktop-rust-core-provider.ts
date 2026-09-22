@@ -1079,6 +1079,8 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   private scanGroup: ScanGroup | null = null
   private nextOrdinalValue = 1
   private nextEventOrdinalValue = 1
+  /** Highest adapter-state event sequence applied from the core. */
+  private adapterStateSequence = 0
   /** The last link-security sequence delivered (a lag re-read continues after it). */
   private securitySequence = 0
   /** Operations dispatched to the core and not yet settled (a live count, never a total). */
@@ -1852,10 +1854,29 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       }
       for (;;) {
         if (this.destroyed || this.coreEventsClosed) return
+        // Adapter states and reset teardown arrive on separate core queues.
+        // A reset is a boundary for the state event named by its
+        // `adapterSequence`, so take it before admitting a later recovery
+        // state. Draining every state first could otherwise publish off → on
+        // on the old generation before the reset is applied.
+        const reset = await this.central.takeAdapterResetEvent()
+        if (reset !== null && reset !== undefined) {
+          if (reset.kind === 'lagged') await this.reconcileAdapterReset(reset.missed ?? null)
+          else this.applyAdapterReset(reset)
+          continue
+        }
         const adapter = await this.central.takeAdapterEvent()
         if (adapter === null || adapter === undefined) break
         if (adapter.kind === 'state' && typeof adapter.state === 'string') {
+          // A reset may already have applied this state from its own causal
+          // record. Never replay that state, or an older one, after the
+          // generation boundary. Gap and closure markers still need their
+          // own handling below.
+          if (typeof adapter.sequence === 'number' && adapter.sequence <= this.adapterStateSequence) continue
           this.applyAdapterPower(adapter.state)
+          if (typeof adapter.sequence === 'number') {
+            this.adapterStateSequence = Math.max(this.adapterStateSequence, adapter.sequence)
+          }
         } else if (adapter.kind === 'lagged') {
           this.noteDiagnostic('adapter-events-lagged', 'adapter events were missed; re-reading adapter state', {
             missed: adapter.missed ?? null
@@ -1864,13 +1885,6 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         } else if (adapter.kind === 'closed') {
           this.failCoreEventSource('adapter-events-closed')
         }
-      }
-      for (;;) {
-        if (this.destroyed || this.coreEventsClosed) return
-        const reset = await this.central.takeAdapterResetEvent()
-        if (reset === null || reset === undefined) break
-        if (reset.kind === 'lagged') await this.reconcileAdapterReset(reset.missed ?? null)
-        else this.applyAdapterReset(reset)
       }
     } catch (error) {
       if (this.destroyed || this.coreEventsClosed) return
@@ -1991,7 +2005,21 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     for (const failure of event.releaseFailures ?? []) {
       this.noteBackgroundFailure('adapter-reset-release-failed', new Error(failure))
     }
-    this.advanceGeneration(ADAPTER_LOSS_SEQUENCE[this.profile.platform].backendRestarted)
+    // The reset carries the state that caused it and the matching adapter
+    // event sequence. This is the ordering fact: it tells us whether that
+    // state event is still queued without taking a second, potentially later
+    // adapter-status observation.
+    const causalAdapterSequence = event.adapterSequence
+    const adapterEventPending =
+      typeof causalAdapterSequence === 'number' && causalAdapterSequence > this.adapterStateSequence
+    this.advanceGeneration(ADAPTER_LOSS_SEQUENCE[this.profile.platform].backendRestarted, adapterEventPending)
+    if (adapterEventPending && event.power !== null && event.power !== undefined) {
+      // `advanceGeneration` has already minted the new generation, so an
+      // equal causal power still must publish that generation exactly once.
+      // The matching queued adapter event is suppressed by its sequence.
+      this.applyAdapterPower(event.power, true)
+      this.adapterStateSequence = causalAdapterSequence
+    }
   }
 
   /**
@@ -2068,9 +2096,8 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     }
   }
 
-  /** A new backend generation: new attachment, stale peer handles dropped, watchers told unless stale. */
-  private advanceGeneration(announceRestart: boolean): void {
-    const previous = this.adapterState
+  /** A new backend generation: new attachment, stale peer handles dropped, and watchers told. */
+  private advanceGeneration(announceRestart: boolean, adapterEventPending = false): void {
     this.generation += 1
     this.attachment = this.attachmentFor(this.attachment.adapter, this.adapterState)
     this.identifiers = this.identifiersFor(this.attachment)
@@ -2082,17 +2109,9 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       for (const stream of streams) stream.closeWithReason('source-failed')
     }
     this.securityWatches.clear()
-    // The advanced generation stays visible to adapter watchers (the loss
-    // contract), but never ahead of the adapter event behind the reset: when
-    // the core already reports a different power than this snapshot, that
-    // event is still queued and its application will emit with the new
-    // generation. Emitting now would report stale state ahead of the real
-    // transition (and duplicate the watch's initial snapshot).
-    const statusPower = this.central.adapterStatus().power ?? null
-    const reportedPower = statusPower === null ? null : adapterPower(statusPower)
-    const adapterEventInFlight =
-      reportedPower !== null && reportedPower !== 'unknown' && reportedPower !== previous.power
-    if (!adapterEventInFlight) {
+    // A causal state event still queued behind this reset publishes the new
+    // generation itself. Otherwise the generation advance is observable now.
+    if (!adapterEventPending) {
       for (const stream of [...this.adapterTransitions]) {
         if (stream.emit(this.adapterState, 96).terminated) this.adapterTransitions.delete(stream)
       }
@@ -2107,7 +2126,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     }
   }
 
-  private applyAdapterPower(power: DesktopRustCoreAdapterPower): void {
+  private applyAdapterPower(power: DesktopRustCoreAdapterPower, forceTransition = false): void {
     if (this.destroyed) return
     // A power change keeps the last measured authorization and its reason,
     // except where the state itself decides them (unsupported).
@@ -2124,7 +2143,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     // A re-announced snapshot that changes nothing observable is not a
     // transition: emitting it would duplicate the watch's initial snapshot
     // (or an earlier transition) for every subscriber.
-    if (!sameObservableAdapterState(previous, this.adapterState)) {
+    if (forceTransition || !sameObservableAdapterState(previous, this.adapterState)) {
       for (const stream of [...this.adapterTransitions]) {
         if (stream.emit(this.adapterState, 96).terminated) this.adapterTransitions.delete(stream)
       }

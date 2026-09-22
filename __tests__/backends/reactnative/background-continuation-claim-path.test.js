@@ -31,6 +31,7 @@ function backlogBatch(records, { more = false, controlLost = 0 } = {}) {
 }
 
 const CLAIM_JSON = JSON.stringify({
+  consumerCount: 1,
   batches: [
     backlogBatch(
       [
@@ -65,7 +66,7 @@ const STATUS_JSON = JSON.stringify({
   }
 })
 
-function managerHost(native) {
+function managerHost(native, declaration = NATIVE_DECLARATION) {
   const binding = createReactNativeRustCoreBinding({ platform: 'android', native })
   return createReactNativeManagerHost({
     platform: 'android',
@@ -75,7 +76,7 @@ function managerHost(native) {
     hostSessionScope: 'ubm-host:test',
     androidApiLevel: 34,
     rustCore: binding,
-    background: { continuation: NATIVE_DECLARATION }
+    ...(declaration === null ? {} : { background: { continuation: declaration } })
   })
 }
 
@@ -96,6 +97,19 @@ describe('continuation claim path', () => {
     const status = await host.services.continuationStatus()
     expect(status.strategy).toBe('native')
     expect(status.lastWake.event).toBe('continuation.completed')
+    await host.manager.destroy()
+  })
+
+  it('claims a manifest-declared backlog from the native owner truth when JS omits the declaration', async () => {
+    const native = new DeterministicRustCoreNative({ platform: 'android' })
+    native.claimContinuation = async () => CLAIM_JSON
+    native.continuationStatus = async () => JSON.stringify({ ...JSON.parse(STATUS_JSON), resubscribe: 0 })
+    const host = await managerHost(native, null)
+
+    const backlog = await host.services.claimContinuationBacklog()
+
+    expect(backlog.values).toHaveLength(1)
+    expect(backlog.values[0].consumer).toBe('ubm-continuation-0')
     await host.manager.destroy()
   })
 

@@ -3,15 +3,16 @@
 // SBOM-Rust slice for UBM 5.0 (trackourhealth/bun-mono#1188; closes packaging
 // open item 1, U-LICENSE/U8 gap): the generator merges the Cargo-resolved Rust
 // workspace graph (`cargo metadata --locked --offline`, 201 nodes: 173 + the zbus stack for the BlueZ OS adapter + ubm-mobile) into
-// SBOM.cdx.json / THIRD_PARTY_LICENSES.json. License evidence is DECLARED
-// metadata only — never fabricated, never guessed: ambiguous declarations
-// stay NOASSERTION with a review flag.
+// SBOM.cdx.json / THIRD_PARTY_LICENSES.json. Cargo license evidence comes from
+// declared metadata, except an exact reviewed license-file override where the
+// vendored text establishes more specific terms.
 
 const { execFileSync } = require('child_process')
 const crypto = require('crypto')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const { normalizeCargoSlashLicense } = require('../scripts/release/generate-dependency-artifacts')
 
 const root = path.join(__dirname, '..')
 const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf8').replace(/\r\n/g, '\n')
@@ -50,21 +51,9 @@ function npmPurl(name, version) {
   return `pkg:npm/${encodedName}@${encodeURIComponent(version)}`
 }
 
-// Ambiguous legacy `/`-separated declarations: recorded as NOASSERTION with a
-// review flag, never reinterpreted as OR/AND.
-const EXPECTED_NOASSERTION_PURLS = [
-  'pkg:cargo/btleplug@0.12.0',
-  'pkg:cargo/cesu8@1.1.0',
-  'pkg:cargo/dbus-tokio@0.7.6',
-  'pkg:cargo/dbus@0.9.12',
-  'pkg:cargo/jni@0.19.0',
-  'pkg:cargo/libdbus-sys@0.2.7',
-  'pkg:cargo/minimal-lexical@0.2.1',
-  'pkg:cargo/plain@0.2.3',
-  'pkg:cargo/same-file@1.0.6',
-  'pkg:cargo/siphasher@1.0.3',
-  'pkg:cargo/walkdir@2.5.0',
-]
+const BTLEPLUG_PURL = 'pkg:cargo/btleplug@0.12.0'
+const BTLEPLUG_LICENSE = 'BSD-3-Clause AND (MIT OR Apache-2.0)'
+const BTLEPLUG_LICENSE_SHA256 = '95f1ea7e261c12c46fe8f67d2ddb7a92ebb1a5fd10d127e4ab3003f0701d9f56'
 
 // Direct Rust dependencies pinned by docs/5.0.0-PACKAGING.md §6.
 const EXPECTED_DIRECT_CARGO_PURLS = [
@@ -116,6 +105,41 @@ const EXPECTED_NPM_PACKAGES = [
 ]
 
 describe('SBOM Rust workspace merge (UBM 5.0)', () => {
+  test('the packed F01 proof binds every Cargo consumer build to the pinned rustc', () => {
+    const proof = read('scripts/ci/f01-packed-dispatch-proof.js')
+    expect(proof).toContain("run('rustup', ['which', '--toolchain', toolchain, 'rustc'])")
+    expect(proof).toContain("['run', toolchain, 'cargo', 'build'")
+    expect(proof).toContain("['run', toolchain, 'cargo', 'check'")
+    expect(proof).toContain('RUSTC: rustc')
+    expect(proof).toContain("process.platform === 'darwin'")
+    expect(proof).toContain("'libubm5_napi_echo.dylib'")
+    expect(proof).toContain("process.platform === 'win32'")
+    expect(proof).toContain("'ubm5_napi_echo.dll'")
+    expect(proof).not.toContain("const active = run('rustc', ['--version'])")
+  })
+
+  test('clean-checkout preflight binds Tauri Cargo calls to the pinned rustc', () => {
+    const preflight = read('scripts/ci/preflight.sh')
+    expect(preflight).toContain('rustup which --toolchain "$PINNED_TOOLCHAIN" rustc')
+    expect(preflight).toContain('export RUSTC="$PINNED_RUSTC"')
+    expect(preflight).toContain('rustup which --toolchain "$PINNED_TOOLCHAIN" rustdoc')
+    expect(preflight).toContain('export RUSTDOC="$PINNED_RUSTDOC"')
+    expect(preflight).toContain('PINNED_TOOLCHAIN_BIN="$(dirname "$PINNED_RUSTC")"')
+    expect(preflight).toContain('export PATH="$PINNED_TOOLCHAIN_BIN:$PATH"')
+    expect(preflight).toContain('rustup run "$PINNED_TOOLCHAIN" cargo fmt')
+    expect(preflight).toContain('rustup run "$PINNED_TOOLCHAIN" cargo test')
+    expect(preflight).toContain('rustup run "$PINNED_TOOLCHAIN" cargo clippy')
+    expect(preflight).toContain('rustup run "$PINNED_TOOLCHAIN" cargo check')
+  })
+
+  test('canonicalizes only allowlisted nonempty legacy Cargo slash terms', () => {
+    expect(normalizeCargoSlashLicense('MIT/Apache-2.0')).toBe('(MIT OR Apache-2.0)')
+    expect(() => normalizeCargoSlashLicense('MIT/')).toThrow('Invalid slash-separated Cargo license declaration')
+    expect(() => normalizeCargoSlashLicense('MIT/Unverified-License')).toThrow(
+      'Invalid slash-separated Cargo license declaration'
+    )
+  })
+
   test('generator --check passes with the merged artifacts', () => {
     runGenerator(['--check'])
   })
@@ -155,16 +179,16 @@ describe('SBOM Rust workspace merge (UBM 5.0)', () => {
     }
   })
 
-  test('license evidence is declared-only; ambiguous stays NOASSERTION with a review flag', () => {
+  test('normalizes legacy slash declarations and retains reviewed btleplug license-file evidence', () => {
     const metadata = cargoMetadata()
     const declaredByPurl = new Map(
       metadata.packages.map(pkg => [cargoPurl(pkg.name, pkg.version), pkg.license || null])
     )
-    const ambiguous = [...declaredByPurl.entries()]
+    const slashSeparated = [...declaredByPurl.entries()]
       .filter(([, license]) => license !== null && license.includes('/'))
       .map(([purl]) => purl)
       .sort()
-    expect(ambiguous).toEqual(EXPECTED_NOASSERTION_PURLS)
+    expect(slashSeparated).toHaveLength(11)
 
     const sbom = readJson('SBOM.cdx.json')
     const inventory = readJson('THIRD_PARTY_LICENSES.json')
@@ -175,28 +199,46 @@ describe('SBOM Rust workspace merge (UBM 5.0)', () => {
       const properties = Object.fromEntries(
         (component.properties || []).map(property => [property.name, property.value])
       )
-      if (EXPECTED_NOASSERTION_PURLS.includes(component.purl)) {
-        expect(component.licenses).toEqual([{ name: 'NOASSERTION' }])
-        expect(properties['unified-ble-manager:license-review-required']).toBe('true')
+      if (component.purl === BTLEPLUG_PURL) {
+        expect(component.licenses).toEqual([{ expression: BTLEPLUG_LICENSE }])
+        expect(properties['unified-ble-manager:license-source']).toBe('reviewed-cargo-license-file')
+        expect(properties['unified-ble-manager:license-file']).toBe('vendor/btleplug/LICENSE.md')
+        expect(properties['unified-ble-manager:license-review-required']).toBeUndefined()
+      } else if (declared !== null && declared.includes('/')) {
+        expect(component.licenses).toEqual([{ expression: `(${declared.split('/').join(' OR ')})` }])
+        expect(properties['unified-ble-manager:license-review-required']).toBeUndefined()
       } else if (declared !== null) {
         // Declared SPDX expressions pass through verbatim — never rewritten.
         expect(component.licenses).toEqual([{ expression: declared }])
         expect(properties['unified-ble-manager:license-review-required']).toBeUndefined()
       }
-      expect(properties['unified-ble-manager:license-source']).toMatch(/^cargo-manifest/)
+      if (component.purl !== BTLEPLUG_PURL) {
+        expect(properties['unified-ble-manager:license-source']).toMatch(/^cargo-manifest/)
+      }
     }
 
-    // The inventory carries the same NOASSERTION set as its review list.
-    expect(inventory.unresolved.map(entry => entry.purl).sort()).toEqual(EXPECTED_NOASSERTION_PURLS)
-    for (const entry of inventory.unresolved) {
-      expect(entry.reason).toMatch(/ambigu/i)
-      expect(typeof entry.declared).toBe('string')
-    }
+    expect(inventory.unresolved).toEqual([])
     const inventoryByPurl = new Map(inventory.packages.map(entry => [entry.purl, entry]))
-    for (const purl of EXPECTED_NOASSERTION_PURLS) {
-      expect(inventoryByPurl.get(purl).license).toBe('NOASSERTION')
-      expect(inventoryByPurl.get(purl).reviewRequired).toBe(true)
+    const btleplug = inventoryByPurl.get(BTLEPLUG_PURL)
+    expect(btleplug).toMatchObject({
+      license: BTLEPLUG_LICENSE,
+      licenseSource: 'reviewed-cargo-license-file',
+      evidence: { fileName: 'vendor/btleplug/LICENSE.md' },
+    })
+    for (const purl of slashSeparated.filter(purl => purl !== BTLEPLUG_PURL)) {
+      const declared = declaredByPurl.get(purl)
+      expect(inventoryByPurl.get(purl)).toMatchObject({
+        license: `(${declared.split('/').join(' OR ')})`,
+        licenseSource: 'cargo-manifest-license-normalized',
+        declared,
+      })
     }
+    expect(inventory.reviewedCargoOverrides).toContainEqual({
+      dependency: 'btleplug@0.12.0',
+      fileName: 'LICENSE.md',
+      license: BTLEPLUG_LICENSE,
+      sha256: BTLEPLUG_LICENSE_SHA256,
+    })
   })
 
   test('workspace crates report the SAL LicenseRef with an extracted-text pointer', () => {
@@ -216,9 +258,6 @@ describe('SBOM Rust workspace merge (UBM 5.0)', () => {
       const entry = inventory.packages.find(candidate => candidate.purl === purl)
       expect(entry.license).toBe(SAL_LICENSE_REF)
     }
-
-    const generator = read('scripts/release/generate-dependency-artifacts.js')
-    expect(generator).not.toMatch(/reviewedLicenseOverrides\[.cargo|license.*override.*cargo/i)
   })
 
   test('the npm production pipeline has no churn', () => {

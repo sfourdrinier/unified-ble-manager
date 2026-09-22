@@ -396,6 +396,12 @@ function isSyntheticCentral(central: DesktopRustCoreCentral): central is Synthet
 interface OpenedLeg {
   readonly central: SyntheticCentral
   readonly pairing: PairingGate
+  readonly notificationIngress: NotificationIngressBarrier
+}
+
+/** The synthetic notification ingress state that `controller.flush` observes. */
+interface NotificationIngressBarrier {
+  flush(): Promise<void>
 }
 
 /**
@@ -470,7 +476,14 @@ function createDesktopRustCoreTckRegistration(
         const securityPeerId = shape.security === null ? null : await primePeer(backend, leg.central, nativePeerId)
         return {
           backend,
-          controller: createDesktopController(backend, leg.central, nativePeerId, options.now, shape.controllerActions),
+          controller: createDesktopController(
+            backend,
+            leg.central,
+            nativePeerId,
+            options.now,
+            shape.controllerActions,
+            leg.notificationIngress
+          ),
           featureScenarioAdapters: Object.freeze({
             connectionControls: Object.freeze({ requestedMtu: TCK_ATT_MTU }),
             ...(shape.security === null || securityPeerId === null
@@ -552,6 +565,8 @@ async function seedSyntheticWorld(central: SyntheticCentral, nativePeerId: strin
 function legFor(central: SyntheticCentral): { readonly central: DesktopRustCoreCentral; readonly opened: OpenedLeg } {
   let hold: Promise<void> | null = null
   let heldCeremony: Promise<void> | null = null
+  let stagedNotifications = 0
+  let completedNotificationValuePolls = 0
   const pairingGate: PairingGate = Object.freeze({
     prepareCancellation: () => {
       const blocked = (async () => {
@@ -575,15 +590,32 @@ function legFor(central: SyntheticCentral): { readonly central: DesktopRustCoreC
     if (ceremony !== null) await ceremony
     return central.cancelPairing(cancelOptions)
   }
+  const stageNotification: SyntheticCentral['stageNotification'] = async input => {
+    await central.stageNotification(input)
+    stagedNotifications += 1
+  }
+  const pollNotification: DesktopRustCoreCentral['pollNotification'] = async pollOptions => {
+    const poll = await central.pollNotification(pollOptions)
+    if (poll.kind === 'value') completedNotificationValuePolls += 1
+    return poll
+  }
+  const notificationIngress: NotificationIngressBarrier = Object.freeze({
+    flush: async () => {
+      const expectedValuePolls = stagedNotifications
+      await pollUntil(async () => completedNotificationValuePolls >= expectedValuePolls, 'tck.notification-ingress')
+    }
+  })
   const wrapped = new Proxy(central, {
     get(target, property) {
       if (property === 'pair') return pair
       if (property === 'cancelPairing') return cancelPairing
+      if (property === 'stageNotification') return stageNotification
+      if (property === 'pollNotification') return pollNotification
       const value: unknown = Reflect.get(target, property)
       return typeof value === 'function' ? (...args: unknown[]) => Reflect.apply(value, target, args) : value
     }
   })
-  return { central: wrapped, opened: Object.freeze({ central, pairing: pairingGate }) }
+  return { central: wrapped, opened: Object.freeze({ central: wrapped, pairing: pairingGate, notificationIngress }) }
 }
 
 function countPairs(calls: readonly string[]): number {
@@ -653,7 +685,8 @@ function createDesktopController(
   central: SyntheticCentral,
   nativePeerId: string,
   now: () => number,
-  availableActions: readonly TckControllerAction[]
+  availableActions: readonly TckControllerAction[],
+  notificationIngress: NotificationIngressBarrier
 ): TckScenarioController {
   const perform = async (action: TckControllerAction, input: SerializableRecord): Promise<void> => {
     if (!availableActions.includes(action)) {
@@ -705,7 +738,10 @@ function createDesktopController(
     availableActions,
     now,
     settle: <Value>(promise: Promise<Value>) => promise,
-    flush: flushMicrotasks,
+    flush: async () => {
+      await notificationIngress.flush()
+      await flushMicrotasks()
+    },
     perform
   })
 }

@@ -19,6 +19,8 @@ import { parseDrainText, type WireDrainRecord, type WireDelivery } from './rust-
 
 /** The native claim shape (`sessions.claimContinuation`): verbatim batches. */
 export interface ContinuationClaimPayload {
+  /** Consumer count captured from the exact native session being claimed. */
+  readonly consumerCount: number
   readonly batches: readonly string[]
   readonly disposed: boolean
   /**
@@ -60,9 +62,13 @@ function assertClaimPayload(value: unknown): asserts value is ContinuationClaimP
   }
   const batches = value.batches
   const disposed = value.disposed
+  const consumerCount = value.consumerCount
   // Empty batches are the valid no-wake answer (no continuation session alive).
   if (!Array.isArray(batches) || batches.some(batch => typeof batch !== 'string')) {
     throw contractError('protocol.malformed', 'restoration', 'continuation-claim.batches')
+  }
+  if (typeof consumerCount !== 'number' || !Number.isSafeInteger(consumerCount) || consumerCount < 0) {
+    throw contractError('protocol.malformed', 'restoration', 'continuation-claim.consumer-count')
   }
   if (typeof disposed !== 'boolean') {
     throw contractError('protocol.malformed', 'restoration', 'continuation-claim.disposed')
@@ -82,10 +88,15 @@ export function continuationConsumerSelector(
   consumer: string,
   declaration: BackgroundContinuationDeclaration
 ): BackgroundContinuationResubscribeSelector | null {
+  const index = continuationConsumerIndex(consumer)
+  if (index === null) return null
+  return declaration.resubscribe[index] ?? null
+}
+
+function continuationConsumerIndex(consumer: string): number | null {
   if (!consumer.startsWith(CONTINUATION_CONSUMER_PREFIX)) return null
   const index = Number(consumer.slice(CONTINUATION_CONSUMER_PREFIX.length))
-  if (!Number.isSafeInteger(index) || index < 0) return null
-  return declaration.resubscribe[index] ?? null
+  return Number.isSafeInteger(index) && index >= 0 ? index : null
 }
 
 /** One wake outcome in the status answer (null fields stay null, never invented). */
@@ -151,8 +162,10 @@ export function parseContinuationStatus(value: unknown): ContinuationStatus {
   if (
     typeof parsed.resubscribe !== 'number' ||
     !Number.isSafeInteger(parsed.resubscribe) ||
+    parsed.resubscribe < 0 ||
     typeof parsed.malformedDeclarations !== 'number' ||
-    !Number.isSafeInteger(parsed.malformedDeclarations)
+    !Number.isSafeInteger(parsed.malformedDeclarations) ||
+    parsed.malformedDeclarations < 0
   ) {
     throw contractError('protocol.malformed', 'restoration', 'continuation-status.counts')
   }
@@ -211,18 +224,17 @@ function parseWakeStatus(value: unknown): ContinuationWakeStatus | null {
  * stream-end for any other consumer is native/JS declaration drift —
  * refused, never merged quietly.
  */
-function assertDeclaredConsumer(consumer: string, declaration: BackgroundContinuationDeclaration): void {
-  if (continuationConsumerSelector(consumer, declaration) === null) {
+function assertDeclaredConsumer(consumer: string, declaredConsumerCount: number): void {
+  const index = continuationConsumerIndex(consumer)
+  if (index === null || index >= declaredConsumerCount) {
     throw contractError('protocol.violation', 'restoration', 'continuation-claim.undeclared-consumer')
   }
 }
 
 /** Parses and aggregates one native claim; fails closed on any gap. */
-export function aggregateContinuationClaim(
-  claim: unknown,
-  declaration: BackgroundContinuationDeclaration
-): ContinuationBacklog {
+export function aggregateContinuationClaim(claim: unknown): ContinuationBacklog {
   assertClaimPayload(claim)
+  const declaredConsumerCount = claim.consumerCount
   const values: ContinuationBacklogValue[] = []
   const streamEnds: ContinuationBacklogStreamEnd[] = []
   const control: WireDrainRecord[] = []
@@ -238,10 +250,10 @@ export function aggregateContinuationClaim(
     controlLost = batch.controlLost
     for (const record of batch.records) {
       if (record.t === 'value') {
-        assertDeclaredConsumer(record.consumer, declaration)
+        assertDeclaredConsumer(record.consumer, declaredConsumerCount)
         values.push(Object.freeze({ consumer: record.consumer, value: record.value, delivery: record.delivery }))
       } else if (record.t === 'stream-end') {
-        assertDeclaredConsumer(record.consumer, declaration)
+        assertDeclaredConsumer(record.consumer, declaredConsumerCount)
         streamEnds.push(
           Object.freeze({
             consumer: record.consumer,

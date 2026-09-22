@@ -48,6 +48,19 @@ const reviewedLicenseOverrides = Object.freeze({
   }),
 })
 
+// Cargo manifests historically used `/` as a shorthand separator. Most of
+// those declarations are alternatives and normalize mechanically to SPDX OR.
+// btleplug is different: its vendored license text separately applies
+// BSD-3-Clause to the crate and MIT-or-Apache-2.0 to forked portions.
+const reviewedCargoLicenseOverrides = Object.freeze({
+  'btleplug@0.12.0': Object.freeze({
+    fileName: 'LICENSE.md',
+    license: 'BSD-3-Clause AND (MIT OR Apache-2.0)',
+    sha256: '95f1ea7e261c12c46fe8f67d2ddb7a92ebb1a5fd10d127e4ab3003f0701d9f56',
+  }),
+})
+const allowedCargoLegacySlashLicenseTerms = new Set(['Apache-2.0', 'MIT', 'Unlicense'])
+
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex')
 }
@@ -206,19 +219,46 @@ function readCargoMetadata() {
   }
 }
 
-// License evidence from DECLARED Cargo manifest metadata only. Declared SPDX
-// expressions pass through verbatim; legacy `/`-separated declarations are
-// ambiguous (OR vs AND was never specified upstream) and are recorded as
-// NOASSERTION with a review flag instead of being reinterpreted. Nothing is
-// fabricated or guessed here: there are no reviewed overrides for cargo nodes.
+function normalizeCargoSlashLicense(declared) {
+  const alternatives = declared.split('/').map(value => value.trim())
+  if (alternatives.some(value => !allowedCargoLegacySlashLicenseTerms.has(value))) {
+    throw new Error(`Invalid slash-separated Cargo license declaration: ${declared}`)
+  }
+  return `(${alternatives.join(' OR ')})`
+}
+
+function resolveReviewedCargoLicense(pkg, override) {
+  const licensePath = path.join(path.dirname(pkg.manifest_path), override.fileName)
+  if (!fs.existsSync(licensePath)) {
+    throw new Error(`Reviewed Cargo license evidence is missing for ${pkg.name}@${pkg.version}: ${override.fileName}`)
+  }
+  const actualSha256 = sha256(fs.readFileSync(licensePath))
+  if (actualSha256 !== override.sha256) {
+    throw new Error(`Reviewed Cargo license evidence changed for ${pkg.name}@${pkg.version}; audit the new file before updating the override`)
+  }
+  return {
+    declared: pkg.license,
+    evidence: { fileName: override.fileName, sha256: override.sha256 },
+    license: override.license,
+    licenseFile: path.relative(repositoryRoot, licensePath).split(path.sep).join('/'),
+    reviewRequired: false,
+    source: 'reviewed-cargo-license-file',
+  }
+}
+
+// Cargo manifest SPDX expressions pass through verbatim. Legacy `/` separators
+// mean SPDX OR unless an exact reviewed license file supplies more specific
+// terms, as with btleplug's BSD code plus dual-licensed forked portions.
 function resolveCargoLicense(pkg) {
+  const override = reviewedCargoLicenseOverrides[`${pkg.name}@${pkg.version}`]
+  if (override) return resolveReviewedCargoLicense(pkg, override)
   if (typeof pkg.license === 'string' && pkg.license.length > 0) {
     if (pkg.license.includes('/')) {
       return {
         declared: pkg.license,
-        license: 'NOASSERTION',
-        reviewRequired: true,
-        source: 'cargo-manifest-license-ambiguous',
+        license: normalizeCargoSlashLicense(pkg.license),
+        reviewRequired: false,
+        source: 'cargo-manifest-license-normalized',
       }
     }
     return {
@@ -518,13 +558,19 @@ function dependencyArtifacts() {
     schemaVersion: '1.0.0',
     package: { name: rootPackage.name, version: rootPackage.version },
     source: {
-      method: 'pnpm-lock production graph with installed-manifest license audit + cargo-metadata workspace graph (declared-license evidence only)',
+      method: 'pnpm-lock production graph with installed-manifest license audit + cargo-metadata workspace graph (declared metadata plus exact reviewed cargo license-file evidence)',
       lockfile: 'pnpm-lock.yaml',
       lockfileSha256: sha256(lockfileBytes),
       cargoLockfile: 'Cargo.lock',
       cargoLockfileSha256: sha256(cargoLockfileBytes),
     },
     reviewedOverrides: Object.entries(reviewedLicenseOverrides).map(([dependency, override]) => ({
+      dependency,
+      fileName: override.fileName,
+      license: override.license,
+      sha256: override.sha256,
+    })),
+    reviewedCargoOverrides: Object.entries(reviewedCargoLicenseOverrides).map(([dependency, override]) => ({
       dependency,
       fileName: override.fileName,
       license: override.license,
@@ -574,4 +620,6 @@ function run() {
   )
 }
 
-run()
+if (require.main === module) run()
+
+module.exports = { normalizeCargoSlashLicense }

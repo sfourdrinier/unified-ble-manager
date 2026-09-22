@@ -76,6 +76,17 @@ test('Apple core builder attests the real session symbols in every assembled arc
   expect(builder).toContain('carries no defined core symbol')
 })
 
+test('Apple core builder uses the exact pinned rustc and Cargo target directory', () => {
+  const builder = fs.readFileSync(path.join(root, 'ios', 'build-rust-core.sh'), 'utf8')
+  expect(builder).toContain('rustup which --toolchain "$PINNED_TOOLCHAIN" rustc')
+  expect(builder).toContain('export RUSTC="$PINNED_RUSTC"')
+  expect(builder).toContain('case "${CARGO_TARGET_DIR:-}" in')
+  expect(builder).toContain('/*) CARGO_TARGET_ROOT="$CARGO_TARGET_DIR" ;;')
+  expect(builder).toContain('*) CARGO_TARGET_ROOT="$ROOT/$CARGO_TARGET_DIR" ;;')
+  expect(builder).toContain('BUILT_LIB="$CARGO_TARGET_ROOT/$1/$PROFILE_DIR/$LIB_NAME"')
+  expect(builder).not.toContain('BUILT_LIB="$ROOT/target/$1/$PROFILE_DIR/$LIB_NAME"')
+})
+
 test('generated UniFFI Swift surface references every attested core symbol', () => {
   const generated = fs.readFileSync(
     path.join(root, 'bindings', 'uniffi', 'generated', 'swift', 'ubm_echo.swift'),

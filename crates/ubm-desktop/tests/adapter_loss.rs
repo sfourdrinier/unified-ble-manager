@@ -163,6 +163,8 @@ async fn a_power_loss_tears_down_everything_live_and_advances_the_generation() {
         .expect("a reset is published")
         .expect("reset event");
     assert_eq!(reset.cause, AdapterLossCause::PoweredOff);
+    assert_eq!(reset.power, Some(AdapterPowerState::PoweredOff));
+    assert!(reset.adapter_sequence.is_some());
     assert_eq!(reset.previous, before);
     assert_eq!(reset.current, central.attachment());
     assert_ne!(
@@ -326,6 +328,8 @@ async fn a_removed_adapter_or_restarted_daemon_resets_and_reads_unavailable() {
         .expect("reset")
         .expect("event");
     assert_eq!(reset.cause, AdapterLossCause::DaemonRestarted);
+    assert_eq!(reset.power, Some(AdapterPowerState::Unknown));
+    assert!(reset.adapter_sequence.is_some());
     assert_eq!(reset.released_links, vec!["peer-2".to_owned()]);
     assert_eq!(
         central.adapter_status().availability,

@@ -9,7 +9,11 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 
-const { installAddon } = require('../scripts/ci/build-napi-addon.js')
+const {
+  installAddon,
+  resolveCargoTargetRoot,
+  resolvePinnedRustc
+} = require('../scripts/ci/build-napi-addon.js')
 
 describe('build-napi-addon install step', () => {
   let directory
@@ -45,5 +49,26 @@ describe('build-napi-addon install step', () => {
     installAddon(built, destination)
 
     expect(fs.readFileSync(destination, 'utf8')).toBe('image')
+  })
+
+  test('reads the built addon from Cargo target-dir overrides', () => {
+    expect(resolveCargoTargetRoot('/repo', undefined)).toBe(path.join('/repo', 'target'))
+    expect(resolveCargoTargetRoot('/repo', 'custom-target')).toBe(path.join('/repo', 'custom-target'))
+    expect(resolveCargoTargetRoot('/repo', path.join(directory, 'cargo-target'))).toBe(
+      path.join(directory, 'cargo-target')
+    )
+  })
+
+  test('resolves rustc from the pinned rustup toolchain instead of host PATH', () => {
+    const calls = []
+    const resolved = resolvePinnedRustc('1.98.1', (command, args) => {
+      calls.push({ command, args })
+      return '/toolchains/1.98.1/bin/rustc\n'
+    })
+
+    expect(resolved).toBe('/toolchains/1.98.1/bin/rustc')
+    expect(calls).toEqual([
+      { command: 'rustup', args: ['which', '--toolchain', '1.98.1', 'rustc'] }
+    ])
   })
 })

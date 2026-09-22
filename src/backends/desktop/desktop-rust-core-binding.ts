@@ -222,6 +222,10 @@ export type DesktopRustCoreAdapterLossCause =
 export interface DesktopRustCoreAdapterResetEvent {
   readonly kind: 'reset' | 'lagged' | 'closed'
   readonly sequence?: number | null
+  /** The core's power fact at this reset boundary, never a later status read. */
+  readonly power?: DesktopRustCoreAdapterPower | null
+  /** The matching adapter-event sequence, if this reset followed one. */
+  readonly adapterSequence?: number | null
   readonly cause?: DesktopRustCoreAdapterLossCause | null
   readonly previous?: DesktopRustCoreAttachmentTuple | null
   readonly current?: DesktopRustCoreAttachmentTuple | null

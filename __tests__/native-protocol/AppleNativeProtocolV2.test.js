@@ -10,6 +10,16 @@ function read(relativePath) {
   return fs.readFileSync(path.join(root, relativePath), 'utf8')
 }
 
+function pinnedRustToolchain() {
+  const match = read('rust-toolchain.toml').match(/^channel\s*=\s*"([^"]+)"/m)
+  if (match === null) throw new Error('rust-toolchain.toml has no pinned channel')
+  return match[1]
+}
+
+function pinnedRustc(toolchain) {
+  return childProcess.execFileSync('rustup', ['which', '--toolchain', toolchain, 'rustc'], { encoding: 'utf8' }).trim()
+}
+
 function readAppleRadio() {
   return [
     read('ios/Owned/OwnedCoreBluetoothProtocolRadio.swift'),
@@ -523,10 +533,12 @@ describe('Apple Native Protocol v2 radio boundary', () => {
       // compile of that crate is a Rust build, not a protocol check: it gets
       // its own bound here (CI pre-builds it, so this is a fresh-check no-op
       // there), and the harness budget below covers only the harness itself.
-      const rustHost = childProcess.spawnSync('cargo', ['build', '--locked', '-p', 'ubm5_uniffi_echo'], {
+      const toolchain = pinnedRustToolchain()
+      const rustHost = childProcess.spawnSync('rustup', ['run', toolchain, 'cargo', 'build', '--locked', '-p', 'ubm5_uniffi_echo'], {
         cwd: root,
         encoding: 'utf8',
-        timeout: 900_000
+        timeout: 900_000,
+        env: { ...process.env, RUSTC: pinnedRustc(toolchain) }
       })
       expect(rustHost.error).toBeUndefined()
       if (rustHost.status !== 0) {

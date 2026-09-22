@@ -103,8 +103,13 @@ case "$(uname -s)" in
 esac
 LINKER="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin/${TARGET}${MINSDK}-clang"
 [ -x "$LINKER" ] || fail "NDK linker missing: $LINKER (NDK=$NDK host=$HOST_TAG). Reinstall NDK 27.x via: sdkmanager 'ndk;27.1.12297006'"
+LLVM_NM="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin/llvm-nm"
+[ -x "$LLVM_NM" ] || fail "NDK symbol reader missing: $LLVM_NM (NDK=$NDK host=$HOST_TAG). Reinstall NDK 27.x via: sdkmanager 'ndk;27.1.12297006'"
 
 command -v rustup >/dev/null 2>&1 || fail "rustup not on PATH (needed to pin toolchain $PINNED_TOOLCHAIN)"
+PINNED_RUSTC="$(rustup which --toolchain "$PINNED_TOOLCHAIN" rustc)" \
+  || fail "rustc is missing from pinned toolchain $PINNED_TOOLCHAIN"
+[ -x "$PINNED_RUSTC" ] || fail "pinned rustc is not executable: $PINNED_RUSTC"
 rustup target list --installed --toolchain "$PINNED_TOOLCHAIN" 2>/dev/null | grep -q "^${TARGET}$" \
   || fail "target $TARGET missing on toolchain $PINNED_TOOLCHAIN. Add it with: rustup target add --toolchain $PINNED_TOOLCHAIN $TARGET"
 
@@ -136,6 +141,15 @@ echo "build-rust-cdylib: abi=$ABI target=$TARGET profile=$PROFILE ndk=$NDK minsd
 PROFILE_FLAG=""
 [ "$PROFILE" = "release" ] && PROFILE_FLAG="--release"
 
+# Cargo resolves a relative CARGO_TARGET_DIR from the anchored workspace root
+# above. Locate the completed library from that same tree instead of silently
+# falling back to a possibly stale default-target build.
+case "${CARGO_TARGET_DIR:-}" in
+  "") CARGO_TARGET_ROOT="$ROOT/target" ;;
+  /*) CARGO_TARGET_ROOT="$CARGO_TARGET_DIR" ;;
+  *) CARGO_TARGET_ROOT="$ROOT/$CARGO_TARGET_DIR" ;;
+esac
+
 # Linker env var is per-target (uppercase, hyphens to underscores).
 LINKER_ENV="$(printf 'CARGO_TARGET_%s_LINKER' "$(printf '%s' "$TARGET" | tr '[:lower:]-' '[:upper:]_')")"
 # Android 15+ requires 16 KB ELF alignment on every shipped .so (the CMake
@@ -144,22 +158,18 @@ LINKER_ENV="$(printf 'CARGO_TARGET_%s_LINKER' "$(printf '%s' "$TARGET" | tr '[:l
 # construction. Appended ahead of any caller RUSTFLAGS, never replacing.
 # shellcheck disable=SC2086
 UBM_RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384${RUSTFLAGS:+ $RUSTFLAGS}"
-env "${LINKER_ENV}=${LINKER}" RUSTFLAGS="$UBM_RUSTFLAGS" \
+env "${LINKER_ENV}=${LINKER}" RUSTC="$PINNED_RUSTC" RUSTFLAGS="$UBM_RUSTFLAGS" \
   rustup run "$PINNED_TOOLCHAIN" cargo build -p "$CRATE" --locked --target "$TARGET" $PROFILE_FLAG \
   || fail "cargo build failed for $TARGET/$PROFILE (pinned $PINNED_TOOLCHAIN). See the cargo output above; common causes: stale Cargo.lock (run cargo update -p $CRATE on the host target first) or a missing NDK platform for minsdk $MINSDK."
 
-BUILT="$ROOT/target/$TARGET/$PROFILE/$LIB"
+BUILT="$CARGO_TARGET_ROOT/$TARGET/$PROFILE/$LIB"
 [ -f "$BUILT" ] || fail "expected cdylib missing after a successful build: $BUILT"
 
-if command -v nm >/dev/null 2>&1; then
-  for sym in Java_com_ubm_gatt_GattBridge_nativeEnqueueGattEvent Java_com_ubm_gatt_GattBridge_nativeDrainGattEvents Java_com_ubm_echo_EchoBridge_nativeOpen; do
-    nm -D --defined-only "$BUILT" 2>/dev/null | grep -q "$sym" \
-      || fail "built cdylib $BUILT lacks JNI symbol $sym (wrong crate revision?)"
-  done
-  echo "build-rust-cdylib: JNI symbols verified (gatt + echo)"
-else
-  echo "build-rust-cdylib: WARN nm absent — JNI symbol check skipped (boundary, not a pass)" >&2
-fi
+for sym in Java_com_ubm_gatt_GattBridge_nativeEnqueueGattEvent Java_com_ubm_gatt_GattBridge_nativeDrainGattEvents Java_com_ubm_echo_EchoBridge_nativeOpen; do
+  "$LLVM_NM" -D --defined-only "$BUILT" | grep -q "$sym" \
+    || fail "built cdylib $BUILT lacks JNI symbol $sym (wrong crate revision?)"
+done
+echo "build-rust-cdylib: JNI symbols verified (gatt + echo)"
 
 mkdir -p "$LIBDIR"
 cp -f "$BUILT" "$LIBDIR/$LIB"

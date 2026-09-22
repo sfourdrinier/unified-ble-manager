@@ -830,6 +830,11 @@ fn adapter_reset_wire(
     Ok(AdapterResetEventInfo {
         kind: "reset".to_owned(),
         sequence: Some(number_wire(event.sequence, OP)?),
+        power: event.power.map(|power| power.as_str().to_owned()),
+        adapter_sequence: event
+            .adapter_sequence
+            .map(|sequence| number_wire(sequence, OP))
+            .transpose()?,
         cause: Some(event.cause.as_str().to_owned()),
         previous: Some(tuple(&event.previous)),
         current: Some(tuple(&event.current)),
@@ -1614,6 +1619,12 @@ pub struct AttachmentTupleInfo {
 pub struct AdapterResetEventInfo {
     pub kind: String,
     pub sequence: Option<i64>,
+    /// The core's power fact at this reset boundary, never a later status
+    /// read from the consumer.
+    pub power: Option<String>,
+    /// The matching adapter-event sequence, when the reset followed one.
+    #[napi(js_name = "adapterSequence")]
+    pub adapter_sequence: Option<i64>,
     /// `powered-off` / `resetting` / `unsupported` / `unauthorized` /
     /// `removed` / `daemon-restarted`.
     pub cause: Option<String>,
@@ -2743,6 +2754,8 @@ impl UbmCentral {
         let gap = |kind: &str, missed: Option<i64>| AdapterResetEventInfo {
             kind: kind.to_owned(),
             sequence: None,
+            power: None,
+            adapter_sequence: None,
             cause: None,
             previous: None,
             current: None,
@@ -5454,6 +5467,8 @@ mod tests {
         let reset = reset.expect("adapter reset");
         assert_eq!(reset.kind, "reset");
         assert_eq!(reset.cause.as_deref(), Some("powered-off"));
+        assert_eq!(reset.power.as_deref(), Some("powered-off"));
+        assert!(reset.adapter_sequence.is_some());
         assert_eq!(
             reset.released_links.as_deref(),
             Some(&["peer-1".to_owned()][..])

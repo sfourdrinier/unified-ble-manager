@@ -29,6 +29,9 @@ describe('open-source release policies and dependency artifacts', () => {
     expect(contributing).toContain('canonical package checks')
     expect(dependencyPolicy).toContain('CycloneDX 1.6')
     expect(dependencyPolicy).toContain('unresolved license')
+    expect(dependencyPolicy).toContain('`/` in place of `OR`')
+    expect(dependencyPolicy).toContain('exact package version and SHA-256')
+    expect(dependencyPolicy).toContain('explicitly partitions terms')
     expect(dependencyPolicy).toContain('kind-specific source-file digests')
     expect(read('RELEASE.md')).not.toContain('private vulnerability reporting is\ndisabled')
   })
@@ -55,16 +58,9 @@ describe('open-source release policies and dependency artifacts', () => {
     ).toBe(true)
     expect(inventory.schema).toBe('unified-ble-manager/third-party-license-inventory')
     expect(inventory.source.method).toBe(
-      'pnpm-lock production graph with installed-manifest license audit + cargo-metadata workspace graph (declared-license evidence only)'
+      'pnpm-lock production graph with installed-manifest license audit + cargo-metadata workspace graph (declared metadata plus exact reviewed cargo license-file evidence)'
     )
-    // Declared-only Rust evidence: ambiguous cargo declarations stay NOASSERTION
-    // with a review flag (covered exactly by ReleaseArtifactsRust); the npm
-    // pipeline itself leaves nothing unresolved.
-    expect(
-      inventory.unresolved.every(
-        entry => entry.purl.startsWith('pkg:cargo/') && typeof entry.reason === 'string'
-      )
-    ).toBe(true)
+    expect(inventory.unresolved).toEqual([])
     expect(inventory.packages.length).toBe(sbom.components.length)
     expect(sbom.dependencies).toHaveLength(sbom.components.length + 1)
     expect(sbom.dependencies.some(dependency => dependency.dependsOn.length > 0)).toBe(true)

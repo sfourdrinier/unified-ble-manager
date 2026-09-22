@@ -176,17 +176,32 @@ export class DbusNextBluezBoundaryFactory implements BluezDbusBoundaryFactory {
     const bus = busKind === 'system' ? dbus.systemBus() : dbus.sessionBus()
     let daemon: DbusDaemonProxy | null = null
     const installedRules: string[] = []
+    let rejectOpeningBus: ((reason?: unknown) => void) | undefined
+    const openingBusFailure = new Promise<never>((_, reject) => {
+      rejectOpeningBus = reject
+    })
+    const handleOpeningBusError = (error: Error): void => {
+      rejectOpeningBus?.(error)
+    }
+    const whileBusIsOpening = <T>(operation: Promise<T>): Promise<T> => Promise.race([operation, openingBusFailure])
+    // dbus-next can emit `error` before getProxyObject rejects. EventEmitter
+    // treats an unobserved error as a process crash, so own that interval and
+    // turn the transport event into the open operation's typed rejection.
+    bus.on('error', handleOpeningBusError)
     try {
-      const daemonProxy = await bus.getProxyObject(dbusService, dbusPath)
+      const daemonProxy = await whileBusIsOpening(bus.getProxyObject(dbusService, dbusPath))
       daemon = daemonProxy.getInterface<DbusDaemonProxy>(dbusService)
       for (const rule of bluezMatchRules) {
-        await daemon.AddMatch(rule)
+        await whileBusIsOpening(daemon.AddMatch(rule))
         installedRules.push(rule)
       }
-      const proxy = await bus.getProxyObject(BLUEZ_SERVICE, '/')
+      const proxy = await whileBusIsOpening(bus.getProxyObject(BLUEZ_SERVICE, '/'))
       const manager = proxy.getInterface<ObjectManagerProxy>(BLUEZ_OBJECT_MANAGER_INTERFACE)
-      return new DbusNextBluezBoundary(busKind, bus, daemon, manager, installedRules)
+      const boundary = new DbusNextBluezBoundary(busKind, bus, daemon, manager, installedRules)
+      bus.removeListener('error', handleOpeningBusError)
+      return boundary
     } catch (error) {
+      bus.removeListener('error', handleOpeningBusError)
       if (daemon !== null) {
         for (const rule of installedRules.reverse()) {
           try {

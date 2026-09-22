@@ -74,6 +74,7 @@ class RustCoreContinuationSessionsTest {
     val reply = Captured()
     sessions.claimContinuation(256.0, 65536.0, reply)
     val claim = reply.resolved.single() ?: error("no claim")
+    assertTrue(claim.contains("\"consumerCount\":0"))
     assertTrue(claim.contains("\"batches\":[]"))
     assertTrue(claim.contains("\"disposed\":false"))
   }

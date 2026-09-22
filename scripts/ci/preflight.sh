@@ -50,6 +50,17 @@ cd "$REPO" || exit 1
 SHA="$(git rev-parse --short "$REF" 2>/dev/null)" || { echo "unknown ref: $REF" >&2; exit 2; }
 WORK="$CACHE/tree-$SHA"
 
+PINNED_TOOLCHAIN="$(sed -n 's/^channel *= *"\(.*\)" *$/\1/p' "$REPO/rust-toolchain.toml" | head -n 1)"
+[ -n "$PINNED_TOOLCHAIN" ] || { echo "cannot parse pinned Rust toolchain" >&2; exit 1; }
+PINNED_RUSTC="$(rustup which --toolchain "$PINNED_TOOLCHAIN" rustc)" || exit 1
+[ -x "$PINNED_RUSTC" ] || { echo "pinned rustc is not executable: $PINNED_RUSTC" >&2; exit 1; }
+export RUSTC="$PINNED_RUSTC"
+PINNED_RUSTDOC="$(rustup which --toolchain "$PINNED_TOOLCHAIN" rustdoc)" || exit 1
+[ -x "$PINNED_RUSTDOC" ] || { echo "pinned rustdoc is not executable: $PINNED_RUSTDOC" >&2; exit 1; }
+export RUSTDOC="$PINNED_RUSTDOC"
+PINNED_TOOLCHAIN_BIN="$(dirname "$PINNED_RUSTC")"
+export PATH="$PINNED_TOOLCHAIN_BIN:$PATH"
+
 # Shared across runs: rebuilding 2.8 GB of Cargo output per checkout is what
 # makes a clean-tree run feel expensive, and it is pure waste - the artefacts
 # are keyed by content, not by directory.
@@ -121,10 +132,10 @@ run_package() {
 run_tauri() {
   cd "$WORK" || return 1
   set -e
-  cargo fmt --manifest-path native/tauri/Cargo.toml -- --check
-  cargo test --manifest-path native/tauri/Cargo.toml
-  cargo clippy --manifest-path native/tauri/Cargo.toml -- -D warnings
-  cargo check --manifest-path example-tauri/src-tauri/Cargo.toml
+  rustup run "$PINNED_TOOLCHAIN" cargo fmt --manifest-path native/tauri/Cargo.toml -- --check
+  rustup run "$PINNED_TOOLCHAIN" cargo test --manifest-path native/tauri/Cargo.toml
+  rustup run "$PINNED_TOOLCHAIN" cargo clippy --manifest-path native/tauri/Cargo.toml -- -D warnings
+  rustup run "$PINNED_TOOLCHAIN" cargo check --manifest-path example-tauri/src-tauri/Cargo.toml
 }
 
 # The two Android jobs are the slowest in CI and fully reproducible here, so

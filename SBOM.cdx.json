@@ -711,18 +711,18 @@
       "version": "0.12.0",
       "licenses": [
         {
-          "name": "NOASSERTION"
+          "expression": "BSD-3-Clause AND (MIT OR Apache-2.0)"
         }
       ],
       "purl": "pkg:cargo/btleplug@0.12.0",
       "properties": [
         {
           "name": "unified-ble-manager:license-source",
-          "value": "cargo-manifest-license-ambiguous"
+          "value": "reviewed-cargo-license-file"
         },
         {
-          "name": "unified-ble-manager:license-review-required",
-          "value": "true"
+          "name": "unified-ble-manager:license-file",
+          "value": "vendor/btleplug/LICENSE.md"
         }
       ]
     },
@@ -823,18 +823,14 @@
       "version": "1.1.0",
       "licenses": [
         {
-          "name": "NOASSERTION"
+          "expression": "(Apache-2.0 OR MIT)"
         }
       ],
       "purl": "pkg:cargo/cesu8@1.1.0",
       "properties": [
         {
           "name": "unified-ble-manager:license-source",
-          "value": "cargo-manifest-license-ambiguous"
-        },
-        {
-          "name": "unified-ble-manager:license-review-required",
-          "value": "true"
+          "value": "cargo-manifest-license-normalized"
         }
       ]
     },
@@ -953,18 +949,14 @@
       "version": "0.7.6",
       "licenses": [
         {
-          "name": "NOASSERTION"
+          "expression": "(Apache-2.0 OR MIT)"
         }
       ],
       "purl": "pkg:cargo/dbus-tokio@0.7.6",
       "properties": [
         {
           "name": "unified-ble-manager:license-source",
-          "value": "cargo-manifest-license-ambiguous"
-        },
-        {
-          "name": "unified-ble-manager:license-review-required",
-          "value": "true"
+          "value": "cargo-manifest-license-normalized"
         }
       ]
     },
@@ -975,18 +967,14 @@
       "version": "0.9.12",
       "licenses": [
         {
-          "name": "NOASSERTION"
+          "expression": "(Apache-2.0 OR MIT)"
         }
       ],
       "purl": "pkg:cargo/dbus@0.9.12",
       "properties": [
         {
           "name": "unified-ble-manager:license-source",
-          "value": "cargo-manifest-license-ambiguous"
-        },
-        {
-          "name": "unified-ble-manager:license-review-required",
-          "value": "true"
+          "value": "cargo-manifest-license-normalized"
         }
       ]
     },
@@ -1609,18 +1597,14 @@
       "version": "0.19.0",
       "licenses": [
         {
-          "name": "NOASSERTION"
+          "expression": "(MIT OR Apache-2.0)"
         }
       ],
       "purl": "pkg:cargo/jni@0.19.0",
       "properties": [
         {
           "name": "unified-ble-manager:license-source",
-          "value": "cargo-manifest-license-ambiguous"
-        },
-        {
-          "name": "unified-ble-manager:license-review-required",
-          "value": "true"
+          "value": "cargo-manifest-license-normalized"
         }
       ]
     },
@@ -1685,18 +1669,14 @@
       "version": "0.2.7",
       "licenses": [
         {
-          "name": "NOASSERTION"
+          "expression": "(Apache-2.0 OR MIT)"
         }
       ],
       "purl": "pkg:cargo/libdbus-sys@0.2.7",
       "properties": [
         {
           "name": "unified-ble-manager:license-source",
-          "value": "cargo-manifest-license-ambiguous"
-        },
-        {
-          "name": "unified-ble-manager:license-review-required",
-          "value": "true"
+          "value": "cargo-manifest-license-normalized"
         }
       ]
     },
@@ -1815,18 +1795,14 @@
       "version": "0.2.1",
       "licenses": [
         {
-          "name": "NOASSERTION"
+          "expression": "(MIT OR Apache-2.0)"
         }
       ],
       "purl": "pkg:cargo/minimal-lexical@0.2.1",
       "properties": [
         {
           "name": "unified-ble-manager:license-source",
-          "value": "cargo-manifest-license-ambiguous"
-        },
-        {
-          "name": "unified-ble-manager:license-review-required",
-          "value": "true"
+          "value": "cargo-manifest-license-normalized"
         }
       ]
     },
@@ -2179,18 +2155,14 @@
       "version": "0.2.3",
       "licenses": [
         {
-          "name": "NOASSERTION"
+          "expression": "(MIT OR Apache-2.0)"
         }
       ],
       "purl": "pkg:cargo/plain@0.2.3",
       "properties": [
         {
           "name": "unified-ble-manager:license-source",
-          "value": "cargo-manifest-license-ambiguous"
-        },
-        {
-          "name": "unified-ble-manager:license-review-required",
-          "value": "true"
+          "value": "cargo-manifest-license-normalized"
         }
       ]
     },
@@ -2417,18 +2389,14 @@
       "version": "1.0.6",
       "licenses": [
         {
-          "name": "NOASSERTION"
+          "expression": "(Unlicense OR MIT)"
         }
       ],
       "purl": "pkg:cargo/same-file@1.0.6",
       "properties": [
         {
           "name": "unified-ble-manager:license-source",
-          "value": "cargo-manifest-license-ambiguous"
-        },
-        {
-          "name": "unified-ble-manager:license-review-required",
-          "value": "true"
+          "value": "cargo-manifest-license-normalized"
         }
       ]
     },
@@ -2691,18 +2659,14 @@
       "version": "1.0.3",
       "licenses": [
         {
-          "name": "NOASSERTION"
+          "expression": "(MIT OR Apache-2.0)"
         }
       ],
       "purl": "pkg:cargo/siphasher@1.0.3",
       "properties": [
         {
           "name": "unified-ble-manager:license-source",
-          "value": "cargo-manifest-license-ambiguous"
-        },
-        {
-          "name": "unified-ble-manager:license-review-required",
-          "value": "true"
+          "value": "cargo-manifest-license-normalized"
         }
       ]
     },
@@ -3591,18 +3555,14 @@
       "version": "2.5.0",
       "licenses": [
         {
-          "name": "NOASSERTION"
+          "expression": "(Unlicense OR MIT)"
         }
       ],
       "purl": "pkg:cargo/walkdir@2.5.0",
       "properties": [
         {
           "name": "unified-ble-manager:license-source",
-          "value": "cargo-manifest-license-ambiguous"
-        },
-        {
-          "name": "unified-ble-manager:license-review-required",
-          "value": "true"
+          "value": "cargo-manifest-license-normalized"
         }
       ]
     },

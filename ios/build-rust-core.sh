@@ -101,6 +101,22 @@ if [ -z "$PINNED_TOOLCHAIN" ]; then
   echo "build-rust-core: cannot parse pinned channel from rust-toolchain.toml" >&2
   exit 1
 fi
+PINNED_RUSTC="$(rustup which --toolchain "$PINNED_TOOLCHAIN" rustc)"
+if [ ! -x "$PINNED_RUSTC" ]; then
+  echo "build-rust-core: pinned rustc is not executable: $PINNED_RUSTC" >&2
+  exit 1
+fi
+# `rustup run ... cargo` can otherwise inherit a Homebrew RUSTC from Cargo's
+# environment on macOS. Bind Cargo to the exact compiler the repository pins.
+export RUSTC="$PINNED_RUSTC"
+
+# Cargo resolves a relative CARGO_TARGET_DIR from its working directory. All
+# Cargo calls below run from ROOT, so mirror that rule when locating outputs.
+case "${CARGO_TARGET_DIR:-}" in
+  "") CARGO_TARGET_ROOT="$ROOT/target" ;;
+  /*) CARGO_TARGET_ROOT="$CARGO_TARGET_DIR" ;;
+  *) CARGO_TARGET_ROOT="$ROOT/$CARGO_TARGET_DIR" ;;
+esac
 
 TARGETS="$MATRIX_DEVICE $MATRIX_SIM $MATRIX_TVOS_DEVICE $MATRIX_TVOS_SIM"
 for target in $TARGETS; do
@@ -205,7 +221,7 @@ build_target() {
   echo "build-rust-core: building $CRATE ($PROFILE) for $1"
   # shellcheck disable=SC2086
   (cd "$ROOT" && rustup run "$PINNED_TOOLCHAIN" cargo build --locked -p "$CRATE" $CARGO_PROFILE --target "$1")
-  BUILT_LIB="$ROOT/target/$1/$PROFILE_DIR/$LIB_NAME"
+  BUILT_LIB="$CARGO_TARGET_ROOT/$1/$PROFILE_DIR/$LIB_NAME"
   if [ ! -f "$BUILT_LIB" ]; then
     echo "build-rust-core: missing staticlib $BUILT_LIB" >&2
     exit 1

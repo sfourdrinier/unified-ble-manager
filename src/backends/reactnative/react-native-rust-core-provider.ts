@@ -412,7 +412,7 @@ async function openBackend(
       state,
       options.trace ?? null,
       leaseId => releaseBackgroundThroughModule(binding, `${options.owner}/${ownerId}/background`, leaseId),
-      continuationAccessFor(binding, continuation)
+      continuationAccessFor(binding)
     )
   } catch (error) {
     await disposeUnopenedSession(session, error)
@@ -476,19 +476,14 @@ async function persistBackgroundContinuation(
  * `capability.unsupported` — never an invented empty backlog.
  */
 export interface ReactNativeContinuationAccess {
-  readonly declaration: BackgroundContinuationDeclaration
   readonly claimBatches: (maxItems: number, maxBytes: number) => Promise<unknown>
   readonly readStatus: () => Promise<unknown>
 }
 
-function continuationAccessFor(
-  binding: ReactNativeRustCoreBinding,
-  declaration: BackgroundContinuationDeclaration
-): ReactNativeContinuationAccess {
+function continuationAccessFor(binding: ReactNativeRustCoreBinding): ReactNativeContinuationAccess {
   const claim = binding.claimContinuation
   const status = binding.continuationStatus
   return Object.freeze({
-    declaration,
     claimBatches: (maxItems: number, maxBytes: number) => {
       if (claim === undefined) {
         return Promise.reject(
@@ -1005,7 +1000,10 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       throw contractError('argument.invalid', 'restoration', `${SCOPE}.continuation.claim-bounds`)
     }
     const payload = await access.claimBatches(maxItems, maxBytes)
-    return aggregateContinuationClaim(this.parseClaimPayload(payload), access.declaration)
+    // The native claim carries the consumer count captured from this exact
+    // session. A standing declaration can change before an older wake is
+    // claimed, so mutable status cannot authorize these consumer names.
+    return aggregateContinuationClaim(this.parseClaimPayload(payload))
   }
 
   /** Reports the continuation posture (declared strategy, last wake). */

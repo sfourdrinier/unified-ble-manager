@@ -147,7 +147,12 @@ cmd_stage() {
     ! -name 'dist' \
     ! -name 'web-build' \
     -exec rm -rf {} +
-  (cd "${APP_DIR}" && tar cf - \
+  # macOS' system tar can report a write error when its archive is piped
+  # directly into another tar process. Write the short-lived archive into
+  # the stage instead; this is also portable to Git Bash on Windows.
+  local stage_archive="${STAGE}/.ubm-stage-source.tar"
+  rm -f "${stage_archive}"
+  if ! (cd "${APP_DIR}" && tar cf "${stage_archive}" \
     --exclude='./node_modules' \
     --exclude='./ios' \
     --exclude='./ios-tv' \
@@ -155,7 +160,15 @@ cmd_stage() {
     --exclude='./.expo' \
     --exclude='./dist' \
     --exclude='./web-build' \
-    .) | (cd "${STAGE}" && tar xf -)
+    .); then
+    rm -f "${stage_archive}"
+    return 1
+  fi
+  if ! (cd "${STAGE}" && tar xf "${stage_archive}"); then
+    rm -f "${stage_archive}"
+    return 1
+  fi
+  rm -f "${stage_archive}"
 
   # Finding 176: pnpm reuses a present `file:` dependency directory, so a
   # re-stage must drop the staged unified-ble-manager copy. The next

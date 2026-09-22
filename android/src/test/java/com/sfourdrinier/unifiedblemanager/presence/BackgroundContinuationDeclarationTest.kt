@@ -47,6 +47,16 @@ class BackgroundContinuationDeclarationTest {
   }
 
   @Test
+  fun fractionalOccurrencesAreRejectedInsteadOfTruncated() {
+    assertThrows(IllegalArgumentException::class.java) {
+      BackgroundContinuationDeclaration.parse(
+        "{\"onAppearance\":\"native\",\"resubscribe\":[{\"serviceUuid\":\"$hrService\",\"serviceOccurrence\":1.5," +
+          "\"characteristicUuid\":\"$hrMeasurement\"}]}"
+      )
+    }
+  }
+
+  @Test
   fun unknownStrategiesAndKeysAreRefusedNeverSubstituted() {
     assertThrows(IllegalArgumentException::class.java) {
       BackgroundContinuationDeclaration.parse("{\"onAppearance\":\"auto-magic\",\"resubscribe\":[]}")

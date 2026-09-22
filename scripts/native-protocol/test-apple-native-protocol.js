@@ -11,11 +11,12 @@ const root = path.resolve(__dirname, '../..')
 const reactNativeRoot = path.dirname(require.resolve('react-native/package.json'))
 const reactCommonRoot = path.join(reactNativeRoot, 'ReactCommon')
 
-function run(command, args) {
+function run(command, args, options = {}) {
   const result = childProcess.spawnSync(command, args, {
     cwd: root,
     stdio: 'inherit',
-    shell: false
+    shell: false,
+    ...options
   })
   if (result.error) {
     throw result.error
@@ -27,6 +28,23 @@ function run(command, args) {
 
 if (process.platform !== 'darwin') {
   throw new Error('Apple Native Protocol executable harness requires macOS and Xcode')
+}
+
+function pinnedRustToolchain() {
+  const contents = fs.readFileSync(path.join(root, 'rust-toolchain.toml'), 'utf8')
+  const match = contents.match(/^channel\s*=\s*"([^"]+)"/m)
+  if (match === null) throw new Error('rust-toolchain.toml has no pinned channel')
+  return match[1]
+}
+
+const rustToolchain = pinnedRustToolchain()
+const rustc = childProcess.execFileSync('rustup', ['which', '--toolchain', rustToolchain, 'rustc'], {
+  encoding: 'utf8'
+}).trim()
+const rustEnvironment = { ...process.env, RUSTC: rustc }
+
+function runCargo(args) {
+  run('rustup', ['run', rustToolchain, 'cargo', ...args], { env: rustEnvironment })
 }
 
 const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'unified-ble-apple-native-protocol-'))
@@ -42,10 +60,11 @@ const uniffiSwiftDirectory = path.join(root, 'bindings/uniffi/generated/swift')
 // The Apple Rust route harness links the REAL mobile host: the host-platform
 // build of the UniFFI crate, located through cargo (CARGO_TARGET_DIR aware).
 function cargoTargetDirectory() {
-  const result = childProcess.spawnSync('cargo', ['metadata', '--format-version', '1', '--no-deps', '--locked'], {
+  const result = childProcess.spawnSync('rustup', ['run', rustToolchain, 'cargo', 'metadata', '--format-version', '1', '--no-deps', '--locked'], {
     cwd: root,
     encoding: 'utf8',
-    maxBuffer: 64 * 1024 * 1024
+    maxBuffer: 64 * 1024 * 1024,
+    env: rustEnvironment
   })
   if (result.error) {
     throw result.error
@@ -107,7 +126,7 @@ try {
     ingressExecutable
   ])
   run(ingressExecutable, [])
-  run('cargo', ['build', '--locked', '-p', 'ubm5_uniffi_echo'])
+  runCargo(['build', '--locked', '-p', 'ubm5_uniffi_echo'])
   run('xcrun', [
     '--sdk',
     'macosx',

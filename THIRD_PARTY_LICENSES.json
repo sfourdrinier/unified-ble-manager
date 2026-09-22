@@ -7,7 +7,7 @@
     "version": "5.0.0-rc.0"
   },
   "source": {
-    "method": "pnpm-lock production graph with installed-manifest license audit + cargo-metadata workspace graph (declared-license evidence only)",
+    "method": "pnpm-lock production graph with installed-manifest license audit + cargo-metadata workspace graph (declared metadata plus exact reviewed cargo license-file evidence)",
     "lockfile": "pnpm-lock.yaml",
     "lockfileSha256": "fea8b9fea3dca31d966c33e5942c5fb0f179c492a8462f90482d0c5dc1bd86d2",
     "cargoLockfile": "Cargo.lock",
@@ -27,63 +27,15 @@
       "sha256": "8937affb1fac84258c98aa2351eb161405999975b602140c43bcbac23b22f1e9"
     }
   ],
-  "unresolved": [
+  "reviewedCargoOverrides": [
     {
-      "purl": "pkg:cargo/btleplug@0.12.0",
-      "declared": "MIT/Apache-2.0/BSD-3-Clause",
-      "reason": "ambiguous license declaration \"MIT/Apache-2.0/BSD-3-Clause\"; recorded as NOASSERTION pending human review"
-    },
-    {
-      "purl": "pkg:cargo/cesu8@1.1.0",
-      "declared": "Apache-2.0/MIT",
-      "reason": "ambiguous license declaration \"Apache-2.0/MIT\"; recorded as NOASSERTION pending human review"
-    },
-    {
-      "purl": "pkg:cargo/dbus-tokio@0.7.6",
-      "declared": "Apache-2.0/MIT",
-      "reason": "ambiguous license declaration \"Apache-2.0/MIT\"; recorded as NOASSERTION pending human review"
-    },
-    {
-      "purl": "pkg:cargo/dbus@0.9.12",
-      "declared": "Apache-2.0/MIT",
-      "reason": "ambiguous license declaration \"Apache-2.0/MIT\"; recorded as NOASSERTION pending human review"
-    },
-    {
-      "purl": "pkg:cargo/jni@0.19.0",
-      "declared": "MIT/Apache-2.0",
-      "reason": "ambiguous license declaration \"MIT/Apache-2.0\"; recorded as NOASSERTION pending human review"
-    },
-    {
-      "purl": "pkg:cargo/libdbus-sys@0.2.7",
-      "declared": "Apache-2.0/MIT",
-      "reason": "ambiguous license declaration \"Apache-2.0/MIT\"; recorded as NOASSERTION pending human review"
-    },
-    {
-      "purl": "pkg:cargo/minimal-lexical@0.2.1",
-      "declared": "MIT/Apache-2.0",
-      "reason": "ambiguous license declaration \"MIT/Apache-2.0\"; recorded as NOASSERTION pending human review"
-    },
-    {
-      "purl": "pkg:cargo/plain@0.2.3",
-      "declared": "MIT/Apache-2.0",
-      "reason": "ambiguous license declaration \"MIT/Apache-2.0\"; recorded as NOASSERTION pending human review"
-    },
-    {
-      "purl": "pkg:cargo/same-file@1.0.6",
-      "declared": "Unlicense/MIT",
-      "reason": "ambiguous license declaration \"Unlicense/MIT\"; recorded as NOASSERTION pending human review"
-    },
-    {
-      "purl": "pkg:cargo/siphasher@1.0.3",
-      "declared": "MIT/Apache-2.0",
-      "reason": "ambiguous license declaration \"MIT/Apache-2.0\"; recorded as NOASSERTION pending human review"
-    },
-    {
-      "purl": "pkg:cargo/walkdir@2.5.0",
-      "declared": "Unlicense/MIT",
-      "reason": "ambiguous license declaration \"Unlicense/MIT\"; recorded as NOASSERTION pending human review"
+      "dependency": "btleplug@0.12.0",
+      "fileName": "LICENSE.md",
+      "license": "BSD-3-Clause AND (MIT OR Apache-2.0)",
+      "sha256": "95f1ea7e261c12c46fe8f67d2ddb7a92ebb1a5fd10d127e4ab3003f0701d9f56"
     }
   ],
+  "unresolved": [],
   "packages": [
     {
       "name": "@babel/runtime",
@@ -362,10 +314,12 @@
     {
       "name": "btleplug",
       "version": "0.12.0",
-      "license": "NOASSERTION",
-      "licenseSource": "cargo-manifest-license-ambiguous",
-      "reviewRequired": true,
+      "license": "BSD-3-Clause AND (MIT OR Apache-2.0)",
+      "licenseSource": "reviewed-cargo-license-file",
       "declared": "MIT/Apache-2.0/BSD-3-Clause",
+      "evidence": {
+        "fileName": "vendor/btleplug/LICENSE.md"
+      },
       "purl": "pkg:cargo/btleplug@0.12.0"
     },
     {
@@ -411,9 +365,8 @@
     {
       "name": "cesu8",
       "version": "1.1.0",
-      "license": "NOASSERTION",
-      "licenseSource": "cargo-manifest-license-ambiguous",
-      "reviewRequired": true,
+      "license": "(Apache-2.0 OR MIT)",
+      "licenseSource": "cargo-manifest-license-normalized",
       "declared": "Apache-2.0/MIT",
       "purl": "pkg:cargo/cesu8@1.1.0"
     },
@@ -468,18 +421,16 @@
     {
       "name": "dbus-tokio",
       "version": "0.7.6",
-      "license": "NOASSERTION",
-      "licenseSource": "cargo-manifest-license-ambiguous",
-      "reviewRequired": true,
+      "license": "(Apache-2.0 OR MIT)",
+      "licenseSource": "cargo-manifest-license-normalized",
       "declared": "Apache-2.0/MIT",
       "purl": "pkg:cargo/dbus-tokio@0.7.6"
     },
     {
       "name": "dbus",
       "version": "0.9.12",
-      "license": "NOASSERTION",
-      "licenseSource": "cargo-manifest-license-ambiguous",
-      "reviewRequired": true,
+      "license": "(Apache-2.0 OR MIT)",
+      "licenseSource": "cargo-manifest-license-normalized",
       "declared": "Apache-2.0/MIT",
       "purl": "pkg:cargo/dbus@0.9.12"
     },
@@ -758,9 +709,8 @@
     {
       "name": "jni",
       "version": "0.19.0",
-      "license": "NOASSERTION",
-      "licenseSource": "cargo-manifest-license-ambiguous",
-      "reviewRequired": true,
+      "license": "(MIT OR Apache-2.0)",
+      "licenseSource": "cargo-manifest-license-normalized",
       "declared": "MIT/Apache-2.0",
       "purl": "pkg:cargo/jni@0.19.0"
     },
@@ -791,9 +741,8 @@
     {
       "name": "libdbus-sys",
       "version": "0.2.7",
-      "license": "NOASSERTION",
-      "licenseSource": "cargo-manifest-license-ambiguous",
-      "reviewRequired": true,
+      "license": "(Apache-2.0 OR MIT)",
+      "licenseSource": "cargo-manifest-license-normalized",
       "declared": "Apache-2.0/MIT",
       "purl": "pkg:cargo/libdbus-sys@0.2.7"
     },
@@ -848,9 +797,8 @@
     {
       "name": "minimal-lexical",
       "version": "0.2.1",
-      "license": "NOASSERTION",
-      "licenseSource": "cargo-manifest-license-ambiguous",
-      "reviewRequired": true,
+      "license": "(MIT OR Apache-2.0)",
+      "licenseSource": "cargo-manifest-license-normalized",
       "declared": "MIT/Apache-2.0",
       "purl": "pkg:cargo/minimal-lexical@0.2.1"
     },
@@ -1009,9 +957,8 @@
     {
       "name": "plain",
       "version": "0.2.3",
-      "license": "NOASSERTION",
-      "licenseSource": "cargo-manifest-license-ambiguous",
-      "reviewRequired": true,
+      "license": "(MIT OR Apache-2.0)",
+      "licenseSource": "cargo-manifest-license-normalized",
       "declared": "MIT/Apache-2.0",
       "purl": "pkg:cargo/plain@0.2.3"
     },
@@ -1114,9 +1061,8 @@
     {
       "name": "same-file",
       "version": "1.0.6",
-      "license": "NOASSERTION",
-      "licenseSource": "cargo-manifest-license-ambiguous",
-      "reviewRequired": true,
+      "license": "(Unlicense OR MIT)",
+      "licenseSource": "cargo-manifest-license-normalized",
       "declared": "Unlicense/MIT",
       "purl": "pkg:cargo/same-file@1.0.6"
     },
@@ -1235,9 +1181,8 @@
     {
       "name": "siphasher",
       "version": "1.0.3",
-      "license": "NOASSERTION",
-      "licenseSource": "cargo-manifest-license-ambiguous",
-      "reviewRequired": true,
+      "license": "(MIT OR Apache-2.0)",
+      "licenseSource": "cargo-manifest-license-normalized",
       "declared": "MIT/Apache-2.0",
       "purl": "pkg:cargo/siphasher@1.0.3"
     },
@@ -1636,9 +1581,8 @@
     {
       "name": "walkdir",
       "version": "2.5.0",
-      "license": "NOASSERTION",
-      "licenseSource": "cargo-manifest-license-ambiguous",
-      "reviewRequired": true,
+      "license": "(Unlicense OR MIT)",
+      "licenseSource": "cargo-manifest-license-normalized",
       "declared": "Unlicense/MIT",
       "purl": "pkg:cargo/walkdir@2.5.0"
     },

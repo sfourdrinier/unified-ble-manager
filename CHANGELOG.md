@@ -2,7 +2,7 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
-## [Unreleased]
+## [5.0.0-rc.0] - 2026-09-22 (prerelease candidate, unpublished)
 
 How to read this section: each entry states a behavior change in plain
 words first, then the exact mechanism. A `finding NNN` reference is the
@@ -13,6 +13,14 @@ their code. Physical-device anecdotes below (a Samsung phone, Polar H10
 straps) motivate individual fixes; they are rationale, not support claims.
 Backend support labels come only from retained evidence — see
 `docs/generated/PLATFORM_SUPPORT.md`.
+
+This prerelease carries the Rust-first distributable: the npm artifact ships
+the Rust workspace sources (`crates/`, `bindings/`) and committed Android native
+prebuilds (`arm64-v8a`, `x86_64`), so packed consumers build and load the shared
+core. The N-API `UbmCentral` dispatch, Tauri plugin, React Native shared-core
+seam, 5.x podspec/JNI drain, full scan-discovery facts, and sealed native build
+fingerprint are included. The remaining cutover follow-ups are tracked in the
+5.0.0 gate ledger and `docs/5.0.0-PACKAGING.md`.
 
 ### Changed
 
@@ -1393,6 +1401,65 @@ metadata:{androidGattStatus}}` on Android, or the `NSError` domain and code
 
 ### Fixed
 
+- **Background continuation serializes ownership without racing its claim
+  (Android).** An executing native wake and `continuation.claim()` now reserve
+  the same session before either performs radio I/O. A concurrent operation
+  receives a typed lifecycle refusal and leaves the session intact; it cannot
+  dispose a session that the wake later reports as completed. The Companion
+  service admits callbacks to one serial worker and returns promptly to CDM;
+  teardown closes admission but lets work already admitted finish. Focused
+  regressions prove the two reservation orders and admitted-work teardown.
+  The wake also converts public 1-based GATT occurrences to the Rust mobile
+  wire's 0-based paths. Claims validate consumer indices against a
+  `consumerCount` captured from the exact native session and returned
+  atomically with its backlog, including when a build-time manifest leaves the
+  JavaScript manager option absent. On a Samsung SM-A376U1, a real Polar H10
+  absent-to-present transition woke the app with no JavaScript, connected,
+  discovered and subscribed in about 1.6 seconds; Logcat contained no app ANR
+  during this run, the service recorded queued bytes before JavaScript opened,
+  and the later claim drained 30 heart-rate values with zero dropped items,
+  dropped bytes or control loss.
+
+- **TV staging uses a portable archive and executable Python shim.** The TV
+  staging copy writes a temporary tar archive before extracting it, avoiding a
+  macOS system-tar pipe failure while retaining Git Bash compatibility. Windows
+  test shims are created in Git Bash's executable temp location rather than a
+  host temp directory that Git Bash can resolve but cannot execute from.
+
+- **Android prebuild verification uses the NDK's ELF symbol reader.** The
+  canonical builder no longer asks the host `nm` to parse an Android `.so`;
+  macOS `nm` accepted no GNU `-D` mode and falsely reported that present JNI
+  exports were missing. Both release ABIs now verify with the pinned NDK's
+  `llvm-nm`, the same toolchain that links them. Both Rust builders resolve
+  `rustc` from the pinned rustup toolchain rather than accepting an older host
+  `rustc` earlier on `PATH`. The Android and desktop N-API builders also read
+  their completed libraries from `CARGO_TARGET_DIR` when Cargo is directed to
+  an isolated target tree, instead of copying a stale default-target binary.
+
+- **Desktop slow-drain acceptance has a deterministic ingress barrier.** The
+  desktop Rust-core TCK waits until staged notifications reach the bounded
+  stream before reading the slow-drain window. The test now exposes overflow
+  accounting under the same deterministic synthetic workload on Linux and
+  Windows instead of racing an independent notification pump.
+
+- **Desktop adapter resets use the core's causal power and sequence.** A reset
+  applies its factual power state at the new generation and discards queued
+  state observations at or before its causal sequence. Delayed-state and rapid
+  off/on regressions pin the ordering, replacing the prior status-read
+  inference.
+
+- **Cargo license output resolves legacy slash declarations precisely.** Slash
+  alternatives are normalized to SPDX `OR`; `btleplug@0.12.0` is resolved from
+  its reviewed, digest-bound vendored license file as
+  `BSD-3-Clause AND (MIT OR Apache-2.0)`. The regenerated SBOM and third-party
+  notice now have zero unresolved Cargo entries.
+
+- **SIM0001's configured one-second advertising cadence has physical HCI
+  evidence.** A separate Linux controller captured raw extended advertising
+  reports: observed consecutive gaps include 992 ms, 1003 ms and 1007 ms, and
+  longer gaps were whole-second multiples. This establishes nominal cadence;
+  it does not claim RF reception of every advertisement.
+
 - **The native refresh consumers work on Windows.** `ensure-native.js` spawned
   `pnpm` with no shell. Windows runs pnpm as `pnpm.cmd`, which only executes
   through `cmd.exe`, so every consumer that refreshes native artifacts through
@@ -1493,9 +1560,9 @@ metadata:{androidGattStatus}}` on Android, or the `NSError` domain and code
 
 - **The desktop adapter watch no longer reports a stale snapshot during a
   reset.** Powering the adapter off queues an adapter event and a core reset
-  separately; when the reset drained first, watchers were told the adapter was
-  still on immediately before it went off. The generation advance now withholds
-  its emission while that adapter event is in flight.
+  separately; when the reset drains first, the core supplies the reset's causal
+  power and sequence. The new generation reports that fact, and queued states
+  at or before that sequence cannot replay ahead of recovery.
 
 - **The background wake reports the platform's answer, not its own timer.** The
   native wake connected `when-available`, which on Android parks a slow,
@@ -2027,30 +2094,6 @@ clients`); the control port binds before the simulator reports ready,
   via `bash example-expo/scripts/android-tv-emu.sh all`. It proves
   adapter/scan truthfulness only (clean 0-observation scans); it is not
   physical-radio evidence.
-
-## [5.0.0-rc.0] - 2026-09-16 (prerelease candidate, unpublished)
-
-First 5.0.0 prerelease candidate: the Rust-first distributable. The npm
-artifact now ships the Rust workspace sources (`crates/`, `bindings/`) plus
-committed Android native prebuilds (`arm64-v8a`, `x86_64`), so packed
-consumers build and load the shared core instead of skipping it; the N-API
-`UbmCentral` dispatch routes scan/connect/discover/read/write/subscribe/
-timeout/dispose through `DesktopCentral`, with failure identities issued by
-the shared core; the Tauri plugin emits frozen `ubm-core` error identities
-and admits only hosts linked against the pinned contract revision at
-bootstrap; the React Native shared-core seam (selection, binding
-resolution, revision admission) fails loudly instead of substituting the
-TypeScript manager; the 5.x podspec selects the UniFFI Rust core beside the
-Owned radio; the JNI drain surfaces kernel effects and typed observations
-instead of discarding them; scan observations preserve the full discovery
-fact set (local name, service UUIDs, manufacturer data with payload bytes,
-RSSI) for the consumer matcher; and the build seal
-(`lib/ubm-build-fingerprint.json`) replaces timestamp freshness heuristics
-for linked-checkout qualification. The 4.x TypeScript manager remains for
-compatibility during cutover; the Tauri dispatcher authority migration, the
-React Native binding-backed backend (blocked on the JNI/UniFFI op surface),
-tvOS Rust coverage, and Apple device-matrix load qualification are open
-follow-ups (see the 5.0.0 gate ledger and `docs/5.0.0-PACKAGING.md`).
 
 ## [4.0.28] - 2026-09-09
 

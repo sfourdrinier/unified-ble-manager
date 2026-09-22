@@ -49,6 +49,52 @@ async function generationAdvanced(backend, generation) {
   return backend.identity.attachment.backendGeneration !== generation
 }
 
+/**
+ * Keep the adapter-state queue behind the reset queue. The native core has
+ * separate receivers for these facts, so this models the turn where the
+ * reset reaches TypeScript before its causal state event does.
+ */
+function deferAdapterEvents(harness) {
+  const openSynthetic = harness.binding.openSynthetic
+  let released = false
+  harness.binding.openSynthetic = async (owner, options) => {
+    const central = await openSynthetic(owner, options)
+    return new Proxy(central, {
+      get(target, property) {
+        if (property === 'takeAdapterEvent') {
+          return () => (released ? target.takeAdapterEvent() : Promise.resolve(null))
+        }
+        const value = Reflect.get(target, property)
+        return typeof value === 'function' ? (...args) => Reflect.apply(value, target, args) : value
+      }
+    })
+  }
+  return () => {
+    released = true
+  }
+}
+
+/** Hold both native queues until one deterministic drain sees their shared ordering. */
+function deferAdapterAndResetEvents(harness) {
+  const openSynthetic = harness.binding.openSynthetic
+  let released = false
+  harness.binding.openSynthetic = async (owner, options) => {
+    const central = await openSynthetic(owner, options)
+    return new Proxy(central, {
+      get(target, property) {
+        if (property === 'takeAdapterEvent' || property === 'takeAdapterResetEvent') {
+          return () => (released ? Reflect.apply(target[property], target, []) : Promise.resolve(null))
+        }
+        const value = Reflect.get(target, property)
+        return typeof value === 'function' ? (...args) => Reflect.apply(value, target, args) : value
+      }
+    })
+  }
+  return () => {
+    released = true
+  }
+}
+
 // What each legacy backend announced (corebluetooth-backend.ts,
 // winrt-backend.ts, bluez-backend-runtime.ts).
 const LEGACY_SEQUENCE = {
@@ -151,6 +197,175 @@ describe('adapter loss follows the legacy per-OS sequence (LEGACY-AUDIT-1 #57)',
       expect(seen.some(state => state.power === 'off')).toBe(true)
       expect(seen.at(-1).backendGeneration).not.toBe(watch.initial.backendGeneration)
     })
+  })
+
+  test('a reset applies its causal power after generation when its adapter event is still queued', async () => {
+    const harness = realBinding('bluez')
+    const releaseAdapterEvents = deferAdapterEvents(harness)
+    const provider = createTestDesktopRustCoreBackendProvider({
+      platform: 'bluez',
+      owner: 'queued-reset-state',
+      now: () => performance.now(),
+      radio: 'synthetic',
+      binding: harness.binding,
+      hostPlatform: 'linux'
+    })
+    const [adapter] = await provider.listAdapters()
+    const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
+    try {
+      const stage = harness.opened.at(-1)
+      const watch = await backend.adapter.watchState()
+      const transitions = watch.transitions[Symbol.asyncIterator]()
+      await stage.stageAdapterState('powered-off', true)
+      const transition = await nextItem(transitions, 5000)
+      expect(transition).toMatchObject({
+        kind: 'value',
+        value: { power: 'off' }
+      })
+      expect(transition.value.backendGeneration).not.toBe(watch.initial.backendGeneration)
+      await stage.stageAdapterState('powered-on', true)
+      releaseAdapterEvents()
+      const restored = await nextItem(transitions, 5000)
+      expect(restored).toMatchObject({ kind: 'value', value: { power: 'on' } })
+      expect(restored.value.backendGeneration).toBe(transition.value.backendGeneration)
+    } finally {
+      await backend.destroy()
+    }
+  })
+
+  test('an off reset precedes a queued on recovery at the new generation', async () => {
+    const harness = realBinding('bluez')
+    const releaseEvents = deferAdapterAndResetEvents(harness)
+    const provider = createTestDesktopRustCoreBackendProvider({
+      platform: 'bluez',
+      owner: 'reset-before-recovery',
+      now: () => performance.now(),
+      radio: 'synthetic',
+      binding: harness.binding,
+      hostPlatform: 'linux'
+    })
+    const [adapter] = await provider.listAdapters()
+    const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
+    try {
+      const stage = harness.opened.at(-1)
+      const watch = await backend.adapter.watchState()
+      const transitions = watch.transitions[Symbol.asyncIterator]()
+      await stage.stageAdapterState('powered-off', true)
+      await stage.stageAdapterState('powered-on', true)
+      releaseEvents()
+      await backend.settleCoreEvents()
+      const off = await nextItem(transitions, 5000)
+      const on = await nextItem(transitions, 5000)
+      expect(off).toMatchObject({ kind: 'value', value: { power: 'off' } })
+      expect(off.value.backendGeneration).not.toBe(watch.initial.backendGeneration)
+      expect(on).toMatchObject({ kind: 'value', value: { power: 'on' } })
+      expect(on.value.backendGeneration).toBe(off.value.backendGeneration)
+    } finally {
+      await backend.destroy()
+    }
+  })
+
+  test('a reset does not replay queued states at or before its causal sequence', async () => {
+    const harness = realBinding('bluez')
+    const releaseEvents = deferAdapterAndResetEvents(harness)
+    const provider = createTestDesktopRustCoreBackendProvider({
+      platform: 'bluez',
+      owner: 'reset-discards-pre-reset-state',
+      now: () => performance.now(),
+      radio: 'synthetic',
+      binding: harness.binding,
+      hostPlatform: 'linux'
+    })
+    const [adapter] = await provider.listAdapters()
+    const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
+    try {
+      const stage = harness.opened.at(-1)
+      const watch = await backend.adapter.watchState()
+      const transitions = watch.transitions[Symbol.asyncIterator]()
+      await stage.stageAdapterState('powered-on', true)
+      await stage.stageAdapterState('powered-off', true)
+      releaseEvents()
+      await backend.settleCoreEvents()
+      const transition = await nextItem(transitions, 5000)
+      expect(transition).toMatchObject({ kind: 'value', value: { power: 'off' } })
+      expect(transition.value.backendGeneration).not.toBe(watch.initial.backendGeneration)
+      expect(await nextItem(transitions, 100).catch(() => null)).toBeNull()
+    } finally {
+      await backend.destroy()
+    }
+  })
+
+  test('a direct adapter removal carries its wake-state sequence across the reset boundary', async () => {
+    const harness = realBinding('bluez')
+    const releaseEvents = deferAdapterAndResetEvents(harness)
+    const provider = createTestDesktopRustCoreBackendProvider({
+      platform: 'bluez',
+      owner: 'direct-loss-reset-sequence',
+      now: () => performance.now(),
+      radio: 'synthetic',
+      binding: harness.binding,
+      hostPlatform: 'linux'
+    })
+    const [adapter] = await provider.listAdapters()
+    const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
+    try {
+      const stage = harness.opened.at(-1)
+      const watch = await backend.adapter.watchState()
+      const transitions = watch.transitions[Symbol.asyncIterator]()
+      await stage.stageAdapterState('powered-on', true)
+      await stage.stageAdapterReset('removed')
+      releaseEvents()
+      await backend.settleCoreEvents()
+      const transition = await nextItem(transitions, 5000)
+      expect(transition).toMatchObject({ kind: 'value', value: { power: 'on' } })
+      expect(transition.value.backendGeneration).not.toBe(watch.initial.backendGeneration)
+      expect(await nextItem(transitions, 100).catch(() => null)).toBeNull()
+    } finally {
+      await backend.destroy()
+    }
+  })
+
+  test('a reset does not let a later status read suppress its advanced generation', async () => {
+    const harness = realBinding('bluez')
+    const openSynthetic = harness.binding.openSynthetic
+    let staleStatus = false
+    harness.binding.openSynthetic = async (owner, options) => {
+      const central = await openSynthetic(owner, options)
+      return new Proxy(central, {
+        get(target, property) {
+          if (property === 'adapterStatus') {
+            return () => {
+              const status = target.adapterStatus()
+              return staleStatus ? { ...status, power: 'powered-off' } : status
+            }
+          }
+          const value = Reflect.get(target, property)
+          return typeof value === 'function' ? (...args) => Reflect.apply(value, target, args) : value
+        }
+      })
+    }
+    const provider = createTestDesktopRustCoreBackendProvider({
+      platform: 'bluez',
+      owner: 'stale-reset-status',
+      now: () => performance.now(),
+      radio: 'synthetic',
+      binding: harness.binding,
+      hostPlatform: 'linux'
+    })
+    const [adapter] = await provider.listAdapters()
+    const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
+    try {
+      const stage = harness.opened.at(-1)
+      const watch = await backend.adapter.watchState()
+      const transitions = watch.transitions[Symbol.asyncIterator]()
+      staleStatus = true
+      await stage.stageAdapterReset('daemon-restarted')
+      const transition = await nextItem(transitions, 5000)
+      expect(transition).toMatchObject({ kind: 'value', value: { power: watch.initial.power } })
+      expect(transition.value.backendGeneration).not.toBe(watch.initial.backendGeneration)
+    } finally {
+      await backend.destroy()
+    }
   })
 })
 

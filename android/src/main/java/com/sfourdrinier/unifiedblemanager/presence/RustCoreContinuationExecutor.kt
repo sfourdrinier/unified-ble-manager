@@ -42,10 +42,14 @@ class RustCoreContinuationExecutor(
   private var sessionId: Long? = null
   private var continuingPeer: String? = null
   private var subscribedConsumers = 0
+  private var activeSession: Long? = null
+  private var activeSessionActivity: SessionActivity? = null
   private val admission = AtomicLong(0)
 
   /** One execution's state snapshot: the lock guards this handoff, not the radio I/O. */
   private data class Execution(val session: Long)
+
+  private enum class SessionActivity { EXECUTING, CLAIMING }
 
   /** Executes the order; every refusal is a typed outcome, never a throw. */
   fun execute(address: String, declaration: BackgroundContinuationDeclaration): ContinuationOutcome {
@@ -63,6 +67,14 @@ class RustCoreContinuationExecutor(
           null
         )
       }
+      if (activeSession == session) {
+        return ContinuationOutcome.failed(
+          ContinuationStrategy.NATIVE,
+          "lifecycle.invalid-state",
+          "continuation session is ${activeSessionActivity!!.name.lowercase()}; the wake is still in progress",
+          null
+        )
+      }
       val held = continuingPeer
       if (held != null && held != address) {
         return ContinuationOutcome.failed(
@@ -76,6 +88,8 @@ class RustCoreContinuationExecutor(
         log("continuation session already holds $address; already continuing")
         return ContinuationOutcome.completed(ContinuationStrategy.NATIVE, address, subscribedConsumers)
       }
+      activeSession = session
+      activeSessionActivity = SessionActivity.EXECUTING
       Execution(session)
     }
     try {
@@ -130,9 +144,12 @@ class RustCoreContinuationExecutor(
             "peerId" to address,
             "selector" to linkedMapOf(
               "serviceUuid" to selector.serviceUuid,
-              "serviceOccurrence" to selector.serviceOccurrence,
+              // The public GATT path is 1-based; the Rust mobile wire indexes
+              // duplicate UUID occurrences from zero (its discovery facts do
+              // the same). Convert exactly at this boundary.
+              "serviceOccurrence" to selector.serviceOccurrence - 1L,
               "characteristicUuid" to selector.characteristicUuid,
-              "characteristicOccurrence" to selector.characteristicOccurrence
+              "characteristicOccurrence" to selector.characteristicOccurrence - 1L
             ),
             "consumer" to consumer,
             "operationId" to "continuation-subscribe-$index",
@@ -149,14 +166,14 @@ class RustCoreContinuationExecutor(
           )
         }
         resubscribed += 1
-      }
-      synchronized(lock) {
-        // A claim may have disposed the session while the radio worked: the
-        // link gap is covered by the drain's loss accounting, so a stale
-        // commit must not resurrect ownership here.
-        if (sessionId == execution.session) {
-          continuingPeer = address
-          subscribedConsumers = resubscribed
+        synchronized(lock) {
+          // Pin each successful consumer immediately. If a later selector
+          // fails, this session can already queue values for earlier ones and
+          // its eventual claim must authorize those consumer names.
+          if (sessionId == execution.session) {
+            continuingPeer = address
+            subscribedConsumers = resubscribed
+          }
         }
       }
       log("continuation completed for $address: connected direct, resubscribed $resubscribed")
@@ -168,6 +185,8 @@ class RustCoreContinuationExecutor(
         error.message ?: "continuation invoke refused",
         null
       )
+    } finally {
+      clearActivity(execution.session, SessionActivity.EXECUTING)
     }
   }
 
@@ -203,55 +222,81 @@ class RustCoreContinuationExecutor(
    * would discard the unread tail silently.
    */
   fun claimAndDispose(maxItems: Int, maxBytes: Int, maxBatches: Int = 32): ContinuationClaim {
-    val session = synchronized(lock) { sessionId }
-      ?: return ContinuationClaim(emptyList(), false)
-    val batches = ArrayList<String>(4)
-    var more = true
-    var rounds = 0
-    var drainFailure: String? = null
-    while (more && rounds < maxBatches) {
-      rounds += 1
-      val batch = try {
-        core.drain(session, maxItems, maxBytes)
-      } catch (error: RuntimeException) {
-        drainFailure = "continuation drain failed: ${error.message ?: error.javaClass.simpleName}"
-        log(drainFailure)
-        break
+    val (session, consumerCount) = synchronized(lock) {
+      val current = sessionId ?: return ContinuationClaim(0, emptyList(), false)
+      val currentConsumerCount = subscribedConsumers
+      if (activeSession == current) {
+        return ContinuationClaim(
+          currentConsumerCount,
+          emptyList(),
+          false,
+          "continuation session is ${activeSessionActivity!!.name.lowercase()}; it is kept for a follow-up claim"
+        )
       }
-      batches.add(batch)
-      more = try {
-        val root = RustCoreJson.parse(batch) as? Map<*, *>
-        root?.get("more") as? Boolean ?: false
-      } catch (error: IllegalArgumentException) {
-        drainFailure = "continuation drain batch unparseable: ${error.message}"
-        log(drainFailure)
-        false
+      activeSession = current
+      activeSessionActivity = SessionActivity.CLAIMING
+      Pair(current, currentConsumerCount)
+    }
+    try {
+      val batches = ArrayList<String>(4)
+      var more = true
+      var rounds = 0
+      var drainFailure: String? = null
+      while (more && rounds < maxBatches) {
+        rounds += 1
+        val batch = try {
+          core.drain(session, maxItems, maxBytes)
+        } catch (error: RuntimeException) {
+          drainFailure = "continuation drain failed: ${error.message ?: error.javaClass.simpleName}"
+          log(drainFailure)
+          break
+        }
+        batches.add(batch)
+        more = try {
+          val root = RustCoreJson.parse(batch) as? Map<*, *>
+          root?.get("more") as? Boolean ?: false
+        } catch (error: IllegalArgumentException) {
+          drainFailure = "continuation drain batch unparseable: ${error.message}"
+          log(drainFailure)
+          false
+        }
       }
+      if (drainFailure == null && more) {
+        drainFailure = "continuation claim stopped after $rounds batches with more queued; the session is kept for a follow-up claim"
+        log(drainFailure)
+      }
+      if (drainFailure != null) {
+        return ContinuationClaim(consumerCount, batches, false, drainFailure)
+      }
+      val disposeFailure = try {
+        disposeFailure(invoke(session, "session.dispose", emptyMap(), opTimeoutMs))
+      } catch (error: ContinuationFailure) {
+        "continuation dispose failed: ${error.message}"
+      }
+      if (disposeFailure != null) {
+        log(disposeFailure)
+        return ContinuationClaim(consumerCount, batches, false, disposeFailure)
+      }
+      synchronized(lock) {
+        if (sessionId == session) {
+          sessionId = null
+          continuingPeer = null
+          subscribedConsumers = 0
+        }
+      }
+      return ContinuationClaim(consumerCount, batches, true)
+    } finally {
+      clearActivity(session, SessionActivity.CLAIMING)
     }
-    if (drainFailure == null && more) {
-      drainFailure = "continuation claim stopped after $rounds batches with more queued; the session is kept for a follow-up claim"
-      log(drainFailure)
-    }
-    if (drainFailure != null) {
-      return ContinuationClaim(batches, false, drainFailure)
-    }
-    val disposeFailure = try {
-      disposeFailure(invoke(session, "session.dispose", emptyMap(), opTimeoutMs))
-    } catch (error: ContinuationFailure) {
-      "continuation dispose failed: ${error.message}"
-    }
-    if (disposeFailure != null) {
-      log(disposeFailure)
-      return ContinuationClaim(batches, false, disposeFailure)
-    }
+  }
+
+  private fun clearActivity(session: Long, activity: SessionActivity) {
     synchronized(lock) {
-      if (sessionId == session) {
-        sessionId = null
-        continuingPeer = null
-        subscribedConsumers = 0
+      if (activeSession == session && activeSessionActivity == activity) {
+        activeSession = null
+        activeSessionActivity = null
       }
     }
-    return ContinuationClaim(batches, true)
   }
 
   /**
@@ -377,14 +422,17 @@ private class ContinuationFailure(message: String) : RuntimeException(message)
 data class BacklogCounts(val queuedBytes: Long?, val ingressDrops: Map<String, Long>)
 
 /**
- * Verbatim drain batches for the JS codec plus whether a session was
- * disposed. Empty batches with `disposed: false` and no [disposeFailure] is
+ * Verbatim drain batches for the JS codec plus the consumer count captured
+ * from that exact session and whether the session was disposed. Empty batches
+ * with `disposed: false`, [consumerCount] zero, and no [disposeFailure] is
  * the valid no-wake answer (no continuation session alive) — never an
  * error. A non-null [disposeFailure] is why the session is still alive: the
  * drain did not complete or the dispose reported failures, so the next
  * claim retries instead of abandoning the session with no owner.
  */
 data class ContinuationClaim(
+  /** Number of consumers subscribed by this exact session, captured atomically before claim. */
+  val consumerCount: Int,
   val batches: List<String>,
   val disposed: Boolean,
   val disposeFailure: String? = null

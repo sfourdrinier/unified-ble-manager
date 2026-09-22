@@ -888,6 +888,12 @@ pub struct AdapterEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdapterResetEvent {
     pub sequence: u64,
+    /// The adapter power fact that caused this reset. This is the core's
+    /// observation at the reset boundary, not a later status read.
+    pub power: Option<AdapterPowerState>,
+    /// The matching adapter-event sequence for the causal power, authorization,
+    /// or direct-loss state observation.
+    pub adapter_sequence: Option<u64>,
     pub cause: AdapterLossCause,
     pub previous: AttachmentTuple,
     pub current: AttachmentTuple,
@@ -4990,7 +4996,7 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                         let _ = inner.adapter.send(event);
                         inner.signal(CentralSignal::Adapter(event));
                         if let Some(cause) = loss {
-                            adapter_reset(&inner, cause).await;
+                            adapter_reset(&inner, cause, Some(state), Some(sequence)).await;
                         }
                     }
                     Some(RadioEvent::AdapterAuthorization(authorization)) => {
@@ -5008,9 +5014,15 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                             loss
                         };
                         // Waiters on a usable adapter re-read the facts.
-                        wake_state_waiters(&inner);
+                        let event = wake_state_waiters(&inner);
                         if loss {
-                            adapter_reset(&inner, AdapterLossCause::Unauthorized).await;
+                            adapter_reset(
+                                &inner,
+                                AdapterLossCause::Unauthorized,
+                                Some(event.state),
+                                Some(event.sequence),
+                            )
+                            .await;
                         }
                     }
                     Some(RadioEvent::AdapterLost(cause)) => {
@@ -5024,9 +5036,9 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                             }
                             facts.lost = true;
                         }
-                        wake_state_waiters(&inner);
+                        let event = wake_state_waiters(&inner);
                         if inner.teardown_on_loss {
-                            adapter_reset(&inner, cause).await;
+                            adapter_reset(&inner, cause, Some(event.state), Some(event.sequence)).await;
                         }
                     }
                     Some(RadioEvent::AdapterRestored) => {
@@ -5116,7 +5128,7 @@ fn note_power<B>(inner: &Inner<B>, state: AdapterPowerState) -> Option<AdapterLo
 
 /// Wake [`DesktopCentral::await_usable_adapter`] waiters after a fact
 /// changed without a power report (authorization, presence).
-fn wake_state_waiters<B>(inner: &Inner<B>) {
+fn wake_state_waiters<B>(inner: &Inner<B>) -> AdapterEvent {
     let state = lock_std(&inner.adapter_facts)
         .power
         .unwrap_or(AdapterPowerState::Unknown);
@@ -5124,6 +5136,7 @@ fn wake_state_waiters<B>(inner: &Inner<B>) {
     let event = AdapterEvent { sequence, state };
     let _ = inner.adapter.send(event);
     inner.signal(CentralSignal::Adapter(event));
+    event
 }
 
 /// The adapter facts at open, read from the radio when it has an adapter
@@ -5226,7 +5239,12 @@ fn next_scope(
 /// 3. the OS scan stop and link releases are asked for, bounded; what the
 ///    adapter no longer holds counts as released, anything else is named;
 /// 4. one [`AdapterResetEvent`] reports it all.
-async fn adapter_reset<B: RadioBoundary>(inner: &Arc<Inner<B>>, cause: AdapterLossCause) {
+async fn adapter_reset<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    cause: AdapterLossCause,
+    power: Option<AdapterPowerState>,
+    adapter_sequence: Option<u64>,
+) {
     let scan = inner.scan_slot().take();
     let peers: Vec<(String, String)> = inner
         .peers
@@ -5360,6 +5378,8 @@ async fn adapter_reset<B: RadioBoundary>(inner: &Arc<Inner<B>>, cause: AdapterLo
     }
     let event = AdapterResetEvent {
         sequence: inner.reset_sequence.fetch_add(1, Ordering::SeqCst) + 1,
+        power,
+        adapter_sequence,
         cause,
         previous,
         current,

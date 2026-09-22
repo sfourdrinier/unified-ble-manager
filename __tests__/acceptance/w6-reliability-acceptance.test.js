@@ -237,7 +237,13 @@ async function scenarioSharedScan(ctx) {
   )
 
   const holds =
-    acquiresNothing && ownerReceived && joinedReceived && joinedReleased && ownerKeepsReceiving && ownerReleased && noLateObservation
+    acquiresNothing &&
+    ownerReceived &&
+    joinedReceived &&
+    joinedReleased &&
+    ownerKeepsReceiving &&
+    ownerReleased &&
+    noLateObservation
   return {
     holds,
     skips,
@@ -438,12 +444,15 @@ async function scenarioConcurrentConnect(ctx) {
   } catch (error) {
     admittedRaceOutcome = { ok: false, error }
   }
-  const admittedRaceLive =
-    admittedRaceOutcome.ok && String(admittedRaceOutcome.value.connectionGeneration).length > 0
-  const racerRaceLive =
-    racerRace !== null && racerRace.ok && String(racerRace.value.connectionGeneration).length > 0
+  const admittedRaceLive = admittedRaceOutcome.ok && String(admittedRaceOutcome.value.connectionGeneration).length > 0
+  const racerRaceLive = racerRace !== null && racerRace.ok && String(racerRace.value.connectionGeneration).length > 0
   detail.admittedRaceLive = admittedRaceLive
-  detail.racerRace = racerRace === null ? 'missing' : racerRace.ok ? `joined:${String(racerRace.value.connectionGeneration)}` : `rejected:${errorCode(racerRace.error)}`
+  detail.racerRace =
+    racerRace === null
+      ? 'missing'
+      : racerRace.ok
+        ? `joined:${String(racerRace.value.connectionGeneration)}`
+        : `rejected:${errorCode(racerRace.error)}`
   detail.linksAfterRace = physicalLinks()
   const generationsDistinct =
     !admittedRaceLive ||
@@ -479,9 +488,8 @@ async function scenarioConcurrentConnect(ctx) {
   // G4 (W7): the capability answer must match the behaviour probe on every leg.
   detail.supportsMatchesBehaviour = manager.supports('connection:when-available') === whenAvailableSupported
   const probeOk =
-    (whenAvailableSupported
-      ? detail.linksAfterProbeRelease === 0
-      : detail.unsupportedProbeAcquiredNothing === true) && detail.supportsMatchesBehaviour === true
+    (whenAvailableSupported ? detail.linksAfterProbeRelease === 0 : detail.unsupportedProbeAcquiredNothing === true) &&
+    detail.supportsMatchesBehaviour === true
   const holds = probeOk && sequentialOk && raceOk
   return { holds, skips, detail: { ...detail, probeOk, sequentialOk, raceOk } }
 }
@@ -515,7 +523,7 @@ async function scenarioDisconnectDuringSubscribe(ctx) {
     const iterator = subscription.values[Symbol.asyncIterator]()
     const terminal = await controller.settle(iterator.next())
     detail.settledTerminalKind = terminal.done ? 'done' : terminal.value.kind
-    detail.settledTerminalReason = terminal.done ? null : terminal.value.reason ?? null
+    detail.settledTerminalReason = terminal.done ? null : (terminal.value.reason ?? null)
     const complete = await controller.settle(iterator.next())
     detail.settledCompletes = complete.done === true
     await controller.settle(subscription.remove())
@@ -534,7 +542,7 @@ async function scenarioDisconnectDuringSubscribe(ctx) {
     // legs included — the staged value must arrive on the resubscription.
     const item = await readValueBounded(next.values[Symbol.asyncIterator](), controller)
     detail.resubscribedValue =
-      item !== null && !item.done && item.value.kind === 'value' ? [...item.value.value.value][0] ?? null : null
+      item !== null && !item.done && item.value.kind === 'value' ? ([...item.value.value.value][0] ?? null) : null
     detail.generationsDiffer =
       String(reconnected.connection.connectionGeneration) !== String(connection.connectionGeneration)
     await controller.settle(next.remove())
@@ -595,7 +603,7 @@ async function scenarioDisconnectDuringSubscribe(ctx) {
   // G1 (W7): the mid-flight resubscription delivers on every leg.
   const item = await readValueBounded(nextSubscription.values[Symbol.asyncIterator](), controller)
   detail.nextValue =
-    item !== null && !item.done && item.value.kind === 'value' ? [...item.value.value.value][0] ?? null : null
+    item !== null && !item.done && item.value.kind === 'value' ? ([...item.value.value.value][0] ?? null) : null
   await controller.settle(nextSubscription.remove())
   await controller.settle(next.connection.release())
 
@@ -656,7 +664,10 @@ async function scenarioGenerationFence(ctx) {
     second.database.subscribe(secondCharacteristic.path, support.subscriptionOptions('drop-oldest', 4, 4096))
   )
   const secondNext = secondSubscription.values[Symbol.asyncIterator]().next()
-  await controller.perform('emit-notification', support.notificationInput(secondCharacteristic.path, new Uint8Array([11])))
+  await controller.perform(
+    'emit-notification',
+    support.notificationInput(secondCharacteristic.path, new Uint8Array([11]))
+  )
   if (canStageDelayed) {
     await controller.perform('advance-time', Object.freeze({ milliseconds: 30 }))
   } else {
@@ -665,14 +676,14 @@ async function scenarioGenerationFence(ctx) {
 
   const oldItem = await controller.settle(oldNext)
   detail.oldIteratorKind = oldItem.done ? 'done' : oldItem.value.kind
-  detail.oldIteratorReason = oldItem.done ? null : oldItem.value.reason ?? null
+  detail.oldIteratorReason = oldItem.done ? null : (oldItem.value.reason ?? null)
   detail.oldNeverReceivesNewValue =
     oldItem.done || oldItem.value.kind !== 'value' || [...(oldItem.value.value.value ?? [])][0] !== 11
   // G1 (W7): the fenced resubscription delivers on every leg.
   const newItem = await settleBounded(controller, secondNext)
   detail.newValue =
     newItem !== null && !newItem.done && newItem.value.kind === 'value'
-      ? [...newItem.value.value.value][0] ?? null
+      ? ([...newItem.value.value.value][0] ?? null)
       : null
   const staleReadRejected = await support.rejectsWithCode(
     first.database.read(firstCharacteristic.path, support.operationOptions),
@@ -709,6 +720,7 @@ async function scenarioGenerationFence(ctx) {
 async function scenarioSlowDrain(ctx) {
   const { manager, fixture } = ctx
   const controller = fixture.controller
+  const desktopSyntheticIngress = ctx.leg.id.startsWith('desktop-')
   const skips = []
   const detail = {}
   const peerId = await findPeerId(ctx)
@@ -719,11 +731,15 @@ async function scenarioSlowDrain(ctx) {
     database.subscribe(characteristic.path, support.subscriptionOptions('drop-oldest', 4, 4096))
   )
   const flood = async count => {
-    for (let index = 0; index < count; index += 1) {
-      await controller.perform(
+    const notification = index =>
+      controller.perform(
         'emit-notification',
         support.notificationInput(characteristic.path, new Uint8Array([index & 0xff]))
       )
+    if (desktopSyntheticIngress) {
+      await Promise.all(Array.from({ length: count }, (_unused, index) => notification(index)))
+    } else {
+      for (let index = 0; index < count; index += 1) await notification(index)
     }
     await controller.flush()
   }
@@ -743,6 +759,25 @@ async function scenarioSlowDrain(ctx) {
   let valueCount = 0
   const noticeItems = []
   const noticeBytes = []
+  // The desktop Rust-core `flush` is an ingress barrier. Start the exact
+  // number of reads needed to expose a capacity-four window plus its control
+  // record. Without that barrier, all five waits register before the desktop
+  // pump reaches its bounded stream and resolve as values, hiding overflow.
+  const ingressItems = desktopSyntheticIngress
+    ? await Promise.all(Array.from({ length: 5 }, () => controller.settle(iterator.next())))
+    : []
+  for (const item of ingressItems) {
+    if (item.done) {
+      detail.unexpectedIngressEnd = 'done'
+    } else if (item.value.kind === 'value') {
+      valueCount += 1
+    } else if (item.value.kind === 'overflow') {
+      noticeItems.push(Number(item.value.droppedItems))
+      noticeBytes.push(Number(item.value.droppedBytes))
+    } else if (item.value.kind === 'terminal') {
+      detail.unexpectedIngressEnd = item.value.reason
+    }
+  }
   let quiescent = false
   for (let pull = 0; pull < 40 && !quiescent; pull += 1) {
     const item = await settleBounded(controller, iterator.next(), 5000)
@@ -850,8 +885,7 @@ async function scenarioSlowDrain(ctx) {
   const gap = emitted - valueCount - detail.postDrainRetained
   const nonDecreasing = series => series.every((count, index) => index === 0 || count >= series[index - 1])
   const restatementsMonotonic = nonDecreasing(noticeItems) && nonDecreasing(noticeBytes)
-  const lastStatesGap =
-    detail.lastNoticeDroppedItems === gap && detail.lastNoticeDroppedBytes === gap
+  const lastStatesGap = detail.lastNoticeDroppedItems === gap && detail.lastNoticeDroppedBytes === gap
   detail.accountingShape = 'cumulative-restatement'
   const conserved = valueCount + (detail.lastNoticeDroppedItems ?? -1) + detail.postDrainRetained === emitted
   const bounded = detail.managerRetainedDuringFlood <= 8 && detail.postDrainRetained <= 4
@@ -991,7 +1025,10 @@ async function scenarioRestorationReference() {
     return {
       holds: false,
       skips,
-      detail: { reference: candidate, reason: 'W2 PresenceColdStartTest not found; cold-process restoration is uncovered' }
+      detail: {
+        reference: candidate,
+        reason: 'W2 PresenceColdStartTest not found; cold-process restoration is uncovered'
+      }
     }
   }
   const source = fs.readFileSync(candidate, 'utf8')
@@ -1011,8 +1048,10 @@ function deterministicLeg() {
 }
 
 function reactNativeLeg(platform) {
-  const { DeterministicRustCoreNative, DEFAULT_PEER } =
-    require('../../test-support/react-native/deterministic-rust-core-native')
+  const {
+    DeterministicRustCoreNative,
+    DEFAULT_PEER
+  } = require('../../test-support/react-native/deterministic-rust-core-native')
   const { deterministicRustCoreTckBoundary } = require('../../test-support/react-native/rust-core-harness')
   const {
     createReactNativeAndroidFirstPartyTckRegistration,
@@ -1104,30 +1143,30 @@ describe('W6 reliability acceptance (deterministic, no radio)', () => {
         })
       } else {
         for (const [scenarioId, body] of TCK_SCENARIOS) {
-        test(`${scenarioId} holds with identical behaviour`, async () => {
-          let ctx = null
-          try {
-            ctx = await openOwner(leg, scenarioId, 'owner')
-          } catch (error) {
-            if (error instanceof LegSkip) {
-              console.log(`SKIP ${scenarioId} [${leg.id}]: ${error.reason}`)
-              expect(error.reason.length > 0).toBe(true)
-              return
+          test(`${scenarioId} holds with identical behaviour`, async () => {
+            let ctx = null
+            try {
+              ctx = await openOwner(leg, scenarioId, 'owner')
+            } catch (error) {
+              if (error instanceof LegSkip) {
+                console.log(`SKIP ${scenarioId} [${leg.id}]: ${error.reason}`)
+                expect(error.reason.length > 0).toBe(true)
+                return
+              }
+              throw error
             }
-            throw error
-          }
-          try {
-            const report = await body(ctx)
-            reportSkips(scenarioId, leg.id, report.skips)
-            if (!report.holds) {
-              console.log(`DETAIL ${scenarioId} [${leg.id}]: ${JSON.stringify(report.detail)}`)
+            try {
+              const report = await body(ctx)
+              reportSkips(scenarioId, leg.id, report.skips)
+              if (!report.holds) {
+                console.log(`DETAIL ${scenarioId} [${leg.id}]: ${JSON.stringify(report.detail)}`)
+              }
+              expect(report.detail).toBeDefined()
+              expect(report.holds).toBe(true)
+            } finally {
+              await closeContext(ctx)
             }
-            expect(report.detail).toBeDefined()
-            expect(report.holds).toBe(true)
-          } finally {
-            await closeContext(ctx)
-          }
-        })
+          })
         }
       }
     })

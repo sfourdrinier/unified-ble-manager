@@ -2472,14 +2472,11 @@ packages:
     hasBin: true
     peerDependencies:
       '@tauri-apps/api': ^2.0.0
-      dbus-next: ^0.10.2
       expo: ^57.0.0
       react: '*'
       react-native: '>=0.86.0'
     peerDependenciesMeta:
       '@tauri-apps/api':
-        optional: true
-      dbus-next:
         optional: true
       expo:
         optional: true

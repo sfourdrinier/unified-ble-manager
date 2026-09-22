@@ -9,6 +9,9 @@ import android.content.Context
 import android.os.Build
 import android.util.Log
 import com.sfourdrinier.unifiedblemanager.rustcore.RustCoreProcessHost
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 
 /**
  * The Companion Device Manager presence endpoint (issue #212). The system
@@ -29,10 +32,11 @@ import com.sfourdrinier.unifiedblemanager.rustcore.RustCoreProcessHost
  * ([BackgroundContinuationDeclaration]) executes: `record-only` stops here,
  * `native` reconnects the declared known peer and resubscribes the declared
  * characteristics through the Rust core with no JavaScript, and the deferred
- * strategies record their `capability.unsupported` refusal. The wake work
- * runs synchronously on the callback thread with bounded waits (connect
- * budget plus op timeouts); every outcome is logged and recorded, never
- * silent.
+ * strategies record their `capability.unsupported` refusal. The callback
+ * only admits the work to this service's single serial worker, then returns
+ * to the system promptly; the worker performs the bounded connect and
+ * operation waits in callback order. Destroying the service closes admission
+ * without interrupting a wake already admitted to that worker.
  *
  * Manifest (added by the Expo config plugin whenever `background.android`
  * is configured):
@@ -53,6 +57,16 @@ import com.sfourdrinier.unifiedblemanager.rustcore.RustCoreProcessHost
  * unguarded host service.
  */
 open class UbmCompanionPresenceService : CompanionDeviceService() {
+  /**
+   * CompanionDeviceService callbacks may arrive on the main thread. Native
+   * continuation has deliberately bounded but long radio waits, so it must
+   * never occupy that callback. One worker also preserves the callback order
+   * that the coordinator's duplicate and disappearance semantics require.
+   */
+  private val callbackWorker: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
+    Thread(runnable, "ubm-companion-presence").also { it.isDaemon = true }
+  }
+
   private val coordinator: PresenceWakeCoordinator by lazy {
     // The override short-circuits before any Context use: unit tests drive
     // an unattached service, where applicationContext itself throws.
@@ -60,7 +74,7 @@ open class UbmCompanionPresenceService : CompanionDeviceService() {
   }
 
   override fun onDeviceAppeared(address: String) {
-    run("appeared") {
+    enqueue("appeared") {
       if (coordinator.appeared(address, null)) {
         Log.i(TAG, "presence wake delivered for $address (associationId=none)")
       }
@@ -73,7 +87,7 @@ open class UbmCompanionPresenceService : CompanionDeviceService() {
       Log.w(TAG, "presence appearance without a device address ignored (associationId=${association.id})")
       return
     }
-    run("appeared") {
+    enqueue("appeared") {
       if (coordinator.appeared(address, association.id)) {
         Log.i(TAG, "presence wake delivered for $address (associationId=${association.id})")
       }
@@ -81,7 +95,7 @@ open class UbmCompanionPresenceService : CompanionDeviceService() {
   }
 
   override fun onDeviceDisappeared(address: String) {
-    run("disappeared") { coordinator.disappeared(address, null) }
+    enqueue("disappeared") { coordinator.disappeared(address, null) }
   }
 
   override fun onDeviceDisappeared(association: AssociationInfo) {
@@ -90,7 +104,23 @@ open class UbmCompanionPresenceService : CompanionDeviceService() {
       Log.w(TAG, "presence disappearance without a device address ignored (associationId=${association.id})")
       return
     }
-    run("disappeared") { coordinator.disappeared(address, association.id) }
+    enqueue("disappeared") { coordinator.disappeared(address, association.id) }
+  }
+
+  override fun onDestroy() {
+    // shutdown(), unlike shutdownNow(), drains work that a system callback
+    // already admitted. A later callback after destruction is rejected and
+    // logged visibly by enqueue rather than run against a dead service.
+    callbackWorker.shutdown()
+    super.onDestroy()
+  }
+
+  private fun enqueue(what: String, body: () -> Unit) {
+    try {
+      callbackWorker.execute { run(what, body) }
+    } catch (error: RejectedExecutionException) {
+      Log.w(TAG, "presence $what rejected after service teardown: ${error.message ?: error.javaClass.simpleName}")
+    }
   }
 
   private fun run(what: String, body: () -> Unit) {

@@ -157,19 +157,25 @@ function legConsumerGate(installed) {
 }
 
 // Leg D: build the dispatch addon from the packed sources.
-function legBuildDispatch(installed, toolchain) {
+function legBuildDispatch(installed, toolchain, rustc) {
   const manifest = path.join(installed, 'Cargo.toml')
   if (!fs.existsSync(manifest)) fail('packed candidate is missing the workspace Cargo.toml')
-  const active = run('rustc', ['--version'])
+  const active = run(rustc, ['--version'])
   if (!active.includes(toolchain)) {
     fail(`active ${active} is not the pinned ${toolchain}`)
   }
   run(
-    'cargo',
-    ['build', '--locked', '-p', 'ubm5_napi_echo', '--manifest-path', manifest],
-    { cwd: installed, env: { ...process.env, CARGO_TARGET_DIR: targetDir } }
+    'rustup',
+    ['run', toolchain, 'cargo', 'build', '--locked', '-p', 'ubm5_napi_echo', '--manifest-path', manifest],
+    { cwd: installed, env: { ...process.env, RUSTC: rustc, CARGO_TARGET_DIR: targetDir } }
   )
-  const built = path.join(targetDir, 'debug', 'libubm5_napi_echo.so')
+  const hostCdylib =
+    process.platform === 'darwin'
+      ? 'libubm5_napi_echo.dylib'
+      : process.platform === 'win32'
+        ? 'ubm5_napi_echo.dll'
+        : 'libubm5_napi_echo.so'
+  const built = path.join(targetDir, 'debug', hostCdylib)
   if (!fs.existsSync(built)) fail('dispatch build produced no cdylib')
   // The build consumed the packed tree: its fingerprint references the
   // installed sources, not this checkout. (grep exits 1 on no match.)
@@ -233,14 +239,14 @@ function legOldManager(installed) {
 }
 
 // Leg H: the Tauri plugin compiles from the packed sources.
-function legTauriPlugin(installed) {
+function legTauriPlugin(installed, toolchain, rustc) {
   const pluginDir = path.join(installed, 'native', 'tauri')
   if (!fs.existsSync(path.join(pluginDir, 'Cargo.toml'))) fail('packed candidate lost native/tauri')
   // No --locked: the plugin lockfile is local-only by design (see the
   // crate). Resolution runs against crates.io like any first consumer.
-  run('cargo', ['check', '-p', 'tauri-plugin-unified-ble-manager'], {
+  run('rustup', ['run', toolchain, 'cargo', 'check', '-p', 'tauri-plugin-unified-ble-manager'], {
     cwd: pluginDir,
-    env: { ...process.env, CARGO_TARGET_DIR: path.join(targetDir, 'tauri') }
+    env: { ...process.env, RUSTC: rustc, CARGO_TARGET_DIR: path.join(targetDir, 'tauri') }
   })
   log('Tauri plugin compiles from packed sources (ubm-core references pin the shared core)')
 }
@@ -282,15 +288,16 @@ function legApple(installed) {
 function main() {
   try {
     const toolchain = pinnedToolchain()
+    const rustc = run('rustup', ['which', '--toolchain', toolchain, 'rustc'])
     log(`pinned toolchain: ${toolchain}`)
     const { tarball, sha256 } = legPack()
     const installed = legInstall(tarball)
     legConsumerGate(installed)
-    const addon = legBuildDispatch(installed, toolchain)
+    const addon = legBuildDispatch(installed, toolchain, rustc)
     legIdentity(installed, addon)
     legDispatch(addon)
     legOldManager(installed)
-    legTauriPlugin(installed)
+    legTauriPlugin(installed, toolchain, rustc)
     legAndroid(installed)
     legApple(installed)
     log(`F01 PACKED-DISPATCH PROOF PASS (candidate sha256=${sha256})`)

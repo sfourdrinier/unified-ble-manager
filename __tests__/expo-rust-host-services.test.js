@@ -358,6 +358,7 @@ describe('Expo host services on the Rust session', () => {
       ]
     }
     const CLAIM = JSON.stringify({
+      consumerCount: 1,
       batches: [
         JSON.stringify({
           more: false,

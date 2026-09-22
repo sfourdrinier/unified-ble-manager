@@ -26,6 +26,7 @@ describe('continuation dispose failure', () => {
   it('a release-failed dispose reaches the app with the session kept', () => {
     const backlog = aggregateContinuationClaim(
       {
+        consumerCount: 1,
         batches: [],
         disposed: false,
         disposeFailure: 'session.dispose reported release-failed; the session is kept for a retry'
@@ -37,9 +38,23 @@ describe('continuation dispose failure', () => {
   })
 
   it('a clean dispose carries no failure', () => {
-    const backlog = aggregateContinuationClaim({ batches: [], disposed: true }, NATIVE_DECLARATION)
+    const backlog = aggregateContinuationClaim({ consumerCount: 1, batches: [], disposed: true }, NATIVE_DECLARATION)
     expect(backlog.disposed).toBe(true)
     expect(backlog.disposeFailure).toBe(null)
+  })
+
+  it('refuses negative session and status counts', () => {
+    expect(() => aggregateContinuationClaim({ consumerCount: -1, batches: [], disposed: false })).toThrow()
+    expect(() =>
+      parseContinuationStatus({
+        strategy: 'native',
+        peerId: null,
+        resubscribe: -1,
+        malformedDeclarations: 0,
+        lastWake: null,
+        detail: null
+      })
+    ).toThrow()
   })
 })
 

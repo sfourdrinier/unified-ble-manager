@@ -35,6 +35,7 @@ describe('continuation backlog drains with accounted loss', () => {
   it('aggregates value records across chained batches with ordinal continuity', () => {
     const claim = aggregateContinuationClaim(
       {
+        consumerCount: 1,
         batches: [
           batch([valueRecord(1, 'ubm-continuation-0'), valueRecord(2, 'ubm-continuation-0')], { more: true }),
           batch([valueRecord(3, 'ubm-continuation-0')], { more: false })
@@ -53,6 +54,7 @@ describe('continuation backlog drains with accounted loss', () => {
   it('surfaces stream-end overflow with exact drop counts, never silent', () => {
     const claim = aggregateContinuationClaim(
       {
+        consumerCount: 1,
         batches: [
           batch([
             valueRecord(1, 'ubm-continuation-0'),
@@ -71,7 +73,7 @@ describe('continuation backlog drains with accounted loss', () => {
 
   it('reports cumulative controlLost so the reader reconciles instead of inferring', () => {
     const claim = aggregateContinuationClaim(
-      { batches: [batch([valueRecord(1, 'ubm-continuation-0')], { controlLost: 3 })], disposed: false },
+      { consumerCount: 1, batches: [batch([valueRecord(1, 'ubm-continuation-0')], { controlLost: 3 })], disposed: false },
       DECLARATION
     )
     expect(claim.controlLost).toBe(3)
@@ -84,6 +86,7 @@ describe('continuation backlog drains with accounted loss', () => {
     expect(() =>
       aggregateContinuationClaim(
         {
+          consumerCount: 1,
           batches: [
             batch([valueRecord(1, 'ubm-continuation-0')], { more: true }),
             batch([valueRecord(1, 'ubm-continuation-0')], { more: false })
@@ -96,11 +99,11 @@ describe('continuation backlog drains with accounted loss', () => {
   })
 
   it('refuses malformed batches instead of delivering partial backlogs', () => {
-    expect(() => aggregateContinuationClaim({ batches: ['{nope'], disposed: true }, DECLARATION)).toThrow()
+    expect(() => aggregateContinuationClaim({ consumerCount: 1, batches: ['{nope'], disposed: true }, DECLARATION)).toThrow()
   })
 
   it('reads empty batches as the valid no-wake answer, never an error', () => {
-    const claim = aggregateContinuationClaim({ batches: [], disposed: false }, DECLARATION)
+    const claim = aggregateContinuationClaim({ consumerCount: 0, batches: [], disposed: false }, DECLARATION)
     expect(claim.values).toEqual([])
     expect(claim.streamEnds).toEqual([])
     expect(claim.controlLost).toBe(0)
@@ -110,7 +113,7 @@ describe('continuation backlog drains with accounted loss', () => {
   it('refuses backlog records for consumers the order never subscribed', () => {
     expect(() =>
       aggregateContinuationClaim(
-        { batches: [batch([valueRecord(1, 'ubm-continuation-7')])], disposed: true },
+        { consumerCount: 1, batches: [batch([valueRecord(1, 'ubm-continuation-7')])], disposed: true },
         DECLARATION
       )
     ).toThrow()

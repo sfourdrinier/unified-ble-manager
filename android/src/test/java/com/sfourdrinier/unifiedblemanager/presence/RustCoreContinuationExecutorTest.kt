@@ -34,6 +34,13 @@ class RustCoreContinuationExecutorTest {
     foregroundService = null
   )
 
+  private fun twoSelectorDeclaration() = declaration().copy(
+    resubscribe = listOf(
+      ContinuationSelector(hrService, 1, hrMeasurement, 1),
+      ContinuationSelector(hrService, 1, "00002a38-0000-1000-8000-00805f9b34fb", 1)
+    )
+  )
+
   private fun ok(valueJson: String) = "{\"ok\":true,\"value\":$valueJson}"
 
   /** Answers one issued invoke by index, waiting until the executor issues it. */
@@ -96,6 +103,11 @@ class RustCoreContinuationExecutorTest {
     assertTrue(subscribeArgs.contains("\"consumer\":\"ubm-continuation-0\""))
     assertTrue(subscribeArgs.contains(hrService))
     assertTrue(subscribeArgs.contains(hrMeasurement))
+    assertTrue(
+      "declarations are public 1-based paths while the Rust mobile wire is 0-based: $subscribeArgs",
+      subscribeArgs.contains("\"serviceOccurrence\":0") &&
+        subscribeArgs.contains("\"characteristicOccurrence\":0")
+    )
     assertTrue(fake.openScopes.contains(RustCoreContinuationExecutor.CONTINUATION_SCOPE))
   }
 
@@ -117,6 +129,34 @@ class RustCoreContinuationExecutorTest {
     assertTrue(failed.platform!!.contains("connectionFailed"))
     // Nothing after the refusal: no discover, no subscribe.
     assertEquals(listOf("connection.connect"), fake.invokes.map { it.second })
+  }
+
+  @Test
+  fun aPartialSubscriptionFailurePinsTheConsumersThatCanAlreadyQueueValues() {
+    fake.openRecord = { "{\"sessionId\":7,\"contractRevision\":\"c\",\"wireRevision\":\"ubm-mobile-wire/1\"}" }
+    val answering = answerInvokes(
+      listOf(
+        ok("{\"peerKey\":\"k\",\"connectionGeneration\":\"cg-1\"}"),
+        ok("{\"connectionGeneration\":\"cg-1\",\"databaseGeneration\":\"db-1\",\"services\":[]}"),
+        ok("{\"consumer\":\"ubm-continuation-0\",\"delivery\":\"notification\"}"),
+        "{\"ok\":false,\"error\":{\"code\":\"gatt.not-found\",\"detail\":\"second selector absent\"}}"
+      )
+    )
+    val outcome = executor.execute(peer, twoSelectorDeclaration())
+    answering.join(10_000)
+    assertEquals("gatt.not-found", (outcome as ContinuationOutcome.Failed).code)
+
+    fake.drainAnswer =
+      "{\"more\":false,\"records\":[{\"t\":\"value\",\"ordinal\":1," +
+        "\"consumer\":\"ubm-continuation-0\",\"valueB64\":\"AEg=\",\"delivery\":\"notification\"}],\"controlLost\":0}"
+    val disposing = Thread { answerAt(4, "{\"ok\":true,\"value\":{\"state\":\"released\",\"failures\":[]}}") }
+    disposing.isDaemon = true
+    disposing.start()
+    val claim = executor.claimAndDispose(256, 65536)
+    disposing.join(10_000)
+
+    assertEquals(1, claim.consumerCount)
+    assertTrue(claim.batches.single().contains("\"consumer\":\"ubm-continuation-0\""))
   }
 
   @Test
@@ -204,6 +244,84 @@ class RustCoreContinuationExecutorTest {
     answeringDescribe.start()
     assertTrue(done.await(5, TimeUnit.SECONDS))
     assertTrue(backlog != null)
+  }
+
+  @Test
+  fun aClaimDuringExecutionKeepsTheSessionUntilTheRadioWorkCompletes() {
+    fake.openRecord = { "{\"sessionId\":7,\"contractRevision\":\"c\",\"wireRevision\":\"ubm-mobile-wire/1\"}" }
+    var outcome: ContinuationOutcome? = null
+    val executing = Thread { outcome = executor.execute(peer, declaration()) }
+    executing.isDaemon = true
+    executing.start()
+    val deadline = System.currentTimeMillis() + 10_000L
+    while (fake.invokes.isEmpty() && System.currentTimeMillis() < deadline) Thread.sleep(5)
+    assertTrue("the wake must have started its connect before claiming", fake.invokes.isNotEmpty())
+
+    val claimWhileExecuting = executor.claimAndDispose(256, 65536)
+    assertFalse("a claim must not dispose a session whose radio work is still running", claimWhileExecuting.disposed)
+    assertTrue("the app must be told why it needs to claim again", claimWhileExecuting.disposeFailure!!.contains("executing"))
+    assertTrue("a busy claim must not drain the in-flight session", fake.calls.none { it.startsWith("drain:") })
+    assertEquals(listOf("connection.connect"), fake.invokes.map { it.second })
+
+    val answering = answerInvokes(
+      listOf(
+        ok("{\"peerKey\":\"k\",\"connectionGeneration\":\"cg-1\"}"),
+        ok("{\"connectionGeneration\":\"cg-1\",\"databaseGeneration\":\"db-1\",\"services\":[]}"),
+        ok("{\"consumer\":\"ubm-continuation-0\",\"delivery\":\"notification\"}")
+      )
+    )
+    executing.join(10_000)
+    answering.join(10_000)
+    assertEquals(ContinuationOutcome.completed(ContinuationStrategy.NATIVE, peer, 1), outcome)
+
+    val disposing = Thread { answerAt(3, "{\"ok\":true,\"value\":{\"state\":\"released\",\"failures\":[]}}") }
+    disposing.isDaemon = true
+    disposing.start()
+    val laterClaim = executor.claimAndDispose(256, 65536)
+    disposing.join(10_000)
+    assertEquals(1, laterClaim.consumerCount)
+    assertTrue("a later claim must dispose after execution leaves the session", laterClaim.disposed)
+  }
+
+  @Test
+  fun anExecutionDuringClaimDoesNotStartRadioWorkOnTheClaimedSession() {
+    fake.openRecord = { "{\"sessionId\":7,\"contractRevision\":\"c\",\"wireRevision\":\"ubm-mobile-wire/1\"}" }
+    val establishing = answerInvokes(
+      listOf(
+        ok("{\"peerKey\":\"k\",\"connectionGeneration\":\"cg-1\"}"),
+        ok("{\"connectionGeneration\":\"cg-1\",\"databaseGeneration\":\"db-1\",\"services\":[]}"),
+        ok("{\"consumer\":\"ubm-continuation-0\",\"delivery\":\"notification\"}")
+      )
+    )
+    assertEquals(ContinuationOutcome.completed(ContinuationStrategy.NATIVE, peer, 1), executor.execute(peer, declaration()))
+    establishing.join(10_000)
+
+    var claim: ContinuationClaim? = null
+    val claiming = Thread { claim = executor.claimAndDispose(256, 65536) }
+    claiming.isDaemon = true
+    claiming.start()
+    val claimDeadline = System.currentTimeMillis() + 10_000L
+    while (fake.callbacks.size < 4 && System.currentTimeMillis() < claimDeadline) Thread.sleep(5)
+    assertEquals("the claim must reserve the session through dispose", "session.dispose", fake.invokes[3].second)
+
+    var outcome: ContinuationOutcome? = null
+    val executing = Thread { outcome = executor.execute(peer, declaration()) }
+    executing.isDaemon = true
+    executing.start()
+    Thread.sleep(100)
+    fake.callbacks[3].onResult("{\"ok\":true,\"value\":{\"state\":\"released\",\"failures\":[]}}")
+
+    val extraInvokeDeadline = System.currentTimeMillis() + 2_000L
+    while (fake.callbacks.size < 5 && executing.isAlive && System.currentTimeMillis() < extraInvokeDeadline) Thread.sleep(5)
+    if (fake.callbacks.size >= 5) {
+      fake.callbacks[4].onResult("{\"ok\":false,\"error\":{\"code\":\"lifecycle.destroyed\",\"detail\":\"claim owns disposal\"}}")
+    }
+    claiming.join(10_000)
+    executing.join(10_000)
+
+    assertTrue(claim!!.disposed)
+    assertEquals("a claimed session must refuse a competing execute", "lifecycle.invalid-state", (outcome as ContinuationOutcome.Failed).code)
+    assertEquals("the competing execute must not begin another connect", 1, fake.invokes.count { it.second == "connection.connect" })
   }
 
   @Test

@@ -14,6 +14,7 @@ const { execFileSync, spawn, spawnSync } = require('node:child_process')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
+const { gitBashExecutableTemp } = require('./helpers/git-bash-temp')
 
 const SCRIPT = path.join(__dirname, '..', 'example-expo', 'scripts', 'build-tv.sh')
 const ROOT = path.join(__dirname, '..')
@@ -344,7 +345,7 @@ describe('build-tv.sh finding 176', () => {
   // when python3 is absent.
   test('bundle-url resolves python portably when python3 is absent', () => {
     const stage = stageDir()
-    const shim = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-py-shim-'))
+    const shim = fs.mkdtempSync(path.join(gitBashExecutableTemp(), 'ubm-py-shim-'))
     try {
       const iosDir = path.join(stage, 'ios', 'TvApp')
       fs.mkdirSync(iosDir, { recursive: true })
