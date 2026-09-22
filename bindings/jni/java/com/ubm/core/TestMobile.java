@@ -15,6 +15,7 @@ public final class TestMobile {
     private TestMobile() {}
 
     static volatile String lastPreferredPhy = null;
+    static volatile long lastNotificationEpoch = -1;
     static final java.util.concurrent.atomic.AtomicInteger backgroundReleases = new java.util.concurrent.atomic.AtomicInteger();
 
     static final class Radio implements MobileCoreBridge.RadioHost {
@@ -37,7 +38,10 @@ public final class TestMobile {
         public void write(long id, String p, String s, long so, String c, long co, byte[] v, boolean r) { MobileCoreBridge.nativeCompleteUnit(id); }
         public void readDescriptor(long id, String p, String s, long so, String c, long co, String d, long dco) { MobileCoreBridge.nativeCompleteBytes(id, new byte[] {1, 0}); }
         public void writeDescriptor(long id, String p, String s, long so, String c, long co, String d, long dco, byte[] v) { MobileCoreBridge.nativeCompleteUnit(id); }
-        public void enableNotifications(long id, String p, String s, long so, String c, long co, long epoch, String req, String pref) { MobileCoreBridge.nativeCompleteNotifyEnabled(id, "notification"); }
+        public void enableNotifications(long id, String p, String s, long so, String c, long co, long epoch, String req, String pref) {
+            lastNotificationEpoch = epoch;
+            MobileCoreBridge.nativeCompleteNotifyEnabled(id, "notification");
+        }
         public void disableNotifications(long id, String p, String s, long so, String c, long co) { MobileCoreBridge.nativeCompleteUnit(id); }
         public void readMtu(long id, String p) { MobileCoreBridge.nativeCompleteMtu(id, 247); }
         public void readWriteLimits(long id, String p) { MobileCoreBridge.nativeCompleteWriteLimits(id, 512, 20); }
@@ -53,7 +57,11 @@ public final class TestMobile {
         public void acquireBackground(long id, String kind, String reason) { MobileCoreBridge.nativeCompleteLease(id, "lease-1"); }
         public void releaseBackground(long id, String lease) { backgroundReleases.incrementAndGet(); MobileCoreBridge.nativeCompleteUnit(id); }
         public void updateBackgroundNotification(long id, String lease, String title, String body) { MobileCoreBridge.nativeCompleteUnit(id); }
-        public void associateCompanion(long id, String name, String service) { MobileCoreBridge.nativeCompleteCompanion(id, 7L, "AA:BB:CC:DD:EE:FF", null); }
+        public void associateCompanion(long id, String name, String service) { MobileCoreBridge.nativeCompleteCompanion(id, 7L, "AA:BB:CC:DD:EE:FF", null, false); }
+        public void listCompanion(long id) { MobileCoreBridge.nativeCompleteCompanionList(id, new long[0], new String[0], new String[0]); }
+        public void disassociateCompanion(long id, long associationId) { MobileCoreBridge.nativeCompleteUnit(id); }
+        public void observePresence(long id, String peerId) { MobileCoreBridge.nativeCompleteUnit(id); }
+        public void unobservePresence(long id, String peerId) { MobileCoreBridge.nativeCompleteUnit(id); }
         public void close(long id) { MobileCoreBridge.nativeCompleteClosed(id, new String[0], new String[0], new long[0], new String[0], new long[0], new String[0]); }
         public void cancel(long id) {}
     }
@@ -130,8 +138,24 @@ public final class TestMobile {
         check(bonded.contains("\"source\":\"system-bonded\""), "bonded peers");
         String lease = call(session, "background.acquire", "{\"kind\":\"connected-device\",\"reason\":\"workout\"}");
         check(lease.contains("\"leaseId\":\"lease-1\""), "foreground-service lease acquired");
-        String disposed = call(session, "session.dispose", "{}");
-        check(disposed.contains("\"state\":\"released\""), "dispose releases");
+        String subscribed = call(session, "gatt.subscribe", "{\"peerId\":\"AA:BB:CC:DD:EE:FF\",\"selector\":" + selector + ",\"consumer\":\"continuation-0\",\"deliveryMode\":\"require-notification\",\"operationId\":\"sub1\"}");
+        check(subscribed.contains("\"consumer\":\"continuation-0\""), "continuation subscription enabled");
+        check(MobileCoreBridge.nativeIngestNotification("AA:BB:CC:DD:EE:FF", "180D", 0, "2A37", 0, lastNotificationEpoch, new byte[] {1, 2}) == MobileCoreBridge.STATUS_ACCEPTED, "pre-cutoff notification accepted");
+        check(wakes.poll(5, TimeUnit.SECONDS) != null, "pre-cutoff notification reached the session outbox");
+        String sealed = call(session, "session.quiesce", "{}");
+        check(sealed.contains("\"state\":\"sealed\"") && sealed.contains("\"afterCutoffItems\":0"), "continuation outbox sealed");
+        String continuationDrain = MobileCoreBridge.nativeDrain(session, 256, 65536);
+        check(continuationDrain.contains("\"consumer\":\"continuation-0\"") && continuationDrain.contains("\"valueB64\":\"AQI=\""), "pre-cutoff notification drains exactly once");
+        check(MobileCoreBridge.nativeIngestNotification("AA:BB:CC:DD:EE:FF", "180D", 0, "2A37", 0, lastNotificationEpoch, new byte[] {3}) == MobileCoreBridge.STATUS_ACCEPTED, "post-cutoff notification reaches native intake");
+        String cutoff = sealed;
+        long cutoffDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!cutoff.contains("\"afterCutoffItems\":1") && System.nanoTime() < cutoffDeadline) {
+            Thread.sleep(5);
+            cutoff = call(session, "session.quiesce", "{}");
+        }
+        check(cutoff.contains("\"afterCutoffItems\":1"), "post-cutoff notification is loss-accounted");
+        String continuationDisposed = call(session, "session.continuation-dispose", "{}");
+        check(continuationDisposed.contains("\"state\":\"released\"") && continuationDisposed.contains("\"afterCutoffItems\":1"), "continuation cleanup returns cutoff accounting");
         check(backgroundReleases.get() == 0, "manager destroy keeps the module's foreground service");
         String scope = MobileCoreBridge.nativeReleaseBackgroundScope("jvm-module");
         check(scope.contains("\"state\":\"released\"") && backgroundReleases.get() == 1, "module invalidation releases the lease: " + scope);

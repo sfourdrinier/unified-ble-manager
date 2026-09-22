@@ -15,8 +15,9 @@ import java.util.concurrent.atomic.AtomicReference
  * with no JavaScript (BGS4): a host-owned continuation session opens,
  * connects the appeared known peer `direct`, discovers, and subscribes the
  * declared characteristics. Values arriving with no JS session queue in the
- * session's existing bounded outbox; when the app opens, [claimAndDispose]
- * drains it with the drain contract's own loss accounting.
+ * session's existing bounded outbox; when the app opens, the native surface
+ * prepares then acknowledges a claim, while [claimAndDispose] is JVM-test
+ * convenience that exercises that same protocol.
  *
  * `direct`, not `when-available`: Companion Device Manager only fires on an
  * absent-to-present transition, so the peer is already advertising when this
@@ -41,13 +42,31 @@ class RustCoreContinuationExecutor(
   private val lock = Any()
   private var sessionId: Long? = null
   private var continuingPeer: String? = null
+  /** Immutable declaration identity for the session's active continuation. */
+  private var continuingSelectors: List<ContinuationSelector> = emptyList()
+  /** Consumers whose routes still describe the currently live continuation. */
+  private var activeConsumers: List<String> = emptyList()
+  /** Selector identity for every consumer that can still occur in this session's outbox. */
+  private var claimedSelectors: List<ContinuationSelector> = emptyList()
   private var subscribedConsumers = 0
   private var activeSession: Long? = null
   private var activeSessionActivity: SessionActivity? = null
   private val admission = AtomicLong(0)
+  /** A sealed native handoff remains authoritative until TypeScript validates and acknowledges it. */
+  private var preparedClaim: PreparedClaim? = null
+
+  private data class PreparedClaim(
+    val token: String,
+    val claim: ContinuationClaim,
+    /** A complete drain may release after acknowledgement; a prefix may only advance to its tail. */
+    val cleanupEligible: Boolean,
+    var acknowledged: Boolean = false,
+    /** A released session keeps one replay-safe acknowledgement receipt. */
+    var acknowledgement: ContinuationAcknowledgement? = null
+  )
 
   /** One execution's state snapshot: the lock guards this handoff, not the radio I/O. */
-  private data class Execution(val session: Long)
+  private data class Execution(val session: Long, val reconcileHeldSession: Boolean)
 
   private enum class SessionActivity { EXECUTING, CLAIMING }
 
@@ -84,15 +103,47 @@ class RustCoreContinuationExecutor(
           null
         )
       }
-      if (held == address && subscribedConsumers == declaration.resubscribe.size) {
-        log("continuation session already holds $address; already continuing")
-        return ContinuationOutcome.completed(ContinuationStrategy.NATIVE, address, subscribedConsumers)
+      if (held == address) {
+        if (continuingSelectors != declaration.resubscribe) {
+          return ContinuationOutcome.failed(
+            ContinuationStrategy.NATIVE,
+            "lifecycle.invalid-state",
+            "continuation session holds a different declaration; claim the pinned backlog before replacing it",
+            null
+          )
+        }
+        if (activeConsumers.size != declaration.resubscribe.size) {
+          return ContinuationOutcome.failed(
+            ContinuationStrategy.NATIVE,
+            "lifecycle.invalid-state",
+            "continuation session has a partial declaration; claim the pinned backlog before retrying it",
+            null
+          )
+        }
+        activeSession = session
+        activeSessionActivity = SessionActivity.EXECUTING
+        return@synchronized Execution(session, true)
       }
       activeSession = session
       activeSessionActivity = SessionActivity.EXECUTING
-      Execution(session)
+      Execution(session, false)
     }
     try {
+      if (execution.reconcileHeldSession) {
+        when (heldSessionHealthy(execution.session, address)) {
+          true -> {
+            log("continuation session already holds $address with an authoritative live link and subscriptions")
+            return ContinuationOutcome.completed(ContinuationStrategy.NATIVE, address, declaration.resubscribe.size)
+          }
+          false -> {
+            log("continuation session for $address is no longer live; reconnecting the pinned declaration")
+            // Retain every historical selector for backlog decoding, but the
+            // next authoritative reconcile must assess only the replacement
+            // routes. An ended route cannot become live again by name.
+            synchronized(lock) { activeConsumers = emptyList() }
+          }
+        }
+      }
       val connected = invokeChecked(
         execution.session,
         "connection.connect",
@@ -134,9 +185,10 @@ class RustCoreContinuationExecutor(
           discovered.platform
         )
       }
+      val consumerBase = synchronized(lock) { claimedSelectors.size }
       var resubscribed = 0
       declaration.resubscribe.forEachIndexed { index, selector ->
-        val consumer = "$CONSUMER_PREFIX$index"
+        val consumer = "$CONSUMER_PREFIX${consumerBase + index}"
         val subscribed = invokeChecked(
           execution.session,
           "gatt.subscribe",
@@ -172,7 +224,10 @@ class RustCoreContinuationExecutor(
           // its eventual claim must authorize those consumer names.
           if (sessionId == execution.session) {
             continuingPeer = address
-            subscribedConsumers = resubscribed
+            continuingSelectors = declaration.resubscribe.toList()
+            activeConsumers = activeConsumers + consumer
+            claimedSelectors = claimedSelectors + selector
+            subscribedConsumers = claimedSelectors.size
           }
         }
       }
@@ -187,6 +242,18 @@ class RustCoreContinuationExecutor(
       )
     } finally {
       clearActivity(execution.session, SessionActivity.EXECUTING)
+    }
+  }
+
+  /**
+   * A persisted replacement cannot claim success while an older session can
+   * still drain records under a different selector identity.
+   */
+  fun declarationReplacementFailure(declaration: BackgroundContinuationDeclaration): String? = synchronized(lock) {
+    if (sessionId != null && continuingSelectors != declaration.resubscribe) {
+      "continuation session holds a different declaration; claim the pinned backlog before replacing it"
+    } else {
+      null
     }
   }
 
@@ -209,9 +276,12 @@ class RustCoreContinuationExecutor(
   }
 
   /**
-   * Drains the continuation backlog (verbatim drain batches for the JS
-   * codec) and disposes the session. The app's own session connects next;
-   * the link gap is covered by the core's loss accounting, never silence.
+   * Establishes the Rust-owned intake cutoff, drains the sealed continuation
+   * backlog (verbatim batches for the JS codec), then disposes the session.
+   * The cutoff and each data admission share the Rust outbox mutex: a record
+   * accepted before it is returned once; an attempted later admission is
+   * reported as [ContinuationClaim.afterCutoffLoss], never silently folded
+   * into the foreground handoff.
    *
    * The dispose envelope decides ownership: `released` clears the session,
    * while `release-failed` (or an unreadable dispose) keeps the id with the
@@ -221,10 +291,16 @@ class RustCoreContinuationExecutor(
    * cap with `more` still queued) likewise keeps the session: disposing now
    * would discard the unread tail silently.
    */
-  fun claimAndDispose(maxItems: Int, maxBytes: Int, maxBatches: Int = 32): ContinuationClaim {
-    val (session, consumerCount) = synchronized(lock) {
+  fun prepareClaim(maxItems: Int, maxBytes: Int, maxBatches: Int = 32): ContinuationClaim {
+    synchronized(lock) {
+      preparedClaim?.let { prepared ->
+        return if (prepared.acknowledged) prepared.claim.copy(batches = emptyList()) else prepared.claim
+      }
+    }
+    val (session, consumerCount, selectors) = synchronized(lock) {
       val current = sessionId ?: return ContinuationClaim(0, emptyList(), false)
       val currentConsumerCount = subscribedConsumers
+      val currentSelectors = claimedSelectors.toList()
       if (activeSession == current) {
         return ContinuationClaim(
           currentConsumerCount,
@@ -235,9 +311,16 @@ class RustCoreContinuationExecutor(
       }
       activeSession = current
       activeSessionActivity = SessionActivity.CLAIMING
-      Pair(current, currentConsumerCount)
+      Triple(current, currentConsumerCount, currentSelectors)
     }
     try {
+      val cutoff = try {
+        quiesce(session)
+      } catch (error: ContinuationFailure) {
+        val failure = "continuation quiesce failed: ${error.message}"
+        log(failure)
+        return ContinuationClaim(consumerCount, emptyList(), false, failure, selectors = selectors)
+      }
       val batches = ArrayList<String>(4)
       var more = true
       var rounds = 0
@@ -251,12 +334,15 @@ class RustCoreContinuationExecutor(
           log(drainFailure)
           break
         }
-        batches.add(batch)
         more = try {
-          val root = RustCoreJson.parse(batch) as? Map<*, *>
-          root?.get("more") as? Boolean ?: false
-        } catch (error: IllegalArgumentException) {
-          drainFailure = "continuation drain batch unparseable: ${error.message}"
+          val completion = parseDrainCompletion(batch)
+          // Return only a prefix the TypeScript drain codec can consume.
+          // A malformed following batch remains native-side failure state;
+          // including it here would make the valid prefix unusable.
+          batches.add(batch)
+          completion
+        } catch (error: ContinuationFailure) {
+          drainFailure = "continuation drain batch malformed: ${error.message}"
           log(drainFailure)
           false
         }
@@ -266,35 +352,207 @@ class RustCoreContinuationExecutor(
         log(drainFailure)
       }
       if (drainFailure != null) {
-        return ContinuationClaim(consumerCount, batches, false, drainFailure)
-      }
-      val disposeFailure = try {
-        disposeFailure(invoke(session, "session.dispose", emptyMap(), opTimeoutMs))
-      } catch (error: ContinuationFailure) {
-        "continuation dispose failed: ${error.message}"
-      }
-      if (disposeFailure != null) {
-        log(disposeFailure)
-        return ContinuationClaim(consumerCount, batches, false, disposeFailure)
-      }
-      synchronized(lock) {
-        if (sessionId == session) {
-          sessionId = null
-          continuingPeer = null
-          subscribedConsumers = 0
+        // `drain` has already consumed every valid prefix batch. Keep that
+        // prefix behind a token so JS can decode and acknowledge it before a
+        // later claim advances to the unread tail. Returning it tokenless
+        // would make a valid prefix neither deliverable nor replayable.
+        synchronized(lock) {
+          val token = "continuation-${admission.incrementAndGet()}"
+          val prepared = ContinuationClaim(
+            consumerCount,
+            batches,
+            false,
+            drainFailure,
+            afterCutoffLoss = cutoff,
+            selectors = selectors,
+            claimToken = token
+          )
+          preparedClaim = PreparedClaim(token, prepared, cleanupEligible = false)
+          return prepared
         }
       }
-      return ContinuationClaim(consumerCount, batches, true)
+      synchronized(lock) {
+        val token = "continuation-${admission.incrementAndGet()}"
+        val prepared = ContinuationClaim(
+          consumerCount,
+          batches,
+          false,
+          null,
+          cutoff,
+          selectors,
+          token
+        )
+        preparedClaim = PreparedClaim(token, prepared, cleanupEligible = true)
+        return prepared
+      }
     } finally {
       clearActivity(session, SessionActivity.CLAIMING)
     }
   }
+
+  /** A successful TypeScript decode is the only authority that permits continuation cleanup. */
+  fun acknowledgeClaim(token: String): ContinuationAcknowledgement {
+    val (session, prepared) = synchronized(lock) {
+      val current = preparedClaim ?: throw ContinuationFailure("no prepared continuation claim")
+      if (current.token != token) throw ContinuationFailure("continuation claim token does not match the prepared handoff")
+      current.acknowledgement?.let { return it }
+      val currentSession = sessionId ?: throw ContinuationFailure("prepared continuation session is gone")
+      if (activeSession == currentSession) throw ContinuationFailure("continuation session is ${activeSessionActivity!!.name.lowercase()}")
+      activeSession = currentSession
+      activeSessionActivity = SessionActivity.CLAIMING
+      current.acknowledged = true
+      Pair(currentSession, current)
+    }
+    try {
+      if (!prepared.cleanupEligible) {
+        // JS has validated the prefix, so it is safe to advance past it. Do
+        // not dispose: the sealed session still owns the unread tail. The
+        // explicit failure remains part of the acknowledgement so callers
+        // know to issue the next claim.
+        synchronized(lock) {
+          if (preparedClaim === prepared) preparedClaim = null
+        }
+        return ContinuationAcknowledgement(false, prepared.claim.afterCutoffLoss, prepared.claim.disposeFailure)
+      }
+      val disposal = try {
+        continuationDispose(session)
+      } catch (error: ContinuationFailure) {
+        ContinuationDisposal("continuation dispose failed: ${error.message}", prepared.claim.afterCutoffLoss)
+      }
+      if (disposal.failure != null) {
+        log(disposal.failure)
+        return ContinuationAcknowledgement(false, disposal.afterCutoffLoss, disposal.failure)
+      }
+      val acknowledgement = ContinuationAcknowledgement(true, disposal.afterCutoffLoss, null)
+      synchronized(lock) {
+        if (sessionId == session) {
+          sessionId = null
+          continuingPeer = null
+          continuingSelectors = emptyList()
+          activeConsumers = emptyList()
+          claimedSelectors = emptyList()
+          subscribedConsumers = 0
+          // Keep the one acknowledged receipt after releasing the native
+          // session. If the JS promise is lost or its result is malformed,
+          // the next prepare/ack can obtain this terminal answer without
+          // replaying batches that JS has already decoded.
+          prepared.acknowledgement = acknowledgement
+        }
+      }
+      return acknowledgement
+    } finally {
+      clearActivity(session, SessionActivity.CLAIMING)
+    }
+  }
+
+  /** JVM-only convenience for lifecycle tests; the exported native surface uses prepare then acknowledge. */
+  fun claimAndDispose(maxItems: Int, maxBytes: Int, maxBatches: Int = 32): ContinuationClaim {
+    val prepared = prepareClaim(maxItems, maxBytes, maxBatches)
+    if (prepared.claimToken.isEmpty()) return prepared
+    val acknowledgement = acknowledgeClaim(prepared.claimToken)
+    return prepared.copy(
+      batches = prepared.batches,
+      disposed = acknowledgement.disposed,
+      disposeFailure = acknowledgement.disposeFailure,
+      afterCutoffLoss = acknowledgement.afterCutoffLoss
+    )
+  }
+
+  /** `session.quiesce` is idempotent and establishes the native intake cutoff. */
+  private fun quiesce(session: Long): CutoffLoss {
+    val checked = checkEnvelope("session.quiesce", invoke(session, "session.quiesce", emptyMap(), opTimeoutMs))
+    if (!checked.ok) throw ContinuationFailure("${checked.code} ${checked.reason}")
+    if (checked.value["state"] != "sealed") throw ContinuationFailure("session.quiesce did not report sealed")
+    return cutoffLoss("session.quiesce", checked.value)
+  }
+
+  /** Cleanup after the cutoff includes every attempted post-cutoff admission. */
+  private fun continuationDispose(session: Long): ContinuationDisposal {
+    val checked = checkEnvelope(
+      "session.continuation-dispose",
+      invoke(session, "session.continuation-dispose", emptyMap(), opTimeoutMs)
+    )
+    if (!checked.ok) {
+      if (checked.code == "lifecycle.destroyed") return ContinuationDisposal(null, CutoffLoss(0, 0))
+      return ContinuationDisposal(
+        "session.continuation-dispose refused: ${checked.code} ${checked.reason}",
+        CutoffLoss(0, 0)
+      )
+    }
+    val loss = cutoffLoss("session.continuation-dispose", checked.value)
+    return if (checked.value["state"] == "released") {
+      ContinuationDisposal(null, loss)
+    } else {
+      ContinuationDisposal(
+        "session.continuation-dispose reported ${checked.value["state"] ?: "release-failed"}; " +
+          "the session is kept for a retry: ${RustCoreJson.write(checked.value)}",
+        loss
+      )
+    }
+  }
+
+  /** Strict enough to decide whether destructive cleanup may run. */
+  private fun parseDrainCompletion(batch: String): Boolean {
+    val root = try {
+      RustCoreJson.parse(batch) as? Map<*, *>
+        ?: throw ContinuationFailure("root is not an object")
+    } catch (error: IllegalArgumentException) {
+      throw ContinuationFailure("JSON is unparseable: ${error.message}")
+    }
+    if (root.keys.any { it !in setOf("more", "records", "controlLost") }) {
+      throw ContinuationFailure("root contains unknown fields")
+    }
+    val more = root["more"]
+    if (more !is Boolean) throw ContinuationFailure("more is missing or not boolean")
+    if (root["records"] !is List<*>) throw ContinuationFailure("records is missing or not an array")
+    val controlLost = root["controlLost"]
+    if (controlLost !is Number || controlLost.toLong() < 0) {
+      throw ContinuationFailure("controlLost is missing, negative, or not numeric")
+    }
+    return more
+  }
+
+  private fun cutoffLoss(operation: String, value: Map<*, *>): CutoffLoss {
+    val items = (value["afterCutoffItems"] as? Number)?.toLong()
+    val bytes = (value["afterCutoffBytes"] as? Number)?.toLong()
+    if (items == null || bytes == null || items < 0 || bytes < 0) {
+      throw ContinuationFailure("$operation did not report non-negative after-cutoff loss counts")
+    }
+    return CutoffLoss(items, bytes)
+  }
+
+  private data class ContinuationDisposal(val failure: String?, val afterCutoffLoss: CutoffLoss)
 
   private fun clearActivity(session: Long, activity: SessionActivity) {
     synchronized(lock) {
       if (activeSession == session && activeSessionActivity == activity) {
         activeSession = null
         activeSessionActivity = null
+      }
+    }
+  }
+
+  /**
+   * `session.reconcile` is the core's authoritative owner snapshot. A cached
+   * successful wake is reusable only while this exact peer has a current
+   * link and every active continuation consumer still has a live route.
+   */
+  private fun heldSessionHealthy(session: Long, address: String): Boolean {
+    // `session.reconcile` is a state read and intentionally has no operation
+    // id/admission on the Rust wire.
+    val checked = checkEnvelope("session.reconcile", invoke(session, "session.reconcile", emptyMap(), opTimeoutMs))
+    if (!checked.ok) return false
+    val links = checked.value["links"] as? List<*> ?: return false
+    val connected = links.any { entry ->
+      val link = entry as? Map<*, *> ?: return@any false
+      link["peerId"] == address && link["state"] == "connected" && link["databaseState"] == "current"
+    }
+    if (!connected) return false
+    val subscriptions = checked.value["subscriptions"] as? List<*> ?: return false
+    return activeConsumers.all { consumer ->
+      subscriptions.any { entry ->
+        val subscription = entry as? Map<*, *> ?: return@any false
+        subscription["consumer"] == consumer && subscription["state"] == "live"
       }
     }
   }
@@ -317,6 +575,10 @@ class RustCoreContinuationExecutor(
 
   private fun ensureSession(): Long {
     sessionId?.let { return it }
+    // A terminal receipt belongs to the just-finished session. Opening a new
+    // continuation begins a distinct handoff and may replace that one bounded
+    // receipt; incomplete prepared claims always still have a live session.
+    if (preparedClaim?.acknowledgement != null) preparedClaim = null
     val record = try {
       core.openSession(CONTINUATION_OWNER, wireRevision, CONTINUATION_SCOPE)
     } catch (error: RuntimeException) {
@@ -435,5 +697,21 @@ data class ContinuationClaim(
   val consumerCount: Int,
   val batches: List<String>,
   val disposed: Boolean,
-  val disposeFailure: String? = null
+  val disposeFailure: String? = null,
+  /** Native intake attempts observed after the sealed handoff cutoff. */
+  val afterCutoffLoss: CutoffLoss = CutoffLoss(0, 0),
+  /** Immutable selector identity for every numeric consumer this session can still drain. */
+  val selectors: List<ContinuationSelector> = emptyList(),
+  /** Opaque native claim token, acknowledged only after TypeScript validates these batches. */
+  val claimToken: String = ""
 )
+
+/** Native cleanup result after TypeScript acknowledged a prepared continuation claim. */
+data class ContinuationAcknowledgement(
+  val disposed: Boolean,
+  val afterCutoffLoss: CutoffLoss,
+  val disposeFailure: String?
+)
+
+/** A post-cutoff intake was observed by the native process and loss-accounted. */
+data class CutoffLoss(val items: Long, val bytes: Long)

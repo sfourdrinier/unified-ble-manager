@@ -41,7 +41,7 @@ export interface ExpoBleManager extends BleManager {
 - `ExpoCompanionAssociationResult :: { readonly source: "associated" | "already-associated"; readonly associationId: number; readonly peerId: string | null; readonly displayName: string | null }`
 - `ExpoCompanionDisassociationRequest :: { readonly associationId: number }`
 - `ExpoCompanionDisassociationResult :: { readonly state: "disassociated"; readonly associationId: number }`
-- `ExpoContinuationBacklog :: { readonly values: readonly ExpoContinuationValue[]; readonly streamEnds: readonly ExpoContinuationStreamEnd[]; readonly controlLost: number; readonly disposed: boolean; readonly disposeFailure: string | null }`
+- `ExpoContinuationBacklog :: { readonly selectors: readonly BackgroundContinuationResubscribeSelector[]; readonly values: readonly ExpoContinuationValue[]; readonly streamEnds: readonly ExpoContinuationStreamEnd[]; readonly controlLost: number; readonly afterCutoffLoss: { readonly items: number; readonly bytes: number; }; readonly disposed: boolean; readonly disposeFailure: string | null }`
 - `ExpoContinuationClaimRequest :: { readonly maxItems?: number | undefined; readonly maxBytes?: number | undefined }`
 - `ExpoContinuationStatus :: { readonly strategy: string; readonly peerId: string | null; readonly resubscribe: number; readonly malformedDeclarations: number; readonly lastWake: ExpoContinuationWakeReport | null; readonly detail: string | null }`
 - `ExpoContinuationStreamEnd :: { readonly consumer: string; readonly reason: "overflow" | "closed" | "invalidated"; readonly droppedItems: number; readonly droppedBytes: number }`

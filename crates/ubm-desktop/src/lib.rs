@@ -50,10 +50,11 @@ pub use capabilities::{
 };
 pub use central::{
     ADAPTER_INITIALIZATION_TIMED_OUT, ADAPTER_INITIALIZATION_TIMEOUT, AdapterEvent,
-    AdapterResetEvent, AdapterStatus, CentralObserver, CentralProfile, CentralSignal,
-    ConnectionHandle, DesktopCentral, DiscoveredPath, DiscoveryReport, InvalidationCause,
-    LIFECYCLE_EVENT_CAPACITY, LifecycleEvent, LifecycleKind, LinkRelease, NotificationPoll,
-    PeerRecord, ResourceCounters, ScanObservation, ScanSession, ScanStop, ShutdownReport,
+    AdapterResetEvent, AdapterStatus, COMPLETED_SCAN_TICKET_CAPACITY, CentralObserver,
+    CentralProfile, CentralSignal, ConnectionHandle, DesktopCentral, DiscoveredPath,
+    DiscoveryReport, InvalidationCause, LIFECYCLE_EVENT_CAPACITY, LifecycleEvent, LifecycleKind,
+    LinkRelease, NotificationPoll, PeerRecord, ResourceCounters, ScanObservation, ScanSession,
+    ScanStop, ShutdownReport,
 };
 pub use central::{
     CancelPairingOutcome, PairRequest, PairingGeneration, PairingGenerationController,

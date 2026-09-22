@@ -363,7 +363,14 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
     completion(text, nil)
   }
 
-  public func claimContinuation(maxItems _: Double, maxBytes _: Double, completion: (String?, String?) -> Void) {
+  public func prepareContinuationClaim(maxItems _: Double, maxBytes _: Double, completion: (String?, String?) -> Void) {
+    completion(nil, Self.failureJson(
+      code: "capability.unsupported", domain: "restoration", operation: "continuation.claim",
+      detail: "native reconnect plus resubscribe from willRestoreState is not implemented in this release"
+    ))
+  }
+
+  public func acknowledgeContinuationClaim(_ claimToken: String, completion: (String?, String?) -> Void) {
     completion(nil, Self.failureJson(
       code: "capability.unsupported", domain: "restoration", operation: "continuation.claim",
       detail: "native reconnect plus resubscribe from willRestoreState is not implemented in this release"

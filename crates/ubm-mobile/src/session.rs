@@ -87,6 +87,11 @@ pub const OPS: &[&str] = &[
     "presence.unobserve",
     "op.cancel",
     "session.reconcile",
+    // Internal native-continuation handoff operations. They never cross the
+    // public React Native wire; Kotlin uses them to establish a cutoff and
+    // report cleanup with post-cutoff accounting.
+    "session.quiesce",
+    "session.continuation-dispose",
     "session.dispose",
 ];
 
@@ -578,6 +583,8 @@ impl MobileSession {
         if self.state.closing.load(Ordering::SeqCst)
             && op != "session.dispose"
             && op != "counters.describe"
+            && op != "session.quiesce"
+            && op != "session.continuation-dispose"
         {
             return reject(
                 error(BleErrorCode::LifecycleDestroyed, BleErrorDomain::Core, op)
@@ -705,8 +712,15 @@ impl MobileSession {
             Ok(Some(args.string("operationId")?))
         };
         let (body, operation_id, budget) = match op {
-            "adapter.state" | "counters.describe" | "peers.known" | "peers.connected"
-            | "peers.restored" | "session.reconcile" | "session.dispose" => {
+            "adapter.state"
+            | "counters.describe"
+            | "peers.known"
+            | "peers.connected"
+            | "peers.restored"
+            | "session.reconcile"
+            | "session.quiesce"
+            | "session.continuation-dispose"
+            | "session.dispose" => {
                 args.exact(&[], &[])?;
                 let body = match op {
                     "adapter.state" => Body::AdapterState,
@@ -715,6 +729,8 @@ impl MobileSession {
                     "peers.known" => Body::PeersKnown,
                     "peers.connected" => Body::PeersConnected,
                     "peers.restored" => Body::PeersRestored,
+                    "session.quiesce" => Body::Quiesce,
+                    "session.continuation-dispose" => Body::ContinuationDispose,
                     _ => Body::Dispose,
                 };
                 (body, None, Budget::unbounded())
@@ -1943,6 +1959,31 @@ impl MobileSession {
                 }
             }
             Body::Reconcile => self.reconcile(&ctl).await,
+            Body::Quiesce => {
+                let loss = self.state.outbox.seal();
+                Ok(object(vec![
+                    ("state", Value::from("sealed")),
+                    ("afterCutoffItems", Value::from(loss.items)),
+                    ("afterCutoffBytes", Value::from(loss.bytes)),
+                ]))
+            }
+            Body::ContinuationDispose => {
+                let failures = self.release(1).await;
+                let loss = self.state.outbox.after_cutoff_loss();
+                Ok(object(vec![
+                    (
+                        "state",
+                        Value::from(if failures.is_empty() {
+                            "released"
+                        } else {
+                            "release-failed"
+                        }),
+                    ),
+                    ("failures", Value::Array(failures)),
+                    ("afterCutoffItems", Value::from(loss.items)),
+                    ("afterCutoffBytes", Value::from(loss.bytes)),
+                ]))
+            }
             Body::Dispose => Ok(cleanup_record(self.release(1).await)),
         }
     }
@@ -2623,6 +2664,8 @@ impl Control {
 enum Body {
     AdapterState,
     Counters,
+    Quiesce,
+    ContinuationDispose,
     ScanStart {
         service_uuids: Vec<String>,
         device_addresses: Vec<String>,

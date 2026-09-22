@@ -516,8 +516,11 @@ and silently chooses the first matching native attribute.
 ## 13. Operations, cancellation, deadlines, and terminal records
 
 The runtime assigns an opaque operation identity for diagnostics and ownership.
-It is not an API selector, it is not stable across restart, and callers MUST
-NOT expose public transaction IDs. Cancellation is expressed only by an
+It is scoped to the immutable attachment that minted it, is not stable across
+restart, and callers MUST NOT expose public transaction IDs. A host may retain
+a bounded duplicate-cleanup acknowledgement window; after that window expires,
+the host reports an explicit lifecycle outcome rather than treating a once
+valid handle as an arbitrary argument. Cancellation is expressed only by an
 `AbortSignal`; deadlines are absolute monotonic instants or a duration converted
 to one at request admission. A pre-aborted signal rejects before queueing.
 

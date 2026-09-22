@@ -358,13 +358,21 @@ export function createReactNativeRustCoreBinding(
           }
         }
       : {}),
-    ...(typeof native.claimContinuation === 'function' && typeof native.continuationStatus === 'function'
+    ...(typeof native.prepareContinuationClaim === 'function' &&
+    typeof native.acknowledgeContinuationClaim === 'function' &&
+    typeof native.continuationStatus === 'function'
       ? {
-          claimContinuation: async (maxItems: number, maxBytes: number): Promise<string> => {
+          prepareContinuationClaim: async (maxItems: number, maxBytes: number): Promise<string> => {
             if (!Number.isSafeInteger(maxItems) || maxItems < 1 || !Number.isSafeInteger(maxBytes) || maxBytes < 1) {
               throw contractError('argument.invalid', 'restoration', `${OPERATION}.continuation.claim-bounds`)
             }
-            return call('claim-continuation', () => native.claimContinuation(maxItems, maxBytes))
+            return call('prepare-continuation-claim', () => native.prepareContinuationClaim(maxItems, maxBytes))
+          },
+          acknowledgeContinuationClaim: async (claimToken: string): Promise<string> => {
+            if (claimToken.length === 0 || claimToken.length > 256) {
+              throw contractError('argument.invalid', 'restoration', `${OPERATION}.continuation.claim-token`)
+            }
+            return call('acknowledge-continuation-claim', () => native.acknowledgeContinuationClaim(claimToken))
           },
           continuationStatus: async (): Promise<string> => {
             return call('continuation-status', () => native.continuationStatus())

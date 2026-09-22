@@ -3,6 +3,7 @@
 import { BackendContractError, contractError } from './backend-contract/errors'
 import type { BleErrorCode } from './backend-contract/errors'
 import type { RestorationAdoptionResult } from './backend-contract/restoration'
+import type { BackgroundContinuationResubscribeSelector } from './backend-contract/background-continuation'
 import { Platform, TurboModuleRegistry } from 'react-native'
 import { rehydratePublicError } from './public/error-bridge'
 import { BleError } from './public/errors'
@@ -140,9 +141,13 @@ export interface ExpoContinuationStreamEnd {
 }
 
 export interface ExpoContinuationBacklog {
+  /** Immutable selector identity for each numeric continuation consumer. */
+  readonly selectors: readonly BackgroundContinuationResubscribeSelector[]
   readonly values: readonly ExpoContinuationValue[]
   readonly streamEnds: readonly ExpoContinuationStreamEnd[]
   readonly controlLost: number
+  /** Native intake observed after the continuation handoff cutoff. */
+  readonly afterCutoffLoss: { readonly items: number; readonly bytes: number }
   readonly disposed: boolean
   /**
    * Why the wake's session could not be released, when it could not. The
@@ -915,9 +920,11 @@ async function claimExpoContinuationBacklog(
   try {
     const backlog = await host.services.claimContinuationBacklog({ ...request })
     return Object.freeze({
+      selectors: Object.freeze(backlog.selectors.map(selector => Object.freeze({ ...selector }))),
       values: Object.freeze(backlog.values.map(record => Object.freeze({ ...record }))),
       streamEnds: Object.freeze(backlog.streamEnds.map(record => Object.freeze({ ...record }))),
       controlLost: backlog.controlLost,
+      afterCutoffLoss: Object.freeze({ ...backlog.afterCutoffLoss }),
       disposed: backlog.disposed,
       disposeFailure: backlog.disposeFailure
     })

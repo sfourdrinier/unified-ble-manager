@@ -71,6 +71,87 @@ async fn counters(session: &ubm_mobile::MobileSession) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn continuation_quiesce_seals_real_notification_intake_for_handoff() {
+    let radio = Scripted::polar();
+    let (host, wakes) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("continuation").expect("session");
+
+    connect(&session, "continuation-connect").await;
+    ok(&call(
+        &session,
+        "gatt.discover",
+        &json!({"peerId": POLAR, "lease": "lease-1", "operationId": "continuation-discover"})
+            .to_string(),
+    )
+    .await);
+    ok(&call(
+        &session,
+        "gatt.subscribe",
+        &json!({"peerId": POLAR, "selector": selector(), "consumer": "continuation-0",
+            "deliveryMode": "require-notification", "operationId": "continuation-subscribe"})
+        .to_string(),
+    )
+    .await);
+    let epoch = enable_epoch(&radio);
+
+    // Wake is emitted after `push_data` has retained the record, so this is
+    // a real routing fence rather than a timing sleep.
+    let before_wake = wakes.count.load(Ordering::SeqCst);
+    host.ingest(hr_value(&[0x01], epoch));
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while wakes.count.load(Ordering::SeqCst) == before_wake {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("pre-cutoff notification reaches the session outbox");
+
+    let first_seal = ok(&call(&session, "session.quiesce", "{}").await);
+    assert_eq!(first_seal["state"], "sealed");
+    assert_eq!(first_seal["afterCutoffItems"], 0);
+    // Repeating the cutoff is idempotent: it neither reopens intake nor
+    // creates a different handoff boundary.
+    assert_eq!(
+        ok(&call(&session, "session.quiesce", "{}").await),
+        first_seal
+    );
+
+    host.ingest(hr_value(&[0x02, 0x03], epoch));
+    let final_seal = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let sealed = ok(&call(&session, "session.quiesce", "{}").await);
+            if sealed["afterCutoffItems"] == 1 {
+                return sealed;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("post-cutoff notification is explicitly accounted");
+    let after_cutoff_bytes = final_seal["afterCutoffBytes"]
+        .as_u64()
+        .expect("after-cutoff byte accounting is numeric");
+    assert!(after_cutoff_bytes > 0);
+
+    let batch = parse(&session.drain(256, 65536));
+    assert_eq!(batch["more"], false);
+    let values = of_type(batch["records"].as_array().unwrap(), "value");
+    assert_eq!(
+        values.len(),
+        1,
+        "only the pre-cutoff notification transfers"
+    );
+    assert_eq!(values[0]["valueB64"], "AQ==");
+    assert!(session.drain(256, 65536).contains("\"records\":[]"));
+
+    let disposed = ok(&call(&session, "session.continuation-dispose", "{}").await);
+    assert_eq!(disposed["state"], "released");
+    assert_eq!(disposed["failures"], json!([]));
+    assert_eq!(disposed["afterCutoffItems"], 1);
+    assert_eq!(disposed["afterCutoffBytes"], after_cutoff_bytes);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn polar_h10_script_runs_end_to_end() {
     let radio = Scripted::polar();
     let (host, _wakes) = open(&radio, MobilePlatform::Android).await;

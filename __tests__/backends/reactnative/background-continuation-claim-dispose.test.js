@@ -27,8 +27,10 @@ describe('continuation dispose failure', () => {
     const backlog = aggregateContinuationClaim(
       {
         consumerCount: 1,
+        selectors: [{ serviceUuid: '0000180d-0000-1000-8000-00805f9b34fb', serviceOccurrence: 1, characteristicUuid: '00002a37-0000-1000-8000-00805f9b34fb', characteristicOccurrence: 1 }],
         batches: [],
         disposed: false,
+        afterCutoffLoss: { items: 0, bytes: 0 },
         disposeFailure: 'session.dispose reported release-failed; the session is kept for a retry'
       },
       NATIVE_DECLARATION
@@ -38,13 +40,13 @@ describe('continuation dispose failure', () => {
   })
 
   it('a clean dispose carries no failure', () => {
-    const backlog = aggregateContinuationClaim({ consumerCount: 1, batches: [], disposed: true }, NATIVE_DECLARATION)
+    const backlog = aggregateContinuationClaim({ consumerCount: 1, selectors: [{ serviceUuid: '0000180d-0000-1000-8000-00805f9b34fb', serviceOccurrence: 1, characteristicUuid: '00002a37-0000-1000-8000-00805f9b34fb', characteristicOccurrence: 1 }], batches: [], disposed: true, afterCutoffLoss: { items: 0, bytes: 0 } }, NATIVE_DECLARATION)
     expect(backlog.disposed).toBe(true)
     expect(backlog.disposeFailure).toBe(null)
   })
 
   it('refuses negative session and status counts', () => {
-    expect(() => aggregateContinuationClaim({ consumerCount: -1, batches: [], disposed: false })).toThrow()
+    expect(() => aggregateContinuationClaim({ consumerCount: -1, selectors: [], batches: [], disposed: false, afterCutoffLoss: { items: 0, bytes: 0 } })).toThrow()
     expect(() =>
       parseContinuationStatus({
         strategy: 'native',

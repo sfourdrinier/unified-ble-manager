@@ -118,8 +118,13 @@ public class UnifiedBleRustCoreModule extends NativeUnifiedBleRustCoreSpec {
   }
 
   @Override
-  public void claimContinuation(double maxItems, double maxBytes, Promise promise) {
-    sessions.claimContinuation(maxItems, maxBytes, reply(promise));
+  public void prepareContinuationClaim(double maxItems, double maxBytes, Promise promise) {
+    sessions.prepareContinuationClaim(maxItems, maxBytes, reply(promise));
+  }
+
+  @Override
+  public void acknowledgeContinuationClaim(String claimToken, Promise promise) {
+    sessions.acknowledgeContinuationClaim(claimToken, reply(promise));
   }
 
   @Override

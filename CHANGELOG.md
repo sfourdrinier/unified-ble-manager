@@ -1401,6 +1401,17 @@ metadata:{androidGattStatus}}` on Android, or the `NSError` domain and code
 
 ### Fixed
 
+- **Desktop scan duplicate acknowledgements are bounded and attachment-scoped.**
+  A long-lived central retains the exact terminal outcome for its newest 256
+  completed scans, matching the public scan-state bound. A recent duplicate
+  cancel still suppresses onto that terminal; a ticket from the same attachment
+  after that acknowledgement window reports `lifecycle.invalid-state` with an
+  explicit expiry detail, and cancellation of a ticket from another central
+  reports `ownership.denied` (`scan.stop` remains the idempotent `NotActive`
+  cleanup result). Opaque operation ids now include their immutable
+  attachment scope, so independently opened centrals cannot alias local
+  counters.
+
 - **Background continuation serializes ownership without racing its claim
   (Android).** An executing native wake and `continuation.claim()` now reserve
   the same session before either performs radio I/O. A concurrent operation
@@ -1419,6 +1430,27 @@ metadata:{androidGattStatus}}` on Android, or the `NSError` domain and code
   during this run, the service recorded queued bytes before JavaScript opened,
   and the later claim drained 30 heart-rate values with zero dropped items,
   dropped bytes or control loss.
+
+- **Background continuation revalidates liveness and pins selector identity
+  (Android).** A repeated presence wake now reads the Rust owner's
+  `session.reconcile` snapshot before treating an existing continuation as
+  complete: it remains idempotent only with a current link and live routes;
+  an ended link or route reconnects and receives fresh consumer ordinals.
+  A different same-count, reordered, or occurrence-changed declaration is
+  refused while the old session is claimable. Claims carry the immutable
+  selector list for their numeric consumers, so a later declaration cannot
+  relabel an older backlog.
+
+- **Background continuation claims have an atomic native cutoff (Android).**
+  The Rust outbox now seals under the same lock as data admission before Kotlin
+  drains it. Records admitted before the cutoff are returned exactly once;
+  later observed intake is reported through `afterCutoffLoss` rather than
+  disappearing between the final drain and cleanup. Kotlin validates the
+  required drain shape before authorizing cleanup, returns only validated
+  prefixes on a malformed boundary, and keeps failed cleanup owned for retry.
+  An unreadable acknowledgement returns the decoded backlog with explicit
+  disposal uncertainty; a retained empty native receipt lets the next claim
+  confirm cleanup without delivering those values again.
 
 - **TV staging uses a portable archive and executable Python shim.** The TV
   staging copy writes a temporary tar archive before extracting it, avoiding a

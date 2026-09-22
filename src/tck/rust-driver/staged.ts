@@ -25,7 +25,7 @@
 //   against the frozen tables before pinning; a mismatch fails the suite,
 //   never the pin. Each program records its own capture source in its
 //   `provenance` field.
-// - Kernel op ids (`central-op-N`) are session-scoped serialization labels,
+// - Kernel op ids are attachment-scoped opaque serialization labels,
 //   not contract observations: both columns normalize them to first-seen
 //   `@opN` tokens (`normalizeStagedLines`), preserving identity relations
 //   (which step admitted which op, which effect belongs to which op) while
@@ -67,7 +67,8 @@ export function stableStringify(value: unknown): string {
 }
 
 /**
- * Normalizes session-scoped kernel op labels (`central-op-N`) to
+ * Normalizes attachment-scoped opaque kernel op labels
+ * (`central-op/<scope-length>/<scope>/<class>/N[/scan-tag]`) to
  * first-seen `@opN` tokens across a whole observation run, then
  * stable-stringifies each line. Identity relations survive (the same op
  * maps to the same token on every line); the counter does not leak into
@@ -76,7 +77,7 @@ export function stableStringify(value: unknown): string {
 export function normalizeStagedLines(lines: readonly string[]): string[] {
   const seen: string[] = []
   return lines.map(line => {
-    const mapped = line.replace(/central-op-\d+/gu, match => {
+    const mapped = line.replace(/central-op(?:-\d+|\/\d+\/[^"\\]+\/(?:scan\/\d+\/[0-9a-f]+|op\/\d+))/gu, match => {
       const index = seen.indexOf(match)
       if (index !== -1) {
         return `@op${index}`

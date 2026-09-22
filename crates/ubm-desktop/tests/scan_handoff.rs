@@ -14,7 +14,10 @@
 use std::time::Duration;
 
 use ubm_desktop::OpControl;
-use ubm_desktop::{CompletionOutcome, DesktopCentral, FakeRadio, FaultOp};
+use ubm_desktop::{
+    AdapterPowerState, AdmissionPolicy, COMPLETED_SCAN_TICKET_CAPACITY, CompletionOutcome,
+    DesktopCentral, FakeRadio, FaultOp, RadioEvent,
+};
 
 /// Stop whatever scan the central owns (`NotActive` when none is owned).
 async fn stop_owned_scan<B: ubm_desktop::RadioBoundary>(
@@ -245,4 +248,231 @@ async fn r15_double_cancel_after_abort_maps_to_settled_terminal() {
     stop_owned_scan(&central)
         .await
         .expect("late stop stays safe");
+}
+
+// R5: completed scan tickets are only a duplicate-cleanup acknowledgement
+// window, not central-lifetime history. The newest ticket must still suppress
+// a duplicate cancel, while a ticket outside the documented window expires
+// rather than retaining an unbounded record.
+#[tokio::test]
+async fn r5_completed_scan_tickets_are_bounded_without_losing_recent_duplicate_semantics() {
+    let central = open().await;
+    let mut first = None;
+    let mut latest = None;
+    for _ in 0..=COMPLETED_SCAN_TICKET_CAPACITY {
+        let session = central
+            .start_scan("owner-a", &[], OpControl::budget_ms(5000))
+            .await
+            .expect("start scan");
+        first.get_or_insert_with(|| session.operation_id().clone());
+        latest = Some(session.operation_id().clone());
+        central
+            .stop_scan(session.operation_id(), OpControl::budget_ms(5000))
+            .await
+            .expect("stop scan");
+    }
+
+    assert_eq!(
+        central.resource_counters().await.retained_scan_tickets,
+        COMPLETED_SCAN_TICKET_CAPACITY,
+        "a long-lived central retains only the documented duplicate window"
+    );
+    match central
+        .cancel_operation(latest.as_ref().expect("latest scan"))
+        .await
+    {
+        Ok(CompletionOutcome::DuplicateSuppressed { .. }) => {}
+        other => panic!("recent duplicate must preserve its terminal answer, got {other:?}"),
+    }
+    let expired = central
+        .cancel_operation(first.as_ref().expect("first scan"))
+        .await
+        .expect_err("expired ticket reports its lifecycle, not an unknown argument");
+    assert_eq!(expired.code_str(), "lifecycle.invalid-state");
+    assert_eq!(
+        expired.detail(),
+        Some("scan duplicate acknowledgement window expired")
+    );
+}
+
+// R5: a ticket from another central must never borrow this central's
+// acknowledgement window merely because both kernels start their counters at
+// zero. Foreign cleanup is rejected before it can affect this central's own
+// completed scan or radio.
+#[tokio::test]
+async fn r5_foreign_scan_ticket_is_rejected_without_consuming_local_terminal() {
+    let foreign = open().await;
+    let local = open().await;
+    let foreign_scan = foreign
+        .start_scan("owner-a", &[], OpControl::budget_ms(5000))
+        .await
+        .expect("foreign start");
+    foreign
+        .stop_scan(foreign_scan.operation_id(), OpControl::budget_ms(5000))
+        .await
+        .expect("foreign stop");
+    let local_scan = local
+        .start_scan("owner-b", &[], OpControl::budget_ms(5000))
+        .await
+        .expect("local start");
+    let before_foreign_stop = local.boundary().calls();
+    assert_eq!(
+        local
+            .stop_scan(foreign_scan.operation_id(), OpControl::budget_ms(5000))
+            .await
+            .expect("a non-owned scan id is idempotently inactive"),
+        ubm_desktop::ScanStop::NotActive
+    );
+    assert_eq!(
+        local.boundary().calls(),
+        before_foreign_stop,
+        "a foreign stop never reaches the local radio"
+    );
+    local
+        .stop_scan(local_scan.operation_id(), OpControl::budget_ms(5000))
+        .await
+        .expect("local stop");
+
+    let before = local.boundary().calls();
+    let denied = local
+        .cancel_operation(foreign_scan.operation_id())
+        .await
+        .expect_err("foreign operation id is not this central's cleanup handle");
+    assert_eq!(denied.code_str(), "ownership.denied");
+    assert_eq!(
+        local.boundary().calls(),
+        before,
+        "foreign cancel reaches no radio"
+    );
+    match local.cancel_operation(local_scan.operation_id()).await {
+        Ok(CompletionOutcome::DuplicateSuppressed { .. }) => {}
+        other => panic!("local terminal remains intact, got {other:?}"),
+    }
+}
+
+// R5: a namespace match is not proof that this central issued a handle. A
+// forged future ordinal remains an unknown argument, never an expired cleanup
+// ticket.
+#[tokio::test]
+async fn r5_future_local_namespace_ticket_is_not_misreported_as_expired() {
+    use ubm_core::contracts::OperationId;
+
+    let central = open().await;
+    let session = central
+        .start_scan("owner-a", &[], OpControl::budget_ms(5000))
+        .await
+        .expect("start");
+    let issued = session.operation_id().as_str();
+    let (prefix, _) = issued.rsplit_once('/').expect("opaque operation ordinal");
+    let forged = OperationId::new(format!("{prefix}/999999")).expect("forged opaque shape");
+    let error = central
+        .cancel_operation(&forged)
+        .await
+        .expect_err("future ordinal was never issued");
+    assert_eq!(error.code_str(), "argument.invalid");
+    central
+        .stop_scan(session.operation_id(), OpControl::budget_ms(5000))
+        .await
+        .expect("stop");
+}
+
+// R5: the bounded acknowledgement window belongs only to scans the core
+// actually minted. Rewriting an ordinary operation's class to `scan` cannot
+// manufacture an expired scan acknowledgement.
+#[tokio::test]
+async fn r5_forged_non_scan_operation_cannot_become_an_expired_scan_ticket() {
+    use ubm_core::contracts::OperationId;
+
+    let central = open().await;
+    let session = central
+        .start_scan("owner-a", &[], OpControl::budget_ms(5000))
+        .await
+        .expect("start");
+    let (without_last_segment, _) = session
+        .operation_id()
+        .as_str()
+        .rsplit_once('/')
+        .expect("scan operation suffix");
+    let (scan_prefix, ordinal) = without_last_segment
+        .rsplit_once('/')
+        .expect("scan operation ordinal");
+    let non_scan = OperationId::new(format!(
+        "{}/{}",
+        scan_prefix.replacen("/scan/", "/op/", 1),
+        ordinal
+    ))
+    .expect("ordinary-operation opaque shape");
+    let forged_scan = OperationId::new(non_scan.as_str().replacen("/op/", "/scan/", 1))
+        .expect("forged scan opaque shape");
+    let error = central
+        .cancel_operation(&forged_scan)
+        .await
+        .expect_err("a forged non-scan handle cannot use scan ticket retention");
+    assert_eq!(error.code_str(), "argument.invalid");
+    central
+        .stop_scan(session.operation_id(), OpControl::budget_ms(5000))
+        .await
+        .expect("stop");
+}
+
+// R5: an adapter reset replaces the attachment generation but not this
+// central's immutable operation namespace. The old ticket therefore remains
+// an acknowledged local terminal and cannot stop the replacement scan.
+#[tokio::test]
+async fn r5_old_generation_scan_ticket_cannot_stop_a_replacement_scan() {
+    let radio = FakeRadio::new();
+    radio.set_os_policy(AdmissionPolicy::LifecycleOnly, true);
+    let central = DesktopCentral::open(radio, "reset-host")
+        .await
+        .expect("open");
+    let mut resets = central.adapter_reset_events();
+    let old = central
+        .start_scan("owner-a", &[], OpControl::budget_ms(5000))
+        .await
+        .expect("old scan");
+    central
+        .boundary()
+        .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOff));
+    tokio::time::timeout(std::time::Duration::from_secs(5), resets.recv())
+        .await
+        .expect("reset arrives")
+        .expect("reset event");
+    central
+        .boundary()
+        .push_event(RadioEvent::AdapterState(AdapterPowerState::PoweredOn));
+    let replacement = central
+        .start_scan("owner-a", &[], OpControl::budget_ms(5000))
+        .await
+        .expect("replacement scan");
+    let stops = central
+        .boundary()
+        .calls()
+        .iter()
+        .filter(|call| *call == "stop_scan")
+        .count();
+    assert_eq!(
+        central
+            .stop_scan(old.operation_id(), OpControl::budget_ms(5000))
+            .await
+            .expect("old generation stop is harmless"),
+        ubm_desktop::ScanStop::NotActive
+    );
+    assert_eq!(
+        central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "stop_scan")
+            .count(),
+        stops,
+        "the old generation never stops the replacement radio scan"
+    );
+    match central.cancel_operation(old.operation_id()).await {
+        Ok(CompletionOutcome::DuplicateSuppressed { .. }) => {}
+        other => panic!("old generation terminal stays local, got {other:?}"),
+    }
+    central
+        .stop_scan(replacement.operation_id(), OpControl::budget_ms(5000))
+        .await
+        .expect("replacement stop");
 }

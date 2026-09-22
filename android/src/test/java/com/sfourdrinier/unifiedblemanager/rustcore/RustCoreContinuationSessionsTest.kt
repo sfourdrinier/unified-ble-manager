@@ -5,6 +5,7 @@ package com.sfourdrinier.unifiedblemanager.rustcore
 import com.sfourdrinier.unifiedblemanager.presence.ContinuationStrategy
 import com.ubm.core.MobileCoreBridge
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.security.SecureRandom
@@ -72,9 +73,11 @@ class RustCoreContinuationSessionsTest {
   @Test
   fun claimWithNoWakeIsTheValidEmptyAnswer() {
     val reply = Captured()
-    sessions.claimContinuation(256.0, 65536.0, reply)
+    sessions.prepareContinuationClaim(256.0, 65536.0, reply)
     val claim = reply.resolved.single() ?: error("no claim")
     assertTrue(claim.contains("\"consumerCount\":0"))
+    assertFalse(claim.contains("\"claimToken\""))
+    assertTrue(claim.contains("\"selectors\":[]"))
     assertTrue(claim.contains("\"batches\":[]"))
     assertTrue(claim.contains("\"disposed\":false"))
   }

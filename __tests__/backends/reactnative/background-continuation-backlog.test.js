@@ -31,16 +31,18 @@ const DECLARATION = normalizeBackgroundContinuation({
   resubscribe: [{ serviceUuid: HR_SERVICE, characteristicUuid: HR_MEASUREMENT }]
 })
 
+function claimPayload(consumerCount, batches, disposed) {
+  return { consumerCount, selectors: DECLARATION.resubscribe.slice(0, consumerCount), batches, disposed, afterCutoffLoss: { items: 0, bytes: 0 } }
+}
+
 describe('continuation backlog drains with accounted loss', () => {
   it('aggregates value records across chained batches with ordinal continuity', () => {
     const claim = aggregateContinuationClaim(
       {
-        consumerCount: 1,
-        batches: [
+        ...claimPayload(1, [
           batch([valueRecord(1, 'ubm-continuation-0'), valueRecord(2, 'ubm-continuation-0')], { more: true }),
           batch([valueRecord(3, 'ubm-continuation-0')], { more: false })
-        ],
-        disposed: true
+        ], true)
       },
       DECLARATION
     )
@@ -54,14 +56,12 @@ describe('continuation backlog drains with accounted loss', () => {
   it('surfaces stream-end overflow with exact drop counts, never silent', () => {
     const claim = aggregateContinuationClaim(
       {
-        consumerCount: 1,
-        batches: [
+        ...claimPayload(1, [
           batch([
             valueRecord(1, 'ubm-continuation-0'),
             { t: 'stream-end', ordinal: 2, consumer: 'ubm-continuation-0', reason: 'overflow', droppedItems: 5, droppedBytes: 100 }
           ])
-        ],
-        disposed: true
+        ], true)
       },
       DECLARATION
     )
@@ -73,7 +73,7 @@ describe('continuation backlog drains with accounted loss', () => {
 
   it('reports cumulative controlLost so the reader reconciles instead of inferring', () => {
     const claim = aggregateContinuationClaim(
-      { consumerCount: 1, batches: [batch([valueRecord(1, 'ubm-continuation-0')], { controlLost: 3 })], disposed: false },
+      claimPayload(1, [batch([valueRecord(1, 'ubm-continuation-0')], { controlLost: 3 })], false),
       DECLARATION
     )
     expect(claim.controlLost).toBe(3)
@@ -85,25 +85,21 @@ describe('continuation backlog drains with accounted loss', () => {
     // repeats or regresses ordinals is malformed, never merged quietly.
     expect(() =>
       aggregateContinuationClaim(
-        {
-          consumerCount: 1,
-          batches: [
+        claimPayload(1, [
             batch([valueRecord(1, 'ubm-continuation-0')], { more: true }),
             batch([valueRecord(1, 'ubm-continuation-0')], { more: false })
-          ],
-          disposed: true
-        },
+          ], true),
         DECLARATION
       )
     ).toThrow()
   })
 
   it('refuses malformed batches instead of delivering partial backlogs', () => {
-    expect(() => aggregateContinuationClaim({ consumerCount: 1, batches: ['{nope'], disposed: true }, DECLARATION)).toThrow()
+    expect(() => aggregateContinuationClaim(claimPayload(1, ['{nope'], true), DECLARATION)).toThrow()
   })
 
   it('reads empty batches as the valid no-wake answer, never an error', () => {
-    const claim = aggregateContinuationClaim({ consumerCount: 0, batches: [], disposed: false }, DECLARATION)
+    const claim = aggregateContinuationClaim(claimPayload(0, [], false), DECLARATION)
     expect(claim.values).toEqual([])
     expect(claim.streamEnds).toEqual([])
     expect(claim.controlLost).toBe(0)
@@ -113,20 +109,37 @@ describe('continuation backlog drains with accounted loss', () => {
   it('refuses backlog records for consumers the order never subscribed', () => {
     expect(() =>
       aggregateContinuationClaim(
-        { consumerCount: 1, batches: [batch([valueRecord(1, 'ubm-continuation-7')])], disposed: true },
+        claimPayload(1, [batch([valueRecord(1, 'ubm-continuation-7')])], true),
         DECLARATION
       )
     ).toThrow()
   })
 
   it('maps wake consumers to the declared selectors they subscribed', () => {
-    expect(continuationConsumerSelector('ubm-continuation-0', DECLARATION)).toEqual({
+    // This list came from the exact native session being claimed. It must
+    // remain authoritative even when a later declaration reorders selectors.
+    const pinnedSelectors = [
+      {
+        serviceUuid: HR_SERVICE,
+        serviceOccurrence: 1,
+        characteristicUuid: HR_MEASUREMENT,
+        characteristicOccurrence: 1
+      },
+      {
+        serviceUuid: HR_SERVICE,
+        serviceOccurrence: 1,
+        characteristicUuid: '00002a38-0000-1000-8000-00805f9b34fb',
+        characteristicOccurrence: 2
+      }
+    ]
+    expect(continuationConsumerSelector('ubm-continuation-0', pinnedSelectors)).toEqual({
       serviceUuid: HR_SERVICE,
       serviceOccurrence: 1,
       characteristicUuid: HR_MEASUREMENT,
       characteristicOccurrence: 1
     })
-    expect(continuationConsumerSelector('ubm-continuation-7', DECLARATION)).toBeNull()
-    expect(continuationConsumerSelector('s1-sub-3', DECLARATION)).toBeNull()
+    expect(continuationConsumerSelector('ubm-continuation-1', pinnedSelectors)).toEqual(pinnedSelectors[1])
+    expect(continuationConsumerSelector('ubm-continuation-7', pinnedSelectors)).toBeNull()
+    expect(continuationConsumerSelector('s1-sub-3', pinnedSelectors)).toBeNull()
   })
 })

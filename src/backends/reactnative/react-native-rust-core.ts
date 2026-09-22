@@ -60,13 +60,10 @@ export interface ReactNativeRustCoreBinding {
    * silent record-only.
    */
   declareBackgroundContinuation?(declarationJson: string): Promise<void>
-  /**
-   * Drains the continuation backlog the wake queued (verbatim
-   * `{batches, disposed}` claim JSON). Optional like the declare method; a
-   * missing claim answers `capability.unsupported`, never an invented empty
-   * backlog.
-   */
-  claimContinuation?(maxItems: number, maxBytes: number): Promise<string>
+  /** Prepares one sealed continuation backlog; its token is acknowledged only after JS decodes it. */
+  prepareContinuationClaim?(maxItems: number, maxBytes: number): Promise<string>
+  /** Acknowledges a successfully decoded prepared claim and performs retryable native cleanup. */
+  acknowledgeContinuationClaim?(claimToken: string): Promise<string>
   /**
    * Reports the continuation posture (verbatim status JSON). Optional like
    * the declare method.

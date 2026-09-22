@@ -124,10 +124,14 @@ class RustCoreSessions(
     if (declarationJson.isEmpty() || declarationJson.length > MAX_CONTINUATION_JSON) {
       throw RustCoreRejection.invalid("continuation.declare", "declaration must be 1..$MAX_CONTINUATION_JSON bytes")
     }
-    try {
+    val declaration = try {
       BackgroundContinuationDeclaration.parse(declarationJson)
     } catch (error: IllegalArgumentException) {
       throw RustCoreRejection.invalid("continuation.declare", error.message ?: "declaration malformed")
+    }
+    val conflict = host.continuationExecutor().declarationReplacementFailure(declaration)
+    if (conflict != null) {
+      throw RustCoreRejection("lifecycle.invalid-state", "lifecycle", "continuation.declare", conflict)
     }
     host.continuationStore().saveDeclaration(declarationJson)
     reply.resolve("{\"state\":\"declared\"}")
@@ -139,23 +143,60 @@ class RustCoreSessions(
    * connects next. Values queued with no JS session drain here with the
    * drain contract's own loss accounting — nothing silently dropped.
    */
-  fun claimContinuation(maxItems: Double, maxBytes: Double, reply: Reply) =
+  fun prepareContinuationClaim(maxItems: Double, maxBytes: Double, reply: Reply) =
     perform(reply, "continuation.claim") {
       val items = positiveInt(maxItems, "maxItems")
       val bytes = positiveInt(maxBytes, "maxBytes")
-      val claim = host.continuationExecutor().claimAndDispose(items, bytes)
+      val claim = host.continuationExecutor().prepareClaim(items, bytes)
+      val response = linkedMapOf<String, Any?>(
+        // Session-pinned authority for the consumer names in these batches.
+        // The standing declaration may change before claim.
+        "consumerCount" to claim.consumerCount,
+        "selectors" to claim.selectors.map { selector ->
+          linkedMapOf(
+            "serviceUuid" to selector.serviceUuid,
+            "serviceOccurrence" to selector.serviceOccurrence,
+            "characteristicUuid" to selector.characteristicUuid,
+            "characteristicOccurrence" to selector.characteristicOccurrence
+          )
+        },
+        "batches" to claim.batches,
+        "disposed" to false,
+        // Attempts observed after the native cutoff are separate from
+        // bounded-outbox loss: they belong to the handoff gap and must
+        // be surfaced to the foreground owner explicitly.
+        "afterCutoffLoss" to linkedMapOf(
+          "items" to claim.afterCutoffLoss.items,
+          "bytes" to claim.afterCutoffLoss.bytes
+        ),
+        // Why the session is still alive (null when disposed or when no
+        // wake existed): a release-failed dispose or an incomplete drain
+        // is retried by the next claim, never abandoned silently.
+        "disposeFailure" to claim.disposeFailure
+      )
+      // No wake is the one valid tokenless response. Every prepared handoff
+      // has a non-empty token and must be acknowledged by TypeScript.
+      if (claim.claimToken.isNotEmpty()) response["claimToken"] = claim.claimToken
+      reply.resolve(
+        RustCoreJson.write(response)
+      )
+    }
+
+  fun acknowledgeContinuationClaim(claimToken: String, reply: Reply) =
+    perform(reply, "continuation.claim") {
+      if (claimToken.isEmpty() || claimToken.length > 256) {
+        throw RustCoreRejection.invalid("continuation.claim", "claimToken must be 1..256 bytes")
+      }
+      val acknowledgement = host.continuationExecutor().acknowledgeClaim(claimToken)
       reply.resolve(
         RustCoreJson.write(
           linkedMapOf(
-            // Session-pinned authority for the consumer names in these
-            // batches. The standing declaration may change before claim.
-            "consumerCount" to claim.consumerCount,
-            "batches" to claim.batches,
-            "disposed" to claim.disposed,
-            // Why the session is still alive (null when disposed or when no
-            // wake existed): a release-failed dispose or an incomplete drain
-            // is retried by the next claim, never abandoned silently.
-            "disposeFailure" to claim.disposeFailure
+            "disposed" to acknowledgement.disposed,
+            "afterCutoffLoss" to linkedMapOf(
+              "items" to acknowledgement.afterCutoffLoss.items,
+              "bytes" to acknowledgement.afterCutoffLoss.bytes
+            ),
+            "disposeFailure" to acknowledgement.disposeFailure
           )
         )
       )

@@ -186,12 +186,25 @@ RCT_EXPORT_MODULE(UnifiedBleRustCore)
   }];
 }
 
-- (void)claimContinuation:(double)maxItems
+- (void)prepareContinuationClaim:(double)maxItems
                 maxBytes:(double)maxBytes
                  resolve:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject {
-  [[UnifiedBleRustCoreSessions shared] claimContinuationWithMaxItems:maxItems
+  [[UnifiedBleRustCoreSessions shared] prepareContinuationClaimWithMaxItems:maxItems
                                                            maxBytes:maxBytes
+                                                         completion:^(NSString *claim, NSString *failure) {
+                                                           if (failure != nil) {
+                                                             rejectWithFailure(reject, failure);
+                                                             return;
+                                                           }
+                                                           resolve(claim);
+                                                         }];
+}
+
+- (void)acknowledgeContinuationClaim:(NSString *)claimToken
+                 resolve:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject {
+  [[UnifiedBleRustCoreSessions shared] acknowledgeContinuationClaim:claimToken
                                                          completion:^(NSString *claim, NSString *failure) {
                                                            if (failure != nil) {
                                                              rejectWithFailure(reject, failure);

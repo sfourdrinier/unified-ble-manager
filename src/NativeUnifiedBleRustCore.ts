@@ -63,12 +63,10 @@ export interface Spec extends TurboModule {
    * and the last wake outcome. Resolves the status JSON verbatim.
    */
   continuationStatus(): Promise<string>
-  /**
-   * Drains the continuation backlog (verbatim drain batches for the JS
-   * codec) and disposes the continuation session. Resolves
-   * `{batches, disposed}` JSON verbatim.
-   */
-  claimContinuation(maxItems: number, maxBytes: number): Promise<string>
+  /** Prepares a sealed continuation handoff. JS must acknowledge claimToken only after decoding batches. */
+  prepareContinuationClaim(maxItems: number, maxBytes: number): Promise<string>
+  /** Acknowledges a decoded prepared handoff and performs retryable native cleanup. */
+  acknowledgeContinuationClaim(claimToken: string): Promise<string>
   /** One emission per armed Rust wake; JS drains until `more` is false. */
   readonly onSessionWake: CodegenTypes.EventEmitter<RustCoreSessionWake>
 }

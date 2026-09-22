@@ -250,7 +250,93 @@ fn release_duplicate(
     kind
 }
 
-type ScanTickets = StdMutex<HashMap<OperationId, OperationTerminalKind>>;
+/// Maximum retained completed-scan tickets per central.
+///
+/// This is the same 256-entry bound as the public scan-state contract. A
+/// ticket is only a duplicate-cleanup acknowledgement, so retaining more
+/// historical tickets than one bounded scan-state window would make a
+/// long-lived central grow with its lifetime. The newest 256 completed scans
+/// retain their exact terminal; an older ticket from this central's immutable
+/// operation namespace answers the explicit expired-lifecycle outcome below.
+pub const COMPLETED_SCAN_TICKET_CAPACITY: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompletedScanTicket {
+    Settled(OperationTerminalKind),
+    Local,
+    Expired,
+    Foreign,
+    Unknown,
+}
+
+struct CompletedScanTickets {
+    tickets: HashMap<OperationId, OperationTerminalKind>,
+    order: VecDeque<OperationId>,
+    operation_namespace: String,
+}
+
+impl CompletedScanTickets {
+    fn new(scope: &str) -> Self {
+        Self {
+            tickets: HashMap::new(),
+            order: VecDeque::new(),
+            operation_namespace: scope.to_owned(),
+        }
+    }
+
+    fn retain(&mut self, op: &OperationId, kind: OperationTerminalKind) {
+        if self.tickets.contains_key(op) {
+            return;
+        }
+        while self.tickets.len() >= COMPLETED_SCAN_TICKET_CAPACITY {
+            let Some(expired) = self.order.pop_front() else {
+                break;
+            };
+            self.tickets.remove(&expired);
+        }
+        self.order.push_back(op.clone());
+        self.tickets.insert(op.clone(), kind);
+    }
+
+    fn status(&self, op: &OperationId) -> CompletedScanTicket {
+        if let Some(kind) = self.tickets.get(op) {
+            return CompletedScanTicket::Settled(*kind);
+        }
+        match scan_operation_scope(op) {
+            Some(scope) if scope == self.operation_namespace => CompletedScanTicket::Local,
+            Some(_) => CompletedScanTicket::Foreign,
+            None => CompletedScanTicket::Unknown,
+        }
+    }
+}
+
+/// Extract the immutable central namespace from an opaque *scan* operation id.
+/// The length prefix makes this unambiguous even when a host's attachment id
+/// contains a separator used by the serialized form.
+fn scan_operation_scope(operation: &OperationId) -> Option<&str> {
+    let rest = operation.as_str().strip_prefix("central-op/")?;
+    let (length, rest) = rest.split_once('/')?;
+    let length = length.parse::<usize>().ok()?;
+    let scope = rest.get(..length)?;
+    let suffix = rest.get(length..)?.strip_prefix('/')?;
+    let mut fields = suffix.split('/');
+    let (Some(class), Some(ordinal), Some(tag), None) =
+        (fields.next(), fields.next(), fields.next(), fields.next())
+    else {
+        return None;
+    };
+    (class == "scan")
+        .then(|| {
+            ordinal
+                .parse::<u64>()
+                .ok()
+                .zip(u64::from_str_radix(tag, 16).ok())
+                .map(|_| scope)
+        })
+        .flatten()
+}
+
+type ScanTickets = StdMutex<CompletedScanTickets>;
 
 fn lock_std<T>(mutex: &StdMutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -261,13 +347,43 @@ fn lock_std<T>(mutex: &StdMutex<T>) -> MutexGuard<'_, T> {
 /// duplicate can observe a settled-but-unretained op. Sync: no await
 /// between settle and retain, and none inside.
 fn retain_completed_scan(tickets: &ScanTickets, op: &OperationId, kind: OperationTerminalKind) {
-    lock_std(tickets).entry(op.clone()).or_insert(kind);
+    lock_std(tickets).retain(op, kind);
 }
 
-/// Retained terminal for a released scan op, if this central completed that
-/// scan. Sync; safe under the core lock.
-fn completed_scan_kind(tickets: &ScanTickets, op: &OperationId) -> Option<OperationTerminalKind> {
-    lock_std(tickets).get(op).copied()
+fn completed_scan_ticket(tickets: &ScanTickets, op: &OperationId) -> CompletedScanTicket {
+    lock_std(tickets).status(op)
+}
+
+fn resolved_scan_ticket(
+    core: &Central,
+    tickets: &ScanTickets,
+    operation: &OperationId,
+) -> CompletedScanTicket {
+    match completed_scan_ticket(tickets, operation) {
+        CompletedScanTicket::Local if core.issued_scan_operation_id(operation) => {
+            CompletedScanTicket::Expired
+        }
+        CompletedScanTicket::Local => CompletedScanTicket::Unknown,
+        ticket => ticket,
+    }
+}
+
+fn expired_scan_ticket_error() -> DesktopError {
+    DesktopError::new(
+        BleErrorCode::LifecycleInvalidState,
+        BleErrorDomain::Scan,
+        "scan.ticket",
+    )
+    .with_detail("scan duplicate acknowledgement window expired")
+}
+
+fn foreign_scan_ticket_error() -> DesktopError {
+    DesktopError::new(
+        BleErrorCode::OwnershipDenied,
+        BleErrorDomain::Scan,
+        "scan.ticket",
+    )
+    .with_detail("scan ticket belongs to another central attachment")
 }
 
 /// Which retryability rule an operation's outcome follows (PR210-22).
@@ -1571,6 +1687,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let admission = boundary.admission_policy();
         let teardown_on_loss = boundary.tears_down_on_adapter_loss();
         let facts = seed_adapter_facts(&boundary, admission, profile.identity.log_tag()).await;
+        let ticket_scope = attachment.attachment_id().as_str().to_owned();
         let inner = Arc::new(Inner {
             core: Mutex::new(core),
             boundary,
@@ -1589,7 +1706,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             reset_events: broadcast::channel(LIFECYCLE_EVENT_CAPACITY).0,
             reset_sequence: AtomicU64::new(0),
             scan: StdMutex::new(None),
-            completed_scans: StdMutex::new(HashMap::new()),
+            completed_scans: StdMutex::new(CompletedScanTickets::new(&ticket_scope)),
             peers: Mutex::new(HashMap::new()),
             subscriptions: Mutex::new(HashMap::new()),
             epochs: Mutex::new(HashMap::new()),
@@ -1955,16 +2072,23 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             Err(error) if error.code() == BleErrorCode::ArgumentInvalid => {
                 // Reaped already (shutdown tombstone or retained scan): the
                 // retained winner is the answer.
-                match core
-                    .shutdown_terminal_kind(operation)
-                    .or_else(|| completed_scan_kind(&self.inner.completed_scans, operation))
-                    .or_else(|| {
-                        lock_std(&self.inner.reset_ops)
-                            .contains(operation)
-                            .then_some(OperationTerminalKind::Reset)
-                    }) {
-                    Some(winner) => terminal_to_error(winner, op_name),
-                    None => DesktopError::cancelled(op_name),
+                if let Some(winner) = core.shutdown_terminal_kind(operation) {
+                    terminal_to_error(winner, op_name)
+                } else {
+                    match resolved_scan_ticket(&core, &self.inner.completed_scans, operation) {
+                        CompletedScanTicket::Settled(winner) => terminal_to_error(winner, op_name),
+                        CompletedScanTicket::Expired => expired_scan_ticket_error(),
+                        CompletedScanTicket::Foreign => foreign_scan_ticket_error(),
+                        CompletedScanTicket::Local | CompletedScanTicket::Unknown => {
+                            lock_std(&self.inner.reset_ops)
+                                .contains(operation)
+                                .then_some(OperationTerminalKind::Reset)
+                                .map_or_else(
+                                    || DesktopError::cancelled(op_name),
+                                    |winner| terminal_to_error(winner, op_name),
+                                )
+                        }
+                    }
                 }
             }
             Err(error) => DesktopError::from(error),
@@ -2043,7 +2167,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             lifecycle_unobserved: self.inner.lifecycle_unobserved.load(Ordering::Relaxed),
             compensation_failures: self.inner.compensation_failures.load(Ordering::Relaxed),
             scan_owned: self.inner.scan_slot().is_some(),
-            retained_scan_tickets: lock_std(&self.inner.completed_scans).len(),
+            retained_scan_tickets: lock_std(&self.inner.completed_scans).tickets.len(),
             pairings_in_flight: lock_std(&self.inner.pairings).len(),
             retained_enablements: lock_std(&self.inner.retained_enablements).len(),
             generation_restore_failures: self
@@ -4453,15 +4577,24 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 // cancel arrived — the kernel forgot it. A retained scan
                 // ticket or an F15 shutdown tombstone still names the
                 // genuine settled terminal, so suppress onto it exactly as
-                // a cancel against the still-present terminal would. Truly
-                // unknown ids keep failing closed with `argument.invalid`.
-                if completed_scan_kind(&self.inner.completed_scans, operation).is_some()
+                // a cancel against the still-present terminal would. An
+                // expired local acknowledgement and a foreign central's
+                // opaque id are distinct lifecycle/ownership outcomes;
+                // only a structurally unknown id remains `argument.invalid`.
+                let ticket = resolved_scan_ticket(&core, &self.inner.completed_scans, operation);
+                if matches!(ticket, CompletedScanTicket::Settled(_))
                     || core.shutdown_terminal_kind(operation).is_some()
                 {
                     let suppressed = core.suppressed_count(operation).unwrap_or(0);
                     ubm_core::central::CompletionOutcome::DuplicateSuppressed { suppressed }
                 } else {
-                    return Err(DesktopError::from(error));
+                    return Err(match ticket {
+                        CompletedScanTicket::Expired => expired_scan_ticket_error(),
+                        CompletedScanTicket::Foreign => foreign_scan_ticket_error(),
+                        CompletedScanTicket::Settled(_)
+                        | CompletedScanTicket::Local
+                        | CompletedScanTicket::Unknown => DesktopError::from(error),
+                    });
                 }
             }
             Err(error) => return Err(DesktopError::from(error)),

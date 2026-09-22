@@ -359,6 +359,7 @@ describe('Expo host services on the Rust session', () => {
     }
     const CLAIM = JSON.stringify({
       consumerCount: 1,
+      selectors: [{ serviceUuid: '0000180d-0000-1000-8000-00805f9b34fb', serviceOccurrence: 1, characteristicUuid: '00002a37-0000-1000-8000-00805f9b34fb', characteristicOccurrence: 1 }],
       batches: [
         JSON.stringify({
           more: false,
@@ -376,7 +377,8 @@ describe('Expo host services on the Rust session', () => {
           ]
         })
       ],
-      disposed: true
+      disposed: true,
+      afterCutoffLoss: { items: 0, bytes: 0 }
     })
     const STATUS = JSON.stringify({
       strategy: 'native',
@@ -396,7 +398,11 @@ describe('Expo host services on the Rust session', () => {
     async function continuationManager() {
       const harness = rustCoreHarness({ platform: 'android' })
       harness.native.declareBackgroundContinuation = async () => {}
-      harness.native.claimContinuation = async () => CLAIM
+      harness.native.prepareContinuationClaim = async () => JSON.stringify({ ...JSON.parse(CLAIM), claimToken: 'expo-claim' })
+      harness.native.acknowledgeContinuationClaim = async token => {
+        expect(token).toBe('expo-claim')
+        return JSON.stringify({ disposed: true, afterCutoffLoss: { items: 0, bytes: 0 }, disposeFailure: null })
+      }
       harness.native.continuationStatus = async () => STATUS
       // The harness binds eagerly; rebuild after adding the native methods.
       const { createReactNativeRustCoreBinding } = require('../src/backends/reactnative/react-native-rust-core-binding')

@@ -55,6 +55,8 @@ import {
 } from '../../backend-contract/background-continuation'
 import {
   aggregateContinuationClaim,
+  optionalContinuationClaimToken,
+  parseContinuationClaimAcknowledgement,
   parseContinuationStatus,
   type ContinuationBacklog,
   type ContinuationStatus
@@ -476,30 +478,48 @@ async function persistBackgroundContinuation(
  * `capability.unsupported` — never an invented empty backlog.
  */
 export interface ReactNativeContinuationAccess {
-  readonly claimBatches: (maxItems: number, maxBytes: number) => Promise<unknown>
+  readonly prepareClaim: (maxItems: number, maxBytes: number) => Promise<unknown>
+  readonly acknowledgeClaim: (claimToken: string) => Promise<unknown>
   readonly readStatus: () => Promise<unknown>
 }
 
+function acknowledgementFailureDetail(error: unknown): string {
+  if (error instanceof BackendContractError) return error.normalized.code
+  if (error instanceof Error && error.message.length > 0) return error.message.slice(0, 256)
+  return 'native acknowledgement did not return a valid receipt'
+}
+
 function continuationAccessFor(binding: ReactNativeRustCoreBinding): ReactNativeContinuationAccess {
-  const claim = binding.claimContinuation
+  const prepare = binding.prepareContinuationClaim
+  const acknowledge = binding.acknowledgeContinuationClaim
   const status = binding.continuationStatus
   return Object.freeze({
-    claimBatches: (maxItems: number, maxBytes: number) => {
-      if (claim === undefined) {
+    prepareClaim: (maxItems: number, maxBytes: number) => {
+      if (prepare === undefined || acknowledge === undefined) {
         return Promise.reject(
           contractError('capability.unsupported', 'restoration', 'react-native-rust-core.continuation.claim')
         )
       }
-      return claim.call(binding, maxItems, maxBytes).catch(error => {
+      return prepare.call(binding, maxItems, maxBytes).catch(error => {
         if (error instanceof BackendContractError) throw error
         throw contractError('platform.failure', 'restoration', 'react-native-rust-core.continuation.claim', {
           domain: 'react-native-rust-core',
-          code: 'claim-continuation',
+          code: 'prepare-continuation-claim',
           safeMessage: error instanceof Error ? error.message.slice(0, 1024) : String(error).slice(0, 1024),
           metadata: Object.freeze({})
         })
       })
     },
+    acknowledgeClaim: (claimToken: string) =>
+      acknowledge!.call(binding, claimToken).catch(error => {
+        if (error instanceof BackendContractError) throw error
+        throw contractError('platform.failure', 'restoration', 'react-native-rust-core.continuation.claim', {
+          domain: 'react-native-rust-core',
+          code: 'acknowledge-continuation-claim',
+          safeMessage: error instanceof Error ? error.message.slice(0, 1024) : String(error).slice(0, 1024),
+          metadata: Object.freeze({})
+        })
+      }),
     readStatus: () => {
       if (status === undefined) {
         return Promise.reject(
@@ -999,11 +1019,42 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     if (!Number.isSafeInteger(maxItems) || maxItems < 1 || !Number.isSafeInteger(maxBytes) || maxBytes < 1) {
       throw contractError('argument.invalid', 'restoration', `${SCOPE}.continuation.claim-bounds`)
     }
-    const payload = await access.claimBatches(maxItems, maxBytes)
+    const payload = await access.prepareClaim(maxItems, maxBytes)
     // The native claim carries the consumer count captured from this exact
     // session. A standing declaration can change before an older wake is
     // claimed, so mutable status cannot authorize these consumer names.
-    return aggregateContinuationClaim(this.parseClaimPayload(payload))
+    const prepared = this.parseClaimPayload(payload)
+    const backlog = aggregateContinuationClaim(prepared)
+    const claimToken = optionalContinuationClaimToken(prepared)
+    if (
+      claimToken === null &&
+      backlog.selectors.length === 0 &&
+      backlog.values.length === 0 &&
+      backlog.streamEnds.length === 0 &&
+      backlog.control.length === 0
+    ) {
+      return backlog
+    }
+    if (claimToken === null) {
+      throw contractError('protocol.malformed', 'restoration', `${SCOPE}.continuation.claim-token`)
+    }
+    try {
+      const acknowledgement = parseContinuationClaimAcknowledgement(
+        this.parseClaimPayload(await access.acknowledgeClaim(claimToken))
+      )
+      return Object.freeze({ ...backlog, ...acknowledgement })
+    } catch (error) {
+      // The batches have already passed the strict drain codec. An uncertain
+      // acknowledgement must not turn that completed handoff into an
+      // unobservable rejection: native retains the prepared receipt for a
+      // later acknowledgement retry, while this call reports that cleanup is
+      // not yet known to have completed.
+      return Object.freeze({
+        ...backlog,
+        disposed: false,
+        disposeFailure: `continuation acknowledgement uncertain: ${acknowledgementFailureDetail(error)}`
+      })
+    }
   }
 
   /** Reports the continuation posture (declared strategy, last wake). */

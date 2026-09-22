@@ -48,6 +48,19 @@ struct Queues {
     /// sees the gap within a bounded number of drains, without waiting for
     /// the queues to empty and without disturbing record ordinals.
     control_lost_total: u64,
+    /// A continuation claim sealed this outbox. Data that reaches the
+    /// process after that authoritative cutoff is not silently treated as
+    /// backlog for the prior owner; it is counted for the handoff result.
+    sealed: bool,
+    after_cutoff_items: u64,
+    after_cutoff_bytes: u64,
+}
+
+/// Observed data refused after an owner sealed its outbox for handoff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AfterCutoffLoss {
+    pub items: u64,
+    pub bytes: u64,
 }
 
 /// A data record the session could not queue: the caller turns it into a
@@ -94,6 +107,11 @@ impl Outbox {
         let bytes = record.to_string().len();
         {
             let mut queues = lock(&self.queues);
+            if queues.sealed {
+                queues.after_cutoff_items += 1;
+                queues.after_cutoff_bytes += bytes as u64;
+                return Err(DataOverflow { bytes });
+            }
             if queues.data.len() >= DATA_RECORD_CAP || queues.data_bytes + bytes > DATA_RECORD_BYTES
             {
                 return Err(DataOverflow { bytes });
@@ -109,6 +127,27 @@ impl Outbox {
         }
         self.signal();
         Ok(())
+    }
+
+    /// Establishes the handoff cutoff. The same mutex orders this state
+    /// change with every data admission: an accepted record is before the
+    /// cutoff and remains drainable; a later attempt is counted explicitly.
+    pub fn seal(&self) -> AfterCutoffLoss {
+        let mut queues = lock(&self.queues);
+        queues.sealed = true;
+        AfterCutoffLoss {
+            items: queues.after_cutoff_items,
+            bytes: queues.after_cutoff_bytes,
+        }
+    }
+
+    #[must_use]
+    pub fn after_cutoff_loss(&self) -> AfterCutoffLoss {
+        let queues = lock(&self.queues);
+        AfterCutoffLoss {
+            items: queues.after_cutoff_items,
+            bytes: queues.after_cutoff_bytes,
+        }
     }
 
     /// Queue one control record.
@@ -344,5 +383,29 @@ mod tests {
             }
         }
         assert_eq!(seen, 7u64);
+    }
+
+    #[test]
+    fn seal_orders_each_admission_into_the_handoff_or_explicit_loss() {
+        let outbox = Outbox::new(7, Arc::new(NoWake));
+        outbox
+            .push_data(data(1))
+            .expect("pre-cutoff record is retained");
+        assert_eq!(outbox.seal(), AfterCutoffLoss { items: 0, bytes: 0 });
+        let after = data(2);
+        let bytes = after.to_string().len() as u64;
+        assert!(
+            outbox.push_data(after).is_err(),
+            "post-cutoff data is refused"
+        );
+
+        let batch = outbox.drain(256, 1 << 20);
+        assert_eq!(batch["more"], json!(false));
+        assert_eq!(batch["records"].as_array().unwrap().len(), 1);
+        assert_eq!(batch["records"][0]["n"], json!(1));
+        assert_eq!(
+            outbox.after_cutoff_loss(),
+            AfterCutoffLoss { items: 1, bytes }
+        );
     }
 }

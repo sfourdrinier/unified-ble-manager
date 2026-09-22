@@ -75,6 +75,18 @@ class RustCoreContinuationExecutorTest {
     return thread
   }
 
+  /** Answers a contiguous suffix of invokes without relying on sleeps. */
+  private fun answerFrom(first: Int, answers: List<String>): Thread = Thread {
+    answers.forEachIndexed { offset, answer ->
+      while (fake.callbacks.size <= first + offset) Thread.yield()
+      fake.callbacks[first + offset].onResult(answer)
+    }
+  }.also { it.isDaemon = true; it.start() }
+
+  private fun sealed() = "{\"ok\":true,\"value\":{\"state\":\"sealed\",\"afterCutoffItems\":0,\"afterCutoffBytes\":0}}"
+  private fun continuationDispose(state: String = "released") =
+    "{\"ok\":true,\"value\":{\"state\":\"$state\",\"failures\":[],\"afterCutoffItems\":0,\"afterCutoffBytes\":0}}"
+
   @Test
   fun connectsDirectDiscoversAndResubscribes() {
     fake.openRecord = { "{\"sessionId\":7,\"contractRevision\":\"c\",\"wireRevision\":\"ubm-mobile-wire/1\"}" }
@@ -149,9 +161,7 @@ class RustCoreContinuationExecutorTest {
     fake.drainAnswer =
       "{\"more\":false,\"records\":[{\"t\":\"value\",\"ordinal\":1," +
         "\"consumer\":\"ubm-continuation-0\",\"valueB64\":\"AEg=\",\"delivery\":\"notification\"}],\"controlLost\":0}"
-    val disposing = Thread { answerAt(4, "{\"ok\":true,\"value\":{\"state\":\"released\",\"failures\":[]}}") }
-    disposing.isDaemon = true
-    disposing.start()
+    val disposing = answerFrom(4, listOf(sealed(), continuationDispose()))
     val claim = executor.claimAndDispose(256, 65536)
     disposing.join(10_000)
 
@@ -166,20 +176,65 @@ class RustCoreContinuationExecutorTest {
       listOf(
         ok("{\"peerKey\":\"k\",\"connectionGeneration\":\"cg-1\"}"),
         ok("{\"connectionGeneration\":\"cg-1\",\"databaseGeneration\":\"db-1\",\"services\":[]}"),
-        ok("{\"consumer\":\"ubm-continuation-0\",\"delivery\":\"notification\"}")
+        ok("{\"consumer\":\"ubm-continuation-0\",\"delivery\":\"notification\"}"),
+        ok("{\"links\":[{\"peerId\":\"$peer\",\"state\":\"connected\",\"databaseState\":\"current\"}],\"subscriptions\":[{\"consumer\":\"ubm-continuation-0\",\"state\":\"live\"}]}")
       )
     )
     assertEquals(
       ContinuationOutcome.completed(ContinuationStrategy.NATIVE, peer, 1),
       executor.execute(peer, declaration())
     )
-    answering.join(10_000)
     val invokesAfterFirst = fake.invokes.size
     assertEquals(
       ContinuationOutcome.completed(ContinuationStrategy.NATIVE, peer, 1),
       executor.execute(peer, declaration())
     )
-    assertEquals(invokesAfterFirst, fake.invokes.size)
+    answering.join(10_000)
+    assertEquals(invokesAfterFirst + 1, fake.invokes.size)
+    assertEquals("session.reconcile", fake.invokes.last().second)
+  }
+
+  @Test
+  fun aLostLinkReconcilesThenReconnectsInsteadOfReportingTheCachedCompletion() {
+    fake.openRecord = { "{\"sessionId\":7,\"contractRevision\":\"c\",\"wireRevision\":\"ubm-mobile-wire/1\"}" }
+    val answering = answerInvokes(
+      listOf(
+        ok("{\"peerKey\":\"k\",\"connectionGeneration\":\"cg-1\"}"),
+        ok("{\"connectionGeneration\":\"cg-1\",\"databaseGeneration\":\"db-1\",\"services\":[]}"),
+        ok("{\"consumer\":\"ubm-continuation-0\",\"delivery\":\"notification\"}"),
+        ok("{\"links\":[{\"peerId\":\"$peer\",\"state\":\"ended\",\"databaseState\":null}],\"subscriptions\":[{\"consumer\":\"ubm-continuation-0\",\"state\":\"ended\"}]}"),
+        ok("{\"peerKey\":\"k\",\"connectionGeneration\":\"cg-2\"}"),
+        ok("{\"connectionGeneration\":\"cg-2\",\"databaseGeneration\":\"db-2\",\"services\":[]}"),
+        ok("{\"consumer\":\"ubm-continuation-1\",\"delivery\":\"notification\"}")
+      )
+    )
+    assertEquals(ContinuationOutcome.completed(ContinuationStrategy.NATIVE, peer, 1), executor.execute(peer, declaration()))
+    assertEquals(ContinuationOutcome.completed(ContinuationStrategy.NATIVE, peer, 1), executor.execute(peer, declaration()))
+    answering.join(10_000)
+    assertEquals(2, fake.invokes.count { it.second == "connection.connect" })
+    assertEquals(2, fake.invokes.count { it.second == "gatt.subscribe" })
+    assertTrue(fake.invokes.last().third.contains("\"consumer\":\"ubm-continuation-1\""))
+  }
+
+  @Test
+  fun aSameCountDeclarationChangeIsRefusedUntilThePinnedSessionIsClaimed() {
+    fake.openRecord = { "{\"sessionId\":7,\"contractRevision\":\"c\",\"wireRevision\":\"ubm-mobile-wire/1\"}" }
+    val answering = answerInvokes(
+      listOf(
+        ok("{\"peerKey\":\"k\",\"connectionGeneration\":\"cg-1\"}"),
+        ok("{\"connectionGeneration\":\"cg-1\",\"databaseGeneration\":\"db-1\",\"services\":[]}"),
+        ok("{\"consumer\":\"ubm-continuation-0\",\"delivery\":\"notification\"}")
+      )
+    )
+    assertEquals(ContinuationOutcome.completed(ContinuationStrategy.NATIVE, peer, 1), executor.execute(peer, declaration()))
+    answering.join(10_000)
+    val changed = declaration().copy(
+      resubscribe = listOf(ContinuationSelector(hrService, 1, "00002a38-0000-1000-8000-00805f9b34fb", 1))
+    )
+    assertTrue(executor.declarationReplacementFailure(changed)!!.contains("pinned backlog"))
+    val outcome = executor.execute(peer, changed) as ContinuationOutcome.Failed
+    assertEquals("lifecycle.invalid-state", outcome.code)
+    assertEquals(1, fake.invokes.count { it.second == "gatt.subscribe" })
   }
 
   @Test
@@ -195,9 +250,7 @@ class RustCoreContinuationExecutorTest {
     executor.execute(peer, declaration())
     answering.join(10_000)
     fake.drainAnswer = "{\"more\":false,\"records\":[],\"controlLost\":0}"
-    val disposing = Thread { answerAt(3, "{\"ok\":true,\"value\":{\"state\":\"release-failed\",\"failures\":[{\"resourceKind\":\"connection\",\"code\":\"connection.failed\"}]}}") }
-    disposing.isDaemon = true
-    disposing.start()
+    val disposing = answerFrom(3, listOf(sealed(), continuationDispose("release-failed")))
     val claim = executor.claimAndDispose(256, 65536)
     disposing.join(10_000)
     // The Rust side keeps failed leases and subscriptions for retry and only
@@ -206,13 +259,40 @@ class RustCoreContinuationExecutorTest {
     assertFalse(claim.disposed)
     assertTrue(logs.any { it.contains("release-failed") })
     // The kept session retries the dispose on the next claim.
-    val retry = Thread { answerAt(4, "{\"ok\":true,\"value\":{\"state\":\"released\",\"failures\":[]}}") }
-    retry.isDaemon = true
-    retry.start()
+    // The acknowledged prepared handoff already owns a sealed outbox. A
+    // cleanup retry repeats only continuation-dispose; re-quiescing would
+    // create a second opinion about the same cutoff.
+    val retry = answerFrom(5, listOf(continuationDispose()))
     val second = executor.claimAndDispose(256, 65536)
     retry.join(10_000)
     assertEquals(true, second.disposed)
-    assertEquals(2, fake.invokes.count { it.second == "session.dispose" })
+    assertEquals(2, fake.invokes.count { it.second == "session.continuation-dispose" })
+  }
+
+  @Test
+  fun anAcknowledgedReleaseRetainsAnEmptyReplayReceiptWithoutRedeliveringBatches() {
+    fake.openRecord = { "{\"sessionId\":7,\"contractRevision\":\"c\",\"wireRevision\":\"ubm-mobile-wire/1\"}" }
+    val answering = answerInvokes(
+      listOf(
+        ok("{\"peerKey\":\"k\",\"connectionGeneration\":\"cg-1\"}"),
+        ok("{\"connectionGeneration\":\"cg-1\",\"databaseGeneration\":\"db-1\",\"services\":[]}"),
+        ok("{\"consumer\":\"ubm-continuation-0\",\"delivery\":\"notification\"}")
+      )
+    )
+    executor.execute(peer, declaration())
+    answering.join(10_000)
+    fake.drainAnswer = "{\"more\":false,\"records\":[],\"controlLost\":0}"
+    val disposing = answerFrom(3, listOf(sealed(), continuationDispose()))
+    val prepared = executor.prepareClaim(256, 65536)
+    val released = executor.acknowledgeClaim(prepared.claimToken)
+    disposing.join(10_000)
+
+    assertTrue(released.disposed)
+    val replay = executor.prepareClaim(256, 65536)
+    assertEquals(prepared.claimToken, replay.claimToken)
+    assertTrue(replay.batches.isEmpty())
+    assertTrue(executor.acknowledgeClaim(replay.claimToken).disposed)
+    assertEquals(1, fake.invokes.count { it.second == "session.continuation-dispose" })
   }
 
   @Test
@@ -274,9 +354,8 @@ class RustCoreContinuationExecutorTest {
     answering.join(10_000)
     assertEquals(ContinuationOutcome.completed(ContinuationStrategy.NATIVE, peer, 1), outcome)
 
-    val disposing = Thread { answerAt(3, "{\"ok\":true,\"value\":{\"state\":\"released\",\"failures\":[]}}") }
-    disposing.isDaemon = true
-    disposing.start()
+    fake.drainAnswer = "{\"more\":false,\"records\":[],\"controlLost\":0}"
+    val disposing = answerFrom(3, listOf(sealed(), continuationDispose()))
     val laterClaim = executor.claimAndDispose(256, 65536)
     disposing.join(10_000)
     assertEquals(1, laterClaim.consumerCount)
@@ -296,30 +375,31 @@ class RustCoreContinuationExecutorTest {
     assertEquals(ContinuationOutcome.completed(ContinuationStrategy.NATIVE, peer, 1), executor.execute(peer, declaration()))
     establishing.join(10_000)
 
+    fake.drainAnswer = "{\"more\":false,\"records\":[],\"controlLost\":0}"
     var claim: ContinuationClaim? = null
     val claiming = Thread { claim = executor.claimAndDispose(256, 65536) }
     claiming.isDaemon = true
     claiming.start()
     val claimDeadline = System.currentTimeMillis() + 10_000L
     while (fake.callbacks.size < 4 && System.currentTimeMillis() < claimDeadline) Thread.sleep(5)
-    assertEquals("the claim must reserve the session through dispose", "session.dispose", fake.invokes[3].second)
+    assertEquals("the claim must reserve the session through its cutoff", "session.quiesce", fake.invokes[3].second)
 
     var outcome: ContinuationOutcome? = null
     val executing = Thread { outcome = executor.execute(peer, declaration()) }
     executing.isDaemon = true
     executing.start()
     Thread.sleep(100)
-    fake.callbacks[3].onResult("{\"ok\":true,\"value\":{\"state\":\"released\",\"failures\":[]}}")
+    fake.callbacks[3].onResult(sealed())
 
     val extraInvokeDeadline = System.currentTimeMillis() + 2_000L
-    while (fake.callbacks.size < 5 && executing.isAlive && System.currentTimeMillis() < extraInvokeDeadline) Thread.sleep(5)
+    while (fake.callbacks.size < 5 && System.currentTimeMillis() < extraInvokeDeadline) Thread.sleep(5)
     if (fake.callbacks.size >= 5) {
       fake.callbacks[4].onResult("{\"ok\":false,\"error\":{\"code\":\"lifecycle.destroyed\",\"detail\":\"claim owns disposal\"}}")
     }
     claiming.join(10_000)
     executing.join(10_000)
 
-    assertTrue(claim!!.disposed)
+    assertTrue("claim must dispose after the cutoff: $claim; invokes=${fake.invokes.map { it.second }}", claim!!.disposed)
     assertEquals("a claimed session must refuse a competing execute", "lifecycle.invalid-state", (outcome as ContinuationOutcome.Failed).code)
     assertEquals("the competing execute must not begin another connect", 1, fake.invokes.count { it.second == "connection.connect" })
   }

@@ -238,12 +238,20 @@ claimed afterwards:
 
 ```ts
 const backlog = await manager.continuation.claim({ maxItems, maxBytes })
-// values[], streamEnds[], controlLost, disposed
+// selectors[], values[], streamEnds[], controlLost, afterCutoffLoss, disposed
 ```
 
 Each value carries the consumer that produced it, named
-`ubm-continuation-{index}` — one per declared resubscription, in declaration
-order — so a reader maps every value back to the selector that subscribed it.
+`ubm-continuation-{index}`. `selectors[index]` is the immutable selector that
+the exact native session subscribed for that consumer. A recovery uses fresh
+consumer indices while retaining the older mapping, so changing or reordering
+the standing declaration cannot relabel an already queued value.
+
+Claim first seals the Rust outbox under the same lock as native data admission.
+Every record admitted before that cutoff remains drainable. An intake attempt
+observed after the cutoff increments `afterCutoffLoss.items` and `.bytes`, so
+the foreground handoff reports its gap explicitly instead of treating an
+instantaneously empty queue as proof that no later value arrived.
 
 Loss is reported, never hidden:
 
@@ -251,6 +259,8 @@ Loss is reported, never hidden:
   `droppedItems` and `droppedBytes`;
 - `controlLost` is cumulative; an increase means the app must run
   `session.reconcile` rather than infer the current state;
+- `afterCutoffLoss` counts native intake observed after the sealed handoff
+  cutoff;
 - a broken ordinal chain or an unparseable batch **fails closed**. No partial
   backlog is ever handed over as though it were complete.
 
@@ -264,11 +274,16 @@ failures the platform reported, verbatim. The same is true when a drain is cut
 short by the batch cap with more still queued: the unread tail is retained
 rather than discarded. An application that sees `disposed: false` must claim
 again until it sees `true`; treating one claim as the end of the backlog loses
-data that the library deliberately kept for it. One path reports less than the
-others: when a queued batch is itself unparseable the claim fails closed with
-`protocol.malformed` before any backlog is built, so the session is still kept
-but the reason reaches the caller as that error rather than as
-`disposeFailure`.
+data that the library deliberately kept for it. When a native drain batch is
+malformed, only earlier strictly validated batches are returned and
+`disposeFailure` reports the malformed boundary; destructive cleanup is not
+authorized and the session remains owned for diagnosis or a follow-up claim.
+If JavaScript decoded a handoff but its acknowledgement is rejected in transit
+or returns a malformed receipt, the decoded backlog is still returned with
+`disposed: false` and an acknowledgement uncertainty in `disposeFailure`.
+After native cleanup succeeds it retains one empty acknowledgement receipt, so
+the next claim can confirm release without delivering those already decoded
+batches again.
 
 **Every wake is recorded, including the ones that do nothing.** A peer that
 appears without an association is recorded as `association.unknown`, and an

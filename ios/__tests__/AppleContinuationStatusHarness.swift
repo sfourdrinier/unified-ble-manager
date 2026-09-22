@@ -133,7 +133,7 @@ enum AppleContinuationStatusHarness {
 
     // The claim stays an unsupported stub with nothing to abandon.
     var claimFailure: String?
-    sessions.claimContinuation(maxItems: 256, maxBytes: 65536) { _, failure in claimFailure = failure }
+    sessions.prepareContinuationClaim(maxItems: 256, maxBytes: 65536) { _, failure in claimFailure = failure }
     let claim = json(claimFailure ?? "{}")
     check(claim["code"] as? String == "capability.unsupported", "claim code: \(claim)")
     check(claim["operation"] as? String == "continuation.claim", "claim operation: \(claim)")

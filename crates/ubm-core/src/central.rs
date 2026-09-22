@@ -26,7 +26,8 @@
 //! any effect is staged, so a rejected request leaves state unchanged and
 //! emits no radio effect (OWN-02, stale-path vectors).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque, hash_map::RandomState};
+use std::hash::{BuildHasher, Hasher};
 
 use crate::contracts::{
     AttachmentTuple, BleErrorCode, BleErrorDomain, Contender, ContenderKind, CoreError, Generation,
@@ -46,6 +47,15 @@ use crate::streams::{
 /// call site names a contract path.
 fn err(code: BleErrorCode, domain: BleErrorDomain, operation: &str) -> CoreError {
     CoreError::new(code, domain, operation)
+}
+
+/// A process-private key for opaque scan handle authentication. The key is
+/// never serialized; only its derived tag crosses the host boundary.
+fn fresh_scan_identity_key() -> u64 {
+    let state = RandomState::new();
+    let mut hasher = state.build_hasher();
+    hasher.write_u8(0x53);
+    hasher.finish()
 }
 
 fn append_u64(into: &mut String, mut value: u64) {
@@ -1676,6 +1686,15 @@ pub struct Central {
     config: CentralConfig,
     kernel: Kernel,
     attachment: AttachmentTuple,
+    /// Immutable per-central namespace for opaque operation handles. It is
+    /// seeded from the opening attachment (which carries the central ordinal)
+    /// and deliberately survives adapter-generation replacement so an old
+    /// local handle cannot become indistinguishable from a foreign one.
+    operation_namespace: String,
+    /// Per-central secret used to authenticate the scan-only suffix of an
+    /// opaque operation id. It lets an evicted real scan remain recognisable
+    /// without retaining an unbounded set of every issued scan ordinal.
+    scan_identity_key: u64,
     kernel_generation: Generation,
     op_counter: u64,
     conn_gen_counter: u64,
@@ -1783,6 +1802,8 @@ impl Central {
         Ok(Self {
             config,
             kernel,
+            operation_namespace: attachment.attachment_id().as_str().to_owned(),
+            scan_identity_key: fresh_scan_identity_key(),
             attachment,
             kernel_generation: generation,
             op_counter: 0,
@@ -1815,10 +1836,80 @@ impl Central {
         })
     }
 
-    fn next_op_id(&mut self) -> Result<OperationId, CoreError> {
-        let id = OperationId::new(format!("central-op-{}", self.op_counter))?;
+    fn next_op_id(&mut self, class: &str) -> Result<OperationId, CoreError> {
+        // Operation ids cross host boundaries as opaque handles. Scope each
+        // one to the immutable attachment so a completed handle from another
+        // central cannot alias this central's same local counter.
+        let scope = self.operation_namespace.as_str();
+        let ordinal = self.op_counter;
+        let id = if class == "scan" {
+            OperationId::new(format!(
+                "central-op/{}/{scope}/{class}/{ordinal}/{:016x}",
+                scope.len(),
+                self.scan_identity_tag(ordinal)
+            ))?
+        } else {
+            OperationId::new(format!(
+                "central-op/{}/{scope}/{class}/{ordinal}",
+                scope.len()
+            ))?
+        };
         self.op_counter = self.op_counter.saturating_add(1);
         Ok(id)
+    }
+
+    /// Whether this central minted `operation` as a scan. The attachment-
+    /// derived namespace prevents another central from matching the local
+    /// counter; the scan-only authenticated suffix prevents another operation
+    /// kind or an invented future id from looking like a retired scan.
+    #[must_use]
+    pub fn issued_scan_operation_id(&self, operation: &OperationId) -> bool {
+        let Some(rest) = operation.as_str().strip_prefix("central-op/") else {
+            return false;
+        };
+        let Some((length, rest)) = rest.split_once('/') else {
+            return false;
+        };
+        let Ok(length) = length.parse::<usize>() else {
+            return false;
+        };
+        let Some(scope) = rest.get(..length) else {
+            return false;
+        };
+        if scope != self.operation_namespace {
+            return false;
+        }
+        let Some(suffix) = rest
+            .get(length..)
+            .and_then(|suffix| suffix.strip_prefix('/'))
+        else {
+            return false;
+        };
+        let mut fields = suffix.split('/');
+        let (Some(class), Some(ordinal), Some(tag), None) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            return false;
+        };
+        if class != "scan" {
+            return false;
+        }
+        let Ok(ordinal) = ordinal.parse::<u64>() else {
+            return false;
+        };
+        let Ok(tag) = u64::from_str_radix(tag, 16) else {
+            return false;
+        };
+        ordinal < self.op_counter && tag == self.scan_identity_tag(ordinal)
+    }
+
+    fn scan_identity_tag(&self, ordinal: u64) -> u64 {
+        let mut value = self.scan_identity_key ^ ordinal.rotate_left(17);
+        value ^= value >> 30;
+        value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        value ^= value >> 27;
+        value = value.wrapping_mul(0x94d0_49bb_1331_11eb);
+        value ^ (value >> 31)
     }
 
     fn next_ordinal(&mut self) -> u64 {
@@ -1875,7 +1966,28 @@ impl Central {
         now: MonotonicTime,
         out: &mut EffectBatch,
     ) -> Result<OperationId, CoreError> {
-        let id = self.next_op_id()?;
+        self.admit_op_class(owner, timeout_ms, now, out, "op")
+    }
+
+    fn admit_scan_op(
+        &mut self,
+        owner: &str,
+        timeout_ms: u64,
+        now: MonotonicTime,
+        out: &mut EffectBatch,
+    ) -> Result<OperationId, CoreError> {
+        self.admit_op_class(owner, timeout_ms, now, out, "scan")
+    }
+
+    fn admit_op_class(
+        &mut self,
+        owner: &str,
+        timeout_ms: u64,
+        now: MonotonicTime,
+        out: &mut EffectBatch,
+        class: &str,
+    ) -> Result<OperationId, CoreError> {
+        let id = self.next_op_id(class)?;
         let lease = LeaseId::new(String::from(owner))?;
         let generation = self.kernel_generation.clone();
         let attachment = self.attachment.clone();
@@ -2193,7 +2305,7 @@ impl Central {
                 return Err(err(code, BleErrorDomain::Core, "scan.arbitration"));
             }
         }
-        let id = self.admit_op(owner, request.timeout_ms(), now, out)?;
+        let id = self.admit_scan_op(owner, request.timeout_ms(), now, out)?;
         self.scans.push(ScanSessionRecord {
             id: id.clone(),
             state: ScanSessionState::Starting,
@@ -5226,6 +5338,26 @@ impl Central {
         self.op_ids.retain(|known| known != id);
         self.op_paths.retain(|(known, _)| known != id);
         self.op_peers.retain(|(known, _)| known != id);
+        // A released scan has no live lifecycle work left, but its recent
+        // state remains useful for same-central reconciliation. Keep that
+        // state to the public 256-entry bound; unreleased terminal records
+        // stay pinned until their cleanup receipt arrives.
+        while self
+            .scans
+            .iter()
+            .filter(|scan| scan.state.is_terminal() && !self.op_ids.contains(&scan.id))
+            .count()
+            > crate::contracts::MAX_SCAN_STATE_ENTRIES as usize
+        {
+            let Some(index) = self
+                .scans
+                .iter()
+                .position(|scan| scan.state.is_terminal() && !self.op_ids.contains(&scan.id))
+            else {
+                break;
+            };
+            self.scans.remove(index);
+        }
     }
 
     /// Report a host release result for a terminal operation. A failed
@@ -5583,6 +5715,63 @@ mod tests {
             central.note_scan_platform(&id, ScanPlatformEvent::PlatformStopped, 1003, &mut out)?;
         check(state == ScanSessionState::Stopped, "platform confirmed");
         check(state.is_terminal(), "stopped is terminal");
+        Ok(())
+    }
+
+    #[test]
+    fn released_scan_history_is_bounded_but_recent_state_and_issued_identity_remain()
+    -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let request = validate_scan_request(&[], "all", "none", 5000, false, &[])?;
+        let mut first = None;
+        let mut latest = None;
+        for ordinal in 0..=crate::contracts::MAX_SCAN_STATE_ENTRIES {
+            let mut out = batch();
+            let id = central.start_scan(&request, None, "owner-a", ordinal, &mut out)?;
+            first.get_or_insert_with(|| id.clone());
+            central.platform_scan_started(&id)?;
+            central.stop_scan(&id, ordinal + 1, &mut out)?;
+            central.note_scan_platform(
+                &id,
+                ScanPlatformEvent::PlatformStopped,
+                ordinal + 2,
+                &mut out,
+            )?;
+            central.report_release_success(&id)?;
+            latest = Some(id);
+        }
+        let first = first.expect("first scan");
+        let latest = latest.expect("latest scan");
+        check(
+            central.scans.len() <= crate::contracts::MAX_SCAN_STATE_ENTRIES as usize,
+            "released scan state stays within the public bound",
+        );
+        check(
+            central.scan_session_state(&first).is_none(),
+            "old released scan state is evicted",
+        );
+        check(
+            central.scan_session_state(&latest) == Some(ScanSessionState::Stopped),
+            "recent released scan state remains observable",
+        );
+        check(
+            central.issued_scan_operation_id(&first),
+            "an evicted real scan still has a self-authenticating identity",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn issued_scan_identity_refuses_a_generic_operation_relabelled_as_scan() -> Result<(), CoreError>
+    {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let ordinary = central.admit_op("owner-a", 5000, 1, &mut out)?;
+        let forged = OperationId::new(ordinary.as_str().replacen("/op/", "/scan/", 1))?;
+        check(
+            !central.issued_scan_operation_id(&forged),
+            "a generic operation cannot claim scan history by changing its class",
+        );
         Ok(())
     }
 
