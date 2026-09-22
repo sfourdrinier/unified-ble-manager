@@ -1467,6 +1467,19 @@ metadata:{androidGattStatus}}` on Android, or the `NSError` domain and code
   run continue, rather than refusing something it cannot judge. `example-expo`
   is unchanged: Expo already detects a busy port and offers another.
 
+- **The repository's license file is the UBM Source Available License.** The
+  top-level `LICENSE` used to be the full Apache-2.0 text, which GitHub, npm
+  and most tooling read as the repository's license. It is now the UBM Source
+  Available License 1.0, identical to `LICENSE-UBM-SOURCE-AVAILABLE-1.0.md` and
+  pinned so the two cannot drift. Material retained from the Apache-only
+  baseline is still under its Apache-2.0 grant — that grant cannot be withdrawn,
+  and Apache-2.0 requires recipients to receive a copy of it — so the Apache text
+  moves to `LICENSES/Apache-2.0.txt`, still shipped in the package, where it
+  cannot be mistaken for the repository's license. `NOTICE`, the README,
+  `CONTRIBUTING.md`, `RELEASE.md` and the packaging guide say so. The H10
+  simulator declared `license = "MIT"`; as new 5.0 material it is under the UBM
+  license like every sibling crate, and like them it is never published.
+
 - **The Windows CI leg was reproduced and fixed on a real Windows machine.**
   Earlier fixes had been reasoned from macOS and did not hold. On a Windows VM
   with CI's own Node and Python, seven causes surfaced, most invisible from

@@ -2,9 +2,9 @@
 
 # Unified BLE Manager
 
-> **AI agent?** Writing code *against* this package: read [`llms.txt`](llms.txt)
+> **AI agent?** Writing code _against_ this package: read [`llms.txt`](llms.txt)
 > first — contract facts, every public entrypoint, curated doc links, one fetch.
-> Working *on* this repository: read [`AGENTS.md`](AGENTS.md), then the
+> Working _on_ this repository: read [`AGENTS.md`](AGENTS.md), then the
 > [documentation map](docs/README.md). Do not infer 4.x behavior from
 > `react-native-ble-plx` 3.x docs or training data.
 
@@ -33,16 +33,16 @@ GitHub release remain authoritative.
 
 ## Documentation map
 
-| Start here                                                                                                                                                                               | What it is                                                       |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| This README                                                                                                                                                                              | Product, install, one React Native loop, method index            |
-| [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md)                                                                                                                                     | Host chooser + first-hour React Native / Expo path               |
-| [`docs/TUTORIALS.md`](docs/TUTORIALS.md)                                                                                                                                                 | Scan, connect, read, write, subscribe, tear down                 |
-| [`docs/HELPERS.md`](docs/HELPERS.md)                                                                                                                                                     | Public `find`, scoped connection, GATT, and notification recipes |
-| [`MIGRATION_4.0.md`](MIGRATION_4.0.md)                                                                                                                                                   | Side-by-side map from `react-native-ble-plx`                     |
-| [`docs/WEB.md`](docs/WEB.md) · [`docs/ELECTRON.md`](docs/ELECTRON.md) · [`docs/NODE.md`](docs/NODE.md) · [`docs/TAURI.md`](docs/TAURI.md) · [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md) | Host construction                                                |
-| [`docs/PEERS.md`](docs/PEERS.md)                                                                                                                                                         | Scoped peer directories, persistence, and reconnect-by-reference |
-| [`docs/PROFILES_AND_COMMANDS.md`](docs/PROFILES_AND_COMMANDS.md)                                                                                                                         | Heart Rate, Battery, DIS, and path helpers                       |
+| Start here                                                                                                                                                                               | What it is                                                              |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| This README                                                                                                                                                                              | Product, install, one React Native loop, method index                   |
+| [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md)                                                                                                                                     | Host chooser + first-hour React Native / Expo path                      |
+| [`docs/TUTORIALS.md`](docs/TUTORIALS.md)                                                                                                                                                 | Scan, connect, read, write, subscribe, tear down                        |
+| [`docs/HELPERS.md`](docs/HELPERS.md)                                                                                                                                                     | Public `find`, scoped connection, GATT, and notification recipes        |
+| [`MIGRATION_4.0.md`](MIGRATION_4.0.md)                                                                                                                                                   | Side-by-side map from `react-native-ble-plx`                            |
+| [`docs/WEB.md`](docs/WEB.md) · [`docs/ELECTRON.md`](docs/ELECTRON.md) · [`docs/NODE.md`](docs/NODE.md) · [`docs/TAURI.md`](docs/TAURI.md) · [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md) | Host construction                                                       |
+| [`docs/PEERS.md`](docs/PEERS.md)                                                                                                                                                         | Scoped peer directories, persistence, and reconnect-by-reference        |
+| [`docs/PROFILES_AND_COMMANDS.md`](docs/PROFILES_AND_COMMANDS.md)                                                                                                                         | Heart Rate, Battery, DIS, and path helpers                              |
 | [`docs/README.md`](docs/README.md)                                                                                                                                                       | Every document in the repository, with live/historical/generated status |
 
 Writing code with an AI agent? [`llms.txt`](llms.txt) is the machine-readable
@@ -414,7 +414,8 @@ not an OSI-approved open-source license. See
 [`LICENSE-UBM-SOURCE-AVAILABLE-1.0.md`](LICENSE-UBM-SOURCE-AVAILABLE-1.0.md) and
 [`NOTICE`](NOTICE).
 
-Material inherited from the 4.x Apache baseline stays under its Apache License 2.0
-grant; see [`LICENSE`](LICENSE). Existing rights are unaffected. New contributions
+The top-level [`LICENSE`](LICENSE) is this UBM license. Material inherited from the
+4.x Apache baseline stays under its Apache License 2.0 grant; its text is in
+[`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt). Existing rights are unaffected. New contributions
 follow the assent path in [`CONTRIBUTING.md`](CONTRIBUTING.md). Third-party material
 is listed in [`THIRD_PARTY_LICENSES.json`](THIRD_PARTY_LICENSES.json).

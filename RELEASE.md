@@ -50,7 +50,7 @@ Before a stable release tag is pushed:
 5. `SBOM.cdx.json` and `THIRD_PARTY_LICENSES.json` are generated from the same package metadata/lockfile.
 6. canonical CI is green for the release commit.
 7. package/repository/homepage/bug URLs point at `sfourdrinier/unified-ble-manager`.
-8. the license metadata (`package.json` license field, Cargo `license-file` pointers, SBOM expression) and the license documents (`LICENSE`, `LICENSE-UBM-SOURCE-AVAILABLE-1.0.md`, `NOTICE`) agree.
+8. the license metadata (`package.json` license field, Cargo `license-file` pointers, SBOM expression) and the license documents (`LICENSE` — the UBM text —, `LICENSE-UBM-SOURCE-AVAILABLE-1.0.md`, `LICENSES/Apache-2.0.txt` for retained Apache material, `NOTICE`) agree.
 9. the npm trusted publisher points at this repository/workflow/environment.
 10. GitHub private vulnerability reporting is enabled for the canonical repository.
 11. the complete macOS/Windows `arm64`/`x64` Node-API prebuild matrix is produced from the release tag and verified under Node and Electron.
@@ -75,7 +75,7 @@ npm pack --dry-run
 
 CI additionally owns the platform-specific native compilation and ABI lanes.
 
-## Releasing 4.0.0-rc.*
+## Releasing 4.0.0-rc.\*
 
 Active `4.0.0-rc.*` release-train candidates publish to npm `latest` so a bare `pnpm add unified-ble-manager` installs the current 4.0 line. The GitHub Release is marked prerelease. Each candidate is cut from the exact current `main` merge commit; the workflow verifies tag/package version equality.
 

@@ -35,10 +35,49 @@ describe('UBM 5.0 license packaging and metadata', () => {
     expect(exists(CONTRIBUTION_TERMS_FILE)).toBe(true)
   })
 
-  test('the existing Apache LICENSE is preserved for inherited 4.x material', () => {
+  // The repository presents the UBM Source Available License as its license.
+  // GitHub, npm and most tooling classify a repository from the top-level
+  // LICENSE file, so that file must be the UBM text and nothing else — a root
+  // Apache text reads as "this repository is Apache-2.0", which it is not.
+  test('the top-level LICENSE is the UBM Source Available License, not Apache', () => {
     expect(exists('LICENSE')).toBe(true)
-    expect(read('LICENSE')).toContain('Apache License')
-    expect(read('LICENSE')).toContain('TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION')
+    expect(read('LICENSE')).toBe(read(SAL_LICENSE_FILE))
+    expect(read('LICENSE')).not.toContain('Apache License')
+    expect(read('LICENSE')).not.toContain('TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION')
+  })
+
+  // Material retained from the Apache baseline stays under its Apache-2.0
+  // grant, and Apache-2.0 section 4(a) requires that recipients receive a copy
+  // of that license. The text therefore still ships — under LICENSES/, where it
+  // cannot be mistaken for the repository's license.
+  test('the retained Apache-2.0 text ships under LICENSES/, never at the repository root', () => {
+    const apachePath = 'LICENSES/Apache-2.0.txt'
+    expect(exists(apachePath)).toBe(true)
+    expect(read(apachePath)).toContain('Apache License')
+    expect(read(apachePath)).toContain('TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION')
+    const packageJson = require('../package.json')
+    expect(packageJson.files).toContain(apachePath)
+    const rootLicenseFiles = fs
+      .readdirSync(root, { withFileTypes: true })
+      .filter(entry => entry.isFile() && /^(LICEN[CS]E|COPYING)/i.test(entry.name))
+      .map(entry => entry.name)
+      .filter(name => /Apache License/.test(read(name)))
+    expect(rootLicenseFiles).toEqual([])
+  })
+
+  test('NOTICE points retained Apache material at LICENSES/Apache-2.0.txt and names LICENSE as the UBM license', () => {
+    const notice = read(NOTICE_FILE)
+    expect(notice).toContain('LICENSES/Apache-2.0.txt')
+    expect(notice).not.toMatch(/Apache License 2\.0 grant; see LICENSE\./)
+  })
+
+  // The H10 simulator is new 5.0 material, so it is under the UBM license like
+  // every sibling crate — not MIT — and, like them, it is never published.
+  test('the H10 simulator is UBM-licensed and unpublishable, like its siblings', () => {
+    const manifest = read('tool/h10-sim/Cargo.toml')
+    expect(manifest).not.toMatch(/^license\s*=\s*"MIT"/m)
+    expect(manifest).toMatch(/^license-file\s*=\s*"\.\.\/\.\.\/LICENSE-UBM-SOURCE-AVAILABLE-1\.0\.md"/m)
+    expect(manifest).toMatch(/^publish\s*=\s*false/m)
   })
 
   test('NOTICE names the confirmed licensor, the Apache baseline, and the material statement', () => {

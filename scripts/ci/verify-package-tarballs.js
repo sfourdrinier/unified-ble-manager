@@ -451,6 +451,10 @@ function isRootArchiveEntryAllowed(
     'package/CONTRIBUTING.md',
     'package/GOVERNANCE.md',
     'package/LICENSE',
+    // Retained Apache-2.0 text for inherited baseline material (Apache-2.0
+    // section 4(a)); kept out of the repository root so the top-level LICENSE
+    // is unambiguously the UBM license.
+    'package/LICENSES/Apache-2.0.txt',
     'package/LICENSE-UBM-SOURCE-AVAILABLE-1.0.md',
     'package/NOTICE',
     'package/UBM-CONTRIBUTION-TERMS-1.0.md',

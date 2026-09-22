@@ -8,9 +8,9 @@ Apache baseline
 
 Commit 8c8195dd0430ff847d9492ce32f4e63ea3a5df1d is the last Apache-only
 commit. Material retained from that baseline remains under its existing
-Apache License 2.0 grant; see LICENSE. Those existing rights are
-unaffected by the adoption below, and retained Apache notices are kept
-unchanged.
+Apache License 2.0 grant; the full text is in LICENSES/Apache-2.0.txt.
+Those existing rights are unaffected by the adoption below, and retained
+Apache notices are kept unchanged.
 
 New 5.0 material
 ----------------
@@ -18,7 +18,8 @@ New 5.0 material
 New UBM 5.0 work first introduced in the adoption commit that adds this
 NOTICE is made available under the UBM Source Available License 1.0
 (LicenseRef-UBM-Source-Available-1.0); see
-LICENSE-UBM-SOURCE-AVAILABLE-1.0.md. That license is a commercial
+LICENSE-UBM-SOURCE-AVAILABLE-1.0.md, which the top-level LICENSE file
+reproduces as the repository's license. That license is a commercial
 source-available license, not an OSI-approved open-source license.
 
 Retained, derived, and new material

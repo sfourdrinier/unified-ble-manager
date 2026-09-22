@@ -127,8 +127,10 @@ Do not open a public issue containing vulnerability details. Follow [`SECURITY.m
 
 ## Licensing
 
-The 4.x line is licensed under the **Apache License 2.0**; see [`LICENSE`](LICENSE)
-and [`NOTICE`](NOTICE). Unless explicitly agreed otherwise, contributions
+The 4.x line is licensed under the **Apache License 2.0**; see
+[`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt) and [`NOTICE`](NOTICE). The
+top-level [`LICENSE`](LICENSE) is the UBM Source Available License 1.0, which governs
+the 5.0 line. Unless explicitly agreed otherwise, contributions
 intentionally submitted for inclusion in the 4.x line are provided under the
 same Apache-2.0 terms. That Apache default is retained for 4.x material.
 

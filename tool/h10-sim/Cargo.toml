@@ -5,7 +5,8 @@ name = "h10-sim"
 version = "0.1.0"
 edition = "2021"
 description = "Polar H10 BLE peripheral simulator for unified-ble-manager driver scenarios (test tool, not part of the published package)"
-license = "MIT"
+publish = false
+license-file = "../../LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
 
 [[bin]]
 name = "h10-sim"

@@ -33,6 +33,7 @@
     "SBOM.cdx.json",
     "THIRD_PARTY_LICENSES.json",
     "LICENSE-UBM-SOURCE-AVAILABLE-1.0.md",
+    "LICENSES/Apache-2.0.txt",
     "NOTICE",
     "UBM-CONTRIBUTION-TERMS-1.0.md",
     "plugin/build",
