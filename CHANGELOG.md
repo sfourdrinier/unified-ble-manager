@@ -1467,6 +1467,36 @@ metadata:{androidGattStatus}}` on Android, or the `NSError` domain and code
   run continue, rather than refusing something it cannot judge. `example-expo`
   is unchanged: Expo already detects a busy port and offers another.
 
+- **The Windows CI leg was reproduced and fixed on a real Windows machine.**
+  Earlier fixes had been reasoned from macOS and did not hold. On a Windows VM
+  with CI's own Node and Python, seven causes surfaced, most invisible from
+  macOS: Git Bash mounts the Windows temp directory on `/tmp` and resets
+  `TEMP`/`TMP`, so the TV stage guard rejected every legitimate stage; Git for
+  Windows ships no `rsync`; `python3` there is a zero-byte Microsoft Store stub;
+  there is no `lsof`; and a teardown `EBUSY` was replacing the real assertion
+  failures. The stage now syncs with `find` and `tar`, the interpreter is kept
+  only if it actually runs, port probes go over TCP, and the port guard's honest
+  "cannot determine" answer is what the Windows tests expect.
+
+- **The desktop adapter watch no longer reports a stale snapshot during a
+  reset.** Powering the adapter off queues an adapter event and a core reset
+  separately; when the reset drained first, watchers were told the adapter was
+  still on immediately before it went off. The generation advance now withholds
+  its emission while that adapter event is in flight.
+
+- **The background wake reports the platform's answer, not its own timer.** The
+  native wake connected `when-available`, which on Android parks a slow,
+  fragile background connection — pointless, since presence only fires once the
+  peer is already advertising — and gave GATT discovery no budget, so a
+  ten-second client timer reported `platform.failure` while the core's own
+  window was still open. The wake now connects `direct`, gives discovery a
+  twenty-second budget, and every client timer waits for the core to answer
+  first. (Not yet proven over the air.)
+
+- **The packed Electron smoke offers the IPC protocol the renderer accepts.** A
+  protocol bump from 3 to 4 had left the smoke test's stand-in main process
+  offering 3; a test now ties that number to `IPC_PROTOCOL_VERSION`.
+
 - **The Windows CI leg runs the shell-script behaviour tests it was skipping
   past.** Nine tests in three suites had never passed on `windows-latest`, each
   for its own reason and none of them a real platform limit: the TV stage guard
