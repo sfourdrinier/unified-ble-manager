@@ -13,10 +13,17 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * Executes the `native` standing order from the wake through the Rust core
  * with no JavaScript (BGS4): a host-owned continuation session opens,
- * connects the appeared known peer `when-available`, discovers, and
- * subscribes the declared characteristics. Values arriving with no JS
- * session queue in the session's existing bounded outbox; when the app opens,
- * [claimAndDispose] drains it with the drain contract's own loss accounting.
+ * connects the appeared known peer `direct`, discovers, and subscribes the
+ * declared characteristics. Values arriving with no JS session queue in the
+ * session's existing bounded outbox; when the app opens, [claimAndDispose]
+ * drains it with the drain contract's own loss accounting.
+ *
+ * `direct`, not `when-available`: Companion Device Manager only fires on an
+ * absent-to-present transition, so the peer is already advertising when this
+ * runs and the opportunistic background wait buys nothing (finding 242: the
+ * wake link must establish at once, like the foreground's). Every radio op
+ * carries the budget its client latch honors, so an outcome always reports
+ * the core's answer instead of the latch contradicting it.
  *
  * One continuation session per process: a second appearance while the link
  * is held is already continuing, so it reuses the session instead of
@@ -28,7 +35,8 @@ class RustCoreContinuationExecutor(
   private val wireRevision: String,
   private val log: (String) -> Unit,
   private val connectBudgetMs: Long = CONNECT_BUDGET_MS,
-  private val opTimeoutMs: Long = OP_TIMEOUT_MS
+  private val opTimeoutMs: Long = OP_TIMEOUT_MS,
+  private val discoverBudgetMs: Long = DISCOVER_BUDGET_MS
 ) {
   private val lock = Any()
   private var sessionId: Long? = null
@@ -78,12 +86,12 @@ class RustCoreContinuationExecutor(
           "peerId" to address,
           "lease" to CONTINUATION_LEASE,
           "operationId" to "continuation-connect",
-          "intent" to "when-available",
+          "intent" to "direct",
           "transport" to "auto",
           "preferredPhy" to emptyList<String>(),
           "budgetMs" to connectBudgetMs
         ),
-        opTimeoutMs + connectBudgetMs
+        latchFor(connectBudgetMs)
       )
       if (!connected.ok) {
         return ContinuationOutcome.failed(
@@ -99,9 +107,10 @@ class RustCoreContinuationExecutor(
         linkedMapOf(
           "peerId" to address,
           "lease" to CONTINUATION_LEASE,
-          "operationId" to "continuation-discover"
+          "operationId" to "continuation-discover",
+          "budgetMs" to discoverBudgetMs
         ),
-        opTimeoutMs
+        latchFor(discoverBudgetMs)
       )
       if (!discovered.ok) {
         return ContinuationOutcome.failed(
@@ -126,9 +135,10 @@ class RustCoreContinuationExecutor(
               "characteristicOccurrence" to selector.characteristicOccurrence
             ),
             "consumer" to consumer,
-            "operationId" to "continuation-subscribe-$index"
+            "operationId" to "continuation-subscribe-$index",
+            "budgetMs" to opTimeoutMs
           ),
-          opTimeoutMs
+          latchFor(opTimeoutMs)
         )
         if (!subscribed.ok) {
           return ContinuationOutcome.failed(
@@ -149,7 +159,7 @@ class RustCoreContinuationExecutor(
           subscribedConsumers = resubscribed
         }
       }
-      log("continuation completed for $address: connected when-available, resubscribed $resubscribed")
+      log("continuation completed for $address: connected direct, resubscribed $resubscribed")
       return ContinuationOutcome.completed(ContinuationStrategy.NATIVE, address, resubscribed)
     } catch (error: ContinuationFailure) {
       return ContinuationOutcome.failed(
@@ -281,6 +291,13 @@ class RustCoreContinuationExecutor(
 
   private data class Checked(val ok: Boolean, val code: String, val reason: String, val platform: String?, val value: Map<*, *>)
 
+  /**
+   * The client latch for an op budgeted at [budgetMs]: the budget itself
+   * plus one generic hop margin, so the core always answers first and the
+   * outcome reports what the operation did, never the latch firing early.
+   */
+  private fun latchFor(budgetMs: Long) = budgetMs + opTimeoutMs
+
   private fun invokeChecked(session: Long, op: String, args: Map<String, Any?>, timeoutMs: Long): Checked {
     val withAdmission = LinkedHashMap<String, Any?>(args)
     withAdmission["admission"] = admission.incrementAndGet()
@@ -342,6 +359,14 @@ class RustCoreContinuationExecutor(
     const val CONSUMER_PREFIX = "ubm-continuation-"
     const val CONNECT_BUDGET_MS = 15_000L
     const val OP_TIMEOUT_MS = 10_000L
+    /**
+     * Finding 242: the discovery budget the wake gives the core. 20 s is
+     * the bound the foreground proves sufficient for this peer's database
+     * (the shared driver discovers with `OPERATION_TIMEOUT_MS = 20_000`);
+     * the old 10 s client latch contradicted the core's own 120 s window,
+     * so it could only ever fabricate the outcome.
+     */
+    const val DISCOVER_BUDGET_MS = 20_000L
   }
 }
 

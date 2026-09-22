@@ -13,10 +13,12 @@ data class PresenceRestoredPeer(val peerId: String, val name: String?, val conne
  * it; only an appearance no owner takes persists in the
  * [PresenceRestoredStore] for exactly-once drain at the next session open.
  * A disappearance clears a persisted appearance that never reached a
- * session. The link itself is established later through the ordinary
- * `when-available` connect: direct to the known address, no scan — this
- * coordinator never connects and never resubscribes; the declared standing
- * order ([continuation]) may. `record-only` is this doc comment's behaviour;
+ * session. The link itself is established later with no scan: the app-owned
+ * reconnect uses the ordinary `when-available` connect to the known address,
+ * while the `native` standing order connects `direct` (finding 242: the wake
+ * fires on presence, so the peer is already there) — this coordinator never
+ * connects and never resubscribes; the declared standing order
+ * ([continuation]) may. `record-only` is this doc comment's behaviour;
  * `native` reconnects the declared known peer and resubscribes the declared
  * characteristics through [executeContinuation] (the Rust core, no
  * JavaScript). Deferred strategies (`headless-task`, `foreground-service`)

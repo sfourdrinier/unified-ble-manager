@@ -69,7 +69,7 @@ class RustCoreContinuationExecutorTest {
   }
 
   @Test
-  fun connectsWhenAvailableDiscoversAndResubscribes() {
+  fun connectsDirectDiscoversAndResubscribes() {
     fake.openRecord = { "{\"sessionId\":7,\"contractRevision\":\"c\",\"wireRevision\":\"ubm-mobile-wire/1\"}" }
     val answering = answerInvokes(
       listOf(
@@ -87,7 +87,9 @@ class RustCoreContinuationExecutorTest {
     )
     val connectArgs = fake.invokes[0].third
     assertTrue(connectArgs.contains("\"peerId\":\"$peer\""))
-    assertTrue(connectArgs.contains("\"intent\":\"when-available\""))
+    // Finding 242: the wake fires on presence, so the peer is already
+    // there — connect direct, like the foreground, not when-available.
+    assertTrue(connectArgs.contains("\"intent\":\"direct\""))
     assertTrue(connectArgs.contains("\"admission\":1"))
     assertTrue(fake.invokes[1].third.contains("\"admission\":2"))
     val subscribeArgs = fake.invokes[2].third
