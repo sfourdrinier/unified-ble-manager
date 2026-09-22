@@ -58,7 +58,7 @@ function createBootstrapResponse() {
         capabilitySchema: negotiated('capability-schema', 1),
         eventSchema: negotiated('event-schema', 1),
         traceFormat: negotiated('trace-format', 1),
-        ipcProtocol: negotiated('ipc-protocol', 3)
+        ipcProtocol: negotiated('ipc-protocol', 4)
       }),
       capabilities: Object.freeze({
         schemaVersion: 2,
@@ -145,7 +145,7 @@ function assertDataOnlyPreloadSurfaceMembrane() {
   )
   const proof = JSON.parse(serializedProof)
   assert.deepEqual(proof.requestKinds, ['bootstrap', 'release'], 'data-only renderer proxy limits requests to bootstrap and release')
-  assert.equal(proof.ipcProtocolVersion, 3, 'data-only renderer proxy preserves the versioned IPC handshake')
+  assert.equal(proof.ipcProtocolVersion, 4, 'data-only renderer proxy preserves the versioned IPC handshake')
   assert.equal(proof.cleanupState, 'released', 'data-only renderer proxy preserves release cleanup')
   assert.equal(proof.processType, 'undefined', 'data-only VM membrane does not expose process')
   assert.equal(proof.requireType, 'undefined', 'data-only VM membrane does not expose require')
@@ -225,7 +225,7 @@ async function main() {
   }
   const client = new electronRenderer.ElectronRendererBleClient(rendererTransport)
   const bootstrap = await client.initialize()
-  assert.equal(bootstrap.versions.ipcProtocol.selected.value, 3, 'renderer receives the versioned IPC handshake')
+  assert.equal(bootstrap.versions.ipcProtocol.selected.value, 4, 'renderer receives the versioned IPC handshake')
   assert.deepEqual(requests.map(request => request.kind), ['bootstrap'], 'renderer proxy makes only its bootstrap IPC request')
   await client.destroy()
   assert.deepEqual(
