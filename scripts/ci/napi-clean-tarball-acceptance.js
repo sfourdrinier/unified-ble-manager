@@ -110,12 +110,17 @@ function run(command, args, options) {
   return result
 }
 
+function cleanConsumerPackageJson() {
+  const packageManager = require(path.join(repoRoot, 'package.json')).packageManager
+  if (typeof packageManager !== 'string' || packageManager.length === 0) {
+    fail('repository package.json must declare its packageManager for offline pnpm acceptance')
+  }
+  return { name: 'ubm-napi-acceptance-consumer', private: true, version: '0.0.0', packageManager }
+}
+
 function install(tarball, pm) {
   const consumer = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-napi-acceptance-consumer-')))
-  fs.writeFileSync(
-    path.join(consumer, 'package.json'),
-    JSON.stringify({ name: 'ubm-napi-acceptance-consumer', private: true, version: '0.0.0' }, null, 2)
-  )
+  fs.writeFileSync(path.join(consumer, 'package.json'), JSON.stringify(cleanConsumerPackageJson(), null, 2))
   const args =
     pm === 'npm'
       ? ['install', '--ignore-scripts', '--omit=optional', '--omit=peer', '--no-audit', '--no-fund', '--offline', tarball]
@@ -376,4 +381,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { parseArguments, pathWithoutRust }
+module.exports = { cleanConsumerPackageJson, parseArguments, pathWithoutRust }
