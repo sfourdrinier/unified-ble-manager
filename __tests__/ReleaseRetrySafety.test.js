@@ -7,6 +7,17 @@ const root = path.resolve(__dirname, '..')
 const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf8').replace(/\r\n/g, '\n')
 
 describe('release retry safety', () => {
+  test('published release recovery has time for registry processing and bounded GitHub notes', () => {
+    const workflow = read('.github/workflows/publish.yml')
+    const publishJob = workflow.slice(workflow.indexOf('  publish:\n'))
+    const timeout = Number(publishJob.match(/timeout-minutes: (\d+)/)?.[1])
+    const releaseNotes = publishJob.slice(publishJob.indexOf('- name: Create GitHub Release'))
+
+    expect(timeout).toBeGreaterThanOrEqual(75)
+    expect(releaseNotes).toContain('BODY="${BODY:0:20000}"')
+    expect(releaseNotes).toContain('blob/${TAG}/CHANGELOG.md')
+  })
+
   test('clean-tarball pnpm acceptance pins its temporary consumer to this repository package manager', () => {
     const { cleanConsumerPackageJson } = require('../scripts/ci/napi-clean-tarball-acceptance')
     const packageJson = require('../package.json')
