@@ -25,9 +25,9 @@ use ubm_desktop::{
 };
 
 use super::{
-    attachment_identity_matches, attachment_record, caller_key, object, string, Attachment,
-    AuthorityOpener, BtleplugDispatcher, CallerState, DispatchError, IpcEventSink, IpcValue,
-    OrphanResource, ReleasePhase, StreamEnd,
+    attachment_identity_matches, attachment_record, caller_key, into_object, object,
+    required_value, string, Attachment, AuthorityOpener, BtleplugDispatcher, CallerState,
+    DispatchError, IpcEventSink, IpcValue, OrphanResource, ReleasePhase, StreamEnd,
 };
 use crate::desktop_core::CoreAuthority;
 use crate::AuthenticatedCaller;
@@ -2134,6 +2134,61 @@ async fn finding_57_an_adapter_loss_ends_every_stream_in_the_legacy_vocabulary()
 // fail `backend.reset` (recreate the manager) before any native I/O, the
 // releases a renderer owes still run, and a fresh attach binds the new
 // generation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn finding_57_a_route_validated_before_rebind_stays_on_its_original_attachment() {
+    let harness = Harness::with_radio(os_radio(AdmissionPolicy::LifecycleOnly)).await;
+    let link = harness.connect("peer-a").await;
+    let database = harness.discover(&link).await;
+    let request = harness.route_request(
+        "gatt.read",
+        "gatt.read-validated-before-rebind",
+        Harness::gatt_entries(&link, &database, CONTROL_POINT),
+        None,
+    );
+    let envelope = into_object(
+        required_value(&request, "envelope", "test.route-envelope")
+            .expect("route envelope")
+            .clone(),
+        "test.route-envelope",
+    )
+    .expect("route envelope object");
+    let validated_attachment = harness
+        .dispatcher
+        .validate_envelope(&harness.caller, "gatt.read", &envelope)
+        .await
+        .expect("the original attachment validates before reset");
+
+    harness.lose_adapter().await;
+    let reads = count(&harness.radio().calls(), "read");
+    let error = harness
+        .dispatcher
+        .execute_for_attachment(
+            &harness.caller,
+            "gatt.read",
+            &validated_attachment,
+            Harness::lease_payload(Harness::gatt_entries(&link, &database, CONTROL_POINT)),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect_err("the route remains bound to the attachment it validated");
+
+    assert_eq!(
+        error.identity(),
+        (
+            "backend.reset",
+            "adapter",
+            "tauri.route-attachment".to_owned()
+        )
+    );
+    assert_eq!(error.commit, Some(CommitState::NotDispatched));
+    assert_eq!(
+        count(&harness.radio().calls(), "read"),
+        reads,
+        "no native I/O"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn finding_57_the_previous_attachment_fails_backend_reset_before_native_io() {
     let harness = Harness::with_radio(os_radio(AdmissionPolicy::LifecycleOnly)).await;

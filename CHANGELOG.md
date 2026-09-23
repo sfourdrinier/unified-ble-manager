@@ -36,6 +36,9 @@ separate from package SemVer.
   strand existing members. Successful compensation terminates displaced
   members; refused compensation retains the replacement operation and retries
   it through the existing member's ordinary stop.
+- Tauri routes retain the attachment identity validated from their envelope
+  through execution. A concurrent adapter-reset rebind can no longer let a
+  request from the ended attachment execute against the new generation.
 
 ### Documentation and consumer proofs
 
