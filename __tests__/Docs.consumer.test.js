@@ -371,6 +371,14 @@ describe('consumer documentation matches the published package', () => {
     expect(readme).not.toMatch(/new\s+BleManager\s*\(/)
   })
 
+  test('candidate consumer guides pin the exact native package instead of resolving stable latest', () => {
+    for (const document of ['docs/GETTING_STARTED.md', 'docs/EXPO_PLUGIN.md', 'docs/WEB.md', 'docs/TAURI.md']) {
+      const text = read(document)
+      expect(text).toContain(`pnpm add unified-ble-manager@${packageVersion}`)
+      expect(text).not.toMatch(/^\s*pnpm add unified-ble-manager\s*$/m)
+    }
+  })
+
   test('release documentation preserves publication, evidence, and deferral boundaries', () => {
     const readme = read('README.md')
     const release = read('RELEASE.md')
@@ -504,6 +512,12 @@ describe('consumer documentation matches the published package', () => {
     expect(node).toContain('createBleManagerFromProvider')
     expect(tauri).toContain('createTauriBleManager()')
     expect(tauri).toContain('returns the public `BleManager`')
+    expect(tauri).toContain("gatt.characteristic('180f', '2a19')")
+    expect(tauri).toContain('await level.read(')
+    expect(tauri).not.toMatch(/service\.uuid === '180f'|characteristic\.uuid === '2a19'/)
+    expect(tauri).toContain('[patch.crates-io]')
+    expect(tauri).toContain('vendor/btleplug')
+    expect(tauri).toContain('vendor/bluez-async')
   })
 
   test('teaching files that mention 4.0.0-rc. use the current package version', () => {

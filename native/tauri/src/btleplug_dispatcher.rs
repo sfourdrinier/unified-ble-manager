@@ -1128,7 +1128,11 @@ impl BtleplugDispatcher {
                 ))
             }
         };
-        self.validate_envelope(&caller, &command, &envelope).await?;
+        // Keep the exact attachment that this request validated. The caller
+        // may be rebound by the lifecycle pump after validation but before
+        // the operation task starts; consulting the caller again there would
+        // let an envelope from the ended attachment ride the new binding.
+        let route_attachment = self.validate_envelope(&caller, &command, &envelope).await?;
 
         if command == "operation.cancel" {
             return self.cancel_operation(&caller, &payload).await;
@@ -1165,9 +1169,10 @@ impl BtleplugDispatcher {
         let operation_command = command.clone();
         let result = tauri::async_runtime::spawn(async move {
             operation_dispatcher
-                .execute(
+                .execute_for_attachment(
                     &operation_caller,
                     &operation_command,
+                    &route_attachment,
                     payload,
                     binary_payload,
                     control,
@@ -1264,7 +1269,7 @@ impl BtleplugDispatcher {
         caller: &AuthenticatedCaller,
         command: &str,
         envelope: &BTreeMap<String, IpcValue>,
-    ) -> Result<(), DispatchError> {
+    ) -> Result<Attachment, DispatchError> {
         let lease = into_object(
             required_value(envelope, "rendererLease", "tauri.route-lease")?.clone(),
             "tauri.route-lease",
@@ -1282,7 +1287,7 @@ impl BtleplugDispatcher {
         )?;
         let versions = required_value(envelope, "versions", "tauri.route-versions")?;
         let state = self.inner.lock().await;
-        {
+        let validated_attachment = {
             let caller_state = state
                 .callers
                 .get(&caller_key(caller))
@@ -1347,8 +1352,9 @@ impl BtleplugDispatcher {
             // once by `bootstrap` and lives for the attachment; replacing it
             // would drop the previous Tauri Channel, and that drop ends the
             // shared JS callback which every later event depends on.
-        }
-        Ok(())
+            caller_state.attachment.clone()
+        };
+        Ok(validated_attachment)
     }
 
     /// Refuse work on an attachment an adapter reset replaced (finding 57)
@@ -1358,18 +1364,15 @@ impl BtleplugDispatcher {
     /// gone.
     async fn refuse_stale_attachment(
         &self,
-        caller: &AuthenticatedCaller,
+        route_attachment: &Attachment,
         command: &str,
     ) -> Result<(), DispatchError> {
         if is_release_command(command) {
             return Ok(());
         }
-        let bound = self
-            .bound_attachment(caller, "tauri.route-attachment")
-            .await?;
         let current = self.ensure_authority().await?.attachment();
-        if current.attachment_id().as_str() != bound.attachment_id {
-            return Err(stale_attachment(&bound, &current));
+        if current.attachment_id().as_str() != route_attachment.attachment_id {
+            return Err(stale_attachment(route_attachment, &current));
         }
         Ok(())
     }
@@ -1406,6 +1409,7 @@ impl BtleplugDispatcher {
         Ok(())
     }
 
+    #[cfg(test)]
     async fn execute(
         &self,
         caller: &AuthenticatedCaller,
@@ -1414,8 +1418,32 @@ impl BtleplugDispatcher {
         binary_payload: Option<Vec<u8>>,
         ctl: OpControl,
     ) -> Result<IpcValue, DispatchError> {
+        let route_attachment = self
+            .bound_attachment(caller, "tauri.route-attachment")
+            .await?;
+        self.execute_for_attachment(
+            caller,
+            command,
+            &route_attachment,
+            payload,
+            binary_payload,
+            ctl,
+        )
+        .await
+    }
+
+    async fn execute_for_attachment(
+        &self,
+        caller: &AuthenticatedCaller,
+        command: &str,
+        route_attachment: &Attachment,
+        payload: BTreeMap<String, IpcValue>,
+        binary_payload: Option<Vec<u8>>,
+        ctl: OpControl,
+    ) -> Result<IpcValue, DispatchError> {
         self.validate_expected_lease(caller, &payload).await?;
-        self.refuse_stale_attachment(caller, command).await?;
+        self.refuse_stale_attachment(route_attachment, command)
+            .await?;
         match command {
             "adapter.state" => self.adapter_state(caller, ctl).await,
             "scan.start" => self.start_scan(caller, payload, ctl).await,

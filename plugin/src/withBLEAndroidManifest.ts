@@ -9,6 +9,9 @@ type ManifestPermission = InnerManifest['permission']
 type ExtraTools = {
   // https://developer.android.com/studio/write/tool-attributes#toolstargetapi
   'tools:targetApi'?: string
+  // A higher-priority consumer manifest needs this marker to remove an
+  // attribute inherited from the library manifest during the real merge.
+  'tools:remove'?: string
 }
 
 export type ManifestUsesPermissionWithExtraTools = {
@@ -326,7 +329,12 @@ function reconcileScanPermission(androidManifest: AndroidManifestWithExtraTools,
       'tools:targetApi': '31'
     }
   }
-  if (!neverForLocation) delete scanPermission.$['android:usesPermissionFlags']
+  if (neverForLocation) {
+    delete scanPermission.$['tools:remove']
+  } else {
+    delete scanPermission.$['android:usesPermissionFlags']
+    scanPermission.$['tools:remove'] = 'android:usesPermissionFlags'
+  }
 
   const permissions = androidManifest.manifest['uses-permission']
   const connectIndex = permissions.findIndex(item => item.$['android:name'] === 'android.permission.BLUETOOTH_CONNECT')

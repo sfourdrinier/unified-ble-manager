@@ -125,6 +125,7 @@ run_package() {
   node scripts/ci/bluez-soft-probe.js
   node scripts/ci/pack-install-smoke.js
   node scripts/ci/packed-host-consumer-check.js
+  node scripts/ci/tauri-packed-consumer-check.js
   node scripts/ci/g6a-packed-consumer-proof.js
   node scripts/ci/check-tck-test-only-packaging.js
 }

@@ -1330,6 +1330,30 @@ describe('React host surface', () => {
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ cleanup }))
   })
 
+  test('unmount before scan admission still stops the late session and returns both iterators', async () => {
+    const admission = deferred()
+    const observations = createControllableAsyncIterator()
+    const events = createControllableAsyncIterator()
+    const session = scanSession(observations.iterable, events.iterable)
+    const createdManager = manager({ scan: jest.fn().mockReturnValue(admission.promise) })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+
+    useDiscoveredPeers()
+    const unmount = hookHarness.effects[0]()
+    await flush()
+    unmount()
+    await flush()
+    expect(session.stop).not.toHaveBeenCalled()
+
+    admission.resolve(session)
+    await flushMany()
+
+    expect(observations.returnFn).toHaveBeenCalledTimes(1)
+    expect(events.returnFn).toHaveBeenCalledTimes(1)
+    expect(session.stop).toHaveBeenCalledTimes(1)
+    expect(createdManager.destroy).not.toHaveBeenCalled()
+  })
+
   test('scan remount retries release-failed stop and does not start a second scan until released', async () => {
     const retryStop = deferred()
     const firstSession = scanSession()
@@ -1548,6 +1572,70 @@ describe('React host surface', () => {
     expect(hookHarness.stateValues[0].error).toMatchObject({ normalized: { code: 'stream.overflow' } })
     cleanup()
   })
+
+  test('surfaces a scan source-failed terminal with its structured cause', async () => {
+    const error = {
+      code: 'scan.start-failed',
+      domain: 'scan',
+      operation: 'test.scan',
+      platform: {
+        domain: 'android',
+        code: 'SCAN_FAILED_INTERNAL_ERROR',
+        safeMessage: 'scan source failed',
+        metadata: { callbackCode: 3 }
+      },
+      retryability: 'never'
+    }
+    const session = scanSession(
+      (async function* () {
+        yield {
+          kind: 'terminal',
+          reason: 'source-failed',
+          droppedItems: 0,
+          droppedBytes: 0,
+          replacedItems: 0,
+          error
+        }
+      })()
+    )
+    const createdManager = manager({ scan: jest.fn().mockResolvedValue(session) })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+
+    useDiscoveredPeers()
+    const cleanup = hookHarness.effects[0]()
+    await flushMany()
+
+    expect(hookHarness.stateValues[0]).toMatchObject({
+      peers: [],
+      state: 'failed',
+      error: {
+        code: 'scan.start-failed',
+        operation: 'test.scan',
+        platform: { domain: 'android', code: 'SCAN_FAILED_INTERNAL_ERROR', metadata: { callbackCode: 3 } }
+      }
+    })
+    cleanup()
+  })
+
+  test.each(['closed', 'owner-released', 'operation-aborted', 'operation-timed-out'])(
+    'treats deliberately finite scan terminal %s as stopped',
+    async reason => {
+      const session = scanSession(
+        (async function* () {
+          yield streamTerminal(reason)
+        })()
+      )
+      const createdManager = manager({ scan: jest.fn().mockResolvedValue(session) })
+      hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+
+      useDiscoveredPeers()
+      const cleanup = hookHarness.effects[0]()
+      await flushMany()
+
+      expect(hookHarness.stateValues[0]).toMatchObject({ peers: [], state: 'stopped', error: null })
+      cleanup()
+    }
+  )
 
   test('lost discovery event removes the peer when events are present', async () => {
     const observations = createControllableAsyncIterator()

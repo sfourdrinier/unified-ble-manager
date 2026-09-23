@@ -129,8 +129,8 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
         proofBoundary: 'compile-config-loadability',
         cratePublished: false,
         compatibility: expect.objectContaining({
-          npmRange: '^5.0.0-rc.4',
-          crateRange: '^5.0.0-rc.4',
+          npmRange: '^5.0.0-rc.5',
+          crateRange: '^5.0.0-rc.5',
           ipcProtocol: 4
         })
       })
@@ -173,13 +173,13 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
     })
     const expoFactory = fs.readFileSync(path.join(directory, 'expo-factory.fragment.ts'), 'utf8')
     expect(expoFactory).toContain('createExpoBleManager')
-    expect(expoFactory).toContain("unified-ble-manager/expo")
+    expect(expoFactory).toContain('unified-ble-manager/expo')
     expect(expoFactory).not.toMatch(/Expo Go is supported/i)
 
     const electronText = fs.readFileSync(path.join(directory, 'electron-renderer.fragment.ts'), 'utf8')
     expect(electronText).toContain('createElectronRendererBleManager')
-    expect(electronText).toContain("unified-ble-manager/electron/renderer")
-    expect(electronText).toContain("unified-ble-manager/electron/main")
+    expect(electronText).toContain('unified-ble-manager/electron/renderer')
+    expect(electronText).toContain('unified-ble-manager/electron/main')
     expect(electronText).not.toContain('createElectronMainBleManager')
     expect(fs.existsSync(path.join(directory, 'electron-main.fragment.ts'))).toBe(false)
 
@@ -187,13 +187,13 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
     expect(nodeText).toContain('createCoreBluetoothBleManager')
     expect(nodeText).toContain('createWinRtBleManager')
     expect(nodeText).toContain('createBluezBleManager')
-    expect(nodeText).toContain("unified-ble-manager/node/corebluetooth")
-    expect(nodeText).toContain("unified-ble-manager/node/winrt")
-    expect(nodeText).toContain("unified-ble-manager/node/bluez")
+    expect(nodeText).toContain('unified-ble-manager/node/corebluetooth')
+    expect(nodeText).toContain('unified-ble-manager/node/winrt')
+    expect(nodeText).toContain('unified-ble-manager/node/bluez')
 
     const webText = fs.readFileSync(path.join(directory, 'web-chooser.fragment.ts'), 'utf8')
     expect(webText).toContain('createWebBleManager')
-    expect(webText).toContain("unified-ble-manager/web")
+    expect(webText).toContain('unified-ble-manager/web')
     expect(webText).not.toContain('createNavigatorWebBleManager')
   })
 
@@ -229,10 +229,13 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
 
 describe('PR11 Tauri crate and testkit contracts', () => {
   test('exports machine-readable npm/crate/protocol compatibility', () => {
+    const currentCandidateRange = new RegExp(
+      `\\^${UNIFIED_BLE_IMPLEMENTATION_VERSION.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}`
+    )
     expect(TAURI_PLUGIN_COMPATIBILITY).toEqual(
       expect.objectContaining({
-        npmRange: expect.stringMatching(/\^5\.0\.0-rc\.4/),
-        crateRange: expect.stringMatching(/\^5\.0\.0-rc\.4/),
+        npmRange: expect.stringMatching(currentCandidateRange),
+        crateRange: expect.stringMatching(currentCandidateRange),
         ipcProtocol: 4,
         contractRevision: require('../contracts/src/version').CONTRACT_REVISION
       })
@@ -254,7 +257,7 @@ describe('PR11 Tauri crate and testkit contracts', () => {
     const crateReadme = fs.readFileSync(path.join(__dirname, '../native/tauri/README.md'), 'utf8')
     const exampleReadme = fs.readFileSync(path.join(__dirname, '../example-tauri/README.md'), 'utf8')
     for (const text of [docs, crateReadme, exampleReadme]) {
-      expect(text).toContain('tauri-plugin-unified-ble-manager@5.0.0-rc.4')
+      expect(text).toContain('tauri-plugin-unified-ble-manager@5.0.0-rc.5')
       expect(text).toMatch(/not (yet )?published|until the crate is (published|on crates\.io)|once the crate exists/i)
     }
   })

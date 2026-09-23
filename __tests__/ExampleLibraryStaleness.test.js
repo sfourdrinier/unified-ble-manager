@@ -29,7 +29,7 @@ const ROOT = path.join(__dirname, '..')
 function repoFacts(overrides = {}) {
   return {
     identity: 'sourceDigest: abc',
-    version: '5.0.0-rc.4',
+    version: '5.0.0-rc.5',
     ...overrides
   }
 }
@@ -38,7 +38,7 @@ function copyFacts(overrides = {}) {
   return {
     present: true,
     identity: 'sourceDigest: abc',
-    version: '5.0.0-rc.4',
+    version: '5.0.0-rc.5',
     hasBuiltLib: true,
     ...overrides
   }

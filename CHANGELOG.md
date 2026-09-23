@@ -2,6 +2,62 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.0.0-rc.5] - 2026-09-23 (prerelease)
+
+This candidate closes the twelve findings from the public source and
+documentation review of `v5.0.0-rc.4`, and confirms the review's additional
+shared-scan scenario with deterministic Rust reproductions. These changes do
+not promote any backend evidence label; physical-radio qualification remains
+separate from package SemVer.
+
+### Fixed
+
+- React scan-hook cleanup can run again after an earlier cleanup completed, so
+  a scan admitted after unmount is stopped instead of inheriting a stale
+  promise. Terminal scan failures now preserve their structured public error;
+  normal closure, owner release, cancellation, and deadline expiry still end as
+  normal stopped outcomes.
+- `GattCharacteristic.writeWhenReady()` invokes the source method with its
+  original receiver, preserving instance-backed implementations.
+- Android React-context invalidation now shares one admission barrier with
+  queued session opens. Work accepted before invalidation settles without
+  creating an unowned native session afterwards.
+- Android invalidation transfers a refused session disposal to a process-owned
+  retry owner. The disappearing React module no longer forgets cleanup debt,
+  and retries retain the session until Rust confirms release.
+- The active Android Gradle manifest now declares companion-presence
+  observation permission. Its test resolves the manifest selected by Gradle,
+  and a fresh consumer module checks the merged output.
+- Expo `neverForLocation: false` writes a manifest-merger removal marker instead
+  of merely omitting the inherited library attribute. Merged-manifest tests pin
+  `true -> false -> true`, and the API 30 fixture declares the location
+  permission requested by the documented `legacyLocation: "auto"` path.
+- A caller deadline expiring after a shared-scan widening start can no longer
+  strand existing members. Successful compensation terminates displaced
+  members; refused compensation retains the replacement operation and retries
+  it through the existing member's ordinary stop.
+- Tauri routes retain the attachment identity validated from their envelope
+  through execution. A concurrent adapter-reset rebind can no longer let a
+  request from the ended attachment execute against the new generation.
+
+### Documentation and consumer proofs
+
+- Candidate install commands are pinned to `unified-ble-manager@5.0.0-rc.5`
+  and distinguish npm `next` from the stable `latest` line.
+- The external Tauri recipe now places the mandatory `btleplug` and
+  `bluez-async` patches in the consuming Cargo root. CI packs npm, installs it
+  outside this workspace, and compiles a fresh Cargo consumer from that layout.
+- The Tauri Battery example resolves canonical UUIDs through
+  `gatt.characteristic('180f', '2a19')` and proves that the read actually runs.
+- The Expo Android 11 recipe, generated manifest, and runtime permission request
+  now agree on `ACCESS_FINE_LOCATION`.
+- Contributor guidance names `UnifiedBleRustCore` and `ubm-mobile-wire/1` as
+  the active React Native factory route; `UnifiedBleProtocolControl` is labeled
+  as historical compatibility surface.
+- The prior truthful React Native diagnostic and limitation wording departure
+  remains part of this candidate (finding 159): the active transport is
+  `ubm-mobile-wire/1`, not the obsolete JSI control boundary.
+
 ## [5.0.0-rc.4] - 2026-09-23 (prerelease)
 
 The immutable `v5.0.0-rc.3` tag stopped before npm publication because its

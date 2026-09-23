@@ -20,4 +20,12 @@ describe('AGENTS.md 5.x contract', () => {
       expect(line).not.toMatch(/optional.*dbus-next|dbus-next.*depend/)
     }
   })
+
+  test('names the active React Native factory boundary, not the historical control module', () => {
+    const hostImplementations = agents.split('## Host implementations')[1].split('## Evidence and support')[0]
+    expect(hostImplementations).toContain('`UnifiedBleRustCore`')
+    expect(hostImplementations).toContain('production factory')
+    expect(hostImplementations).toMatch(/historical\s+`UnifiedBleProtocolControl`/)
+    expect(hostImplementations).not.toContain('uses the versioned `UnifiedBleProtocolControl` boundary')
+  })
 })

@@ -2,12 +2,13 @@
 
 This small checkout app uses `createTauriBleManager()` from
 `unified-ble-manager/tauri`. The window button runs `adapter.state()`, then
-`scan()`, then `stop()` and `destroy()`. It does not connect, discover, or
-subscribe. A successful click is not live-radio evidence.
+`scan()`, connects to the first peer, discovers GATT, and reads the Battery
+Level characteristic through `gatt.characteristic('180f', '2a19')` before
+releasing every resource. A successful click is not live-radio evidence.
 
 The Cargo registry crate is not published. Use the checkout path for local
 development (`path = "../../native/tauri"`). A future crates.io publication may
-use `cargo add tauri-plugin-unified-ble-manager@5.0.0-rc.4`; it is not part of
+use `cargo add tauri-plugin-unified-ble-manager@5.0.0-rc.5`; it is not part of
 the npm release candidate.
 See [`../docs/TAURI.md`](../docs/TAURI.md).
 
@@ -17,7 +18,8 @@ Keeping it separate prevents Tauri from treating `src-tauri/target` as frontend
 content while Cargo is writing that directory.
 
 The first discovered peer is used only after the user presses **Run BLE proof**.
-No device or vendor UUID is built into the library or example.
+The example asks that peer for the standard Battery Service; it does not target
+a device or vendor-specific UUID.
 
 ## Shared test driver
 

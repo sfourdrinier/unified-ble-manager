@@ -7,6 +7,7 @@ import com.ubm.core.MobileCoreBridge
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executor
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Everything the `UnifiedBleRustCore` TurboModule does, without React
@@ -41,19 +42,24 @@ class RustCoreSessions(
   private val owned = ConcurrentHashMap.newKeySet<Long>()
   private val backgroundScope = "rn-module:" + ByteArray(16).also(random::nextBytes).joinToString("") { "%02x".format(it) }
   private val released = ConcurrentHashMap.newKeySet<Long>()
+  private val invalidated = AtomicBoolean(false)
+  private val admissionLock = Any()
 
   fun openSession(owner: String, expectedWireRevision: String, reply: Reply) = perform(reply, "session.open") {
-    host.ensureInstalled()
-    // A presence wake with no live session persisted its peers; surface them
-    // through the same restored records and events as a live ingest.
-    host.drainPresenceAppearances()
-    val record = core.openSession(owner, expectedWireRevision, backgroundScope)
-    val admission = RustCoreJson.parse(record) as? Map<*, *>
-    val sessionId = (admission?.get("sessionId") as? Long)
-      ?: throw RustCoreRejection("protocol.malformed", "core", "session.open", "admission record has no numeric sessionId")
-    owned.add(sessionId)
-    host.route(sessionId) { id -> emitWake(id.toString()) }
-    reply.resolve(record)
+    synchronized(admissionLock) {
+      rejectIfInvalidated("session.open")
+      host.ensureInstalled()
+      // A presence wake with no live session persisted its peers; surface them
+      // through the same restored records and events as a live ingest.
+      host.drainPresenceAppearances()
+      val record = core.openSession(owner, expectedWireRevision, backgroundScope)
+      val admission = RustCoreJson.parse(record) as? Map<*, *>
+      val sessionId = (admission?.get("sessionId") as? Long)
+        ?: throw RustCoreRejection("protocol.malformed", "core", "session.open", "admission record has no numeric sessionId")
+      owned.add(sessionId)
+      host.route(sessionId) { id -> emitWake(id.toString()) }
+      reply.resolve(record)
+    }
   }
 
   fun invoke(sessionIdText: String, op: String, argsJson: String, reply: Reply) = perform(reply, op) {
@@ -235,25 +241,26 @@ class RustCoreSessions(
    * then end the module's background scope (its foreground-service leases).
    */
   fun invalidate() {
-    owned.toList().forEach { sessionId ->
-      host.unroute(sessionId)
-      if (released.contains(sessionId)) {
-        forget(sessionId)
-        return@forEach
-      }
-      executor.execute {
-        try {
-          dispose(sessionId) { outcome ->
-            forget(sessionId)
-            if (outcome != null) log("session $sessionId dispose on invalidate failed: ${outcome.toJson()}")
-          }
-        } catch (error: Throwable) {
-          log("session $sessionId dispose on invalidate threw: ${error.message}")
-        }
-      }
+    val firstInvalidation = synchronized(admissionLock) {
+      invalidated.compareAndSet(false, true)
     }
+    if (!firstInvalidation) return
     executor.execute {
       try {
+        owned.toList().forEach { sessionId ->
+          host.unroute(sessionId)
+          if (released.contains(sessionId)) {
+            forget(sessionId)
+            return@forEach
+          }
+          dispose(sessionId) { outcome ->
+            if (outcome != null) {
+              host.retainSessionCleanup(sessionId, outcome.toJson())
+              log("session $sessionId dispose on invalidate transferred to process owner: ${outcome.toJson()}")
+            }
+            forget(sessionId)
+          }
+        }
         val record = core.releaseBackgroundScope(backgroundScope)
         if (envelope(record)?.get("state") != "released") {
           log("background scope $backgroundScope release on invalidate: $record")
@@ -287,6 +294,7 @@ class RustCoreSessions(
   private fun perform(reply: Reply, operation: String, body: () -> Unit) {
     val task = Runnable {
       try {
+        rejectIfInvalidated(operation)
         body()
       } catch (rejection: RustCoreRejection) {
         reply.reject(rejection)
@@ -329,6 +337,11 @@ class RustCoreSessions(
       else -> RustCoreRejection.platform(operation, error)
     }
 
+    internal fun disposeThrownOutcome(error: RuntimeException): RustCoreRejection? {
+      val rejection = nativeRejection(error, DISPOSE)
+      return if (rejection.code == LIFECYCLE_DESTROYED) null else rejection
+    }
+
     private fun envelope(text: String): Map<*, *>? = try {
       RustCoreJson.parse(text) as? Map<*, *>
     } catch (_: IllegalArgumentException) {
@@ -363,6 +376,12 @@ class RustCoreSessions(
         error?.get("operation") as? String ?: DISPOSE,
         error?.get("detail") as? String
       )
+    }
+  }
+
+  private fun rejectIfInvalidated(operation: String) {
+    if (invalidated.get()) {
+      throw RustCoreRejection(LIFECYCLE_DESTROYED, "core", operation, "React context is invalidated")
     }
   }
 }

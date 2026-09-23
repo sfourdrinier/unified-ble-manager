@@ -13,9 +13,13 @@ describe('Native Protocol executable CI gates', () => {
   test('exposes package-owned Android and Apple native protocol test scripts', () => {
     const packageJson = JSON.parse(read('package.json'))
 
-    expect(packageJson.scripts['test:native-protocol:android']).toBe(
-      'cd example/android && ./gradlew :unified-ble-manager:testDebugUnitTest --no-daemon --console=plain'
-    )
+    const androidGate = packageJson.scripts['test:native-protocol:android']
+    expect(androidGate).toContain(':unified-ble-manager:testDebugUnitTest')
+    for (const variant of ['NeverTrue', 'NeverFalse', 'NeverTrueAgain', 'LegacyApi30']) {
+      expect(androidGate).toContain(`:manifest-consumer:process${variant}DebugMainManifest`)
+    }
+    expect(androidGate).toContain('--no-daemon --console=plain')
+    expect(androidGate).toContain('scripts/ci/verify-android-consumer-manifests.js')
     expect(packageJson.scripts['test:native-protocol:apple']).toBe(
       'node scripts/native-protocol/test-apple-native-protocol.js'
     )

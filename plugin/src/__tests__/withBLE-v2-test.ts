@@ -286,7 +286,13 @@ describe('Expo Android reconciliation', () => {
       { $: { 'android:name': 'android.permission.INTERNET' } },
       { $: { 'android:name': 'android.permission.BLUETOOTH', 'android:maxSdkVersion': '30' } },
       { $: { 'android:name': 'android.permission.BLUETOOTH_ADMIN', 'android:maxSdkVersion': '30' } },
-      { $: { 'android:name': 'android.permission.BLUETOOTH_SCAN', 'tools:targetApi': '31' } },
+      {
+        $: {
+          'android:name': 'android.permission.BLUETOOTH_SCAN',
+          'tools:remove': 'android:usesPermissionFlags',
+          'tools:targetApi': '31'
+        }
+      },
       { $: { 'android:name': 'android.permission.BLUETOOTH_CONNECT', 'tools:targetApi': '31' } }
     ])
   })

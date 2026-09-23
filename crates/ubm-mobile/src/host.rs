@@ -1311,42 +1311,41 @@ impl HostInner {
         self.radio.clear_staging(None, None, true);
         match started {
             Ok(session) => {
+                let operation = session.operation_id().clone();
+                share.physical = Some(PhysicalScan {
+                    operation: operation.clone(),
+                    request: wanted,
+                });
                 // The radio call took a while: a queued cancel or an
                 // expired budget must not take a membership for a dead op.
                 if let Some(error) = Self::scan_not_alive_parts(&ticket, &budget) {
-                    let operation = session.operation_id().clone();
-                    share.physical = None;
-                    drop(share);
-                    let _ = self
+                    let cleanup = self
                         .central
                         .stop_scan(&operation, OpControl::unbounded())
                         .await;
+                    if cleanup.is_ok() {
+                        // Widening already stopped the scan that served the
+                        // existing members. The replacement is gone too, so
+                        // those members must be told that their source ended.
+                        share.physical = None;
+                        let orphans = self.take_scan_members();
+                        drop(share);
+                        self.end_scan_members(orphans, "source-failed");
+                    }
+                    // A refused cleanup stays in both owners: DesktopCentral
+                    // retains the active operation for retry and ScanShare
+                    // retains its physical identity plus the existing
+                    // memberships. Their next ordinary stop retries it.
                     return Err(error);
                 }
-                share.physical = Some(PhysicalScan {
-                    operation: session.operation_id().clone(),
-                    request: wanted,
-                });
                 lock(&self.scan_members).insert(session_id, member);
                 Ok(())
             }
             Err(error) => {
                 // A failed restart leaves the previous members without a
                 // radio scan: end their streams instead of pretending.
-                let orphans: Vec<(u64, ScanMember)> =
-                    std::mem::take(&mut *lock(&self.scan_members))
-                        .into_iter()
-                        .collect();
-                for (orphan, member) in orphans {
-                    if let Some(session) = self.session(orphan) {
-                        session.clear_scan(&member.membership);
-                        session.outbox.push_control(object(vec![
-                            ("t", Value::from("scan-end")),
-                            ("operationId", Value::from(member.membership.as_str())),
-                            ("reason", Value::from("source-failed")),
-                        ]));
-                    }
-                }
+                let orphans = self.take_scan_members();
+                self.end_scan_members(orphans, "source-failed");
                 Err(error)
             }
         }
