@@ -348,9 +348,19 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4.0.1
         with:
-          # The action default includes the removed `tools` package. Keep this
-          # release build on the supported command-line SDK package only.
-          packages: 'platform-tools'
+          # Match the source-build CI lane: the obsolete `tools` package is
+          # gone, and AGP's automatic NDK install has flaked on clean runners.
+          packages: 'platform-tools ndk;27.1.12297006'
+
+      - name: Install pinned Rust + Android targets
+        # The publish job builds both RN examples with UBM_NATIVE_BUILD=source.
+        # Install every ABI requested by android/build.gradle before Gradle;
+        # source the toolchain pin exactly as the CI Android jobs do.
+        run: |
+          PINNED_TOOLCHAIN="$(grep -E '^channel[[:space:]]*=' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/' || true)"
+          test -n "$PINNED_TOOLCHAIN" || { echo "could not parse pinned toolchain channel from rust-toolchain.toml"; exit 1; }
+          cargo --version
+          rustup target add --toolchain "$PINNED_TOOLCHAIN" aarch64-linux-android x86_64-linux-android
 
       - name: Install classic example dependencies
         run: pnpm --dir example install --no-frozen-lockfile
