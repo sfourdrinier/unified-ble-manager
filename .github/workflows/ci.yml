@@ -152,11 +152,32 @@ jobs:
         # offline metadata reads succeed on a fresh runner.
         run: cargo fetch --locked
 
-      - name: Install Linux build sysdeps
+      - name: Install Tauri Linux system dependencies for packed consumer
+        # The packed-consumer proof compiles a real external Tauri application.
+        # Its GTK/WebKit dependencies are consumer prerequisites, not supplied
+        # by the Rust crate, so this lane must match the dedicated Tauri job.
+        if: runner.os == 'Linux' && matrix.node == '22'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libdbus-1-dev \
+            pkg-config
+
+      - name: Install Linux build sysdeps (Node 24)
         # napi -> ubm-desktop -> btleplug -> bluez-async -> libdbus-sys needs
         # pkg-config + D-Bus headers at compile time (same subset as the
-        # rust-parity-5-0 job). macOS/Windows backends need no sysdeps.
-        if: runner.os == 'Linux'
+        # rust-parity-5-0 job). The Node 22 lane installs this subset as part
+        # of the full Tauri consumer prerequisites above.
+        if: runner.os == 'Linux' && matrix.node == '24'
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libdbus-1-dev pkg-config

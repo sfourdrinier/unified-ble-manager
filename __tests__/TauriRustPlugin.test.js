@@ -150,4 +150,19 @@ describe('Tauri v2 Rust plugin boundary', () => {
     expect(workflow).toContain('cargo test --manifest-path native/tauri/Cargo.toml')
     expect(workflow).toContain('cargo clippy --manifest-path native/tauri/Cargo.toml -- -D warnings')
   })
+
+  test('installs Tauri Linux system libraries before the packed consumer proof', () => {
+    const workflow = read('.github/workflows/ci.yml')
+    const packageJob = workflow.slice(workflow.indexOf('  package:'), workflow.indexOf('  contracts:'))
+    const dependencyStep = packageJob.slice(
+      packageJob.indexOf('- name: Install Tauri Linux system dependencies for packed consumer'),
+      packageJob.indexOf('- name: Build NAPI dispatch addon')
+    )
+
+    expect(dependencyStep).toContain("if: runner.os == 'Linux' && matrix.node == '22'")
+    expect(dependencyStep).toContain('libwebkit2gtk-4.1-dev')
+    expect(dependencyStep).toContain('libayatana-appindicator3-dev')
+    expect(dependencyStep).toContain('libdbus-1-dev')
+    expect(dependencyStep).toContain('pkg-config')
+  })
 })
