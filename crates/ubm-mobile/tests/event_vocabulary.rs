@@ -99,7 +99,7 @@ fn read_args(id: &str, budget_ms: Option<u64>) -> String {
 async fn connected(
     radio: &Arc<Scripted>,
     platform: MobilePlatform,
-) -> (ubm_mobile::MobileHost, MobileSession) {
+) -> (std::sync::Arc<ubm_mobile::MobileHost>, MobileSession) {
     let (host, _) = open(radio, platform).await;
     let session = host.open_session("rn").unwrap();
     ok(&call(

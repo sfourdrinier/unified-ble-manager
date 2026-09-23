@@ -331,6 +331,14 @@ describe('ci-release canonical package (4.0)', () => {
     expect(ci).not.toMatch(/name:\s*Package checks \(\$\{\{ matrix\.os \}\}/)
   })
 
+  test('Rust workspace runs test cases serially until the mobile test-harness teardown race is removed', () => {
+    const ci = read('.github/workflows/ci.yml')
+    const rustWorkspace = ci.slice(ci.indexOf('  rust-5-0:'), ci.indexOf('  rust-parity-5-0:'))
+
+    expect(rustWorkspace).toContain('- name: Test Rust workspace')
+    expect(rustWorkspace).toContain('cargo test --locked -- --test-threads=1')
+  })
+
   // The package gate checks only the public root plus explicit authoring subpaths.
   test('publish.yml and check-host-exports assert the strict v4 package boundary', () => {
     const publish = read('.github/workflows/publish.yml')

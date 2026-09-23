@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -35,7 +35,7 @@ pub struct Scripted {
     pub requests: Mutex<Vec<RadioRequest>>,
     pub cancels: Mutex<Vec<u64>>,
     pub held: Mutex<HashMap<u64, RadioRequest>>,
-    host: OnceLock<MobileHost>,
+    host: OnceLock<Weak<MobileHost>>,
     responder: Mutex<Responder>,
 }
 
@@ -86,7 +86,14 @@ impl Scripted {
 
     pub fn answer(&self, id: u64, completion: RadioCompletion) -> ubm_mobile::CompletionStatus {
         self.held.lock().unwrap().remove(&id);
-        self.host.get().unwrap().complete(id, completion)
+        self.host().complete(id, completion)
+    }
+
+    fn host(&self) -> Arc<MobileHost> {
+        self.host
+            .get()
+            .and_then(Weak::upgrade)
+            .expect("the test host remains alive while scripted work runs")
     }
 }
 
@@ -96,7 +103,7 @@ impl PlatformRadio for Scripted {
         let reply = (self.responder.lock().unwrap())(&request);
         match reply {
             Reply::Now(completion) => {
-                self.host.get().unwrap().complete(request.id(), completion);
+                self.host().complete(request.id(), completion);
             }
             Reply::Hold => {
                 self.held.lock().unwrap().insert(request.id(), request);
@@ -187,21 +194,26 @@ impl WakeSink for Wakes {
     }
 }
 
-pub async fn open(radio: &Arc<Scripted>, platform: MobilePlatform) -> (MobileHost, Arc<Wakes>) {
+pub async fn open(
+    radio: &Arc<Scripted>,
+    platform: MobilePlatform,
+) -> (Arc<MobileHost>, Arc<Wakes>) {
     let wakes = Arc::new(Wakes::default());
-    let host = MobileHost::open(
-        Arc::clone(radio) as Arc<dyn PlatformRadio>,
-        Arc::clone(&wakes) as Arc<dyn WakeSink>,
-        HostOptions {
-            platform,
-            owner: "ubm-mobile-test".to_owned(),
-            adapter_label: "scripted-adapter".to_owned(),
-        },
-        tokio::runtime::Handle::current(),
-    )
-    .await
-    .expect("host opens");
-    assert!(radio.host.set(host.clone()).is_ok());
+    let host = Arc::new(
+        MobileHost::open(
+            Arc::clone(radio) as Arc<dyn PlatformRadio>,
+            Arc::clone(&wakes) as Arc<dyn WakeSink>,
+            HostOptions {
+                platform,
+                owner: "ubm-mobile-test".to_owned(),
+                adapter_label: "scripted-adapter".to_owned(),
+            },
+            tokio::runtime::Handle::current(),
+        )
+        .await
+        .expect("host opens"),
+    );
+    assert!(radio.host.set(Arc::downgrade(&host)).is_ok());
     (host, wakes)
 }
 
