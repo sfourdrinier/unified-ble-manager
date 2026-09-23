@@ -470,7 +470,10 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Test Rust workspace
-        run: cargo test --locked
+        # The mobile scripted-radio harness has a retained teardown race under
+        # parallel libtest execution. Keep complete coverage while each test
+        # case runs serially until the harness is made concurrency-safe.
+        run: cargo test --locked -- --test-threads=1
 
   # UBM 5.0 Rust/JS parity (napi roundtrip + staged-fault proofs). Linux-only:
   # the napi toolchain build is host-sensitive and parity is OS-independent.

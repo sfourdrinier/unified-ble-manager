@@ -1007,7 +1007,10 @@ fn responder_with(
 async fn discovered_session(
     radio: &std::sync::Arc<Scripted>,
     platform: MobilePlatform,
-) -> (ubm_mobile::MobileHost, ubm_mobile::MobileSession) {
+) -> (
+    std::sync::Arc<ubm_mobile::MobileHost>,
+    ubm_mobile::MobileSession,
+) {
     let (host, _) = open(radio, platform).await;
     let session = host.open_session("rn").unwrap();
     connect(&session, "c").await;
