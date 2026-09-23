@@ -4,7 +4,7 @@
 <!-- entrypoint: ./node/winrt; source: src/node-winrt.ts -->
 
 - `ADAPTER_INITIALIZATION_TIMEOUT_MS :: 10000`
-- `DESKTOP_RUST_CORE_IMPLEMENTATION_VERSION :: "5.0.0-rc.1"`
+- `DESKTOP_RUST_CORE_IMPLEMENTATION_VERSION :: "5.0.0-rc.2"`
 - `DESKTOP_RUST_CORE_PROFILES :: Readonly<Record<DesktopRustCorePlatform, DesktopRustCoreProfile>>`
 - `DesktopCoreManagerOptions :: { readonly owner?: string | undefined; readonly binding?: DesktopRustCoreBinding | undefined; readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly randomBytes?: ((length: number) => Uint8Array<ArrayBufferLike>) | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined; readonly background?: { readonly continuation?: unknown; } | undefined }`
 - `DesktopCoreProviderOptions :: { readonly now: () => number; readonly owner?: string | undefined; readonly binding?: DesktopRustCoreBinding | undefined }`
@@ -40,7 +40,7 @@
 - `NativeWinRtProviderOptions :: { readonly now: () => number; readonly owner?: string | undefined; readonly binding?: DesktopRustCoreBinding | undefined }`
 - `NodeBleManagerAppOptions :: { readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly randomBytes?: ((length: number) => Uint8Array<ArrayBufferLike>) | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined; readonly background?: { readonly continuation?: unknown; } | undefined }`
 - `WINRT_BACKEND_ID :: "unified-ble:winrt"`
-- `WINRT_IMPLEMENTATION_VERSION :: "5.0.0-rc.1"`
+- `WINRT_IMPLEMENTATION_VERSION :: "5.0.0-rc.2"`
 - `WINRT_PLATFORM_ID :: "unified-ble:windows-winrt"`
 - `WinRtBleManagerAppOptions :: { readonly owner?: string | undefined; readonly binding?: DesktopRustCoreBinding | undefined; readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly randomBytes?: ((length: number) => Uint8Array<ArrayBufferLike>) | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined; readonly background?: { readonly continuation?: unknown; } | undefined }`
 - `assertDesktopRustCorePlatform :: (platform: DesktopRustCorePlatform, hostPlatform?: string) => void`

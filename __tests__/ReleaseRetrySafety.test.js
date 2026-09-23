@@ -4,8 +4,7 @@ const fs = require('fs')
 const path = require('path')
 
 const root = path.resolve(__dirname, '..')
-const read = relativePath =>
-  fs.readFileSync(path.join(root, relativePath), 'utf8').replace(/\r\n/g, '\n')
+const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf8').replace(/\r\n/g, '\n')
 
 describe('release retry safety', () => {
   test('allows bounded npm processing delays for metadata and provenance', () => {
@@ -28,15 +27,9 @@ describe('release retry safety', () => {
     expect(workflow).toContain("if: steps.npm_status.outputs.package_published != 'true'")
     expect(bind).toBeGreaterThan(tagGuard)
     expect(restore).toBeGreaterThan(bind)
-    expect(workflow).toContain(
-      'ALREADY_PUBLISHED: ${{ steps.npm_status.outputs.package_published }}'
-    )
-    expect(workflow).toContain(
-      'cp "${REGISTRY_TARBALL_COPY}" "${PUBLISH_TARBALL}"'
-    )
-    expect(workflow).toContain(
-      '--output "${REGISTRY_TARBALL_COPY}"'
-    )
+    expect(workflow).toContain('ALREADY_PUBLISHED: ${{ steps.npm_status.outputs.package_published }}')
+    expect(workflow).toContain('cp "${REGISTRY_TARBALL_COPY}" "${PUBLISH_TARBALL}"')
+    expect(workflow).toContain('--output "${REGISTRY_TARBALL_COPY}"')
     expect(workflow.indexOf('LOCAL_TARBALL_SHA256=')).toBeGreaterThan(restore)
   })
 
@@ -50,12 +43,8 @@ describe('release retry safety', () => {
     expect(tarballBinding).toContain('curl --fail --location --silent --show-error')
     expect(tarballBinding).toContain('test -s "${REGISTRY_TARBALL_COPY}"')
     expect(tarballBinding).toContain('REGISTRY_TARBALL_READY=true')
-    expect(tarballBinding).toContain(
-      'npm registry tarball is not downloadable yet (attempt ${ATTEMPT}/120)'
-    )
-    expect(tarballBinding).toContain(
-      'npm registry tarball did not become downloadable within the bounded retry window'
-    )
+    expect(tarballBinding).toContain('npm registry tarball is not downloadable yet (attempt ${ATTEMPT}/120)')
+    expect(tarballBinding).toContain('npm registry tarball did not become downloadable within the bounded retry window')
     expect(tarballBinding.indexOf('curl --fail')).toBeLessThan(
       tarballBinding.indexOf('npm registry tarball is not downloadable yet')
     )
@@ -79,11 +68,24 @@ describe('release retry safety', () => {
     expect(workflow).toMatch(/concurrency:\n(?:  .+\n)*  cancel-in-progress: true/)
   })
 
+  test('every Android build installs only the supported platform-tools SDK package', () => {
+    for (const workflowPath of ['.github/workflows/ci.yml', '.github/workflows/publish.yml']) {
+      const workflow = read(workflowPath)
+      const setupSteps = workflow.match(
+        /uses: android-actions\/setup-android@v4\.0\.1[\s\S]*?packages: 'platform-tools(?: [^']+)?'/g
+      )
+
+      expect(setupSteps).not.toBeNull()
+      expect(setupSteps).toHaveLength(workflowPath.endsWith('ci.yml') ? 2 : 1)
+      for (const setupStep of setupSteps) {
+        expect(setupStep).not.toMatch(/packages: 'tools(?: |')/)
+      }
+    }
+  })
+
   test('the installed changelog points to preserved history that remains reachable outside the tarball', () => {
     const changelog = read('CHANGELOG.md')
-    expect(changelog).toContain(
-      'https://github.com/sfourdrinier/unified-ble-manager/blob/main/CHANGELOG_HISTORY.md'
-    )
+    expect(changelog).toContain('https://github.com/sfourdrinier/unified-ble-manager/blob/main/CHANGELOG_HISTORY.md')
     expect(changelog).not.toContain('](CHANGELOG_HISTORY.md)')
   })
 })

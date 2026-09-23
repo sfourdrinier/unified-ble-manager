@@ -2,14 +2,20 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
-## [5.0.0-rc.1] - 2026-09-22 (prerelease)
+## [5.0.0-rc.2] - 2026-09-22 (prerelease)
+
+The immutable `v5.0.0-rc.1` tag stopped before npm publication because
+`android-actions/setup-android` tried to install Google's removed legacy
+`tools` SDK package. The release workflow now explicitly installs only
+`platform-tools`, matching both Android CI build jobs. A regression guard
+checks all three setup steps. The package, native plugin, generated references,
+examples, and current release guidance now identify `5.0.0-rc.2`; the 5.0
+behavior and qualification notes below apply to this candidate.
 
 The first 5.0 release-candidate tag, `v5.0.0-rc.0`, stopped before npm
 publication: the Linux native prebuild passed but its Electron smoke needed a
 display server on GitHub's headless runner. This candidate runs that smoke
-under Xvfb, preserving the Electron ABI check. The package and documentation
-version now identify `5.0.0-rc.1`; the 5.0 behavior and qualification notes
-below apply to this candidate.
+under Xvfb, preserving the Electron ABI check.
 
 How to read this section: each entry states a behavior change in plain
 words first, then the exact mechanism. A `finding NNN` reference is the
