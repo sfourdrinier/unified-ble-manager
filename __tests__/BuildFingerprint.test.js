@@ -26,7 +26,7 @@ function writeFile(root, relative, content) {
 
 function fixtureRoot() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-fingerprint-'))
-  writeFile(root, 'package.json', JSON.stringify({ name: 'unified-ble-manager', version: '5.0.0-rc.0' }))
+  writeFile(root, 'package.json', JSON.stringify({ name: 'unified-ble-manager', version: '5.0.0-rc.1' }))
   writeFile(root, 'src/a.ts', 'export const a = 1\n')
   writeFile(root, 'src/b.ts', 'export const b = 2\n')
   writeFile(root, 'contracts/frozen.txt', 'C-UBM.0.1.2-DRAFT\n')
@@ -90,7 +90,7 @@ describe('build fingerprint (F23)', () => {
     const first = generateBuildFingerprint(root)
     const second = generateBuildFingerprint(root)
     expect(second).toEqual(first)
-    expect(first.package).toEqual({ name: 'unified-ble-manager', version: '5.0.0-rc.0' })
+    expect(first.package).toEqual({ name: 'unified-ble-manager', version: '5.0.0-rc.1' })
     expect(first.contractRevision).toBe('C-UBM.0.1.2-DRAFT')
     expect(first.files['src/a.ts']).toMatch(/^[0-9a-f]{64}$/)
     expect(first.files['android/src/main/jniLibs/arm64-v8a/libubm5_jni_echo.so']).toMatch(/^[0-9a-f]{64}$/)

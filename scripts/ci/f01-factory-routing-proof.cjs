@@ -327,7 +327,7 @@ function proofBootstrap(contractRevision, capabilities) {
       ipcProtocol: negotiated('ipc-protocol', 3)
     },
     capabilities,
-    core: { contractRevision, implementationVersion: '5.0.0-rc.0' },
+    core: { contractRevision, implementationVersion: '5.0.0-rc.1' },
     renderer: { clientId: 'leg-g-client', windowScope: 'main', sessionScope: 'leg-g-scope' },
     rendererLease: { leaseId: 'leg-g-lease', generation: 'leg-g-lease-generation' }
   }

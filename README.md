@@ -18,7 +18,7 @@ root import does not pick a radio. Package SemVer and backend support labels are
 independent: each radio backend keeps its evidence-derived label. See
 [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
 
-This source tree is versioned `5.0.0-rc.0`. Install the exact version shown in the npm
+This source tree is versioned `5.0.0-rc.1`. Install the exact version shown in the npm
 registry. During release preparation, the version in `package.json` can be ahead
 of npm until the matching tag-driven workflow publishes it; the registry and
 GitHub release remain authoritative.
@@ -54,7 +54,7 @@ links in one fetch. Agents contributing to this repository start at
 ## Install
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.0
+pnpm add unified-ble-manager@5.0.0-rc.1
 ```
 
 Installable with npm, yarn, or Bun. This repository uses pnpm. Bun as a runtime is not a tested host.
@@ -381,7 +381,7 @@ after disconnect, service change, or rediscovery.
 - **Node:** `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager`, or list adapters and `createBleManagerFromProvider`. Published releases ship the Node-API desktop-core prebuild for macOS, Windows and Linux on `arm64`/`x64`. [`docs/NODE.md`](docs/NODE.md)
 - **Tauri:** `createTauriBleManager()` returns the public `BleManager`; test transports use `createTauriBleManagerWithEnvironment`. [`docs/TAURI.md`](docs/TAURI.md)
 
-`5.0.0-rc.0` publishes to npm `next`; bare installs still select the 4.0
+`5.0.0-rc.1` publishes to npm `next`; bare installs still select the 4.0
 `latest` line. Stable 5.x versions will publish to `latest`. Publication uses
 npm trusted publishing/OIDC with provenance.
 

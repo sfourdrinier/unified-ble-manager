@@ -1,8 +1,8 @@
 import { IPC_PROTOCOL_VERSION } from '../ipc/protocol'
 
 export const TAURI_PLUGIN_COMPATIBILITY = Object.freeze({
-  npmRange: '^5.0.0-rc.0',
-  crateRange: '^5.0.0-rc.0',
+  npmRange: '^5.0.0-rc.1',
+  crateRange: '^5.0.0-rc.1',
   ipcProtocol: IPC_PROTOCOL_VERSION,
   // F01: the linked ubm-core contract revision the candidate plugin must
   // report at bootstrap. Pinned like the ranges above; the Tauri suite

@@ -82,11 +82,12 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install libdbus for btleplug/BlueZ (Linux desktop-core)
+      - name: Install Linux native and Electron smoke dependencies
         if: matrix.builder == 'cargo' && runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libdbus-1-dev pkg-config
+          sudo apt-get install --no-install-recommends -y xvfb xauth
 
       - name: Install pinned Rust + target (desktop-core)
         if: matrix.builder == 'cargo'
@@ -117,7 +118,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ runner.os }}" = "Linux" ]; then
-            ./node_modules/.bin/electron --no-sandbox scripts/ci/electron-main-smoke.js
+            xvfb-run -a ./node_modules/.bin/electron --no-sandbox scripts/ci/electron-main-smoke.js
           else
             ./node_modules/.bin/electron scripts/ci/electron-main-smoke.js
           fi
