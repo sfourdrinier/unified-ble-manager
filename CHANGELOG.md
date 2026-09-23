@@ -2,15 +2,22 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
-## [5.0.0-rc.2] - 2026-09-22 (prerelease)
+## [5.0.0-rc.3] - 2026-09-22 (prerelease)
+
+The immutable `v5.0.0-rc.2` tag stopped before npm publication while the
+release-only Android source build required pinned-Rust Android targets that the
+publish workflow had not installed. The workflow now installs
+`aarch64-linux-android` and `x86_64-linux-android` for the pinned toolchain
+before either Android Gradle build. The package, native plugin, generated
+references, examples, and current release guidance now identify
+`5.0.0-rc.3`; the 5.0 behavior and qualification notes below apply to this
+candidate.
 
 The immutable `v5.0.0-rc.1` tag stopped before npm publication because
 `android-actions/setup-android` tried to install Google's removed legacy
 `tools` SDK package. The release workflow now explicitly installs only
 `platform-tools`, matching both Android CI build jobs. A regression guard
-checks all three setup steps. The package, native plugin, generated references,
-examples, and current release guidance now identify `5.0.0-rc.2`; the 5.0
-behavior and qualification notes below apply to this candidate.
+checks all three setup steps.
 
 The first 5.0 release-candidate tag, `v5.0.0-rc.0`, stopped before npm
 publication: the Linux native prebuild passed but its Electron smoke needed a

@@ -83,6 +83,19 @@ describe('release retry safety', () => {
     }
   })
 
+  test('source-built release Android examples install both pinned Rust ABI targets first', () => {
+    const workflow = read('.github/workflows/publish.yml')
+    const installRust = workflow.indexOf('- name: Install pinned Rust + Android targets')
+    const classicBuild = workflow.indexOf('- name: Assemble classic RN Android debug APK')
+    const targetStep = workflow.slice(installRust, classicBuild)
+
+    expect(workflow).toContain('UBM_NATIVE_BUILD: source')
+    expect(installRust).toBeGreaterThan(-1)
+    expect(classicBuild).toBeGreaterThan(installRust)
+    expect(targetStep).toContain('rust-toolchain.toml')
+    expect(targetStep).toContain('rustup target add --toolchain "$PINNED_TOOLCHAIN" aarch64-linux-android x86_64-linux-android')
+  })
+
   test('the installed changelog points to preserved history that remains reachable outside the tarball', () => {
     const changelog = read('CHANGELOG.md')
     expect(changelog).toContain('https://github.com/sfourdrinier/unified-ble-manager/blob/main/CHANGELOG_HISTORY.md')

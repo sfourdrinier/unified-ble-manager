@@ -121,7 +121,7 @@ function tauriBootstrap() {
     },
     core: {
       contractRevision: 'C-UBM.0.1.2-DRAFT',
-      implementationVersion: '5.0.0-rc.2'
+      implementationVersion: '5.0.0-rc.3'
     },
     renderer: {
       clientId: 'tauri-client-1',

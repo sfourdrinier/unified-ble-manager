@@ -1,6 +1,6 @@
 <!-- example-web/README.md -->
 
-# 5.0.0-rc.2 TypeScript Web Bluetooth example
+# 5.0.0-rc.3 TypeScript Web Bluetooth example
 
 This Vite example constructs the host with `createWebBleManager()` from
 `unified-ble-manager/web`. Its strict TypeScript source exercises the real Web
