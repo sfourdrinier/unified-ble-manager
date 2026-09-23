@@ -110,6 +110,36 @@ describe('GattCharacteristic.writeWhenReady', () => {
     )
   })
 
+  test('preserves the source method receiver', async () => {
+    const fixture = createSource({ writeWhenReady: undefined })
+    class ReceiverDependentSource {
+      constructor(source) {
+        Object.assign(this, source)
+        delete this.writeWhenReady
+        this.database = 'receiver-owned-database'
+        this.calls = []
+      }
+
+      async writeWhenReady(path, value, options) {
+        this.calls.push({ database: this.database, path, value, options })
+        return { terminal: terminal(), commitState: 'confirmed' }
+      }
+    }
+    const source = new ReceiverDependentSource(fixture.source)
+    const database = await createPublicGattDatabase(source)
+    const characteristic = database.characteristic('180f', '2a19')
+
+    await expect(characteristic.writeWhenReady(new Uint8Array([7]))).resolves.toMatchObject({
+      commitState: 'confirmed'
+    })
+    expect(source.calls).toEqual([
+      expect.objectContaining({
+        database: 'receiver-owned-database',
+        path: expect.objectContaining({ characteristicUuid: '2a19' })
+      })
+    ])
+  })
+
   test('rejects unsupported when the source has no authoritative readiness path', async () => {
     const fixture = createSource({ writeWhenReady: undefined })
     const database = await createPublicGattDatabase(fixture.source)

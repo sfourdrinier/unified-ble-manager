@@ -159,11 +159,15 @@ Do not reintroduce the legacy 3.x `BleManager`/`Device`/`Service`/
 
 ## Host implementations
 
-**React Native** uses the versioned `UnifiedBleProtocolControl` boundary and
-explicit manager construction. The modernization floor is React Native 0.86+;
-Expo integration targets SDK 57+. The package contains native code and does not
-run in Expo Go. Keep package metadata, examples, native defaults and docs
-aligned unless the project intentionally raises a floor.
+**React Native** uses explicit manager construction. The production factory
+resolves the `UnifiedBleRustCore` TurboModule and speaks the versioned
+`ubm-mobile-wire/1` session protocol. The historical
+`UnifiedBleProtocolControl` boundary remains only where legacy protocol
+artifacts and their compatibility tests still name it; it is not the active
+factory route. The modernization floor is React Native 0.86+; Expo integration
+targets SDK 57+. The package contains native code and does not run in Expo Go.
+Keep package metadata, examples, native defaults and docs aligned unless the
+project intentionally raises a floor.
 
 **Web** uses Web Bluetooth's explicit chooser/session integration. Browser
 user-activation and security restrictions are part of the host contract; do not

@@ -8,6 +8,8 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.security.SecureRandom
+import java.util.ArrayDeque
+import java.util.concurrent.Executor
 
 class RustCoreSessionsTest {
   private val core = FakeCore()
@@ -44,6 +46,18 @@ class RustCoreSessionsTest {
   }
 
   private fun open(): Captured = Captured().also { sessions.openSession("manager-a", "ubm-mobile-wire/1", it) }
+
+  private class QueuedExecutor : Executor {
+    private val tasks = ArrayDeque<Runnable>()
+
+    override fun execute(command: Runnable) {
+      tasks.addLast(command)
+    }
+
+    fun runAll() {
+      while (tasks.isNotEmpty()) tasks.removeFirst().run()
+    }
+  }
 
   @Test
   fun openInstallsTheProcessHostOnceAndResolvesTheAdmissionVerbatim() {
@@ -226,6 +240,68 @@ class RustCoreSessionsTest {
     assertTrue(sessions.ownedSessions().isEmpty())
     host.wake.onWake(7)
     assertTrue(wakes.isEmpty())
+  }
+
+  @Test
+  fun invalidateRejectsAnAcceptedOpenThatWasAlreadyQueuedBeforeTeardown() {
+    val queued = QueuedExecutor()
+    val queuedWakes = mutableListOf<String>()
+    val queuedHost = RustCoreProcessHost(core, { unusedRadioHost() }, log = { logs.add(it) })
+    val queuedSessions = RustCoreSessions(
+      core,
+      queuedHost,
+      queued,
+      { queuedWakes.add(it) },
+      { packageName },
+      SecureRandom(),
+      { logs.add(it) }
+    )
+    val admission = Captured()
+
+    queuedSessions.openSession("queued-manager", "ubm-mobile-wire/1", admission)
+    queuedSessions.invalidate()
+    queued.runAll()
+
+    assertEquals("lifecycle.destroyed", admission.rejection().code)
+    assertTrue(core.openScopes.isEmpty())
+    assertTrue(queuedSessions.ownedSessions().isEmpty())
+    queuedHost.wake.onWake(7)
+    assertTrue(queuedWakes.isEmpty())
+    assertEquals(1L, queuedHost.unroutedWakeCount())
+    assertEquals(1, core.releasedScopes.size)
+  }
+
+  @Test
+  fun invalidateTransfersFailedDisposalToTheProcessOwnerUntilARetryReleasesIt() {
+    val cleanupTasks = QueuedExecutor()
+    val processHost = RustCoreProcessHost(
+      core,
+      { unusedRadioHost() },
+      { _, task -> cleanupTasks.execute(task) },
+      { logs.add(it) }
+    )
+    val moduleSessions = RustCoreSessions(
+      core,
+      processHost,
+      DirectExecutor,
+      {},
+      { packageName },
+      SecureRandom(),
+      { logs.add(it) }
+    )
+    Captured().also { moduleSessions.openSession("manager-a", "ubm-mobile-wire/1", it) }.single()
+
+    moduleSessions.invalidate()
+    core.callbacks.single().onResult(
+      "{\"ok\":true,\"value\":{\"failures\":[{\"resourceKind\":\"connection\",\"code\":\"platform.failure\"}],\"state\":\"release-failed\"}}"
+    )
+
+    assertTrue(moduleSessions.ownedSessions().isEmpty())
+    assertEquals(setOf(7L), processHost.retainedCleanupSessions())
+    cleanupTasks.runAll()
+    assertEquals(2, core.callbacks.size)
+    core.callbacks[1].onResult("{\"ok\":true,\"value\":{\"failures\":[],\"state\":\"released\"}}")
+    assertTrue(processHost.retainedCleanupSessions().isEmpty())
   }
 
   @Test

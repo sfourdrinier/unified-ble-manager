@@ -9,17 +9,30 @@ The Rust plugin owns the radio (btleplug: CoreBluetooth, WinRT, or BlueZ). The w
 ## Install
 
 ```sh
-pnpm add unified-ble-manager @tauri-apps/api
+pnpm add unified-ble-manager@5.0.0-rc.5 @tauri-apps/api
 ```
 
-Until the crate is on crates.io, point Cargo at the plugin in this repository:
+Until the crate is on crates.io, use the Rust plugin source shipped in the same
+exact npm package. In the normal Tauri layout (`src-tauri/` beside
+`node_modules/`), put all three entries in the consuming app's
+`src-tauri/Cargo.toml`:
 
 ```toml
 [dependencies]
-tauri-plugin-unified-ble-manager = { path = "../../native/tauri" }
+tauri-plugin-unified-ble-manager = { path = "../node_modules/unified-ble-manager/native/tauri" }
+
+# Cargo reads patches only from the consuming workspace root. The plugin's
+# dependency manifest cannot activate these mandatory UBM vendor patches.
+[patch.crates-io]
+btleplug = { path = "../node_modules/unified-ble-manager/vendor/btleplug" }
+bluez-async = { path = "../node_modules/unified-ble-manager/vendor/bluez-async" }
 ```
 
-The intended published recipe is `cargo add tauri-plugin-unified-ble-manager@5.0.0-rc.4`.
+Adjust all three relative paths together in a monorepo. Omitting the root
+`[patch.crates-io]` table fails the plugin's production vendor-patch guard;
+Cargo intentionally ignores patch tables in dependency manifests.
+
+The intended published recipe is `cargo add tauri-plugin-unified-ble-manager@5.0.0-rc.5`.
 That command fails today because the crate is not published. `ubm init --host tauri`
 writes the crates.io fragment so you can switch when it is.
 
@@ -46,12 +59,11 @@ if (first.done || first.value.kind !== 'value') {
 const connection = await manager.connect(first.value.peer, { signal: abort.signal, timeoutMs: 10_000 })
 try {
   const gatt = await connection.discover({ signal: abort.signal, timeoutMs: 10_000 })
-  const battery = gatt.services.find(service => service.uuid === '180f')
-  const level = battery?.characteristics.find(characteristic => characteristic.uuid === '2a19')
-  if (level !== undefined) {
-    const bytes = await level.read({ signal: abort.signal, timeoutMs: 5_000 })
-    void bytes
-  }
+  // Public UUID properties are canonical 128-bit values. The lookup helper
+  // accepts short Bluetooth SIG UUIDs and normalizes them before matching.
+  const level = gatt.characteristic('180f', '2a19')
+  const bytes = await level.read({ signal: abort.signal, timeoutMs: 5_000 })
+  void bytes
 } finally {
   await connection.release()
   await manager.destroy()

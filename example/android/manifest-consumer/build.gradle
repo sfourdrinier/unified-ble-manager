@@ -1,0 +1,26 @@
+apply plugin: "com.android.application"
+
+android {
+    namespace = "com.unifiedblemanager.manifestconsumer"
+    compileSdk = rootProject.ext.compileSdkVersion
+
+    defaultConfig {
+        applicationId = "com.unifiedblemanager.manifestconsumer"
+        minSdkVersion = rootProject.ext.minSdkVersion
+        targetSdkVersion = rootProject.ext.targetSdkVersion
+        versionCode = 1
+        versionName = "1.0"
+    }
+
+    flavorDimensions += "manifestPolicy"
+    productFlavors {
+        neverTrue { dimension = "manifestPolicy" }
+        neverFalse { dimension = "manifestPolicy" }
+        neverTrueAgain { dimension = "manifestPolicy" }
+        legacyApi30 { dimension = "manifestPolicy" }
+    }
+}
+
+dependencies {
+    implementation project(":unified-ble-manager")
+}

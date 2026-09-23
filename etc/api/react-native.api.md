@@ -35,14 +35,14 @@ host/test seam; its internal options remain separate from the application API.
 - `NativeUnifiedBleRustCore :: { openSession(owner: string, expectedWireRevision: string): Promise<string>; invoke(sessionId: string, op: string, argsJson: string): Promise<string>; drain(sessionId: string, maxItems: number, maxBytes: number): Promise<string>; closeSession(sessionId: string): Promise<void>; nativeBuildIdentity(): Promise<string>; contractRevision(): Promise<string>; wireRevision(): Promise<string>; randomBytes(length: number): Promise<string>; restorationIdentity(requestJson: string): Promise<string>; declareBackgroundContinuation(declarationJson: string): Promise<void>; continuationStatus(): Promise<string>; prepareContinuationClaim(maxItems: number, maxBytes: number): Promise<string>; acknowledgeContinuationClaim(claimToken: string): Promise<string>; readonly onSessionWake: EventEmitter<RustCoreSessionWake>; getConstants?: (() => {}) | undefined }`
 - `REACT_NATIVE_ANDROID_BACKEND_ID :: "unified-ble:react-native-android"`
 - `REACT_NATIVE_ANDROID_DEFAULT_ADAPTER_NATIVE_ID :: "android-default-adapter"`
-- `REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION :: "5.0.0-rc.4"`
+- `REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION :: "5.0.0-rc.5"`
 - `REACT_NATIVE_ANDROID_PLATFORM_ID :: "unified-ble:android-gatt"`
 - `REACT_NATIVE_APPLE_BACKEND_ID :: "unified-ble:react-native-apple"`
 - `REACT_NATIVE_APPLE_DEFAULT_ADAPTER_NATIVE_ID :: "apple-corebluetooth-default-adapter"`
-- `REACT_NATIVE_APPLE_IMPLEMENTATION_VERSION :: "5.0.0-rc.4"`
+- `REACT_NATIVE_APPLE_IMPLEMENTATION_VERSION :: "5.0.0-rc.5"`
 - `REACT_NATIVE_APPLE_PLATFORM_ID :: "unified-ble:apple-corebluetooth"`
 - `REACT_NATIVE_RUST_CORE_BACKEND_ID :: "unified-ble:react-native-rust-core"`
-- `REACT_NATIVE_RUST_CORE_IMPLEMENTATION_VERSION :: "5.0.0-rc.4"`
+- `REACT_NATIVE_RUST_CORE_IMPLEMENTATION_VERSION :: "5.0.0-rc.5"`
 - `RUST_CORE_CONTRACT_REVISION :: string`
 - `ReactNativeAndroidBackendProviderOptions :: { readonly now: () => number; readonly createOwnerId?: (() => string) | undefined; readonly rustCore?: ReactNativeRustCoreBinding | undefined; readonly androidApiLevel?: number | undefined }`
 - `ReactNativeAppleBackendProviderOptions :: { readonly now: () => number; readonly createOwnerId?: (() => string) | undefined; readonly rustCore?: ReactNativeRustCoreBinding | undefined; readonly restorationAuthority?: ReactNativeRestorationAuthority | undefined }`

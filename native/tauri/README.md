@@ -8,15 +8,18 @@ The documented consumer install is crates.io:
 
 ```toml
 [dependencies]
-tauri-plugin-unified-ble-manager = "5.0.0-rc.4"
+tauri-plugin-unified-ble-manager = "5.0.0-rc.5"
 ```
 
 ```sh
-cargo add tauri-plugin-unified-ble-manager@5.0.0-rc.4
+cargo add tauri-plugin-unified-ble-manager@5.0.0-rc.5
 ```
 
-The crate is not yet published. Until the crate is published, a repository
-checkout may still use a path dependency for local plugin development.
+The crate is not yet published. Until the crate is published, use the plugin,
+`btleplug`, and `bluez-async` paths shipped by the exact npm package. The
+consumer workspace root must declare both vendor entries under
+`[patch.crates-io]`; Cargo ignores patch tables in dependency manifests. The
+complete copy-and-paste layout is in [`../../docs/TAURI.md`](../../docs/TAURI.md).
 
 Register the production dispatcher:
 

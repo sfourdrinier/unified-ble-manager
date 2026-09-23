@@ -17,4 +17,5 @@ plugins {
 extensions.configure(com.facebook.react.ReactSettingsExtension){ ex -> ex.autolinkLibrariesFromCommand() }
 rootProject.name = 'BlePlxExample'
 include ':app'
+include ':manifest-consumer'
 includeBuild('../node_modules/@react-native/gradle-plugin')

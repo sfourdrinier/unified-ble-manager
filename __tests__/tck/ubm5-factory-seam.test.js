@@ -29,7 +29,7 @@ describe('UBM5 TCK factory seam', () => {
     expect(PINNED_TS_REFERENCE).toMatchObject({
       kind: 'ts-reference',
       baseShortSha: '8c8195dd',
-      implementationVersion: '5.0.0-rc.4'
+      implementationVersion: '5.0.0-rc.5'
     })
     expect(String(PINNED_TS_REFERENCE.baseSha)).toContain('8c8195dd')
     expect(String(PINNED_TS_REFERENCE.baseSha)).toBe('8c8195dd0430ff847d9492ce32f4e63ea3a5df1d')
@@ -40,7 +40,7 @@ describe('UBM5 TCK factory seam', () => {
     expect(seam.kind).toBe('ts-reference')
     expect(seam.reference).toMatchObject({
       baseShortSha: '8c8195dd',
-      implementationVersion: '5.0.0-rc.4'
+      implementationVersion: '5.0.0-rc.5'
     })
 
     const definition = baseTckScenarios.find(

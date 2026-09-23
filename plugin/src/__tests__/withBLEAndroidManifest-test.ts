@@ -286,7 +286,13 @@ describe('legacy location policy reconciliation', () => {
     expect(manifest.manifest['uses-permission']).toEqual([
       { $: { 'android:name': 'android.permission.BLUETOOTH', 'android:maxSdkVersion': '30' } },
       { $: { 'android:name': 'android.permission.BLUETOOTH_ADMIN', 'android:maxSdkVersion': '30' } },
-      { $: { 'android:name': 'android.permission.BLUETOOTH_SCAN', 'tools:targetApi': '31' } },
+      {
+        $: {
+          'android:name': 'android.permission.BLUETOOTH_SCAN',
+          'tools:remove': 'android:usesPermissionFlags',
+          'tools:targetApi': '31'
+        }
+      },
       { $: { 'android:name': 'android.permission.BLUETOOTH_CONNECT', 'tools:targetApi': '31' } }
     ])
   })
@@ -313,6 +319,7 @@ describe('legacy location policy reconciliation', () => {
         $: {
           'android:name': 'android.permission.BLUETOOTH_SCAN',
           ...(neverForLocation ? { 'android:usesPermissionFlags': 'neverForLocation' } : {}),
+          ...(!neverForLocation ? { 'tools:remove': 'android:usesPermissionFlags' } : {}),
           'tools:targetApi': '31'
         }
       },

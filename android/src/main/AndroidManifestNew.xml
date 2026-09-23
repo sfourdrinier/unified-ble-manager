@@ -19,6 +19,12 @@
   <uses-permission
     android:name="android.permission.BLUETOOTH_CONNECT"
     tools:targetApi="s" />
+  <!-- CompanionDeviceManager presence observation is the process-death wake
+       route. This is the AGP 8+ manifest selected by android/build.gradle, so
+       consumers inherit the permission from the artifact they actually build. -->
+  <uses-permission
+    android:name="android.permission.REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE"
+    tools:targetApi="s" />
 
   <application />
 </manifest>

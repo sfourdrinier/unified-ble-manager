@@ -343,7 +343,7 @@ class PublicGattCharacteristic implements GattCharacteristic {
       if (writeWhenReady === undefined) {
         throw contractError('capability.unsupported', 'connection', 'public-gatt.characteristic.write-when-ready')
       }
-      return writeWhenReady(this.indexedRecord.record.path, value, {
+      return writeWhenReady.call(this.source, this.indexedRecord.record.path, value, {
         ...normalizeOperationOptions(options, () => this.source.monotonicNow()),
         mode: 'without-response'
       })

@@ -4,7 +4,7 @@ import * as React from 'react'
 import type { ReactNode } from 'react'
 import { contractError } from './backend-contract/errors'
 import type { CleanupRecord } from './public/cleanup'
-import type { PublicStreamItem, PublicStreamTerminalReason } from './public/streams'
+import type { PublicStreamItem, PublicStreamTerminalNotice, PublicStreamTerminalReason } from './public/streams'
 import {
   connectionEventsEndedExpectedly,
   type BleConnection,
@@ -23,6 +23,7 @@ import {
 } from './public/scan-state-budget'
 import type { BleAdapterState, BleAdapterStateWatch } from './public/ble-adapter'
 import type { GattCharacteristic, GattSubscribeOptions, GattSubscription, GattValueEvent } from './public/gatt'
+import { BleError } from './public/errors'
 import type { BleCapabilities, CapabilityDescriptor, FeatureId } from './public/capabilities'
 import { adapterWatchOwnershipInspectors } from './public/react-adapter-watch-inspect'
 import { normalizeScanQuery } from './public/scan-query'
@@ -674,6 +675,7 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
     let eventsReturned = false
     let sessionReleased = false
     let stopAttempt: Promise<void> | null = null
+    let stopRequestedSession: ScanSession | null = null
     const eventsAuthoritative = (): boolean => eventIterator !== null
 
     const isCurrentGeneration = (): boolean => generationRef.current === runGeneration
@@ -745,6 +747,7 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
 
     const stopRun = (): Promise<void> => {
       if (stopAttempt !== null) return stopAttempt
+      if (session !== null && stopRequestedSession === session) return Promise.resolve()
       if (session !== null && !sessionReleased) {
         parkScanStop(manager, session)
       }
@@ -766,6 +769,7 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
           )
         ])
         if (!sessionReleased && session !== null) {
+          stopRequestedSession = session
           const cleanup = await completeScanStop(manager, session, reportError)
           if (cleanup.state === 'released') {
             sessionReleased = true
@@ -774,10 +778,11 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
         peers.clear()
         retainedBytes = 0
       })()
-      stopAttempt = attempt.finally(() => {
-        if (stopAttempt === attempt) stopAttempt = null
+      const tracked = attempt.finally(() => {
+        if (stopAttempt === tracked) stopAttempt = null
       })
-      return stopAttempt
+      stopAttempt = tracked
+      return tracked
     }
 
     const consumeObservations = async (): Promise<void> => {
@@ -786,7 +791,10 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
         const next = await observationIterator.next()
         if (next.done || !active) return
         const item = next.value
-        if (item.kind === 'terminal') return
+        if (item.kind === 'terminal') {
+          consumeError = overflowError ?? mapScanTerminal(item)
+          return
+        }
         if (item.kind === 'overflow') {
           overflowError = streamOverflowError('react.useDiscoveredPeers.observations')
           publish('active', overflowError)
@@ -1113,6 +1121,32 @@ function mapCharacteristicTerminal(reason: PublicStreamTerminalReason): Error | 
     return contractError('operation.timed-out', 'connection', 'react.useCharacteristicValue')
   }
   return contractError('stream.closed', 'stream', 'react.useCharacteristicValue')
+}
+
+function mapScanTerminal(item: PublicStreamTerminalNotice): Error | null {
+  if (
+    item.reason === 'closed' ||
+    item.reason === 'owner-released' ||
+    item.reason === 'operation-aborted' ||
+    item.reason === 'operation-timed-out'
+  ) {
+    return null
+  }
+  if (item.reason === 'overflow') return streamOverflowError('react.useDiscoveredPeers.observations')
+  if (item.reason === 'connection-lost') {
+    return contractError('connection.lost', 'connection', 'react.useDiscoveredPeers')
+  }
+  if (item.reason === 'service-changed') {
+    return contractError('gatt.stale-handle', 'gatt', 'react.useDiscoveredPeers')
+  }
+  if (item.error !== undefined && item.error !== null) {
+    return new BleError(item.error.code, item.error.domain, item.error.operation, {
+      platform: item.error.platform,
+      retryability: item.error.retryability,
+      commit: item.error.commit ?? null
+    })
+  }
+  return streamClosedError('react.useDiscoveredPeers')
 }
 
 type CleanupResult = Pick<CleanupRecord, 'state'> & { readonly failures: readonly unknown[] }

@@ -18,6 +18,8 @@ import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio
 import com.ubm.core.MobileCoreBridge
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -30,10 +32,15 @@ import java.util.concurrent.atomic.AtomicLong
 class RustCoreProcessHost(
   private val core: MobileCorePort,
   private val radioHost: () -> MobileCoreBridge.RadioHost,
+  private val scheduleCleanup: (Long, Runnable) -> Unit = { delayMs, task ->
+    cleanupExecutor.schedule(task, delayMs, TimeUnit.MILLISECONDS)
+  },
   private val log: (String) -> Unit
 ) {
   private val routes = ConcurrentHashMap<Long, (Long) -> Unit>()
   private val unroutedWakes = AtomicLong()
+  private val retainedCleanupAttempts = ConcurrentHashMap<Long, AtomicInteger>()
+  private val scheduledCleanups = ConcurrentHashMap.newKeySet<Long>()
 
   @Volatile
   private var companionChooser: CompanionPort? = null
@@ -66,6 +73,7 @@ class RustCoreProcessHost(
 
   @Synchronized
   fun ensureInstalled() {
+    retainedCleanupAttempts.keys.forEach { scheduleRetainedCleanup(it, 0L) }
     if (core.hostInstalled()) return
     val radio = radioHost()
     installedAdapter = radio as? RustRadioHostAdapter
@@ -142,6 +150,61 @@ class RustCoreProcessHost(
     routes.remove(sessionId)
   }
 
+  /**
+   * Takes cleanup ownership from a React module that is going away. The
+   * process host outlives React contexts, so a refused native dispose remains
+   * visible and retryable instead of being forgotten with the module's
+   * executor. Retries remain bounded in frequency, never in count: the owner
+   * keeps the session until Rust confirms that the lease is gone.
+   */
+  fun retainSessionCleanup(sessionId: Long, detail: String) {
+    retainedCleanupAttempts.putIfAbsent(sessionId, AtomicInteger(0))
+    unroute(sessionId)
+    log("process owner retained session $sessionId cleanup: $detail")
+    scheduleRetainedCleanup(sessionId, 0L)
+  }
+
+  internal fun retainedCleanupSessions(): Set<Long> = retainedCleanupAttempts.keys.toSet()
+
+  private fun scheduleRetainedCleanup(sessionId: Long, delayMs: Long) {
+    if (!retainedCleanupAttempts.containsKey(sessionId) || !scheduledCleanups.add(sessionId)) return
+    try {
+      scheduleCleanup(delayMs, Runnable { attemptRetainedCleanup(sessionId) })
+    } catch (error: RuntimeException) {
+      scheduledCleanups.remove(sessionId)
+      log("process owner could not schedule session $sessionId cleanup: ${error.message}")
+    }
+  }
+
+  private fun attemptRetainedCleanup(sessionId: Long) {
+    scheduledCleanups.remove(sessionId)
+    val attempts = retainedCleanupAttempts[sessionId] ?: return
+    val attempt = attempts.incrementAndGet()
+    try {
+      core.invoke(sessionId, RustCoreSessions.DISPOSE, "{}", MobileCoreBridge.InvokeCallback { envelope ->
+        val outcome = RustCoreSessions.disposeOutcome(envelope)
+        if (outcome == null) {
+          retainedCleanupAttempts.remove(sessionId)
+          scheduledCleanups.remove(sessionId)
+          log("process owner released retained session $sessionId on attempt $attempt")
+        } else {
+          log("process owner session $sessionId cleanup attempt $attempt failed: ${outcome.toJson()}")
+          scheduleRetainedCleanup(sessionId, cleanupRetryDelay(attempt))
+        }
+      })
+    } catch (error: RuntimeException) {
+      val outcome = RustCoreSessions.disposeThrownOutcome(error)
+      if (outcome == null) {
+        retainedCleanupAttempts.remove(sessionId)
+        scheduledCleanups.remove(sessionId)
+        log("process owner found retained session $sessionId already released on attempt $attempt")
+      } else {
+        log("process owner session $sessionId cleanup attempt $attempt threw: ${outcome.toJson()}")
+        scheduleRetainedCleanup(sessionId, cleanupRetryDelay(attempt))
+      }
+    }
+  }
+
   /** The chooser of the most recently attached React context (the one with a foreground Activity). */
   fun attachCompanionChooser(chooser: CompanionPort) {
     companionChooser = chooser
@@ -157,6 +220,10 @@ class RustCoreProcessHost(
     const val OWNER = "unified-ble-manager/react-native-android"
     const val ADAPTER_LABEL = "android-default"
     private const val TAG = "UnifiedBleRustCore"
+    private const val MAX_CLEANUP_RETRY_DELAY_MS = 5_000L
+    private val cleanupExecutor = Executors.newSingleThreadScheduledExecutor { runnable ->
+      Thread(runnable, "ubm-rust-process-cleanup").also { it.isDaemon = true }
+    }
 
     @Volatile
     private var shared: RustCoreProcessHost? = null
@@ -195,12 +262,17 @@ class RustCoreProcessHost(
             log = ::log
           )
         },
-        ::log
+        log = ::log
       )
       host.attachPresenceStore(SharedPreferencesPresenceStore(application))
       host.attachContinuationStore(SharedPreferencesBackgroundContinuationStore(application))
       shared = host
       return host
+    }
+
+    private fun cleanupRetryDelay(attempt: Int): Long {
+      val shift = (attempt - 1).coerceIn(0, 6)
+      return (100L shl shift).coerceAtMost(MAX_CLEANUP_RETRY_DELAY_MS)
     }
   }
 

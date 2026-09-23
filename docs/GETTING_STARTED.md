@@ -4,7 +4,7 @@
 
 This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are linked at the bottom. The root import does not turn Bluetooth on.
 
-This source targets `5.0.0-rc.4`; verify the published version in the npm registry.
+This source targets `5.0.0-rc.5`; verify the published version in the npm registry.
 
 ## Pick a host
 
@@ -24,11 +24,12 @@ This source targets `5.0.0-rc.4`; verify the published version in the npm regist
 
 #### Bare React Native
 
-Install the current published package and commit the resolved lockfile for a
-known native rebuild:
+The 5.0 candidate is on npm `next`; npm `latest` remains the stable 4.0 line.
+Install the exact candidate and commit the resolved lockfile for a known native
+rebuild:
 
 ```sh
-pnpm add unified-ble-manager
+pnpm add unified-ble-manager@5.0.0-rc.5
 ```
 
 Declare Android Bluetooth permissions and the BLE hardware feature yourself,
@@ -38,11 +39,11 @@ request runtime permissions on Android 12+, add
 #### Expo / CNG v2
 
 The Expo v2 schema and `unified-ble-manager/expo` factory are in this source.
-After the npm registry lists `5.0.0-rc.4`, install that exact version and keep it in
+After the npm registry lists `5.0.0-rc.5`, install that exact version and keep it in
 your lockfile while validating the native build:
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.4
+pnpm add unified-ble-manager@5.0.0-rc.5
 ```
 
 The package does not run in Expo Go.
@@ -67,7 +68,7 @@ Add the plugin (full option table: [`EXPO_PLUGIN.md`](EXPO_PLUGIN.md)):
             "bluetoothAlways": "Allow $(PRODUCT_NAME) to connect to Bluetooth devices",
             "android": {
               "neverForLocation": false,
-              "legacyLocation": "none"
+              "legacyLocation": "auto"
             }
           },
           "background": {

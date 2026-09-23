@@ -5,11 +5,15 @@
 
 mod common;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use common::*;
 use serde_json::json;
-use ubm_mobile::{MobilePlatform, RadioCompletion, RadioRequest, RequestKind};
+use ubm_mobile::{
+    FailureKind, MobilePlatform, PlatformFailure, RadioCompletion, RadioRequest, RequestKind,
+};
 
 async fn wait_for(condition: impl Fn() -> bool) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -24,6 +28,128 @@ async fn wait_for(condition: impl Fn() -> bool) {
 
 fn scan_args(op: &str) -> String {
     json!({"serviceUuids": [], "duplicatePolicy": "all", "operationId": op}).to_string()
+}
+
+fn filtered_scan_args(op: &str) -> String {
+    json!({"serviceUuids": [HR_SERVICE], "duplicatePolicy": "all", "operationId": op})
+        .to_string()
+}
+
+/// V01: the widening start itself can succeed after the joining caller's
+/// deadline. If compensating stop succeeds, the previous physical scan is
+/// gone too, so every existing member receives a terminal instead of being
+/// left with a membership backed by no radio scan.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v01_expired_widening_start_ends_existing_members_after_cleanup() {
+    let stops = Arc::new(AtomicU64::new(0));
+    let starts = AtomicU64::new(0);
+    let observed_stops = Arc::clone(&stops);
+    let radio = Scripted::new(Box::new(move |request| match request {
+        RadioRequest::StartScan { .. } => {
+            if starts.fetch_add(1, Ordering::SeqCst) == 1 {
+                // `submit` is synchronous. This makes the OS answer success
+                // after the caller budget while the central's work branch is
+                // already being polled, deterministically reaching the host's
+                // post-start liveness check.
+                std::thread::sleep(Duration::from_millis(60));
+            }
+            Reply::Now(RadioCompletion::Unit)
+        }
+        RadioRequest::StopScan { .. } => {
+            observed_stops.fetch_add(1, Ordering::SeqCst);
+            Reply::Now(RadioCompletion::Unit)
+        }
+        other => polar_responder(other),
+    }));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session_a = host.open_session("a").unwrap();
+    let session_b = host.open_session("b").unwrap();
+    let membership_a = ok(&call(&session_a, "scan.start", &filtered_scan_args("a")).await)
+        ["operationId"]
+        .as_str()
+        .expect("A membership")
+        .to_owned();
+
+    let (error, _) = failure(
+        &call(
+            &session_b,
+            "scan.start",
+            &json!({"serviceUuids": [], "duplicatePolicy": "all", "operationId": "b", "budgetMs": 20})
+                .to_string(),
+        )
+        .await,
+    );
+    assert_eq!(error["code"], "operation.timed-out", "{error}");
+    let records = drain_until(&session_a, |records| !of_type(records, "scan-end").is_empty()).await;
+    let ended = of_type(&records, "scan-end");
+    assert_eq!(ended.len(), 1, "{records:#?}");
+    assert_eq!(ended[0]["operationId"], membership_a);
+    assert_eq!(ended[0]["reason"], "source-failed");
+    assert_eq!(
+        ok(&call(&session_a, "session.reconcile", "{}").await)["scan"],
+        json!(null)
+    );
+    assert_eq!(stops.load(Ordering::SeqCst), 2);
+}
+
+/// V01 cleanup refusal: the replacement scan is still physically alive.
+/// Keep it and the existing membership so that the member's ordinary stop
+/// retries the exact retained operation instead of forgetting the debt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v01_expired_widening_start_retains_refused_cleanup_for_retry() {
+    let stops = Arc::new(AtomicU64::new(0));
+    let starts = AtomicU64::new(0);
+    let observed_stops = Arc::clone(&stops);
+    let radio = Scripted::new(Box::new(move |request| match request {
+        RadioRequest::StartScan { .. } => {
+            if starts.fetch_add(1, Ordering::SeqCst) == 1 {
+                std::thread::sleep(Duration::from_millis(60));
+            }
+            Reply::Now(RadioCompletion::Unit)
+        }
+        RadioRequest::StopScan { .. } => {
+            let attempt = observed_stops.fetch_add(1, Ordering::SeqCst) + 1;
+            if attempt == 2 {
+                Reply::Now(RadioCompletion::Failed(PlatformFailure::new(
+                    FailureKind::Platform,
+                    "scripted cleanup refusal",
+                )))
+            } else {
+                Reply::Now(RadioCompletion::Unit)
+            }
+        }
+        other => polar_responder(other),
+    }));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session_a = host.open_session("a").unwrap();
+    let session_b = host.open_session("b").unwrap();
+    let membership_a = ok(&call(&session_a, "scan.start", &filtered_scan_args("a")).await)
+        ["operationId"]
+        .as_str()
+        .expect("A membership")
+        .to_owned();
+
+    let (error, _) = failure(
+        &call(
+            &session_b,
+            "scan.start",
+            &json!({"serviceUuids": [], "duplicatePolicy": "all", "operationId": "b", "budgetMs": 20})
+                .to_string(),
+        )
+        .await,
+    );
+    assert_eq!(error["code"], "operation.timed-out", "{error}");
+    assert_eq!(
+        ok(&call(&session_a, "session.reconcile", "{}").await)["scan"],
+        membership_a
+    );
+    ok(&call(
+        &session_a,
+        "scan.stop",
+        &json!({"operationId": membership_a}).to_string(),
+    )
+    .await);
+    assert_eq!(stops.load(Ordering::SeqCst), 3, "the retained cleanup is retried");
 }
 
 /// X-R1: B queues behind A's held scan start; cancelling B must fail B with
