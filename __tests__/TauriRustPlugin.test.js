@@ -153,16 +153,34 @@ describe('Tauri v2 Rust plugin boundary', () => {
 
   test('installs Tauri Linux system libraries before the packed consumer proof', () => {
     const workflow = read('.github/workflows/ci.yml')
+    const publish = read('.github/workflows/publish.yml')
     const packageJob = workflow.slice(workflow.indexOf('  package:'), workflow.indexOf('  contracts:'))
     const dependencyStep = packageJob.slice(
       packageJob.indexOf('- name: Install Tauri Linux system dependencies for packed consumer'),
       packageJob.indexOf('- name: Build NAPI dispatch addon')
     )
+    const publishJob = publish.slice(publish.indexOf('  publish:'))
+    const publishDependencyStep = publishJob.slice(
+      publishJob.indexOf('- name: Install Tauri Linux system dependencies for packed consumer'),
+      publishJob.indexOf('- name: Build NAPI dispatch addon')
+    )
 
     expect(dependencyStep).toContain("if: runner.os == 'Linux' && matrix.node == '22'")
-    expect(dependencyStep).toContain('libwebkit2gtk-4.1-dev')
-    expect(dependencyStep).toContain('libayatana-appindicator3-dev')
-    expect(dependencyStep).toContain('libdbus-1-dev')
-    expect(dependencyStep).toContain('pkg-config')
+    for (const required of [
+      'libwebkit2gtk-4.1-dev',
+      'build-essential',
+      'curl',
+      'wget',
+      'file',
+      'libxdo-dev',
+      'libssl-dev',
+      'libayatana-appindicator3-dev',
+      'librsvg2-dev',
+      'libdbus-1-dev',
+      'pkg-config'
+    ]) {
+      expect(dependencyStep).toContain(required)
+      expect(publishDependencyStep).toContain(required)
+    }
   })
 })

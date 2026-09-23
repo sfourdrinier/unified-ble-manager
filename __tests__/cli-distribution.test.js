@@ -129,8 +129,8 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
         proofBoundary: 'compile-config-loadability',
         cratePublished: false,
         compatibility: expect.objectContaining({
-          npmRange: '^5.0.0-rc.5',
-          crateRange: '^5.0.0-rc.5',
+          npmRange: '^5.0.0-rc.6',
+          crateRange: '^5.0.0-rc.6',
           ipcProtocol: 4
         })
       })
@@ -257,7 +257,7 @@ describe('PR11 Tauri crate and testkit contracts', () => {
     const crateReadme = fs.readFileSync(path.join(__dirname, '../native/tauri/README.md'), 'utf8')
     const exampleReadme = fs.readFileSync(path.join(__dirname, '../example-tauri/README.md'), 'utf8')
     for (const text of [docs, crateReadme, exampleReadme]) {
-      expect(text).toContain('tauri-plugin-unified-ble-manager@5.0.0-rc.5')
+      expect(text).toContain('tauri-plugin-unified-ble-manager@5.0.0-rc.6')
       expect(text).toMatch(/not (yet )?published|until the crate is (published|on crates\.io)|once the crate exists/i)
     }
   })

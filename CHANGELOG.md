@@ -2,6 +2,26 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.0.0-rc.6] - 2026-09-23 (prerelease)
+
+The immutable `v5.0.0-rc.5` tag stopped before npm publication. Its new packed
+external Tauri consumer proof compiled a real Linux Tauri application after
+the release-only Android builds, but the canonical publish job installed only
+the NAPI/D-Bus build prerequisites. It therefore lacked the GTK/WebKit system
+libraries required by Tauri and failed at `glib-sys` before the immutable npm
+tarball was created.
+
+This candidate installs the same complete Tauri Linux prerequisite set in the
+publish job that already gates the CI package lane. A regression test checks
+both workflows so their packed-consumer environments cannot drift apart again.
+It otherwise carries the complete rc.5 review remediation unchanged; neither
+candidate promotes a backend evidence label or claims new physical-radio
+qualification.
+
+The prior truthful React Native diagnostic and limitation wording departure
+also remains part of this candidate (finding 159): the active transport is
+`ubm-mobile-wire/1`, not the obsolete JSI control boundary.
+
 ## [5.0.0-rc.5] - 2026-09-23 (prerelease)
 
 This candidate closes the twelve findings from the public source and
