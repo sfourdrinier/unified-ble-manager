@@ -19,7 +19,7 @@ Until the crate is on crates.io, point Cargo at the plugin in this repository:
 tauri-plugin-unified-ble-manager = { path = "../../native/tauri" }
 ```
 
-The intended published recipe is `cargo add tauri-plugin-unified-ble-manager@5.0.0-rc.2`.
+The intended published recipe is `cargo add tauri-plugin-unified-ble-manager@5.0.0-rc.3`.
 That command fails today because the crate is not published. `ubm init --host tauri`
 writes the crates.io fragment so you can switch when it is.
 

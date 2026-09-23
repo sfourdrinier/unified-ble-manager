@@ -4,7 +4,7 @@
 
 Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.
 
-This source targets `5.0.0-rc.2`. Main executes the shared Rust core (`DesktopCentral`) through one N-API addon. Tagged releases ship it prebuilt for Linux, macOS and Windows on `arm64`/`x64`. The addon is Node-API, so one binary serves Node and modern Electron alike.
+This source targets `5.0.0-rc.3`. Main executes the shared Rust core (`DesktopCentral`) through one N-API addon. Tagged releases ship it prebuilt for Linux, macOS and Windows on `arm64`/`x64`. The addon is Node-API, so one binary serves Node and modern Electron alike.
 
 `unified-ble-manager/electron/main` and
 `unified-ble-manager/electron/renderer` are the only Electron entrypoints.
