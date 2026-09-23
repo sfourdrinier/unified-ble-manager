@@ -10,6 +10,6 @@ const root = path.join(__dirname, '..')
 describe('desktop docs version', () => {
   test('docs/NODE.md targets the current release candidate', () => {
     const node = fs.readFileSync(path.join(root, 'docs', 'NODE.md'), 'utf8')
-    expect(node).toMatch('targets `5.0.0-rc.3`')
+    expect(node).toMatch('targets `5.0.0-rc.4`')
   })
 })

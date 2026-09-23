@@ -13,7 +13,7 @@ describe('packed third-party backend SDK fixture', () => {
 
     const manifest = JSON.parse(fs.readFileSync(path.join(fixtureRoot, 'package.json'), 'utf8'))
     expect(manifest.name).toBe('@example/packed-third-party-backend')
-    expect(manifest.peerDependencies).toEqual({ 'unified-ble-manager': '>=4.0.0-alpha.0 <5.0.0 || >=5.0.0-rc.3 <6.0.0' })
+    expect(manifest.peerDependencies).toEqual({ 'unified-ble-manager': '>=4.0.0-alpha.0 <5.0.0 || >=5.0.0-rc.4 <6.0.0' })
     expect(manifest.devDependencies).toEqual({ typescript: '5.8.3' })
 
     const source = fs.readFileSync(path.join(fixtureRoot, 'src', 'packed-third-party-backend.ts'), 'utf8')

@@ -10,7 +10,7 @@ The root import does not open an adapter. Pick the entrypoint for your OS:
 | `unified-ble-manager/node/winrt`         | Windows | shared Rust core over WinRT         |
 | `unified-ble-manager/node/bluez`         | Linux   | shared Rust core over BlueZ         |
 
-All three execute one shared Rust core (`DesktopCentral` in `crates/ubm-desktop`, btleplug plus narrow OS adapters) through one N-API addon. This source targets `5.0.0-rc.3`. Tagged releases ship the addon prebuilt for `linux-x64`, `linux-arm64`, `darwin-arm64`, `darwin-x64`, `win32-x64` and `win32-arm64`, under `native/desktop-core/prebuilds/<platform>-<arch>/`. A normal install compiles nothing and needs no Rust toolchain. The app no longer needs `dbus-next` on Linux.
+All three execute one shared Rust core (`DesktopCentral` in `crates/ubm-desktop`, btleplug plus narrow OS adapters) through one N-API addon. This source targets `5.0.0-rc.4`. Tagged releases ship the addon prebuilt for `linux-x64`, `linux-arm64`, `darwin-arm64`, `darwin-x64`, `win32-x64` and `win32-arm64`, under `native/desktop-core/prebuilds/<platform>-<arch>/`. A normal install compiles nothing and needs no Rust toolchain. The app no longer needs `dbus-next` on Linux.
 
 Runtime requirements:
 

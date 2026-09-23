@@ -7,6 +7,18 @@ const root = path.resolve(__dirname, '..')
 const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf8').replace(/\r\n/g, '\n')
 
 describe('release retry safety', () => {
+  test('clean-tarball pnpm acceptance pins its temporary consumer to this repository package manager', () => {
+    const { cleanConsumerPackageJson } = require('../scripts/ci/napi-clean-tarball-acceptance')
+    const packageJson = require('../package.json')
+
+    expect(cleanConsumerPackageJson()).toEqual({
+      name: 'ubm-napi-acceptance-consumer',
+      private: true,
+      version: '0.0.0',
+      packageManager: packageJson.packageManager
+    })
+  })
+
   test('allows bounded npm processing delays for metadata and provenance', () => {
     const workflow = read('.github/workflows/publish.yml')
 
