@@ -2158,7 +2158,21 @@ async fn finding_57_a_route_validated_before_rebind_stays_on_its_original_attach
         .await
         .expect("the original attachment validates before reset");
 
-    harness.lose_adapter().await;
+    let reset = harness.lose_adapter().await;
+    harness
+        .dispatcher
+        .rebind_callers(reset.previous.attachment_id().as_str(), &reset.current)
+        .await;
+    assert_eq!(
+        harness
+            .dispatcher
+            .bound_attachment(&harness.caller, "test.route-attachment")
+            .await
+            .expect("caller remains bound")
+            .attachment_id,
+        reset.current.attachment_id().as_str(),
+        "the caller is rebound after the old envelope was validated"
+    );
     let reads = count(&harness.radio().calls(), "read");
     let error = harness
         .dispatcher
