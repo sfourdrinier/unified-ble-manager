@@ -8,7 +8,7 @@ releasing every resource. A successful click is not live-radio evidence.
 
 The Cargo registry crate is not published. Use the checkout path for local
 development (`path = "../../native/tauri"`). A future crates.io publication may
-use `cargo add tauri-plugin-unified-ble-manager@5.0.0-rc.5`; it is not part of
+use `cargo add tauri-plugin-unified-ble-manager@5.0.0-rc.6`; it is not part of
 the npm release candidate.
 See [`../docs/TAURI.md`](../docs/TAURI.md).
 

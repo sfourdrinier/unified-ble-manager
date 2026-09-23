@@ -93,8 +93,8 @@ function legPack() {
     .filter(Boolean)
     .pop()
   const tarball = path.join(workRoot, tarballName)
-  if (!tarball.endsWith('unified-ble-manager-5.0.0-rc.5.tgz')) {
-    fail(`packed ${tarballName}, not the 5.0.0-rc.5 candidate`)
+  if (!tarball.endsWith('unified-ble-manager-5.0.0-rc.6.tgz')) {
+    fail(`packed ${tarballName}, not the 5.0.0-rc.6 candidate`)
   }
   const sha256 = crypto.createHash('sha256').update(fs.readFileSync(tarball)).digest('hex')
   log(`candidate: ${tarballName} sha256=${sha256}`)
@@ -201,11 +201,11 @@ function legBuildDispatch(installed, toolchain, rustc) {
 // Leg E: package/core/fingerprint identity at runtime.
 function legIdentity(installed, addon) {
   const manifest = JSON.parse(fs.readFileSync(path.join(installed, 'package.json'), 'utf8'))
-  if (manifest.version !== '5.0.0-rc.5') fail(`installed version ${manifest.version} is not the candidate`)
+  if (manifest.version !== '5.0.0-rc.6') fail(`installed version ${manifest.version} is not the candidate`)
   const sealPath = path.join(installed, 'lib', 'ubm-build-fingerprint.json')
   if (!fs.existsSync(sealPath)) fail('installed candidate is missing the fingerprint seal')
   const seal = JSON.parse(fs.readFileSync(sealPath, 'utf8'))
-  if (seal.package.version !== '5.0.0-rc.5') fail('seal package version is not the candidate')
+  if (seal.package.version !== '5.0.0-rc.6') fail('seal package version is not the candidate')
   const runtime = JSON.parse(
     run(process.execPath, ['-e', `console.log(JSON.stringify({revision: require(${JSON.stringify(addon)}).echoRevision()}))`])
   )

@@ -9,7 +9,7 @@ The Rust plugin owns the radio (btleplug: CoreBluetooth, WinRT, or BlueZ). The w
 ## Install
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.5 @tauri-apps/api
+pnpm add unified-ble-manager@5.0.0-rc.6 @tauri-apps/api
 ```
 
 Until the crate is on crates.io, use the Rust plugin source shipped in the same
@@ -32,7 +32,7 @@ Adjust all three relative paths together in a monorepo. Omitting the root
 `[patch.crates-io]` table fails the plugin's production vendor-patch guard;
 Cargo intentionally ignores patch tables in dependency manifests.
 
-The intended published recipe is `cargo add tauri-plugin-unified-ble-manager@5.0.0-rc.5`.
+The intended published recipe is `cargo add tauri-plugin-unified-ble-manager@5.0.0-rc.6`.
 That command fails today because the crate is not published. `ubm init --host tauri`
 writes the crates.io fragment so you can switch when it is.
 

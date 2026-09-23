@@ -84,7 +84,9 @@ release plan. RC2, RC3, RC4, `4.0.0-rc.4.1`, and RC5 are already immutable
 once tagged. Stable `4.0.0` through `4.0.20` are immutable. The unpublished
 `v4.0.21` tag is also immutable after its cancelled workflow. `4.0.22`,
 `4.0.23`, `4.0.24`, `4.0.25`, `4.0.26`, and `4.0.27` are immutable tagged
-history. `4.0.28` is immutable tagged history. This branch prepares `5.0.0-rc.5`.
+history. `4.0.28` is immutable tagged history. The unpublished
+`v5.0.0-rc.5` tag is immutable after its publish-only Tauri consumer failure.
+This branch prepares `5.0.0-rc.6`.
 
 ```sh
 release_candidate=4.0.0-rc.N
@@ -112,12 +114,15 @@ The first stable tag `v4.0.0` is immutable published history. Do not recreate or
 git tag -a v4.0.0 -m "v4.0.0"
 ```
 
-## Releasing 5.0.0-rc.5
+## Releasing 5.0.0-rc.6
 
-`v5.0.0-rc.4` is immutable published history. Release `v5.0.0-rc.5` only from
-the exact current `main` commit after the release PR and canonical CI succeed.
-Verify `package.json` is `5.0.0-rc.5`, the worktree is clean, and release-note
-extraction finds `## [5.0.0-rc.5]`. Push a new annotated `v5.0.0-rc.5` tag;
+`v5.0.0-rc.4` is immutable published history. The immutable
+`v5.0.0-rc.5` tag stopped before npm publication because the packed external
+Tauri consumer ran in the canonical publish job without GTK/WebKit system
+libraries. Release `v5.0.0-rc.6` only from the exact current `main` commit
+after the release PR and canonical CI succeed. Verify `package.json` is
+`5.0.0-rc.6`, the worktree is clean, and release-note extraction finds
+`## [5.0.0-rc.6]`. Push a new annotated `v5.0.0-rc.6` tag;
 the tag workflow publishes to npm `next` with provenance and creates a GitHub
 prerelease. Never publish this candidate manually, move an earlier tag, or tag
 the release branch before it has merged to `main`.
@@ -587,7 +592,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=5.0.0-rc.5
+version=5.0.0-rc.6
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -598,7 +603,7 @@ npm view "unified-ble-manager@$version" dist.integrity
 
 Then verify:
 
-- npm `next` resolves to `5.0.0-rc.5`, while `latest` remains on the 4.0 stable
+- npm `next` resolves to `5.0.0-rc.6`, while `latest` remains on the 4.0 stable
   line; a stable release moves `latest`;
 - the npm package page shows provenance for the published artifact;
 - the GitHub Release exists at that tag, and is marked prerelease only if the
@@ -606,7 +611,7 @@ Then verify:
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager@5.0.0-rc.5` explicitly and import the documented host
+  `unified-ble-manager@5.0.0-rc.6` explicitly and import the documented host
   entrypoints. A bare install still selects `latest` (the 4.0 line). This
   catches a packaging gap the repository's
   own tests cannot see: `@babel/runtime` shipped undeclared in 4.0.4 and only a
@@ -622,7 +627,7 @@ Never move or recreate a published version tag to hide a failed release.
 
 ## Prereleases after 4.0.0
 
-Prereleases such as `5.0.0-rc.5` use normal SemVer suffixes. They publish to
+Prereleases such as `5.0.0-rc.6` use normal SemVer suffixes. They publish to
 `next` and must never replace `latest` until a final version is released.
 
 ## Release artifacts and evidence

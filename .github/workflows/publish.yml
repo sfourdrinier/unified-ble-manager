@@ -289,12 +289,24 @@ jobs:
       - name: Warm cargo cache for offline metadata
         run: cargo fetch --locked
 
-      - name: Install Linux build sysdeps
-        # napi -> ubm-desktop -> btleplug -> bluez-async -> libdbus-sys needs
-        # pkg-config + D-Bus headers at compile time (same subset as CI).
+      - name: Install Tauri Linux system dependencies for packed consumer
+        # The release compiles the packed bytes from a fresh external Tauri
+        # Cargo root. Match the CI Tauri consumer prerequisites here; the
+        # D-Bus subset alone is enough for NAPI but not GTK/WebKit/Tauri.
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libdbus-1-dev pkg-config
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libdbus-1-dev \
+            pkg-config
 
       - name: Build NAPI dispatch addon (R03 converged path)
         # The bluez-rust-core-routing converged-path tests require the REAL

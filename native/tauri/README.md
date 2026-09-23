@@ -8,11 +8,11 @@ The documented consumer install is crates.io:
 
 ```toml
 [dependencies]
-tauri-plugin-unified-ble-manager = "5.0.0-rc.5"
+tauri-plugin-unified-ble-manager = "5.0.0-rc.6"
 ```
 
 ```sh
-cargo add tauri-plugin-unified-ble-manager@5.0.0-rc.5
+cargo add tauri-plugin-unified-ble-manager@5.0.0-rc.6
 ```
 
 The crate is not yet published. Until the crate is published, use the plugin,
