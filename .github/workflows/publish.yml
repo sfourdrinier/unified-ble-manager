@@ -84,10 +84,7 @@ jobs:
 
       - name: Install Linux native and Electron smoke dependencies
         if: matrix.builder == 'cargo' && runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libdbus-1-dev pkg-config
-          sudo apt-get install --no-install-recommends -y xvfb xauth
+        run: bash scripts/ci/install-linux-native-system-dependencies.sh desktop-prebuild
 
       - name: Install pinned Rust + target (desktop-core)
         if: matrix.builder == 'cargo'
@@ -291,22 +288,8 @@ jobs:
 
       - name: Install Tauri Linux system dependencies for packed consumer
         # The release compiles the packed bytes from a fresh external Tauri
-        # Cargo root. Match the CI Tauri consumer prerequisites here; the
-        # D-Bus subset alone is enough for NAPI but not GTK/WebKit/Tauri.
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            libwebkit2gtk-4.1-dev \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libxdo-dev \
-            libssl-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libdbus-1-dev \
-            pkg-config
+        # Cargo root through the same canonical installer as normal CI.
+        run: bash scripts/ci/install-linux-native-system-dependencies.sh tauri
 
       - name: Build NAPI dispatch addon (R03 converged path)
         # The bluez-rust-core-routing converged-path tests require the REAL
@@ -335,6 +318,11 @@ jobs:
 
       - name: Build package artifacts
         run: pnpm prepack
+
+      # Fail before examples, Android builds and the remaining package gates
+      # if the exact packed Tauri Cargo consumer cannot compile.
+      - name: Packed external Tauri Cargo consumer proof
+        run: node scripts/ci/tauri-packed-consumer-check.js
 
       - name: Build 4.0 Web Bluetooth public example
         run: pnpm build:example:web
@@ -412,9 +400,6 @@ jobs:
       # remains separate from the Node/Web-only G6A schema.
       - name: Packed Expo/Tauri consumer proof
         run: node scripts/ci/packed-host-consumer-check.js
-
-      - name: Packed external Tauri Cargo consumer proof
-        run: node scripts/ci/tauri-packed-consumer-check.js
 
       # Independent G6A packed-consumer proof; keep separate from generic smoke to avoid artifact collisions.
       - name: G6A packed consumer proof

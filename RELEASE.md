@@ -583,6 +583,14 @@ For a valid version tag, `.github/workflows/publish.yml`:
 13. on a post-publish recovery rerun, replaces any newly built local tarball with the immutable npm registry tarball;
 14. creates the GitHub Release only after npm publication and provenance verification succeed.
 
+Linux native system-package profiles have one source of truth:
+`scripts/ci/install-linux-native-system-dependencies.sh`. CI and publish jobs
+call its `bluez`, `tauri`, or `desktop-prebuild` profile and must not duplicate
+`apt-get install` package lists in workflow YAML. The packed external Tauri
+Cargo consumer runs immediately after `prepack`, before examples, Android
+builds and later packaging gates, so an inconsistent runner or consumer fails
+early.
+
 Stable versions publish to `latest`. Active `4.0.0-rc.*` candidates also publish to `latest`; other hyphenated SemVer prereleases publish to `next` and create GitHub prereleases.
 
 ## Post-release verification

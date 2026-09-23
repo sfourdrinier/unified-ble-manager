@@ -68,20 +68,7 @@ jobs:
 
       - name: Install Tauri Linux system dependencies
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            libwebkit2gtk-4.1-dev \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libxdo-dev \
-            libssl-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libdbus-1-dev \
-            pkg-config
+        run: bash scripts/ci/install-linux-native-system-dependencies.sh tauri
 
       - name: Install stable Rust components
         run: |
@@ -157,20 +144,7 @@ jobs:
         # Its GTK/WebKit dependencies are consumer prerequisites, not supplied
         # by the Rust crate, so this lane must match the dedicated Tauri job.
         if: runner.os == 'Linux' && matrix.node == '22'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            libwebkit2gtk-4.1-dev \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libxdo-dev \
-            libssl-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libdbus-1-dev \
-            pkg-config
+        run: bash scripts/ci/install-linux-native-system-dependencies.sh tauri
 
       - name: Install Linux build sysdeps (Node 24)
         # napi -> ubm-desktop -> btleplug -> bluez-async -> libdbus-sys needs
@@ -178,9 +152,7 @@ jobs:
         # rust-parity-5-0 job). The Node 22 lane installs this subset as part
         # of the full Tauri consumer prerequisites above.
         if: runner.os == 'Linux' && matrix.node == '24'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libdbus-1-dev pkg-config
+        run: bash scripts/ci/install-linux-native-system-dependencies.sh bluez
 
       - name: Build NAPI dispatch addon (R03 converged path)
         # The bluez-rust-core-routing converged-path tests require the REAL
@@ -229,6 +201,13 @@ jobs:
       - name: Build package artifacts
         if: runner.os == 'Linux'
         run: pnpm prepack
+
+      # Compile a fresh external Cargo root immediately after prepack. Keep
+      # this before generated-artifact, desktop and packed-consumer gates so a
+      # broken Tauri consumer or runner setup fails fast.
+      - name: Packed external Tauri Cargo consumer proof
+        if: runner.os == 'Linux' && matrix.node == '22'
+        run: node scripts/ci/tauri-packed-consumer-check.js
 
       # RV5 finding 6: generated artifacts (API reports, PLATFORM_SUPPORT)
       # must match the sources on every PR, not only under preflight.
@@ -417,12 +396,6 @@ jobs:
         if: runner.os == 'Linux' && matrix.node == '22'
         run: node scripts/ci/packed-host-consumer-check.js
 
-      # A fresh Cargo root consumes only the packed npm bytes and supplies the
-      # documented root patches. This catches dependency-manifest patch drift.
-      - name: Packed external Tauri Cargo consumer proof
-        if: runner.os == 'Linux' && matrix.node == '22'
-        run: node scripts/ci/tauri-packed-consumer-check.js
-
       # Independent G6A packed-consumer proof; keep separate from generic smoke to avoid artifact collisions.
       - name: G6A packed consumer proof
         if: runner.os == 'Linux' && matrix.node == '22'
@@ -485,9 +458,7 @@ jobs:
         # pkg-config + D-Bus headers at compile time (same subset the
         # Tauri job installs).
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libdbus-1-dev pkg-config
+        run: bash scripts/ci/install-linux-native-system-dependencies.sh bluez
 
       - name: Check Rust formatting (workspace scope)
         if: runner.os == 'Linux'
@@ -525,9 +496,7 @@ jobs:
         # napi -> ubm-desktop -> btleplug -> bluez-async -> libdbus-sys needs
         # pkg-config + D-Bus headers at compile time (same subset as rust-5-0;
         # required since wave E wired the addon to the shared core).
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libdbus-1-dev pkg-config
+        run: bash scripts/ci/install-linux-native-system-dependencies.sh bluez
 
       - name: Rust parity proofs
         run: pnpm test:parity
@@ -559,9 +528,7 @@ jobs:
         # bluer -> libdbus-sys needs pkg-config + D-Bus headers at compile
         # time (same subset as rust-5-0).
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libdbus-1-dev pkg-config
+        run: bash scripts/ci/install-linux-native-system-dependencies.sh bluez
 
       - name: Setup JS package
         uses: ./.github/actions/setup-js-package
