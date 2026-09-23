@@ -108,7 +108,7 @@ fn the_mobile_identity_names_every_scope_in_the_legacy_react_native_formats() {
 /// even when the allocator hands the freed address straight back. On Windows
 /// the second platform iteration inherited the first one's admissions and
 /// production correctly refused them as `argument.invalid` -- the harness
-/// identity, not the admission check, was wrong. Hosts drop per iteration
+/// identity, not the admission check, was wrong. Hosts shut down per iteration
 /// exactly like the adapter-loss test, so a pointer-derived key collides
 /// here on any recycling allocator.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -130,6 +130,10 @@ async fn session_instance_keys_are_never_reused_across_hosts() {
                 seen.insert(key),
                 "round {round} {platform:?}: instance_key {key} reused after its session died"
             );
+            ok(&call(&session, "session.dispose", "{}").await);
+            drop(session);
+            let record = parse(&host.shutdown().await);
+            assert_eq!(record["state"], "released", "{record}");
         }
     }
 }
@@ -155,6 +159,8 @@ async fn session_instance_keys_differ_after_drop_and_recreate() {
         drop(session);
         tokio::task::yield_now().await;
     }
+    let record = parse(&host.shutdown().await);
+    assert_eq!(record["state"], "released", "{record}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
