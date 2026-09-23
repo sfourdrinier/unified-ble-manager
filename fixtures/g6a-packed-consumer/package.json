@@ -3,6 +3,6 @@
   "version": "0.1.0",
   "private": true,
   "peerDependencies": {
-    "unified-ble-manager": ">=4.0.0-alpha.0 <5.0.0 || >=5.0.0-rc.3 <6.0.0"
+    "unified-ble-manager": ">=4.0.0-alpha.0 <5.0.0 || >=5.0.0-rc.4 <6.0.0"
   }
 }

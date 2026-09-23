@@ -2,7 +2,17 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
-## [5.0.0-rc.3] - 2026-09-22 (prerelease)
+## [5.0.0-rc.4] - 2026-09-23 (prerelease)
+
+The immutable `v5.0.0-rc.3` tag stopped before npm publication because its
+release-only clean-tarball acceptance created a temporary consumer without a
+`packageManager` pin. Corepack selected pnpm 12.5.1 instead of the repository's
+pnpm 10.14.0, then the strict offline install could not resolve
+`@babel/runtime@^7.29.7` from that empty pnpm-v11 cache. `5.0.0-rc.4` pins the
+temporary consumer to the repository package manager and primes its offline
+dependency metadata before the acceptance install. It keeps every preceding
+failed tag immutable and requires npm registry verification before this release
+is described as published.
 
 The immutable `v5.0.0-rc.2` tag stopped before npm publication while the
 release-only Android source build required pinned-Rust Android targets that the
@@ -10,7 +20,7 @@ publish workflow had not installed. The workflow now installs
 `aarch64-linux-android` and `x86_64-linux-android` for the pinned toolchain
 before either Android Gradle build. The package, native plugin, generated
 references, examples, and current release guidance now identify
-`5.0.0-rc.3`; the 5.0 behavior and qualification notes below apply to this
+`5.0.0-rc.4`; the 5.0 behavior and qualification notes below apply to this
 candidate.
 
 The immutable `v5.0.0-rc.1` tag stopped before npm publication because
