@@ -31,8 +31,7 @@ fn scan_args(op: &str) -> String {
 }
 
 fn filtered_scan_args(op: &str) -> String {
-    json!({"serviceUuids": [HR_SERVICE], "duplicatePolicy": "all", "operationId": op})
-        .to_string()
+    json!({"serviceUuids": [HR_SERVICE], "duplicatePolicy": "all", "operationId": op}).to_string()
 }
 
 /// V01: the widening start itself can succeed after the joining caller's
@@ -64,11 +63,11 @@ async fn v01_expired_widening_start_ends_existing_members_after_cleanup() {
     let (host, _) = open(&radio, MobilePlatform::Android).await;
     let session_a = host.open_session("a").unwrap();
     let session_b = host.open_session("b").unwrap();
-    let membership_a = ok(&call(&session_a, "scan.start", &filtered_scan_args("a")).await)
-        ["operationId"]
-        .as_str()
-        .expect("A membership")
-        .to_owned();
+    let membership_a =
+        ok(&call(&session_a, "scan.start", &filtered_scan_args("a")).await)["operationId"]
+            .as_str()
+            .expect("A membership")
+            .to_owned();
 
     let (error, _) = failure(
         &call(
@@ -80,7 +79,10 @@ async fn v01_expired_widening_start_ends_existing_members_after_cleanup() {
         .await,
     );
     assert_eq!(error["code"], "operation.timed-out", "{error}");
-    let records = drain_until(&session_a, |records| !of_type(records, "scan-end").is_empty()).await;
+    let records = drain_until(&session_a, |records| {
+        !of_type(records, "scan-end").is_empty()
+    })
+    .await;
     let ended = of_type(&records, "scan-end");
     assert_eq!(ended.len(), 1, "{records:#?}");
     assert_eq!(ended[0]["operationId"], membership_a);
@@ -123,11 +125,11 @@ async fn v01_expired_widening_start_retains_refused_cleanup_for_retry() {
     let (host, _) = open(&radio, MobilePlatform::Android).await;
     let session_a = host.open_session("a").unwrap();
     let session_b = host.open_session("b").unwrap();
-    let membership_a = ok(&call(&session_a, "scan.start", &filtered_scan_args("a")).await)
-        ["operationId"]
-        .as_str()
-        .expect("A membership")
-        .to_owned();
+    let membership_a =
+        ok(&call(&session_a, "scan.start", &filtered_scan_args("a")).await)["operationId"]
+            .as_str()
+            .expect("A membership")
+            .to_owned();
 
     let (error, _) = failure(
         &call(
@@ -149,7 +151,11 @@ async fn v01_expired_widening_start_retains_refused_cleanup_for_retry() {
         &json!({"operationId": membership_a}).to_string(),
     )
     .await);
-    assert_eq!(stops.load(Ordering::SeqCst), 3, "the retained cleanup is retried");
+    assert_eq!(
+        stops.load(Ordering::SeqCst),
+        3,
+        "the retained cleanup is retried"
+    );
 }
 
 /// X-R1: B queues behind A's held scan start; cancelling B must fail B with
