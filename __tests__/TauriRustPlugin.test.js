@@ -151,21 +151,19 @@ describe('Tauri v2 Rust plugin boundary', () => {
     expect(workflow).toContain('cargo clippy --manifest-path native/tauri/Cargo.toml -- -D warnings')
   })
 
-  test('installs Tauri Linux system libraries before the packed consumer proof', () => {
+  test('uses one Tauri Linux dependency installer in every workflow', () => {
     const workflow = read('.github/workflows/ci.yml')
     const publish = read('.github/workflows/publish.yml')
+    const installerPath = 'scripts/ci/install-linux-native-system-dependencies.sh'
+    const installer = read(installerPath)
+    const installerCommand = `bash ${installerPath} tauri`
+    const workflowFiles = fs
+      .readdirSync(path.join(root, '.github', 'workflows'))
+      .filter(file => file.endsWith('.yml') || file.endsWith('.yaml'))
+    const tauriJob = workflow.slice(workflow.indexOf('  tauri-plugin:'), workflow.indexOf('  package:'))
     const packageJob = workflow.slice(workflow.indexOf('  package:'), workflow.indexOf('  contracts:'))
-    const dependencyStep = packageJob.slice(
-      packageJob.indexOf('- name: Install Tauri Linux system dependencies for packed consumer'),
-      packageJob.indexOf('- name: Build NAPI dispatch addon')
-    )
     const publishJob = publish.slice(publish.indexOf('  publish:'))
-    const publishDependencyStep = publishJob.slice(
-      publishJob.indexOf('- name: Install Tauri Linux system dependencies for packed consumer'),
-      publishJob.indexOf('- name: Build NAPI dispatch addon')
-    )
 
-    expect(dependencyStep).toContain("if: runner.os == 'Linux' && matrix.node == '22'")
     for (const required of [
       'libwebkit2gtk-4.1-dev',
       'build-essential',
@@ -179,8 +177,39 @@ describe('Tauri v2 Rust plugin boundary', () => {
       'libdbus-1-dev',
       'pkg-config'
     ]) {
-      expect(dependencyStep).toContain(required)
-      expect(publishDependencyStep).toContain(required)
+      expect(installer).toContain(required)
+      expect(installer.split(/\r?\n/).filter(line => line.trim() === required)).toHaveLength(1)
     }
+
+    expect(tauriJob).toContain(installerCommand)
+    expect(packageJob).toContain(installerCommand)
+    expect(publishJob).toContain(installerCommand)
+    expect(workflow).toContain(`bash ${installerPath} bluez`)
+    expect(publish).toContain(`bash ${installerPath} desktop-prebuild`)
+    for (const file of workflowFiles) {
+      const contents = read(path.join('.github', 'workflows', file))
+      expect(contents).not.toContain('apt-get install')
+      expect(contents).not.toContain('libwebkit2gtk-4.1-dev')
+    }
+  })
+
+  test('runs the external packed Tauri proof immediately after prepack and before expensive gates', () => {
+    const workflow = read('.github/workflows/ci.yml')
+    const publish = read('.github/workflows/publish.yml')
+    const packageJob = workflow.slice(workflow.indexOf('  package:'), workflow.indexOf('  contracts:'))
+    const publishJob = publish.slice(publish.indexOf('  publish:'))
+
+    const assertFailFastOrder = (job, nextExpensiveStep) => {
+      const prepack = job.indexOf('- name: Build package artifacts')
+      const tauriProof = job.indexOf('- name: Packed external Tauri Cargo consumer proof')
+      const expensiveGate = job.indexOf(nextExpensiveStep)
+
+      expect(prepack).toBeGreaterThanOrEqual(0)
+      expect(tauriProof).toBeGreaterThan(prepack)
+      expect(expensiveGate).toBeGreaterThan(tauriProof)
+    }
+
+    assertFailFastOrder(packageJob, '- name: Generated artifacts match the sources')
+    assertFailFastOrder(publishJob, '- name: Build 4.0 Web Bluetooth public example')
   })
 })
