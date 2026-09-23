@@ -19,7 +19,7 @@ Until the crate is on crates.io, point Cargo at the plugin in this repository:
 tauri-plugin-unified-ble-manager = { path = "../../native/tauri" }
 ```
 
-The intended published recipe is `cargo add tauri-plugin-unified-ble-manager@5.0.0-rc.0`.
+The intended published recipe is `cargo add tauri-plugin-unified-ble-manager@5.0.0-rc.1`.
 That command fails today because the crate is not published. `ubm init --host tauri`
 writes the crates.io fragment so you can switch when it is.
 
@@ -68,7 +68,7 @@ Remote streams preserve bounded delivery and overflow notices. GATT objects are 
 
 ## How the plugin runs operations
 
-**IPC protocol version.** The webview and the plugin speak IPC protocol 4 and each offers exactly that version. Version 4 is the wire described on this page: relative `budgetMs` deadlines, `commit` on every error, `delivery` on subscriptions, forwarded connection-lifecycle events, and the attachment rebind after an adapter loss (see [Adapter](#adapter)). A pair where one side is older (protocol 3, the rebind-less 5.0 prerelease wire, or protocol 2, the 5.0.0-rc.0 wire) is refused at bootstrap with `protocol.incompatible` before any operation runs, whichever side is older; the npm package and the crate must be upgraded together. `TAURI_PLUGIN_COMPATIBILITY.ipcProtocol` reports the version this package requires.
+**IPC protocol version.** The webview and the plugin speak IPC protocol 4 and each offers exactly that version. Version 4 is the wire described on this page: relative `budgetMs` deadlines, `commit` on every error, `delivery` on subscriptions, forwarded connection-lifecycle events, and the attachment rebind after an adapter loss (see [Adapter](#adapter)). A pair where one side is older (protocol 3, the rebind-less 5.0 prerelease wire, or protocol 2, the earlier 5.0 release-candidate wire) is refused at bootstrap with `protocol.incompatible` before any operation runs, whichever side is older; the npm package and the crate must be upgraded together. `TAURI_PLUGIN_COMPATIBILITY.ipcProtocol` reports the version this package requires.
 
 The plugin owns one shared Rust central (`ubm-desktop`) and never serializes BLE work behind a lock of its own: a slow connect or discovery on one peer does not delay another peer's notifications, a cancel, or shutdown. The central and its radio open once, on the shared desktop executor, the first time a BLE operation needs them.
 
