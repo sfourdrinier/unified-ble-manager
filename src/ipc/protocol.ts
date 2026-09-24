@@ -297,6 +297,12 @@ export interface IpcBleEvent {
   readonly item: SerializableRecord
 }
 
+/** Local event-channel failure; aggregate loss cannot be assigned to one remote stream. */
+export interface IpcEventTransportHealthNotice {
+  readonly reason: 'overflow' | 'source-failed' | 'owner-released'
+  readonly error: NormalizedBleError | null
+}
+
 export interface IpcBootstrapRequest {
   readonly kind: 'bootstrap'
   readonly offer: IpcCompatibilityOffer
@@ -403,6 +409,8 @@ export interface IpcClientTransport<Attachment extends string, Client extends st
     request: IpcBleRequest<Attachment, Client, Operation>
   ): Promise<IpcBleResponse<Attachment, Client>>
   subscribe(listener: (event: IpcBleEvent) => void): () => void
+  /** Optional local channel health, separate from host-issued stream events. */
+  subscribeEventHealth?(listener: (notice: IpcEventTransportHealthNotice) => void): () => void
   acknowledge(
     rendererLease: IpcClientLeaseIdentity,
     eventId: string

@@ -88,6 +88,7 @@ import { CoreBoundedStream } from '../core/bounded-stream'
 import { capacity } from '../backend-contract/primitives'
 import {
   IpcBleManager,
+  requiredTerminalError,
   type IpcConnection,
   type IpcGattDatabase,
   type IpcNotificationValue,
@@ -724,6 +725,7 @@ function toPortableSubscription(
   return {
     subscriptionId: subscription.subscriptionId,
     path,
+    observedDelivery: subscription.observedDelivery,
     values: toPortableNotificationStream(subscription.values),
     remove: () => subscription.remove().then(toPublicCleanupRecord)
   }
@@ -872,7 +874,13 @@ export function mapIpcConnectionEvents(
                 if (reason === null) {
                   throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event-terminal')
                 }
-                throw publicConnectionTerminalError(reason)
+                throw publicConnectionTerminalError(
+                  reason,
+                  requiredTerminalError(
+                    readIpcConnectionField(itemValue, 'error', 'ipc-public-manager.connection-event-terminal'),
+                    'ipc-public-manager.connection-event-terminal'
+                  )
+                )
               }
               if (itemKind !== 'value') {
                 throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event-kind')

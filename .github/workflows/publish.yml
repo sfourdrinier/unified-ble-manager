@@ -322,7 +322,7 @@ jobs:
       # Fail before examples, Android builds and the remaining package gates
       # if the exact packed Tauri Cargo consumer cannot compile.
       - name: Packed external Tauri Cargo consumer proof
-        run: node scripts/ci/tauri-packed-consumer-check.js
+        run: node scripts/ci/tauri-packed-consumer-check.js --receipt "${RUNNER_TEMP}/ubm-tauri-packed-proof.json"
 
       - name: Build 4.0 Web Bluetooth public example
         run: pnpm build:example:web
@@ -428,6 +428,9 @@ jobs:
           PUBLISH_TARBALL=".release-package/${TARBALL_NAME}"
           test -f "${PUBLISH_TARBALL}"
           echo "PUBLISH_TARBALL=${PUBLISH_TARBALL}" >> "$GITHUB_ENV"
+
+      - name: Bind linked Tauri application to exact publish tarball
+        run: node scripts/ci/check-tauri-pack-binding.js --receipt "${RUNNER_TEMP}/ubm-tauri-packed-proof.json" --tarball "${PUBLISH_TARBALL}"
 
       - name: Desktop-core prebuild packaging proof (all six targets + sidecars)
         # PR210-03: exactly the maintained prebuilds, each sidecar naming its

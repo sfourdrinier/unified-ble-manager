@@ -4,7 +4,7 @@
 
 Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.
 
-This source targets `5.0.0-rc.6`. Main executes the shared Rust core (`DesktopCentral`) through one N-API addon. Tagged releases ship it prebuilt for Linux, macOS and Windows on `arm64`/`x64`. The addon is Node-API, so one binary serves Node and modern Electron alike.
+This source targets `5.0.0-rc.7`. Main executes the shared Rust core (`DesktopCentral`) through one N-API addon. Tagged releases ship it prebuilt for Linux, macOS and Windows on `arm64`/`x64`. The addon is Node-API, so one binary serves Node and modern Electron alike.
 
 `unified-ble-manager/electron/main` and
 `unified-ble-manager/electron/renderer` are the only Electron entrypoints.
@@ -87,6 +87,15 @@ Main and renderer stay split:
 - `ElectronMainBleBinding` authenticates each `WebContents` from host facts,
   owns the attachment/session mapping, bounds outbound events, and cleans up
   on navigation, renderer destruction, app shutdown, and backend restart.
+
+The renderer's shared event stream also has a bounded buffer. If it overflows,
+the public manager ends every active child stream because the lost events cannot
+be assigned reliably to individual scans or subscriptions. The resulting error
+reports aggregate loss with `attribution: 'unknown'`; it does not claim exact
+per-stream counts. A failed event acknowledgment or event iterator likewise
+ends active streams with its failure cause. The application must call
+`manager.destroy()` after such a terminal and retry a failed cleanup receipt;
+the renderer retains its remote release ownership until cleanup succeeds.
 
 There is no Noble dependency, renderer Web Bluetooth fallback, legacy
 `BlePort`, `PortBleManager`, or mock-radio production fallback in these

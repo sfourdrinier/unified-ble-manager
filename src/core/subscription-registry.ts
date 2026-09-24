@@ -61,6 +61,7 @@ export interface SubscriptionRegistryRuntime<Attachment extends string, Identity
 export class CoreSubscription<Attachment extends string, Identity extends BackendIdentity<Attachment>> {
   private removal: Promise<CleanupRecord> | null = null
   private state: 'enabling' | 'ready' | 'removed' | 'invalid' = 'enabling'
+  observedDelivery: NotificationValue['delivery'] = 'unknown'
 
   constructor(
     readonly subscriptionId: SubscriptionId<Attachment, string, string, string, string, string>,
@@ -167,6 +168,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
       subscription.markReady()
       try {
         await this.waitForReady(existing, options)
+        subscription.observedDelivery = existing.backend?.observedDelivery ?? 'unknown'
         return subscription
       } catch (error) {
         const admissionError =
@@ -315,6 +317,9 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     }
     physical.lateSubscriptionPending = false
     physical.backend = backendSubscription
+    for (const consumer of physical.consumers) {
+      consumer.observedDelivery = backendSubscription.observedDelivery ?? 'unknown'
+    }
     this.runtime.resourceLedger.increment('physicalCccdEnablements')
     physical.pump = this.pumpNotifications(physical, backendSubscription.notifications)
     this.runtime.trace.record({

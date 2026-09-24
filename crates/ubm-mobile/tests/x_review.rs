@@ -158,6 +158,55 @@ async fn v01_expired_widening_start_retains_refused_cleanup_for_retry() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn first_scanner_refused_compensation_is_retried_without_a_member() {
+    let stops = Arc::new(AtomicU64::new(0));
+    let observed_stops = Arc::clone(&stops);
+    let radio = Scripted::new(Box::new(move |request| match request {
+        RadioRequest::StartScan { .. } => {
+            std::thread::sleep(Duration::from_millis(60));
+            Reply::Now(RadioCompletion::Unit)
+        }
+        RadioRequest::StopScan { .. } => {
+            if observed_stops.fetch_add(1, Ordering::SeqCst) == 0 {
+                Reply::Now(RadioCompletion::Failed(PlatformFailure::new(
+                    FailureKind::Platform,
+                    "first cleanup refused",
+                )))
+            } else {
+                Reply::Now(RadioCompletion::Unit)
+            }
+        }
+        other => polar_responder(other),
+    }));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("first").unwrap();
+    let (error, _) = failure(
+        &call(
+            &session,
+            "scan.start",
+            &json!({"serviceUuids": [], "duplicatePolicy": "all", "operationId": "first", "budgetMs": 20})
+                .to_string(),
+        )
+        .await,
+    );
+    assert_eq!(error["code"], "operation.timed-out");
+    assert_eq!(
+        ok(&call(&session, "session.reconcile", "{}").await)["scan"],
+        json!(null)
+    );
+    assert_eq!(
+        ok(&call(&session, "session.dispose", "{}").await)["state"],
+        "released"
+    );
+    wait_for(|| stops.load(Ordering::SeqCst) == 2).await;
+    assert_eq!(
+        stops.load(Ordering::SeqCst),
+        2,
+        "process owner retries the orphan once"
+    );
+}
+
 /// X-R1: B queues behind A's held scan start; cancelling B must fail B with
 /// no membership while A stays healthy.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

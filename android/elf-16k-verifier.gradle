@@ -1,0 +1,47 @@
+// Packed consumers check ELF program headers inside Gradle. No shell, NDK, or
+// readelf executable is needed to verify Android's 16 KiB page alignment.
+ext.verifyUbmElf16k = { File library, String abi ->
+  def fail = { detail -> throw new GradleException("16 KB page check FAILED: abi=${abi} so=${library}: ${detail}") }
+  def expectedMachine = ["arm64-v8a": 183, "x86_64": 62][abi]
+  if (expectedMachine == null) fail("unsupported ABI")
+  new RandomAccessFile(library, "r").withCloseable { elf ->
+    def length = elf.length()
+    if (length < 64) fail("truncated ELF header")
+    byte[] header = new byte[64]
+    elf.readFully(header)
+    def elfHeader = java.nio.ByteBuffer.wrap(header).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+    if ((header[0] & 255) != 0x7f || header[1] != 69 || header[2] != 76 || header[3] != 70 ||
+        header[4] != 2 || header[5] != 1 || header[6] != 1) fail("not a supported ELF64 little-endian object")
+    if ((elfHeader.getShort(16) & 0xffff) != 3 || (elfHeader.getShort(18) & 0xffff) != expectedMachine) {
+      fail("ELF type or machine does not match ${abi}")
+    }
+    def tableOffset = elfHeader.getLong(32)
+    def entrySize = elfHeader.getShort(54) & 0xffff
+    def entryCount = elfHeader.getShort(56) & 0xffff
+    if (tableOffset < 64 || entrySize < 56 || entryCount == 0 ||
+        tableOffset > length || (long) entryCount * entrySize > length - tableOffset) {
+      fail("missing or truncated ELF program-header table")
+    }
+    def loadCount = 0
+    for (int index = 0; index < entryCount; index++) {
+      elf.seek(tableOffset + (long) index * entrySize)
+      byte[] bytes = new byte[56]
+      elf.readFully(bytes)
+      def segment = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+      if (segment.getInt(0) != 1) continue // PT_LOAD
+      loadCount++
+      def offset = segment.getLong(8)
+      def fileSize = segment.getLong(32)
+      def memorySize = segment.getLong(40)
+      def alignment = segment.getLong(48)
+      if (offset < 0 || fileSize < 0 || offset > length || fileSize > length - offset || memorySize < fileSize) {
+        fail("PT_LOAD ${index} extends beyond the object or has invalid sizes")
+      }
+      if (alignment < 16384 || (alignment & (alignment - 1)) != 0) {
+        fail("PT_LOAD ${index} has invalid alignment ${alignment}; need at least 16384")
+      }
+    }
+    if (loadCount == 0) fail("no PT_LOAD segments")
+    return "check-elf-16k-pages: PASS abi=${abi} so=${library} (${loadCount} PT_LOAD segments, all Align >= 0x4000, via JVM)"
+  }
+}

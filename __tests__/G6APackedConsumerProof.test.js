@@ -31,7 +31,7 @@ describe('G6A packed independent-consumer proof fixture', () => {
 
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
     expect(manifest.name).toBe('@example/g6a-packed-consumer')
-    expect(manifest.peerDependencies).toEqual({ 'unified-ble-manager': '>=4.0.0-alpha.0 <5.0.0 || >=5.0.0-rc.6 <6.0.0' })
+    expect(manifest.peerDependencies).toEqual({ 'unified-ble-manager': '>=4.0.0-alpha.0 <5.0.0 || >=5.0.0-rc.7 <6.0.0' })
     expect(manifest.dependencies).toBeUndefined()
     expect(manifest.devDependencies).toBeUndefined()
 

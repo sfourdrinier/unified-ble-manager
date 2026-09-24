@@ -2,6 +2,49 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.0.0-rc.7] - 2026-09-23 (prerelease)
+
+This candidate addresses the thirteen findings in the public rc.6 review.
+It does not promote any backend support or physical-radio evidence label.
+The truthful React Native diagnostic and limitation wording from finding 159
+remains: the active route is `ubm-mobile-wire/1`.
+
+### Runtime and ownership
+
+- Mobile Rust session disposal now closes admission and waits for admitted
+  operations without holding the operation gate. Concurrent disposal shares an
+  attempt result; a later call can retry a failed attempt.
+- Desktop and mobile scan-start compensation retain native stop ownership after
+  a refusal or timeout. The first mobile scanner's zero-member orphan has a
+  process-owned retry path; an 18-case cancellation/deadline/cleanup matrix
+  covers zero, one, and two prior members.
+- Android background-scope teardown and Apple session teardown retain failed
+  cleanup in process-owned retry owners, rather than only logging the failure.
+- GATT subscribe results report delivery observed by the native operation,
+  instead of inferring it from the request. The observed result is carried
+  through the mobile, desktop, Electron, WinRT, and Tauri bridges.
+- Tauri and Web reject unsupported background manager options explicitly.
+  Numeric Bluetooth UUID inputs accept valid zero-prefixed short forms.
+- Electron's public transport propagates aggregate overflow, terminal, and
+  iterator failures to active streams, with cleanup remaining retryable.
+- A Tauri notification poll already in flight cannot overtake a requested
+  disconnect and misreport its stream terminal as `connection-lost`.
+
+### Distribution and consumer proofs
+
+- Android's default prebuilt ELF verifier runs within Gradle's JVM and no
+  longer requires a shell; malformed and no-shell regression fixtures cover it.
+- The packed Tauri gate builds a linked external application and binds its
+  receipt to the exact npm tarball later published by the release workflow.
+- Tauri's CLI scaffold and guide share one install recipe using a local plugin
+  path and consuming-root Cargo patches, not an unpublished crates.io plugin.
+- The Tauri frontend guide reads the actual nested scan observation and owns
+  manager, scan, and connection cleanup. Its exact code block is typechecked
+  and executed under failure injection.
+- A canonical 5.x SVG mark and reusable raster app icons replace the inherited
+  BLE PLX artwork in the Tauri proof app, Web example, and packed-consumer
+  fixture.
+
 ## [5.0.0-rc.6] - 2026-09-23 (prerelease)
 
 The immutable `v5.0.0-rc.5` tag stopped before npm publication. Its new packed

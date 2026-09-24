@@ -3098,26 +3098,25 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     }
     this.subscriptions.set(consumer, stored)
     return this.dispatch(operationId, request.operation.signal, operation, async () => {
-      try {
-        await this.invoke('gatt.subscribe', {
-          peerId: entry.nativePeerId,
-          selector,
-          consumer,
-          operationId,
-          ...(request.options.deliveryMode === undefined ? {} : { deliveryMode: request.options.deliveryMode }),
-          ...budget
-        })
-      } catch (error) {
+      const enabled = await this.invoke('gatt.subscribe', {
+        peerId: entry.nativePeerId,
+        selector,
+        consumer,
+        operationId,
+        ...(request.options.deliveryMode === undefined ? {} : { deliveryMode: request.options.deliveryMode }),
+        ...budget
+      }).catch(error => {
         this.subscriptions.delete(consumer)
         stream.closeWithReason('source-failed', normalizedFrom(error, operation))
         throw error
-      }
+      })
       if (stored.state === 'subscribing') stored.state = 'active'
       await this.refreshCounters()
       return Object.freeze({
         subscriptionId,
         path,
         terminal: this.terminal(request.operation.correlation),
+        observedDelivery: enabled.delivery,
         notifications: stream
       })
     })

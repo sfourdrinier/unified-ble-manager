@@ -164,6 +164,45 @@ async fn failed_scan_stop_keeps_the_scan_and_the_retry_reaches_the_radio() {
     assert!(!central.boundary().scan_active());
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failed_start_compensation_keeps_the_original_scan_retry_handle() {
+    let central = open().await;
+    central.boundary().block_op(FaultOp::StartScan);
+    central
+        .boundary()
+        .fail_next(FaultOp::StopScan, "compensating stop refused");
+    let starting = tokio::spawn({
+        let central = central.clone();
+        async move {
+            central
+                .start_scan("owner-a", &[], OpControl::budget_ms(100))
+                .await
+        }
+    });
+    until(
+        || count(&central, "start_scan") == 1,
+        "scan start reached the radio",
+    )
+    .await;
+    let id = central
+        .active_scan_id()
+        .expect("starting scan has an identity");
+    let error = starting.await.unwrap().expect_err("start deadline expires");
+    assert_eq!(error.code_str(), "operation.timed-out");
+    assert_eq!(count(&central, "stop_scan"), 1);
+    assert_eq!(central.active_scan_id(), Some(id.clone()));
+    assert!(central.resource_counters().await.scan_owned);
+    assert_eq!(
+        central
+            .stop_scan(&id, OpControl::budget_ms(5000))
+            .await
+            .unwrap(),
+        ScanStop::Stopped
+    );
+    assert_eq!(count(&central, "stop_scan"), 2);
+    assert!(!central.resource_counters().await.scan_owned);
+}
+
 #[tokio::test(start_paused = true)]
 async fn hung_scan_stop_is_bounded_and_retained() {
     let central = open().await;

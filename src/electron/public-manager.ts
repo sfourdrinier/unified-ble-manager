@@ -1,7 +1,15 @@
-import { contractError } from '../backend-contract/errors'
+import { BackendContractError, contractError } from '../backend-contract/errors'
+import type { NormalizedBleError } from '../backend-contract/errors'
+import type { StreamOverflowNotice, StreamTerminalNotice } from '../backend-contract/streams'
 import type { SerializableRecord } from '../backend-contract/primitives'
 import type { ElectronRendererIpcTransport } from './protocol'
-import type { IpcBleEvent, IpcBleRequest, IpcBleResponse, IpcClientTransport } from '../ipc/protocol'
+import type {
+  IpcBleEvent,
+  IpcBleRequest,
+  IpcBleResponse,
+  IpcClientTransport,
+  IpcEventTransportHealthNotice
+} from '../ipc/protocol'
 import { ElectronRendererBleClient } from './renderer'
 import { IpcBleManager } from '../ipc/manager'
 import { IpcPublicManagerAdapter } from '../ipc/public-manager'
@@ -32,6 +40,9 @@ export const createElectronRendererBleManagerWithEnvironment = createElectronRen
 class ElectronClientTransport implements IpcClientTransport<string, string> {
   private readonly listeners = new Set<(event: IpcBleEvent) => void>()
   private pumping = false
+  private pumpTerminated = false
+  private healthNotice: IpcEventTransportHealthNotice | null = null
+  private readonly healthListeners = new Set<(notice: IpcEventTransportHealthNotice) => void>()
   private nextEvent = 1
 
   constructor(private readonly client: ElectronRendererBleClient<string, string>) {}
@@ -64,25 +75,54 @@ class ElectronClientTransport implements IpcClientTransport<string, string> {
     return () => this.listeners.delete(listener)
   }
 
+  subscribeEventHealth(listener: (notice: IpcEventTransportHealthNotice) => void): () => void {
+    this.healthListeners.add(listener)
+    if (this.healthNotice !== null) listener(this.healthNotice)
+    return () => this.healthListeners.delete(listener)
+  }
+
   acknowledge(): Promise<{ kind: 'event.ack' }> {
     // ElectronRendererBleClient acknowledges the authenticated event itself.
     return Promise.resolve({ kind: 'event.ack' })
   }
 
   private startPump(): void {
-    if (this.pumping) return
+    if (this.pumping || this.pumpTerminated) return
     this.pumping = true
-    this.pump().catch(() => undefined)
+    this.pump()
+      .catch(error => this.failTransport('source-failed', transportError(error, 'event-iterator')))
+      .finally(() => {
+        this.pumping = false
+      })
   }
 
   private async pump(): Promise<void> {
     for await (const item of this.client.events) {
-      if (item.kind !== 'value' || !isRendererStreamRecord(item.value)) continue
+      if (item.kind === 'overflow') {
+        this.failTransport('overflow', aggregateOverflowError(item))
+        return
+      }
+      if (item.kind === 'terminal') {
+        this.failTransport(
+          item.reason === 'owner-released'
+            ? 'owner-released'
+            : item.reason === 'overflow'
+              ? 'overflow'
+              : 'source-failed',
+          terminalError(item)
+        )
+        return
+      }
+      if (!isRendererStreamRecord(item.value)) {
+        this.failTransport('source-failed', transportError(null, 'event-record'))
+        return
+      }
       let rendererLease
       try {
         rendererLease = this.client.bootstrap.rendererLease
-      } catch {
-        continue
+      } catch (error) {
+        this.failTransport('source-failed', transportError(error, 'renderer-lease'))
+        return
       }
       const event: IpcBleEvent = Object.freeze({
         rendererLease,
@@ -92,7 +132,49 @@ class ElectronClientTransport implements IpcClientTransport<string, string> {
       })
       for (const listener of [...this.listeners]) listener(event)
     }
+    this.failTransport('source-failed', transportError(null, 'event-stream-ended'))
   }
+
+  private failTransport(reason: IpcEventTransportHealthNotice['reason'], error: NormalizedBleError | null): void {
+    if (this.pumpTerminated) return
+    this.pumpTerminated = true
+    this.healthNotice = Object.freeze({ reason, error })
+    for (const listener of [...this.healthListeners]) listener(this.healthNotice)
+  }
+}
+
+function aggregateOverflowError(
+  notice: Pick<StreamOverflowNotice, 'droppedItems' | 'droppedBytes' | 'replacedItems'>
+): NormalizedBleError {
+  return contractError('stream.overflow', 'ipc', 'electron-public-manager.aggregate-event-loss', {
+    domain: 'electron-renderer-events',
+    code: 'aggregate-overflow',
+    safeMessage: 'The shared Electron event stream lost events with unknown child stream attribution',
+    metadata: Object.freeze({
+      attribution: 'unknown',
+      droppedItems: Number(notice.droppedItems),
+      droppedBytes: Number(notice.droppedBytes),
+      replacedItems: Number(notice.replacedItems)
+    })
+  }).normalized
+}
+
+function terminalError(notice: StreamTerminalNotice): NormalizedBleError | null {
+  if (notice.reason === 'owner-released') return null
+  if (notice.reason === 'overflow') {
+    return notice.error ?? aggregateOverflowError(notice)
+  }
+  return notice.error ?? transportError(null, `event-terminal-${notice.reason}`)
+}
+
+function transportError(error: unknown, operation: string): NormalizedBleError {
+  if (error instanceof BackendContractError) return error.normalized
+  return contractError('platform.transport', 'ipc', `electron-public-manager.${operation}`, {
+    domain: 'electron-renderer-events',
+    code: 'delivery-failed',
+    safeMessage: error instanceof Error ? error.message : 'Electron event delivery failed',
+    metadata: Object.freeze({})
+  }).normalized
 }
 
 function isRendererStreamRecord(value: SerializableRecord): value is SerializableRecord & {

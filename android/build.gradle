@@ -16,6 +16,7 @@ buildscript {
 apply plugin: "com.android.library"
 apply plugin: "com.facebook.react"
 apply plugin: "org.jetbrains.kotlin.android"
+apply from: file("elf-16k-verifier.gradle")
 
 def appProject = rootProject.allprojects.find { it.plugins.hasPlugin('com.android.application') }
 
@@ -213,33 +214,27 @@ if (ubmRustSourceBuild) {
     inputs.property("ubmRustAbis", ubmRustAbis)
     inputs.property("ubmNativeBuildMode", ubmNativeBuildMode)
     inputs.file(ubmRustScript)
-    inputs.file(ubmRust16kScript)
     if (ubmRustSourceBuild) {
+      inputs.file(ubmRust16kScript)
       ubmRustInputFiles.each { input -> inputs.file(input) }
     } else if (ubmRustPrebuiltDir.isDirectory()) {
+      inputs.file(file("elf-16k-verifier.gradle"))
       inputs.dir(ubmRustPrebuiltDir)
     }
     outputs.dir(stagingDir)
     doLast {
       if (!ubmRustSourceBuild) {
         verifyUbmRustPrebuilts(taskName, stagingDir, ubmRustPrebuiltDir, ubmRustPrebuiltIdentity, ubmRustAbis)
-        // Prebuilt path: opportunistic 16 KB check over the verified prebuilts.
-        // --offline-ok keeps NDK-less consumers green (consumers must never
-        // need the NDK); misalignment still fails loud wherever the tool
-        // resolves. File names come from the verify receipt, never assumed.
+        // The JVM already running Gradle checks each ELF program header.
+        // Packed consumers need neither sh nor an NDK/readelf installation.
+        // File names come from the verified identity receipt.
         def receipt16k = new StringBuilder()
         new File(stagingDir, "packed-prebuilt-receipt.txt").eachLine { line ->
           def prebuiltMatcher = line =~ /^abi=(\S+) sha256=[0-9a-f]{64} bytes=\d+ file=(\S+)$/
           if (prebuiltMatcher.matches()) {
             def prebuiltAbi = prebuiltMatcher.group(1)
             def prebuiltSo = new File(new File(ubmRustPrebuiltDir, prebuiltAbi), prebuiltMatcher.group(2))
-            def result16k = runUbmScript(["sh", ubmRust16kScript.absolutePath,
-              "--so", prebuiltSo.absolutePath, "--abi", prebuiltAbi, "--offline-ok"], rootDir)
-            if (result16k.exitValue != 0) {
-              throw new GradleException(
-                "${taskName} FAILED: 16 KB page check on packed prebuilt ${prebuiltSo}:\n${result16k.stdout}\n${result16k.stderr}")
-            }
-            receipt16k.append("${result16k.stdout}".trim()).append("\n")
+            receipt16k.append(verifyUbmElf16k(prebuiltSo, prebuiltAbi)).append("\n")
           }
         }
         new File(stagingDir, "packed-16k-receipt.txt").text = receipt16k.toString()

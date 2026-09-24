@@ -1,6 +1,6 @@
 {
   "name": "unified-ble-manager",
-  "version": "5.0.0-rc.6",
+  "version": "5.0.0-rc.7",
   "description": "Unified Bluetooth Low Energy manager for React Native, Electron, Tauri, Web, and desktop",
   "packageManager": "pnpm@10.14.0",
   "main": "lib/commonjs/index.js",
@@ -82,7 +82,7 @@
     "native-protocol:generate": "node scripts/native-protocol/generate-native-protocol.js",
     "native-protocol:check": "node scripts/native-protocol/generate-native-protocol.js --check",
     "test:native-protocol": "node scripts/native-protocol/test-native-protocol.js",
-    "test:native-protocol:android": "cd example/android && ./gradlew :unified-ble-manager:testDebugUnitTest :manifest-consumer:processNeverTrueDebugMainManifest :manifest-consumer:processNeverFalseDebugMainManifest :manifest-consumer:processNeverTrueAgainDebugMainManifest :manifest-consumer:processLegacyApi30DebugMainManifest --no-daemon --console=plain && node ../../scripts/ci/verify-android-consumer-manifests.js",
+    "test:native-protocol:android": "cd example/android && ./gradlew :unified-ble-manager:testDebugUnitTest :manifest-consumer:processNeverTrueDebugMainManifest :manifest-consumer:processNeverFalseDebugMainManifest :manifest-consumer:processNeverTrueAgainDebugMainManifest :manifest-consumer:processLegacyApi30DebugMainManifest --no-daemon --console=plain && node ../../scripts/ci/verify-android-consumer-manifests.js && node ../../scripts/ci/check-android-prebuilt-verifier.js",
     "test:native-protocol:apple": "node scripts/native-protocol/test-apple-native-protocol.js",
     "test:native-protocol:winrt": "node scripts/native-protocol/test-winrt-connection-ownership.js",
     "performance:native-host": "node scripts/performance/run-native-host-benchmark.js",

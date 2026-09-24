@@ -54,7 +54,7 @@ import { BleCleanupError, collectCleanupPhases } from '../public/error-bridge'
 import type { CleanupRecord as PublicCleanupRecord } from '../public/cleanup'
 import { IpcBleClient } from './client'
 import { IPC_ATTACHMENT_STREAM_ID, IPC_GATT_DATABASE_SCHEMA_VERSION } from './protocol'
-import type { IpcCapabilitySnapshotV2, IpcClientTransport } from './protocol'
+import type { IpcCapabilitySnapshotV2, IpcClientTransport, IpcEventTransportHealthNotice } from './protocol'
 import { decodeIpcScanQuery, encodeIpcScanQuery } from './scan-planning'
 import type { NormalizedScanQuery } from '../backend-contract/scan-query'
 
@@ -251,7 +251,7 @@ export interface IpcDescriptorRecord extends SerializableRecord {
 }
 
 interface StreamSink {
-  readonly closeWithReason: (reason: StreamTerminalNotice['reason']) => void
+  readonly closeWithReason: (reason: StreamTerminalNotice['reason'], error?: NormalizedBleError | null) => void
   readonly deliver: (streamId: string, item: SerializableRecord) => void
   readonly notifyOwnerTerminal: (reason: StreamTerminalNotice['reason']) => void
 }
@@ -274,13 +274,16 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   private releaseResult: Promise<PublicCleanupRecord> | null = null
   private readonly ownerCleanupLedger: { run: () => void; error: unknown | null }[] = []
   private pumpDead = false
+  private pumpTerminal: { reason: StreamTerminalNotice['reason']; error: NormalizedBleError | null } | null = null
   private pumpFailure: unknown | null = null
+  private readonly unsubscribeEventHealth: () => void
   private readonly unresolvedProvisionals: UnresolvedProvisional[] = []
 
   private constructor(
     private readonly client: IpcBleClient<Attachment, Client>,
     readonly capabilities: BleCapabilities,
-    private readonly now: () => number
+    private readonly now: () => number,
+    transport: IpcClientTransport<Attachment, Client>
   ) {
     this.eventPump = this.pumpEvents()
     this.eventPump.then(
@@ -290,6 +293,8 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
         this.terminalizeEventPump('source-failed')
       }
     )
+    this.unsubscribeEventHealth =
+      transport.subscribeEventHealth?.(notice => this.noteEventTransportHealth(notice)) ?? (() => undefined)
     ipcPendingInspectors.set(this, () => this.pendingAccounting())
     ipcProvisionalInspectors.set(this, () => this.provisionalAdmissionAccounting())
   }
@@ -307,7 +312,8 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
         String(client.bootstrap.attachment.backendGeneration),
         true
       ),
-      options.now ?? (() => Date.now())
+      options.now ?? (() => Date.now()),
+      transport
     )
   }
 
@@ -447,6 +453,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     try {
       const cleanup = await this.client.destroy()
       if (cleanup.state === 'released') {
+        this.unsubscribeEventHealth()
         for (const sink of this.streams.values()) sink.closeWithReason('owner-released')
         this.streams.clear()
         this.clearPendingAccounting()
@@ -594,11 +601,18 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       }
     }
     const sink: StreamSink = {
-      closeWithReason: reason => source.closeWithReason(reason),
+      closeWithReason: (reason, error) => source.closeWithReason(reason, error),
       deliver,
       notifyOwnerTerminal: reason => {
         onTerminal?.(reason)
       }
+    }
+    if (this.pumpDead) {
+      const terminal = this.pumpTerminal
+      const reason = terminal?.reason ?? 'source-failed'
+      source.closeWithReason(reason, terminal?.error ?? null)
+      this.captureOwnerCleanup(() => onTerminal?.(reason))
+      return source
     }
     if (tombstone !== undefined) {
       this.pendingTombstones.delete(handle)
@@ -719,6 +733,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     let cause: StreamTerminalNotice['reason'] = 'source-failed'
     try {
       for await (const event of this.client.events) {
+        if (this.pumpDead) break
         if (event.kind === 'terminal') {
           cause = event.reason === 'overflow' ? 'overflow' : 'source-failed'
           break
@@ -760,14 +775,19 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     }
   }
 
-  private terminalizeEventPump(cause: StreamTerminalNotice['reason']): void {
+  private noteEventTransportHealth(notice: IpcEventTransportHealthNotice): void {
+    this.terminalizeEventPump(notice.reason, notice.error)
+  }
+
+  private terminalizeEventPump(cause: StreamTerminalNotice['reason'], error: NormalizedBleError | null = null): void {
     if (this.pumpDead) return
     this.pumpDead = true
+    this.pumpTerminal = { reason: cause, error }
     const sinks = [...this.streams.values()]
     this.streams.clear()
     this.clearPendingAccounting()
     for (const sink of sinks) {
-      sink.closeWithReason(cause)
+      sink.closeWithReason(cause, error)
       this.captureOwnerCleanup(() => sink.notifyOwnerTerminal(cause))
     }
   }
@@ -1300,7 +1320,10 @@ export class IpcConnection {
     for await (const event of subscription.events) {
       if (event.kind === 'terminal') {
         this.invalidateDatabases().catch(() => undefined)
-        this.lifecycleEvents.finishWithReason(requiredTerminalReason(event.reason, 'ipc-manager.connection-lifecycle'))
+        this.lifecycleEvents.finishWithReason(
+          requiredTerminalReason(event.reason, 'ipc-manager.connection-lifecycle'),
+          requiredTerminalError(event.error, 'ipc-manager.connection-lifecycle')
+        )
         return
       }
       if (event.kind === 'overflow') {
@@ -2077,6 +2100,7 @@ export class IpcCharacteristic {
       const subscription = new IpcSubscription(
         this.database,
         handle,
+        requiredObservedDelivery(payload),
         this.database.registerStream<IpcNotificationValue>(
           handle,
           isIpcNotificationValue,
@@ -2148,6 +2172,7 @@ export class IpcSubscription {
   constructor(
     private readonly database: IpcGattDatabase,
     readonly handle: string,
+    readonly observedDelivery: 'notification' | 'indication' | 'unknown',
     readonly values: BoundedAsyncStream<IpcNotificationValue>
   ) {}
 
@@ -2382,7 +2407,7 @@ function requiredTerminalReason(
   throw contractError('protocol.malformed', 'ipc', operation)
 }
 
-function requiredTerminalError(value: SerializableValue | undefined, operation: string): NormalizedBleError | null {
+export function requiredTerminalError(value: unknown, operation: string): NormalizedBleError | null {
   if (value === undefined || value === null) return null
   if (!isSerializableRecord(value)) throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-error`)
   const code = BLE_ERROR_CODES.find(candidate => candidate === value.code)
@@ -2571,6 +2596,14 @@ function optionalResourceHandle(record: SerializableRecord, key: string): string
   const value = record[key]
   if (typeof value !== 'string' || value.length === 0) return null
   return value
+}
+
+function requiredObservedDelivery(record: SerializableRecord): 'notification' | 'indication' | 'unknown' {
+  // Older Tauri plugins called this field `delivery`; both spellings carry
+  // the settled native answer, never a requested preference.
+  const value = record.observedDelivery ?? record.delivery
+  if (value === 'notification' || value === 'indication' || value === 'unknown') return value
+  throw contractError('protocol.malformed', 'ipc', 'ipc-manager.gatt-subscribe.observed-delivery')
 }
 
 function requiredString(record: SerializableRecord, key: string, operation: string): string {

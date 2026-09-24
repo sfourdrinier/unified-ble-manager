@@ -132,7 +132,7 @@ function bootstrap(effectiveMtuEntry) {
     // identity; fixtures simulate the lane plugin, not a legacy host.
     core: {
       contractRevision: 'C-UBM.0.1.2-DRAFT',
-      implementationVersion: '5.0.0-rc.6'
+      implementationVersion: '5.0.0-rc.7'
     },
     renderer: {
       clientId: 'tauri-client-1',
@@ -478,7 +478,7 @@ describe('Tauri v2 public manager', () => {
           commitState: 'confirmed',
           bytesSubmitted: 1
         },
-        'gatt.subscribe': { handle: 'subscription-1' },
+        'gatt.subscribe': { handle: 'subscription-1', observedDelivery: 'unknown' },
         'gatt.unsubscribe': { state: 'released', failures: [] },
         'connection.disconnect': { state: 'released', failures: [] }
       }
@@ -550,6 +550,7 @@ describe('Tauri v2 public manager', () => {
     })
 
     const subscription = await characteristic.subscribe()
+    expect(subscription.effectiveDelivery).toBe('unknown')
     const notification = subscription.values[Symbol.asyncIterator]().next()
     streamValue('subscription-1', {
       value: new Uint8Array([6, 7]),
@@ -633,7 +634,7 @@ describe('Tauri v2 public manager', () => {
           ],
           descriptors: []
         },
-        'gatt.subscribe': { handle: 'subscription-1', delivery: 'unknown' },
+        'gatt.subscribe': { handle: 'subscription-1', observedDelivery: 'unknown' },
         'gatt.unsubscribe': { state: 'released', failures: [] },
         'connection.disconnect': { state: 'released', failures: [] }
       }
@@ -1298,6 +1299,25 @@ describe('Tauri v2 public manager', () => {
     expect(invoke.mock.calls.map(([, args]) => args.request.kind)).toEqual(['bootstrap', 'release'])
   })
 
+  test('refuses a background standing order before opening the native transport', async () => {
+    const invoke = jest.fn()
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    await expect(
+      createTauriBleManagerWithEnvironment(
+        { invoke, Channel: FakeChannel },
+        { background: { continuation: { onAppearance: 'record-only' } } }
+      )
+    ).rejects.toMatchObject({ code: 'capability.unsupported' })
+    expect(invoke).not.toHaveBeenCalled()
+    await expect(
+      createTauriBleManagerWithEnvironment(
+        { invoke, Channel: FakeChannel },
+        { randomBytes: length => new Uint8Array(length) }
+      )
+    ).rejects.toMatchObject({ code: 'capability.unsupported' })
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
   test('use after destroy rejects with a public lifecycle BleError without Tauri wording', async () => {
     const invoke = jest.fn(async (_command, args) => {
       if (args.request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
@@ -1374,7 +1394,7 @@ describe('Tauri shared-core admission (F01)', () => {
     const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
     const foreign = {
       ...bootstrap(),
-      core: { contractRevision: 'C-UBM.9.9.9-DRAFT', implementationVersion: '5.0.0-rc.6' }
+      core: { contractRevision: 'C-UBM.9.9.9-DRAFT', implementationVersion: '5.0.0-rc.7' }
     }
     const invoke = invokeWithBootstrap(foreign)
     await expect(createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })).rejects.toThrow(

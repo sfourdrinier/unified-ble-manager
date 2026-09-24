@@ -282,6 +282,15 @@ export function canonicalUuid(value: string): Uuid {
   }
   return `${compact.slice(0, 8)}-${compact.slice(8, 12)}-${compact.slice(12, 16)}-${compact.slice(16, 20)}-${compact.slice(20)}` as Uuid
 }
+
+/** Numeric UUIDs have no textual leading zeroes; restore their 16/32-bit width. */
+export function canonicalUuidInput(value: string | number): Uuid {
+  if (typeof value === 'string') return canonicalUuid(value)
+  if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
+    throw new Error('Numeric UUID must be an unsigned 32-bit integer')
+  }
+  return canonicalUuid(value.toString(16).padStart(value <= 0xffff ? 4 : 8, '0'))
+}
 /**
  * Canonicalizes a 48-bit BLE radio address to uppercase colon-separated octets.
  * Accepts ':' or '-' separators in any case; rejects every other shape. This

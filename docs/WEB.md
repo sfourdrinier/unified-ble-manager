@@ -6,7 +6,7 @@ Use `unified-ble-manager/web` to run the public UBM manager directly in a browse
 
 The complete runnable TypeScript/Vite application is in [`example-web/`](../example-web/).
 
-This guide targets `5.0.0-rc.6`. Web Bluetooth support still depends on the browser, operating system, adapter, and peripheral. UBM reports those runtime boundaries; it does not fabricate a fallback backend.
+This guide targets `5.0.0-rc.7`. Web Bluetooth support still depends on the browser, operating system, adapter, and peripheral. UBM reports those runtime boundaries; it does not fabricate a fallback backend.
 
 ## Requirements
 
@@ -17,11 +17,14 @@ This guide targets `5.0.0-rc.6`. Web Bluetooth support still depends on the brow
 - Keep the requested peripheral near the browser and ensure another central is not already occupying its connection.
 
 Web Bluetooth does not provide UBM’s continuous `scan()` capability, background monitoring after the page closes, or process-level restoration. `manager.scan()` therefore rejects with `capability.unsupported`; use `manager.choose()` (often named `ble.choose()` in smaller examples).
+The Web factory rejects `background` and `restoration` declarations before
+creating a manager. It accepts the browser adapter identity, optional instance
+identity, diagnostics limits, and caller-supplied entropy for ephemeral IDs.
 
 ## Install and create the manager
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.6
+pnpm add unified-ble-manager@5.0.0-rc.7
 ```
 
 ```ts

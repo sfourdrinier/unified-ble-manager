@@ -804,7 +804,7 @@ export class ElectronMainBleRouter {
       requiredString(envelope.payload, 'databaseHandle'),
       subscription
     )
-    return Object.freeze({ handle })
+    return Object.freeze({ handle, observedDelivery: subscription.observedDelivery ?? 'unknown' })
   }
 
   private async stopScan(resources: RendererResources, payload: SerializableRecord): Promise<SerializableRecord> {

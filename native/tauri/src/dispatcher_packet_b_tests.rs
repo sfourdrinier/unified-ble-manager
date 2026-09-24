@@ -1528,6 +1528,173 @@ async fn finding_190a_a_requested_disconnect_ends_notifications_owner_released()
     );
 }
 
+// The core can invalidate a notification poll before the requested native
+// disconnect has answered. The in-flight poll must not win the transport
+// terminal race against the owner-release path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn requested_disconnect_pauses_an_in_flight_notification_terminal() {
+    let harness = Harness::new().await;
+    let link = harness.connect("peer-a").await;
+    let database = harness.discover(&link).await;
+    let subscription = harness
+        .subscribe(&link, &database, NOTIFY_ONLY, None)
+        .await
+        .expect("subscribe");
+    let notifications = text(&subscription, "handle");
+    harness.radio().block_op(FaultOp::Disconnect);
+    let disconnect = harness.spawn_route(
+        "connection.disconnect",
+        "requested-disconnect-race",
+        Harness::link_entries(&link),
+        None,
+    );
+    harness.wait_calls("disconnect", 1).await;
+    assert!(
+        harness
+            .with_caller(|caller| caller
+                .connections
+                .get(&link.handle)
+                .is_some_and(|connection| matches!(connection.phase, ReleasePhase::Releasing(_))))
+            .await
+    );
+
+    // Model the already-started core poll returning LinkEnded while the
+    // disconnect owns the link. Its terminal send must be rejected atomically
+    // with the release phase, not by a separate check before sending.
+    let delivered = harness
+        .dispatcher
+        .notification_terminal(
+            &harness.key(),
+            (LEASE_ID, LEASE_GENERATION),
+            &notifications,
+            "connection-lost",
+            None,
+        )
+        .await
+        .expect("terminal admission check");
+    assert!(!delivered);
+    assert!(
+        harness.items(&notifications).is_empty(),
+        "the pending owner release must reserve the notification terminal"
+    );
+
+    harness.radio().unblock_op(FaultOp::Disconnect);
+    disconnect
+        .await
+        .expect("disconnect task")
+        .expect("disconnect");
+    let ended = harness.wait_items(&notifications, 1).await;
+    assert_eq!(ended[0]["reason"], "owner-released");
+    assert_eq!(harness.items(&notifications).len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_notification_terminal_sent_before_disconnect_is_not_sent_twice() {
+    let harness = Harness::new().await;
+    let link = harness.connect("peer-a").await;
+    let database = harness.discover(&link).await;
+    let subscription = harness
+        .subscribe(&link, &database, NOTIFY_ONLY, None)
+        .await
+        .expect("subscribe");
+    let notifications = text(&subscription, "handle");
+
+    assert!(harness
+        .dispatcher
+        .notification_terminal(
+            &harness.key(),
+            (LEASE_ID, LEASE_GENERATION),
+            &notifications,
+            "connection-lost",
+            None,
+        )
+        .await
+        .expect("first terminal is sent"));
+    harness
+        .execute(
+            "connection.disconnect",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect("disconnect");
+    assert_eq!(
+        harness.items(&notifications).len(),
+        1,
+        "a terminal physically sent before owner release is not duplicated"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_owner_terminal_send_keeps_the_disconnect_retryable() {
+    let harness = Harness::new().await;
+    let link = harness.connect("peer-a").await;
+    let database = harness.discover(&link).await;
+    let subscription = harness
+        .subscribe(&link, &database, NOTIFY_ONLY, None)
+        .await
+        .expect("subscribe");
+    let notifications = text(&subscription, "handle");
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let send_attempts = Arc::clone(&attempts);
+    let events = Arc::clone(&harness.events);
+    let sink = IpcEventSink::new(Channel::new(move |body| {
+        if send_attempts.fetch_add(1, AtomicOrdering::SeqCst) == 0 {
+            return Err(tauri::Error::Io(std::io::Error::other(
+                "scripted terminal send refusal",
+            )));
+        }
+        if let InvokeResponseBody::Json(json) = body {
+            events
+                .lock()
+                .expect("event log")
+                .push(serde_json::from_str(&json).expect("event json"));
+        }
+        Ok(())
+    }));
+    {
+        let mut state = harness.dispatcher.inner.lock().await;
+        state
+            .callers
+            .get_mut(&harness.key())
+            .expect("caller")
+            .event_sink = sink;
+    }
+
+    let first = harness
+        .execute(
+            "connection.disconnect",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect_err("a refused terminal send cannot report complete cleanup");
+    assert_eq!(first.code, BleErrorCode::PlatformTransport);
+    assert!(
+        harness
+            .with_caller(|caller| caller.connections.contains_key(&link.handle)
+                && caller.subscriptions.contains_key(&notifications))
+            .await
+    );
+    assert!(harness.items(&notifications).is_empty());
+
+    harness
+        .execute(
+            "connection.disconnect",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect("retry delivers the terminal and releases the mapping");
+    let ended = harness.wait_items(&notifications, 1).await;
+    assert_eq!(ended[0]["reason"], "owner-released");
+    assert_eq!(ended.len(), 1);
+    assert_eq!(attempts.load(AtomicOrdering::SeqCst), 2);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pr210_11_a_stale_generation_matches_nothing() {
     let harness = Harness::new().await;
@@ -1681,7 +1848,10 @@ async fn pr210_13t_a_requirement_is_refused_only_where_the_property_is_missing()
         .subscribe(&link, &database, NOTIFY_ONLY, Some("require-notification"))
         .await
         .expect("a notify-capable characteristic accepts require-notification");
-    assert_eq!(field(&subscription, "delivery"), &string("notification"));
+    assert_eq!(
+        field(&subscription, "observedDelivery"),
+        &string("notification")
+    );
     assert_eq!(
         harness.radio().delivery_requests(),
         vec![Some(DeliveryMode::Notification)],
@@ -1702,7 +1872,7 @@ async fn pr210_13t_a_preference_reports_unknown_delivery_when_the_radio_says_not
         .subscribe(&link, &database, NOTIFY_ONLY, Some("prefer-indication"))
         .await
         .expect("a preference rides through");
-    assert_eq!(field(&subscription, "delivery"), &string("unknown"));
+    assert_eq!(field(&subscription, "observedDelivery"), &string("unknown"));
     assert_eq!(harness.radio().delivery_requests(), vec![None]);
 }
 

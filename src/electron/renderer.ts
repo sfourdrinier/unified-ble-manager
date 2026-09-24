@@ -655,7 +655,7 @@ export class ElectronRendererBleClient<Attachment extends string, Renderer exten
       return
     }
     this.lifecycle = 'acknowledgement-failed'
-    this.eventsStream.closeWithReason('source-failed')
+    this.eventsStream.closeWithReason('source-failed', error.normalized)
   }
 
   private async restoreAfterFailedRelease(): Promise<void> {

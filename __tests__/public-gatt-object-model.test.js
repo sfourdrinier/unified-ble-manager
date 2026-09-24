@@ -21,8 +21,26 @@ function compatibility() {
   }
 }
 
-async function createPublicFixture() {
+async function createPublicFixture(observedDeliveryOverride, onNativeSubscribe) {
   const fixture = createDeterministicTestBackend()
+  if (observedDeliveryOverride !== undefined || onNativeSubscribe !== undefined) {
+    const nativeGatt = fixture.backend.gatt
+    fixture.backend.gatt = {
+      ...nativeGatt,
+      subscribe(path, request) {
+        onNativeSubscribe?.(path, request)
+        const dispatch = nativeGatt.subscribe(path, request)
+        return {
+          ...dispatch,
+          completion: dispatch.completion.then(subscription =>
+            observedDeliveryOverride === undefined
+              ? subscription
+              : { ...subscription, observedDelivery: observedDeliveryOverride }
+          )
+        }
+      }
+    }
+  }
   const attachedBackend = await attachBleBackend(fixture.backend, compatibility())
   const authority = createManagerOwnershipAuthority(attachedBackend)
   const internal = await InternalBleManager.create(
@@ -63,6 +81,42 @@ async function connectAndDiscover(fixture, manager) {
 }
 
 describe('stable public GATT object model (PR3 TDD)', () => {
+  test('subscription receipt uses settled native delivery, including unknown, across shared consumers', async () => {
+    const { fixture, manager } = await createPublicFixture('unknown')
+    const { connection, database } = await connectAndDiscover(fixture, manager)
+    const characteristic = database.service('180f', { occurrence: 0 }).characteristic('2a19')
+    const first = await settle(fixture, characteristic.subscribe({ delivery: 'prefer-indication' }))
+    const second = await settle(fixture, characteristic.subscribe({ delivery: 'prefer-indication' }))
+    expect(first.requestedDelivery).toBe('prefer-indication')
+    expect(first.effectiveDelivery).toBe('unknown')
+    expect(second.effectiveDelivery).toBe('unknown')
+    await settle(fixture, first.remove())
+    await settle(fixture, second.remove())
+    await settle(fixture, connection.release())
+    await settle(fixture, manager.destroy())
+  })
+
+  test('dual-property subscriptions report the native mode and an impossible hard requirement stops before backend effects', async () => {
+    const nativeSubscribe = jest.fn()
+    const { fixture, manager } = await createPublicFixture(undefined, nativeSubscribe)
+    const { connection, database } = await connectAndDiscover(fixture, manager)
+    const dual = database.service('180f', { occurrence: 0 }).characteristic('2a19')
+    const notified = await settle(fixture, dual.subscribe({ delivery: 'prefer-notification' }))
+    const indicated = await settle(fixture, dual.subscribe({ delivery: 'require-indication' }))
+    expect(notified.effectiveDelivery).toBe('notification')
+    expect(indicated.effectiveDelivery).toBe('indication')
+    const before = nativeSubscribe.mock.calls.length
+    const notifyOnly = database.service('180f', { occurrence: 1 }).characteristic('2a19', { occurrence: 0 })
+    await expect(notifyOnly.subscribe({ delivery: 'require-indication' })).rejects.toMatchObject({
+      code: 'gatt.property-not-supported'
+    })
+    expect(nativeSubscribe).toHaveBeenCalledTimes(before)
+    await settle(fixture, notified.remove())
+    await settle(fixture, indicated.remove())
+    await settle(fixture, connection.release())
+    await settle(fixture, manager.destroy())
+  })
+
   test('broadcasts public lifecycle events to independent consumers', async () => {
     const source = new CoreBoundedStream(
       { itemCapacity: capacity(2), byteCapacity: capacity(64), reservedControlCapacity: capacity(1) },

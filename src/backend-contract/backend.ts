@@ -312,6 +312,8 @@ export interface BackendSubscription<
   readonly subscriptionId: SubscriptionId<Attachment, string, string, string, string, string>
   readonly path: CharacteristicPath<Attachment, Connection, Database, Service, Characteristic, 'current'>
   readonly terminal: OperationTerminalRecord<Attachment, string>
+  /** Delivery observed by the host after enablement; absence means unobserved. */
+  readonly observedDelivery?: NotificationValue['delivery']
   readonly notifications: BoundedAsyncStream<NotificationValue>
 }
 export interface BackendEventBase<Attachment extends string> {

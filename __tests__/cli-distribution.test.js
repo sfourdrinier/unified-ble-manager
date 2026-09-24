@@ -66,15 +66,18 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
     expect(result.failures[0].code).toBe('cli.execution-failed')
   })
 
-  test('ubm init --host tauri writes a crates.io fragment and does not overwrite without --force', async () => {
+  test('ubm init --host tauri writes the working packed-package recipe and does not overwrite without --force', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-init-'))
     const target = path.join(directory, 'Cargo.toml.fragment')
     const first = await runUnifiedBleCli(['init', '--host', 'tauri', '--dir', directory])
     expect(first.ok).toBe(true)
     expect(first.command).toBe('init')
     expect(fs.readFileSync(target, 'utf8')).toContain('tauri-plugin-unified-ble-manager')
-    expect(fs.readFileSync(target, 'utf8')).toMatch(/tauri-plugin-unified-ble-manager\s*=\s*"5/)
-    expect(fs.readFileSync(target, 'utf8')).not.toContain('node_modules/unified-ble-manager/native/tauri')
+    const recipe = fs.readFileSync(target, 'utf8')
+    expect(recipe).toContain('path = "../node_modules/unified-ble-manager/native/tauri"')
+    expect(recipe).toContain('btleplug = { path = "../node_modules/unified-ble-manager/vendor/btleplug" }')
+    expect(recipe).toContain('bluez-async = { path = "../node_modules/unified-ble-manager/vendor/bluez-async" }')
+    expect(recipe).not.toMatch(/tauri-plugin-unified-ble-manager\s*=\s*"5/)
 
     const blocked = await runUnifiedBleCli(['init', '--host', 'tauri', '--dir', directory])
     expect(blocked.ok).toBe(false)
@@ -82,6 +85,13 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
 
     const forced = await runUnifiedBleCli(['init', '--host', 'tauri', '--dir', directory, '--force'])
     expect(forced.ok).toBe(true)
+  })
+
+  test('Tauri guide and CLI use the same Cargo installation recipe', () => {
+    const { tauriCargoRecipe } = require('../src/tauri/install-recipe')
+    const guide = fs.readFileSync(path.join(__dirname, '../docs/TAURI.md'), 'utf8')
+    const fragment = guide.match(/```toml\n([\s\S]*?)\n```/)?.[1]
+    expect(`${fragment}\n`).toBe(tauriCargoRecipe())
   })
 
   test('ubm init --host tauri uses runtime cwd when --dir is omitted', async () => {
@@ -109,7 +119,7 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
     expect(result.failures[0].message).toMatch(/--backend/)
   })
 
-  test('ubm inspect config --host tauri reports crates.io install and does not load a backend', async () => {
+  test('ubm inspect config --host tauri reports the packed npm install and does not load a backend', async () => {
     const result = await runUnifiedBleCli(['inspect', 'config', '--host', 'tauri'], {
       readTextFile: async () => '',
       loadBackendModule: async () => {
@@ -123,14 +133,14 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
         schemaVersion: 1,
         host: 'tauri',
         documentedCrate: 'tauri-plugin-unified-ble-manager',
-        documentedInstall: 'crates.io',
-        pathDependency: 'checkout-fallback',
+        documentedInstall: 'packed-npm-path',
+        pathDependency: 'required',
         liveRadio: false,
         proofBoundary: 'compile-config-loadability',
         cratePublished: false,
         compatibility: expect.objectContaining({
-          npmRange: '^5.0.0-rc.6',
-          crateRange: '^5.0.0-rc.6',
+          npmRange: '^5.0.0-rc.7',
+          crateRange: '^5.0.0-rc.7',
           ipcProtocol: 4
         })
       })
@@ -252,13 +262,15 @@ describe('PR11 Tauri crate and testkit contracts', () => {
     await environment.destroy()
   })
 
-  test('documented Tauri install is crates.io and does not claim the crate is already published', () => {
+  test('Tauri documentation points to the packed npm plugin while the crate is unpublished', () => {
     const docs = fs.readFileSync(path.join(__dirname, '../docs/TAURI.md'), 'utf8')
     const crateReadme = fs.readFileSync(path.join(__dirname, '../native/tauri/README.md'), 'utf8')
     const exampleReadme = fs.readFileSync(path.join(__dirname, '../example-tauri/README.md'), 'utf8')
-    for (const text of [docs, crateReadme, exampleReadme]) {
-      expect(text).toContain('tauri-plugin-unified-ble-manager@5.0.0-rc.6')
-      expect(text).toMatch(/not (yet )?published|until the crate is (published|on crates\.io)|once the crate exists/i)
-    }
+    expect(docs).toContain('node_modules/unified-ble-manager/native/tauri')
+    expect(docs).toContain('not yet published on crates.io')
+    expect(crateReadme).toContain('node_modules/unified-ble-manager/native/tauri')
+    expect(crateReadme).toMatch(/not (yet )?published/i)
+    expect(exampleReadme).toContain('exact installed npm package')
+    expect(exampleReadme).toMatch(/not (yet )?published/i)
   })
 })

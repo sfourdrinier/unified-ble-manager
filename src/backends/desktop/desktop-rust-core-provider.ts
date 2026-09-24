@@ -4202,6 +4202,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         subscriptionId,
         path,
         terminal: this.succeededTerminal(request.operation.correlation),
+        observedDelivery: enabled.delivery,
         notifications
       })
     })()

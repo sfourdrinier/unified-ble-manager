@@ -52,6 +52,61 @@ private func jsonText(_ object: [String: Any]) -> String {
   String(data: try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), encoding: .utf8)!
 }
 
+private final class HarnessInvokeCompletion: MobileInvokeCompletion, @unchecked Sendable {
+  private let body: (String) -> Void
+  init(_ body: @escaping (String) -> Void) { self.body = body }
+  func complete(envelope: String) { body(envelope) }
+}
+
+private final class DisposalGate {
+  private let lock = NSLock()
+  private var counts = [UInt64: Int]()
+  private var fail = Set<UInt64>()
+  private var hold = Set<UInt64>()
+  private var held = [UInt64: (String) -> Void]()
+  private var completedHeld = [UInt64: (String) -> Void]()
+  private let failure = "{\"ok\":false,\"error\":{\"code\":\"platform.failure\",\"domain\":\"platform\",\"operation\":\"session.dispose\"}}"
+
+  func failOnce(_ id: String) { lock.lock(); fail.insert(UInt64(id)!); lock.unlock() }
+  func holdOnce(_ id: String) { lock.lock(); hold.insert(UInt64(id)!); lock.unlock() }
+  func attempts(_ id: String) -> Int { lock.lock(); defer { lock.unlock() }; return counts[UInt64(id)!] ?? 0 }
+  func waitForAttempts(_ id: String, _ count: Int) -> Bool {
+    let deadline = Date().addingTimeInterval(10)
+    while Date() < deadline {
+      if attempts(id) >= count { return true }
+      Thread.sleep(forTimeInterval: 0.01)
+    }
+    return false
+  }
+  func releaseHeldFailure(_ id: String) {
+    lock.lock()
+    let callback = held.removeValue(forKey: UInt64(id)!)
+    if let callback { completedHeld[UInt64(id)!] = callback }
+    lock.unlock()
+    check(callback != nil, "missing held disposer")
+    callback?(failure)
+  }
+  func repeatHeldFailure(_ id: String) {
+    lock.lock()
+    let callback = completedHeld[UInt64(id)!]
+    lock.unlock()
+    check(callback != nil, "missing completed held disposer")
+    callback?(failure)
+  }
+  func invoke(_ session: MobileCoreSession, _ completion: @escaping (String) -> Void) {
+    let id = session.sessionId()
+    lock.lock()
+    counts[id, default: 0] += 1
+    let shouldHold = hold.remove(id) != nil
+    let shouldFail = fail.remove(id) != nil
+    if shouldHold { held[id] = completion }
+    lock.unlock()
+    if shouldHold { return }
+    if shouldFail { completion(failure); return }
+    session.invoke(op: "session.dispose", argsJson: "{}", completion: HarnessInvokeCompletion { completion($0) })
+  }
+}
+
 /// Scripted CoreBluetooth stand-in. Mutable state is confined to `workQueue`,
 /// exactly like the production radio.
 final class ScriptedDriver: UnifiedBleRustRadioDriver {
@@ -596,12 +651,109 @@ final class Harness {
     }
     check(json(badDrain.1 ?? "{}")["code"] as? String == "argument.invalid", "fractional drain: \(badDrain)")
 
+    lifecycleCleanupChecks()
+
     // Process shutdown disables every CCCD the radio still holds.
     let cleanup = json(host.shutdown())
     check(cleanup["state"] != nil, "shutdown cleanup record: \(cleanup)")
     let counters: UnifiedBleRustRadioAdapterCounters = waitFor("adapter counters") { self.adapter.adapterCounters(completion: $0) }
     check(counters.mismatchedCompletions == 0, "Rust refused an adapter answer shape: \(counters)")
     check(counters.cancelledRequests >= 1, "cancel was not counted: \(counters)")
+  }
+
+  func lifecycleCleanupChecks() {
+    let gate = DisposalGate()
+    let lifecycle = UnifiedBleRustCoreSessions(
+      installer: { _ in self.host },
+      disposeInvoker: gate.invoke,
+      retryDelay: .milliseconds(20)
+    )
+    let ownerA = NSObject()
+    let ownerB = NSObject()
+    func open(_ owner: NSObject) -> String {
+      let result: (String?, String?) = waitFor("lifecycle open") { done in
+        lifecycle.openSession("lifecycle", expectedWireRevision: mobileWireRevision(), ownerToken: owner, onWake: { _ in }) {
+          done(($0, $1))
+        }
+      }
+      check(result.1 == nil, "lifecycle open failed: \(String(describing: result.1))")
+      return String((json(result.0!)["sessionId"] as! NSNumber).uint64Value)
+    }
+    func waitUntilClosed(_ wrapper: UnifiedBleRustCoreSessions, _ id: String) {
+      let deadline = Date().addingTimeInterval(10)
+      while Date() < deadline {
+        let result: (String?, String?) = waitFor("closed session probe") { done in
+          wrapper.invoke(sessionId: id, op: "adapter.state", argsJson: "{}") { done(($0, $1)) }
+        }
+        if json(result.1 ?? "{}")["code"] as? String == "lifecycle.destroyed" { return }
+        Thread.sleep(forTimeInterval: 0.01)
+      }
+      check(false, "session \(id) remained addressable after retry")
+    }
+    let first = open(ownerA)
+    let unaffected = open(ownerB)
+    gate.failOnce(first)
+    lifecycle.closeSessions(ownedBy: ownerA)
+    check(gate.waitForAttempts(first, 2), "failed module cleanup was not retried without another module event")
+    waitUntilClosed(lifecycle, first)
+    let other: (String?, String?) = waitFor("unrelated owner") { done in
+      lifecycle.invoke(sessionId: unaffected, op: "adapter.state", argsJson: "{}") { done(($0, $1)) }
+    }
+    check(json(other.0 ?? "{}")["ok"] as? Bool == true, "another module's session was disposed")
+    let otherClose: String? = waitFor("unrelated close") { done in lifecycle.closeSession(unaffected) { done($0) } }
+    check(otherClose == nil, "unrelated close failed")
+
+    let ownerC = NSObject()
+    let racing = open(ownerC)
+    gate.holdOnce(racing)
+    let explicitDone = DispatchSemaphore(value: 0)
+    lifecycle.closeSession(racing) { _ in explicitDone.signal() }
+    lifecycle.closeSessions(ownedBy: ownerC)
+    check(gate.attempts(racing) == 1, "explicit close and invalidation overlapped native disposal")
+    gate.releaseHeldFailure(racing)
+    check(explicitDone.wait(timeout: .now() + timeout) == .success, "explicit close did not settle")
+    check(gate.waitForAttempts(racing, 2), "racing failed disposal was not retried")
+    waitUntilClosed(lifecycle, racing)
+    gate.repeatHeldFailure(racing)
+    Thread.sleep(forTimeInterval: 0.05)
+    check(gate.attempts(racing) == 2, "stale disposal callback scheduled another retry")
+
+    let admissionEntered = DispatchSemaphore(value: 0)
+    let allowAdmission = DispatchSemaphore(value: 0)
+    let admittedIdLock = NSLock()
+    var admittedId: String?
+    let admissionOwner = NSObject()
+    let admission = UnifiedBleRustCoreSessions(
+      installer: { _ in self.host },
+      openInvoker: { host, name, revision in
+        admissionEntered.signal()
+        check(allowAdmission.wait(timeout: .now() + timeout) == .success, "admission gate timed out")
+        let session = try host.openSession(owner: name, expectedWireRevision: revision)
+        admittedIdLock.lock()
+        admittedId = String(session.sessionId())
+        admittedIdLock.unlock()
+        return session
+      },
+      disposeInvoker: gate.invoke,
+      retryDelay: .milliseconds(20)
+    )
+    let openDone = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+      admission.openSession("late", expectedWireRevision: mobileWireRevision(), ownerToken: admissionOwner, onWake: { _ in }) { value, failure in
+        check(value == nil && failure != nil, "late admission was delivered after module invalidation")
+        openDone.signal()
+      }
+    }
+    check(admissionEntered.wait(timeout: .now() + timeout) == .success, "open did not reach native admission")
+    admission.closeSessions(ownedBy: admissionOwner)
+    allowAdmission.signal()
+    check(openDone.wait(timeout: .now() + timeout) == .success, "late admission did not settle")
+    admittedIdLock.lock()
+    let lateId = admittedId
+    admittedIdLock.unlock()
+    check(lateId != nil, "native admission did not create a session")
+    check(gate.waitForAttempts(lateId!, 1), "late native session was not handed to process cleanup")
+    waitUntilClosed(admission, lateId!)
   }
 
   func translationChecks() {

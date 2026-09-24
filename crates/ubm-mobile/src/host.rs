@@ -98,6 +98,7 @@ pub(crate) struct PhysicalScan {
 #[derive(Debug, Default)]
 pub(crate) struct ScanShare {
     pub physical: Option<PhysicalScan>,
+    orphan_retry_scheduled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1242,7 +1243,7 @@ impl HostInner {
 
     /// Start, join or widen the shared physical scan for one member.
     pub(crate) async fn join_scan(
-        &self,
+        self: &Arc<Self>,
         session_id: u64,
         member: ScanMember,
         android: Option<AndroidScanOptions>,
@@ -1331,11 +1332,15 @@ impl HostInner {
                         let orphans = self.take_scan_members();
                         drop(share);
                         self.end_scan_members(orphans, "source-failed");
+                        return Err(error);
                     }
-                    // A refused cleanup stays in both owners: DesktopCentral
-                    // retains the active operation for retry and ScanShare
-                    // retains its physical identity plus the existing
-                    // memberships. Their next ordinary stop retries it.
+                    // A refused cleanup stays in both owners. Existing
+                    // members can retry their ordinary stop; a first scanner
+                    // has no member, so the process owner drives that debt.
+                    if lock(&self.scan_members).is_empty() && !share.orphan_retry_scheduled {
+                        share.orphan_retry_scheduled = true;
+                        self.runtime.spawn(Arc::clone(self).retry_orphan_scan());
+                    }
                     return Err(error);
                 }
                 lock(&self.scan_members).insert(session_id, member);
@@ -1347,6 +1352,35 @@ impl HostInner {
                 let orphans = self.take_scan_members();
                 self.end_scan_members(orphans, "source-failed");
                 Err(error)
+            }
+        }
+    }
+
+    async fn retry_orphan_scan(self: Arc<Self>) {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            if self.shut_down.load(Ordering::SeqCst) {
+                return;
+            }
+            let mut share = self.scan.lock().await;
+            if !lock(&self.scan_members).is_empty() || share.physical.is_none() {
+                share.orphan_retry_scheduled = false;
+                return;
+            }
+            let operation = share.physical.as_ref().unwrap().operation.clone();
+            match self
+                .central
+                .stop_scan(&operation, OpControl::unbounded())
+                .await
+            {
+                Ok(_) => {
+                    share.physical = None;
+                    share.orphan_retry_scheduled = false;
+                    return;
+                }
+                Err(error) => {
+                    eprintln!("ubm-mobile: retained orphan scan cleanup failed: {error}");
+                }
             }
         }
     }

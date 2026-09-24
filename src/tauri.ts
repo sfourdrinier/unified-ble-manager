@@ -26,7 +26,7 @@ export async function createTauriBleManager(options: BleManagerCreateOptions = {
 }
 
 async function createTauriBleManagerInternal(options: BleManagerCreateOptions): Promise<BleManager> {
-  normalizeBleManagerCreateOptions(options)
+  const normalized = normalizeTauriCreateOptions(options)
   let tauriCore: { invoke: TauriInvoke; Channel: new <T>() => TauriChannel<T> }
   try {
     const imported: { invoke: TauriInvoke; Channel: new <T>() => TauriChannel<T> } = await import(
@@ -45,7 +45,7 @@ async function createTauriBleManagerInternal(options: BleManagerCreateOptions): 
   })
   const ipcManager = await IpcBleManager.create(transport)
   await admitTauriCompatibility(ipcManager)
-  await admitTauriCreateOptions(options, ipcManager)
+  await admitTauriCreateOptions(normalized, ipcManager)
   return createTauriPublicManager(ipcManager)
 }
 
@@ -66,12 +66,23 @@ async function createTauriBleManagerWithEnvironmentInternal(
   environment: TauriBleManagerEnvironment,
   options: BleManagerCreateOptions
 ): Promise<BleManager> {
-  normalizeBleManagerCreateOptions(options)
+  const normalized = normalizeTauriCreateOptions(options)
   const transport = new TauriBleIpcTransport(environment)
   const ipcManager = await IpcBleManager.create(transport)
   await admitTauriCompatibility(ipcManager)
-  await admitTauriCreateOptions(options, ipcManager)
+  await admitTauriCreateOptions(normalized, ipcManager)
   return createTauriPublicManager(ipcManager)
+}
+
+function normalizeTauriCreateOptions(options: BleManagerCreateOptions): BleManagerCreateOptions {
+  const normalized = normalizeBleManagerCreateOptions(options)
+  if (normalized.background !== undefined) {
+    throw contractError('capability.unsupported', 'capability', 'tauri-manager.background')
+  }
+  if (normalized.randomBytes !== undefined) {
+    throw contractError('capability.unsupported', 'capability', 'tauri-manager.random-bytes')
+  }
+  return normalized
 }
 
 function assertTauriCreateOptions(options: BleManagerCreateOptions, ipc: IpcBleManager): void {
