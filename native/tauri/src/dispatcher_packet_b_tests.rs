@@ -1681,7 +1681,10 @@ async fn pr210_13t_a_requirement_is_refused_only_where_the_property_is_missing()
         .subscribe(&link, &database, NOTIFY_ONLY, Some("require-notification"))
         .await
         .expect("a notify-capable characteristic accepts require-notification");
-    assert_eq!(field(&subscription, "observedDelivery"), &string("notification"));
+    assert_eq!(
+        field(&subscription, "observedDelivery"),
+        &string("notification")
+    );
     assert_eq!(
         harness.radio().delivery_requests(),
         vec![Some(DeliveryMode::Notification)],
