@@ -245,6 +245,9 @@ struct CoreSubscription {
     delivery: ObservedDelivery,
     task: Option<TauriJoinHandle<()>>,
     phase: ReleasePhase,
+    /// A terminal accepted by the channel has already ended this stream.
+    /// A later explicit disconnect must not send a second terminal.
+    terminal_sent: bool,
 }
 
 /// How one link ended, as a connection-lifecycle transition plus the
@@ -2098,7 +2101,7 @@ impl BtleplugDispatcher {
             (ReleaseStep::Join(receiver), _, _) => return join_release(receiver).await,
             (ReleaseStep::Lead(sender), peer_id, lease) => (sender, peer_id, lease),
         };
-        let result = match self.ensure_authority().await {
+        let mut result = match self.ensure_authority().await {
             Ok(authority) => match authority.disconnect(&peer_id, &lease, ctl).await {
                 Ok(_) => Ok(()),
                 Err(error) => {
@@ -2112,49 +2115,81 @@ impl BtleplugDispatcher {
             },
             Err(error) => Err(error),
         };
-        let (detached, owner_lease) = {
+        // A native release can invalidate an already-running notification
+        // poll before it answers. Once it does answer, send each remaining
+        // owner terminal before forgetting its mapping. A failed channel
+        // send keeps that mapping and the link retryable; an earlier terminal
+        // is marked and never sent again. The snapshot cannot race a new
+        // notification terminal: `begin_release` already set `Releasing`
+        // under the same lock that guards its channel send and sent marker.
+        if result.is_ok() {
+            let targets = {
+                let state = self.inner.lock().await;
+                state.callers.get(key).and_then(|caller_state| {
+                    (!caller_state.retired).then(|| {
+                        (
+                            caller_state.lease_id.clone(),
+                            caller_state.lease_generation.clone(),
+                            caller_state
+                                .subscriptions
+                                .iter()
+                                .filter_map(|(subscription_handle, subscription)| {
+                                    (subscription.connection_handle == handle
+                                        && !subscription.terminal_sent)
+                                        .then_some(subscription_handle.clone())
+                                })
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+                })
+            };
+            if let Some((owner_lease_id, owner_lease_generation, handles)) = targets {
+                for subscription_handle in handles {
+                    match self
+                        .terminal(
+                            key,
+                            (&owner_lease_id, &owner_lease_generation),
+                            &subscription_handle,
+                            "owner-released",
+                            None,
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            let mut state = self.inner.lock().await;
+                            if let Some(subscription) =
+                                state.callers.get_mut(key).and_then(|caller| {
+                                    caller.subscriptions.get_mut(&subscription_handle)
+                                })
+                            {
+                                subscription.terminal_sent = true;
+                            }
+                        }
+                        Err(error) => {
+                            result = Err(error);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        let detached = {
             let mut state = self.inner.lock().await;
             match state.callers.get_mut(key) {
                 Some(caller_state) if caller_state.connections.contains_key(handle) => {
                     if result.is_ok() {
                         caller_state.connections.remove(handle);
-                        let lease = (
-                            caller_state.lease_id.clone(),
-                            caller_state.lease_generation.clone(),
-                        );
-                        (
-                            Self::detach_connection_mappings(caller_state, handle),
-                            Some(lease),
-                        )
+                        Self::detach_connection_mappings(caller_state, handle)
                     } else {
                         if let Some(connection) = caller_state.connections.get_mut(handle) {
                             connection.phase = ReleasePhase::ReleaseFailed;
                         }
-                        (Vec::new(), None)
+                        Vec::new()
                     }
                 }
-                _ => (Vec::new(), None),
+                _ => Vec::new(),
             }
         };
-        // Finding 190a: the app released the link, so every detached
-        // subscription ends with the vocabulary's requested-disconnect word
-        // (`owner-released`, as on RN iOS/Android/tvOS) — never a bare close
-        // the supervisor reads as a stop. The forwarder cannot race this:
-        // the connection left `Active` at `begin_release`, so delivery stays
-        // paused until the mappings below are gone.
-        if let Some((owner_lease_id, owner_lease_generation)) = owner_lease {
-            for (subscription_handle, _) in &detached {
-                let _ = self
-                    .terminal(
-                        key,
-                        (&owner_lease_id, &owner_lease_generation),
-                        subscription_handle,
-                        "owner-released",
-                        None,
-                    )
-                    .await;
-            }
-        }
         for (_, subscription) in detached {
             if let Some(task) = subscription.task {
                 task.abort();
@@ -3182,6 +3217,7 @@ impl BtleplugDispatcher {
                             delivery,
                             task: None,
                             phase: ReleasePhase::Active,
+                            terminal_sent: false,
                         },
                     );
                     let task = self.spawn_notification_forwarder(
@@ -3312,11 +3348,39 @@ impl BtleplugDispatcher {
                     Err(error) => ("source-failed", Some(DispatchError::from_core(&error))),
                 };
                 let (reason, error) = ending;
-                dispatcher
-                    .terminal(&key, (&lease.0, &lease.1), &handle, reason, error.as_ref())
-                    .await
-                    .ok();
-                return;
+                let mut reported_send_failure = false;
+                loop {
+                    match dispatcher
+                        .notification_terminal(
+                            &key,
+                            (&lease.0, &lease.1),
+                            &handle,
+                            reason,
+                            error.as_ref(),
+                        )
+                        .await
+                    {
+                        Ok(true) => return,
+                        // A requested release took admission while this
+                        // poll was in flight. Let that release own the
+                        // terminal; if it fails, the mapping remains for
+                        // the explicit retry path.
+                        Ok(false) => break,
+                        // Caller retirement or lease replacement owns this
+                        // stream now; it no longer admits delivery here.
+                        Err(failure) if failure.code == BleErrorCode::OwnershipDenied => return,
+                        Err(failure) => {
+                            if !reported_send_failure {
+                                eprintln!(
+                                    "tauri-plugin-unified-ble-manager: notification terminal delivery failed; retrying: {}",
+                                    failure.describe()
+                                );
+                                reported_send_failure = true;
+                            }
+                            tokio::time::sleep(FORWARD_POLL_INTERVAL).await;
+                        }
+                    }
+                }
             }
         })
     }
@@ -4006,47 +4070,97 @@ impl BtleplugDispatcher {
         reason: &str,
         error: Option<&DispatchError>,
     ) -> Result<(), DispatchError> {
-        let (sink, lease_id, lease_generation, event_id) = {
-            let mut state = self.inner.lock().await;
-            let caller_state = state
-                .callers
-                .get_mut(caller_key)
-                .filter(|caller_state| !caller_state.retired)
-                .ok_or_else(|| {
-                    DispatchError::new(
-                        BleErrorCode::OwnershipDenied,
-                        "stream",
-                        "tauri.terminal-owner",
-                    )
-                })?;
-            if caller_state.lease_id != expected_lease.0
-                || caller_state.lease_generation != expected_lease.1
-            {
-                return Err(DispatchError::new(
+        self.terminal_with_subscription_admission(
+            caller_key,
+            expected_lease,
+            stream_id,
+            reason,
+            error,
+            false,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Send a notification terminal only while its subscription and
+    /// connection are still active. The phase check, synchronous channel
+    /// send, and sent marker share one lock: a core poll started before
+    /// `disconnect` cannot overtake or duplicate the owner-release terminal.
+    async fn notification_terminal(
+        &self,
+        caller_key: &str,
+        expected_lease: (&str, &str),
+        stream_id: &str,
+        reason: &str,
+        error: Option<&DispatchError>,
+    ) -> Result<bool, DispatchError> {
+        self.terminal_with_subscription_admission(
+            caller_key,
+            expected_lease,
+            stream_id,
+            reason,
+            error,
+            true,
+        )
+        .await
+    }
+
+    async fn terminal_with_subscription_admission(
+        &self,
+        caller_key: &str,
+        expected_lease: (&str, &str),
+        stream_id: &str,
+        reason: &str,
+        error: Option<&DispatchError>,
+        require_active_subscription: bool,
+    ) -> Result<bool, DispatchError> {
+        let mut state = self.inner.lock().await;
+        let caller_state = state
+            .callers
+            .get_mut(caller_key)
+            .filter(|caller_state| !caller_state.retired)
+            .ok_or_else(|| {
+                DispatchError::new(
                     BleErrorCode::OwnershipDenied,
                     "stream",
-                    "tauri.terminal-stale-lease",
-                ));
+                    "tauri.terminal-owner",
+                )
+            })?;
+        if caller_state.lease_id != expected_lease.0
+            || caller_state.lease_generation != expected_lease.1
+        {
+            return Err(DispatchError::new(
+                BleErrorCode::OwnershipDenied,
+                "stream",
+                "tauri.terminal-stale-lease",
+            ));
+        }
+        if require_active_subscription {
+            let Some(subscription) = caller_state.subscriptions.get(stream_id) else {
+                return Ok(false);
+            };
+            if subscription.terminal_sent
+                || !subscription.phase.is_active()
+                || !caller_state
+                    .connections
+                    .get(&subscription.connection_handle)
+                    .is_some_and(|connection| connection.phase.is_active())
+            {
+                return Ok(false);
             }
-            let event_id = self.id("event-terminal");
-            caller_state.pending_events.insert(event_id.clone());
-            (
-                caller_state.event_sink.clone(),
-                caller_state.lease_id.clone(),
-                caller_state.lease_generation.clone(),
-                event_id,
-            )
-        };
+        }
+        let event_id = self.id("event-terminal");
+        caller_state.pending_events.insert(event_id.clone());
         let mut terminal_item = object([("kind", string("terminal")), ("reason", string(reason))]);
         if let (Some(error), IpcValue::Object(item)) = (error, &mut terminal_item) {
             item.insert("error".to_owned(), error.normalized_error());
         }
-        let send_result = sink.send(object([
+        let send_result = caller_state.event_sink.send(object([
             (
                 "rendererLease",
                 object([
-                    ("leaseId", string(lease_id.clone())),
-                    ("generation", string(lease_generation.clone())),
+                    ("leaseId", string(caller_state.lease_id.clone())),
+                    ("generation", string(caller_state.lease_generation.clone())),
                 ]),
             ),
             ("eventId", string(event_id.clone())),
@@ -4054,14 +4168,7 @@ impl BtleplugDispatcher {
             ("item", terminal_item),
         ]));
         if send_result.is_err() {
-            let mut state = self.inner.lock().await;
-            if let Some(caller_state) = state.callers.get_mut(caller_key) {
-                if caller_state.lease_id == lease_id
-                    && caller_state.lease_generation == lease_generation
-                {
-                    caller_state.pending_events.remove(&event_id);
-                }
-            }
+            caller_state.pending_events.remove(&event_id);
         }
         send_result.map_err(|error| {
             DispatchError::new(
@@ -4070,7 +4177,13 @@ impl BtleplugDispatcher {
                 "tauri.terminal-send",
             )
             .platform(error.to_string())
-        })
+        })?;
+        if require_active_subscription {
+            if let Some(subscription) = caller_state.subscriptions.get_mut(stream_id) {
+                subscription.terminal_sent = true;
+            }
+        }
+        Ok(true)
     }
 
     /// Release everything one caller owns, through the shared core.

@@ -27,6 +27,8 @@ remains: the active route is `ubm-mobile-wire/1`.
   Numeric Bluetooth UUID inputs accept valid zero-prefixed short forms.
 - Electron's public transport propagates aggregate overflow, terminal, and
   iterator failures to active streams, with cleanup remaining retryable.
+- A Tauri notification poll already in flight cannot overtake a requested
+  disconnect and misreport its stream terminal as `connection-lost`.
 
 ### Distribution and consumer proofs
 

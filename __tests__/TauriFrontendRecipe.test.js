@@ -21,16 +21,19 @@ function typecheckRecipe(source) {
   if (config.error) throw new Error(ts.flattenDiagnosticMessageText(config.error.messageText, '\n'))
   const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, root)
   const virtualFile = path.join(root, '__tests__/tauri-frontend-guide.virtual.ts')
+  // TypeScript normalizes compiler paths to forward slashes on Windows;
+  // node:path joins with backslashes there. Compare filesystem identities.
+  const isVirtualFile = fileName => path.normalize(fileName) === virtualFile
   const host = ts.createCompilerHost(parsed.options)
   const getSourceFile = host.getSourceFile.bind(host)
   const fileExists = host.fileExists.bind(host)
   const readFile = host.readFile.bind(host)
   host.getSourceFile = (fileName, languageVersion, onError, shouldCreateNewSourceFile) =>
-    fileName === virtualFile
+    isVirtualFile(fileName)
       ? ts.createSourceFile(fileName, source, languageVersion, true)
       : getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile)
-  host.fileExists = fileName => fileName === virtualFile || fileExists(fileName)
-  host.readFile = fileName => (fileName === virtualFile ? source : readFile(fileName))
+  host.fileExists = fileName => isVirtualFile(fileName) || fileExists(fileName)
+  host.readFile = fileName => (isVirtualFile(fileName) ? source : readFile(fileName))
   const program = ts.createProgram([virtualFile], { ...parsed.options, noEmit: true }, host)
   const diagnostics = ts.getPreEmitDiagnostics(program)
   if (diagnostics.length > 0) {
