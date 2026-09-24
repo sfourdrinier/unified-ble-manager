@@ -849,6 +849,10 @@ export class Subscription<Attachment extends string, Identity extends BackendIde
     return this.subscription.values
   }
 
+  get observedDelivery() {
+    return this.subscription.observedDelivery
+  }
+
   remove(): Promise<CleanupRecord> {
     return this.subscription.remove()
   }

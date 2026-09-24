@@ -1036,6 +1036,16 @@ describe('WebBluetoothBackend', () => {
     void provider
   })
 
+  test('refuses a background standing order before constructing a browser manager', async () => {
+    const { createWebBleManagerWithEnvironment } = require('../../src/web')
+    await expect(
+      createWebBleManagerWithEnvironment({
+        environment: {},
+        createOptions: { background: { continuation: { onAppearance: 'record-only' } } }
+      })
+    ).rejects.toMatchObject({ code: 'capability.unsupported' })
+  })
+
   test('keeps Web chooser match filters separate from optional GATT grants', async () => {
     const requestDevice = jest.fn(async () => ({
       id: 'public-web-device',

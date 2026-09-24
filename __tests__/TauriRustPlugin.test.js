@@ -1,7 +1,10 @@
 'use strict'
 
 const fs = require('fs')
+const crypto = require('crypto')
+const os = require('os')
 const path = require('path')
+const { spawnSync } = require('child_process')
 
 const root = path.resolve(__dirname, '..')
 const read = relative => fs.readFileSync(path.join(root, relative), 'utf8')
@@ -211,5 +214,37 @@ describe('Tauri v2 Rust plugin boundary', () => {
 
     assertFailFastOrder(packageJob, '- name: Generated artifacts match the sources')
     assertFailFastOrder(publishJob, '- name: Build 4.0 Web Bluetooth public example')
+    expect(read('scripts/ci/tauri-packed-consumer-check.js')).toContain("'cargo', 'build'")
+    expect(read('scripts/ci/tauri-packed-consumer-check.js')).toContain('tauri::generate_context!()')
+    expect(read('scripts/ci/tauri-packed-consumer-check.js')).toContain('tauriCargoRecipe()')
+    expect(publishJob).toContain('check-tauri-pack-binding.js')
+    expect(publishJob.indexOf('check-tauri-pack-binding.js')).toBeGreaterThan(
+      publishJob.indexOf('Generate the exact canonical npm publish tarball')
+    )
+  })
+
+  test('rejects a linked Tauri proof for different publish tarball bytes', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-tauri-binding-test-'))
+    try {
+      const tarball = path.join(directory, 'package.tgz')
+      const receipt = path.join(directory, 'receipt.json')
+      const manifest = require('../package.json')
+      const run = () => spawnSync(process.execPath, [
+        path.join(root, 'scripts/ci/check-tauri-pack-binding.js'),
+        '--receipt', receipt,
+        '--tarball', tarball
+      ], { cwd: root, encoding: 'utf8' })
+      fs.writeFileSync(tarball, 'packed bytes')
+      fs.writeFileSync(receipt, JSON.stringify({
+        package: `${manifest.name}@${manifest.version}`,
+        tarballSha256: crypto.createHash('sha256').update('packed bytes').digest('hex'),
+        proof: 'linked-tauri-application'
+      }))
+      expect(run().status).toBe(0)
+      fs.writeFileSync(tarball, 'different bytes')
+      expect(run().status).not.toBe(0)
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true })
+    }
   })
 })

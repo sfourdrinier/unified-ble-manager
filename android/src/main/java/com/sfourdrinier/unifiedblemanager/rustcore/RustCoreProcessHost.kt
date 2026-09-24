@@ -19,7 +19,6 @@ import com.ubm.core.MobileCoreBridge
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -39,8 +38,20 @@ class RustCoreProcessHost(
 ) {
   private val routes = ConcurrentHashMap<Long, (Long) -> Unit>()
   private val unroutedWakes = AtomicLong()
-  private val retainedCleanupAttempts = ConcurrentHashMap<Long, AtomicInteger>()
-  private val scheduledCleanups = ConcurrentHashMap.newKeySet<Long>()
+  private sealed interface CleanupObligation {
+    data class Session(val id: Long) : CleanupObligation
+    data class Scope(val id: String) : CleanupObligation
+  }
+
+  private class CleanupState {
+    var attempts = 0
+    var generation = 0L
+    var scheduled = false
+    var inFlight = false
+  }
+
+  private val cleanupLock = Any()
+  private val retainedCleanups = mutableMapOf<CleanupObligation, CleanupState>()
 
   @Volatile
   private var companionChooser: CompanionPort? = null
@@ -73,7 +84,7 @@ class RustCoreProcessHost(
 
   @Synchronized
   fun ensureInstalled() {
-    retainedCleanupAttempts.keys.forEach { scheduleRetainedCleanup(it, 0L) }
+    synchronized(cleanupLock) { retainedCleanups.keys.toList() }.forEach { scheduleRetainedCleanup(it, 0L) }
     if (core.hostInstalled()) return
     val radio = radioHost()
     installedAdapter = radio as? RustRadioHostAdapter
@@ -158,50 +169,88 @@ class RustCoreProcessHost(
    * keeps the session until Rust confirms that the lease is gone.
    */
   fun retainSessionCleanup(sessionId: Long, detail: String) {
-    retainedCleanupAttempts.putIfAbsent(sessionId, AtomicInteger(0))
+    val obligation = CleanupObligation.Session(sessionId)
+    synchronized(cleanupLock) { retainedCleanups.getOrPut(obligation) { CleanupState() } }
     unroute(sessionId)
     log("process owner retained session $sessionId cleanup: $detail")
-    scheduleRetainedCleanup(sessionId, 0L)
+    scheduleRetainedCleanup(obligation, 0L)
   }
 
-  internal fun retainedCleanupSessions(): Set<Long> = retainedCleanupAttempts.keys.toSet()
+  fun retainBackgroundScopeCleanup(scope: String) {
+    val obligation = CleanupObligation.Scope(scope)
+    synchronized(cleanupLock) { retainedCleanups.getOrPut(obligation) { CleanupState() } }
+    scheduleRetainedCleanup(obligation, 0L)
+  }
 
-  private fun scheduleRetainedCleanup(sessionId: Long, delayMs: Long) {
-    if (!retainedCleanupAttempts.containsKey(sessionId) || !scheduledCleanups.add(sessionId)) return
+  internal fun retainedCleanupSessions(): Set<Long> = synchronized(cleanupLock) {
+    retainedCleanups.keys.filterIsInstance<CleanupObligation.Session>().mapTo(mutableSetOf()) { it.id }
+  }
+
+  internal fun retainedCleanupScopes(): Set<String> = synchronized(cleanupLock) {
+    retainedCleanups.keys.filterIsInstance<CleanupObligation.Scope>().mapTo(mutableSetOf()) { it.id }
+  }
+
+  private fun scheduleRetainedCleanup(obligation: CleanupObligation, delayMs: Long) {
+    val generation = synchronized(cleanupLock) {
+      val state = retainedCleanups[obligation] ?: return
+      if (state.scheduled || state.inFlight) return
+      state.scheduled = true
+      ++state.generation
+    }
     try {
-      scheduleCleanup(delayMs, Runnable { attemptRetainedCleanup(sessionId) })
+      scheduleCleanup(delayMs, Runnable { attemptRetainedCleanup(obligation, generation) })
     } catch (error: RuntimeException) {
-      scheduledCleanups.remove(sessionId)
-      log("process owner could not schedule session $sessionId cleanup: ${error.message}")
+      synchronized(cleanupLock) {
+        retainedCleanups[obligation]?.takeIf { it.generation == generation }?.scheduled = false
+      }
+      log("process owner could not schedule $obligation cleanup: ${error.message}")
     }
   }
 
-  private fun attemptRetainedCleanup(sessionId: Long) {
-    scheduledCleanups.remove(sessionId)
-    val attempts = retainedCleanupAttempts[sessionId] ?: return
-    val attempt = attempts.incrementAndGet()
+  private fun attemptRetainedCleanup(obligation: CleanupObligation, generation: Long) {
+    val attempt = synchronized(cleanupLock) {
+      val state = retainedCleanups[obligation] ?: return
+      if (state.generation != generation || !state.scheduled || state.inFlight) return
+      state.scheduled = false
+      state.inFlight = true
+      ++state.attempts
+    }
     try {
-      core.invoke(sessionId, RustCoreSessions.DISPOSE, "{}", MobileCoreBridge.InvokeCallback { envelope ->
-        val outcome = RustCoreSessions.disposeOutcome(envelope)
-        if (outcome == null) {
-          retainedCleanupAttempts.remove(sessionId)
-          scheduledCleanups.remove(sessionId)
-          log("process owner released retained session $sessionId on attempt $attempt")
-        } else {
-          log("process owner session $sessionId cleanup attempt $attempt failed: ${outcome.toJson()}")
-          scheduleRetainedCleanup(sessionId, cleanupRetryDelay(attempt))
+      when (obligation) {
+        is CleanupObligation.Session -> core.invoke(obligation.id, RustCoreSessions.DISPOSE, "{}", MobileCoreBridge.InvokeCallback { envelope ->
+          finishRetainedCleanup(obligation, generation, attempt, RustCoreSessions.disposeOutcome(envelope))
+        })
+        is CleanupObligation.Scope -> {
+          val record = core.releaseBackgroundScope(obligation.id)
+          val released = try {
+            (RustCoreJson.parse(record) as? Map<*, *>)?.get("state") == "released"
+          } catch (_: IllegalArgumentException) {
+            false
+          }
+          finishRetainedCleanup(obligation, generation, attempt, if (released) null else
+            RustCoreRejection("platform.failure", "platform", "background.scope.release", record))
         }
-      })
-    } catch (error: RuntimeException) {
-      val outcome = RustCoreSessions.disposeThrownOutcome(error)
-      if (outcome == null) {
-        retainedCleanupAttempts.remove(sessionId)
-        scheduledCleanups.remove(sessionId)
-        log("process owner found retained session $sessionId already released on attempt $attempt")
-      } else {
-        log("process owner session $sessionId cleanup attempt $attempt threw: ${outcome.toJson()}")
-        scheduleRetainedCleanup(sessionId, cleanupRetryDelay(attempt))
       }
+    } catch (error: RuntimeException) {
+      val outcome = if (obligation is CleanupObligation.Session) RustCoreSessions.disposeThrownOutcome(error)
+        else RustCoreRejection.platform("background.scope.release", error)
+      finishRetainedCleanup(obligation, generation, attempt, outcome)
+    }
+  }
+
+  private fun finishRetainedCleanup(obligation: CleanupObligation, generation: Long, attempt: Int, outcome: RustCoreRejection?) {
+    val accepted = synchronized(cleanupLock) {
+      val state = retainedCleanups[obligation]
+      if (state == null || state.generation != generation || !state.inFlight) false else {
+        state.inFlight = false
+        if (outcome == null) retainedCleanups.remove(obligation)
+        true
+      }
+    }
+    if (!accepted) return
+    if (outcome == null) log("process owner released $obligation on attempt $attempt") else {
+      log("process owner $obligation cleanup attempt $attempt failed: ${outcome.toJson()}")
+      scheduleRetainedCleanup(obligation, cleanupRetryDelay(attempt))
     }
   }
 

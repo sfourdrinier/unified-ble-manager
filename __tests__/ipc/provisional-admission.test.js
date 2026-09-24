@@ -111,7 +111,7 @@ async function createAdmissionHarness(options = {}) {
   const connectPayload = options.connectPayload ?? validConnectPayload()
   const subscribePayload = options.subscribePayload
   const discoverPayload = options.discoverPayload ?? validGattDiscoverPayload()
-  const gattSubscribePayload = options.gattSubscribePayload ?? { handle: 'subscription-1' }
+  const gattSubscribePayload = options.gattSubscribePayload ?? { handle: 'subscription-1', observedDelivery: 'unknown' }
   let disconnectImpl =
     options.disconnect ?? (async () => ({ kind: 'route', payload: { state: 'released', failures: [] } }))
   let unsubscribeImpl =
@@ -450,7 +450,7 @@ describe('IPC provisional admission', () => {
 
   test('duplicate GATT subscribe handle rejects without unsubscribing the admitted subscription', async () => {
     const harness = await createAdmissionHarness({
-      gattSubscribePayload: { handle: 'subscription-1' }
+      gattSubscribePayload: { handle: 'subscription-1', observedDelivery: 'unknown' }
     })
     const connection = await harness.ipc.connect('peer-1')
     const database = await connection.discover()
@@ -461,7 +461,22 @@ describe('IPC provisional admission', () => {
     })
     expect(harness.commands.filter(command => command === 'gatt.unsubscribe')).toHaveLength(0)
     expect(first.handle).toBe('subscription-1')
+    expect(first.observedDelivery).toBe('unknown')
     await first.remove()
+    expect(harness.commands.filter(command => command === 'gatt.unsubscribe')).toHaveLength(1)
+    await connection.release()
+    await harness.ipc.destroy()
+  })
+
+  test('malformed observed subscription delivery compensates the admitted native handle', async () => {
+    const harness = await createAdmissionHarness({
+      gattSubscribePayload: { handle: 'subscription-1', observedDelivery: 'requested-mode' }
+    })
+    const connection = await harness.ipc.connect('peer-1')
+    const database = await connection.discover()
+    await expect(database.characteristics[0].subscribe()).rejects.toMatchObject({
+      normalized: { code: 'protocol.malformed', operation: 'ipc-manager.gatt-subscribe.observed-delivery' }
+    })
     expect(harness.commands.filter(command => command === 'gatt.unsubscribe')).toHaveLength(1)
     await connection.release()
     await harness.ipc.destroy()

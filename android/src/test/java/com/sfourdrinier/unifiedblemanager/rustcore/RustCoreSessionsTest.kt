@@ -16,7 +16,7 @@ class RustCoreSessionsTest {
   private val logs = mutableListOf<String>()
   private val radioHost = unusedRadioHost()
   private var radioHostBuilds = 0
-  private val host = RustCoreProcessHost(core, { radioHostBuilds++; radioHost }) { logs.add(it) }
+  private val host = RustCoreProcessHost(core, { radioHostBuilds++; radioHost }, { _, task -> task.run() }) { logs.add(it) }
   private val wakes = mutableListOf<String>()
   private var packageName: String? = "com.example.app"
   private val sessions = RustCoreSessions(core, host, DirectExecutor, { wakes.add(it) }, { packageName }, SecureRandom(), { logs.add(it) })
@@ -56,6 +56,10 @@ class RustCoreSessionsTest {
 
     fun runAll() {
       while (tasks.isNotEmpty()) tasks.removeFirst().run()
+    }
+
+    fun runNext() {
+      tasks.removeFirst().run()
     }
   }
 
@@ -221,11 +225,99 @@ class RustCoreSessionsTest {
 
   @Test
   fun aScopeReleaseFailureOnInvalidateIsLoggedNotSwallowed() {
-    open().single()
+    val cleanupTasks = QueuedExecutor()
+    val processHost = RustCoreProcessHost(core, { unusedRadioHost() },
+      { _, task -> cleanupTasks.execute(task) }, { logs.add(it) })
+    val moduleSessions = RustCoreSessions(core, processHost, DirectExecutor, {}, { packageName }, SecureRandom(), { logs.add(it) })
+    Captured().also { moduleSessions.openSession("manager-a", "ubm-mobile-wire/1", it) }.single()
     core.scopeRelease = "{\"failures\":[{\"resourceKind\":\"background\",\"code\":\"platform.failure\"}],\"state\":\"release-failed\"}"
-    sessions.invalidate()
+    moduleSessions.invalidate()
     core.callbacks.forEach { it.onResult("{\"ok\":true,\"value\":{\"failures\":[],\"state\":\"released\"}}") }
-    assertTrue(logs.toString(), logs.any { it.contains("background scope") && it.contains("release-failed") })
+    cleanupTasks.runNext()
+    assertTrue(logs.toString(), logs.any { it.contains("Scope") && it.contains("release-failed") })
+  }
+
+  @Test
+  fun invalidationRetriesFailedScopeAfterSessionDisposalWithoutAnotherModule() {
+    val cleanupTasks = QueuedExecutor()
+    val processHost = RustCoreProcessHost(core, { unusedRadioHost() },
+      { _, task -> cleanupTasks.execute(task) }, { logs.add(it) })
+    val first = RustCoreSessions(core, processHost, DirectExecutor, {}, { packageName }, SecureRandom(), { logs.add(it) })
+    val second = RustCoreSessions(core, processHost, DirectExecutor, {}, { packageName }, SecureRandom(), { logs.add(it) })
+    Captured().also { first.openSession("first", "ubm-mobile-wire/1", it) }.single()
+    core.openRecord = { "{\"sessionId\":8}" }
+    Captured().also { second.openSession("second", "ubm-mobile-wire/1", it) }.single()
+    val firstScope = core.openScopes[0]
+    val secondScope = core.openScopes[1]
+    core.scopeRelease = "{\"failures\":[{\"resourceKind\":\"background\",\"code\":\"platform.failure\"}],\"state\":\"release-failed\"}"
+
+    first.invalidate()
+    assertTrue("scope awaits native disposal", core.releasedScopes.isEmpty())
+    core.callbacks.single().onResult("{\"ok\":true,\"value\":{\"failures\":[],\"state\":\"released\"}}")
+    cleanupTasks.runNext()
+    assertEquals(listOf(firstScope), core.releasedScopes)
+    assertEquals(setOf(firstScope), processHost.retainedCleanupScopes())
+    core.scopeRelease = "{\"failures\":[],\"state\":\"released\"}"
+    cleanupTasks.runAll()
+    assertEquals(listOf(firstScope, firstScope), core.releasedScopes)
+    assertTrue(processHost.retainedCleanupScopes().isEmpty())
+    assertTrue("other module remains active", secondScope !in core.releasedScopes)
+  }
+
+  @Test
+  fun acceptedBackgroundAcquisitionCannotOutliveTheScopeReleaseBoundary() {
+    val cleanupTasks = QueuedExecutor()
+    val processHost = RustCoreProcessHost(core, { unusedRadioHost() },
+      { _, task -> cleanupTasks.execute(task) }, { logs.add(it) })
+    val moduleSessions = RustCoreSessions(core, processHost, DirectExecutor, {}, { packageName }, SecureRandom(), { logs.add(it) })
+    Captured().also { moduleSessions.openSession("manager", "ubm-mobile-wire/1", it) }.single()
+    val acquisition = Captured()
+    moduleSessions.invoke("7", "background.acquire", "{\"kind\":\"connected-device\"}", acquisition)
+    assertEquals(1, core.callbacks.size)
+
+    moduleSessions.invalidate()
+    assertEquals(2, core.callbacks.size)
+    assertTrue(core.releasedScopes.isEmpty())
+    core.callbacks[0].onResult("{\"ok\":true,\"value\":{\"leaseId\":\"background-1\"}}")
+    acquisition.single()
+    cleanupTasks.runAll()
+    assertTrue("accepted acquisition alone cannot release the scope", core.releasedScopes.isEmpty())
+    core.callbacks[1].onResult("{\"ok\":true,\"value\":{\"failures\":[],\"state\":\"released\"}}")
+    cleanupTasks.runAll()
+    assertEquals(listOf(core.openScopes.single()), core.releasedScopes)
+  }
+
+  @Test
+  fun retainedSessionRetryStaysSingleFlightAndIgnoresStaleCallback() {
+    val cleanupTasks = QueuedExecutor()
+    val processHost = RustCoreProcessHost(core, { unusedRadioHost() },
+      { _, task -> cleanupTasks.execute(task) }, { logs.add(it) })
+    processHost.retainSessionCleanup(7L, "failure")
+    cleanupTasks.runAll()
+    assertEquals(1, core.callbacks.size)
+    repeat(3) { processHost.ensureInstalled() }
+    cleanupTasks.runAll()
+    assertEquals("in-flight native disposal is not retried", 1, core.callbacks.size)
+    core.callbacks.single().onResult("{\"ok\":true,\"value\":{\"failures\":[],\"state\":\"released\"}}")
+    assertTrue(processHost.retainedCleanupSessions().isEmpty())
+    core.callbacks.single().onResult("{\"ok\":true,\"value\":{\"failures\":[],\"state\":\"released\"}}")
+    assertTrue(processHost.retainedCleanupSessions().isEmpty())
+  }
+
+  @Test
+  fun staleSessionCallbackCannotCompleteANewerRetry() {
+    val cleanupTasks = QueuedExecutor()
+    val processHost = RustCoreProcessHost(core, { unusedRadioHost() },
+      { _, task -> cleanupTasks.execute(task) }, { logs.add(it) })
+    processHost.retainSessionCleanup(7L, "failure")
+    cleanupTasks.runNext()
+    core.callbacks[0].onResult("{\"ok\":true,\"value\":{\"failures\":[{\"code\":\"platform.failure\"}],\"state\":\"release-failed\"}}")
+    cleanupTasks.runNext()
+    assertEquals(2, core.callbacks.size)
+    core.callbacks[0].onResult("{\"ok\":true,\"value\":{\"failures\":[],\"state\":\"released\"}}")
+    assertEquals(setOf(7L), processHost.retainedCleanupSessions())
+    core.callbacks[1].onResult("{\"ok\":true,\"value\":{\"failures\":[],\"state\":\"released\"}}")
+    assertTrue(processHost.retainedCleanupSessions().isEmpty())
   }
 
   @Test
@@ -246,7 +338,8 @@ class RustCoreSessionsTest {
   fun invalidateRejectsAnAcceptedOpenThatWasAlreadyQueuedBeforeTeardown() {
     val queued = QueuedExecutor()
     val queuedWakes = mutableListOf<String>()
-    val queuedHost = RustCoreProcessHost(core, { unusedRadioHost() }, log = { logs.add(it) })
+    val queuedHost = RustCoreProcessHost(core, { unusedRadioHost() },
+      { _, task -> task.run() }, { logs.add(it) })
     val queuedSessions = RustCoreSessions(
       core,
       queuedHost,

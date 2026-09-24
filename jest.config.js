@@ -9,6 +9,7 @@ module.exports = {
   testPathIgnorePatterns: [
     '/node_modules/',
     '/__tests__/helpers/',
+    '/__tests__/electron/helpers/',
     '/__tests__/docs-recipes/',
     '/__tests__/backend-contract/fixtures/',
     '/__tests__/package-surface/fixtures/'

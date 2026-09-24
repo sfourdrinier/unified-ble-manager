@@ -92,6 +92,18 @@ async fn r14b_stop_wins_over_inflight_start() {
     wait_for_call(&central, "start_scan").await;
 
     stop_owned_scan(&central).await.expect("stop wins");
+    assert_eq!(
+        central
+            .start_scan(
+                "replacement-before-old-start-settles",
+                &[],
+                OpControl::budget_ms(5000)
+            )
+            .await
+            .expect_err("the late starter still owns compensation")
+            .code_str(),
+        "scan.already-active"
+    );
     central.boundary().unblock_op(FaultOp::StartScan);
 
     let racing = tokio::time::timeout(Duration::from_secs(10), racing)

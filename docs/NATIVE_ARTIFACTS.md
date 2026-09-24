@@ -18,6 +18,11 @@ against the current sources; a mismatch is `stale`, never silent.
 The Tauri plugin (`native/tauri`) is not a precompiled artifact: it compiles
 inside the Tauri app build, so it needs no status row and no refresh.
 
+Android's default prebuilt Gradle path verifies the committed identity, byte
+length, SHA-256, ELF machine, and every load segment's 16 KiB alignment using
+Gradle's JVM. Packed consumers need no shell, NDK, or `readelf` for that check.
+The explicit `UBM_NATIVE_BUILD=source` path still uses the native build tools.
+
 ## The fourth thing a Rust change stales: the expected identity
 
 `src/generated/native-build-identity.ts` is the identity every host compares a

@@ -19,7 +19,7 @@
 use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
@@ -164,7 +164,10 @@ pub(crate) struct SessionState {
     pub outbox: Outbox,
     ops: Mutex<OpTable>,
     idle: Notify,
-    live_ops: AtomicU64,
+    admission: Mutex<AdmissionState>,
+    release_guard: tokio::sync::Mutex<()>,
+    release_version: AtomicU64,
+    last_release: Mutex<Option<Vec<Value>>>,
     /// Radio progress of every live op except `counters.describe` (which
     /// never counts itself), keyed by a per-session sequence.
     op_radio: Mutex<HashMap<u64, Arc<OpRadio>>>,
@@ -179,7 +182,11 @@ pub(crate) struct SessionState {
     scan: Mutex<ScanSlot>,
     scan_ordinal: AtomicU64,
     pub background_scope: BackgroundScope,
-    closing: AtomicBool,
+}
+
+struct AdmissionState {
+    closing: bool,
+    ordinary_ops: u64,
 }
 
 impl SessionState {
@@ -194,7 +201,13 @@ impl SessionState {
                 cancelled_ahead: BTreeSet::new(),
             }),
             idle: Notify::new(),
-            live_ops: AtomicU64::new(0),
+            admission: Mutex::new(AdmissionState {
+                closing: false,
+                ordinary_ops: 0,
+            }),
+            release_guard: tokio::sync::Mutex::new(()),
+            release_version: AtomicU64::new(0),
+            last_release: Mutex::new(None),
             op_radio: Mutex::new(HashMap::new()),
             op_sequence: AtomicU64::new(0),
             leases: Mutex::new(HashMap::new()),
@@ -204,7 +217,6 @@ impl SessionState {
             scan: Mutex::new(ScanSlot::Idle),
             scan_ordinal: AtomicU64::new(0),
             background_scope,
-            closing: AtomicBool::new(false),
         }
     }
 
@@ -580,7 +592,7 @@ impl MobileSession {
         // A disposed session still answers `counters.describe` (a read): it
         // reports what the session still holds — nothing after a clean
         // dispose — so a manager can confirm its own return to baseline.
-        if self.state.closing.load(Ordering::SeqCst)
+        if lock(&self.state.admission).closing
             && op != "session.dispose"
             && op != "counters.describe"
             && op != "session.quiesce"
@@ -634,6 +646,24 @@ impl MobileSession {
         if op != "op.cancel" && command.operation_id.is_some() != admission.is_some() {
             return reject(wire::invalid("args.admission"), completion);
         }
+        let is_disposal = matches!(command.body, Body::Dispose | Body::ContinuationDispose);
+        let release_version = self.state.release_version.load(Ordering::SeqCst);
+        // This is the definitive admission boundary. Teardown closes it under
+        // the same lock, so an operation cannot appear after the drain check.
+        let mut gate = lock(&self.state.admission);
+        if gate.closing
+            && op != "session.dispose"
+            && op != "session.continuation-dispose"
+            && op != "counters.describe"
+            && op != "session.quiesce"
+        {
+            drop(gate);
+            return reject(
+                error(BleErrorCode::LifecycleDestroyed, BleErrorDomain::Core, op)
+                    .with_detail("session disposed"),
+                completion,
+            );
+        }
         let ticket = OpTicket::new();
         if let (Some(id), Some(admission)) = (&command.operation_id, admission) {
             let mut ops = lock(&self.state.ops);
@@ -643,7 +673,10 @@ impl MobileSession {
             }
             ops.live.insert(id.clone(), (ticket.clone(), admission));
         }
-        self.state.live_ops.fetch_add(1, Ordering::SeqCst);
+        if !is_disposal {
+            gate.ordinary_ops += 1;
+        }
+        drop(gate);
         let progress = Arc::new(OpRadio::default());
         let tracked = (!matches!(command.body, Body::Counters)).then(|| {
             let key = self.state.op_sequence.fetch_add(1, Ordering::Relaxed);
@@ -658,7 +691,7 @@ impl MobileSession {
                 .scope(
                     progress,
                     DISPATCHED.scope(Cell::new(false), async {
-                        let outcome = session.execute(command.body, ctl).await;
+                        let outcome = session.execute(command.body, ctl, release_version).await;
                         (outcome, DISPATCHED.with(Cell::get))
                     }),
                 )
@@ -676,7 +709,10 @@ impl MobileSession {
                 lock(&session.state.ops).live.remove(&id);
             }
             completion(text);
-            if session.state.live_ops.fetch_sub(1, Ordering::SeqCst) == 1 {
+            if !is_disposal {
+                let mut gate = lock(&session.state.admission);
+                gate.ordinary_ops -= 1;
+                drop(gate);
                 session.state.idle.notify_waiters();
             }
         });
@@ -1315,7 +1351,12 @@ impl MobileSession {
         }
     }
 
-    async fn execute(&self, body: Body, ctl: OpControl) -> Result<Value, DesktopError> {
+    async fn execute(
+        &self,
+        body: Body,
+        ctl: OpControl,
+        release_version: u64,
+    ) -> Result<Value, DesktopError> {
         let host = &*self.host;
         let central = &host.central;
         match body {
@@ -1356,7 +1397,11 @@ impl MobileSession {
                     service_uuids,
                     device_addresses,
                 };
-                if let Err(error) = host.join_scan(self.state.id, member, android, ctl).await {
+                if let Err(error) = self
+                    .host
+                    .join_scan(self.state.id, member, android, ctl)
+                    .await
+                {
                     let mut slot = lock(&self.state.scan);
                     if slot.membership() == Some(membership.as_str()) {
                         *slot = ScanSlot::Idle;
@@ -1968,7 +2013,7 @@ impl MobileSession {
                 ]))
             }
             Body::ContinuationDispose => {
-                let failures = self.release(1).await;
+                let failures = self.release(release_version).await;
                 let loss = self.state.outbox.after_cutoff_loss();
                 Ok(object(vec![
                     (
@@ -1984,7 +2029,7 @@ impl MobileSession {
                     ("afterCutoffBytes", Value::from(loss.bytes)),
                 ]))
             }
-            Body::Dispose => Ok(cleanup_record(self.release(1).await)),
+            Body::Dispose => Ok(cleanup_record(self.release(release_version).await)),
         }
     }
 
@@ -2512,12 +2557,17 @@ impl MobileSession {
     /// Release everything this session holds on the shared owner. Failed
     /// releases stay held (a second dispose retries them).
     pub(crate) async fn dispose_failures(&self) -> Vec<Value> {
-        self.release(0).await
+        self.release(self.state.release_version.load(Ordering::SeqCst))
+            .await
     }
 
-    async fn release(&self, own_ops: u64) -> Vec<Value> {
+    async fn release(&self, requested_version: u64) -> Vec<Value> {
+        let _leader = self.state.release_guard.lock().await;
+        if self.state.release_version.load(Ordering::SeqCst) > requested_version {
+            return lock(&self.state.last_release).clone().unwrap_or_default();
+        }
         let host = &*self.host;
-        self.state.closing.store(true, Ordering::SeqCst);
+        lock(&self.state.admission).closing = true;
         // Cancel every other live op and wait for them to settle (the
         // dispose op itself is not in the live table: it has no id).
         let tickets: Vec<OpTicket> = lock(&self.state.ops)
@@ -2530,7 +2580,9 @@ impl MobileSession {
         }
         loop {
             let idle = self.state.idle.notified();
-            if self.state.live_ops.load(Ordering::SeqCst) <= own_ops {
+            tokio::pin!(idle);
+            idle.as_mut().enable();
+            if lock(&self.state.admission).ordinary_ops == 0 {
                 break;
             }
             idle.await;
@@ -2592,6 +2644,8 @@ impl MobileSession {
         if failures.is_empty() {
             host.remove_session(self.state.id);
         }
+        *lock(&self.state.last_release) = Some(failures.clone());
+        self.state.release_version.fetch_add(1, Ordering::SeqCst);
         failures
     }
 }

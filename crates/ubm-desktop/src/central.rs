@@ -1344,6 +1344,9 @@ type StopAnswer = Option<Result<(), DesktopError>>;
 enum ScanPhase {
     /// OS start in flight.
     Starting,
+    /// A stop won while the OS start was still in flight. Keep the identity
+    /// until that start settles, because it can turn the radio on afterward.
+    StartCancelled,
     /// OS confirmed the start.
     Active,
     /// One stop is in flight; concurrent stops wait for its answer.
@@ -1569,7 +1572,7 @@ impl<B> Clone for DesktopCentral<B> {
 
 /// Role one stop call takes for the owned scan.
 enum StopRole {
-    Lead(watch::Sender<StopAnswer>),
+    Lead(watch::Sender<StopAnswer>, bool),
     Follow(watch::Receiver<StopAnswer>),
     NotActive,
 }
@@ -2391,6 +2394,14 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         };
         let id = {
             let mut core = self.inner.core.lock().await;
+            if let Some(occupant) = self.inner.scan_slot().as_ref() {
+                return Err(DesktopError::new(
+                    BleErrorCode::ScanAlreadyActive,
+                    BleErrorDomain::Scan,
+                    "scan.start",
+                )
+                .with_detail(format!("scan {} still owns radio cleanup", occupant.id)));
+            }
             let mut out = batch();
             let id = match core.start_scan(&request, None, owner, now_ms(), &mut out) {
                 Ok(id) => id,
@@ -2539,79 +2550,57 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         recycle_observations(&mut core);
     }
 
-    /// Settle a scan start that lost to a concurrent stop/shutdown, expired,
-    /// or was cancelled (R14b/R14c): never activate. When a stop leader
-    /// owns our marker, wait (bounded) for its answer first. Then take our
-    /// marker when still present, stop the possibly-started OS scan only
-    /// when no newer scan owns the radio (bounded; a failure is reported,
-    /// never swallowed), and drive our session terminal. A marker retained
-    /// after a failed stop stays: the next stop owns that cleanup.
+    /// A start that lost admission can still have turned on the OS scan.
+    /// Compensation uses the same generation-bound stop owner and retry
+    /// state as an explicit stop; a refused stop never discards its handle.
     async fn compensate_lost_start(&self, id: &OperationId) {
         let deadline = tokio::time::Instant::now() + LIVENESS_CLEANUP;
-        let radio_free = loop {
+        loop {
             let pending = {
                 let mut slot = self.inner.scan_slot();
                 match slot
                     .as_ref()
                     .map(|active| (active.id == *id, &active.phase))
                 {
-                    None => break true,
-                    Some((false, _)) => break false,
-                    Some((true, ScanPhase::StopFailed)) => {
-                        // The failed stop keeps the scan for its retry.
-                        return;
+                    None => {
+                        if self.inner.shut_down.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        *slot = Some(ActiveScan {
+                            id: id.clone(),
+                            phase: ScanPhase::StopFailed,
+                        });
+                        None
                     }
-                    Some((true, ScanPhase::Stopping(rx))) => rx.clone(),
-                    Some((true, ScanPhase::Starting | ScanPhase::Active)) => {
-                        *slot = None;
-                        break true;
-                    }
+                    Some((false, _)) => return,
+                    Some((true, ScanPhase::Stopping(rx))) => Some(rx.clone()),
+                    Some((true, _)) => None,
                 }
             };
-            let mut pending = pending;
-            let answered =
-                tokio::time::timeout_at(deadline, pending.wait_for(Option::is_some)).await;
-            if !matches!(answered, Ok(Ok(_))) {
-                // The leader still owns the marker; its own bound decides.
-                return;
+            if let Some(mut pending) = pending {
+                if !matches!(
+                    tokio::time::timeout_at(deadline, pending.wait_for(Option::is_some)).await,
+                    Ok(Ok(_))
+                ) {
+                    // The leader retains the identity and its own deadline.
+                    return;
+                }
+                continue;
             }
-        };
-        let (stop_ok, stop_code) = if radio_free {
-            match tokio::time::timeout(COMPENSATION_TIMEOUT, self.inner.boundary.stop_scan()).await
+            let control = OpControl::unbounded();
+            if self
+                .stop_scan_with(
+                    id,
+                    control.budget.window(COMPENSATION_TIMEOUT),
+                    &control.ticket,
+                )
+                .await
+                .is_err()
             {
-                Ok(Ok(())) => (true, None),
-                Ok(Err(error)) => {
-                    self.inner.note_compensation_failure();
-                    (false, Some(error.code()))
-                }
-                Err(_) => {
-                    self.inner.note_compensation_failure();
-                    (false, Some(BleErrorCode::OperationTimedOut))
-                }
+                self.inner.note_compensation_failure();
             }
-        } else {
-            (true, None)
-        };
-        let mut core = self.inner.core.lock().await;
-        let mut out = batch();
-        let _ = core.stop_scan(id, now_ms(), &mut out);
-        let _ = out.drain();
-        let _ = core.note_scan_platform(
-            id,
-            ubm_core::central::ScanPlatformEvent::PlatformStopped,
-            now_ms(),
-            &mut out,
-        );
-        let _ = out.drain();
-        let _ = core.settle_op(id, ContenderKind::Success, true, 0, now_ms(), &mut out);
-        let _ = out.drain();
-        // R15: retain the completed ticket between settlement and release
-        // (first writer wins), then release with the compensation receipt.
-        if let Some(kind) = terminal_kind_of(&core, id) {
-            retain_completed_scan(&self.inner.completed_scans, id, kind);
+            return;
         }
-        report_terminal_release(&mut core, id, stop_ok, stop_code);
-        recycle_observations(&mut core);
     }
 
     /// Stop the scan `scan` names (PR210-09). Only that scan: another id
@@ -2646,10 +2635,14 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             match slot.as_mut() {
                 Some(active) if active.id == *scan => match &active.phase {
                     ScanPhase::Stopping(rx) => StopRole::Follow(rx.clone()),
-                    ScanPhase::Starting | ScanPhase::Active | ScanPhase::StopFailed => {
+                    ScanPhase::Starting
+                    | ScanPhase::StartCancelled
+                    | ScanPhase::Active
+                    | ScanPhase::StopFailed => {
+                        let was_starting = matches!(active.phase, ScanPhase::Starting);
                         let (tx, rx) = watch::channel(None);
                         active.phase = ScanPhase::Stopping(rx);
-                        StopRole::Lead(tx)
+                        StopRole::Lead(tx, was_starting)
                     }
                 },
                 _ => StopRole::NotActive,
@@ -2682,7 +2675,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     )),
                 }
             }
-            StopRole::Lead(tx) => {
+            StopRole::Lead(tx, was_starting) => {
                 let mut lead = StopLead {
                     inner: &self.inner,
                     id: scan.clone(),
@@ -2731,8 +2724,14 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                             report_terminal_release(&mut core, scan, true, None);
                             recycle_observations(&mut core);
                             let mut slot = self.inner.scan_slot();
-                            if slot.as_ref().is_some_and(|active| active.id == *scan) {
-                                *slot = None;
+                            if let Some(active) = slot.as_mut()
+                                && active.id == *scan
+                            {
+                                if was_starting {
+                                    active.phase = ScanPhase::StartCancelled;
+                                } else {
+                                    *slot = None;
+                                }
                             }
                         }
                         lead.succeed();

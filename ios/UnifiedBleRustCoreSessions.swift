@@ -26,21 +26,56 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
   private struct Entry {
     let session: MobileCoreSession
     weak var owner: NSObject?
+    let ownerState: OwnerState
     let onWake: (String) -> Void
   }
 
+  private final class OwnerState {
+    weak var owner: NSObject?
+    var invalidated = false
+    var opening = 0
+    init(_ owner: NSObject) { self.owner = owner }
+  }
+
+  typealias OpenInvoker = (MobileCoreHost, String, String) throws -> MobileCoreSession
+  typealias DisposeInvoker = (MobileCoreSession, @escaping (String) -> Void) -> Void
+  private struct DisposalFlight {
+    let generation: UInt64
+    var completions: [(String?) -> Void]
+  }
+
   private let installer: Installer
+  private let openInvoker: OpenInvoker
+  private let disposeInvoker: DisposeInvoker
+  private let retryDelay: DispatchTimeInterval
   private let lock = NSLock()
   private var host: MobileCoreHost?
   private var sessions = [UInt64: Entry]()
+  private var ownerStates = [ObjectIdentifier: OwnerState]()
+  private var cleanupPending = Set<UInt64>()
+  private var disposalFlights = [UInt64: DisposalFlight]()
+  private var scheduledRetries = Set<UInt64>()
+  private var nextDisposalGeneration: UInt64 = 0
   private var highestIssued: UInt64 = 0
   /// Wakes that raced ahead of their session's registration (Rust admitted
   /// the session, the module has not stored it yet). Bounded by the number
   /// of concurrent opens.
   private var earlyWakes = Set<UInt64>()
 
-  init(installer: @escaping Installer) {
+  init(
+    installer: @escaping Installer,
+    openInvoker: @escaping OpenInvoker = { try $0.openSession(owner: $1, expectedWireRevision: $2) },
+    disposeInvoker: @escaping DisposeInvoker = { session, completion in
+      session.invoke(op: "session.dispose", argsJson: "{}", completion: InvokeCompletion { envelope in
+        completion(envelope)
+      })
+    },
+    retryDelay: DispatchTimeInterval = .seconds(2)
+  ) {
     self.installer = installer
+    self.openInvoker = openInvoker
+    self.disposeInvoker = disposeInvoker
+    self.retryDelay = retryDelay
     super.init()
   }
 
@@ -146,18 +181,51 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
     onWake: @escaping (String) -> Void,
     completion: (String?, String?) -> Void
   ) {
+    let ownerKey = ObjectIdentifier(ownerToken)
+    lock.lock()
+    // The state is retained through a native open, even when module
+    // invalidation races the return from Rust admission.
+    let ownerState = ownerStates[ownerKey].flatMap { $0.owner === ownerToken ? $0 : nil } ?? OwnerState(ownerToken)
+    ownerStates[ownerKey] = ownerState
+    if ownerState.invalidated {
+      lock.unlock()
+      return completion(nil, Self.failureJson(
+        code: "lifecycle.destroyed", domain: "lifecycle", operation: "rust-core.open-session",
+        detail: "the owning module was invalidated"
+      ))
+    }
+    ownerState.opening += 1
+    lock.unlock()
     let session: MobileCoreSession
     do {
-      session = try installedHost().openSession(owner: owner, expectedWireRevision: expectedWireRevision)
+      session = try openInvoker(installedHost(), owner, expectedWireRevision)
     } catch {
+      lock.lock()
+      ownerState.opening -= 1
+      pruneOwnerStatesLocked()
+      lock.unlock()
       return completion(nil, Self.failureJson(error, operation: "rust-core.open-session"))
     }
     let id = session.sessionId()
     lock.lock()
-    sessions[id] = Entry(session: session, owner: ownerToken, onWake: onWake)
+    ownerState.opening -= 1
+    let invalidated = ownerState.invalidated
+    sessions[id] = Entry(session: session, owner: ownerToken, ownerState: ownerState, onWake: onWake)
+    if invalidated { cleanupPending.insert(id) }
     highestIssued = max(highestIssued, id)
     let wokeEarly = earlyWakes.remove(id) != nil
     lock.unlock()
+    if invalidated {
+      closeSession(String(id)) { failure in
+        if let failure {
+          NSLog("[UnifiedBleRustCoreSessions] disposing late session %llu failed: %@", id, failure)
+        }
+      }
+      return completion(nil, Self.failureJson(
+        code: "lifecycle.destroyed", domain: "lifecycle", operation: "rust-core.open-session",
+        detail: "the owning module was invalidated during admission"
+      ))
+    }
     if wokeEarly { onWake(String(id)) }
     completion(session.admissionJson(), nil)
   }
@@ -212,24 +280,35 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
     }
     lock.lock()
     let held = sessions[id]
+    if held != nil, var flight = disposalFlights[id] {
+      flight.completions.append(completion)
+      disposalFlights[id] = flight
+      lock.unlock()
+      return
+    }
+    if held != nil {
+      nextDisposalGeneration &+= 1
+      disposalFlights[id] = DisposalFlight(generation: nextDisposalGeneration, completions: [completion])
+    }
+    let generation = nextDisposalGeneration
     lock.unlock()
     guard let held else { return completion(nil) }
-    held.session.invoke(op: "session.dispose", argsJson: "{}", completion: InvokeCompletion { envelope in
-      if let failure = Self.disposeFailure(envelope) {
-        return completion(failure)
-      }
-      self.lock.lock()
-      self.sessions.removeValue(forKey: id)
-      self.lock.unlock()
-      completion(nil)
-    })
+    disposeInvoker(held.session) { envelope in
+      self.finishDisposal(id: id, generation: generation, envelope: envelope)
+    }
   }
 
   /// Module teardown (React reload): the JS owner of these sessions is gone.
   @objc(closeSessionsOwnedBy:)
   public func closeSessions(ownedBy ownerToken: NSObject) {
     lock.lock()
-    let owned = sessions.filter { $0.value.owner === ownerToken || $0.value.owner == nil }.map(\.key)
+    let ownerKey = ObjectIdentifier(ownerToken)
+    let ownerState = ownerStates[ownerKey].flatMap { $0.owner === ownerToken ? $0 : nil } ?? OwnerState(ownerToken)
+    ownerStates[ownerKey] = ownerState
+    ownerState.invalidated = true
+    let owned = sessions.filter { $0.value.ownerState === ownerState || $0.value.owner == nil }.map(\.key)
+    cleanupPending.formUnion(owned)
+    pruneOwnerStatesLocked()
     lock.unlock()
     for id in owned {
       closeSession(String(id)) { failure in
@@ -237,6 +316,56 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
           NSLog("[UnifiedBleRustCoreSessions] disposing session %llu at module teardown failed: %@", id, failure)
         }
       }
+    }
+  }
+
+  private func finishDisposal(id: UInt64, generation: UInt64, envelope: String) {
+    let failure = Self.disposeFailure(envelope)
+    lock.lock()
+    guard let flight = disposalFlights[id], flight.generation == generation else {
+      lock.unlock()
+      return
+    }
+    disposalFlights.removeValue(forKey: id)
+    if failure == nil {
+      sessions.removeValue(forKey: id)
+      cleanupPending.remove(id)
+      scheduledRetries.remove(id)
+      pruneOwnerStatesLocked()
+    }
+    let shouldRetry = failure != nil && cleanupPending.contains(id)
+    lock.unlock()
+    for callback in flight.completions { callback(failure) }
+    if shouldRetry { scheduleRetry(id) }
+  }
+
+  private func scheduleRetry(_ id: UInt64) {
+    lock.lock()
+    guard cleanupPending.contains(id), sessions[id] != nil, scheduledRetries.insert(id).inserted else {
+      lock.unlock()
+      return
+    }
+    lock.unlock()
+    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + retryDelay) { [self] in
+      lock.lock()
+      scheduledRetries.remove(id)
+      let shouldRetry = cleanupPending.contains(id) && sessions[id] != nil
+      lock.unlock()
+      if shouldRetry {
+        closeSession(String(id)) { failure in
+          if let failure {
+            NSLog("[UnifiedBleRustCoreSessions] retrying session %llu disposal failed: %@", id, failure)
+          }
+        }
+      }
+    }
+  }
+
+  /// Call with lock held. Only module states with neither accepted work nor
+  /// retained sessions can be removed; an in-flight open preserves its state.
+  private func pruneOwnerStatesLocked() {
+    ownerStates = ownerStates.filter { _, state in
+      state.opening > 0 || sessions.values.contains { $0.ownerState === state } || state.owner != nil
     }
   }
 

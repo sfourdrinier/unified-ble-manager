@@ -1,6 +1,6 @@
 // src/public/gatt.ts
 
-import { canonicalUuid } from '../backend-contract/primitives'
+import { canonicalUuidInput } from '../backend-contract/primitives'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
 import { contractError } from '../backend-contract/errors'
 import type {
@@ -370,19 +370,30 @@ class PublicGattCharacteristic implements GattCharacteristic {
       ) {
         throw contractError('capability.limited', 'gatt', 'public-gatt.subscribe.delivery-selection')
       }
-      const effectiveDelivery = this.source.deliverySelection === 'unknown' ? 'unknown' : selectedDelivery
       const budget = resolveStreamPolicy(options.stream ?? 'balanced')
       const subscription = await this.source.subscribe(this.indexedRecord.record.path, {
         ...normalizeOperationOptions(options, () => this.source.monotonicNow()),
         delivery: budget,
         deliveryMode:
           options.delivery ??
-          (effectiveDelivery === 'notification'
+          (selectedDelivery === 'notification'
             ? 'prefer-notification'
-            : effectiveDelivery === 'indication'
+            : selectedDelivery === 'indication'
               ? 'prefer-indication'
               : undefined)
       })
+      const effectiveDelivery = subscription.observedDelivery ?? 'unknown'
+      if (
+        effectiveDelivery !== 'notification' &&
+        effectiveDelivery !== 'indication' &&
+        effectiveDelivery !== 'unknown'
+      ) {
+        const cleanup = await subscription.remove()
+        if (cleanup.state === 'release-failed') {
+          throw contractError('platform.failure', 'cleanup', 'public-gatt.subscribe.invalid-delivery-cleanup')
+        }
+        throw contractError('protocol.violation', 'gatt', 'public-gatt.subscribe.observed-delivery')
+      }
       return Object.freeze({
         requestedDelivery: options.delivery,
         effectiveDelivery,
@@ -475,11 +486,10 @@ class PublicGattDescriptor implements GattDescriptor {
 
 function normalizeUuid(value: UuidInput): string {
   try {
-    const text = typeof value === 'number' ? value.toString(16) : value
-    if (typeof text !== 'string' || text.length === 0) {
+    if (typeof value === 'string' && value.length === 0) {
       throw new Error('UUID input must be non-empty')
     }
-    return String(canonicalUuid(text))
+    return String(canonicalUuidInput(value))
   } catch {
     throw rehydratePublicError(contractError('argument.invalid', 'gatt', 'public-gatt.uuid'))
   }

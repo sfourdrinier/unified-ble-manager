@@ -8,6 +8,7 @@ import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Everything the `UnifiedBleRustCore` TurboModule does, without React
@@ -246,6 +247,10 @@ class RustCoreSessions(
     }
     if (!firstInvalidation) return
     executor.execute {
+      val pending = AtomicInteger(1)
+      fun finishOne() {
+        if (pending.decrementAndGet() == 0) host.retainBackgroundScopeCleanup(backgroundScope)
+      }
       try {
         owned.toList().forEach { sessionId ->
           host.unroute(sessionId)
@@ -253,20 +258,26 @@ class RustCoreSessions(
             forget(sessionId)
             return@forEach
           }
+          pending.incrementAndGet()
+          val completed = AtomicBoolean(false)
           dispose(sessionId) { outcome ->
-            if (outcome != null) {
-              host.retainSessionCleanup(sessionId, outcome.toJson())
-              log("session $sessionId dispose on invalidate transferred to process owner: ${outcome.toJson()}")
+            if (completed.compareAndSet(false, true)) {
+              try {
+                if (outcome != null) {
+                  host.retainSessionCleanup(sessionId, outcome.toJson())
+                  log("session $sessionId dispose on invalidate transferred to process owner: ${outcome.toJson()}")
+                }
+                forget(sessionId)
+              } finally {
+                finishOne()
+              }
             }
-            forget(sessionId)
           }
         }
-        val record = core.releaseBackgroundScope(backgroundScope)
-        if (envelope(record)?.get("state") != "released") {
-          log("background scope $backgroundScope release on invalidate: $record")
-        }
       } catch (error: Throwable) {
-        log("background scope $backgroundScope release on invalidate threw: ${error.message}")
+        log("background scope $backgroundScope invalidation threw: ${error.message}")
+      } finally {
+        finishOne()
       }
     }
   }

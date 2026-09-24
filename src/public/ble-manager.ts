@@ -2415,7 +2415,11 @@ export function connectionEventsEndedExpectedly(iterable: AsyncIterable<BleConne
   return expectedConnectionEventEnds.get(iterable) === 'expected'
 }
 
-export function publicConnectionTerminalError(reason: StreamTerminalNotice['reason']): Error {
+export function publicConnectionTerminalError(
+  reason: StreamTerminalNotice['reason'],
+  error: NormalizedBleError | null = null
+): Error {
+  if (error !== null) return new BackendContractError(error)
   if (reason === 'closed' || reason === 'owner-released') {
     return new ExpectedConnectionEventEnd()
   }
@@ -2454,7 +2458,7 @@ function mapPublicConnectionEvents(
               throw contractError('stream.overflow', 'connection', 'public-connection.events')
             }
             if (item.value.kind === 'terminal') {
-              throw publicConnectionTerminalError(item.value.reason)
+              throw publicConnectionTerminalError(item.value.reason, item.value.error ?? null)
             }
             const event = item.value.value
             return {

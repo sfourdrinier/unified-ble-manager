@@ -399,6 +399,8 @@ export interface DiscoveredGattDatabaseHandle {
 export interface SubscriptionHandle {
   readonly subscriptionId: string
   readonly path: PortableCurrentCharacteristicPath
+  /** Settled native answer. Older handles without it report `unknown`. */
+  readonly observedDelivery?: 'notification' | 'indication' | 'unknown'
   readonly values: PortableBoundedAsyncStream<PortableNotificationValue>
   remove(): Promise<PortableCleanupRecord>
 }

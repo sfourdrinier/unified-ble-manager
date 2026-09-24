@@ -9,20 +9,21 @@ The Rust plugin owns the radio (btleplug: CoreBluetooth, WinRT, or BlueZ). The w
 ## Install
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.6 @tauri-apps/api
+pnpm add unified-ble-manager@5.0.0-rc.7 @tauri-apps/api
 ```
 
-Until the crate is on crates.io, use the Rust plugin source shipped in the same
-exact npm package. In the normal Tauri layout (`src-tauri/` beside
-`node_modules/`), put all three entries in the consuming app's
-`src-tauri/Cargo.toml`:
+Use the Rust plugin source shipped in the same npm package. In the normal
+Tauri layout (`src-tauri/` beside `node_modules/`), put the following entries
+in the consuming app's `src-tauri/Cargo.toml`. `ubm init --host tauri --dir
+src-tauri` generates this fragment from the same recipe used by the external
+packed-consumer build:
 
 ```toml
 [dependencies]
+tauri = { version = "2", features = [] }
 tauri-plugin-unified-ble-manager = { path = "../node_modules/unified-ble-manager/native/tauri" }
 
-# Cargo reads patches only from the consuming workspace root. The plugin's
-# dependency manifest cannot activate these mandatory UBM vendor patches.
+# Cargo reads patches only from the consuming workspace root.
 [patch.crates-io]
 btleplug = { path = "../node_modules/unified-ble-manager/vendor/btleplug" }
 bluez-async = { path = "../node_modules/unified-ble-manager/vendor/bluez-async" }
@@ -32,9 +33,8 @@ Adjust all three relative paths together in a monorepo. Omitting the root
 `[patch.crates-io]` table fails the plugin's production vendor-patch guard;
 Cargo intentionally ignores patch tables in dependency manifests.
 
-The intended published recipe is `cargo add tauri-plugin-unified-ble-manager@5.0.0-rc.6`.
-That command fails today because the crate is not published. `ubm init --host tauri`
-writes the crates.io fragment so you can switch when it is.
+The crate is not yet published on crates.io. Use the packed npm path recipe
+until a separately published crate exists.
 
 ## Frontend
 
@@ -43,34 +43,43 @@ import { createTauriBleManager } from 'unified-ble-manager/tauri'
 
 const abort = new AbortController()
 const manager = await createTauriBleManager()
-const scan = await manager.scan({
-  query: { anyOf: [{ services: { any: ['180d'] } }] },
-  duplicates: 'coalesced',
-  delivery: 'balanced',
-  signal: abort.signal,
-  timeoutMs: 15_000
-})
-const first = await scan.observations[Symbol.asyncIterator]().next()
-await scan.stop()
-if (first.done || first.value.kind !== 'value') {
-  await manager.destroy()
-  throw new Error('No peer observed')
-}
-const connection = await manager.connect(first.value.peer, { signal: abort.signal, timeoutMs: 10_000 })
 try {
-  const gatt = await connection.discover({ signal: abort.signal, timeoutMs: 10_000 })
-  // Public UUID properties are canonical 128-bit values. The lookup helper
-  // accepts short Bluetooth SIG UUIDs and normalizes them before matching.
-  const level = gatt.characteristic('180f', '2a19')
-  const bytes = await level.read({ signal: abort.signal, timeoutMs: 5_000 })
-  void bytes
+  const scan = await manager.scan({
+    query: { anyOf: [{ services: { any: ['180d'] } }] },
+    duplicates: 'coalesced',
+    delivery: 'balanced',
+    signal: abort.signal,
+    timeoutMs: 15_000
+  })
+  let peer
+  try {
+    const first = await scan.observations[Symbol.asyncIterator]().next()
+    if (first.done || first.value.kind !== 'value') throw new Error('No peer observed')
+    peer = first.value.value.peer
+  } finally {
+    await scan.stop()
+  }
+  const connection = await manager.connect(peer, { signal: abort.signal, timeoutMs: 10_000 })
+  try {
+    const gatt = await connection.discover({ signal: abort.signal, timeoutMs: 10_000 })
+    // Public UUIDs are canonical 128-bit values; lookup accepts short forms.
+    const level = gatt.characteristic('180f', '2a19')
+    const bytes = await level.read({ signal: abort.signal, timeoutMs: 5_000 })
+    void bytes
+  } finally {
+    await connection.release()
+  }
 } finally {
-  await connection.release()
   await manager.destroy()
 }
 ```
 
 `BleManager.scan` accepts the frozen `ScanQuery` Boolean algebra plus `signal`, `timeoutMs`, duplicate policy, and a stream preset. Query matching is performed by the shared portable matcher; native projections are only safe broad prefilters.
+
+Tauri uses its native attachment identity. Its factory accepts an adapter
+selector and rejects `instanceId`, `diagnostics`, `randomBytes`, `restoration`,
+and `background` declarations with a typed capability error; an unsupported
+background standing order never silently becomes record-only.
 
 **Scan-query digest.** The webview normalizes the query and sends its `scan-query-v1:` digest (FNV-1a/64 over the canonical JSON) with the request; the plugin recomputes the digest over its own canonicalization and fails closed with `protocol.malformed` at `tauri.scan-query` on any mismatch, before any radio work. The TypeScript normalizer owns the canonical form — null `services`/`names`/`manufacturerData`/`serviceData`/`rssi` are kept, null `peers`/`addresses` are dropped — and the plugin reproduces it byte-identically, including radio `addresses`, UUID case/short forms, and explicit wire nulls. The shared golden corpus `__tests__/fixtures/scan-query-digests.json` (generated by `scripts/generate-scan-query-digest-corpus.js`) pins all supported shapes on both sides.
 

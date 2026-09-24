@@ -49,10 +49,16 @@ describe('Android Rust cdylib packaging (UBM 5.0 HOST-ANDROID)', () => {
     // prebuilts fails LOUD (broken artifact), never silently.
     expect(buildGradle).toContain('android.sourceSets.main.jniLibs.srcDirs = [file("src/main/jniLibs")]')
     expect(buildGradle).toContain('no committed prebuilts')
-    // D2(iii): the 16 KB page-size gate is wired into both paths (hard in
-    // source builds, opportunistic --offline-ok over packed prebuilts).
+    // D2(iii): source builds use the native tool; default packed consumers
+    // verify ELF alignment inside Gradle, including on hosts without `sh`.
     expect(buildGradle).toContain('def ubmRust16kScript = file("check-elf-16k-pages.sh")')
-    expect(buildGradle).toContain('inputs.file(ubmRust16kScript)')
+    expect(buildGradle).toContain('apply from: file("elf-16k-verifier.gradle")')
+    expect(buildGradle).toContain('inputs.file(file("elf-16k-verifier.gradle"))')
+    expect(buildGradle).toContain('verifyUbmElf16k(prebuiltSo, prebuiltAbi)')
+    const prebuiltBranch = buildGradle.split('if (!ubmRustSourceBuild) {')[1].split('return\n      }')[0]
+    expect(prebuiltBranch).not.toContain('runUbmScript')
+    expect(prebuiltBranch).not.toContain('"sh"')
+    expect(buildGradle).toContain('if (ubmRustSourceBuild) {\n      inputs.file(ubmRust16kScript)')
     expect(buildGradle).toContain('16 KB page check')
   })
 

@@ -2,6 +2,8 @@
 
 # Unified BLE Manager
 
+<img src="assets/brand/ubm-mark.svg" width="88" height="88" alt="Unified BLE Manager icon" />
+
 > **AI agent?** Writing code _against_ this package: read [`llms.txt`](llms.txt)
 > first — contract facts, every public entrypoint, curated doc links, one fetch.
 > Working _on_ this repository: read [`AGENTS.md`](AGENTS.md), then the
@@ -18,7 +20,7 @@ root import does not pick a radio. Package SemVer and backend support labels are
 independent: each radio backend keeps its evidence-derived label. See
 [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
 
-This source tree is versioned `5.0.0-rc.6`. Install the exact version shown in the npm
+This source tree is versioned `5.0.0-rc.7`. Install the exact version shown in the npm
 registry. During release preparation, the version in `package.json` can be ahead
 of npm until the matching tag-driven workflow publishes it; the registry and
 GitHub release remain authoritative.
@@ -54,7 +56,7 @@ links in one fetch. Agents contributing to this repository start at
 ## Install
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.6
+pnpm add unified-ble-manager@5.0.0-rc.7
 ```
 
 Installable with npm, yarn, or Bun. This repository uses pnpm. Bun as a runtime is not a tested host.
@@ -345,10 +347,12 @@ after disconnect, service change, or rediscovery.
 
 ### `Subscription`
 
-| Member     | Use                                                                                                                      |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `values`   | Bounded stream of `value` / `overflow` / `terminal` items. A value item carries bytes, delivery, timestamp, and sequence |
-| `remove()` | Always, including after abort; inspect the cleanup receipt                                                               |
+| Member              | Use                                                                                                                      |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `requestedDelivery` | The caller's preference or requirement, if supplied.                                                                     |
+| `effectiveDelivery` | The settled host observation: `notification`, `indication`, or `unknown` when the platform does not report it.           |
+| `values`            | Bounded stream of `value` / `overflow` / `terminal` items. A value item carries bytes, delivery, timestamp, and sequence |
+| `remove()`          | Always, including after abort; inspect the cleanup receipt                                                               |
 
 ### Scoped façade methods
 
@@ -381,7 +385,7 @@ after disconnect, service change, or rediscovery.
 - **Node:** `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager`, or list adapters and `createBleManagerFromProvider`. Published releases ship the Node-API desktop-core prebuild for macOS, Windows and Linux on `arm64`/`x64`. [`docs/NODE.md`](docs/NODE.md)
 - **Tauri:** `createTauriBleManager()` returns the public `BleManager`; test transports use `createTauriBleManagerWithEnvironment`. [`docs/TAURI.md`](docs/TAURI.md)
 
-`5.0.0-rc.6` publishes to npm `next`; bare installs still select the 4.0
+`5.0.0-rc.7` publishes to npm `next`; bare installs still select the 4.0
 `latest` line. Stable 5.x versions will publish to `latest`. Publication uses
 npm trusted publishing/OIDC with provenance.
 

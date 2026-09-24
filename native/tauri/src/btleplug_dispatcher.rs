@@ -3212,7 +3212,7 @@ impl BtleplugDispatcher {
         }
         Ok(object([
             ("handle", string(handle)),
-            ("delivery", string(delivery.as_str())),
+            ("observedDelivery", string(delivery.as_str())),
         ]))
     }
 

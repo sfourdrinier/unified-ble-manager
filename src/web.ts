@@ -18,7 +18,7 @@ import {
 import { createBleManagerFromBackend, DEFAULT_BLE_MANAGER_OPTIONS } from './manager/ble-manager'
 import { byteLimit, opaqueId } from './backend-contract/primitives'
 import { createEphemeralHostIdentity } from './public/host-identity'
-import { canonicalUuid } from './backend-contract/primitives'
+import { canonicalUuidInput } from './backend-contract/primitives'
 import type { Uuid } from './backend-contract/primitives'
 import { normalizeOperationOptions } from './public/operation-options'
 import { contractError } from './backend-contract/errors'
@@ -128,6 +128,9 @@ function normalizeWebCreateOptions(options: BleManagerCreateOptions | undefined)
   if (normalized.restoration !== undefined) {
     throw contractError('capability.unsupported', 'restoration', 'web-manager.restoration')
   }
+  if (normalized.background !== undefined) {
+    throw contractError('capability.unsupported', 'capability', 'web-manager.background')
+  }
   return normalized
 }
 
@@ -171,7 +174,7 @@ async function chooseWebPeer(backend: WebBluetoothBackend, options: ChooseOption
 }
 
 function normalizeChooserUuid(value: string | number): Uuid {
-  return canonicalUuid(typeof value === 'number' ? value.toString(16) : value)
+  return canonicalUuidInput(value)
 }
 
 function normalizeChooserFilter(filter: ChooseFilter) {

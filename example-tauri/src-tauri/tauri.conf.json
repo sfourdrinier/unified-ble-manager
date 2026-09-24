@@ -8,5 +8,5 @@
     "windows": [{ "label": "main", "title": "Unified BLE Tauri Proof", "width": 720, "height": 480, "backgroundThrottling": "disabled" }],
     "security": { "csp": null }
   },
-  "bundle": { "active": false, "icon": ["../../docs/logo.png"] }
+  "bundle": { "active": false, "icon": ["../../assets/brand/ubm-mark-512.png"] }
 }

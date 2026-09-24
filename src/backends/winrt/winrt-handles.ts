@@ -478,6 +478,10 @@ export class WinRtBackendSubscription implements BackendSubscription<string, str
     return this.stream
   }
 
+  get observedDelivery(): 'notification' | 'indication' {
+    return this.physical.mode === 'notify' ? 'notification' : 'indication'
+  }
+
   get values(): BoundedAsyncStream<NotificationValue> {
     return this.stream
   }

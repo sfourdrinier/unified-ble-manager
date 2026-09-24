@@ -641,6 +641,115 @@ async fn dispose_reports_release_failures_and_retries() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disposal_settles_after_an_admitted_operation_finishes() {
+    let radio = Scripted::new(Box::new(|request| match request {
+        ubm_mobile::RadioRequest::AdapterState { .. } => Reply::Hold,
+        other => polar_responder(other),
+    }));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("rn").unwrap();
+    let pending = tokio::spawn({
+        let session = session.clone();
+        async move { call(&session, "adapter.state", "{}").await }
+    });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while radio.held_of(RequestKind::AdapterState).is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("ordinary operation is admitted");
+    let disposing = tokio::spawn({
+        let session = session.clone();
+        async move { call(&session, "session.dispose", "{}").await }
+    });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let response = parse(&call(&session, "peers.known", "{}").await);
+            if response["error"]["code"] == "lifecycle.destroyed" {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("disposal closed ordinary admission before held work finishes");
+    radio.answer(
+        radio.held_of(RequestKind::AdapterState)[0],
+        RadioCompletion::Adapter(adapter_on()),
+    );
+    ok(&pending.await.unwrap());
+    let result = tokio::time::timeout(Duration::from_secs(1), disposing)
+        .await
+        .expect("disposal wakes when ordinary work drains")
+        .unwrap();
+    assert_eq!(ok(&result)["state"], "released");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn overlapping_disposal_calls_share_one_failed_attempt_then_retry() {
+    let radio = Scripted::polar();
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("rn").unwrap();
+    connect(&session, "connect-before-disposal").await;
+    radio.set_responder(Box::new(|request| match request {
+        ubm_mobile::RadioRequest::Disconnect { .. } => Reply::Hold,
+        other => polar_responder(other),
+    }));
+    let (first_tx, first_rx) = tokio::sync::oneshot::channel();
+    session.invoke(
+        "session.dispose",
+        "{}",
+        Box::new(move |result| {
+            let _ = first_tx.send(result);
+        }),
+    );
+    let (second_tx, second_rx) = tokio::sync::oneshot::channel();
+    session.invoke(
+        "session.continuation-dispose",
+        "{}",
+        Box::new(move |result| {
+            let _ = second_tx.send(result);
+        }),
+    );
+    let held = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(id) = radio.held_of(RequestKind::Disconnect).first() {
+                break *id;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("one disposal owns the native disconnect");
+    radio.answer(
+        held,
+        RadioCompletion::Failed(PlatformFailure::new(
+            FailureKind::Platform,
+            "disconnect refused",
+        )),
+    );
+    let first = ok(&tokio::time::timeout(Duration::from_secs(1), first_rx)
+        .await
+        .unwrap()
+        .unwrap());
+    let second = ok(&tokio::time::timeout(Duration::from_secs(1), second_rx)
+        .await
+        .unwrap()
+        .unwrap());
+    assert_eq!(first["state"], "release-failed");
+    assert_eq!(second["state"], "release-failed");
+    assert_eq!(first["failures"], second["failures"]);
+    assert_eq!(radio.count(RequestKind::Disconnect), 1);
+    radio.set_responder(Box::new(polar_responder));
+    assert_eq!(
+        ok(&call(&session, "session.dispose", "{}").await)["state"],
+        "released"
+    );
+    assert_eq!(radio.count(RequestKind::Disconnect), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wake_fires_once_per_armed_period() {
     let radio = Scripted::polar();
     let (host, wakes) = open(&radio, MobilePlatform::Android).await;

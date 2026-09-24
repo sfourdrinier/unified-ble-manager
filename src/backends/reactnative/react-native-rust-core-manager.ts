@@ -286,7 +286,7 @@ export const BRIDGE_SHAPES: Record<string, BridgeShape> = {
   },
   subscription: {
     methods: ['remove'],
-    properties: ['subscriptionId', 'path', 'values']
+    properties: ['subscriptionId', 'path', 'values', 'observedDelivery']
   }
 }
 
@@ -1835,6 +1835,10 @@ class NativeSubscription {
 
   get values() {
     return this.backendSubscription.values
+  }
+
+  get observedDelivery() {
+    return this.backendSubscription.observedDelivery ?? 'unknown'
   }
 
   remove(): Promise<CleanupRecord> {

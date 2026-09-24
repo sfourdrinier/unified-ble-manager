@@ -1681,7 +1681,7 @@ async fn pr210_13t_a_requirement_is_refused_only_where_the_property_is_missing()
         .subscribe(&link, &database, NOTIFY_ONLY, Some("require-notification"))
         .await
         .expect("a notify-capable characteristic accepts require-notification");
-    assert_eq!(field(&subscription, "delivery"), &string("notification"));
+    assert_eq!(field(&subscription, "observedDelivery"), &string("notification"));
     assert_eq!(
         harness.radio().delivery_requests(),
         vec![Some(DeliveryMode::Notification)],
@@ -1702,7 +1702,7 @@ async fn pr210_13t_a_preference_reports_unknown_delivery_when_the_radio_says_not
         .subscribe(&link, &database, NOTIFY_ONLY, Some("prefer-indication"))
         .await
         .expect("a preference rides through");
-    assert_eq!(field(&subscription, "delivery"), &string("unknown"));
+    assert_eq!(field(&subscription, "observedDelivery"), &string("unknown"));
     assert_eq!(harness.radio().delivery_requests(), vec![None]);
 }
 

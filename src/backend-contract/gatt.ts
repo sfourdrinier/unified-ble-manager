@@ -327,6 +327,7 @@ export interface Subscription<
     CharacteristicOccurrence,
     'current'
   >
+  readonly observedDelivery?: NotificationDelivery
   readonly values: BoundedAsyncStream<NotificationValue>
   remove(): Promise<CleanupRecord>
 }

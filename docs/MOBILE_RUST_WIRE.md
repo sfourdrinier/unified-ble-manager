@@ -55,6 +55,11 @@ JS manager ─┘                          └─ WakeSink (JS wakeup)
     (`s{id}:` for leases and consumers): scan membership, connection leases
     and subscription consumers.
   - `session.dispose` releases exactly those resources.
+  - On Apple, module invalidation closes admission for that module and transfers
+    its sessions to process-owned cleanup. A failed disposal stays owned and is
+    retried on a bounded cadence without another module reload. An explicit
+    close and module invalidation share one native disposal attempt; unrelated
+    module sessions and the process CoreBluetooth restoration radio remain live.
 - **Background leases belong to a background scope.**
   - On Android every session a React Native module instance opens shares
     that module's scope (`nativeOpenSession(…, backgroundScope)`). A
@@ -63,6 +68,11 @@ JS manager ─┘                          └─ WakeSink (JS wakeup)
     (`nativeReleaseBackgroundScope`) ends it, exactly as the legacy module
     held its leases until `invalidate()`. Another scope never reaches it
     (`ownership.denied`).
+  - Android module invalidation closes admission, waits for accepted session
+    disposal results, then transfers scope release to the process host. The
+    host retries refused session disposals and scope releases until Rust
+    confirms release; a React context reload is not required. Each cleanup
+    obligation permits only one native attempt in flight.
   - A session opened without a scope (UniFFI, tests) is its own scope, so
     `session.dispose` releases its background leases.
   - Host shutdown releases every scope. A failed release is reported and the

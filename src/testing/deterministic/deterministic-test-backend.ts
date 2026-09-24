@@ -752,7 +752,7 @@ export class DeterministicTestBackend
       throw contractError('gatt.property-not-supported', 'gatt', 'gatt.subscribe.indication')
     }
     const indication =
-      requestedDelivery === 'prefer-indication' && indicationsAvailable
+      (requestedDelivery === 'prefer-indication' || requestedDelivery === 'require-indication') && indicationsAvailable
         ? true
         : !notificationsAvailable && indicationsAvailable
     const stream = this.createStream<NotificationValue>(optionsValue.delivery, optionsValue.delivery.overflowPolicy)
@@ -851,6 +851,7 @@ export class DeterministicTestBackend
       subscriptionId: subscription.subscriptionId,
       path: subscription.path,
       terminal: physical.enableTerminal,
+      observedDelivery: physical.indication ? 'indication' : 'notification',
       notifications: subscription.values
     }
   }
