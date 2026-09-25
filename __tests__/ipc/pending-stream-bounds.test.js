@@ -110,6 +110,10 @@ function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
+function serializedBytes(value) {
+  return Buffer.byteLength(JSON.stringify(value))
+}
+
 async function firstStreamItem(ipc, streamId) {
   const stream = ipc.registerStream(streamId, isRecord)
   const iterator = stream[Symbol.asyncIterator]()
@@ -119,6 +123,129 @@ async function firstStreamItem(ipc, streamId) {
 }
 
 describe('IPC pre-registration stream buffering', () => {
+  test('active terminal-only source loss retains its counters', async () => {
+    const { ipc, emit } = await createIpcHarness()
+    const iterator = ipc.registerStream('active-terminal-loss', isRecord)[Symbol.asyncIterator]()
+    emit(
+      'active-terminal-loss',
+      { kind: 'terminal', reason: 'overflow', droppedItems: 3, droppedBytes: 30, replacedItems: 2 },
+      'active-terminal-loss-event'
+    )
+    await flushPump()
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { kind: 'overflow', droppedItems: 3, droppedBytes: 30, replacedItems: 2 }
+    })
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason: 'overflow', droppedItems: 3, droppedBytes: 30, replacedItems: 2 }
+    })
+    await ipc.destroy()
+  })
+  test('terminal-only upstream loss remains visible', async () => {
+    const { ipc, emit } = await createIpcHarness()
+    emit(
+      'terminal-loss',
+      { kind: 'terminal', reason: 'source-failed', droppedItems: 3, droppedBytes: 30, replacedItems: 2 },
+      'terminal-loss-event'
+    )
+    await flushPump()
+    const iterator = ipc.registerStream('terminal-loss', isRecord)[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { kind: 'overflow', droppedItems: 3, droppedBytes: 30, replacedItems: 2 }
+    })
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { kind: 'terminal', droppedItems: 3, droppedBytes: 30, replacedItems: 2 }
+    })
+    await ipc.destroy()
+  })
+
+  test('upstream cumulative 3 then 5 plus independent pending 2 reports 7', async () => {
+    const { ipc, emit } = await createIpcHarness()
+    emit(
+      'staged-loss',
+      { kind: 'overflow', policy: 'drop-oldest', droppedItems: 3, droppedBytes: 30, replacedItems: 1 },
+      'staged-loss-3'
+    )
+    emit(
+      'staged-loss',
+      { kind: 'overflow', policy: 'drop-oldest', droppedItems: 5, droppedBytes: 50, replacedItems: 4 },
+      'staged-loss-5'
+    )
+    for (let index = 0; index < 130; index += 1) {
+      emit('staged-loss', { kind: 'value', value: { index } }, `staged-value-${index}`)
+      await new Promise(resolve => setImmediate(resolve))
+    }
+    emit(
+      'staged-loss',
+      { kind: 'terminal', reason: 'closed', droppedItems: 5, droppedBytes: 50, replacedItems: 4 },
+      'staged-terminal'
+    )
+    await flushPump()
+    const iterator = ipc.registerStream('staged-loss', isRecord)[Symbol.asyncIterator]()
+    let terminal
+    for (;;) {
+      const next = await iterator.next()
+      if (next.value?.kind === 'terminal') {
+        terminal = next.value
+        break
+      }
+    }
+    expect(terminal).toMatchObject({ droppedItems: 7, replacedItems: 4 })
+    expect(terminal.droppedBytes).toBe(
+      50 +
+        serializedBytes({ kind: 'value', value: { index: 0 } }) +
+        serializedBytes({ kind: 'value', value: { index: 1 } })
+    )
+    await ipc.destroy()
+  })
+
+  test('upstream totals survive pre-registration control eviction without a terminal', async () => {
+    const { ipc, emit } = await createIpcHarness()
+    emit(
+      'open-loss',
+      { kind: 'overflow', policy: 'drop-oldest', droppedItems: 3, droppedBytes: 30, replacedItems: 1 },
+      'open-loss-3'
+    )
+    emit(
+      'open-loss',
+      { kind: 'overflow', policy: 'drop-oldest', droppedItems: 5, droppedBytes: 50, replacedItems: 4 },
+      'open-loss-5'
+    )
+    for (let index = 0; index < 130; index += 1) {
+      emit('open-loss', { kind: 'value', value: { index } }, `open-value-${index}`)
+      await new Promise(resolve => setImmediate(resolve))
+    }
+    await flushPump()
+    const iterator = ipc.registerStream('open-loss', isRecord)[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: {
+        kind: 'overflow',
+        droppedItems: 7,
+        replacedItems: 4
+      }
+    })
+    await iterator.return()
+    await ipc.destroy()
+  })
+
+  test('eviction retains upstream and buffered value losses', async () => {
+    const { ipc, emit } = await createIpcHarness()
+    emit(
+      'evicted-source-loss',
+      { kind: 'overflow', policy: 'drop-oldest', droppedItems: 5, droppedBytes: 50, replacedItems: 4 },
+      'evicted-overflow'
+    )
+    emit('evicted-source-loss', { kind: 'value', value: { index: 0 } }, 'evicted-value')
+    await flushPump()
+    for (let index = 0; index < 256; index += 1) {
+      emit(`other-${index}`, { kind: 'value', value: { index } }, `other-${index}`)
+      await new Promise(resolve => setImmediate(resolve))
+    }
+    const iterator = ipc.registerStream('evicted-source-loss', isRecord)[Symbol.asyncIterator]()
+    const terminal = await iterator.next()
+    expect(terminal.value).toMatchObject({ kind: 'terminal', reason: 'overflow', droppedItems: 6, replacedItems: 4 })
+    expect(terminal.value.droppedBytes).toBe(50 + serializedBytes({ kind: 'value', value: { index: 0 } }))
+    await ipc.destroy()
+  })
   test('forwards a structured source failure after emitted peers without inventing drops', async () => {
     const { ipc, emit } = await createIpcHarness()
     const stream = ipc.registerStream('scan-error', isRecord)
@@ -204,6 +331,31 @@ describe('IPC pre-registration stream buffering', () => {
     })
     await expect(iterator.next()).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'overflow' } })
     await iterator.return()
+    await ipc.destroy()
+  })
+
+  test('oversized upstream overflow control counts only displaced values as local loss', async () => {
+    const { ipc, emit } = await createIpcHarness()
+    emit('oversized-control', { kind: 'value', value: { seq: 1 } }, 'control-value')
+    emit(
+      'oversized-control',
+      {
+        kind: 'overflow',
+        policy: 'drop-oldest',
+        droppedItems: 3,
+        droppedBytes: 30,
+        replacedItems: 2,
+        padding: 'x'.repeat(70 * 1024)
+      },
+      'control-overflow'
+    )
+    await flushPump()
+    const iterator = ipc.registerStream('oversized-control', isRecord)[Symbol.asyncIterator]()
+    const overflow = await iterator.next()
+    expect(overflow.value).toMatchObject({ kind: 'overflow', droppedItems: 4, replacedItems: 2 })
+    const terminal = await iterator.next()
+    expect(terminal.value).toMatchObject({ kind: 'terminal', reason: 'overflow', droppedItems: 4, replacedItems: 2 })
+    expect(terminal.value.droppedBytes).toBe(30 + serializedBytes({ kind: 'value', value: { seq: 1 } }))
     await ipc.destroy()
   })
 

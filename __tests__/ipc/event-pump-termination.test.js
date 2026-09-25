@@ -1,6 +1,8 @@
 const { IpcBleManager, inspectIpcPendingStreamAccountingForTests } = require('../../src/ipc/manager')
 const { BUILT_IN_FEATURE_IDS } = require('../../src/backend-contract/capabilities')
 const { ElectronRendererBleClient } = require('../../src/electron/renderer')
+const { IpcPublicManagerAdapter } = require('../../src/ipc/public-manager')
+const { awaitSignal } = require('../helpers/async')
 
 function negotiated(axis, value = axis === 'ipc-protocol' ? 4 : 1) {
   const selected = { axis, value }
@@ -110,9 +112,10 @@ async function createPumpHarness(options = {}) {
       }
       if (request.envelope?.command === 'scan.stop') {
         scanStopAttempts += 1
+        const stopPayload = await options.scanStop?.(scanStopAttempts)
         return {
           kind: 'route',
-          payload: options.scanStop?.(scanStopAttempts) ?? { state: 'released', failures: [] }
+          payload: stopPayload ?? { state: 'released', failures: [] }
         }
       }
       return { kind: 'route', payload: { state: 'released', failureCount: 0 } }
@@ -168,6 +171,131 @@ async function killPump(harness) {
 }
 
 describe('IPC event pump termination', () => {
+  test.each(['reject', 'release-failed', 'aggregate-reject'])(
+    'missing required scan plan reports %s stop and retains retry debt',
+    async stopMode => {
+      const failure = {
+        resourceKind: 'scan',
+        error: {
+          code: 'scan.stop-failed',
+          domain: 'scan',
+          operation: 'fixture.missing-plan-stop',
+          platform: null,
+          retryability: 'caller-decides'
+        }
+      }
+      const harness = await createPumpHarness({
+        scanStop: attempt => {
+          if (attempt > 1) return { state: 'released', failures: [] }
+          if (stopMode === 'reject') throw new Error('missing-plan-stop-rejected')
+          if (stopMode === 'aggregate-reject') {
+            throw new AggregateError([new Error('native-stop-a'), new Error('native-stop-b')], 'native stop failed')
+          }
+          return { state: 'release-failed', failures: [failure] }
+        },
+        release: attempt =>
+          attempt === 1 ? { state: 'release-failed', failures: [failure] } : { state: 'released', failures: [] }
+      })
+      const manager = new IpcPublicManagerAdapter(harness.ipc, { requireScanPlan: true })
+      const scanError = await manager.scan().then(
+        value => value,
+        error => error
+      )
+      expect(scanError).toMatchObject({ name: 'AggregateError' })
+      if (stopMode === 'aggregate-reject') {
+        expect(scanError.errors).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              normalized: expect.objectContaining({ operation: 'ipc-public-manager.scan-plan' })
+            }),
+            expect.objectContaining({ message: 'native stop failed' })
+          ])
+        )
+      }
+      expect(harness.scanStopAttempts()).toBe(1)
+      await expect(manager.destroy()).resolves.toMatchObject({ state: 'release-failed' })
+      expect(harness.scanStopAttempts()).toBe(2)
+      await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
+    }
+  )
+  test.each([
+    ['released', 'reject'],
+    ['release-failed', 'resolve'],
+    ['reject', 'reject']
+  ])('destroy reaches %s parent lease while child stop is unresolved and later %s', async (leaseState, lateMode) => {
+    let resolveChild
+    let rejectChild
+    let noteRelease
+    const releaseReached = new Promise(resolve => {
+      noteRelease = resolve
+    })
+    const childStop = new Promise((resolve, reject) => {
+      resolveChild = resolve
+      rejectChild = reject
+    })
+    const harness = await createPumpHarness({
+      scanStop: () => childStop,
+      release: attempt => {
+        noteRelease()
+        if (attempt > 1 || leaseState === 'released') return { state: 'released', failures: [] }
+        if (leaseState === 'reject') throw new Error('lease-release-rejected')
+        return {
+          state: 'release-failed',
+          failures: [
+            {
+              resourceKind: 'renderer-lease',
+              error: {
+                code: 'platform.transport',
+                domain: 'ipc',
+                operation: 'fixture.release',
+                platform: null,
+                retryability: 'caller-decides'
+              }
+            }
+          ]
+        }
+      }
+    })
+    await harness.ipc.scan()
+    harness.emit('owned-scan', { kind: 'terminal', reason: 'source-failed' }, 'blocked-child-stop')
+    await flushPump()
+    expect(harness.scanStopAttempts()).toBe(1)
+    const result = harness.ipc.destroy().then(
+      value => value,
+      error => error
+    )
+    await expect(harness.ipc.adapterState()).rejects.toMatchObject({ normalized: { code: 'lifecycle.destroyed' } })
+    await awaitSignal(releaseReached, 'parent lease release despite unresolved child stop')
+    expect(harness.releaseAttempts()).toBeGreaterThan(0)
+    const first = await result
+    if (leaseState === 'released') expect(first).toEqual({ state: 'released', failures: [] })
+    else expect(first.state === 'release-failed' || first instanceof Error).toBe(true)
+    if (leaseState === 'reject') {
+      expectConsoleErrorMatching(
+        '[ElectronRendererBleClient] Release failed; client remains retryable:',
+        expect.objectContaining({ message: 'lease-release-rejected' })
+      )
+    }
+    if (lateMode === 'reject') rejectChild(new Error('late-child-stop-rejected'))
+    else
+      resolveChild({
+        state: 'release-failed',
+        failures: [
+          {
+            resourceKind: 'scan',
+            error: {
+              code: 'scan.stop-failed',
+              domain: 'scan',
+              operation: 'fixture.late-stop',
+              platform: null,
+              retryability: 'caller-decides'
+            }
+          }
+        ]
+      })
+    await flushPump()
+    await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
   test('invalid scan plan retains a release-failed compensation receipt for destroy retry', async () => {
     const failure = {
       resourceKind: 'scan',

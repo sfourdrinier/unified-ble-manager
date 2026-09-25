@@ -10,7 +10,8 @@ use std::time::Duration;
 use common::*;
 use serde_json::json;
 use ubm_mobile::{
-    FailureKind, MobilePlatform, PlatformFailure, RadioCompletion, RadioRequest, RequestKind,
+    Advertisement, FailureKind, IngressStatus, MobilePlatform, PlatformFailure, RadioCompletion,
+    RadioIngress, RadioRequest, RequestKind,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -302,4 +303,189 @@ async fn rejected_scan_compensation_matrix() {
     while let Some(result) = cases.join_next().await {
         result.expect("R03 case completed without panic");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cleanup_only_scan_is_stopped_before_immediate_replacement_admission() {
+    let starts = Arc::new(AtomicU64::new(0));
+    let stops = Arc::new(AtomicU64::new(0));
+    let observed_starts = Arc::clone(&starts);
+    let observed_stops = Arc::clone(&stops);
+    let radio = Scripted::new(Box::new(move |request| match request {
+        RadioRequest::StartScan { .. } => {
+            if observed_starts.fetch_add(1, Ordering::SeqCst) == 0 {
+                Reply::Hold
+            } else {
+                Reply::Now(RadioCompletion::Unit)
+            }
+        }
+        RadioRequest::StopScan { .. } => {
+            if observed_stops.fetch_add(1, Ordering::SeqCst) == 0 {
+                Reply::Now(RadioCompletion::Failed(PlatformFailure::new(
+                    FailureKind::Platform,
+                    "first compensation refused",
+                )))
+            } else {
+                Reply::Now(RadioCompletion::Unit)
+            }
+        }
+        other => polar_responder(other),
+    }));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let first = host.open_session("first").unwrap();
+    let pending = tokio::spawn({
+        let first = first.clone();
+        async move {
+            call(
+                &first,
+                "scan.start",
+                &json!({"serviceUuids": [], "duplicatePolicy": "all", "operationId": "first"})
+                    .to_string(),
+            )
+            .await
+        }
+    });
+    wait_for(|| !radio.held_of(RequestKind::StartScan).is_empty()).await;
+    ok(&call(
+        &first,
+        "op.cancel",
+        &json!({"operationId": "first"}).to_string(),
+    )
+    .await);
+    for id in radio.held_of(RequestKind::StartScan) {
+        radio.answer(id, RadioCompletion::Unit);
+    }
+    let (error, _) = failure(&pending.await.unwrap());
+    assert_eq!(error["code"], "operation.aborted");
+    assert_eq!(radio.count(RequestKind::StopScan), 1);
+    assert_eq!(radio.count(RequestKind::StartScan), 1);
+
+    // The replacement's 180 ms budget is shorter than the 250 ms orphan
+    // timer. It must itself settle the old generation before a fresh native
+    // start; treating the cleanup-only record as a shared scan would pass
+    // without issuing StartScan a second time.
+    let replacement = host.open_session("replacement").unwrap();
+    let membership = ok(&call(
+        &replacement,
+        "scan.start",
+        &json!({"serviceUuids": [], "duplicatePolicy": "all", "operationId": "replacement", "budgetMs": 180})
+            .to_string(),
+    )
+    .await)["operationId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        radio.count(RequestKind::StopScan),
+        2,
+        "old debt stopped once"
+    );
+    assert_eq!(radio.count(RequestKind::StartScan), 2, "fresh native scan");
+
+    assert_eq!(
+        host.ingest(RadioIngress::Advertisement(Advertisement {
+            peer_id: POLAR.to_owned(),
+            address: Some(POLAR.to_owned()),
+            service_uuids: vec![HR_SERVICE.to_owned()],
+            rssi: Some(-58),
+            ..Advertisement::default()
+        })),
+        IngressStatus::Accepted
+    );
+    let records = drain_until(&replacement, |records| !of_type(records, "adv").is_empty()).await;
+    assert_eq!(of_type(&records, "adv")[0]["peerId"], POLAR);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        radio.count(RequestKind::StopScan),
+        2,
+        "old orphan timer must not stop the replacement generation"
+    );
+    ok(&call(
+        &replacement,
+        "scan.stop",
+        &json!({"operationId": membership}).to_string(),
+    )
+    .await);
+    ok(&call(&replacement, "session.dispose", "{}").await);
+    ok(&call(&first, "session.dispose", "{}").await);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failed_cleanup_only_admission_retains_the_old_generation_for_retry() {
+    let starts = Arc::new(AtomicU64::new(0));
+    let stops = Arc::new(AtomicU64::new(0));
+    let observed_starts = Arc::clone(&starts);
+    let observed_stops = Arc::clone(&stops);
+    let radio = Scripted::new(Box::new(move |request| match request {
+        RadioRequest::StartScan { .. } => {
+            if observed_starts.fetch_add(1, Ordering::SeqCst) == 0 {
+                std::thread::sleep(Duration::from_millis(80));
+            }
+            Reply::Now(RadioCompletion::Unit)
+        }
+        RadioRequest::StopScan { .. } => {
+            if observed_stops.fetch_add(1, Ordering::SeqCst) < 2 {
+                Reply::Now(RadioCompletion::Failed(PlatformFailure::new(
+                    FailureKind::Platform,
+                    "cleanup refused",
+                )))
+            } else {
+                Reply::Now(RadioCompletion::Unit)
+            }
+        }
+        other => polar_responder(other),
+    }));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let first = host.open_session("first").unwrap();
+    let (error, _) = failure(&call(
+        &first,
+        "scan.start",
+        &json!({"serviceUuids": [], "duplicatePolicy": "all", "operationId": "first", "budgetMs": 20})
+            .to_string(),
+    )
+    .await);
+    assert_eq!(error["code"], "operation.timed-out");
+    assert_eq!(radio.count(RequestKind::StopScan), 1);
+
+    let replacement = host.open_session("replacement").unwrap();
+    let (error, _) = failure(&call(
+        &replacement,
+        "scan.start",
+        &json!({"serviceUuids": [], "duplicatePolicy": "all", "operationId": "attempt-1", "budgetMs": 180})
+            .to_string(),
+    )
+    .await);
+    assert_eq!(error["code"], "platform.failure");
+    assert_eq!(radio.count(RequestKind::StopScan), 2);
+    assert_eq!(
+        radio.count(RequestKind::StartScan),
+        1,
+        "no new native start"
+    );
+    assert_eq!(
+        ok(&call(&replacement, "session.reconcile", "{}").await)["scan"],
+        json!(null),
+        "failed admission took no membership"
+    );
+
+    let membership = ok(&call(
+        &replacement,
+        "scan.start",
+        &json!({"serviceUuids": [], "duplicatePolicy": "all", "operationId": "attempt-2", "budgetMs": 180})
+            .to_string(),
+    )
+    .await)["operationId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(radio.count(RequestKind::StopScan), 3, "old debt retried");
+    assert_eq!(radio.count(RequestKind::StartScan), 2, "fresh native start");
+    ok(&call(
+        &replacement,
+        "scan.stop",
+        &json!({"operationId": membership}).to_string(),
+    )
+    .await);
+    ok(&call(&replacement, "session.dispose", "{}").await);
+    ok(&call(&first, "session.dispose", "{}").await);
 }

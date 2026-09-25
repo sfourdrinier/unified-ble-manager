@@ -9,7 +9,7 @@ The Rust plugin owns the radio (btleplug: CoreBluetooth, WinRT, or BlueZ). The w
 ## Install
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.8 @tauri-apps/api
+pnpm add unified-ble-manager@5.0.0-rc.9 @tauri-apps/api
 ```
 
 Use the Rust plugin source shipped in the same npm package. In the normal

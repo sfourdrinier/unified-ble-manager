@@ -2,6 +2,36 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.0.0-rc.9] - 2026-09-24 (prerelease)
+
+This candidate addresses all six findings in the public rc.8 review. It does
+not promote a backend support label or claim physical-radio qualification.
+
+### Lifecycle and cleanup
+
+- Mobile shared-scan admission no longer mistakes a cleanup-only physical scan
+  for a live source. An immediate replacement confirms old-generation cleanup
+  before a fresh native start; tests require an actual advertisement and prove
+  refused cleanup remains owned.
+- Manager destruction reaches authoritative parent release within a bounded
+  child-drain budget even when scan stop or subscription cleanup never settles.
+  Late child failures remain observable without turning a confirmed parent
+  release into a false cleanup failure.
+- Public GATT subscription retry uses the caller's original deadline and abort
+  budget. Failed provisional cleanup blocks only a conflicting GATT path, not
+  subscriptions on unrelated devices; manager teardown still owns all debt.
+- The IPC public scan adapter preserves the missing-plan protocol error and
+  any compensating stop failure, including rejected aggregate errors, until
+  cleanup or authoritative lease release is confirmed.
+
+### Stream accounting
+
+- IPC preserves terminal-only and evicted upstream loss counters, combines
+  cumulative upstream loss with independent local pending-buffer loss, and
+  excludes control-record bytes from lost-value arithmetic. Regression tests
+  cover dropped items and bytes, replacements, and unknown aggregate
+  attribution.
+
 ## [5.0.0-rc.8] - 2026-09-24 (prerelease)
 
 This candidate addresses the seven findings in the public rc.7 review. It

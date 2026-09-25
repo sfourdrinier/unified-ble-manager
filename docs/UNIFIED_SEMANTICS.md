@@ -139,6 +139,12 @@ two clients use equal filters or peer identifiers.
 | peer connection | Multiple clients lease a single physical link on every backend, each with independent generation validity and cleanup. Release cannot drop the link while another lease remains; final release or explicit owner disconnect does. `connection.already-owned` therefore never means "someone else is already connected": it is reported only when the peer cannot be leased right now — the link is mid-transition (connecting, disconnecting, or tearing down), it is owned by a different manager or process, or the backend runs in explicit exclusive (sharing opt-out) mode. |
 | notification subscription | Distinct consumer streams MAY share a physical enablement only through the owner; disabling one consumer MUST NOT disable another. |
 
+A physical scan retained only because its stop is unconfirmed is cleanup debt,
+not an active source that can admit a new shared member. Admission must first
+confirm release of that generation within the caller's budget or refuse the
+request while retaining the cleanup obligation; a later successful admission
+must start a fresh physical scan.
+
 The main process is the sole arbiter for desktop IPC. A preload bridge only
 validates and forwards typed messages; a renderer cannot name another client,
 forge an ownership epoch, or invoke privileged backend work directly.
@@ -155,9 +161,12 @@ forge an ownership epoch, or invoke privileged backend work directly.
 | manager | created, negotiating, ready, destroying, destroyed | created → negotiating → ready; created/negotiating/ready → destroying → destroyed | destroyed rejects new work and owns no live child resource. |
 | operation | created, queued, dispatched, settling, succeeded, failed, aborted, timed-out, disconnected, reset, adapter-unavailable, destroyed | created → queued → dispatched → settling → one terminal; created/queued may reach any applicable terminal without dispatch | exactly one terminal outcome and exactly one settlement record. |
 
-`destroying` first closes admission, then performs cleanup in dependency order,
-then publishes `destroyed`. During this interval existing streams may deliver
-their one documented terminal error or completion only; no normal observation,
+`destroying` first closes admission, then attempts child cleanup and the
+authoritative parent release, then publishes `destroyed`. An unresponsive child
+cleanup must not indefinitely prevent the parent-release request; confirmed
+parent release retires its child obligations, while failed parent release keeps
+unconfirmed cleanup owned for retry. During this interval existing streams may
+deliver their one documented terminal error or completion only; no normal observation,
 value, or state event is legal. A failed backend exposes failure detail until
 its owner completes cleanup; it never becomes ready by implication.
 
@@ -420,6 +429,12 @@ reports no ready event. Removal first closes consumer ingress, then decrements
 physical enablement, then resolves. An implementation MUST NOT deliver a value
 after subscription removal resolves.
 
+If public subscription construction fails after native acquisition, its owner
+retains removal debt until release is confirmed. Admission retries debt only
+for the conflicting attachment and GATT path; unrelated connections remain
+usable. Waiting on a conflicting cleanup consumes the caller's original
+deadline and abort budget, without cancelling the retained cleanup itself.
+
 The managed CCCD rule forbids generic application descriptor writes to a CCCD
 that the subscription owner manages. Such a request fails `gatt.cccd-managed`;
 only subscription creation/removal may change managed CCCD state. A backend that
@@ -459,6 +474,13 @@ control-record slot for that notice, so ordinary saturation cannot hide the loss
 accounting. Overflow counters are monotonic for a stream lifetime and included
 in its terminal record. Backend ingress is also bounded; a backend incapable of
 safe bounded ingestion MUST report the affected feature unavailable.
+
+At an IPC boundary, repeated upstream notices are cumulative observations of
+one loss stage, so their maximum is counted once. Loss in a separate local
+pending buffer is additional, not another observation of that upstream total.
+Terminal-only upstream counters and counters from an evicted pending stream
+remain attributable to that stream; aggregate transport loss with no known
+child attribution remains explicitly unknown.
 
 The default aggregate quotas are 4 MiB per client, 16 MiB per backend ingress,
 and 64 MiB per adapter owner; a backend MAY declare lower safe limits but never

@@ -1264,6 +1264,26 @@ impl HostInner {
                 android,
             }
         };
+        // A retained physical record with no members is cleanup debt, not
+        // a shareable scan. A new manager must stop that exact generation
+        // before it can acquire a fresh radio scan. The orphan worker uses
+        // this same lock, so it cannot race a replacement into stopping the
+        // new generation. A refused cleanup leaves the old record and retry
+        // driver intact.
+        if lock(&self.scan_members).is_empty()
+            && let Some(operation) = share.physical.as_ref().map(|scan| scan.operation.clone())
+        {
+            self.central
+                .stop_scan(
+                    &operation,
+                    OpControl::new(ctl.budget, ubm_desktop::OpTicket::new()),
+                )
+                .await?;
+            share.physical = None;
+            if let Some(error) = Self::scan_not_alive(&ctl) {
+                return Err(error);
+            }
+        }
         if let Some(physical) = &share.physical {
             if physical.request.android != android {
                 return Err(DesktopError::new(
