@@ -22,6 +22,22 @@ function capabilities() {
   }
 }
 
+const provisionalPath = {
+  attachment: { backendInstanceId: 'backend-1', backendGeneration: 'generation-1' },
+  attachmentId: 'attachment-1',
+  peerId: 'peer-1',
+  connectionId: 'connection-1',
+  connectionGeneration: 'generation-1',
+  ownerLeaseId: 'lease-1',
+  databaseId: 'database-1',
+  databaseGeneration: 'generation-1',
+  serviceUuid: '180f',
+  serviceOccurrence: '0',
+  characteristicUuid: '2a19',
+  characteristicOccurrence: '0',
+  validity: 'current'
+}
+
 function createIpcScanFixture() {
   const observations = new CoreBoundedStream(
     { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
@@ -55,6 +71,7 @@ describe('IPC public manager teardown', () => {
     const child = new Promise((_, reject) => {
       rejectChild = reject
     })
+    const primaryError = new Error('projection-failed')
     let removals = 0
     const compensation = manager.provisionalSubscriptions
       .compensate(
@@ -64,7 +81,8 @@ describe('IPC public manager teardown', () => {
             return removals === 1 ? child : Promise.resolve({ state: 'released', failures: [] })
           }
         },
-        new Error('projection-failed')
+        provisionalPath,
+        primaryError
       )
       .catch(error => error)
     let releaseAttempts = 0
@@ -90,7 +108,8 @@ describe('IPC public manager teardown', () => {
     })
     await expect(manager.destroy()).rejects.toMatchObject({ name: 'AggregateError' })
     rejectChild(lateError)
-    await compensation
+    const compensationError = await compensation
+    expect(compensationError.errors).toContain(primaryError)
     await expect(manager.destroy()).rejects.toMatchObject({ errors: expect.arrayContaining([lateError]) })
     await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
@@ -108,15 +127,17 @@ describe('IPC public manager teardown', () => {
     const child = new Promise((_, reject) => {
       rejectChild = reject
     })
+    const primaryError = new Error('projection-failed')
     const compensation = manager.provisionalSubscriptions
-      .compensate({ remove: () => child }, new Error('projection-failed'))
+      .compensate({ remove: () => child }, provisionalPath, primaryError)
       .catch(error => error)
     const result = manager.destroy()
     await awaitSignal(releaseReached, 'IPC public parent lease release despite unresolved child removal')
     expect(ipc.destroy).toHaveBeenCalledTimes(1)
     await expect(result).resolves.toEqual({ state: 'released', failures: [] })
+    const compensationError = await compensation
+    expect(compensationError).toBe(primaryError)
     rejectChild(new Error('late-child-remove-failed'))
-    await compensation
     await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 })
@@ -131,6 +152,82 @@ async function collectRemainingScanStates(iterator) {
 }
 
 describe('IPC public scan session state', () => {
+  test('released parent retires an active scan without dispatching a child stop', async () => {
+    const { manager, stop } = createIpcScanFixture()
+    const scan = await manager.scan()
+    const states = scan.state[Symbol.asyncIterator]()
+    await expect(states.next()).resolves.toMatchObject({ value: { state: 'active' } })
+    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(states.next()).resolves.toMatchObject({ value: { state: 'stopped' } })
+    await expect(states.next()).resolves.toMatchObject({ done: true })
+    await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(stop).not.toHaveBeenCalled()
+  })
+
+  test.each(['resolve', 'reject'])(
+    'released parent settles an in-flight stop and ignores its late %s',
+    async lateOutcome => {
+      const { manager, stop, ipc } = createIpcScanFixture()
+      let settleStop
+      const stopGate = new Promise((resolve, reject) => {
+        settleStop = lateOutcome === 'resolve' ? resolve : reject
+      })
+      stop.mockImplementation(() => stopGate)
+      const scan = await manager.scan()
+      const states = scan.state[Symbol.asyncIterator]()
+      await expect(states.next()).resolves.toMatchObject({ value: { state: 'active' } })
+      const stopping = scan.stop()
+      await expect(states.next()).resolves.toMatchObject({ value: { state: 'stopping' } })
+      await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+      await expect(stopping).resolves.toEqual({ state: 'released', failures: [] })
+      await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+      await expect(states.next()).resolves.toMatchObject({ value: { state: 'stopped' } })
+      await expect(states.next()).resolves.toMatchObject({ done: true })
+      expect(stop).toHaveBeenCalledTimes(1)
+      expect(ipc.destroy).toHaveBeenCalledTimes(1)
+      settleStop(lateOutcome === 'resolve' ? { state: 'released', failures: [] } : new Error('late IPC stop'))
+      await Promise.resolve()
+      expect(stop).toHaveBeenCalledTimes(1)
+    }
+  )
+
+  test('refused parent release leaves a pending child stop owned for its eventual result', async () => {
+    const { manager, stop, ipc } = createIpcScanFixture()
+    let finishStop
+    const stopGate = new Promise(resolve => {
+      finishStop = resolve
+    })
+    stop.mockImplementation(() => stopGate)
+    ipc.destroy
+      .mockResolvedValueOnce({
+        state: 'release-failed',
+        failures: [
+          {
+            resourceKind: 'renderer-lease',
+            error: {
+              code: 'platform.transport',
+              domain: 'ipc',
+              operation: 'fixture.release',
+              platform: null,
+              retryability: 'caller-decides'
+            }
+          }
+        ]
+      })
+      .mockResolvedValueOnce({ state: 'released', failures: [] })
+    const scan = await manager.scan()
+    const states = scan.state[Symbol.asyncIterator]()
+    await expect(states.next()).resolves.toMatchObject({ value: { state: 'active' } })
+    const stopping = scan.stop()
+    await expect(states.next()).resolves.toMatchObject({ value: { state: 'stopping' } })
+    await expect(manager.destroy()).resolves.toMatchObject({ state: 'release-failed' })
+    expect(stop).toHaveBeenCalledTimes(1)
+    finishStop({ state: 'released', failures: [] })
+    await expect(stopping).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(states.next()).resolves.toMatchObject({ value: { state: 'stopped' } })
+    await expect(states.next()).resolves.toMatchObject({ done: true })
+    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
   test.each([
     ['source-failed', { state: 'failed', reason: 'source-failed' }],
     ['connection-lost', { state: 'failed', reason: 'connection-lost' }],

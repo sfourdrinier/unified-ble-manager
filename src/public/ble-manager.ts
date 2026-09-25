@@ -1595,6 +1595,9 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
     readonly controller: PublicScanSessionController<Attachment>
     readonly closeState: () => void
     readonly stop: () => Promise<PublicCleanupRecord>
+    readonly confirmParentRelease: () => void
+    readonly localViewReleased: () => boolean
+    readonly localViewError: () => unknown | null
   }>()
   private readonly provisionalSubscriptions = new ProvisionalGattSubscriptionOwner()
   private readonly lateScanStopFailures: { readonly error?: unknown; readonly cleanup?: PublicCleanupRecord }[] = []
@@ -1680,13 +1683,27 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
         nativeReleased: boolean
         stopPromise: Promise<PublicCleanupRecord> | null
         pendingCleanupError: unknown | null
+        localViewError: unknown | null
         deliveryEnded: boolean
       } = {
         viewReleased: false,
         nativeReleased: false,
         stopPromise: null,
         pendingCleanupError: null,
+        localViewError: null,
         deliveryEnded: false
+      }
+      let releaseNativeStop!: (cleanup: BackendCleanupRecord) => void
+      const parentRelease = new Promise<BackendCleanupRecord>(resolve => {
+        releaseNativeStop = resolve
+      })
+      let parentConfirmed = false
+      let nativeStopFailed = false
+      let nativeFailureReported = false
+      const reportNativeFailure = () => {
+        if (!parentConfirmed || !nativeStopFailed || nativeFailureReported) return
+        nativeFailureReported = true
+        this.recordLateChildFailure('manager.scan-stop.failed')
       }
       let stopScan: (reason: PublicScanEventTerminalReason) => Promise<PublicCleanupRecord> = async () => ({
         state: 'released',
@@ -1723,15 +1740,30 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
           if (!stopState.viewReleased) {
             try {
               const view = await controller.closeView(reason)
-              if (view.state === 'released') stopState.viewReleased = true
+              if (view.state === 'released') {
+                stopState.viewReleased = true
+                stopState.localViewError = null
+              }
               phases.push({ cleanup: view })
             } catch (error) {
+              stopState.localViewError = error
               phases.push({ error })
             }
           }
           if (!stopState.nativeReleased) {
             try {
-              const native = await rehydratePublicPromise(session.stop())
+              const nativeAttempt = rehydratePublicPromise(session.stop())
+              nativeAttempt.then(
+                cleanup => {
+                  if (cleanup.state !== 'released') nativeStopFailed = true
+                  reportNativeFailure()
+                },
+                () => {
+                  nativeStopFailed = true
+                  reportNativeFailure()
+                }
+              )
+              const native = await Promise.race([nativeAttempt, parentRelease])
               if (native.state === 'released') stopState.nativeReleased = true
               phases.push({ cleanup: native })
             } catch (error) {
@@ -1760,7 +1792,19 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
         stopState.stopPromise = run
         return run
       }
-      const activeScan = { controller, closeState: scanState.close, stop: () => stopScan('owner-released') }
+      const activeScan = {
+        controller,
+        closeState: scanState.close,
+        stop: () => stopScan('owner-released'),
+        confirmParentRelease: () => {
+          parentConfirmed = true
+          stopState.nativeReleased = true
+          releaseNativeStop({ state: 'released', failures: [] })
+          reportNativeFailure()
+        },
+        localViewReleased: () => stopState.viewReleased,
+        localViewError: () => stopState.localViewError
+      }
       this.activeScanSessions.add(activeScan)
       if (!stopState.deliveryEnded) scanState.emit({ state: 'active' })
       const publicSession: ScanSession = {
@@ -2032,24 +2076,32 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
       } catch (error) {
         nativeError = error
       }
-      // Include promptly settled view failures without allowing a stuck child
-      // close to turn manager teardown into an unbounded wait.
-      await Promise.race([Promise.all(viewAttempts), new Promise<void>(resolve => setTimeout(resolve, 0))])
       parentReleased = cleanup !== undefined && toPublicCleanupRecord(cleanup).state === 'released'
+      if (parentReleased) {
+        for (const scan of active) scan.confirmParentRelease()
+      }
+      // Include promptly settled local-view failures without allowing a stuck
+      // iterator return to turn parent teardown into an unbounded wait.
+      await Promise.race([Promise.all(viewAttempts), new Promise<void>(resolve => setTimeout(resolve, 0))])
       reportOpen = false
       if (parentReleased) {
-        for (const view of viewResults) {
-          if (view.error !== undefined || (view.cleanup !== undefined && view.cleanup.state !== 'released')) {
-            this.recordLateChildFailure('manager.scan-stop.failed')
-          }
-        }
         if (cleanupPhaseFailed(provisionalResult)) {
           this.recordLateChildFailure('manager.gatt-unsubscribe.failed')
         }
         this.provisionalSubscriptions.confirmManagerRelease()
       }
+      const localViewFailures = parentReleased
+        ? active
+            .filter(scan => !scan.localViewReleased())
+            .map(scan => ({
+              error:
+                scan.localViewError() ??
+                contractError('lifecycle.invalid-state', 'scan', 'public-ble-manager.destroy.local-view-pending')
+            }))
+        : []
       return toPublicCleanupRecord(
         collectCleanupPhases([
+          ...localViewFailures,
           ...(parentReleased ? [] : retainedViewFailures),
           ...(parentReleased ? [] : viewResults),
           // The original subscribe rejection preserved the provisional failure.

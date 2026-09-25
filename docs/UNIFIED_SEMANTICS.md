@@ -165,7 +165,14 @@ forge an ownership epoch, or invoke privileged backend work directly.
 authoritative parent release, then publishes `destroyed`. An unresponsive child
 cleanup must not indefinitely prevent the parent-release request; confirmed
 parent release retires its child obligations, while failed parent release keeps
-unconfirmed cleanup owned for retry. During this interval existing streams may
+unconfirmed cleanup owned for retry. Confirmed parent release also settles
+pending public child-stop and provisional-compensation waiters for that owner
+generation; it does not assert that a separate local iterator return succeeded.
+Local view failures remain visible and retryable. Cleanup retries for one
+retained child are single-flight, including after a bounded destroy drain.
+Cancelling a new scan while it waits behind an orphaned physical scan's stop
+settles the new admission without abandoning the old scan's cleanup duty.
+During this interval existing streams may
 deliver their one documented terminal error or completion only; no normal observation,
 value, or state event is legal. A failed backend exposes failure detail until
 its owner completes cleanup; it never becomes ready by implication.
@@ -480,7 +487,11 @@ one loss stage, so their maximum is counted once. Loss in a separate local
 pending buffer is additional, not another observation of that upstream total.
 Terminal-only upstream counters and counters from an evicted pending stream
 remain attributable to that stream; aggregate transport loss with no known
-child attribution remains explicitly unknown.
+child attribution remains explicitly unknown. Registration reports retained
+upstream loss before replay even when the displaced pending record was only
+the overflow control and no local value was dropped. The replayed notice
+preserves the retained upstream overflow policy when upstream counters are
+nonzero; local-only pending-buffer loss reports `drop-oldest`.
 
 The default aggregate quotas are 4 MiB per client, 16 MiB per backend ingress,
 and 64 MiB per adapter owner; a backend MAY declare lower safe limits but never

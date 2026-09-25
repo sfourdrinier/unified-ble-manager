@@ -1248,6 +1248,7 @@ impl HostInner {
         member: ScanMember,
         android: Option<AndroidScanOptions>,
         ctl: OpControl,
+        orphan_cleanup: tokio::sync::oneshot::Sender<()>,
     ) -> Result<(), DesktopError> {
         let mut share = self.lock_scan_share(&ctl).await?;
         let mut wanted = {
@@ -1273,6 +1274,10 @@ impl HostInner {
         if lock(&self.scan_members).is_empty()
             && let Some(operation) = share.physical.as_ref().map(|scan| scan.operation.clone())
         {
+            // Notify the admission waiter only after the locked state check.
+            // A preflight snapshot would race another caller creating this
+            // orphan before we acquire the scan section.
+            let _ = orphan_cleanup.send(());
             self.central
                 .stop_scan(
                     &operation,
