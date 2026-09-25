@@ -64,7 +64,11 @@ import type {
 import { assertDirectConnectionCapability } from '../public/capabilities'
 import type { BleCapabilities, CapabilityDescriptor, FeatureId } from '../public/capabilities'
 import { BUILT_IN_FEATURE_IDS } from '../backend-contract/capabilities'
-import { createPublicGattDatabase, type PublicGattDatabaseSource } from '../public/gatt'
+import {
+  createPublicGattDatabase,
+  ProvisionalGattSubscriptionOwner,
+  type PublicGattDatabaseSource
+} from '../public/gatt'
 import type { GattDatabase } from '../public/gatt'
 import type { BleDiagnostics } from '../public/diagnostics'
 import { diagnosticsUnavailable } from '../public/diagnostics'
@@ -79,7 +83,12 @@ import { isPeerReference } from '../public/peer-reference'
 import type { PeerReference } from '../public/peer-reference'
 import { createPublicSecurity } from '../public/security'
 import type { BleSecurity } from '../public/security'
-import { rehydratePublicError, rehydratePublicPromise, runWithCleanup } from '../public/error-bridge'
+import {
+  collectCleanupPhases,
+  rehydratePublicError,
+  rehydratePublicPromise,
+  runWithCleanup
+} from '../public/error-bridge'
 import { BleError } from '../public/errors'
 import { toPublicCleanupRecord, type CleanupRecord as PublicCleanupRecord } from '../public/cleanup'
 import { mapPublicBoundedAsyncStream, type PublicBoundedAsyncStream } from '../public/streams'
@@ -135,6 +144,7 @@ export class IpcPublicManagerAdapter implements BleManager {
   readonly discovery: BleManager['discovery']
   private readonly requireScanPlan: boolean
   private readonly gattDeliverySelection: 'unknown' | 'controllable'
+  private readonly provisionalSubscriptions = new ProvisionalGattSubscriptionOwner()
 
   constructor(
     private readonly ipc: IpcBleManager,
@@ -256,7 +266,13 @@ export class IpcPublicManagerAdapter implements BleManager {
         signal: normalized.signal ?? undefined,
         deadline: normalized.deadline
       })
-      return new IpcPublicConnection(base, peer, this.capabilities, this.gattDeliverySelection)
+      return new IpcPublicConnection(
+        base,
+        peer,
+        this.capabilities,
+        this.gattDeliverySelection,
+        this.provisionalSubscriptions
+      )
     } catch (error) {
       throw rehydratePublicError(error)
     }
@@ -296,8 +312,37 @@ export class IpcPublicManagerAdapter implements BleManager {
     })
   }
 
-  destroy(): Promise<PublicCleanupRecord> {
-    return rehydratePublicPromise(this.ipc.destroy()).then(toPublicCleanupRecord)
+  async destroy(): Promise<PublicCleanupRecord> {
+    const provisionalPhases: { readonly error?: unknown; readonly cleanup?: PublicCleanupRecord }[] = []
+    try {
+      provisionalPhases.push({ cleanup: await this.provisionalSubscriptions.retryPending() })
+    } catch (error) {
+      provisionalPhases.push({ error })
+    }
+    let leaseCleanup: PublicCleanupRecord | undefined
+    let leaseError: unknown
+    try {
+      leaseCleanup = await rehydratePublicPromise(this.ipc.destroy()).then(toPublicCleanupRecord)
+    } catch (error) {
+      leaseError = error
+    }
+    if (leaseCleanup?.state === 'released') this.provisionalSubscriptions.confirmManagerRelease()
+    const owedPhases = leaseCleanup?.state === 'released' ? [] : provisionalPhases
+    if (
+      leaseError !== undefined &&
+      owedPhases.every(phase => phase.error === undefined && phase.cleanup?.state !== 'release-failed')
+    ) {
+      // Preserve the transport's original failure when there is no second
+      // cleanup failure to aggregate with it.
+      throw leaseError
+    }
+    return collectCleanupPhases([
+      // The failed subscribe already reported its cleanup error. A released
+      // IPC manager lease authoritatively retires any provisional resource.
+      ...owedPhases,
+      ...(leaseError === undefined ? [] : [{ error: leaseError }]),
+      ...(leaseCleanup === undefined ? [] : [{ cleanup: leaseCleanup }])
+    ])
   }
 
   /** Low-level host seam retained for Tauri's existing deterministic tests. */
@@ -390,7 +435,8 @@ class IpcPublicConnection implements BleConnection {
     private readonly base: IpcConnection,
     peer: BlePeer | string,
     capabilities: BleCapabilities,
-    private readonly gattDeliverySelection: 'unknown' | 'controllable'
+    private readonly gattDeliverySelection: 'unknown' | 'controllable',
+    private readonly provisionalSubscriptions: ProvisionalGattSubscriptionOwner
   ) {
     this.peer = typeof peer === 'string' ? snapshotBlePeer({ id: peer, name: null, rssi: null }) : snapshotBlePeer(peer)
     this.handle = base.handle
@@ -416,7 +462,10 @@ class IpcPublicConnection implements BleConnection {
         signal: normalized.signal ?? undefined,
         deadline: normalized.deadline
       })
-      return createPublicGattDatabase(createIpcGattSource(database, this.gattDeliverySelection))
+      return createPublicGattDatabase(
+        createIpcGattSource(database, this.gattDeliverySelection),
+        this.provisionalSubscriptions
+      )
     } catch (error) {
       throw rehydratePublicError(error)
     }
@@ -439,7 +488,10 @@ class IpcPublicConnection implements BleConnection {
         },
         options.reason === 'manual' ? 'manual-rediscovery' : 'service-changed'
       )
-      return createPublicGattDatabase(createIpcGattSource(database, this.gattDeliverySelection))
+      return createPublicGattDatabase(
+        createIpcGattSource(database, this.gattDeliverySelection),
+        this.provisionalSubscriptions
+      )
     } catch (error) {
       throw rehydratePublicError(error)
     }
@@ -723,10 +775,16 @@ function toPortableSubscription(
   path: PortableCurrentCharacteristicPath
 ): SubscriptionHandle {
   return {
-    subscriptionId: subscription.subscriptionId,
+    get subscriptionId() {
+      return subscription.subscriptionId
+    },
     path,
-    observedDelivery: subscription.observedDelivery,
-    values: toPortableNotificationStream(subscription.values),
+    get observedDelivery() {
+      return subscription.observedDelivery
+    },
+    get values() {
+      return toPortableNotificationStream(subscription.values)
+    },
     remove: () => subscription.remove().then(toPublicCleanupRecord)
   }
 }

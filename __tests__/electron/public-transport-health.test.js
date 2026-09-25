@@ -118,6 +118,55 @@ async function connectTwo(manager, harness) {
 }
 
 describe('Electron public aggregate transport health', () => {
+  test('inner loss is visible through the public adapter while the outer queue remains below capacity', async () => {
+    const harness = fixture()
+    const descriptor = Object.getOwnPropertyDescriptor(ElectronRendererBleClient.prototype, 'events')
+    const originalGet = descriptor.get
+    let getterAccess = 0
+    let resumeInner
+    const innerGate = new Promise(resolve => {
+      resumeInner = resolve
+    })
+    const getter = jest.spyOn(ElectronRendererBleClient.prototype, 'events', 'get').mockImplementation(function () {
+      getterAccess += 1
+      const source = originalGet.call(this)
+      if (getterAccess !== 2) return source
+      return {
+        async *[Symbol.asyncIterator]() {
+          await innerGate
+          for await (const item of source) yield item
+        }
+      }
+    })
+    let manager
+    try {
+      manager = await createElectronRendererBleManager({ transport: harness.transport })
+      const iterators = await connectTwo(manager, harness)
+      const pending = iterators.map(iterator => iterator.next())
+      for (let batch = 0; batch < 3; batch += 1) {
+        for (let index = 0; index < 80; index += 1) {
+          const ordinal = batch * 80 + index
+          harness.emit('unassigned-inner-event', { kind: 'value', value: { ordinal } }, `inner-event-${ordinal}`)
+        }
+        for (let turn = 0; turn < 8; turn += 1) await new Promise(resolve => setImmediate(resolve))
+      }
+      resumeInner()
+      await expect(pending[0]).rejects.toMatchObject({
+        code: 'stream.overflow',
+        operation: 'ipc-manager.aggregate-event-loss',
+        platform: { metadata: { attribution: 'unknown' } }
+      })
+      await expect(pending[1]).rejects.toMatchObject({ code: 'stream.overflow' })
+      // The dead event route prevents child unsubscription, so the failed
+      // renderer-lease receipt must report those cleanup obligations too.
+      await expect(manager.destroy()).rejects.toMatchObject({ name: 'AggregateError' })
+      await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
+    } finally {
+      resumeInner()
+      getter.mockRestore()
+    }
+  })
+
   test('outer loss with multiple child IDs fails both consumers without fabricated child counts', async () => {
     const harness = fixture()
     const manager = await createElectronRendererBleManager({ transport: harness.transport })
@@ -135,7 +184,7 @@ describe('Electron public aggregate transport health', () => {
       platform: { metadata: { attribution: 'unknown', droppedItems: expect.any(Number) } }
     })
     await expect(pending[1]).rejects.toMatchObject({ code: 'stream.overflow' })
-    await expect(manager.destroy()).resolves.toMatchObject({ state: 'release-failed' })
+    await expect(manager.destroy()).rejects.toMatchObject({ name: 'AggregateError' })
     await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
     expect(harness.releaseAttempts).toBe(2)
   })
@@ -153,7 +202,7 @@ describe('Electron public aggregate transport health', () => {
       expect.objectContaining({ error: expect.objectContaining({ code: 'protocol.violation' }) })
     )
     expect(harness.acknowledged).toBe(1)
-    await expect(manager.destroy()).resolves.toMatchObject({ state: 'release-failed' })
+    await expect(manager.destroy()).rejects.toMatchObject({ name: 'AggregateError' })
     await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
   })
 
@@ -189,7 +238,7 @@ describe('Electron public aggregate transport health', () => {
         platform: { safeMessage: 'outer iterator exploded' }
       })
       await expect(pending[1]).rejects.toMatchObject({ code: 'platform.transport' })
-      await expect(manager.destroy()).resolves.toMatchObject({ state: 'release-failed' })
+      await expect(manager.destroy()).rejects.toMatchObject({ name: 'AggregateError' })
       await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
     } finally {
       eventsGetter.mockRestore()

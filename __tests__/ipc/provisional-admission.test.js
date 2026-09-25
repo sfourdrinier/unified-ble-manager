@@ -108,6 +108,8 @@ async function createAdmissionHarness(options = {}) {
   const gattUnsubscribePayloads = []
   const databaseReleasePayloads = []
   const bootstrap = bootstrapRecord()
+  let eventListener = null
+  let releaseAttempts = 0
   const connectPayload = options.connectPayload ?? validConnectPayload()
   const subscribePayload = options.subscribePayload
   const discoverPayload = options.discoverPayload ?? validGattDiscoverPayload()
@@ -123,7 +125,10 @@ async function createAdmissionHarness(options = {}) {
   const transport = {
     invoke: async request => {
       if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap }
-      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      if (request.kind === 'release') {
+        releaseAttempts += 1
+        return { kind: 'release', cleanup: options.release?.(releaseAttempts) ?? { state: 'released', failures: [] } }
+      }
       const command = request.envelope.command
       const payload = request.envelope.payload
       commands.push(command)
@@ -173,7 +178,8 @@ async function createAdmissionHarness(options = {}) {
       }
       return { kind: 'route', payload: { state: 'released', failures: [] } }
     },
-    subscribe() {
+    subscribe(listener) {
+      eventListener = listener
       return () => undefined
     },
     acknowledge: async () => ({ kind: 'event.ack' })
@@ -186,6 +192,18 @@ async function createAdmissionHarness(options = {}) {
     unsubscribePayloads,
     gattUnsubscribePayloads,
     databaseReleasePayloads,
+    releaseAttempts: () => releaseAttempts,
+    emit(streamId, item, eventId = `terminal-${streamId}`) {
+      eventListener({ rendererLease: bootstrap.rendererLease, eventId, streamId, item })
+    },
+    emitMalformed() {
+      eventListener({
+        rendererLease: bootstrap.rendererLease,
+        eventId: 'malformed-provisional-event',
+        streamId: 123,
+        item: { kind: 'value', value: { seq: 1 } }
+      })
+    },
     setDisconnect(next) {
       disconnectImpl = next
     },
@@ -198,7 +216,114 @@ async function createAdmissionHarness(options = {}) {
   }
 }
 
+async function settleEventPump() {
+  for (let attempt = 0; attempt < 8; attempt += 1) await new Promise(resolve => setImmediate(resolve))
+}
+
+describe('IPC terminal owner cleanup receipts', () => {
+  const failedLease = {
+    state: 'release-failed',
+    failures: [
+      {
+        resourceKind: 'renderer-lease',
+        error: {
+          code: 'platform.failure',
+          domain: 'ipc',
+          operation: 'fixture.release',
+          platform: null,
+          retryability: 'caller-decides'
+        }
+      }
+    ]
+  }
+  const failedUnsubscribe = resourceKind => ({
+    kind: 'route',
+    payload: {
+      state: 'release-failed',
+      failures: [
+        {
+          resourceKind,
+          error: {
+            code: 'platform.failure',
+            domain: resourceKind === 'gatt' ? 'gatt' : 'connection',
+            operation: 'fixture.unsubscribe',
+            platform: null,
+            retryability: 'caller-decides'
+          }
+        }
+      ]
+    }
+  })
+
+  test('connection event terminal retains refused unsubscribe and retries it before lease release', async () => {
+    const harness = await createAdmissionHarness({
+      unsubscribe: async () => failedUnsubscribe('connection-events'),
+      release: attempt => (attempt === 1 ? failedLease : { state: 'released', failures: [] })
+    })
+    const connection = await harness.ipc.connect('peer-1')
+    const lifecycleEvents = connection.events
+    expect(lifecycleEvents).toBeDefined()
+    await settleEventPump()
+    expect(harness.commands).toContain('connection.events.ready')
+    harness.emit('connection-events-ipc-1', { kind: 'terminal', reason: 'source-failed', error: null })
+    await settleEventPump()
+    expect(harness.unsubscribePayloads).toHaveLength(1)
+    await expect(harness.ipc.destroy()).rejects.toMatchObject({ name: 'AggregateError' })
+    expect(harness.unsubscribePayloads).toHaveLength(2)
+    harness.setUnsubscribe(async () => ({ kind: 'route', payload: { state: 'released', failures: [] } }))
+    await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(harness.unsubscribePayloads).toHaveLength(3)
+  })
+
+  test('GATT notification terminal retains refused unsubscribe and retries it before lease release', async () => {
+    const harness = await createAdmissionHarness({
+      gattUnsubscribe: async () => failedUnsubscribe('gatt'),
+      release: attempt => (attempt === 1 ? failedLease : { state: 'released', failures: [] })
+    })
+    const connection = await harness.ipc.connect('peer-1')
+    const database = await connection.discover()
+    await database.characteristics[0].subscribe()
+    harness.emit('subscription-1', { kind: 'terminal', reason: 'source-failed', error: null })
+    await settleEventPump()
+    expect(harness.gattUnsubscribePayloads).toHaveLength(1)
+    await expect(harness.ipc.destroy()).rejects.toMatchObject({ name: 'AggregateError' })
+    expect(harness.gattUnsubscribePayloads).toHaveLength(2)
+    harness.setGattUnsubscribe(async () => ({ kind: 'route', payload: { state: 'released', failures: [] } }))
+    await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(harness.gattUnsubscribePayloads).toHaveLength(3)
+  })
+})
+
 describe('IPC provisional admission', () => {
+  test('lease-wide released receipt subsumes provisional debt after pump failure, but refused release retains it', async () => {
+    const cleanupFailure = {
+      resourceKind: 'renderer-lease',
+      error: {
+        code: 'platform.transport',
+        domain: 'ipc',
+        operation: 'fixture.lease-release',
+        platform: null,
+        retryability: 'never'
+      }
+    }
+    const harness = await createAdmissionHarness({
+      connectPayload: validConnectPayload({ peerId: 'other-peer' }),
+      disconnect: async () => ({ kind: 'route', payload: { state: 'release-failed', failures: [cleanupFailure] } }),
+      release: attempt =>
+        attempt === 1 ? { state: 'release-failed', failures: [cleanupFailure] } : { state: 'released', failures: [] }
+    })
+    await expect(harness.ipc.connect('peer-1')).rejects.toMatchObject({ name: 'AggregateError' })
+    expect(inspectIpcProvisionalAdmissionForTests(harness.ipc).unresolvedConnectionCount).toBe(1)
+    harness.emitMalformed()
+    await new Promise(resolve => setImmediate(resolve))
+    await expect(harness.ipc.destroy()).rejects.toMatchObject({ name: 'AggregateError' })
+    expect(inspectIpcProvisionalAdmissionForTests(harness.ipc).unresolvedConnectionCount).toBe(1)
+    await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(inspectIpcProvisionalAdmissionForTests(harness.ipc).unresolvedConnectionCount).toBe(0)
+    await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(harness.releaseAttempts()).toBe(2)
+  })
+
   test('mismatched connect identity still disconnects the host handle', async () => {
     const harness = await createAdmissionHarness({
       connectPayload: validConnectPayload({ peerId: 'other-peer' })
@@ -576,7 +701,7 @@ describe('IPC provisional admission', () => {
     const attemptsBeforeRelease = unsubscribeAttempts
     const released = await connection.release()
     expect(released.state).toBe('release-failed')
-    expect(released.failures.some(failure => failure.resourceKind === 'gatt')).toBe(true)
+    expect(released.failures.some(cleanupFailure => cleanupFailure.resourceKind === 'gatt')).toBe(true)
     expect(harness.commands).toContain('connection.disconnect')
     expect(unsubscribeAttempts).toBeGreaterThan(attemptsBeforeRelease)
     await harness.ipc.destroy()

@@ -2,6 +2,37 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.0.0-rc.8] - 2026-09-24 (prerelease)
+
+This candidate addresses the seven findings in the public rc.7 review. It
+does not promote a backend support label or claim physical-radio qualification.
+
+### Ownership and recovery
+
+- Desktop scan-start compensation reconciles successful and failed early stops
+  with the authoritative native start result. A cancelled or refused start no
+  longer leaves phantom scan ownership; Rust and TypeScript lifecycle tables
+  agree on the `stopping` to `failed` transition.
+- Mobile shared-scan admission transfers central-retained cleanup after an
+  error to its existing process-owned retry driver. A replacement session can
+  scan on the same live host before shutdown.
+- GATT subscription acquisition is compensated if public result construction
+  fails. Failed removal stays with a manager-scoped retry owner, while a
+  confirmed whole-manager release settles that debt.
+
+### Delivery and consumer guidance
+
+- The shared IPC layer reports aggregate event loss with unknown child-stream
+  attribution, preserves terminal and malformed-event diagnostics, and keeps
+  buffered values ahead of an early terminal within its bounded control budget.
+- A historical event-pump failure no longer makes `destroy()` fail repeatedly
+  after the underlying lease is confirmed released; genuine cleanup refusals
+  remain retryable.
+- Terminal connection-event and GATT notification cleanup now feeds refused
+  unsubscribe attempts into the manager's lease-owned retry ledger.
+- The executable Tauri guide checks resolved cleanup receipts, including
+  `release-failed`, and preserves simultaneous operation and cleanup failures.
+
 ## [5.0.0-rc.7] - 2026-09-23 (prerelease)
 
 This candidate addresses the thirteen findings in the public rc.6 review.

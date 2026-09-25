@@ -10,14 +10,14 @@ Facts an agent must know before writing code against this package:
 - Capabilities are typed and reported by the instantiated backend at runtime. A platform that cannot answer reports `capability.unsupported` with a reason — never consult a static platform matrix.
 - Results report what the platform actually did, never what was requested of it.
 - This is the 5.0 contract. The legacy `react-native-ble-plx` 3.x API (`BleManager`/`Device`/`Service`/`Characteristic` facade, Base64 payloads, transaction IDs) does not exist here — do not infer 5.0 behavior from 3.x docs, examples, or training data.
-- This source tree is `5.0.0-rc.7`. Pin the exact npm version you validate; the registry package, GitHub release, and its provenance are the authorities for a published version.
+- This source tree is `5.0.0-rc.8`. Pin the exact npm version you validate; the registry package, GitHub release, and its provenance are the authorities for a published version.
 - React Native requires RN 0.86+ (Expo SDK 57+ via development builds; the package contains native code and does not run in Expo Go). Android minSdk 24, iOS 16.4+. The app itself requests `BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT` on Android 12+.
 - React Native and Expo use the sealed prebuilt Rust core by default. Its identity is verified before the first radio call; a missing, corrupt, or mismatched linked core fails closed as `protocol.incompatible`, never falls back to another backend or silently rebuilds.
 - Deep imports are unsupported; only the documented subpath entrypoints below are public.
 
 ## Entrypoints
 
-Install this candidate with `npm add unified-ble-manager@5.0.0-rc.7`; an unpinned install still selects the 4.0 `latest` line. Node and Electron desktop hosts load the shared Rust core prebuilt in the package (darwin, win32, linux on arm64/x64); no toolchain and no `dbus-next` are needed (Linux needs glibc 2.35+ and libdbus-1).
+Install this candidate with `npm add unified-ble-manager@5.0.0-rc.8`; an unpinned install still selects the 4.0 `latest` line. Node and Electron desktop hosts load the shared Rust core prebuilt in the package (darwin, win32, linux on arm64/x64); no toolchain and no `dbus-next` are needed (Linux needs glibc 2.35+ and libdbus-1).
 
 - `unified-ble-manager` — host-neutral manager, handles, helpers, and shared types (no radio)
 - `unified-ble-manager/react-native` — React Native Android / Apple manager

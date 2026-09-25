@@ -37,6 +37,15 @@ describe('lifecycle transition tables', () => {
     expect(isTransitionAllowed('scan-session', 'active', 'stopping')).toBe(true);
   });
 
+  test('a native start refusal after an early stop is a failed scan terminal', () => {
+    const scan = TRANSITION_TABLES.find(table => table.machine === 'scan-session');
+    expect(scan?.transitions).toContainEqual({
+      from: 'stopping',
+      to: 'failed',
+      via: 'start-failed',
+    });
+  });
+
   test('forbids resurrection of stale or destroyed objects', () => {
     expect(isTransitionAllowed('backend', 'stopped', 'ready')).toBe(false);
     expect(isTransitionAllowed('manager', 'destroyed', 'ready')).toBe(false);

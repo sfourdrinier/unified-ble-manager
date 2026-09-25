@@ -519,6 +519,12 @@ pub fn step_scan_session(
         (ScanSessionState::Stopping, ScanPlatformEvent::PlatformStopped) => {
             Ok(ScanSessionState::Stopped)
         }
+        // An early stop can enter Stopping before the in-flight native start
+        // answers. Its authoritative refusal settles this scan as failed,
+        // even if the requested stop has not yet returned.
+        (ScanSessionState::Stopping, ScanPlatformEvent::StartFailed) => {
+            Ok(ScanSessionState::Failed)
+        }
         (ScanSessionState::Stopping, ScanPlatformEvent::StopFailed) => Ok(ScanSessionState::Failed),
         _ => Err(err(
             BleErrorCode::LifecycleInvalidState,
@@ -5784,6 +5790,23 @@ mod tests {
         let state =
             central.note_scan_platform(&id, ScanPlatformEvent::StartFailed, 1001, &mut out)?;
         check(state == ScanSessionState::Failed, "start failed");
+        Ok(())
+    }
+
+    #[test]
+    fn native_start_refusal_after_early_stop_releases_scan_arbitration() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let request = validate_scan_request(&[], "all", "none", 5000, false, &[])?;
+        let id = central.start_scan(&request, None, "owner-a", 1000, &mut out)?;
+        central.stop_scan(&id, 1001, &mut out)?;
+        let state =
+            central.note_scan_platform(&id, ScanPlatformEvent::StartFailed, 1002, &mut out)?;
+        check(
+            state == ScanSessionState::Failed,
+            "late start refusal is terminal",
+        );
+        central.start_scan(&request, None, "owner-b", 1003, &mut out)?;
         Ok(())
     }
 

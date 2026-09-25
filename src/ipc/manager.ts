@@ -53,6 +53,7 @@ import { normalizeScanQuery } from '../public/scan-query'
 import { BleCleanupError, collectCleanupPhases } from '../public/error-bridge'
 import type { CleanupRecord as PublicCleanupRecord } from '../public/cleanup'
 import { IpcBleClient } from './client'
+import { aggregateEventLossError } from './aggregate-event-loss'
 import { IPC_ATTACHMENT_STREAM_ID, IPC_GATT_DATABASE_SCHEMA_VERSION } from './protocol'
 import type { IpcCapabilitySnapshotV2, IpcClientTransport, IpcEventTransportHealthNotice } from './protocol'
 import { decodeIpcScanQuery, encodeIpcScanQuery } from './scan-planning'
@@ -109,12 +110,15 @@ export interface IpcPendingStreamAccounting {
 interface PendingStreamRecord {
   readonly items: SerializableRecord[]
   bytes: number
+  terminal: boolean
   readonly createdAt: number
 }
 
 interface PendingStreamTombstone {
   readonly reason: 'overflow' | 'source-failed'
   readonly createdAt: number
+  readonly droppedItems: number
+  readonly droppedBytes: number
 }
 
 const ipcPendingInspectors = new WeakMap<IpcBleManager, () => IpcPendingStreamAccounting>()
@@ -253,7 +257,15 @@ export interface IpcDescriptorRecord extends SerializableRecord {
 interface StreamSink {
   readonly closeWithReason: (reason: StreamTerminalNotice['reason'], error?: NormalizedBleError | null) => void
   readonly deliver: (streamId: string, item: SerializableRecord) => void
-  readonly notifyOwnerTerminal: (reason: StreamTerminalNotice['reason']) => void
+  readonly notifyOwnerTerminal: (reason: StreamTerminalNotice['reason']) => void | Promise<CleanupRecord>
+  readonly cleanupScope: 'local' | 'lease-owned'
+}
+
+interface OwnerCleanupAttempt {
+  readonly run: () => void | Promise<CleanupRecord>
+  readonly scope: 'local' | 'lease-owned'
+  error: unknown | null
+  pending: Promise<void> | null
 }
 
 /**
@@ -268,14 +280,14 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   private readonly pendingTombstones = new Map<string, PendingStreamTombstone>()
   private aggregatePendingItems = 0
   private aggregatePendingBytes = 0
+  private aggregatePendingTerminals = 0
   private readonly eventPump: Promise<void>
   private nextConnectionEventHandle = 1
   private lifecycle: 'active' | 'releasing' | 'released' = 'active'
   private releaseResult: Promise<PublicCleanupRecord> | null = null
-  private readonly ownerCleanupLedger: { run: () => void; error: unknown | null }[] = []
+  private readonly ownerCleanupLedger: OwnerCleanupAttempt[] = []
   private pumpDead = false
   private pumpTerminal: { reason: StreamTerminalNotice['reason']; error: NormalizedBleError | null } | null = null
-  private pumpFailure: unknown | null = null
   private readonly unsubscribeEventHealth: () => void
   private readonly unresolvedProvisionals: UnresolvedProvisional[] = []
 
@@ -289,8 +301,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     this.eventPump.then(
       () => undefined,
       error => {
-        this.pumpFailure = error
-        this.terminalizeEventPump('source-failed')
+        this.terminalizeEventPump('source-failed', this.eventFailureError(error))
       }
     )
     this.unsubscribeEventHealth =
@@ -371,15 +382,25 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
               options.query?.digest
             )
     } catch (error) {
+      const retryStop = async (): Promise<CleanupRecord> =>
+        cleanupRecord(await this.route('scan.stop', Object.freeze({ scanHandle: handle })))
+      let cleanup: CleanupRecord
       try {
-        await this.route('scan.stop', Object.freeze({ scanHandle: handle }))
+        cleanup = await retryStop()
       } catch (cleanupError) {
+        this.retainOwnerCleanupFailure(retryStop, 'lease-owned', cleanupError)
         throw new AggregateError([error, cleanupError], 'IPC scan validation cleanup failed')
       } finally {
         this.closeStream(handle)
       }
+      if (cleanup.state === 'release-failed') {
+        const cleanupError = new BleCleanupError(cleanup)
+        this.retainOwnerCleanupFailure(retryStop, 'lease-owned', cleanupError)
+        throw new AggregateError([error, cleanupError], 'IPC scan validation cleanup failed')
+      }
       throw error
     }
+    let session: IpcScanSession | null = null
     const observations = this.registerStream<IpcScanObservation>(
       handle,
       isIpcScanObservation,
@@ -387,11 +408,19 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       options.stream?.overflowPolicy,
       reason => {
         if (reason === 'overflow' || reason === 'source-failed') {
-          this.route('scan.stop', Object.freeze({ scanHandle: handle })).catch(() => undefined)
+          return Promise.resolve().then(() => {
+            if (session === null) {
+              throw contractError('lifecycle.invariant-violation', 'scan', 'ipc-manager.scan-stop-owner')
+            }
+            return session.stop()
+          })
         }
-      }
+        return undefined
+      },
+      'lease-owned'
     )
-    return new IpcScanSession(this, handle, observations, plan)
+    session = new IpcScanSession(this, handle, observations, plan)
+    return session
   }
 
   async connect(peerId: string, options: IpcManagerOperationOptions = {}): Promise<IpcConnection> {
@@ -449,26 +478,34 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
 
   private async runDestroy(): Promise<PublicCleanupRecord> {
     const provisionalPhases = await this.flushUnresolvedProvisionals()
+    // Retry lease-owned stream cleanup while route admission is still open.
+    // The lease release below can then either confirm those obligations gone
+    // or leave their latest errors available for another destroy attempt.
+    await this.retryLeaseOwnedCleanupBeforeDestroy()
     this.lifecycle = 'releasing'
     try {
       const cleanup = await this.client.destroy()
       if (cleanup.state === 'released') {
+        // Releasing the renderer lease is authoritative for its provisional
+        // native resources. A per-resource retry that failed because event
+        // admission was already dead is diagnostic history, not remaining
+        // ownership after this receipt. A refused lease release leaves the
+        // provisional obligations intact for the next destroy attempt.
+        for (const entry of this.unresolvedProvisionals) entry.error = null
         this.unsubscribeEventHealth()
         for (const sink of this.streams.values()) sink.closeWithReason('owner-released')
         this.streams.clear()
         this.clearPendingAccounting()
         await this.eventPump.catch(() => undefined)
       }
-      const ownerPhases = this.flushOwnerCleanupLedger()
+      const ownerPhases = await this.flushOwnerCleanupLedger(cleanup.state === 'released')
       const combined = collectCleanupPhases([
         { cleanup },
-        ...(this.pumpFailure === null ? [] : [{ error: this.pumpFailure }]),
         ...ownerPhases,
-        ...provisionalPhases
+        ...(cleanup.state === 'released' ? [] : provisionalPhases)
       ])
-      if (combined.state === 'released' && ownerPhases.length === 0 && this.pumpFailure === null) {
+      if (combined.state === 'released' && ownerPhases.length === 0) {
         this.lifecycle = 'released'
-        this.pumpFailure = null
       } else {
         this.lifecycle = 'active'
         this.releaseResult = null
@@ -558,7 +595,8 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     isValue: (value: unknown) => value is Value,
     limits: StreamLimits = REMOTE_STREAM_LIMITS,
     overflowPolicy: OverflowPolicy = 'drop-oldest',
-    onTerminal?: (reason: StreamTerminalNotice['reason']) => void
+    onTerminal?: (reason: StreamTerminalNotice['reason']) => void | Promise<CleanupRecord>,
+    cleanupScope: 'local' | 'lease-owned' = 'local'
   ): BoundedAsyncStream<Value> {
     if (this.hasRegisteredStream(handle)) {
       throw contractError('protocol.violation', 'ipc', 'ipc-manager.stream-handle')
@@ -570,15 +608,12 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       if (item.kind === 'value') {
         const rawValue: unknown = item.value
         if (!isValue(rawValue)) {
-          this.streams.delete(handle)
-          source.closeWithReason('source-failed')
-          onTerminal?.('source-failed')
           throw contractError('protocol.malformed', 'ipc', 'ipc-manager.stream-value')
         }
         const push = source.emit(rawValue, estimateByteLength(rawValue))
         if (push.terminated) {
           this.streams.delete(handle)
-          onTerminal?.('overflow')
+          this.captureOwnerCleanup(() => onTerminal?.('overflow'), cleanupScope)
         }
         return
       }
@@ -595,50 +630,64 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       if (item.kind === 'terminal') {
         const reason = requiredTerminalReason(item.reason, 'ipc-manager.event')
         source.finishWithReason(reason, requiredTerminalError(item.error, 'ipc-manager.event'))
-        onTerminal?.(reason)
         this.streams.delete(streamId)
         this.discardPendingStream(streamId)
+        this.captureOwnerCleanup(() => onTerminal?.(reason), cleanupScope)
+        return
       }
+      throw contractError('protocol.malformed', 'ipc', 'ipc-manager.stream-item-kind')
     }
     const sink: StreamSink = {
       closeWithReason: (reason, error) => source.closeWithReason(reason, error),
       deliver,
       notifyOwnerTerminal: reason => {
-        onTerminal?.(reason)
-      }
+        return onTerminal?.(reason)
+      },
+      cleanupScope
     }
     if (this.pumpDead) {
       const terminal = this.pumpTerminal
       const reason = terminal?.reason ?? 'source-failed'
       source.closeWithReason(reason, terminal?.error ?? null)
-      this.captureOwnerCleanup(() => onTerminal?.(reason))
+      this.captureOwnerCleanup(() => onTerminal?.(reason), cleanupScope)
       return source
     }
     if (tombstone !== undefined) {
       this.pendingTombstones.delete(handle)
+      if (tombstone.droppedItems > 0) {
+        source.observeSourceOverflow({
+          kind: 'overflow',
+          policy: 'drop-oldest',
+          droppedItems: resourceCount(tombstone.droppedItems),
+          droppedBytes: resourceCount(tombstone.droppedBytes),
+          replacedItems: resourceCount(0)
+        })
+      }
       source.closeWithReason(tombstone.reason)
-      this.captureOwnerCleanup(() => {
-        onTerminal?.(tombstone.reason)
-      })
+      this.captureOwnerCleanup(() => onTerminal?.(tombstone.reason), cleanupScope)
       return source
     }
     this.streams.set(handle, sink)
     const pending = this.takePendingStream(handle)
     const pendingOverflow = this.pendingStreamOverflows.get(handle)
     this.pendingStreamOverflows.delete(handle)
-    if (pendingOverflow !== undefined) {
-      deliver(handle, {
-        kind: 'overflow',
-        policy: 'drop-oldest',
-        droppedItems: pendingOverflow.droppedItems,
-        droppedBytes: pendingOverflow.droppedBytes,
-        replacedItems: 0
-      })
-    }
-    if (pending !== undefined) {
-      for (const item of pending.items) {
-        deliver(handle, item)
+    try {
+      if (pendingOverflow !== undefined) {
+        deliver(handle, {
+          kind: 'overflow',
+          policy: 'drop-oldest',
+          droppedItems: pendingOverflow.droppedItems,
+          droppedBytes: pendingOverflow.droppedBytes,
+          replacedItems: 0
+        })
       }
+      if (pending !== undefined) {
+        for (const item of pending.items) {
+          deliver(handle, item)
+        }
+      }
+    } catch (error) {
+      this.failRegisteredStream(handle, sink, error)
     }
     return source
   }
@@ -674,13 +723,42 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     if (validation !== null) {
       await this.compensateFailedEventAdmission(handle, validation)
     }
-    const events = this.registerStream(handle, isIpcConnectionLifecycleEvent, undefined, undefined, reason => {
-      if (reason === 'overflow' || reason === 'source-failed') {
-        this.route('connection.events.unsubscribe', Object.freeze({ connectionEventsHandle: handle })).catch(
-          () => undefined
-        )
-      }
-    })
+    let unsubscribeResult: Promise<CleanupRecord> | null = null
+    const unsubscribe = (): Promise<CleanupRecord> => {
+      if (unsubscribeResult !== null) return unsubscribeResult
+      const result = this.route('connection.events.unsubscribe', Object.freeze({ connectionEventsHandle: handle }))
+        .then(cleanupPayload => cleanupRecord(cleanupPayload))
+        .catch(error => {
+          // A terminal from the host can retire its stream before our cleanup request arrives.
+          if (
+            error instanceof BackendContractError &&
+            error.normalized.code === 'ownership.denied' &&
+            !this.streams.has(handle)
+          ) {
+            return Object.freeze({ state: 'released' as const, failures: Object.freeze([]) })
+          }
+          throw error
+        })
+        .then(cleanup => {
+          if (cleanup.state === 'released') this.closeStream(handle)
+          else unsubscribeResult = null
+          return cleanup
+        })
+        .catch(error => {
+          unsubscribeResult = null
+          throw error
+        })
+      unsubscribeResult = result
+      return result
+    }
+    const events = this.registerStream(
+      handle,
+      isIpcConnectionLifecycleEvent,
+      undefined,
+      undefined,
+      reason => (reason === 'overflow' || reason === 'source-failed' ? unsubscribe() : undefined),
+      'lease-owned'
+    )
     try {
       const ready = await this.route('connection.events.ready', Object.freeze({ connectionEventsHandle: handle }))
       if (ready.state !== 'ready') {
@@ -690,31 +768,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       this.closeStream(handle, 'source-failed')
       await this.compensateFailedEventAdmission(handle, error)
     }
-    return {
-      events,
-      unsubscribe: async () => {
-        let cleanup: CleanupRecord
-        try {
-          cleanup = cleanupRecord(
-            await this.route('connection.events.unsubscribe', Object.freeze({ connectionEventsHandle: handle }))
-          )
-        } catch (error) {
-          // The host ended this stream with its terminal and forgot it: the
-          // host's own answer is that nothing is held, i.e. released (the
-          // renderer client's rule for the same refusal).
-          if (
-            error instanceof BackendContractError &&
-            error.normalized.code === 'ownership.denied' &&
-            !this.streams.has(handle)
-          ) {
-            return Object.freeze({ state: 'released' as const, failures: Object.freeze([]) })
-          }
-          throw error
-        }
-        if (cleanup.state === 'released') this.closeStream(handle)
-        return cleanup
-      }
-    }
+    return { events, unsubscribe }
   }
 
   closeStream(
@@ -731,14 +785,26 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
 
   private async pumpEvents(): Promise<void> {
     let cause: StreamTerminalNotice['reason'] = 'source-failed'
+    let terminalError: NormalizedBleError | null = null
     try {
       for await (const event of this.client.events) {
         if (this.pumpDead) break
-        if (event.kind === 'terminal') {
-          cause = event.reason === 'overflow' ? 'overflow' : 'source-failed'
+        if (event.kind === 'overflow') {
+          // This is aggregate ingress loss. Its dropped counts cannot be
+          // attributed to individual child streams, so fail all children with
+          // zero child-specific counts rather than inventing a distribution.
+          cause = 'overflow'
+          terminalError = aggregateEventLossError('ipc-manager.aggregate-event-loss', 'ipc-client-events', event)
           break
         }
-        if (event.kind !== 'value') continue
+        if (event.kind === 'terminal') {
+          cause = event.reason
+          terminalError =
+            event.reason === 'overflow'
+              ? (event.error ?? aggregateEventLossError('ipc-manager.aggregate-event-loss', 'ipc-client-events', event))
+              : (event.error ?? null)
+          break
+        }
         try {
           const eventValue = event.value
           const streamId = requiredString(eventValue, 'streamId', 'ipc-manager.event')
@@ -752,27 +818,40 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
           }
           try {
             sink.deliver(streamId, item)
-          } catch {
-            const affected = this.streams.get(streamId)
-            if (affected !== undefined) {
-              affected.closeWithReason('source-failed')
-              this.captureOwnerCleanup(() => affected.notifyOwnerTerminal('source-failed'))
-              this.streams.delete(streamId)
-              this.discardPendingStream(streamId)
-            }
+          } catch (error) {
+            this.failRegisteredStream(streamId, sink, error)
           }
         } catch (error) {
-          this.pumpFailure = error
           cause = 'source-failed'
+          terminalError = this.eventFailureError(error)
           break
         }
       }
     } catch (error) {
-      this.pumpFailure = error
       cause = 'source-failed'
+      terminalError = this.eventFailureError(error)
     } finally {
-      this.terminalizeEventPump(cause)
+      this.terminalizeEventPump(cause, terminalError)
     }
+  }
+
+  private eventFailureError(error: unknown): NormalizedBleError {
+    return error instanceof BackendContractError
+      ? error.normalized
+      : contractError('platform.transport', 'ipc', 'ipc-manager.event-pump', {
+          domain: 'ipc-client-events',
+          code: 'iterator-failed',
+          safeMessage: error instanceof Error ? error.message : 'IPC event iteration failed',
+          metadata: Object.freeze({})
+        }).normalized
+  }
+
+  private failRegisteredStream(streamId: string, sink: StreamSink, error: unknown): void {
+    if (this.streams.get(streamId) !== sink) return
+    this.streams.delete(streamId)
+    this.discardPendingStream(streamId)
+    sink.closeWithReason('source-failed', this.eventFailureError(error))
+    this.captureOwnerCleanup(() => sink.notifyOwnerTerminal('source-failed'), sink.cleanupScope)
   }
 
   private noteEventTransportHealth(notice: IpcEventTransportHealthNotice): void {
@@ -788,29 +867,81 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     this.clearPendingAccounting()
     for (const sink of sinks) {
       sink.closeWithReason(cause, error)
-      this.captureOwnerCleanup(() => sink.notifyOwnerTerminal(cause))
+      this.captureOwnerCleanup(() => sink.notifyOwnerTerminal(cause), sink.cleanupScope)
     }
   }
 
-  private captureOwnerCleanup(run: () => void): void {
+  private captureOwnerCleanup(
+    run: () => void | Promise<CleanupRecord>,
+    scope: 'local' | 'lease-owned' = 'local'
+  ): void {
+    const entry: OwnerCleanupAttempt = { run, scope, error: null, pending: null }
     try {
-      run()
+      const result = run()
+      if (result === undefined) return
+      this.ownerCleanupLedger.push(entry)
+      entry.pending = result
+        .then(
+          cleanup => {
+            if (cleanup.state === 'release-failed') entry.error = new BleCleanupError(cleanup)
+          },
+          error => {
+            entry.error = error
+          }
+        )
+        .then(() => {
+          entry.pending = null
+          if (entry.error === null) this.forgetOwnerCleanup(entry)
+        })
     } catch (error) {
-      this.ownerCleanupLedger.push({ run, error })
+      entry.error = error
+      this.ownerCleanupLedger.push(entry)
     }
   }
 
-  private flushOwnerCleanupLedger(): { readonly error: unknown }[] {
+  private retainOwnerCleanupFailure(
+    run: () => Promise<CleanupRecord>,
+    scope: 'local' | 'lease-owned',
+    error: unknown
+  ): void {
+    this.ownerCleanupLedger.push({ run, scope, error, pending: null })
+  }
+
+  private forgetOwnerCleanup(entry: OwnerCleanupAttempt): void {
+    const index = this.ownerCleanupLedger.indexOf(entry)
+    if (index >= 0) this.ownerCleanupLedger.splice(index, 1)
+  }
+
+  private async retryOwnerCleanupEntry(entry: OwnerCleanupAttempt): Promise<void> {
+    if (entry.pending !== null) await entry.pending
+    if (entry.error === null) return
+    try {
+      const cleanup = await entry.run()
+      if (cleanup?.state === 'release-failed') throw new BleCleanupError(cleanup)
+      entry.error = null
+      this.forgetOwnerCleanup(entry)
+    } catch (error) {
+      entry.error = error
+    }
+  }
+
+  private async retryLeaseOwnedCleanupBeforeDestroy(): Promise<void> {
+    for (const entry of [...this.ownerCleanupLedger]) {
+      if (entry.scope === 'lease-owned') await this.retryOwnerCleanupEntry(entry)
+    }
+  }
+
+  private async flushOwnerCleanupLedger(leaseReleased: boolean): Promise<{ readonly error: unknown }[]> {
     const failures: { readonly error: unknown }[] = []
-    for (const entry of this.ownerCleanupLedger) {
-      if (entry.error === null) continue
-      try {
-        entry.run()
+    for (const entry of [...this.ownerCleanupLedger]) {
+      if (leaseReleased && entry.scope === 'lease-owned') {
         entry.error = null
-      } catch (error) {
-        entry.error = error
-        failures.push({ error })
+        this.forgetOwnerCleanup(entry)
+        continue
       }
+      if (entry.scope === 'local') await this.retryOwnerCleanupEntry(entry)
+      else if (entry.pending !== null) await entry.pending
+      if (entry.error !== null) failures.push({ error: entry.error })
     }
     return failures
   }
@@ -826,29 +957,30 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
         this.evictPendingStream(oldestId, 'overflow')
       }
     }
-    const pending = existing ?? { items: [], bytes: 0, createdAt: this.now() }
+    const pending = existing ?? { items: [], bytes: 0, terminal: false, createdAt: this.now() }
     if (existing === undefined) this.pendingStreams.set(streamId, pending)
-    if (item.kind === 'terminal') {
-      this.aggregatePendingItems -= pending.items.length
-      this.aggregatePendingBytes -= pending.bytes
-      pending.items.length = 0
-      pending.bytes = 0
-    }
+    if (pending.terminal) return
     const itemCapacity = Number(REMOTE_STREAM_LIMITS.itemCapacity)
     const byteCapacity = Number(REMOTE_STREAM_LIMITS.byteCapacity)
     const itemBytes = estimateByteLength(item)
     let droppedItems = 0
     let droppedBytes = 0
-    if (itemBytes > byteCapacity && item.kind !== 'terminal') {
+    if (itemBytes > byteCapacity && item.kind === 'terminal') {
+      this.evictPendingStream(streamId, 'source-failed')
+      return
+    }
+    if (itemBytes > byteCapacity) {
+      droppedItems = pending.items.length + 1
+      droppedBytes = pending.bytes + itemBytes
       this.aggregatePendingItems -= pending.items.length
       this.aggregatePendingBytes -= pending.bytes
       pending.items.length = 0
       pending.bytes = 0
-      droppedItems = 1
-      droppedBytes = itemBytes
       const overflowTerminal = { kind: 'terminal', reason: 'overflow' }
       const overflowBytes = estimateByteLength(overflowTerminal)
       pending.items.push(overflowTerminal)
+      pending.terminal = true
+      this.aggregatePendingTerminals += 1
       pending.bytes = overflowBytes
       this.aggregatePendingItems += 1
       this.aggregatePendingBytes += overflowBytes
@@ -857,9 +989,12 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       this.assertPendingAccounting()
       return
     }
+    // A terminal is the one reserved control item. Keep accepted FIFO values
+    // ahead of it; its own bytes remain charged to the aggregate quota. A
+    // nonterminal item still obeys the ordinary per-stream value budget.
     while (
-      pending.items.length >= itemCapacity ||
-      (pending.items.length > 0 && pending.bytes + itemBytes > byteCapacity)
+      item.kind !== 'terminal' &&
+      (pending.items.length >= itemCapacity || (pending.items.length > 0 && pending.bytes + itemBytes > byteCapacity))
     ) {
       const removed = pending.items.shift()
       if (removed === undefined) break
@@ -871,6 +1006,10 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       droppedBytes += removedBytes
     }
     pending.items.push(item)
+    if (item.kind === 'terminal') {
+      pending.terminal = true
+      this.aggregatePendingTerminals += 1
+    }
     pending.bytes += itemBytes
     this.aggregatePendingItems += 1
     this.aggregatePendingBytes += itemBytes
@@ -915,7 +1054,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
 
   private enforceAggregatePendingBudget(): void {
     while (
-      this.aggregatePendingItems > MAX_PENDING_STREAM_ITEMS ||
+      this.aggregatePendingItems > MAX_PENDING_STREAM_ITEMS + this.aggregatePendingTerminals ||
       this.aggregatePendingBytes > MAX_PENDING_STREAM_BYTES
     ) {
       const oldestId = this.oldestPendingStreamId()
@@ -930,8 +1069,19 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   }
 
   private evictPendingStream(streamId: string, reason: 'overflow' | 'source-failed'): void {
+    const record = this.pendingStreams.get(streamId)
+    const prior = this.pendingStreamOverflows.get(streamId)
+    let droppedItems = prior?.droppedItems ?? 0
+    let droppedBytes = prior?.droppedBytes ?? 0
+    if (record !== undefined) {
+      for (const item of record.items) {
+        if (item.kind !== 'value') continue
+        droppedItems += 1
+        droppedBytes += estimateByteLength(item)
+      }
+    }
     this.discardPendingStream(streamId)
-    this.rememberTombstone(streamId, reason)
+    this.rememberTombstone(streamId, reason, droppedItems, droppedBytes)
   }
 
   private takePendingStream(streamId: string): PendingStreamRecord | undefined {
@@ -940,6 +1090,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     this.pendingStreams.delete(streamId)
     this.aggregatePendingItems -= pending.items.length
     this.aggregatePendingBytes -= pending.bytes
+    if (pending.terminal) this.aggregatePendingTerminals -= 1
     this.assertPendingAccounting()
     return pending
   }
@@ -951,16 +1102,22 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     this.pendingStreams.delete(streamId)
     this.aggregatePendingItems -= pending.items.length
     this.aggregatePendingBytes -= pending.bytes
+    if (pending.terminal) this.aggregatePendingTerminals -= 1
     this.assertPendingAccounting()
   }
 
-  private rememberTombstone(streamId: string, reason: 'overflow' | 'source-failed'): void {
+  private rememberTombstone(
+    streamId: string,
+    reason: 'overflow' | 'source-failed',
+    droppedItems: number,
+    droppedBytes: number
+  ): void {
     while (this.pendingTombstones.size >= MAX_PENDING_TOMBSTONES) {
       const oldest = this.pendingTombstones.keys().next()
       if (oldest.done === true) break
       this.pendingTombstones.delete(oldest.value)
     }
-    this.pendingTombstones.set(streamId, { reason, createdAt: this.now() })
+    this.pendingTombstones.set(streamId, { reason, createdAt: this.now(), droppedItems, droppedBytes })
   }
 
   private recordPendingOverflow(streamId: string, droppedItems: number, droppedBytes: number): void {
@@ -977,15 +1134,22 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     this.pendingTombstones.clear()
     this.aggregatePendingItems = 0
     this.aggregatePendingBytes = 0
+    this.aggregatePendingTerminals = 0
   }
 
   private assertPendingAccounting(): void {
     const accounting = this.pendingAccounting()
+    let terminalCount = 0
+    for (const record of this.pendingStreams.values()) {
+      if (record.terminal) terminalCount += 1
+    }
     if (
       accounting.pendingItemCount !== this.aggregatePendingItems ||
       accounting.pendingByteCount !== this.aggregatePendingBytes ||
       this.aggregatePendingItems < 0 ||
-      this.aggregatePendingBytes < 0
+      this.aggregatePendingBytes < 0 ||
+      this.aggregatePendingTerminals < 0 ||
+      this.aggregatePendingTerminals !== terminalCount
     ) {
       throw contractError('protocol.violation', 'ipc', 'ipc-manager.pending-accounting')
     }
@@ -1803,9 +1967,10 @@ export class IpcGattDatabase {
     isValue: (value: unknown) => value is Value,
     limits?: StreamLimits,
     overflowPolicy?: OverflowPolicy,
-    onTerminal?: (reason: StreamTerminalNotice['reason']) => void
+    onTerminal?: (reason: StreamTerminalNotice['reason']) => void | Promise<CleanupRecord>,
+    cleanupScope: 'local' | 'lease-owned' = 'local'
   ): BoundedAsyncStream<Value> {
-    return this.manager.registerStream<Value>(handle, isValue, limits, overflowPolicy, onTerminal)
+    return this.manager.registerStream<Value>(handle, isValue, limits, overflowPolicy, onTerminal, cleanupScope)
   }
 
   hasRegisteredStream(handle: string): boolean {
@@ -2097,7 +2262,30 @@ export class IpcCharacteristic {
       if (handle === null) {
         throw contractError('protocol.malformed', 'ipc', 'ipc-manager.gatt-subscribe')
       }
-      const subscription = new IpcSubscription(
+      let subscription: IpcSubscription | null = null
+      let removeResult: Promise<CleanupRecord> | null = null
+      const remove = (): Promise<CleanupRecord> => {
+        if (removeResult !== null) return removeResult
+        const result = this.database
+          .route('gatt.unsubscribe', Object.freeze({ subscriptionHandle: handle }), null)
+          .then(cleanupPayload => cleanupRecord(cleanupPayload))
+          .then(cleanup => {
+            if (cleanup.state === 'released') {
+              this.database.closeStream(handle)
+              if (subscription !== null) this.database.forgetSubscription(subscription)
+            } else {
+              removeResult = null
+            }
+            return cleanup
+          })
+          .catch(error => {
+            removeResult = null
+            throw error
+          })
+        removeResult = result
+        return result
+      }
+      subscription = new IpcSubscription(
         this.database,
         handle,
         requiredObservedDelivery(payload),
@@ -2107,14 +2295,13 @@ export class IpcCharacteristic {
           toRemoteStreamLimits(options.stream),
           options.stream?.overflowPolicy,
           reason => {
-            if (reason === 'service-changed') this.database.invalidate('service-changed').catch(() => undefined)
-            if (reason === 'overflow' || reason === 'source-failed') {
-              this.database
-                .route('gatt.unsubscribe', Object.freeze({ subscriptionHandle: handle }), null)
-                .catch(() => undefined)
-            }
-          }
-        )
+            if (reason === 'service-changed') return this.database.invalidate('service-changed')
+            if (reason === 'overflow' || reason === 'source-failed') return remove()
+            return undefined
+          },
+          'lease-owned'
+        ),
+        remove
       )
       this.database.registerSubscription(subscription)
       return subscription
@@ -2167,13 +2354,13 @@ export class IpcDescriptor {
 
 export class IpcSubscription {
   path: PortableCurrentCharacteristicPath | null = null
-  private removeResult: Promise<CleanupRecord> | null = null
 
   constructor(
     private readonly database: IpcGattDatabase,
     readonly handle: string,
     readonly observedDelivery: 'notification' | 'indication' | 'unknown',
-    readonly values: BoundedAsyncStream<IpcNotificationValue>
+    readonly values: BoundedAsyncStream<IpcNotificationValue>,
+    private readonly removeOwned: () => Promise<CleanupRecord>
   ) {}
 
   get subscriptionId(): string {
@@ -2181,25 +2368,7 @@ export class IpcSubscription {
   }
 
   remove(): Promise<CleanupRecord> {
-    if (this.removeResult !== null) return this.removeResult
-    const result = this.database
-      .route('gatt.unsubscribe', Object.freeze({ subscriptionHandle: this.handle }), null)
-      .then(payload => cleanupRecord(payload))
-      .then(cleanup => {
-        if (cleanup.state === 'released') {
-          this.database.closeStream(this.handle)
-          this.database.forgetSubscription(this)
-        } else {
-          this.removeResult = null
-        }
-        return cleanup
-      })
-      .catch(error => {
-        this.removeResult = null
-        throw error
-      })
-    this.removeResult = result
-    return result
+    return this.removeOwned()
   }
 
   closeFromDatabase(reason: 'connection-lost' | 'service-changed'): Promise<CleanupRecord> {

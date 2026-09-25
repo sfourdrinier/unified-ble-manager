@@ -86,7 +86,7 @@ once tagged. Stable `4.0.0` through `4.0.20` are immutable. The unpublished
 `4.0.23`, `4.0.24`, `4.0.25`, `4.0.26`, and `4.0.27` are immutable tagged
 history. `4.0.28` is immutable tagged history. The unpublished
 `v5.0.0-rc.5` tag is immutable after its publish-only Tauri consumer failure.
-The current candidate is `5.0.0-rc.7`; rc.6 is immutable published history.
+The current candidate is `5.0.0-rc.8`; rc.7 is immutable published history.
 
 ```sh
 release_candidate=4.0.0-rc.N
@@ -113,6 +113,23 @@ The first stable tag `v4.0.0` is immutable published history. Do not recreate or
 ```sh
 git tag -a v4.0.0 -m "v4.0.0"
 ```
+
+## Releasing 5.0.0-rc.8
+
+`v5.0.0-rc.7` is immutable published history. Release `v5.0.0-rc.8` only
+from the exact current `main` commit after the review-remediation PR and
+canonical CI succeed. Verify `package.json` is `5.0.0-rc.8`, the worktree is
+clean, and release-note extraction finds `## [5.0.0-rc.8]`. Push a new
+annotated `v5.0.0-rc.8` tag; the tag workflow publishes the exact packed
+artifact to npm `next` with provenance and creates a GitHub prerelease. Never
+publish manually or move an earlier tag.
+
+The candidate-specific gate covers same-host scan recovery before shutdown,
+the Rust/TypeScript scan lifecycle parity, shared IPC inner-queue loss and
+terminal diagnostics through Electron and Tauri public paths, manager-scoped
+GATT acquisition compensation, and executable Tauri cleanup-receipt examples.
+Refresh the sealed Android prebuilts and expected native identity after the
+Rust changes. These checks do not constitute physical-radio qualification.
 
 ## Releasing 5.0.0-rc.7
 
@@ -618,7 +635,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=5.0.0-rc.7
+version=5.0.0-rc.8
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -629,7 +646,7 @@ npm view "unified-ble-manager@$version" dist.integrity
 
 Then verify:
 
-- npm `next` resolves to `5.0.0-rc.7`, while `latest` remains on the 4.0 stable
+- npm `next` resolves to `5.0.0-rc.8`, while `latest` remains on the 4.0 stable
   line; a stable release moves `latest`;
 - the npm package page shows provenance for the published artifact;
 - the GitHub Release exists at that tag, and is marked prerelease only if the
@@ -637,7 +654,7 @@ Then verify:
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager@5.0.0-rc.7` explicitly and import the documented host
+  `unified-ble-manager@5.0.0-rc.8` explicitly and import the documented host
   entrypoints. A bare install still selects `latest` (the 4.0 line). This
   catches a packaging gap the repository's
   own tests cannot see: `@babel/runtime` shipped undeclared in 4.0.4 and only a

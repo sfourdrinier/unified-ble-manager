@@ -1,8 +1,6 @@
-const {
-  IpcBleManager,
-  inspectIpcPendingStreamAccountingForTests
-} = require('../../src/ipc/manager')
+const { IpcBleManager, inspectIpcPendingStreamAccountingForTests } = require('../../src/ipc/manager')
 const { BUILT_IN_FEATURE_IDS } = require('../../src/backend-contract/capabilities')
+const { ElectronRendererBleClient } = require('../../src/electron/renderer')
 
 function negotiated(axis, value = axis === 'ipc-protocol' ? 4 : 1) {
   const selected = { axis, value }
@@ -98,10 +96,25 @@ async function createPumpHarness(options = {}) {
   const listeners = []
   const bootstrap = bootstrapRecord()
   let failAck = options.failAck === true
+  let releaseAttempts = 0
+  let scanStopAttempts = 0
   const transport = {
     invoke: async request => {
       if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap }
-      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      if (request.kind === 'release') {
+        releaseAttempts += 1
+        return { kind: 'release', cleanup: options.release?.(releaseAttempts) ?? { state: 'released', failures: [] } }
+      }
+      if (request.envelope?.command === 'scan.start') {
+        return { kind: 'route', payload: options.scanStart ?? { handle: 'owned-scan' } }
+      }
+      if (request.envelope?.command === 'scan.stop') {
+        scanStopAttempts += 1
+        return {
+          kind: 'route',
+          payload: options.scanStop?.(scanStopAttempts) ?? { state: 'released', failures: [] }
+        }
+      }
       return { kind: 'route', payload: { state: 'released', failureCount: 0 } }
     },
     subscribe(listener) {
@@ -114,6 +127,8 @@ async function createPumpHarness(options = {}) {
   return {
     ipc,
     bootstrap,
+    releaseAttempts: () => releaseAttempts,
+    scanStopAttempts: () => scanStopAttempts,
     failAck() {
       failAck = true
     },
@@ -153,6 +168,212 @@ async function killPump(harness) {
 }
 
 describe('IPC event pump termination', () => {
+  test('invalid scan plan retains a release-failed compensation receipt for destroy retry', async () => {
+    const failure = {
+      resourceKind: 'scan',
+      error: {
+        code: 'scan.stop-failed',
+        domain: 'scan',
+        operation: 'fixture.scan-plan-stop',
+        platform: null,
+        retryability: 'never'
+      }
+    }
+    const harness = await createPumpHarness({
+      scanStart: { handle: 'owned-scan', plan: {} },
+      scanStop: attempt =>
+        attempt === 1 ? { state: 'release-failed', failures: [failure] } : { state: 'released', failures: [] }
+    })
+    const rejection = await harness.ipc.scan({}).then(
+      () => null,
+      error => error
+    )
+    expect(rejection).toBeInstanceOf(AggregateError)
+    expect(rejection.errors).toHaveLength(2)
+    expect(rejection.errors[0]).toMatchObject({ normalized: { code: 'protocol.violation' } })
+    expect(rejection.errors[1]).toMatchObject({ cleanup: { state: 'release-failed' } })
+    expect(harness.scanStopAttempts()).toBe(1)
+    await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(harness.scanStopAttempts()).toBe(2)
+  })
+
+  test('failed automatic scan stop retries across refused lease release and settles after a successful retry', async () => {
+    const failure = {
+      resourceKind: 'scan',
+      error: {
+        code: 'scan.stop-failed',
+        domain: 'scan',
+        operation: 'fixture.scan-stop',
+        platform: null,
+        retryability: 'never'
+      }
+    }
+    const harness = await createPumpHarness({
+      scanStop: attempt =>
+        attempt < 3 ? { state: 'release-failed', failures: [failure] } : { state: 'released', failures: [] },
+      release: attempt =>
+        attempt === 1 ? { state: 'release-failed', failures: [failure] } : { state: 'released', failures: [] }
+    })
+    await harness.ipc.scan({})
+    harness.emit('owned-scan', { kind: 'terminal', reason: 'source-failed' }, 'owned-scan-terminal')
+    await flushPump()
+    expect(harness.scanStopAttempts()).toBe(1)
+    await expect(harness.ipc.destroy()).rejects.toMatchObject({
+      errors: expect.arrayContaining([
+        expect.objectContaining({ cleanup: { state: 'release-failed', failures: [failure] } })
+      ])
+    })
+    expect(harness.scanStopAttempts()).toBe(2)
+    await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(harness.scanStopAttempts()).toBe(3)
+  })
+
+  test('automatic terminal and explicit stop share one in-flight scan stop', async () => {
+    let finishStop
+    const stopResult = new Promise(resolve => {
+      finishStop = resolve
+    })
+    const harness = await createPumpHarness({ scanStop: () => stopResult })
+    const scan = await harness.ipc.scan({})
+    harness.emit('owned-scan', { kind: 'terminal', reason: 'source-failed' }, 'owned-scan-terminal')
+    await flushPump()
+    const explicit = scan.stop()
+    expect(harness.scanStopAttempts()).toBe(1)
+    finishStop({ state: 'released', failures: [] })
+    await expect(explicit).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(harness.scanStopAttempts()).toBe(1)
+  })
+
+  test('thrown automatic scan-stop error remains visible when lease release is refused', async () => {
+    const stopError = new Error('scan stop transport unavailable')
+    const leaseFailure = {
+      resourceKind: 'renderer-lease',
+      error: {
+        code: 'platform.transport',
+        domain: 'ipc',
+        operation: 'fixture.release',
+        platform: null,
+        retryability: 'never'
+      }
+    }
+    const harness = await createPumpHarness({
+      scanStop: () => {
+        throw stopError
+      },
+      release: attempt =>
+        attempt === 1 ? { state: 'release-failed', failures: [leaseFailure] } : { state: 'released', failures: [] }
+    })
+    await harness.ipc.scan({})
+    harness.emit('owned-scan', { kind: 'terminal', reason: 'source-failed' }, 'thrown-stop-terminal')
+    await flushPump()
+    await expect(harness.ipc.destroy()).rejects.toMatchObject({ errors: expect.arrayContaining([stopError]) })
+    expect(harness.scanStopAttempts()).toBe(2)
+    await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
+  test('malformed active child value retains the exact diagnostic and retries owner cleanup', async () => {
+    const harness = await createPumpHarness()
+    let ownerAttempts = 0
+    const child = harness.ipc.registerStream('malformed-value-child', isRecord, undefined, undefined, () => {
+      ownerAttempts += 1
+      if (ownerAttempts === 1) throw new Error('owner cleanup refused')
+    })
+    harness.emit('malformed-value-child', { kind: 'value', value: 42 }, 'malformed-child-value')
+    await flushPump()
+    await expect(child[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+      value: {
+        kind: 'terminal',
+        reason: 'source-failed',
+        error: { code: 'protocol.malformed', operation: 'ipc-manager.stream-value' }
+      }
+    })
+    expect(ownerAttempts).toBe(1)
+    await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(ownerAttempts).toBe(2)
+  })
+
+  test.each([
+    ['item kind', { kind: 'unknown' }],
+    ['overflow policy', { kind: 'overflow', policy: 'invalid', droppedItems: 1, droppedBytes: 1, replacedItems: 0 }],
+    ['terminal reason', { kind: 'terminal', reason: 'invalid' }],
+    ['terminal error', { kind: 'terminal', reason: 'source-failed', error: { code: 'invalid' } }]
+  ])('malformed active child %s remains a structured child failure', async (_label, item) => {
+    const harness = await createPumpHarness()
+    const onTerminal = jest.fn()
+    const child = harness.ipc.registerStream('malformed-control-child', isRecord, undefined, undefined, onTerminal)
+    harness.emit('malformed-control-child', item, `malformed-control-${_label}`)
+    await flushPump()
+    await expect(child[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason: 'source-failed', error: { code: 'protocol.malformed' } }
+    })
+    expect(onTerminal).toHaveBeenCalledTimes(1)
+    await harness.ipc.destroy()
+  })
+
+  test('inner source terminal retains its structured diagnostic for every child', async () => {
+    const error = {
+      code: 'platform.transport',
+      domain: 'ipc',
+      operation: 'fixture.inner-event-source',
+      platform: null,
+      retryability: 'never'
+    }
+    const source = {
+      async *[Symbol.asyncIterator]() {
+        yield {
+          kind: 'terminal',
+          reason: 'source-failed',
+          droppedItems: 0,
+          droppedBytes: 0,
+          replacedItems: 0,
+          error
+        }
+      }
+    }
+    const getter = jest.spyOn(ElectronRendererBleClient.prototype, 'events', 'get').mockReturnValue(source)
+    try {
+      const harness = await createPumpHarness()
+      await flushPump()
+      const child = harness.ipc.registerStream('late-child', isRecord)
+      await expect(child[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+        value: { kind: 'terminal', reason: 'source-failed', error }
+      })
+      await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    } finally {
+      getter.mockRestore()
+    }
+  })
+
+  test('bare inner iterator failure is a source-failed terminal and does not poison cleanup', async () => {
+    const source = {
+      async *[Symbol.asyncIterator]() {
+        throw new Error('inner iterator refused')
+      }
+    }
+    const getter = jest.spyOn(ElectronRendererBleClient.prototype, 'events', 'get').mockReturnValue(source)
+    try {
+      const harness = await createPumpHarness()
+      await flushPump()
+      const child = harness.ipc.registerStream('failed-iterator-child', isRecord)
+      await expect(child[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+        value: {
+          kind: 'terminal',
+          reason: 'source-failed',
+          error: {
+            code: 'platform.transport',
+            platform: { code: 'iterator-failed', safeMessage: 'inner iterator refused' }
+          }
+        }
+      })
+      await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    } finally {
+      getter.mockRestore()
+    }
+  })
+
   test('global terminal closes scan, notification, and lifecycle children', async () => {
     const harness = await createPumpHarness()
     const scan = harness.ipc.registerStream('scan-child', isRecord)
@@ -175,15 +396,20 @@ describe('IPC event pump termination', () => {
     await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 
-  test('natural completion is source-failed for all children', async () => {
-    const harness = await createPumpHarness()
-    const child = harness.ipc.registerStream('natural-child', isRecord)
-    const iterator = child[Symbol.asyncIterator]()
-    await killPump(harness)
-    await expect(iterator.next()).resolves.toMatchObject({
-      value: { kind: 'terminal', reason: 'source-failed' }
-    })
-    await harness.ipc.destroy()
+  test('bare inner stream completion is source-failed for all children', async () => {
+    const source = { async *[Symbol.asyncIterator]() {} }
+    const getter = jest.spyOn(ElectronRendererBleClient.prototype, 'events', 'get').mockReturnValue(source)
+    try {
+      const harness = await createPumpHarness()
+      await flushPump()
+      const child = harness.ipc.registerStream('natural-child', isRecord)
+      await expect(child[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+        value: { kind: 'terminal', reason: 'source-failed' }
+      })
+      await harness.ipc.destroy()
+    } finally {
+      getter.mockRestore()
+    }
   })
 
   test('malformed global event terminates children and does not leave an unobserved rejection', async () => {
@@ -202,7 +428,11 @@ describe('IPC event pump termination', () => {
         value: { kind: 'terminal', reason: 'source-failed' }
       })
       expect(unhandled).toEqual([])
-      await expect(harness.ipc.destroy()).rejects.toMatchObject({ name: 'AggregateError' })
+      await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+      await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+      await expect(harness.ipc.adapterState()).rejects.toMatchObject({
+        normalized: { code: 'lifecycle.destroyed' }
+      })
     } finally {
       process.off('unhandledRejection', onUnhandled)
     }
@@ -238,6 +468,74 @@ describe('IPC event pump termination', () => {
     await killPump(harness)
     await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
     await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
+  test('historical delivery failure does not poison a later successful native cleanup', async () => {
+    const harness = await createPumpHarness({
+      release: attempt =>
+        attempt === 1
+          ? {
+              state: 'release-failed',
+              failures: [
+                {
+                  resourceKind: 'renderer-lease',
+                  error: {
+                    code: 'platform.transport',
+                    domain: 'ipc',
+                    operation: 'event-pump-test.release',
+                    platform: null,
+                    retryability: 'never'
+                  }
+                }
+              ]
+            }
+          : { state: 'released', failures: [] }
+    })
+    const child = harness.ipc.registerStream('failure-child', isRecord)
+    harness.emitMalformed()
+    await flushPump()
+    await expect(child[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason: 'source-failed', error: { code: 'protocol.malformed' } }
+    })
+    await expect(harness.ipc.destroy()).resolves.toMatchObject({ state: 'release-failed' })
+    await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(harness.releaseAttempts()).toBe(2)
+  })
+
+  test('inner bounded event queue overflow closes child streams without inventing per-stream drop counts', async () => {
+    const harness = await createPumpHarness()
+    const child = harness.ipc.registerStream('queue-child', isRecord, {
+      itemCapacity: 512,
+      byteCapacity: 1024 * 1024,
+      reservedControlCapacity: 1
+    })
+    for (let index = 0; index < 140; index += 1) {
+      harness.emit('queue-child', { kind: 'value', value: { index } }, `queue-${index}`)
+    }
+    await flushPump()
+    await expect(child[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+      value: {
+        kind: 'terminal',
+        reason: 'overflow',
+        droppedItems: 0,
+        droppedBytes: 0,
+        error: {
+          code: 'stream.overflow',
+          platform: {
+            metadata: {
+              attribution: 'unknown',
+              droppedItems: expect.any(Number),
+              droppedBytes: expect.any(Number)
+            }
+          }
+        }
+      }
+    })
+    await expect(harness.ipc.adapterState()).rejects.toMatchObject({
+      normalized: { code: 'lifecycle.destroyed' }
+    })
+    await harness.ipc.destroy()
   })
 
   test('all child owner cleanups are attempted and failures are aggregated', async () => {

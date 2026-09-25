@@ -9,7 +9,7 @@ The Rust plugin owns the radio (btleplug: CoreBluetooth, WinRT, or BlueZ). The w
 ## Install
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.7 @tauri-apps/api
+pnpm add unified-ble-manager@5.0.0-rc.8 @tauri-apps/api
 ```
 
 Use the Rust plugin source shipped in the same npm package. In the normal
@@ -41,37 +41,69 @@ until a separately published crate exists.
 ```ts
 import { createTauriBleManager } from 'unified-ble-manager/tauri'
 
+// A resolved release-failed receipt is a failure, not a successful cleanup.
+async function withCleanup<T>(
+  work: () => Promise<T>,
+  cleanup: () => Promise<{ readonly state: 'released' | 'release-failed'; readonly failures: readonly unknown[] }>,
+  label: string
+): Promise<T> {
+  let outcome: { kind: 'value'; value: T } | { kind: 'error'; error: unknown }
+  try {
+    outcome = { kind: 'value', value: await work() }
+  } catch (error) {
+    outcome = { kind: 'error', error }
+  }
+  try {
+    const receipt = await cleanup()
+    if (receipt.state === 'release-failed') {
+      throw new Error(`${label} failed`, { cause: receipt })
+    }
+  } catch (cleanupError) {
+    if (outcome.kind === 'error') {
+      throw new AggregateError([outcome.error, cleanupError], `${label} and operation failed`)
+    }
+    throw cleanupError
+  }
+  if (outcome.kind === 'error') throw outcome.error
+  return outcome.value
+}
+
 const abort = new AbortController()
 const manager = await createTauriBleManager()
-try {
-  const scan = await manager.scan({
-    query: { anyOf: [{ services: { any: ['180d'] } }] },
-    duplicates: 'coalesced',
-    delivery: 'balanced',
-    signal: abort.signal,
-    timeoutMs: 15_000
-  })
-  let peer
-  try {
-    const first = await scan.observations[Symbol.asyncIterator]().next()
-    if (first.done || first.value.kind !== 'value') throw new Error('No peer observed')
-    peer = first.value.value.peer
-  } finally {
-    await scan.stop()
-  }
-  const connection = await manager.connect(peer, { signal: abort.signal, timeoutMs: 10_000 })
-  try {
-    const gatt = await connection.discover({ signal: abort.signal, timeoutMs: 10_000 })
-    // Public UUIDs are canonical 128-bit values; lookup accepts short forms.
-    const level = gatt.characteristic('180f', '2a19')
-    const bytes = await level.read({ signal: abort.signal, timeoutMs: 5_000 })
-    void bytes
-  } finally {
-    await connection.release()
-  }
-} finally {
-  await manager.destroy()
-}
+await withCleanup(
+  async () => {
+    const scan = await manager.scan({
+      query: { anyOf: [{ services: { any: ['180d'] } }] },
+      duplicates: 'coalesced',
+      delivery: 'balanced',
+      signal: abort.signal,
+      timeoutMs: 15_000
+    })
+    const peer = await withCleanup(
+      async () => {
+        const first = await scan.observations[Symbol.asyncIterator]().next()
+        if (first.done || first.value.kind !== 'value') throw new Error('No peer observed')
+        return first.value.value.peer
+      },
+      () => scan.stop(),
+      'scan stop'
+    )
+    const connection = await manager.connect(peer, { signal: abort.signal, timeoutMs: 10_000 })
+    await withCleanup(
+      async () => {
+        const gatt = await connection.discover({ signal: abort.signal, timeoutMs: 10_000 })
+        // Public UUIDs are canonical 128-bit values; lookup accepts short forms.
+        const level = gatt.characteristic('180f', '2a19')
+        const bytes = await level.read({ signal: abort.signal, timeoutMs: 5_000 })
+        void bytes
+      },
+      () => connection.release(),
+      'connection release'
+    )
+  },
+  () => manager.destroy(),
+  'manager destroy'
+)
 ```
 
 `BleManager.scan` accepts the frozen `ScanQuery` Boolean algebra plus `signal`, `timeoutMs`, duplicate policy, and a stream preset. Query matching is performed by the shared portable matcher; native projections are only safe broad prefilters.

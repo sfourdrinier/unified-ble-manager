@@ -132,7 +132,7 @@ function bootstrap(effectiveMtuEntry) {
     // identity; fixtures simulate the lane plugin, not a legacy host.
     core: {
       contractRevision: 'C-UBM.0.1.2-DRAFT',
-      implementationVersion: '5.0.0-rc.7'
+      implementationVersion: '5.0.0-rc.8'
     },
     renderer: {
       clientId: 'tauri-client-1',
@@ -165,6 +165,36 @@ function advertisement(peerId, localName, rssi) {
 }
 
 describe('Tauri v2 public manager', () => {
+  test('real shared IPC ingress overflow is visible through public scan without assigning child counts', async () => {
+    const invoke = jest.fn(async (_command, args) => {
+      const request = args.request
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'event.ack') return { kind: 'event.ack' }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      if (request.envelope.command === 'scan.start') return { kind: 'route', payload: { handle: 'scan-overflow' } }
+      if (request.envelope.command === 'scan.stop') {
+        return { kind: 'route', payload: { state: 'released', failures: [] } }
+      }
+      throw new Error(`unexpected route ${request.envelope.command}`)
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+    const scan = await manager.scan({})
+    for (let index = 0; index < 140; index += 1) {
+      streamValue('scan-overflow', advertisement(`peer-${index}`, 'Peer', -45), `overflow-event-${index}`)
+    }
+    await new Promise(resolve => setImmediate(resolve))
+    const item = await scan.observations[Symbol.asyncIterator]().next()
+    expect(item.value).toMatchObject({
+      kind: 'terminal',
+      reason: 'overflow',
+      droppedItems: 0,
+      droppedBytes: 0,
+      error: { code: 'stream.overflow', platform: { metadata: { attribution: 'unknown' } } }
+    })
+    await manager.destroy()
+  })
+
   test('rejects reference connections explicitly when the Tauri directory is unsupported', async () => {
     const invoke = jest.fn(async (_command, args) => {
       const request = args.request
@@ -1394,7 +1424,7 @@ describe('Tauri shared-core admission (F01)', () => {
     const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
     const foreign = {
       ...bootstrap(),
-      core: { contractRevision: 'C-UBM.9.9.9-DRAFT', implementationVersion: '5.0.0-rc.7' }
+      core: { contractRevision: 'C-UBM.9.9.9-DRAFT', implementationVersion: '5.0.0-rc.8' }
     }
     const invoke = invokeWithBootstrap(foreign)
     await expect(createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })).rejects.toThrow(

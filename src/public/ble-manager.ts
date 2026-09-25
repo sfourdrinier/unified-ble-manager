@@ -52,7 +52,7 @@ import type {
 import type { BleDiagnostics, BleDiagnosticTraceDocument } from './diagnostics'
 import { snapshotPublicTraceDocument, snapshotResourceCounters } from './diagnostics'
 import { isAuthorizationBlocking, type AdapterStateSnapshot } from '../backend-contract/identity'
-import { createPublicGattDatabase } from './gatt'
+import { createPublicGattDatabase, ProvisionalGattSubscriptionOwner } from './gatt'
 import type { GattDatabase, GattValueEvent } from './gatt'
 import {
   normalizeScanObservation,
@@ -1590,6 +1590,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
     readonly closeState: () => void
     readonly stop: () => Promise<PublicCleanupRecord>
   }>()
+  private readonly provisionalSubscriptions = new ProvisionalGattSubscriptionOwner()
   private destroyPromise: Promise<PublicCleanupRecord> | null = null
 
   constructor(
@@ -1871,7 +1872,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
               signal: normalized.signal,
               deadline: normalized.deadline
             })
-            return createPublicGattDatabase(source)
+            return createPublicGattDatabase(source, this.provisionalSubscriptions)
           } catch (error) {
             throw rehydratePublicError(error)
           }
@@ -1889,7 +1890,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
               },
               rediscoverOptions.reason === 'manual' ? 'manual-rediscovery' : 'service-changed'
             )
-            return createPublicGattDatabase(source)
+            return createPublicGattDatabase(source, this.provisionalSubscriptions)
           } catch (error) {
             throw rehydratePublicError(error)
           }
@@ -1962,6 +1963,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
     try {
       const active = [...this.activeScanSessions]
       const viewResults: { readonly error?: unknown; readonly cleanup?: PublicCleanupRecord }[] = []
+      const provisionalResults: { readonly error?: unknown; readonly cleanup?: PublicCleanupRecord }[] = []
       for (const scan of active) {
         try {
           const cleanup = await scan.stop()
@@ -1970,6 +1972,11 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
           viewResults.push({ error })
         }
       }
+      try {
+        provisionalResults.push({ cleanup: await this.provisionalSubscriptions.retryPending() })
+      } catch (error) {
+        provisionalResults.push({ error })
+      }
       let cleanup: BackendCleanupRecord | undefined
       let nativeError: unknown
       try {
@@ -1977,9 +1984,14 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
       } catch (error) {
         nativeError = error
       }
+      const nativeReleased = cleanup !== undefined && toPublicCleanupRecord(cleanup).state === 'released'
+      if (nativeReleased) this.provisionalSubscriptions.confirmManagerRelease()
       return toPublicCleanupRecord(
         collectCleanupPhases([
           ...viewResults,
+          // The original subscribe rejection preserved the provisional failure.
+          // A released manager lease is authoritative that its resource is gone.
+          ...(nativeReleased ? [] : provisionalResults),
           ...(nativeError === undefined ? [] : [{ error: nativeError }]),
           ...(cleanup === undefined ? [] : [{ cleanup }])
         ])

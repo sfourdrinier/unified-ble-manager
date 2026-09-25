@@ -132,6 +132,175 @@ async fn r14b_stop_wins_over_inflight_start() {
     stop_owned_scan(&central).await.expect("final stop");
 }
 
+// RC7-01: once the original start has resolved and its compensating OS stop
+// has succeeded, the cancelled-start marker must not block this central.
+#[tokio::test]
+async fn successful_lost_start_compensation_allows_same_central_restart() {
+    let central = open().await;
+    central.boundary().block_op(FaultOp::StartScan);
+    let starting = tokio::spawn({
+        let central = central.clone();
+        async move {
+            central
+                .start_scan("first", &[], OpControl::budget_ms(50))
+                .await
+        }
+    });
+    wait_for_call(&central, "start_scan").await;
+    let error = starting.await.unwrap().expect_err("first start expires");
+    assert_eq!(error.code_str(), "operation.timed-out");
+    assert!(!central.boundary().scan_active());
+    central.boundary().unblock_op(FaultOp::StartScan);
+    central
+        .start_scan("replacement", &[], OpControl::budget_ms(5000))
+        .await
+        .expect("successful compensation releases the old identity");
+    stop_owned_scan(&central).await.expect("replacement stop");
+}
+
+#[tokio::test]
+async fn cancelled_start_with_successful_compensation_allows_same_central_restart() {
+    let central = open().await;
+    central.boundary().block_op(FaultOp::StartScan);
+    let control = OpControl::budget_ms(5000);
+    let ticket = control.ticket.clone();
+    let starting = tokio::spawn({
+        let central = central.clone();
+        async move { central.start_scan("first", &[], control).await }
+    });
+    wait_for_call(&central, "start_scan").await;
+    central
+        .cancel(&ticket)
+        .await
+        .expect("cancel admitted start");
+    let error = starting.await.unwrap().expect_err("start cancelled");
+    assert_eq!(error.code_str(), "operation.aborted");
+    central.boundary().unblock_op(FaultOp::StartScan);
+    central
+        .start_scan("replacement", &[], OpControl::budget_ms(5000))
+        .await
+        .expect("cancelled start compensation releases the old identity");
+    stop_owned_scan(&central).await.expect("replacement stop");
+}
+
+// An explicit stop may finish while native start is still unresolved. Its
+// marker protects against a late success, but a native refusal settles that
+// obligation and must release the marker without another stop or shutdown.
+#[tokio::test]
+async fn early_stop_then_native_start_refusal_allows_same_central_restart() {
+    let central = open().await;
+    central.boundary().block_op(FaultOp::StartScan);
+    central
+        .boundary()
+        .fail_next(FaultOp::StartScan, "native refused");
+    let starting = tokio::spawn({
+        let central = central.clone();
+        async move {
+            central
+                .start_scan("first", &[], OpControl::budget_ms(5000))
+                .await
+        }
+    });
+    wait_for_call(&central, "start_scan").await;
+    stop_owned_scan(&central).await.expect("early stop");
+    central.boundary().unblock_op(FaultOp::StartScan);
+    let error = starting.await.unwrap().expect_err("native refusal");
+    assert_eq!(error.code_str(), "scan.start-failed");
+    central
+        .start_scan("replacement", &[], OpControl::budget_ms(5000))
+        .await
+        .expect("native refusal retires cancelled-start identity");
+    stop_owned_scan(&central).await.expect("replacement stop");
+}
+
+#[tokio::test]
+async fn refused_early_stop_then_native_start_refusal_allows_restart() {
+    let central = open().await;
+    central.boundary().block_op(FaultOp::StartScan);
+    central
+        .boundary()
+        .fail_next(FaultOp::StartScan, "native refused");
+    let starting = tokio::spawn({
+        let central = central.clone();
+        async move {
+            central
+                .start_scan("first", &[], OpControl::budget_ms(5000))
+                .await
+        }
+    });
+    wait_for_call(&central, "start_scan").await;
+    central
+        .boundary()
+        .fail_next(FaultOp::StopScan, "early stop refused");
+    stop_owned_scan(&central)
+        .await
+        .expect_err("early stop refusal");
+    central.boundary().unblock_op(FaultOp::StartScan);
+    let error = starting.await.unwrap().expect_err("native refusal");
+    assert_eq!(error.code_str(), "scan.start-failed");
+    central
+        .start_scan("replacement", &[], OpControl::budget_ms(5000))
+        .await
+        .expect("native refusal retires an earlier failed stop");
+    stop_owned_scan(&central).await.expect("replacement stop");
+}
+
+async fn native_start_refusal_while_early_stop_is_inflight(stop_fails: bool) {
+    let central = open().await;
+    central.boundary().block_op(FaultOp::StartScan);
+    central.boundary().block_op(FaultOp::StopScan);
+    central
+        .boundary()
+        .fail_next(FaultOp::StartScan, "native refused");
+    let starting = tokio::spawn({
+        let central = central.clone();
+        async move {
+            central
+                .start_scan("first", &[], OpControl::budget_ms(5000))
+                .await
+        }
+    });
+    wait_for_call(&central, "start_scan").await;
+    if stop_fails {
+        central
+            .boundary()
+            .fail_next(FaultOp::StopScan, "early stop refused");
+    }
+    let stopping = tokio::spawn({
+        let central = central.clone();
+        async move { stop_owned_scan(&central).await }
+    });
+    wait_for_call(&central, "stop_scan").await;
+    central.boundary().unblock_op(FaultOp::StartScan);
+    let error = starting.await.unwrap().expect_err("native refusal");
+    assert_eq!(error.code_str(), "scan.start-failed");
+    central.boundary().unblock_op(FaultOp::StopScan);
+    let stop_answer = stopping.await.unwrap();
+    if stop_fails {
+        assert_eq!(
+            stop_answer.expect_err("early stop refused").code_str(),
+            "scan.stop-failed"
+        );
+    } else {
+        stop_answer.expect("early stop completes");
+    }
+    central
+        .start_scan("replacement", &[], OpControl::budget_ms(5000))
+        .await
+        .expect("resolved start and stop retire the identity");
+    stop_owned_scan(&central).await.expect("replacement stop");
+}
+
+#[tokio::test]
+async fn native_start_refusal_while_early_stop_is_inflight_allows_restart() {
+    native_start_refusal_while_early_stop_is_inflight(false).await;
+}
+
+#[tokio::test]
+async fn native_start_refusal_while_early_stop_fails_allows_restart() {
+    native_start_refusal_while_early_stop_is_inflight(true).await;
+}
+
 // R14c: shutdown racing an in-flight start leaves no observable scan.
 #[tokio::test]
 async fn r14c_shutdown_during_start_leaves_no_scan() {

@@ -37,6 +37,31 @@ async fn wait_for(condition: impl Fn() -> bool) {
     }
 }
 
+async fn replacement_scan_works(host: &Arc<ubm_mobile::MobileHost>, label: &str) {
+    let replacement = host.open_session("replacement-manager").unwrap();
+    let replacement_id = ok(&call(
+        &replacement,
+        "scan.start",
+        &json!({"serviceUuids": [], "duplicatePolicy": "all", "operationId": "replacement"})
+            .to_string(),
+    )
+    .await)["operationId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    ok(&call(
+        &replacement,
+        "scan.stop",
+        &json!({"operationId": replacement_id}).to_string(),
+    )
+    .await);
+    assert_eq!(
+        ok(&call(&replacement, "session.dispose", "{}").await)["state"],
+        "released",
+        "{label}"
+    );
+}
+
 async fn case(members: usize, interruption: Interruption, compensation: Compensation) {
     let label =
         format!("members={members} interruption={interruption:?} compensation={compensation:?}");
@@ -138,8 +163,8 @@ async fn case(members: usize, interruption: Interruption, compensation: Compensa
     if matches!(interruption, Interruption::Cancel) {
         // Cancellation while the radio start is outstanding settles inside
         // the central. No replacement scan was committed to the mobile host,
-        // so its prior members end; the central retains any refused stop for
-        // process shutdown rather than exposing a stale membership.
+        // so its prior members end. Retained cleanup must recover while this
+        // host remains alive, not merely during shutdown.
         for (session, membership) in &previous {
             let records =
                 drain_until(session, |records| !of_type(records, "scan-end").is_empty()).await;
@@ -165,16 +190,14 @@ async fn case(members: usize, interruption: Interruption, compensation: Compensa
             "released",
             "{label}"
         );
+        if !matches!(compensation, Compensation::Success) {
+            wait_for(|| stops.load(Ordering::SeqCst) > compensation_stop_index).await;
+        }
+        replacement_scan_works(&host, &label).await;
         assert_eq!(
             parse(&host.shutdown().await)["state"],
             "released",
             "{label}"
-        );
-        let expected_stops = compensation_stop_index as usize
-            + usize::from(!matches!(compensation, Compensation::Success));
-        assert!(
-            radio.count(RequestKind::StopScan) >= expected_stops,
-            "{label}: shutdown must retry an unresolved native stop"
         );
         return;
     }
@@ -259,6 +282,7 @@ async fn case(members: usize, interruption: Interruption, compensation: Compensa
         "released",
         "{label}"
     );
+    replacement_scan_works(&host, &label).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 24)]

@@ -1,6 +1,6 @@
 import { BackendContractError, contractError } from '../backend-contract/errors'
 import type { NormalizedBleError } from '../backend-contract/errors'
-import type { StreamOverflowNotice, StreamTerminalNotice } from '../backend-contract/streams'
+import type { StreamTerminalNotice } from '../backend-contract/streams'
 import type { SerializableRecord } from '../backend-contract/primitives'
 import type { ElectronRendererIpcTransport } from './protocol'
 import type {
@@ -12,6 +12,7 @@ import type {
 } from '../ipc/protocol'
 import { ElectronRendererBleClient } from './renderer'
 import { IpcBleManager } from '../ipc/manager'
+import { aggregateEventLossError } from '../ipc/aggregate-event-loss'
 import { IpcPublicManagerAdapter } from '../ipc/public-manager'
 import type { BleManager } from '../public/ble-manager'
 import { rehydratePublicPromise } from '../public/error-bridge'
@@ -99,7 +100,10 @@ class ElectronClientTransport implements IpcClientTransport<string, string> {
   private async pump(): Promise<void> {
     for await (const item of this.client.events) {
       if (item.kind === 'overflow') {
-        this.failTransport('overflow', aggregateOverflowError(item))
+        this.failTransport(
+          'overflow',
+          aggregateEventLossError('electron-public-manager.aggregate-event-loss', 'electron-renderer-events', item)
+        )
         return
       }
       if (item.kind === 'terminal') {
@@ -143,26 +147,13 @@ class ElectronClientTransport implements IpcClientTransport<string, string> {
   }
 }
 
-function aggregateOverflowError(
-  notice: Pick<StreamOverflowNotice, 'droppedItems' | 'droppedBytes' | 'replacedItems'>
-): NormalizedBleError {
-  return contractError('stream.overflow', 'ipc', 'electron-public-manager.aggregate-event-loss', {
-    domain: 'electron-renderer-events',
-    code: 'aggregate-overflow',
-    safeMessage: 'The shared Electron event stream lost events with unknown child stream attribution',
-    metadata: Object.freeze({
-      attribution: 'unknown',
-      droppedItems: Number(notice.droppedItems),
-      droppedBytes: Number(notice.droppedBytes),
-      replacedItems: Number(notice.replacedItems)
-    })
-  }).normalized
-}
-
 function terminalError(notice: StreamTerminalNotice): NormalizedBleError | null {
   if (notice.reason === 'owner-released') return null
   if (notice.reason === 'overflow') {
-    return notice.error ?? aggregateOverflowError(notice)
+    return (
+      notice.error ??
+      aggregateEventLossError('electron-public-manager.aggregate-event-loss', 'electron-renderer-events', notice)
+    )
   }
   return notice.error ?? transportError(null, `event-terminal-${notice.reason}`)
 }
