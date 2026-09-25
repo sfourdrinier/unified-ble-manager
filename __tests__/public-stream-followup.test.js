@@ -3,6 +3,7 @@
 const { contractError } = require('../src/backend-contract/errors')
 const { capacity } = require('../src/backend-contract/primitives')
 const { CoreBoundedStream } = require('../src/core/bounded-stream')
+const { validateTraceDocument } = require('../src/diagnostics/trace-format')
 const { IpcPublicManagerAdapter } = require('../src/ipc/public-manager')
 const { mapIpcConnectionEvents } = require('../src/ipc/public-manager')
 const { createPublicGattDatabase } = require('../src/public/gatt')
@@ -42,6 +43,10 @@ function cleanupRecord(resourceKind) {
       }
     ]
   }
+}
+
+function emptyTrace() {
+  return { format: 'unified-ble-trace-v1', truncated: false, records: [] }
 }
 
 function gattSource(values, remove) {
@@ -264,6 +269,184 @@ describe('public stream follow-up boundaries', () => {
     expect(source.subscribe).toHaveBeenCalledTimes(2)
   })
 
+  test('subscribe deadline is measured before deferred provisional cleanup and does not admit a late native subscribe', async () => {
+    jest.useFakeTimers()
+    try {
+      let now = 0
+      let releaseCleanup
+      const deferredCleanup = new Promise(resolve => {
+        releaseCleanup = resolve
+      })
+      const remove = jest
+        .fn()
+        .mockResolvedValueOnce(cleanupRecord('gatt-provisional'))
+        .mockImplementationOnce(() => deferredCleanup)
+      const source = gattSource(new CoreBoundedStream(limits(2, 32, 1), 'drop-oldest'), remove)
+      source.monotonicNow = () => now
+      source.subscribe = jest
+        .fn()
+        .mockResolvedValueOnce({
+          subscriptionId: 'acquired-1',
+          observedDelivery: 'notification',
+          values: {
+            limits: { itemCapacity: 0, byteCapacity: 32, reservedControlCapacity: 1 },
+            overflowPolicy: 'error'
+          },
+          remove
+        })
+        .mockResolvedValueOnce({
+          subscriptionId: 'acquired-2',
+          observedDelivery: 'notification',
+          values: new CoreBoundedStream(limits(2, 32, 1), 'drop-oldest'),
+          remove
+        })
+      const database = await createPublicGattDatabase(source)
+      const characteristic = database.characteristic('180f', '2a19')
+      await expect(characteristic.subscribe()).rejects.toBeInstanceOf(AggregateError)
+      const waiting = expect(characteristic.subscribe({ timeoutMs: 50 })).rejects.toMatchObject({
+        code: 'operation.timed-out'
+      })
+      for (let turn = 0; turn < 20 && remove.mock.calls.length < 2; turn += 1) await Promise.resolve()
+      expect(remove).toHaveBeenCalledTimes(2)
+      now = 51
+      jest.advanceTimersByTime(51)
+      await waiting
+      expect(source.subscribe).toHaveBeenCalledTimes(1)
+      releaseCleanup({ state: 'released', failures: [] })
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(source.subscribe).toHaveBeenCalledTimes(1)
+      await expect(characteristic.subscribe()).resolves.toMatchObject({ effectiveDelivery: 'notification' })
+      expect(source.subscribe).toHaveBeenCalledTimes(2)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test.each(['pre-aborted', 'mid-wait-aborted'])(
+    'subscribe %s does not wait for or abandon provisional cleanup',
+    async scenario => {
+      let releaseCleanup
+      const deferredCleanup = new Promise(resolve => {
+        releaseCleanup = resolve
+      })
+      const remove = jest
+        .fn()
+        .mockResolvedValueOnce(cleanupRecord('gatt-provisional'))
+        .mockImplementationOnce(() => deferredCleanup)
+      const source = gattSource(new CoreBoundedStream(limits(2, 32, 1), 'drop-oldest'), remove)
+      source.subscribe = jest
+        .fn()
+        .mockResolvedValueOnce({
+          subscriptionId: 'acquired-1',
+          observedDelivery: 'notification',
+          values: {
+            limits: { itemCapacity: 0, byteCapacity: 32, reservedControlCapacity: 1 },
+            overflowPolicy: 'error'
+          },
+          remove
+        })
+        .mockResolvedValueOnce({
+          subscriptionId: 'acquired-2',
+          observedDelivery: 'notification',
+          values: new CoreBoundedStream(limits(2, 32, 1), 'drop-oldest'),
+          remove
+        })
+      const database = await createPublicGattDatabase(source)
+      const characteristic = database.characteristic('180f', '2a19')
+      await expect(characteristic.subscribe()).rejects.toBeInstanceOf(AggregateError)
+      const controller = new AbortController()
+      if (scenario === 'pre-aborted') controller.abort()
+      const waiting = expect(characteristic.subscribe({ signal: controller.signal })).rejects.toMatchObject({
+        code: 'operation.aborted'
+      })
+      if (scenario === 'mid-wait-aborted') {
+        for (let turn = 0; turn < 20 && remove.mock.calls.length < 2; turn += 1) await Promise.resolve()
+        expect(remove).toHaveBeenCalledTimes(2)
+        controller.abort()
+      }
+      await waiting
+      expect(source.subscribe).toHaveBeenCalledTimes(1)
+      expect(remove).toHaveBeenCalledTimes(scenario === 'pre-aborted' ? 1 : 2)
+      releaseCleanup({ state: 'released', failures: [] })
+      await expect(characteristic.subscribe()).resolves.toMatchObject({ effectiveDelivery: 'notification' })
+      expect(source.subscribe).toHaveBeenCalledTimes(2)
+    }
+  )
+
+  test('failed cleanup on device A does not block device B sharing the manager owner', async () => {
+    const removeA = jest.fn(async () => cleanupRecord('device-a'))
+    const sourceA = gattSource(new CoreBoundedStream(limits(2, 32, 1), 'drop-oldest'), removeA)
+    sourceA.subscribe = jest.fn(async () => ({
+      subscriptionId: 'device-a',
+      observedDelivery: 'notification',
+      values: { limits: { itemCapacity: 0, byteCapacity: 32, reservedControlCapacity: 1 }, overflowPolicy: 'error' },
+      remove: removeA
+    }))
+    const sourceB = gattSource(new CoreBoundedStream(limits(2, 32, 1), 'drop-oldest'), async () => ({
+      state: 'released',
+      failures: []
+    }))
+    for (const [source, peer] of [
+      [sourceA, 'device-a'],
+      [sourceB, 'device-b']
+    ]) {
+      const originalSnapshot = source.snapshot
+      source.snapshot = async () => {
+        const snapshot = await originalSnapshot()
+        const rekey = path => ({
+          ...path,
+          peerId: peer,
+          connectionId: `connection-${peer}`,
+          databaseId: `database-${peer}`
+        })
+        return {
+          ...snapshot,
+          path: rekey(snapshot.path),
+          services: snapshot.services.map(service => ({ ...service, path: rekey(service.path) })),
+          characteristics: snapshot.characteristics.map(characteristic => ({
+            ...characteristic,
+            path: rekey(characteristic.path)
+          }))
+        }
+      }
+    }
+    const subscribeB = jest.fn(async () => ({
+      subscriptionId: 'device-b',
+      observedDelivery: 'notification',
+      values: new CoreBoundedStream(limits(2, 32, 1), 'drop-oldest'),
+      remove: async () => ({ state: 'released', failures: [] })
+    }))
+    sourceB.subscribe = subscribeB
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: id => ({ id, state: 'supported' }),
+      capabilities: () => [],
+      connect: jest.fn(async peer => ({
+        connectionGeneration: `generation-${peer}`,
+        events: emptyEvents(),
+        discover: async () => (peer === 'device-a' ? sourceA : sourceB)
+      })),
+      destroy: jest.fn(async () => cleanupRecord('manager-lease'))
+    }
+    const manager = await require('../src/public/ble-manager').createPublicBleManager(internal, () => 0, {
+      peerId: id => id
+    })
+    const databaseA = await (await manager.connect('device-a')).discover()
+    const databaseB = await (await manager.connect('device-b')).discover()
+    await expect(databaseA.characteristic('180f', '2a19').subscribe()).rejects.toBeInstanceOf(AggregateError)
+    await expect(databaseB.characteristic('180f', '2a19').subscribe()).resolves.toMatchObject({
+      effectiveDelivery: 'notification'
+    })
+    expect(subscribeB).toHaveBeenCalledTimes(1)
+    expect(removeA).toHaveBeenCalledTimes(1)
+    await expect(manager.destroy()).resolves.toMatchObject({ state: 'release-failed' })
+    for (let turn = 0; turn < 20 && removeA.mock.calls.length < 2; turn += 1) await Promise.resolve()
+    expect(removeA).toHaveBeenCalledTimes(2)
+  })
+
   test('manager owns failed provisional removal after the caller drops its GATT objects', async () => {
     const remove = jest
       .fn()
@@ -307,10 +490,297 @@ describe('public stream follow-up boundaries', () => {
     expect(remove).toHaveBeenCalledTimes(1)
     await expect(manager.destroy()).resolves.toMatchObject({ state: 'release-failed' })
     expect(remove).toHaveBeenCalledTimes(2)
+    for (let turn = 0; turn < 20; turn += 1) await Promise.resolve()
     await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
     expect(remove).toHaveBeenCalledTimes(3)
     expect(internal.destroy).toHaveBeenCalledTimes(2)
   })
+
+  test.each(['released', 'release-failed'])(
+    'public manager reaches parent destroy while provisional cleanup is unresolved (%s)',
+    async leaseState => {
+      let releaseCleanup
+      const cleanupGate = new Promise(resolve => {
+        releaseCleanup = resolve
+      })
+      const remove = jest.fn(() => cleanupGate)
+      const source = gattSource(new CoreBoundedStream(limits(2, 32, 1), 'drop-oldest'), remove)
+      source.subscribe = jest.fn(async () => ({
+        subscriptionId: 'acquired-1',
+        observedDelivery: 'notification',
+        values: { limits: { itemCapacity: 0, byteCapacity: 32, reservedControlCapacity: 1 }, overflowPolicy: 'error' },
+        remove
+      }))
+      const firstReceipt =
+        leaseState === 'released' ? { state: 'released', failures: [] } : cleanupRecord('manager-lease')
+      const internal = {
+        identity: null,
+        attachedBackend: undefined,
+        traceDocument: emptyTrace,
+        supports: () => true,
+        capability: id => ({ id, state: 'supported' }),
+        capabilities: () => [],
+        connect: async () => ({
+          connectionGeneration: 'generation-1',
+          events: emptyEvents(),
+          discover: async () => source
+        }),
+        destroy: jest
+          .fn()
+          .mockResolvedValueOnce(firstReceipt)
+          .mockResolvedValueOnce({ state: 'released', failures: [] })
+      }
+      const manager = await require('../src/public/ble-manager').createPublicBleManager(internal, () => 0, {
+        peerId: id => id
+      })
+      const connection = await manager.connect('peer-1')
+      const database = await connection.discover()
+      const subscribeOutcome = database
+        .characteristic('180f', '2a19')
+        .subscribe()
+        .catch(error => error)
+      for (let turn = 0; turn < 20 && remove.mock.calls.length === 0; turn += 1) await Promise.resolve()
+      expect(remove).toHaveBeenCalledTimes(1)
+      const destroying = manager.destroy()
+      for (let turn = 0; turn < 20 && internal.destroy.mock.calls.length === 0; turn += 1) await Promise.resolve()
+      expect(internal.destroy).toHaveBeenCalledTimes(1)
+      await expect(destroying).resolves.toMatchObject({ state: leaseState })
+      releaseCleanup(
+        leaseState === 'released' ? cleanupRecord('late-provisional') : { state: 'released', failures: [] }
+      )
+      if (leaseState === 'released') {
+        await expect(subscribeOutcome).resolves.toBeInstanceOf(AggregateError)
+      } else {
+        await expect(subscribeOutcome).resolves.toMatchObject({ code: 'protocol.malformed' })
+      }
+      if (leaseState === 'release-failed') {
+        await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
+        expect(internal.destroy).toHaveBeenCalledTimes(2)
+      } else {
+        await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
+        expect(internal.destroy).toHaveBeenCalledTimes(1)
+      }
+    }
+  )
+
+  test.each(['reject', 'failed-receipt'])(
+    'public manager retains late provisional %s after a failed parent release',
+    async outcome => {
+      let settleCleanup
+      const cleanupGate = new Promise((resolve, reject) => {
+        settleCleanup = outcome === 'reject' ? reject : resolve
+      })
+      const lateError = new Error('late provisional remove failed')
+      const remove = jest.fn().mockReturnValueOnce(cleanupGate).mockResolvedValue({ state: 'released', failures: [] })
+      const source = gattSource(new CoreBoundedStream(limits(2, 32, 1), 'drop-oldest'), remove)
+      source.subscribe = jest.fn(async () => ({
+        subscriptionId: 'acquired-1',
+        observedDelivery: 'notification',
+        values: { limits: { itemCapacity: 0, byteCapacity: 32, reservedControlCapacity: 1 }, overflowPolicy: 'error' },
+        remove
+      }))
+      const internal = {
+        identity: null,
+        attachedBackend: undefined,
+        traceDocument: emptyTrace,
+        supports: () => true,
+        capability: id => ({ id, state: 'supported' }),
+        capabilities: () => [],
+        connect: async () => ({
+          connectionGeneration: 'generation-1',
+          events: emptyEvents(),
+          discover: async () => source
+        }),
+        destroy: jest
+          .fn()
+          .mockResolvedValueOnce(cleanupRecord('manager-lease'))
+          .mockResolvedValueOnce(cleanupRecord('manager-lease'))
+          .mockResolvedValueOnce({ state: 'released', failures: [] })
+      }
+      const manager = await require('../src/public/ble-manager').createPublicBleManager(internal, () => 0, {
+        peerId: id => id
+      })
+      const connection = await manager.connect('peer-1')
+      const database = await connection.discover()
+      const subscribing = database
+        .characteristic('180f', '2a19')
+        .subscribe()
+        .catch(error => error)
+      for (let turn = 0; turn < 20 && remove.mock.calls.length === 0; turn += 1) await Promise.resolve()
+      expect(remove).toHaveBeenCalledTimes(1)
+      await expect(manager.destroy()).resolves.toMatchObject({ state: 'release-failed' })
+      settleCleanup(outcome === 'reject' ? lateError : cleanupRecord('late-provisional'))
+      await subscribing
+      for (let turn = 0; turn < 20; turn += 1) await Promise.resolve()
+      if (outcome === 'reject') {
+        await expect(manager.destroy()).rejects.toMatchObject({
+          errors: expect.arrayContaining([lateError, expect.objectContaining({ name: 'BleCleanupError' })])
+        })
+      } else {
+        await expect(manager.destroy()).resolves.toMatchObject({
+          state: 'release-failed',
+          failures: expect.arrayContaining([expect.objectContaining({ resourceKind: 'late-provisional' })])
+        })
+      }
+      expect(remove).toHaveBeenCalledTimes(2)
+      expect((await manager.diagnostics.startTrace().stop()).records).toEqual(
+        expect.arrayContaining([expect.objectContaining({ event: 'manager.gatt-unsubscribe.late-failed' })])
+      )
+      await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(internal.destroy).toHaveBeenCalledTimes(3)
+    }
+  )
+
+  test.each(['released', 'release-failed'])(
+    'public manager reaches parent destroy while scan stop is unresolved (%s)',
+    async leaseState => {
+      let releaseStop
+      const stopGate = new Promise(resolve => {
+        releaseStop = resolve
+      })
+      const nativeStop = jest.fn(() => stopGate)
+      const source = new CoreBoundedStream(limits(2, 64, 1), 'drop-oldest')
+      const firstReceipt =
+        leaseState === 'released' ? { state: 'released', failures: [] } : cleanupRecord('manager-lease')
+      const internal = {
+        identity: null,
+        attachedBackend: undefined,
+        supports: () => true,
+        capability: () => null,
+        capabilities: () => [],
+        scan: jest.fn(async () => ({ observations: source, stop: nativeStop })),
+        connect: jest.fn(),
+        destroy: jest
+          .fn()
+          .mockResolvedValueOnce(firstReceipt)
+          .mockResolvedValueOnce({ state: 'released', failures: [] })
+      }
+      const manager = await require('../src/public/ble-manager').createPublicBleManager(internal, () => 0)
+      await manager.scan()
+      const destroying = manager.destroy()
+      for (let turn = 0; turn < 20 && nativeStop.mock.calls.length === 0; turn += 1) await Promise.resolve()
+      expect(nativeStop).toHaveBeenCalledTimes(1)
+      for (let turn = 0; turn < 20 && internal.destroy.mock.calls.length === 0; turn += 1) await Promise.resolve()
+      expect(internal.destroy).toHaveBeenCalledTimes(1)
+      await expect(destroying).resolves.toMatchObject({ state: leaseState })
+      releaseStop({ state: 'released', failures: [] })
+      await Promise.resolve()
+      if (leaseState === 'release-failed') {
+        await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
+        expect(internal.destroy).toHaveBeenCalledTimes(2)
+      } else {
+        await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
+        expect(internal.destroy).toHaveBeenCalledTimes(1)
+      }
+    }
+  )
+
+  test('public manager reports a late scan-stop rejection after a failed parent release', async () => {
+    let rejectStop
+    const stopGate = new Promise((resolve, reject) => {
+      rejectStop = reject
+    })
+    const lateStopError = new Error('late scan stop failed')
+    const nativeStop = jest.fn().mockReturnValueOnce(stopGate).mockResolvedValue({ state: 'released', failures: [] })
+    const source = new CoreBoundedStream(limits(2, 64, 1), 'drop-oldest')
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      traceDocument: emptyTrace,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({ observations: source, stop: nativeStop })),
+      connect: jest.fn(),
+      destroy: jest
+        .fn()
+        .mockResolvedValueOnce(cleanupRecord('manager-lease'))
+        .mockResolvedValueOnce(cleanupRecord('manager-lease'))
+        .mockResolvedValueOnce({ state: 'released', failures: [] })
+    }
+    const manager = await require('../src/public/ble-manager').createPublicBleManager(internal, () => 0)
+    await manager.scan()
+    await expect(manager.destroy()).resolves.toMatchObject({ state: 'release-failed' })
+    rejectStop(lateStopError)
+    for (let turn = 0; turn < 20; turn += 1) await Promise.resolve()
+    await expect(manager.destroy()).rejects.toMatchObject({
+      errors: expect.arrayContaining([lateStopError, expect.objectContaining({ name: 'BleCleanupError' })])
+    })
+    expect(internal.destroy).toHaveBeenCalledTimes(2)
+    expect(nativeStop).toHaveBeenCalledTimes(2)
+    expect((await manager.diagnostics.startTrace().stop()).records).toEqual(
+      expect.arrayContaining([expect.objectContaining({ event: 'manager.scan-stop.late-failed' })])
+    )
+    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(internal.destroy).toHaveBeenCalledTimes(3)
+  })
+
+  test('confirmed parent release supersedes a historical late scan-stop failure', async () => {
+    let rejectStop
+    const stopGate = new Promise((resolve, reject) => {
+      rejectStop = reject
+    })
+    const nativeStop = jest.fn().mockReturnValueOnce(stopGate).mockResolvedValue({ state: 'released', failures: [] })
+    const source = new CoreBoundedStream(limits(2, 64, 1), 'drop-oldest')
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      traceDocument: emptyTrace,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({ observations: source, stop: nativeStop })),
+      connect: jest.fn(),
+      destroy: jest
+        .fn()
+        .mockResolvedValueOnce(cleanupRecord('manager-lease'))
+        .mockResolvedValueOnce({ state: 'released', failures: [] })
+    }
+    const manager = await require('../src/public/ble-manager').createPublicBleManager(internal, () => 0)
+    await manager.scan()
+    await expect(manager.destroy()).resolves.toMatchObject({ state: 'release-failed' })
+    rejectStop(new Error('private late details'))
+    for (let turn = 0; turn < 20; turn += 1) await Promise.resolve()
+    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    const trace = await manager.diagnostics.startTrace().stop()
+    expect(trace.records).toEqual(
+      expect.arrayContaining([expect.objectContaining({ event: 'manager.scan-stop.late-failed' })])
+    )
+    expect(JSON.stringify(trace)).not.toContain('private late details')
+    expect(validateTraceDocument(trace).valid).toBe(true)
+  })
+
+  test.each(['reject', 'failed-receipt'])(
+    'confirmed parent release supersedes a promptly settled scan-stop %s',
+    async outcome => {
+      const privateError = new Error('private immediate stop details')
+      const nativeStop = jest.fn(async () => {
+        if (outcome === 'reject') throw privateError
+        return cleanupRecord('scan-stop')
+      })
+      const source = new CoreBoundedStream(limits(2, 64, 1), 'drop-oldest')
+      const internal = {
+        identity: null,
+        attachedBackend: undefined,
+        traceDocument: emptyTrace,
+        supports: () => true,
+        capability: () => null,
+        capabilities: () => [],
+        scan: jest.fn(async () => ({ observations: source, stop: nativeStop })),
+        connect: jest.fn(),
+        destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+      }
+      const manager = await require('../src/public/ble-manager').createPublicBleManager(internal, () => 0)
+      await manager.scan()
+      await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+      const trace = await manager.diagnostics.startTrace().stop()
+      expect(trace.records).toEqual(
+        expect.arrayContaining([expect.objectContaining({ event: 'manager.scan-stop.failed' })])
+      )
+      expect(JSON.stringify(trace)).not.toContain('private immediate stop details')
+      expect(validateTraceDocument(trace).valid).toBe(true)
+    }
+  )
 
   test.each(['successful-retry', 'simultaneous-failure'])(
     'IPC manager compensates a malformed projected subscription with %s',

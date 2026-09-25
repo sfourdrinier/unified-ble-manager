@@ -84,6 +84,7 @@ import type { PeerReference } from '../public/peer-reference'
 import { createPublicSecurity } from '../public/security'
 import type { BleSecurity } from '../public/security'
 import {
+  BleCleanupError,
   collectCleanupPhases,
   rehydratePublicError,
   rehydratePublicPromise,
@@ -104,6 +105,7 @@ import {
   type IpcSubscription,
   type IpcWriteReceipt
 } from './manager'
+import { waitForChildCleanup } from './cleanup-drain'
 
 /**
  * Cadence for the renderer-side adapter-state poll.
@@ -145,6 +147,7 @@ export class IpcPublicManagerAdapter implements BleManager {
   private readonly requireScanPlan: boolean
   private readonly gattDeliverySelection: 'unknown' | 'controllable'
   private readonly provisionalSubscriptions = new ProvisionalGattSubscriptionOwner()
+  private provisionalCleanupDiagnostic: unknown | null = null
 
   constructor(
     private readonly ipc: IpcBleManager,
@@ -193,8 +196,10 @@ export class IpcPublicManagerAdapter implements BleManager {
         toIpcScanOptions(options, normalized.signal, normalizedQuery, normalized.deadline)
       )
       if (this.requireScanPlan && session.plan === null) {
-        await session.stop().catch(() => undefined)
-        throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.scan-plan')
+        await this.ipc.compensateFailedScanSession(
+          session,
+          contractError('protocol.malformed', 'ipc', 'ipc-public-manager.scan-plan')
+        )
       }
       const state = createScanState()
       return new IpcPublicScanSession(
@@ -313,12 +318,20 @@ export class IpcPublicManagerAdapter implements BleManager {
   }
 
   async destroy(): Promise<PublicCleanupRecord> {
-    const provisionalPhases: { readonly error?: unknown; readonly cleanup?: PublicCleanupRecord }[] = []
-    try {
-      provisionalPhases.push({ cleanup: await this.provisionalSubscriptions.retryPending() })
-    } catch (error) {
-      provisionalPhases.push({ error })
-    }
+    // A child removal can outlive its IPC reply. Start its retry, but the
+    // authoritative renderer-lease release must not wait behind that reply.
+    let provisionalPhase: { readonly error?: unknown; readonly cleanup?: PublicCleanupRecord } | null = null
+    const priorDiagnostic = this.provisionalCleanupDiagnostic
+    const provisionalWork = this.provisionalSubscriptions.retryPending().then(
+      cleanup => {
+        provisionalPhase = { cleanup }
+        if (cleanup.state === 'release-failed') this.provisionalCleanupDiagnostic = new BleCleanupError(cleanup)
+      },
+      error => {
+        provisionalPhase = { error }
+        this.provisionalCleanupDiagnostic = error
+      }
+    )
     let leaseCleanup: PublicCleanupRecord | undefined
     let leaseError: unknown
     try {
@@ -326,8 +339,32 @@ export class IpcPublicManagerAdapter implements BleManager {
     } catch (error) {
       leaseError = error
     }
-    if (leaseCleanup?.state === 'released') this.provisionalSubscriptions.confirmManagerRelease()
-    const owedPhases = leaseCleanup?.state === 'released' ? [] : provisionalPhases
+    if (leaseCleanup?.state !== 'released') {
+      const drain = await waitForChildCleanup(provisionalWork)
+      if (drain.error !== undefined) this.provisionalCleanupDiagnostic = drain.error
+    }
+    if (leaseCleanup?.state === 'released') {
+      this.provisionalSubscriptions.confirmManagerRelease()
+      this.provisionalCleanupDiagnostic = null
+    }
+    const owedPhases: { readonly error?: unknown; readonly cleanup?: PublicCleanupRecord }[] =
+      leaseCleanup?.state === 'released'
+        ? []
+        : provisionalPhase === null
+          ? this.provisionalSubscriptions.hasPending()
+            ? [
+                {
+                  error: rehydratePublicError(
+                    contractError('lifecycle.invalid-state', 'ipc', 'ipc-public-manager.provisional-cleanup-pending')
+                  )
+                }
+              ]
+            : []
+          : [provisionalPhase]
+    if (leaseCleanup?.state !== 'released' && priorDiagnostic !== null) {
+      owedPhases.push({ error: priorDiagnostic })
+      if (this.provisionalCleanupDiagnostic === priorDiagnostic) this.provisionalCleanupDiagnostic = null
+    }
     if (
       leaseError !== undefined &&
       owedPhases.every(phase => phase.error === undefined && phase.cleanup?.state !== 'release-failed')

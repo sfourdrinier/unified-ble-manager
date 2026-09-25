@@ -1,6 +1,7 @@
 // src/public/gatt.ts
 
 import { canonicalUuidInput } from '../backend-contract/primitives'
+import { awaitWithOperationAdmission } from '../core/unified-ble-core-helpers'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
 import { contractError } from '../backend-contract/errors'
 import type {
@@ -172,10 +173,20 @@ export interface PublicGattDatabaseSource extends DiscoveredGattDatabaseHandle {
 /** Retains unpublishable subscriptions until retry or manager teardown settles them. */
 export class ProvisionalGattSubscriptionOwner {
   private readonly pending = new Set<SubscriptionHandle>()
+  private readonly scopes = new Map<SubscriptionHandle, string>()
   private readonly removals = new Map<SubscriptionHandle, Promise<CleanupRecord>>()
 
-  async compensate(subscription: SubscriptionHandle, primaryError: unknown): Promise<never> {
+  hasPending(): boolean {
+    return this.pending.size > 0
+  }
+
+  async compensate(
+    subscription: SubscriptionHandle,
+    path: PortableCurrentCharacteristicPath,
+    primaryError: unknown
+  ): Promise<never> {
     this.pending.add(subscription)
+    this.scopes.set(subscription, provisionalScopeKey(path))
     return runWithCleanup(
       async (): Promise<never> => {
         throw rehydratePublicError(primaryError)
@@ -184,9 +195,11 @@ export class ProvisionalGattSubscriptionOwner {
     )
   }
 
-  async retryPending(): Promise<CleanupRecord> {
+  async retryPending(scope?: PortableCurrentCharacteristicPath): Promise<CleanupRecord> {
     const phases: { readonly error?: unknown; readonly cleanup?: CleanupRecord }[] = []
+    const key = scope === undefined ? null : provisionalScopeKey(scope)
     for (const subscription of [...this.pending]) {
+      if (key !== null && this.scopes.get(subscription) !== key) continue
       try {
         phases.push({ cleanup: await this.remove(subscription) })
       } catch (error) {
@@ -199,6 +212,7 @@ export class ProvisionalGattSubscriptionOwner {
   /** A released manager lease is authoritative for every resource under it. */
   confirmManagerRelease(): void {
     this.pending.clear()
+    this.scopes.clear()
     this.removals.clear()
   }
 
@@ -206,7 +220,10 @@ export class ProvisionalGattSubscriptionOwner {
     const inFlight = this.removals.get(subscription)
     if (inFlight !== undefined) return inFlight
     const attempt = rehydrateCleanup(Promise.resolve().then(() => subscription.remove())).then(cleanup => {
-      if (cleanup.state === 'released') this.pending.delete(subscription)
+      if (cleanup.state === 'released') {
+        this.pending.delete(subscription)
+        this.scopes.delete(subscription)
+      }
       return cleanup
     })
     this.removals.set(subscription, attempt)
@@ -215,6 +232,33 @@ export class ProvisionalGattSubscriptionOwner {
     }
     attempt.then(forget, forget)
     return attempt
+  }
+}
+
+function provisionalScopeKey(path: PortableCurrentCharacteristicPath): string {
+  return JSON.stringify([
+    path.attachmentId,
+    path.attachment?.backendInstanceId ?? null,
+    path.attachment?.backendGeneration ?? null,
+    path.peerId,
+    path.connectionId,
+    path.connectionGeneration,
+    path.ownerLeaseId,
+    path.databaseId,
+    path.databaseGeneration,
+    path.serviceUuid,
+    path.serviceOccurrence,
+    path.characteristicUuid,
+    path.characteristicOccurrence
+  ])
+}
+
+function assertSubscribeAdmission(options: ReturnType<typeof normalizeOperationOptions>, now: () => number): void {
+  if (options.signal?.aborted === true) {
+    throw contractError('operation.aborted', 'gatt', 'public-gatt.subscribe')
+  }
+  if (options.deadline !== null && options.deadline <= now()) {
+    throw contractError('operation.timed-out', 'gatt', 'public-gatt.subscribe')
   }
 }
 
@@ -425,10 +469,20 @@ class PublicGattCharacteristic implements GattCharacteristic {
 
   async subscribe(options: GattSubscribeOptions = {}): Promise<GattSubscription> {
     return this.run(async () => {
-      await runWithCleanup(
-        async () => undefined,
-        () => this.provisionalOwner.retryPending()
+      const now = () => this.source.monotonicNow()
+      const operation = normalizeOperationOptions(options, now)
+      assertSubscribeAdmission(operation, now)
+      await awaitWithOperationAdmission(
+        runWithCleanup(
+          async () => undefined,
+          () => this.provisionalOwner.retryPending(this.indexedRecord.record.path)
+        ),
+        operation,
+        now,
+        'public-gatt.subscribe.provisional-cleanup'
       )
+      assertSubscribeAdmission(operation, now)
+      this.source.assertCurrent?.()
       const selectedDelivery = resolveDelivery(this.properties, options.delivery)
       if (
         this.source.deliverySelection === 'unknown' &&
@@ -439,7 +493,7 @@ class PublicGattCharacteristic implements GattCharacteristic {
       }
       const budget = resolveStreamPolicy(options.stream ?? 'balanced')
       const subscription = await this.source.subscribe(this.indexedRecord.record.path, {
-        ...normalizeOperationOptions(options, () => this.source.monotonicNow()),
+        ...operation,
         delivery: budget,
         deliveryMode:
           options.delivery ??
@@ -465,7 +519,7 @@ class PublicGattCharacteristic implements GattCharacteristic {
           remove: () => rehydrateCleanup(subscription.remove())
         })
       } catch (error) {
-        return this.provisionalOwner.compensate(subscription, error)
+        return this.provisionalOwner.compensate(subscription, this.indexedRecord.record.path, error)
       }
     })
   }

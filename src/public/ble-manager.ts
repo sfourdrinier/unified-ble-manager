@@ -51,6 +51,12 @@ import type {
 } from './ble-adapter'
 import type { BleDiagnostics, BleDiagnosticTraceDocument } from './diagnostics'
 import { snapshotPublicTraceDocument, snapshotResourceCounters } from './diagnostics'
+import type { DiagnosticTraceDocument, DiagnosticTraceRecord } from '../diagnostics/trace-format'
+import {
+  measureTraceDocumentBytes,
+  UNIFIED_BLE_TRACE_MAXIMUM_BYTES,
+  UNIFIED_BLE_TRACE_MAXIMUM_RECORDS
+} from '../diagnostics/trace-format'
 import { isAuthorizationBlocking, type AdapterStateSnapshot } from '../backend-contract/identity'
 import { createPublicGattDatabase, ProvisionalGattSubscriptionOwner } from './gatt'
 import type { GattDatabase, GattValueEvent } from './gatt'
@@ -1591,6 +1597,10 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
     readonly stop: () => Promise<PublicCleanupRecord>
   }>()
   private readonly provisionalSubscriptions = new ProvisionalGattSubscriptionOwner()
+  private readonly lateScanStopFailures: { readonly error?: unknown; readonly cleanup?: PublicCleanupRecord }[] = []
+  private readonly lateProvisionalFailures: { readonly error?: unknown; readonly cleanup?: PublicCleanupRecord }[] = []
+  private readonly localCleanupTrace: { readonly event: string; readonly time: number }[] = []
+  private localCleanupTraceTruncated = false
   private destroyPromise: Promise<PublicCleanupRecord> | null = null
 
   constructor(
@@ -1602,9 +1612,9 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
     this.adapter = createPublicAdapter(internal, now)
     this.diagnostics = {
       snapshot: () =>
-        Object.freeze({ trace: publicTraceDocument(internal), resourceCounters: this.diagnostics.resourceCounters() }),
+        Object.freeze({ trace: this.diagnosticTrace(), resourceCounters: this.diagnostics.resourceCounters() }),
       resourceCounters: () => snapshotResourceCounters(publicResourceCounters(internal)),
-      startTrace: () => ({ stop: async () => publicTraceDocument(internal) })
+      startTrace: () => ({ stop: async () => this.diagnosticTrace() })
     }
     this.peers = hostOptions.peers ?? createPublicPeerDirectory(internal.attachedBackend?.backend?.peers, now)
     this.security = createPublicSecurity(resolveSecurityBackend(internal), this.peers, internal, now)
@@ -1963,20 +1973,58 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
     try {
       const active = [...this.activeScanSessions]
       const viewResults: { readonly error?: unknown; readonly cleanup?: PublicCleanupRecord }[] = []
-      const provisionalResults: { readonly error?: unknown; readonly cleanup?: PublicCleanupRecord }[] = []
+      const retainedViewFailures = this.lateScanStopFailures.splice(0)
+      const retainedProvisionalFailures = this.lateProvisionalFailures.splice(0)
+      const viewAttempts: Promise<void>[] = []
+      let provisionalResult: { readonly error?: unknown; readonly cleanup?: PublicCleanupRecord } | null = null
+      let reportOpen = true
+      let parentReleased = false
       for (const scan of active) {
         try {
-          const cleanup = await scan.stop()
-          viewResults.push({ cleanup })
+          // A view close can depend on a native stop that never settles. Keep
+          // observing its outcome, but let the authoritative manager lease
+          // release proceed while that child remains in flight.
+          viewAttempts.push(
+            scan.stop().then(
+              cleanup => {
+                if (reportOpen) viewResults.push({ cleanup })
+                else if (cleanup.state !== 'released') {
+                  this.recordLateChildFailure('manager.scan-stop.late-failed')
+                  if (!parentReleased) this.lateScanStopFailures.push({ cleanup })
+                }
+              },
+              error => {
+                if (reportOpen) viewResults.push({ error })
+                else {
+                  this.recordLateChildFailure('manager.scan-stop.late-failed')
+                  if (!parentReleased) this.lateScanStopFailures.push({ error })
+                }
+              }
+            )
+          )
         } catch (error) {
           viewResults.push({ error })
         }
       }
-      try {
-        provisionalResults.push({ cleanup: await this.provisionalSubscriptions.retryPending() })
-      } catch (error) {
-        provisionalResults.push({ error })
-      }
+      // Retry children without making the authoritative manager release wait
+      // on an individual unsubscribe that may never settle. The owner keeps
+      // the obligation, and the handlers observe late success or failure.
+      this.provisionalSubscriptions.retryPending().then(
+        cleanup => {
+          if (reportOpen) provisionalResult = { cleanup }
+          else if (cleanup.state !== 'released') {
+            this.recordLateChildFailure('manager.gatt-unsubscribe.late-failed')
+            if (!parentReleased) this.lateProvisionalFailures.push({ cleanup })
+          }
+        },
+        error => {
+          if (reportOpen) provisionalResult = { error }
+          else {
+            this.recordLateChildFailure('manager.gatt-unsubscribe.late-failed')
+            if (!parentReleased) this.lateProvisionalFailures.push({ error })
+          }
+        }
+      )
       let cleanup: BackendCleanupRecord | undefined
       let nativeError: unknown
       try {
@@ -1984,14 +2032,30 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
       } catch (error) {
         nativeError = error
       }
-      const nativeReleased = cleanup !== undefined && toPublicCleanupRecord(cleanup).state === 'released'
-      if (nativeReleased) this.provisionalSubscriptions.confirmManagerRelease()
+      // Include promptly settled view failures without allowing a stuck child
+      // close to turn manager teardown into an unbounded wait.
+      await Promise.race([Promise.all(viewAttempts), new Promise<void>(resolve => setTimeout(resolve, 0))])
+      parentReleased = cleanup !== undefined && toPublicCleanupRecord(cleanup).state === 'released'
+      reportOpen = false
+      if (parentReleased) {
+        for (const view of viewResults) {
+          if (view.error !== undefined || (view.cleanup !== undefined && view.cleanup.state !== 'released')) {
+            this.recordLateChildFailure('manager.scan-stop.failed')
+          }
+        }
+        if (cleanupPhaseFailed(provisionalResult)) {
+          this.recordLateChildFailure('manager.gatt-unsubscribe.failed')
+        }
+        this.provisionalSubscriptions.confirmManagerRelease()
+      }
       return toPublicCleanupRecord(
         collectCleanupPhases([
-          ...viewResults,
+          ...(parentReleased ? [] : retainedViewFailures),
+          ...(parentReleased ? [] : viewResults),
           // The original subscribe rejection preserved the provisional failure.
           // A released manager lease is authoritative that its resource is gone.
-          ...(nativeReleased ? [] : provisionalResults),
+          ...(parentReleased ? [] : retainedProvisionalFailures),
+          ...(parentReleased || provisionalResult === null ? [] : [provisionalResult]),
           ...(nativeError === undefined ? [] : [{ error: nativeError }]),
           ...(cleanup === undefined ? [] : [{ cleanup }])
         ])
@@ -2000,6 +2064,71 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
       throw rehydratePublicError(error)
     }
   }
+
+  private recordLateChildFailure(event: string): void {
+    const sampled = this.now()
+    this.localCleanupTrace.push({ event, time: Number.isFinite(sampled) && sampled >= 0 ? sampled : 0 })
+    if (this.localCleanupTrace.length > 64) {
+      this.localCleanupTrace.shift()
+      this.localCleanupTraceTruncated = true
+    }
+  }
+
+  private diagnosticTrace(): BleDiagnosticTraceDocument {
+    return appendLocalCleanupTrace(
+      publicTraceDocument(this.internal),
+      this.localCleanupTrace,
+      this.localCleanupTraceTruncated
+    )
+  }
+}
+
+function cleanupPhaseFailed(
+  phase: { readonly error?: unknown; readonly cleanup?: PublicCleanupRecord } | null
+): boolean {
+  return (
+    phase !== null && (phase.error !== undefined || (phase.cleanup !== undefined && phase.cleanup.state !== 'released'))
+  )
+}
+
+function appendLocalCleanupTrace(
+  source: BleDiagnosticTraceDocument,
+  history: readonly { readonly event: string; readonly time: number }[],
+  historyTruncated: boolean
+): BleDiagnosticTraceDocument {
+  if (history.length === 0) return source
+  const lastOrdinal = source.records[source.records.length - 1]?.ordinal ?? 0
+  const renumber = lastOrdinal > Number.MAX_SAFE_INTEGER - history.length
+  const local: DiagnosticTraceRecord[] = history.map(
+    ({ event, time }, index): DiagnosticTraceRecord => ({
+      ordinal: renumber ? source.records.length + index + 1 : lastOrdinal + index + 1,
+      time,
+      kind: 'resource',
+      event,
+      cause: 'cleanup.late-failed',
+      correlation: null,
+      redactedClient: true,
+      redactedPeer: true,
+      redactedPath: true,
+      redactedPayload: true
+    })
+  )
+  const records: DiagnosticTraceRecord[] = [...source.records.map(record => ({ ...record })), ...local]
+  let truncated = source.truncated || historyTruncated
+  const document = (): DiagnosticTraceDocument => ({
+    format: source.format,
+    truncated,
+    records: renumber ? records.map((record, index) => ({ ...record, ordinal: index + 1 })) : records
+  })
+  while (
+    records.length > UNIFIED_BLE_TRACE_MAXIMUM_RECORDS ||
+    measureTraceDocumentBytes(document()) > UNIFIED_BLE_TRACE_MAXIMUM_BYTES
+  ) {
+    records.shift()
+    truncated = true
+  }
+  const bounded = document()
+  return Object.freeze({ ...bounded, records: Object.freeze(bounded.records.map(record => Object.freeze(record))) })
 }
 
 function publicTraceDocument<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
