@@ -29,6 +29,13 @@ promote any backend support label or claim physical-radio qualification.
   counters without adding the same loss twice; local-only pending loss keeps
   its `drop-oldest` policy.
 
+### Release qualification
+
+- The mobile golden-wire fixture now attaches its Apple restoration listener
+  before injecting a live restoration callback. Pre-session restoration remains
+  covered through the durable claim path; the two golden assertions share one
+  scripted-radio run.
+
 ## [5.0.0-rc.9] - 2026-09-24 (prerelease)
 
 This candidate addresses all six findings in the public rc.8 review. It does

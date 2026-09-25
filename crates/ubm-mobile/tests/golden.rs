@@ -80,6 +80,7 @@ impl Recorder {
     /// The golden flow is loss-free: the cumulative control-loss counter
     /// must read zero, so the vectors pin the field without loss.
     async fn drain(&mut self, session: &ubm_mobile::MobileSession, name: &str, want: usize) {
+        eprintln!("golden wire: waiting for {name}");
         let records = drain_until(session, |records| records.len() >= want).await;
         assert_eq!(records.len(), want, "{name}: {records:#?}");
         // Synchronous stretch: no task can interleave, so this drain
@@ -562,10 +563,13 @@ async fn generate() -> String {
     r.invoke(&session, "dispose", "session.dispose", json!({}))
         .await;
 
-    // Apple: restoration is claimed once per process (invokes only; this
-    // host's records are not drained, so the ordinal chain stays Android's).
+    // Apple: this golden flow observes a live restoration event. Open the
+    // claimant before ingress; pre-session restoration is exercised through
+    // the durable peers.restored/claim path in the session tests. This host's
+    // records are not included in the Android ordinal chain.
     let apple_radio = Scripted::new(Box::new(responder));
     let (apple, _) = open(&apple_radio, MobilePlatform::Apple).await;
+    let claimant = apple.open_session("golden-apple").expect("session");
     apple.ingest(RadioIngress::Restored {
         peers: vec![RestoredPeer {
             peer_id: "5B7C1A2E-0000-4000-8000-000000000001".to_owned(),
@@ -573,7 +577,7 @@ async fn generate() -> String {
             connected: true,
         }],
     });
-    let claimant = apple.open_session("golden-apple").expect("session");
+    eprintln!("golden wire: waiting for Apple restoration");
     drain_until(&claimant, |records| {
         records.iter().any(|record| record["t"] == "restored")
     })
@@ -617,6 +621,17 @@ async fn generate() -> String {
 async fn golden_wire_vectors_are_current() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("golden/wire-vectors.json");
     let fresh = generate().await;
+    // Both assertions use the same owner output; a second full run only
+    // duplicates the asynchronous scenario and its setup cost.
+    let lower = fresh.to_ascii_lowercase();
+    let leaks: Vec<&str> = lower
+        .lines()
+        .filter(|line| line.contains("desktop"))
+        .collect();
+    assert!(
+        leaks.is_empty(),
+        "desktop names on the mobile wire: {leaks:#?}"
+    );
     if std::env::var_os("UBM_MOBILE_GOLDEN_WRITE").is_some() {
         std::fs::write(&path, &fresh).expect("writes golden vectors");
         return;
@@ -625,20 +640,5 @@ async fn golden_wire_vectors_are_current() {
     assert!(
         committed == fresh,
         "golden wire vectors drifted; regenerate with UBM_MOBILE_GOLDEN_WRITE=1 cargo test -p ubm-mobile --test golden"
-    );
-}
-
-/// No desktop host name reaches a phone: the whole golden run — every
-/// invoke envelope and every drained record — is free of one.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn no_desktop_identity_reaches_the_mobile_wire() {
-    let fresh = generate().await.to_ascii_lowercase();
-    let leaks: Vec<&str> = fresh
-        .lines()
-        .filter(|line| line.contains("desktop"))
-        .collect();
-    assert!(
-        leaks.is_empty(),
-        "desktop names on the mobile wire: {leaks:#?}"
     );
 }
