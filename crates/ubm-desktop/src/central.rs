@@ -1360,6 +1360,10 @@ enum ScanPhase {
 struct ActiveScan {
     id: OperationId,
     phase: ScanPhase,
+    /// Native start has authoritatively refused while an earlier stop is
+    /// still in flight. Once that stop settles, even a failed stop leaves
+    /// no scan to retain.
+    start_refused: bool,
 }
 
 /// A resolved characteristic-level path: core path index, radio instance
@@ -1594,7 +1598,11 @@ impl<B> StopLead<'_, B> {
             if let Some(active) = slot.as_mut()
                 && active.id == self.id
             {
-                active.phase = ScanPhase::StopFailed;
+                if active.start_refused {
+                    *slot = None;
+                } else {
+                    active.phase = ScanPhase::StopFailed;
+                }
             }
         }
         if let Some(tx) = self.tx.take() {
@@ -2437,6 +2445,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             *self.inner.scan_slot() = Some(ActiveScan {
                 id: id.clone(),
                 phase: ScanPhase::Starting,
+                start_refused: false,
             });
             id
         };
@@ -2518,16 +2527,21 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         }
     }
 
-    /// The OS refused the start: drop our marker when it is still in the
-    /// starting phase (a stop leader owns it otherwise), then fail and
-    /// release the core session. The OS scan never started, so no stop.
+    /// The OS refused the start: no late start can follow this answer. Drop
+    /// either the untouched starting marker or an early stop's completed
+    /// or failed marker; an in-flight stop leader still owns its answer.
+    /// The OS scan never started, so no further stop is owed.
     async fn fail_scan_start(&self, id: &OperationId) {
         {
             let mut slot = self.inner.scan_slot();
-            if slot.as_ref().is_some_and(|active| {
-                active.id == *id && matches!(active.phase, ScanPhase::Starting)
-            }) {
-                *slot = None;
+            if let Some(active) = slot.as_mut()
+                && active.id == *id
+            {
+                if matches!(active.phase, ScanPhase::Stopping(_)) {
+                    active.start_refused = true;
+                } else {
+                    *slot = None;
+                }
             }
         }
         let mut core = self.inner.core.lock().await;
@@ -2569,6 +2583,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                         *slot = Some(ActiveScan {
                             id: id.clone(),
                             phase: ScanPhase::StopFailed,
+                            start_refused: false,
                         });
                         None
                     }
@@ -2598,6 +2613,17 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 .is_err()
             {
                 self.inner.note_compensation_failure();
+            } else {
+                // The original start has now answered or its future was
+                // cancelled by the caller's budget. The compensating OS
+                // stop succeeded after that point, so the protective
+                // early-stop marker has no remaining start to guard.
+                let mut slot = self.inner.scan_slot();
+                if slot.as_ref().is_some_and(|active| {
+                    active.id == *id && matches!(active.phase, ScanPhase::StartCancelled)
+                }) {
+                    *slot = None;
+                }
             }
             return;
         }
@@ -2727,7 +2753,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                             if let Some(active) = slot.as_mut()
                                 && active.id == *scan
                             {
-                                if was_starting {
+                                if was_starting && !active.start_refused {
                                     active.phase = ScanPhase::StartCancelled;
                                 } else {
                                     *slot = None;

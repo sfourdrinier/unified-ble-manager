@@ -12,11 +12,12 @@ import type {
   DiscoveredGattDatabaseHandle,
   PortableCurrentCharacteristicPath,
   PortableCurrentDescriptorPath,
-  PortableGattDatabaseSnapshot
+  PortableGattDatabaseSnapshot,
+  SubscriptionHandle
 } from '../manager/consumer-handles'
 import { normalizeOperationOptions, type OperationOptions } from './operation-options'
 import { resolveStreamPolicy, type StreamPolicy } from './stream-presets'
-import { rehydratePublicError, runWithCleanup } from './error-bridge'
+import { collectCleanupPhases, rehydratePublicError, runWithCleanup } from './error-bridge'
 import { mapPublicBoundedAsyncStream, type PublicBoundedAsyncStream, type PublicStreamItem } from './streams'
 import { toPublicCleanupRecord, type CleanupRecord } from './cleanup'
 
@@ -131,6 +132,11 @@ export interface GattCharacteristic {
   write(value: Uint8Array, options?: GattWriteOptions): Promise<GattWriteReceipt>
   writeWhenReady(value: Uint8Array, options?: OperationOptions): Promise<GattWriteReceipt>
   writeLong(value: Uint8Array, options?: LongWriteOptions): Promise<GattLongWriteReceipt>
+  /**
+   * A subscription acquired but not publishable is removed before rejection.
+   * Failed provisional removal remains owned and is retried before this
+   * characteristic admits a later subscription.
+   */
   subscribe(options?: GattSubscribeOptions): Promise<GattSubscription>
   withSubscription<T>(options: GattSubscribeOptions, action: (subscription: GattSubscription) => Promise<T>): Promise<T>
   descriptor(uuid: UuidInput, selector?: OccurrenceSelector): GattDescriptor
@@ -163,9 +169,61 @@ export interface PublicGattDatabaseSource extends DiscoveredGattDatabaseHandle {
   readonly deliverySelection?: 'controllable' | 'unknown'
 }
 
-export async function createPublicGattDatabase(source: PublicGattDatabaseSource): Promise<GattDatabase> {
+/** Retains unpublishable subscriptions until retry or manager teardown settles them. */
+export class ProvisionalGattSubscriptionOwner {
+  private readonly pending = new Set<SubscriptionHandle>()
+  private readonly removals = new Map<SubscriptionHandle, Promise<CleanupRecord>>()
+
+  async compensate(subscription: SubscriptionHandle, primaryError: unknown): Promise<never> {
+    this.pending.add(subscription)
+    return runWithCleanup(
+      async (): Promise<never> => {
+        throw rehydratePublicError(primaryError)
+      },
+      () => this.remove(subscription)
+    )
+  }
+
+  async retryPending(): Promise<CleanupRecord> {
+    const phases: { readonly error?: unknown; readonly cleanup?: CleanupRecord }[] = []
+    for (const subscription of [...this.pending]) {
+      try {
+        phases.push({ cleanup: await this.remove(subscription) })
+      } catch (error) {
+        phases.push({ error })
+      }
+    }
+    return collectCleanupPhases(phases)
+  }
+
+  /** A released manager lease is authoritative for every resource under it. */
+  confirmManagerRelease(): void {
+    this.pending.clear()
+    this.removals.clear()
+  }
+
+  private remove(subscription: SubscriptionHandle): Promise<CleanupRecord> {
+    const inFlight = this.removals.get(subscription)
+    if (inFlight !== undefined) return inFlight
+    const attempt = rehydrateCleanup(Promise.resolve().then(() => subscription.remove())).then(cleanup => {
+      if (cleanup.state === 'released') this.pending.delete(subscription)
+      return cleanup
+    })
+    this.removals.set(subscription, attempt)
+    const forget = () => {
+      if (this.removals.get(subscription) === attempt) this.removals.delete(subscription)
+    }
+    attempt.then(forget, forget)
+    return attempt
+  }
+}
+
+export async function createPublicGattDatabase(
+  source: PublicGattDatabaseSource,
+  provisionalOwner = new ProvisionalGattSubscriptionOwner()
+): Promise<GattDatabase> {
   const snapshot = await source.snapshot()
-  return new PublicGattDatabase(source, snapshot)
+  return new PublicGattDatabase(source, snapshot, provisionalOwner)
 }
 
 class PublicGattDatabase implements GattDatabase {
@@ -177,7 +235,8 @@ class PublicGattDatabase implements GattDatabase {
 
   constructor(
     private readonly source: PublicGattDatabaseSource,
-    snapshot: PortableGattDatabaseSnapshot
+    snapshot: PortableGattDatabaseSnapshot,
+    provisionalOwner: ProvisionalGattSubscriptionOwner
   ) {
     validateTopology(snapshot)
     this.generation = snapshot.path.databaseGeneration
@@ -194,7 +253,7 @@ class PublicGattDatabase implements GattDatabase {
         )
         return { characteristic, descriptors }
       })
-      return new PublicGattService(record, source, characteristicObjects)
+      return new PublicGattService(record, source, characteristicObjects, provisionalOwner)
     })
     this.services = Object.freeze(serviceObjects)
     this.serviceLookup = createLookup(this.services, service => service.uuid)
@@ -251,7 +310,8 @@ class PublicGattService implements GattService {
     characteristics: readonly {
       readonly characteristic: OccurrenceRecord<PortableGattDatabaseSnapshot['characteristics'][number]>
       readonly descriptors: readonly OccurrenceRecord<PortableGattDatabaseSnapshot['descriptors'][number]>[]
-    }[]
+    }[],
+    provisionalOwner: ProvisionalGattSubscriptionOwner
   ) {
     this.uuid = normalizeUuid(indexedRecord.record.path.serviceUuid)
     this.occurrence = indexedRecord.occurrence
@@ -262,7 +322,9 @@ class PublicGattService implements GattService {
       )
     )
     this.characteristics = Object.freeze(
-      characteristics.map(entry => new PublicGattCharacteristic(this, source, entry.characteristic, entry.descriptors))
+      characteristics.map(
+        entry => new PublicGattCharacteristic(this, source, entry.characteristic, entry.descriptors, provisionalOwner)
+      )
     )
     this.characteristicLookup = createLookup(this.characteristics, characteristic => characteristic.uuid)
     Object.freeze(this)
@@ -290,7 +352,8 @@ class PublicGattCharacteristic implements GattCharacteristic {
     service: PublicGattService,
     private readonly source: PublicGattDatabaseSource,
     private readonly indexedRecord: OccurrenceRecord<PortableGattDatabaseSnapshot['characteristics'][number]>,
-    descriptorRecords: readonly OccurrenceRecord<PortableGattDatabaseSnapshot['descriptors'][number]>[]
+    descriptorRecords: readonly OccurrenceRecord<PortableGattDatabaseSnapshot['descriptors'][number]>[],
+    private readonly provisionalOwner: ProvisionalGattSubscriptionOwner
   ) {
     this.service = service
     this.uuid = normalizeUuid(indexedRecord.record.path.characteristicUuid)
@@ -362,6 +425,10 @@ class PublicGattCharacteristic implements GattCharacteristic {
 
   async subscribe(options: GattSubscribeOptions = {}): Promise<GattSubscription> {
     return this.run(async () => {
+      await runWithCleanup(
+        async () => undefined,
+        () => this.provisionalOwner.retryPending()
+      )
       const selectedDelivery = resolveDelivery(this.properties, options.delivery)
       if (
         this.source.deliverySelection === 'unknown' &&
@@ -382,24 +449,24 @@ class PublicGattCharacteristic implements GattCharacteristic {
               ? 'prefer-indication'
               : undefined)
       })
-      const effectiveDelivery = subscription.observedDelivery ?? 'unknown'
-      if (
-        effectiveDelivery !== 'notification' &&
-        effectiveDelivery !== 'indication' &&
-        effectiveDelivery !== 'unknown'
-      ) {
-        const cleanup = await subscription.remove()
-        if (cleanup.state === 'release-failed') {
-          throw contractError('platform.failure', 'cleanup', 'public-gatt.subscribe.invalid-delivery-cleanup')
+      try {
+        const effectiveDelivery = subscription.observedDelivery ?? 'unknown'
+        if (
+          effectiveDelivery !== 'notification' &&
+          effectiveDelivery !== 'indication' &&
+          effectiveDelivery !== 'unknown'
+        ) {
+          throw contractError('protocol.violation', 'gatt', 'public-gatt.subscribe.observed-delivery')
         }
-        throw contractError('protocol.violation', 'gatt', 'public-gatt.subscribe.observed-delivery')
+        return Object.freeze({
+          requestedDelivery: options.delivery,
+          effectiveDelivery,
+          values: mapGattValueStream(subscription.values, () => this.source.monotonicNow()),
+          remove: () => rehydrateCleanup(subscription.remove())
+        })
+      } catch (error) {
+        return this.provisionalOwner.compensate(subscription, error)
       }
-      return Object.freeze({
-        requestedDelivery: options.delivery,
-        effectiveDelivery,
-        values: mapGattValueStream(subscription.values, () => this.source.monotonicNow()),
-        remove: () => rehydrateCleanup(subscription.remove())
-      })
     })
   }
 

@@ -1348,8 +1348,23 @@ impl HostInner {
             }
             Err(error) => {
                 // A failed restart leaves the previous members without a
-                // radio scan: end their streams instead of pretending.
+                // radio scan: end their streams instead of pretending. The
+                // central can nevertheless retain this generation after a
+                // failed compensating stop. There is no public membership
+                // left to retry it, so transfer that exact identity to the
+                // process-owned orphan driver before returning the error.
                 let orphans = self.take_scan_members();
+                if let Some(operation) = self.central.active_scan_id() {
+                    share.physical = Some(PhysicalScan {
+                        operation,
+                        request: wanted,
+                    });
+                    if !share.orphan_retry_scheduled {
+                        share.orphan_retry_scheduled = true;
+                        self.runtime.spawn(Arc::clone(self).retry_orphan_scan());
+                    }
+                }
+                drop(share);
                 self.end_scan_members(orphans, "source-failed");
                 Err(error)
             }

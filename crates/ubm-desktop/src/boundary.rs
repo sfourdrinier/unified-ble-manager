@@ -1855,25 +1855,25 @@ impl RadioBoundary for FakeRadio {
             .expect("fake radio state")
             .scan_filters
             .push(filter);
-        if let Some(ScriptedFault { detail, platform }) = self.take_fault(FaultOp::StartScan) {
-            return Err(scripted(DesktopError::scan_start_failed(detail), platform));
-        }
         // Contention gate (mirrors connect/disconnect): tests close it via
         // `block_op(FaultOp::StartScan)` to hold a scan start in flight for
         // stop-while-starting and shutdown-during-start races.
         self.gate(FaultOp::StartScan).await;
+        if let Some(ScriptedFault { detail, platform }) = self.take_fault(FaultOp::StartScan) {
+            return Err(scripted(DesktopError::scan_start_failed(detail), platform));
+        }
         self.state.lock().expect("fake radio state").scan_active = true;
         Ok(())
     }
 
     async fn stop_scan(&self) -> Result<(), DesktopError> {
         self.record("stop_scan");
-        if let Some(ScriptedFault { detail, platform }) = self.take_fault(FaultOp::StopScan) {
-            return Err(scripted(DesktopError::scan_stop_failed(detail), platform));
-        }
         // Contention gate (mirrors connect/disconnect): tests close it via
         // `block_op(FaultOp::StopScan)` to hold a scan stop in flight.
         self.gate(FaultOp::StopScan).await;
+        if let Some(ScriptedFault { detail, platform }) = self.take_fault(FaultOp::StopScan) {
+            return Err(scripted(DesktopError::scan_stop_failed(detail), platform));
+        }
         self.state.lock().expect("fake radio state").scan_active = false;
         Ok(())
     }

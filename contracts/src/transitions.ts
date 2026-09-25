@@ -134,6 +134,7 @@ export const TRANSITION_TABLES: readonly MachineTable[] = freezeTable([
       { from: 'active', to: 'failed', via: 'overflow-error-policy' },
       { from: 'active', to: 'failed', via: 'reset' },
       { from: 'stopping', to: 'stopped', via: 'platform-stopped' },
+      { from: 'stopping', to: 'failed', via: 'start-failed' },
       { from: 'stopping', to: 'failed', via: 'stop-failed' },
     ],
     terminals: ['stopped', 'failed'],

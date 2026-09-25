@@ -177,6 +177,101 @@ describe('IPC pre-registration stream buffering', () => {
     await ipc.destroy()
   })
 
+  test.each(['closed', 'source-failed'])('retains early values before a %s terminal', async reason => {
+    const { ipc, emit } = await createIpcHarness()
+    emit('early-terminal', { kind: 'value', value: { seq: 1 } }, 'early-terminal-a')
+    emit('early-terminal', { kind: 'value', value: { seq: 2 } }, 'early-terminal-b')
+    emit('early-terminal', { kind: 'terminal', reason }, 'early-terminal-end')
+    await flushPump()
+    const iterator = ipc.registerStream('early-terminal', isRecord)[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toMatchObject({ value: { kind: 'value', value: { seq: 1 } } })
+    await expect(iterator.next()).resolves.toMatchObject({ value: { kind: 'value', value: { seq: 2 } } })
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason, droppedItems: 0, droppedBytes: 0 }
+    })
+    await iterator.return()
+    await ipc.destroy()
+  })
+
+  test('oversized early item accounts for values evicted before its overflow terminal', async () => {
+    const { ipc, emit } = await createIpcHarness()
+    emit('oversized-early', { kind: 'value', value: { seq: 1 } }, 'oversized-a')
+    emit('oversized-early', { kind: 'value', value: { bytes: 'x'.repeat(70 * 1024) } }, 'oversized-b')
+    await flushPump()
+    const iterator = ipc.registerStream('oversized-early', isRecord)[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { kind: 'overflow', droppedItems: 2 }
+    })
+    await expect(iterator.next()).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'overflow' } })
+    await iterator.return()
+    await ipc.destroy()
+  })
+
+  test.each([
+    ['value', { kind: 'value', value: 42 }, 'ipc-manager.stream-value'],
+    ['control', { kind: 'overflow', policy: 'invalid', droppedItems: 1, droppedBytes: 1 }, 'ipc-manager.event']
+  ])('malformed buffered %s fails the registered child with its exact diagnostic', async (_label, item, operation) => {
+    const { ipc, emit } = await createIpcHarness()
+    emit('early-malformed', item, `early-malformed-${_label}`)
+    await flushPump()
+    const onTerminal = jest.fn()
+    const stream = ipc.registerStream('early-malformed', isRecord, undefined, undefined, onTerminal)
+    await expect(stream[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason: 'source-failed', error: { code: 'protocol.malformed', operation } }
+    })
+    expect(onTerminal).toHaveBeenCalledTimes(1)
+    expect(inspectIpcPendingStreamAccountingForTests(ipc).activeStreamHandles).not.toContain('early-malformed')
+    await ipc.destroy()
+  })
+
+  test('reserved terminal capacity preserves a near-budget value and quarantines late data until registration', async () => {
+    const { ipc, emit } = await createIpcHarness()
+    const payload = 'x'.repeat(63 * 1024)
+    emit('near-budget', { kind: 'value', value: { payload } }, 'budget-value')
+    emit('near-budget', { kind: 'terminal', reason: 'closed' }, 'budget-terminal')
+    emit('near-budget', { kind: 'value', value: { seq: 99 } }, 'budget-late')
+    await flushPump()
+    const iterator = ipc.registerStream('near-budget', isRecord)[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toMatchObject({ value: { kind: 'value', value: { payload } } })
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason: 'closed', droppedItems: 0, droppedBytes: 0 }
+    })
+    await expect(iterator.next()).resolves.toMatchObject({ done: true })
+    await ipc.destroy()
+  })
+
+  test('aggregate value budget leaves one reserved terminal control slot per pending stream', async () => {
+    const { ipc, emit } = await createIpcHarness()
+    for (let streamIndex = 0; streamIndex < 4; streamIndex += 1) {
+      for (let valueIndex = 0; valueIndex < 128; valueIndex += 1) {
+        emit(
+          `full-${streamIndex}`,
+          { kind: 'value', value: { streamIndex, valueIndex } },
+          `full-${streamIndex}-${valueIndex}`
+        )
+        await new Promise(resolve => setImmediate(resolve))
+      }
+    }
+    expect(inspectIpcPendingStreamAccountingForTests(ipc).pendingItemCount).toBe(512)
+    emit('full-0', { kind: 'terminal', reason: 'closed' }, 'full-0-terminal')
+    await flushPump()
+    expect(inspectIpcPendingStreamAccountingForTests(ipc)).toMatchObject({
+      pendingIdCount: 4,
+      pendingItemCount: 513
+    })
+    const iterator = ipc.registerStream('full-0', isRecord)[Symbol.asyncIterator]()
+    for (let valueIndex = 0; valueIndex < 128; valueIndex += 1) {
+      await expect(iterator.next()).resolves.toMatchObject({
+        value: { kind: 'value', value: { streamIndex: 0, valueIndex } }
+      })
+    }
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason: 'closed', droppedItems: 0, droppedBytes: 0 }
+    })
+    await iterator.return()
+    await ipc.destroy()
+  })
+
   test('unique unknown stream IDs remain globally bounded', async () => {
     const { ipc, emit } = await createIpcHarness()
     const count = 400
@@ -208,6 +303,8 @@ describe('IPC pre-registration stream buffering', () => {
     const evicted = await firstStreamItem(ipc, 'quota-0')
     expect(evicted.value?.kind).toBe('terminal')
     expect(['overflow', 'source-failed']).toContain(evicted.value?.reason)
+    expect(evicted.value?.droppedItems).toBeGreaterThanOrEqual(1)
+    expect(evicted.value?.droppedBytes).toBeGreaterThan(0)
     const kept = await firstStreamItem(ipc, 'quota-256')
     await expect(kept).toMatchObject({ value: { kind: 'value', value: { index: 256 } } })
     await ipc.destroy()
