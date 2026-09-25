@@ -227,6 +227,122 @@ describe('IPC pre-registration stream buffering', () => {
     await ipc.destroy()
   })
 
+  test.each([
+    { values: 128, expectedDroppedItems: 5, expectedLocalBytes: 0 },
+    {
+      values: 129,
+      expectedDroppedItems: 6,
+      expectedLocalBytes: serializedBytes({ kind: 'value', value: { index: 0 } })
+    }
+  ])(
+    'reports displaced upstream control after $values values without double-counting',
+    async ({ values, expectedDroppedItems, expectedLocalBytes }) => {
+      const { ipc, emit } = await createIpcHarness()
+      emit(
+        'control-only-loss',
+        { kind: 'overflow', policy: 'drop-oldest', droppedItems: 5, droppedBytes: 50, replacedItems: 4 },
+        'control-only-loss-overflow'
+      )
+      for (let index = 0; index < values; index += 1) {
+        emit('control-only-loss', { kind: 'value', value: { index } }, `control-only-loss-${index}`)
+        await new Promise(resolve => setImmediate(resolve))
+      }
+      await flushPump()
+      const iterator = ipc.registerStream('control-only-loss', isRecord)[Symbol.asyncIterator]()
+      await expect(iterator.next()).resolves.toMatchObject({
+        value: {
+          kind: 'overflow',
+          droppedItems: expectedDroppedItems,
+          droppedBytes: 50 + expectedLocalBytes,
+          replacedItems: 4
+        }
+      })
+      await iterator.return()
+      await ipc.destroy()
+    }
+  )
+
+  test('reports replacements-only loss after its control is displaced', async () => {
+    const { ipc, emit } = await createIpcHarness()
+    emit(
+      'replacements-only',
+      { kind: 'overflow', policy: 'drop-oldest', droppedItems: 0, droppedBytes: 0, replacedItems: 4 },
+      'replacements-only-overflow'
+    )
+    for (let index = 0; index < 128; index += 1) {
+      emit('replacements-only', { kind: 'value', value: { index } }, `replacements-only-${index}`)
+      await new Promise(resolve => setImmediate(resolve))
+    }
+    await flushPump()
+    const iterator = ipc.registerStream('replacements-only', isRecord)[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { kind: 'overflow', droppedItems: 0, droppedBytes: 0, replacedItems: 4 }
+    })
+    await iterator.return()
+    await ipc.destroy()
+  })
+
+  test.each([
+    { values: 128, droppedItems: 0 },
+    { values: 129, droppedItems: 1 }
+  ])('preserves latest policy after a control is displaced by $values values', async ({ values, droppedItems }) => {
+    const { ipc, emit } = await createIpcHarness()
+    emit(
+      'latest-control-loss',
+      { kind: 'overflow', policy: 'latest', droppedItems: 0, droppedBytes: 0, replacedItems: 4 },
+      'latest-control-overflow'
+    )
+    for (let index = 0; index < values; index += 1) {
+      emit('latest-control-loss', { kind: 'value', value: { index } }, `latest-control-value-${index}`)
+      await new Promise(resolve => setImmediate(resolve))
+    }
+    await flushPump()
+    const iterator = ipc.registerStream('latest-control-loss', isRecord)[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { kind: 'overflow', policy: 'latest', droppedItems, replacedItems: 4 }
+    })
+    await iterator.return()
+    await ipc.destroy()
+  })
+
+  test('uses local drop-oldest policy when a displaced latest control reported zero upstream loss', async () => {
+    const { ipc, emit } = await createIpcHarness()
+    emit(
+      'zero-upstream-latest',
+      { kind: 'overflow', policy: 'latest', droppedItems: 0, droppedBytes: 0, replacedItems: 0 },
+      'zero-upstream-latest-overflow'
+    )
+    for (let index = 0; index < 129; index += 1) {
+      emit('zero-upstream-latest', { kind: 'value', value: { index } }, `zero-upstream-latest-value-${index}`)
+      await new Promise(resolve => setImmediate(resolve))
+    }
+    await flushPump()
+    const iterator = ipc.registerStream('zero-upstream-latest', isRecord)[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { kind: 'overflow', policy: 'drop-oldest', droppedItems: 1, replacedItems: 0 }
+    })
+    await iterator.return()
+    await ipc.destroy()
+  })
+
+  test('reports upstream loss when the byte budget displaces only its control', async () => {
+    const { ipc, emit } = await createIpcHarness()
+    emit(
+      'byte-control-only',
+      { kind: 'overflow', policy: 'drop-oldest', droppedItems: 5, droppedBytes: 50, replacedItems: 4 },
+      'byte-control-overflow'
+    )
+    const payload = 'x'.repeat(65_420)
+    emit('byte-control-only', { kind: 'value', value: { payload } }, 'byte-control-value')
+    await flushPump()
+    const iterator = ipc.registerStream('byte-control-only', isRecord)[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { kind: 'overflow', droppedItems: 5, droppedBytes: 50, replacedItems: 4 }
+    })
+    await iterator.return()
+    await ipc.destroy()
+  })
+
   test('eviction retains upstream and buffered value losses', async () => {
     const { ipc, emit } = await createIpcHarness()
     emit(

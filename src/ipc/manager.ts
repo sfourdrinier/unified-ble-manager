@@ -114,6 +114,7 @@ interface PendingStreamRecord {
   terminal: boolean
   readonly createdAt: number
   upstreamLoss: StreamLossCounters
+  upstreamPolicy: SerializableValue | undefined
 }
 
 interface StreamLossCounters {
@@ -146,6 +147,10 @@ function combinedStreamLoss(upstream: StreamLossCounters, local: StreamLossCount
     droppedBytes: upstream.droppedBytes + local.droppedBytes,
     replacedItems: upstream.replacedItems + local.replacedItems
   }
+}
+
+function hasStreamLoss(loss: StreamLossCounters): boolean {
+  return loss.droppedItems > 0 || loss.droppedBytes > 0 || loss.replacedItems > 0
 }
 
 interface PendingStreamTombstone {
@@ -686,10 +691,11 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       pendingOverflow === undefined ? NO_STREAM_LOSS : { ...pendingOverflow, replacedItems: 0 }
     // Controls may have been displaced from the pending FIFO by later values;
     // their cumulative source totals remain owned by the pending record.
-    let upstreamLoss = this.pendingStreams.get(handle)?.upstreamLoss ?? NO_STREAM_LOSS
+    const pendingRecord = this.pendingStreams.get(handle)
+    let upstreamLoss = pendingRecord?.upstreamLoss ?? NO_STREAM_LOSS
     const reportKnownLoss = (policy: OverflowPolicy): void => {
       const combined = combinedStreamLoss(upstreamLoss, localLoss)
-      if (combined.droppedItems === 0 && combined.droppedBytes === 0 && combined.replacedItems === 0) return
+      if (!hasStreamLoss(combined)) return
       source.observeSourceOverflow({
         kind: 'overflow',
         policy,
@@ -763,9 +769,14 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     const pending = this.takePendingStream(handle)
     this.pendingStreamOverflows.delete(handle)
     try {
-      if (pendingOverflow !== undefined) {
-        reportKnownLoss('drop-oldest')
-      }
+      // A displaced source control can leave known upstream loss even when
+      // the pending buffer dropped no values of its own. Keep its policy too;
+      // local pending-buffer loss alone uses drop-oldest.
+      reportKnownLoss(
+        !hasStreamLoss(upstreamLoss) || pendingRecord?.upstreamPolicy === undefined
+          ? 'drop-oldest'
+          : requiredOverflowPolicy(pendingRecord.upstreamPolicy, 'ipc-manager.event')
+      )
       if (pending !== undefined) {
         for (const item of pending.items) {
           deliver(handle, item)
@@ -997,19 +1008,31 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     if (index >= 0) this.ownerCleanupLedger.splice(index, 1)
   }
 
-  private async retryOwnerCleanupEntry(entry: OwnerCleanupAttempt): Promise<void> {
-    if (entry.pending !== null) await entry.pending
-    if (this.leaseReleased && entry.scope === 'lease-owned') return
-    if (!this.ownerCleanupLedger.includes(entry)) return
-    if (entry.error === null) return
-    try {
-      const cleanup = await entry.run()
-      if (cleanup?.state === 'release-failed') throw new BleCleanupError(cleanup)
-      entry.error = null
-      this.forgetOwnerCleanup(entry)
-    } catch (error) {
-      entry.error = error
+  private retryOwnerCleanupEntry(entry: OwnerCleanupAttempt): Promise<void> {
+    if (entry.pending !== null) return entry.pending
+    if (this.leaseReleased && entry.scope === 'lease-owned') return Promise.resolve()
+    if (!this.ownerCleanupLedger.includes(entry) || entry.error === null) return Promise.resolve()
+    const attempt = Promise.resolve().then(async () => {
+      try {
+        const cleanup = await entry.run()
+        if (cleanup?.state === 'release-failed') throw new BleCleanupError(cleanup)
+        entry.error = null
+        this.forgetOwnerCleanup(entry)
+      } catch (error) {
+        if (this.leaseReleased && entry.scope === 'lease-owned') {
+          entry.error = null
+          this.forgetOwnerCleanup(entry)
+        } else {
+          entry.error = error
+        }
+      }
+    })
+    entry.pending = attempt
+    const clear = () => {
+      if (entry.pending === attempt) entry.pending = null
     }
+    attempt.then(clear, clear)
+    return attempt
   }
 
   private async retryLeaseOwnedCleanupBeforeDestroy(): Promise<void> {
@@ -1057,12 +1080,14 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       bytes: 0,
       terminal: false,
       createdAt: this.now(),
-      upstreamLoss: NO_STREAM_LOSS
+      upstreamLoss: NO_STREAM_LOSS,
+      upstreamPolicy: undefined
     }
     if (existing === undefined) this.pendingStreams.set(streamId, pending)
     if (pending.terminal) return
     if (item.kind === 'overflow' || item.kind === 'terminal') {
       pending.upstreamLoss = cumulativeStreamLoss(pending.upstreamLoss, item)
+      if (item.kind === 'overflow') pending.upstreamPolicy = item.policy
     }
     const itemCapacity = Number(REMOTE_STREAM_LIMITS.itemCapacity)
     const byteCapacity = Number(REMOTE_STREAM_LIMITS.byteCapacity)

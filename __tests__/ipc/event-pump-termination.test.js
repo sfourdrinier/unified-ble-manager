@@ -325,6 +325,40 @@ describe('IPC event pump termination', () => {
     expect(harness.scanStopAttempts()).toBe(2)
   })
 
+  test('repeated destroy shares an unresolved malformed-plan cleanup retry', async () => {
+    const failure = {
+      resourceKind: 'scan',
+      error: {
+        code: 'scan.stop-failed',
+        domain: 'scan',
+        operation: 'fixture.scan-plan-stop',
+        platform: null,
+        retryability: 'caller-decides'
+      }
+    }
+    let finishRetry
+    const retry = new Promise(resolve => {
+      finishRetry = resolve
+    })
+    const harness = await createPumpHarness({
+      scanStart: { handle: 'owned-scan', plan: {} },
+      scanStop: attempt => (attempt === 1 ? { state: 'release-failed', failures: [failure] } : retry),
+      release: attempt =>
+        attempt < 3 ? { state: 'release-failed', failures: [failure] } : { state: 'released', failures: [] }
+    })
+    await expect(harness.ipc.scan({})).rejects.toBeInstanceOf(AggregateError)
+    expect(harness.scanStopAttempts()).toBe(1)
+    const firstDestroy = harness.ipc.destroy().catch(error => error)
+    for (let turn = 0; turn < 20 && harness.scanStopAttempts() < 2; turn += 1) await Promise.resolve()
+    expect(harness.scanStopAttempts()).toBe(2)
+    await firstDestroy
+    await harness.ipc.destroy().catch(() => undefined)
+    expect(harness.scanStopAttempts()).toBe(2)
+    finishRetry({ state: 'released', failures: [] })
+    await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(harness.scanStopAttempts()).toBe(2)
+  })
+
   test('failed automatic scan stop retries across refused lease release and settles after a successful retry', async () => {
     const failure = {
       resourceKind: 'scan',

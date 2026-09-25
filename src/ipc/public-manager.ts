@@ -147,6 +147,7 @@ export class IpcPublicManagerAdapter implements BleManager {
   private readonly requireScanPlan: boolean
   private readonly gattDeliverySelection: 'unknown' | 'controllable'
   private readonly provisionalSubscriptions = new ProvisionalGattSubscriptionOwner()
+  private readonly activeScanSessions = new Set<IpcPublicScanSession>()
   private provisionalCleanupDiagnostic: unknown | null = null
 
   constructor(
@@ -202,15 +203,18 @@ export class IpcPublicManagerAdapter implements BleManager {
         )
       }
       const state = createScanState()
-      return new IpcPublicScanSession(
+      const publicSession = new IpcPublicScanSession(
         session,
         mapPublicBoundedAsyncStream(
           filterScanObservations(session.observations, normalizedQuery, options.duplicates ?? 'coalesced'),
           observation => observation
         ),
         state,
-        options
+        options,
+        () => this.activeScanSessions.delete(publicSession)
       )
+      this.activeScanSessions.add(publicSession)
+      return publicSession
     } catch (error) {
       throw rehydratePublicError(error)
     }
@@ -344,6 +348,7 @@ export class IpcPublicManagerAdapter implements BleManager {
       if (drain.error !== undefined) this.provisionalCleanupDiagnostic = drain.error
     }
     if (leaseCleanup?.state === 'released') {
+      for (const scan of [...this.activeScanSessions]) scan.confirmParentRelease()
       this.provisionalSubscriptions.confirmManagerRelease()
       this.provisionalCleanupDiagnostic = null
     }
@@ -395,14 +400,21 @@ class IpcPublicScanSession implements ScanSession {
   private readonly timeoutHandle: ReturnType<typeof setTimeout> | null
   private readonly abortSignal: AbortSignal | null
   private readonly abortHandler: (() => void) | null
+  private readonly parentRelease: Promise<PublicCleanupRecord>
+  private resolveParentRelease!: (cleanup: PublicCleanupRecord) => void
+  private parentReleased = false
 
   constructor(
     private readonly inner: import('./manager').IpcScanSession,
     readonly observations: PublicBoundedAsyncStream<PublicScanObservation>,
     private readonly scanState: ScanStateController,
-    options: ScanOptions
+    options: ScanOptions,
+    private readonly onRetired: () => void
   ) {
     this.plan = inner.plan
+    this.parentRelease = new Promise(resolve => {
+      this.resolveParentRelease = resolve
+    })
     const stopAutomatically = () => {
       this.stop().catch(() => undefined)
     }
@@ -419,9 +431,24 @@ class IpcPublicScanSession implements ScanSession {
 
   stop(): Promise<PublicCleanupRecord> {
     if (this.stopPromise !== null) return this.stopPromise
+    if (this.parentReleased) return Promise.resolve({ state: 'released', failures: [] })
     const result = this.stopInternal()
     this.stopPromise = result
     return result
+  }
+
+  confirmParentRelease(): void {
+    if (this.parentReleased) return
+    this.parentReleased = true
+    if (this.timeoutHandle !== null) globalThis.clearTimeout(this.timeoutHandle)
+    if (this.abortSignal !== null && this.abortHandler !== null) {
+      this.abortSignal.removeEventListener('abort', this.abortHandler)
+    }
+    if (!this.deliveryEnded) this.scanState.emit({ state: 'stopped' })
+    this.deliveryEnded = true
+    this.scanState.close()
+    this.resolveParentRelease({ state: 'released', failures: [] })
+    this.onRetired()
   }
 
   private noteDeliveryEnded(reason: StreamTerminalNotice['reason']): void {
@@ -437,13 +464,17 @@ class IpcPublicScanSession implements ScanSession {
     }
     if (!this.deliveryEnded) this.scanState.emit({ state: 'stopping' })
     try {
-      const cleanup = await rehydratePublicPromise(this.inner.stop()).then(toPublicCleanupRecord)
+      const cleanup = await Promise.race([
+        rehydratePublicPromise(this.inner.stop()).then(toPublicCleanupRecord),
+        this.parentRelease
+      ])
       if (cleanup.state === 'released') {
         if (!this.deliveryEnded) this.scanState.emit({ state: 'stopped' })
       } else {
         this.scanState.emit({ state: 'failed', reason: 'scan-stop-failed' })
       }
       this.scanState.close()
+      if (cleanup.state === 'released') this.onRetired()
       if (cleanup.state === 'release-failed') this.stopPromise = null
       return cleanup
     } catch (error) {

@@ -411,6 +411,148 @@ async fn cleanup_only_scan_is_stopped_before_immediate_replacement_admission() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelling_replacement_while_old_scan_cleanup_is_held_settles_before_cleanup() {
+    let starts = Arc::new(AtomicU64::new(0));
+    let stops = Arc::new(AtomicU64::new(0));
+    let observed_starts = Arc::clone(&starts);
+    let observed_stops = Arc::clone(&stops);
+    let radio = Scripted::new(Box::new(move |request| match request {
+        RadioRequest::StartScan { .. } => {
+            if observed_starts.fetch_add(1, Ordering::SeqCst) == 0 {
+                Reply::Hold
+            } else {
+                Reply::Now(RadioCompletion::Unit)
+            }
+        }
+        RadioRequest::StopScan { .. } => {
+            if observed_stops.fetch_add(1, Ordering::SeqCst) == 0 {
+                Reply::Now(RadioCompletion::Failed(PlatformFailure::new(
+                    FailureKind::Platform,
+                    "first compensation refused",
+                )))
+            } else {
+                Reply::Hold
+            }
+        }
+        other => polar_responder(other),
+    }));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let first = host.open_session("first").unwrap();
+    let initial = tokio::spawn({
+        let first = first.clone();
+        async move {
+            call(
+                &first,
+                "scan.start",
+                &json!({"serviceUuids": [], "duplicatePolicy": "all", "operationId": "first"})
+                    .to_string(),
+            )
+            .await
+        }
+    });
+    wait_for(|| !radio.held_of(RequestKind::StartScan).is_empty()).await;
+    ok(&call(
+        &first,
+        "op.cancel",
+        &json!({"operationId": "first"}).to_string(),
+    )
+    .await);
+    // Admit the contender while the first generation still holds the scan
+    // lock. The orphan does not exist yet; it is created only after the
+    // held start completes and its compensation is refused.
+    let replacement = host.open_session("replacement").unwrap();
+    let (replacement_tx, replacement_rx) = tokio::sync::oneshot::channel();
+    replacement.invoke(
+        "scan.start",
+        &admitted_args(
+            &replacement,
+            "scan.start",
+            &json!({"serviceUuids": [], "duplicatePolicy": "all", "operationId": "replacement"})
+                .to_string(),
+        ),
+        Box::new(move |answer| {
+            let _ = replacement_tx.send(answer);
+        }),
+    );
+    for id in radio.held_of(RequestKind::StartScan) {
+        radio.answer(id, RadioCompletion::Unit);
+    }
+    assert_eq!(
+        failure(&initial.await.unwrap()).0["code"],
+        "operation.aborted"
+    );
+
+    wait_for(|| !radio.held_of(RequestKind::StopScan).is_empty()).await;
+    assert_eq!(
+        radio.count(RequestKind::StartScan),
+        1,
+        "no replacement start yet"
+    );
+    ok(&call(
+        &replacement,
+        "op.cancel",
+        &json!({"operationId": "replacement"}).to_string(),
+    )
+    .await);
+    let answer = tokio::time::timeout(Duration::from_millis(100), replacement_rx)
+        .await
+        .expect("cancelled admission must answer while old cleanup remains held")
+        .unwrap();
+    assert_eq!(failure(&answer).0["code"], "operation.aborted");
+    assert_eq!(
+        radio.count(RequestKind::StartScan),
+        1,
+        "cancelled replacement never starts"
+    );
+
+    let third = host.open_session("third").unwrap();
+    let third_start = tokio::spawn({
+        let third = third.clone();
+        async move {
+            call(
+                &third,
+                "scan.start",
+                &json!({"serviceUuids": [], "duplicatePolicy": "all", "operationId": "third"})
+                    .to_string(),
+            )
+            .await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(
+        radio.count(RequestKind::StartScan),
+        1,
+        "old stop still fences the next start"
+    );
+    for id in radio.held_of(RequestKind::StopScan) {
+        radio.answer(id, RadioCompletion::Unit);
+    }
+    let membership = ok(&third_start.await.unwrap())["operationId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(radio.count(RequestKind::StartScan), 2, "fresh native start");
+    // The old scan's stop was completed by the original cleanup waiter, not
+    // abandoned on cancellation. Stop the new generation explicitly.
+    let stop = tokio::spawn({
+        let third = third.clone();
+        async move {
+            call(
+                &third,
+                "scan.stop",
+                &json!({"operationId": membership}).to_string(),
+            )
+            .await
+        }
+    });
+    wait_for(|| radio.count(RequestKind::StopScan) == 3).await;
+    for id in radio.held_of(RequestKind::StopScan) {
+        radio.answer(id, RadioCompletion::Unit);
+    }
+    ok(&stop.await.unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn failed_cleanup_only_admission_retains_the_old_generation_for_retry() {
     let starts = Arc::new(AtomicU64::new(0));
     let stops = Arc::new(AtomicU64::new(0));

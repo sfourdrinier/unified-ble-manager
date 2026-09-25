@@ -1397,11 +1397,84 @@ impl MobileSession {
                     service_uuids,
                     device_addresses,
                 };
-                if let Err(error) = self
-                    .host
-                    .join_scan(self.state.id, member, android, ctl)
-                    .await
-                {
+                // Reconciliation can be waiting on a different ticket's
+                // cleanup-only scan stop. Cancellation of this admission
+                // must answer promptly, but dropping join_scan would abandon
+                // the old generation's cleanup authority and scan lock. A
+                // normal scan keeps its original completion boundary, where
+                // post-start compensation must finish before replying.
+                let cancel = ctl.ticket.clone();
+                let join_host = Arc::clone(&self.host);
+                let session_id = self.state.id;
+                let (joined_tx, mut joined_rx) = tokio::sync::oneshot::channel();
+                let (orphan_tx, mut orphan_rx) = tokio::sync::oneshot::channel();
+                self.host.runtime.spawn(async move {
+                    let result = join_host
+                        .join_scan(session_id, member, android, ctl, orphan_tx)
+                        .await;
+                    let _ = joined_tx.send(result);
+                });
+                // The host publishes this signal from inside the scan lock,
+                // at the exact cleanup-only branch. No read-then-join gap can
+                // classify an orphan created by a competing operation as a
+                // normal scan start.
+                let before_orphan = tokio::select! {
+                    biased;
+                    joined = &mut joined_rx => Some(joined),
+                    signalled = &mut orphan_rx => {
+                        if signalled.is_ok() { None } else { Some((&mut joined_rx).await) }
+                    }
+                };
+                let joined = if let Some(joined) = before_orphan {
+                    joined
+                } else {
+                    tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => {
+                        let host = Arc::clone(&self.host);
+                        let state = Arc::clone(&self.state);
+                        let abandoned_membership = membership.clone();
+                        self.host.runtime.spawn(async move {
+                            // A cancelled waiter still owns the outcome of
+                            // the in-flight admission. If it somehow joined
+                            // at the cancellation boundary, retire that
+                            // membership; failed stop stays visible in the
+                            // session slot for the ordinary disposal retry.
+                            let joined = joined_rx.await;
+                            if matches!(joined, Ok(Ok(()))) {
+                                {
+                                    let mut slot = lock(&state.scan);
+                                    if slot.membership() == Some(abandoned_membership.as_str()) {
+                                        *slot = ScanSlot::Active {
+                                            membership: abandoned_membership.clone(),
+                                        };
+                                    }
+                                }
+                                if host.leave_scan(session_id, OpControl::unbounded()).await.is_ok() {
+                                    state.clear_scan(&abandoned_membership);
+                                }
+                            } else {
+                                state.clear_scan(&abandoned_membership);
+                            }
+                        });
+                        return Err(error(
+                            BleErrorCode::OperationAborted,
+                            BleErrorDomain::Scan,
+                            "scan.start",
+                        ));
+                    }
+                    joined = &mut joined_rx => joined,
+                    }
+                };
+                let joined = joined.unwrap_or_else(|_| {
+                    Err(error(
+                        BleErrorCode::ScanStartFailed,
+                        BleErrorDomain::Scan,
+                        "scan.start",
+                    )
+                    .with_detail("scan admission task ended without an outcome"))
+                });
+                if let Err(error) = joined {
                     let mut slot = lock(&self.state.scan);
                     if slot.membership() == Some(membership.as_str()) {
                         *slot = ScanSlot::Idle;

@@ -2,6 +2,33 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.0.0-rc.10] - 2026-09-25 (prerelease)
+
+This candidate addresses the three release-relevant findings in the rc.9
+review and qualifies the additional mobile cancellation scenario. It does not
+promote any backend support label or claim physical-radio qualification.
+
+### Lifecycle and cleanup
+
+- Confirmed parent release settles in-flight public scan stops and closes scan
+  state streams on both in-process and IPC managers. Failed local iterator
+  cleanup remains visible and retryable; a failed parent release retains child
+  ownership. A failed GATT acquisition waiting in provisional compensation
+  rejects with its original error once the parent authoritatively releases.
+- IPC cleanup retries remain single-flight across bounded destroy attempts,
+  including raw malformed-plan compensation. Late completion cannot recreate
+  lease-owned debt after the parent has released.
+- Mobile scan admission remains cancellation-aware while a prior cleanup-only
+  physical scan stop is held. The host continues that cleanup and fences fresh
+  native starts; the caller does not wait behind the unrelated cleanup ticket.
+
+### Stream accounting
+
+- IPC reports saved upstream loss even when only its pending overflow control
+  was displaced. The notice preserves the upstream policy and cumulative
+  counters without adding the same loss twice; local-only pending loss keeps
+  its `drop-oldest` policy.
+
 ## [5.0.0-rc.9] - 2026-09-24 (prerelease)
 
 This candidate addresses all six findings in the public rc.8 review. It does

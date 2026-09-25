@@ -545,12 +545,13 @@ describe('public stream follow-up boundaries', () => {
       for (let turn = 0; turn < 20 && internal.destroy.mock.calls.length === 0; turn += 1) await Promise.resolve()
       expect(internal.destroy).toHaveBeenCalledTimes(1)
       await expect(destroying).resolves.toMatchObject({ state: leaseState })
+      if (leaseState === 'released') {
+        await expect(subscribeOutcome).resolves.toMatchObject({ code: 'protocol.malformed' })
+      }
       releaseCleanup(
         leaseState === 'released' ? cleanupRecord('late-provisional') : { state: 'released', failures: [] }
       )
-      if (leaseState === 'released') {
-        await expect(subscribeOutcome).resolves.toBeInstanceOf(AggregateError)
-      } else {
+      if (leaseState === 'release-failed') {
         await expect(subscribeOutcome).resolves.toMatchObject({ code: 'protocol.malformed' })
       }
       if (leaseState === 'release-failed') {
@@ -674,6 +675,77 @@ describe('public stream follow-up boundaries', () => {
       }
     }
   )
+
+  test.each(['resolve', 'reject'])(
+    'released parent settles an in-flight scan stop and ignores its late %s',
+    async lateOutcome => {
+      let settleStop
+      const stopGate = new Promise((resolve, reject) => {
+        settleStop = lateOutcome === 'resolve' ? resolve : reject
+      })
+      const nativeStop = jest.fn(() => stopGate)
+      const source = new CoreBoundedStream(limits(2, 64, 1), 'drop-oldest')
+      const internal = {
+        identity: null,
+        attachedBackend: undefined,
+        supports: () => true,
+        capability: () => null,
+        capabilities: () => [],
+        scan: jest.fn(async () => ({ observations: source, stop: nativeStop })),
+        connect: jest.fn(),
+        destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+      }
+      const manager = await require('../src/public/ble-manager').createPublicBleManager(internal, () => 0)
+      const scan = await manager.scan()
+      const states = scan.state[Symbol.asyncIterator]()
+      await expect(states.next()).resolves.toMatchObject({ value: { state: 'active' } })
+      const stopping = scan.stop()
+      await expect(states.next()).resolves.toMatchObject({ value: { state: 'stopping' } })
+      await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+      await expect(stopping).resolves.toEqual({ state: 'released', failures: [] })
+      await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+      await expect(states.next()).resolves.toMatchObject({ value: { state: 'stopped' } })
+      await expect(states.next()).resolves.toMatchObject({ done: true })
+      expect(nativeStop).toHaveBeenCalledTimes(1)
+      settleStop(lateOutcome === 'resolve' ? { state: 'released', failures: [] } : new Error('late native stop'))
+      await Promise.resolve()
+      expect(nativeStop).toHaveBeenCalledTimes(1)
+    }
+  )
+
+  test('parent release does not disguise a failed local scan iterator return', async () => {
+    const localError = new Error('local iterator return failed')
+    const sourceReturn = jest.fn().mockRejectedValueOnce(localError).mockResolvedValue({ done: true, value: undefined })
+    const source = {
+      limits: limits(2, 64, 1),
+      overflowPolicy: 'drop-oldest',
+      [Symbol.asyncIterator]: () => ({
+        next: () => new Promise(() => undefined),
+        return: sourceReturn
+      })
+    }
+    const nativeStop = jest.fn(async () => ({ state: 'released', failures: [] }))
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({ observations: source, stop: nativeStop })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await require('../src/public/ble-manager').createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan()
+    scan.observations[Symbol.asyncIterator]().next()
+    await expect(manager.destroy()).rejects.toMatchObject({
+      errors: expect.arrayContaining([localError])
+    })
+    expect(sourceReturn).toHaveBeenCalledTimes(1)
+    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(sourceReturn).toHaveBeenCalledTimes(2)
+    expect(nativeStop).not.toHaveBeenCalled()
+  })
 
   test('public manager reports a late scan-stop rejection after a failed parent release', async () => {
     let rejectStop

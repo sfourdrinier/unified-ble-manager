@@ -175,6 +175,16 @@ export class ProvisionalGattSubscriptionOwner {
   private readonly pending = new Set<SubscriptionHandle>()
   private readonly scopes = new Map<SubscriptionHandle, string>()
   private readonly removals = new Map<SubscriptionHandle, Promise<CleanupRecord>>()
+  private readonly releasedCleanup: CleanupRecord = { state: 'released', failures: [] }
+  private released = false
+  private readonly parentRelease: Promise<CleanupRecord>
+  private confirmParentRelease!: (cleanup: CleanupRecord) => void
+
+  constructor() {
+    this.parentRelease = new Promise(resolve => {
+      this.confirmParentRelease = resolve
+    })
+  }
 
   hasPending(): boolean {
     return this.pending.size > 0
@@ -185,6 +195,7 @@ export class ProvisionalGattSubscriptionOwner {
     path: PortableCurrentCharacteristicPath,
     primaryError: unknown
   ): Promise<never> {
+    if (this.released) throw rehydratePublicError(primaryError)
     this.pending.add(subscription)
     this.scopes.set(subscription, provisionalScopeKey(path))
     return runWithCleanup(
@@ -211,15 +222,22 @@ export class ProvisionalGattSubscriptionOwner {
 
   /** A released manager lease is authoritative for every resource under it. */
   confirmManagerRelease(): void {
+    if (this.released) return
+    this.released = true
     this.pending.clear()
     this.scopes.clear()
     this.removals.clear()
+    this.confirmParentRelease(this.releasedCleanup)
   }
 
   private remove(subscription: SubscriptionHandle): Promise<CleanupRecord> {
+    if (this.released) return Promise.resolve(this.releasedCleanup)
     const inFlight = this.removals.get(subscription)
     if (inFlight !== undefined) return inFlight
-    const attempt = rehydrateCleanup(Promise.resolve().then(() => subscription.remove())).then(cleanup => {
+    const attempt = Promise.race([
+      rehydrateCleanup(Promise.resolve().then(() => (this.released ? this.releasedCleanup : subscription.remove()))),
+      this.parentRelease
+    ]).then(cleanup => {
       if (cleanup.state === 'released') {
         this.pending.delete(subscription)
         this.scopes.delete(subscription)

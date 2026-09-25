@@ -325,7 +325,7 @@ describe('Tauri/Electron H10 GATT database (finding 182)', () => {
             limits: { availability: { maximum: 1, minimum: null, unit: 'boolean' } }
           }))
         },
-        core: { contractRevision: 'C-UBM.0.1.2-DRAFT', implementationVersion: '5.0.0-rc.9' },
+        core: { contractRevision: 'C-UBM.0.1.2-DRAFT', implementationVersion: '5.0.0-rc.10' },
         renderer: { clientId: 'tauri-client-h10', windowScope: 'main', sessionScope: 'session-h10' },
         rendererLease: { leaseId: 'tauri-lease-h10', generation: 'tauri-lease-generation-h10' }
       }
