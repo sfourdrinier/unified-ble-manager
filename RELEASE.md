@@ -130,8 +130,10 @@ failure; single-flight cleanup retry across repeated bounded destroy;
 control-only overflow displacement with source-policy preservation; and
 cancellation during cleanup-only shared-scan reconciliation, including the
 orphan-created-after-admission interleaving. Refresh the sealed Android
-prebuilts and expected native identity after Rust changes. These checks do
-not constitute physical-radio qualification.
+prebuilts and expected native identity after Rust changes. The mobile
+golden-wire test must attach its listener before injecting live restoration;
+pre-session restoration is validated through the durable claim path. These
+checks do not constitute physical-radio qualification.
 
 ## Releasing 5.0.0-rc.9
 
