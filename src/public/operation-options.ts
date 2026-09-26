@@ -41,6 +41,21 @@ export interface NormalizedOperationOptions {
   readonly deadline: Deadline | null
 }
 
+/** Reuse one operation's deadline when a convenience helper starts its next phase. */
+export function remainingOperationOptions(
+  operation: NormalizedOperationOptions,
+  now: () => number,
+  timeoutPath: string
+): OperationOptions {
+  if (operation.deadline === null) return { signal: operation.signal ?? undefined }
+  const remainingMs = operation.deadline - now()
+  if (remainingMs <= 0) throw contractError('operation.timed-out', 'connection', timeoutPath)
+  return {
+    signal: operation.signal ?? undefined,
+    timeoutMs: Math.max(1, Math.trunc(remainingMs))
+  }
+}
+
 /**
  * Centralized application option normalization.
  *

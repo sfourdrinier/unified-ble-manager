@@ -72,7 +72,7 @@ import {
 import type { GattDatabase } from '../public/gatt'
 import type { BleDiagnostics } from '../public/diagnostics'
 import { diagnosticsUnavailable } from '../public/diagnostics'
-import { normalizeOperationOptions } from '../public/operation-options'
+import { normalizeOperationOptions, remainingOperationOptions } from '../public/operation-options'
 import type { OperationOptions } from '../public/operation-options'
 import { normalizeScanQuery, scanQueryTargetsAddresses } from '../public/scan-query'
 import { bindScanSourceTerminal, createScanState, projectScanDeliveryTerminal } from '../public/scan-state'
@@ -315,8 +315,15 @@ export class IpcPublicManagerAdapter implements BleManager {
       readonly gatt: GattDatabase
     }) => Promise<T>
   ): Promise<T> {
+    const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
     return this.withConnection(peer, options, async connection => {
-      const gatt = await connection.discover(options)
+      const gatt = await connection.discover(
+        remainingOperationOptions(
+          normalized,
+          () => globalThis.performance.now(),
+          'ipc-public-manager.with-discovered-connection'
+        )
+      )
       return action(Object.freeze({ connection, gatt }))
     })
   }

@@ -34,6 +34,50 @@ fn filtered_scan_args(op: &str) -> String {
     json!({"serviceUuids": [HR_SERVICE], "duplicatePolicy": "all", "operationId": op}).to_string()
 }
 
+/// A scan start spawned for cancellation-safe admission is still the caller's
+/// operation. While its native request is held, both per-session counters
+/// must classify it as dispatched rather than queued.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn spawned_scan_start_counts_as_the_callers_dispatched_radio_request() {
+    let radio = Scripted::new(Box::new(|request| match request {
+        RadioRequest::StartScan { .. } => Reply::Hold,
+        other => polar_responder(other),
+    }));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("rn").unwrap();
+    let pending = tokio::spawn({
+        let session = session.clone();
+        async move { call(&session, "scan.start", &scan_args("scan")).await }
+    });
+    wait_for(|| !radio.held_of(RequestKind::StartScan).is_empty()).await;
+
+    let busy = ok(&call(&session, "counters.describe", "{}").await);
+    assert_eq!(busy["counters"]["queuedOperations"], 0, "{busy}");
+    assert_eq!(busy["counters"]["dispatchedOperations"], 1, "{busy}");
+    assert_eq!(busy["native"]["pendingRadioRequests"], 1, "{busy}");
+    assert_eq!(
+        busy["process"]["native"]["pendingRadioRequests"], 1,
+        "{busy}"
+    );
+
+    for id in radio.held_of(RequestKind::StartScan) {
+        radio.answer(id, RadioCompletion::Unit);
+    }
+    let membership = ok(&pending.await.unwrap())["operationId"]
+        .as_str()
+        .expect("membership")
+        .to_owned();
+    ok(&call(
+        &session,
+        "scan.stop",
+        &json!({"operationId": membership}).to_string(),
+    )
+    .await);
+    let settled = ok(&call(&session, "counters.describe", "{}").await);
+    assert_eq!(settled["counters"]["dispatchedOperations"], 0, "{settled}");
+    assert_eq!(settled["native"]["pendingRadioRequests"], 0, "{settled}");
+}
+
 /// V01: the widening start itself can succeed after the joining caller's
 /// deadline. If compensating stop succeeds, the previous physical scan is
 /// gone too, so every existing member receives a terminal instead of being
@@ -232,6 +276,20 @@ async fn r1_cancelled_queued_scan_start_leaves_no_membership() {
     // radio: still exactly one held start).
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(radio.held_of(RequestKind::StartScan).len(), 1);
+    let busy_a = ok(&call(&session_a, "counters.describe", "{}").await);
+    assert_eq!(busy_a["counters"]["dispatchedOperations"], 1, "{busy_a}");
+    assert_eq!(busy_a["native"]["pendingRadioRequests"], 1, "{busy_a}");
+    let queued_b = ok(&call(&session_b, "counters.describe", "{}").await);
+    assert_eq!(queued_b["counters"]["queuedOperations"], 1, "{queued_b}");
+    assert_eq!(
+        queued_b["counters"]["dispatchedOperations"], 0,
+        "{queued_b}"
+    );
+    assert_eq!(queued_b["native"]["pendingRadioRequests"], 0, "{queued_b}");
+    assert_eq!(
+        queued_b["process"]["native"]["pendingRadioRequests"], 1,
+        "{queued_b}"
+    );
     let ack = ok(&call(
         &session_b,
         "op.cancel",
@@ -292,6 +350,12 @@ async fn r1_expired_queued_scan_start_leaves_no_membership() {
     // B's budget expires while queued; only then release A.
     let (error, _) = failure(&b.await.unwrap());
     assert_eq!(error["code"], "operation.timed-out", "{error}");
+    let after_timeout = ok(&call(&session_b, "counters.describe", "{}").await);
+    assert_eq!(after_timeout["native"]["pendingRadioRequests"], 0);
+    assert_eq!(
+        after_timeout["process"]["native"]["pendingRadioRequests"],
+        1
+    );
     for id in radio.held_of(RequestKind::StartScan) {
         radio.answer(id, RadioCompletion::Unit);
     }

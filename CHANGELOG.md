@@ -2,6 +2,34 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.0.0-rc.11] - 2026-09-25 (prerelease)
+
+This candidate addresses the three P2 findings in the rc.10 review. It does
+not promote any backend support label or claim physical-radio qualification.
+
+### Lifecycle and consistency
+
+- An automatic scan-stop failure remains available as a diagnostic without
+  permanently contaminating later cleanup. Once native release and local
+  iterator cleanup succeed, the public scan registration retires and repeated
+  stop resolves; outstanding native or local cleanup failures remain visible.
+- Mobile scan admission carries its originating operation's radio-request
+  tracker into the spawned task. Session queued/dispatched and pending-request
+  diagnostics now account for the native scan request while preserving prompt
+  caller cancellation and continued orphan cleanup ownership.
+- IPC `withDiscoveredConnection` gives connect and discovery one acquisition
+  deadline, matching the in-process helper. Discovery receives only the
+  remaining budget; cancellation and exactly-once connection release remain
+  intact.
+
+### Release reliability
+
+- The tag workflow keeps a single bounded npm tarball-visibility retry budget
+  and extends it from 10 to 20 minutes. Invalid or not-yet-visible registry
+  metadata is retried without repeated stack traces. The rc.10 publish command
+  succeeded, but its 118 MB tarball became visible after the previous window;
+  the recovery run bound that registry artifact without republishing.
+
 ## [5.0.0-rc.10] - 2026-09-25 (prerelease)
 
 This candidate addresses the three release-relevant findings in the rc.9

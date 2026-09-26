@@ -530,8 +530,11 @@ jobs:
           REGISTRY_TARBALL_COPY="$(mktemp)"
           trap 'rm -f "${REGISTRY_TARBALL_COPY}"' EXIT
           REGISTRY_TARBALL_READY=false
-          for ATTEMPT in $(seq 1 120); do
-            if REGISTRY_TARBALL="$(npm view "unified-ble-manager@${VER}" dist.tarball --json 2>/dev/null | node -e "let body = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => { body += chunk }); process.stdin.on('end', () => { const value = JSON.parse(body); if (typeof value !== 'string' || !value.startsWith('https://')) { throw new Error('npm dist.tarball must be an HTTPS URL'); } process.stdout.write(value) })")" && \
+          # npm accepted rc.10 but took longer than ten minutes to expose its
+          # 118 MB tarball. Give processing twenty minutes, still bounded.
+          TARBALL_MAX_ATTEMPTS=240
+          for ATTEMPT in $(seq 1 "${TARBALL_MAX_ATTEMPTS}"); do
+            if REGISTRY_TARBALL="$(npm view "unified-ble-manager@${VER}" dist.tarball --json 2>/dev/null | node -e "let body = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => { body += chunk }); process.stdin.on('end', () => { const value = JSON.parse(body); if (typeof value !== 'string' || !value.startsWith('https://')) { process.exitCode = 1; return; } process.stdout.write(value) })")" && \
               curl --fail --location --silent --show-error --proto '=https' \
                 --output "${REGISTRY_TARBALL_COPY}" \
                 "${REGISTRY_TARBALL}" && \
@@ -539,7 +542,7 @@ jobs:
               REGISTRY_TARBALL_READY=true
               break
             fi
-            echo "npm registry tarball is not downloadable yet (attempt ${ATTEMPT}/120)"
+            echo "npm registry tarball is not downloadable yet (attempt ${ATTEMPT}/${TARBALL_MAX_ATTEMPTS})"
             sleep 5
           done
           if [ "${REGISTRY_TARBALL_READY}" != true ]; then

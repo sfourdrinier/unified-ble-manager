@@ -134,6 +134,103 @@ function setup(readinessState) {
 }
 
 describe('IPC public connection controls', () => {
+  describe('withDiscoveredConnection shares one deadline across connect and discover', () => {
+    let now
+
+    beforeEach(() => {
+      now = 1_000
+      jest.spyOn(globalThis.performance, 'now').mockImplementation(() => now)
+    })
+
+    afterEach(() => jest.restoreAllMocks())
+
+    function fixture(onConnect = () => undefined, onDiscover = () => undefined) {
+      const calls = { connect: [], discover: [], release: 0, action: 0 }
+      const capabilitySnapshot = capabilities()
+      const base = {
+        handle: 'connection-handle-1',
+        peerId: 'peer-1',
+        attachmentId: 'attachment-1',
+        connectionId: 'connection-1',
+        ownerLeaseId: 'lease-1',
+        connectionGeneration: 'connection-generation-1',
+        events: emptyEvents(),
+        discover: async options => {
+          calls.discover.push(options)
+          await onDiscover(options)
+          return database('generation-1')
+        },
+        release: async () => {
+          calls.release += 1
+          return { state: 'released', failures: [] }
+        }
+      }
+      const ipc = {
+        capabilities: capabilitySnapshot,
+        bootstrap: { discovery: { kind: 'continuous-scan' } },
+        connect: async (_peerId, options) => {
+          calls.connect.push(options)
+          await onConnect()
+          return base
+        }
+      }
+      const manager = new IpcPublicManagerAdapter(ipc, {
+        capabilities: capabilitySnapshot,
+        adapter: { id: 'adapter-1', state: async () => ({}), waitUntilReady: async () => ({}) }
+      })
+      const action = async () => {
+        calls.action += 1
+        return 'done'
+      }
+      return { manager, calls, action }
+    }
+
+    test('passes only the remaining budget to discover after a partial connect', async () => {
+      const { manager, calls, action } = fixture(() => { now = 1_400 })
+      await expect(manager.withDiscoveredConnection('peer-1', { timeoutMs: 1_000 }, action)).resolves.toBe('done')
+      expect(calls.connect[0].deadline).toBe(2_000)
+      expect(calls.discover[0].deadline).toBe(2_000)
+      expect(calls.release).toBe(1)
+      expect(calls.action).toBe(1)
+    })
+
+    test('does not start discovery when connection consumes the budget', async () => {
+      const { manager, calls, action } = fixture(() => { now = 2_000 })
+      await expect(manager.withDiscoveredConnection('peer-1', { timeoutMs: 1_000 }, action)).rejects.toMatchObject({
+        normalized: { code: 'operation.timed-out' }
+      })
+      expect(calls.discover).toHaveLength(0)
+      expect(calls.release).toBe(1)
+      expect(calls.action).toBe(0)
+    })
+
+    test('preserves cancellation through discovery and releases once', async () => {
+      const controller = new AbortController()
+      const { manager, calls, action } = fixture(
+        () => { now = 1_200 },
+        options => {
+          expect(options.signal).toBe(controller.signal)
+          controller.abort()
+          throw new Error('discovery cancelled')
+        }
+      )
+      await expect(manager.withDiscoveredConnection('peer-1', { timeoutMs: 1_000, signal: controller.signal }, action))
+        .rejects.toThrow('discovery cancelled')
+      expect(calls.discover[0].deadline).toBe(2_000)
+      expect(calls.release).toBe(1)
+      expect(calls.action).toBe(0)
+    })
+
+    test('keeps the full budget after a fast connect and no deadline when omitted', async () => {
+      const { manager, calls, action } = fixture()
+      await expect(manager.withDiscoveredConnection('peer-1', { timeoutMs: 1_000 }, action)).resolves.toBe('done')
+      await expect(manager.withDiscoveredConnection('peer-1', {}, action)).resolves.toBe('done')
+      expect(calls.discover.map(options => options.deadline)).toEqual([2_000, null])
+      expect(calls.release).toBe(2)
+      expect(calls.action).toBe(2)
+    })
+  })
+
   test('P1-09 connect forwards the normalized deadline instead of restarting timeoutMs', async () => {
     const captured = []
     const capabilitySnapshot = capabilities()

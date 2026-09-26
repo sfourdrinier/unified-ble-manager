@@ -499,6 +499,16 @@ async fn cancelling_replacement_while_old_scan_cleanup_is_held_settles_before_cl
         .expect("cancelled admission must answer while old cleanup remains held")
         .unwrap();
     assert_eq!(failure(&answer).0["code"], "operation.aborted");
+    // The cancelled waiter has settled; the old generation's cleanup is now
+    // process-owned work. It must remain visible in process radio counters
+    // until the held native stop actually answers, without misreporting a
+    // live request on the cancelled session.
+    let while_cleanup = ok(&call(&replacement, "counters.describe", "{}").await);
+    assert_eq!(while_cleanup["native"]["pendingRadioRequests"], 0);
+    assert_eq!(
+        while_cleanup["process"]["native"]["pendingRadioRequests"],
+        1
+    );
     assert_eq!(
         radio.count(RequestKind::StartScan),
         1,
@@ -531,6 +541,11 @@ async fn cancelling_replacement_while_old_scan_cleanup_is_held_settles_before_cl
         .as_str()
         .unwrap()
         .to_owned();
+    let after_cleanup = ok(&call(&replacement, "counters.describe", "{}").await);
+    assert_eq!(
+        after_cleanup["process"]["native"]["pendingRadioRequests"],
+        0
+    );
     assert_eq!(radio.count(RequestKind::StartScan), 2, "fresh native start");
     // The old scan's stop was completed by the original cleanup waiter, not
     // abandoned on cancellation. Stop the new generation explicitly.

@@ -33,9 +33,11 @@ describe('release retry safety', () => {
   test('allows bounded npm processing delays for metadata and provenance', () => {
     const workflow = read('.github/workflows/publish.yml')
 
-    expect(workflow.match(/for ATTEMPT in \$\(seq 1 120\)/g)).toHaveLength(3)
+    expect(workflow).toContain('TARBALL_MAX_ATTEMPTS=240')
+    expect(workflow).toContain('for ATTEMPT in $(seq 1 "${TARBALL_MAX_ATTEMPTS}")')
+    expect(workflow.match(/for ATTEMPT in \$\(seq 1 120\)/g)).toHaveLength(2)
     expect(workflow).not.toContain('for ATTEMPT in $(seq 1 36)')
-    expect(workflow.match(/attempt \$\{ATTEMPT\}\/120/g)).toHaveLength(3)
+    expect(workflow.match(/attempt \$\{ATTEMPT\}\/120/g)).toHaveLength(2)
   })
 
   test('published reruns bypass current-main publication admission and reuse immutable npm bytes', () => {
@@ -66,7 +68,10 @@ describe('release retry safety', () => {
     expect(tarballBinding).toContain('curl --fail --location --silent --show-error')
     expect(tarballBinding).toContain('test -s "${REGISTRY_TARBALL_COPY}"')
     expect(tarballBinding).toContain('REGISTRY_TARBALL_READY=true')
-    expect(tarballBinding).toContain('npm registry tarball is not downloadable yet (attempt ${ATTEMPT}/120)')
+    expect(tarballBinding).toContain(
+      'npm registry tarball is not downloadable yet (attempt ${ATTEMPT}/${TARBALL_MAX_ATTEMPTS})'
+    )
+    expect(tarballBinding).toContain('process.exitCode = 1')
     expect(tarballBinding).toContain('npm registry tarball did not become downloadable within the bounded retry window')
     expect(tarballBinding.indexOf('curl --fail')).toBeLessThan(
       tarballBinding.indexOf('npm registry tarball is not downloadable yet')
