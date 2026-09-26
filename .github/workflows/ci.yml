@@ -667,7 +667,7 @@ jobs:
           java-version: 21
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v4.0.1
+        uses: android-actions/setup-android@v4.0.4
         with:
           # Default is 'tools platform-tools'; the obsolete `tools` package
           # no longer exists upstream and fails install on new cmdline-tools.
@@ -752,7 +752,7 @@ jobs:
           java-version: 21
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v4.0.1
+        uses: android-actions/setup-android@v4.0.4
         with:
           # Default is 'tools platform-tools'; the obsolete `tools` package
           # no longer exists upstream and fails install on new cmdline-tools.
