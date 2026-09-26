@@ -64,7 +64,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Install Tauri Linux system dependencies
         if: runner.os == 'Linux'
@@ -114,7 +114,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Setup Python for native Node22 builds
         if: (runner.os == 'macOS' || runner.os == 'Windows') && matrix.node == '22'
@@ -573,7 +573,7 @@ jobs:
       apple: ${{ steps.filter.outputs.apple }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Filter paths
         # Latest: https://github.com/dorny/paths-filter/releases (v4 = Node 24 runtime)
@@ -655,7 +655,7 @@ jobs:
       UBM_NATIVE_BUILD: source
     steps:
       - name: Checkout
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Setup JS package
         uses: ./.github/actions/setup-js-package
@@ -740,7 +740,7 @@ jobs:
       UBM_NATIVE_BUILD: source
     steps:
       - name: Checkout
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Setup JS package
         uses: ./.github/actions/setup-js-package
