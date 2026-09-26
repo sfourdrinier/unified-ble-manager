@@ -132,7 +132,7 @@ function bootstrap(effectiveMtuEntry) {
     // identity; fixtures simulate the lane plugin, not a legacy host.
     core: {
       contractRevision: 'C-UBM.0.1.2-DRAFT',
-      implementationVersion: '5.0.0-rc.11'
+      implementationVersion: '5.0.0-rc.12'
     },
     renderer: {
       clientId: 'tauri-client-1',
@@ -1424,7 +1424,7 @@ describe('Tauri shared-core admission (F01)', () => {
     const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
     const foreign = {
       ...bootstrap(),
-      core: { contractRevision: 'C-UBM.9.9.9-DRAFT', implementationVersion: '5.0.0-rc.11' }
+      core: { contractRevision: 'C-UBM.9.9.9-DRAFT', implementationVersion: '5.0.0-rc.12' }
     }
     const invoke = invokeWithBootstrap(foreign)
     await expect(createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })).rejects.toThrow(

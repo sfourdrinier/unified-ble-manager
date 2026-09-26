@@ -196,7 +196,9 @@ describe('Electron public manager façade', () => {
     }
     const result = await connection.release()
     expect(commands).toEqual(expect.arrayContaining(['connection.events.unsubscribe', 'connection.disconnect']))
-    expect(result.state).toBe('release-failed')
+    expect(result).toEqual({ state: 'released', failures: [] })
+    await expect(connection.release()).resolves.toEqual(result)
+    expect(commands.filter(command => command === 'connection.disconnect')).toHaveLength(1)
     await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
   })
 

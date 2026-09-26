@@ -9,7 +9,7 @@ The Rust plugin owns the radio (btleplug: CoreBluetooth, WinRT, or BlueZ). The w
 ## Install
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.11 @tauri-apps/api
+pnpm add unified-ble-manager@5.0.0-rc.12 @tauri-apps/api
 ```
 
 Use the Rust plugin source shipped in the same npm package. In the normal
@@ -120,6 +120,11 @@ Remote streams preserve bounded delivery and overflow notices. GATT objects are 
 **Discovery.** `gatt.discover` renders one characteristic record per characteristic — descriptor-level core rows repeat their characteristic's identity, so they never mint a second record — with the core's own occurrence numerals, the same grouping the Node desktop path applies; duplicate-UUID characteristics keep distinct per-UUID occurrences on every host. A rediscovery replaces the snapshot: the previous database goes stale (`gatt.stale-handle`). A snapshot that still violates the topology (duplicate service/characteristic/descriptor paths, orphan parents) fails with `protocol.violation` naming the offending path — uuids and occurrences — in the error's `platform` detail (`domain: 'gatt'`), never only a bare code.
 
 ## How the plugin runs operations
+
+The frontend shares Electron's [connection and GATT recovery contract](ELECTRON.md#connection-and-gatt-recovery):
+invalidation is immediate, cleanup ownership survives failure, and bounded
+child cleanup cannot prevent the scoped parent-release request. Local iterator
+cleanup remains distinct from confirmed native release.
 
 **IPC protocol version.** The webview and the plugin speak IPC protocol 4 and each offers exactly that version. Version 4 is the wire described on this page: relative `budgetMs` deadlines, `commit` on every error, `delivery` on subscriptions, forwarded connection-lifecycle events, and the attachment rebind after an adapter loss (see [Adapter](#adapter)). A pair where one side is older (protocol 3, the rebind-less 5.0 prerelease wire, or protocol 2, the earlier 5.0 release-candidate wire) is refused at bootstrap with `protocol.incompatible` before any operation runs, whichever side is older; the npm package and the crate must be upgraded together. `TAURI_PLUGIN_COMPATIBILITY.ipcProtocol` reports the version this package requires.
 

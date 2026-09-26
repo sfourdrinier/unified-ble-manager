@@ -2,6 +2,30 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.0.0-rc.12] - 2026-09-25 (prerelease)
+
+This candidate addresses the two P2 IPC recovery findings and the P3 replay
+finding in the rc.11 review. It does not promote any backend support label or
+claim physical-radio qualification.
+
+### IPC recovery and stream ownership
+
+- GATT invalidation makes the database unusable and publishes its cause before
+  awaiting subscription cleanup. Early-event replay establishes provisional
+  subscription ownership first; failed or racing cleanup remains tracked by
+  resource identity instead of clearing the live ownership set.
+- Connection release closes work admission immediately and bounds the child
+  cleanup drain before requesting the existing scoped parent release. Rejected
+  or unresponsive children cannot make that request unreachable. Confirmed
+  parent release settles its native obligations; refused release retains them
+  for retry, and local iterator failures remain distinct. Discovery's wait for
+  old database cleanup observes the original deadline and caller cancellation
+  without abandoning cleanup ownership.
+- Pending stream replay stops when its destination sink retires or is replaced.
+  One winning terminal schedules one owner-cleanup attempt, retaining upstream
+  loss counters and ordinary FIFO delivery. Failed cleanup remains retryable
+  without duplicate replay-generated ledger entries.
+
 ## [5.0.0-rc.11] - 2026-09-25 (prerelease)
 
 This candidate addresses the three P2 findings in the rc.10 review. It does

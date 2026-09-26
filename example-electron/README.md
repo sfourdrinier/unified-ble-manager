@@ -2,7 +2,7 @@
 
 # Electron deterministic L1 smoke
 
-This repository fixture verifies the packed 5.0.0-rc.11 contract surface without
+This repository fixture verifies the packed 5.0.0-rc.12 contract surface without
 claiming live Electron-radio support. It runs a deterministic scan, connect,
 discover, read, notify, and destroy journey through the packed package. It does
 not create an Electron application, load a native addon, or validate a physical
