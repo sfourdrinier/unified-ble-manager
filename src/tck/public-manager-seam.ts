@@ -28,9 +28,9 @@ export const PINNED_TS_REFERENCE = Object.freeze({
   kind: 'ts-reference',
   baseSha: '8c8195dd0430ff847d9492ce32f4e63ea3a5df1d',
   baseShortSha: '8c8195dd',
-  // Reviewed pin update for the 5.0.0-rc.10 release line (F01): the reference
+  // Reviewed pin update for the 5.0.0-rc.11 release line (F01): the reference
   // implementation advanced; the base snapshot is unchanged.
-  implementationVersion: '5.0.0-rc.10'
+  implementationVersion: '5.0.0-rc.11'
 })
 
 /**

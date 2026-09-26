@@ -311,6 +311,8 @@ describe('consumer documentation matches the published package', () => {
     expect(migration).not.toMatch(/optional bytes codemod/i)
 
     expect(release).toContain('Release branch: `main`')
+    expect(release).toContain('Current 5.0 prerelease npm dist-tag: `next`')
+    expect(release).not.toContain('active `4.0.0-rc.*` release-train candidates publish to `latest`')
     expect(release).toContain('Stable SemVer and platform support qualification are independent')
     expect(release).toContain('git tag -a v4.0.0')
     expect(release).not.toMatch(/publishes the \*\*4\.0 dual identity\*\*/i)

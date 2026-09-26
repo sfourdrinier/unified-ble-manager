@@ -27,7 +27,7 @@ import type {
   StreamTerminalNotice
 } from '../backend-contract/streams'
 import { CoreBoundedStream } from '../core/bounded-stream'
-import { normalizeOperationOptions } from './operation-options'
+import { normalizeOperationOptions, remainingOperationOptions } from './operation-options'
 import type { OperationOptions } from './operation-options'
 import { resolveStreamPolicy } from './stream-presets'
 import type { StreamBudget, StreamPolicy } from './stream-presets'
@@ -1602,7 +1602,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
   private readonly provisionalSubscriptions = new ProvisionalGattSubscriptionOwner()
   private readonly lateScanStopFailures: { readonly error?: unknown; readonly cleanup?: PublicCleanupRecord }[] = []
   private readonly lateProvisionalFailures: { readonly error?: unknown; readonly cleanup?: PublicCleanupRecord }[] = []
-  private readonly localCleanupTrace: { readonly event: string; readonly time: number }[] = []
+  private readonly localCleanupTrace: { readonly event: string; readonly time: number; readonly cause: string }[] = []
   private localCleanupTraceTruncated = false
   private destroyPromise: Promise<PublicCleanupRecord> | null = null
 
@@ -1682,14 +1682,12 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
         viewReleased: boolean
         nativeReleased: boolean
         stopPromise: Promise<PublicCleanupRecord> | null
-        pendingCleanupError: unknown | null
         localViewError: unknown | null
         deliveryEnded: boolean
       } = {
         viewReleased: false,
         nativeReleased: false,
         stopPromise: null,
-        pendingCleanupError: null,
         localViewError: null,
         deliveryEnded: false
       }
@@ -1703,7 +1701,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
       const reportNativeFailure = () => {
         if (!parentConfirmed || !nativeStopFailed || nativeFailureReported) return
         nativeFailureReported = true
-        this.recordLateChildFailure('manager.scan-stop.failed')
+        this.recordCleanupFailure('manager.scan-stop.failed')
       }
       let stopScan: (reason: PublicScanEventTerminalReason) => Promise<PublicCleanupRecord> = async () => ({
         state: 'released',
@@ -1719,7 +1717,13 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
         reportLostAfterMs,
         reason => {
           stopScan(reason).catch(error => {
-            stopState.pendingCleanupError = error
+            // This automatic attempt has already reported its failure. A
+            // later stop is a fresh cleanup attempt, not an obligation to
+            // replay the historical rejection after release succeeds.
+            this.recordCleanupFailure(
+              'manager.scan-stop.automatic-failed',
+              normalizedCleanupFailureCode(error) ?? 'scan.stop-failed'
+            )
             scanState.emit({ state: 'failed', reason: 'scan-stop-failed' })
           })
         },
@@ -1734,9 +1738,6 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
         if (!stopState.deliveryEnded) scanState.emit({ state: 'stopping' })
         const run = (async () => {
           const phases: { readonly error?: unknown; readonly cleanup?: BackendCleanupRecord }[] = []
-          if (stopState.pendingCleanupError !== null) {
-            phases.push({ error: stopState.pendingCleanupError })
-          }
           if (!stopState.viewReleased) {
             try {
               const view = await controller.closeView(reason)
@@ -1776,7 +1777,6 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
               if (!stopState.deliveryEnded) scanState.emit({ state: 'stopped' })
               scanState.close()
               this.activeScanSessions.delete(activeScan)
-              stopState.pendingCleanupError = null
             } else {
               scanState.emit({ state: 'failed', reason: 'scan-stop-failed' })
               scanState.close()
@@ -1984,15 +1984,9 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
   ): Promise<T> {
     const normalized = normalizeOperationOptions(options, this.now)
     return this.withConnection(peer, options, async connection => {
-      if (normalized.deadline !== null && this.now() >= normalized.deadline) {
-        throw contractError('operation.timed-out', 'connection', 'public-ble-manager.with-discovered-connection')
-      }
-      const remainingMs =
-        normalized.deadline === null ? undefined : Math.max(1, Math.trunc(normalized.deadline - this.now()))
-      const gatt = await connection.discover({
-        signal: options.signal,
-        ...(remainingMs === undefined ? {} : { timeoutMs: remainingMs })
-      })
+      const gatt = await connection.discover(
+        remainingOperationOptions(normalized, this.now, 'public-ble-manager.with-discovered-connection')
+      )
       return action(Object.freeze({ connection, gatt }))
     })
   }
@@ -2033,14 +2027,14 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
               cleanup => {
                 if (reportOpen) viewResults.push({ cleanup })
                 else if (cleanup.state !== 'released') {
-                  this.recordLateChildFailure('manager.scan-stop.late-failed')
+                  this.recordCleanupFailure('manager.scan-stop.late-failed')
                   if (!parentReleased) this.lateScanStopFailures.push({ cleanup })
                 }
               },
               error => {
                 if (reportOpen) viewResults.push({ error })
                 else {
-                  this.recordLateChildFailure('manager.scan-stop.late-failed')
+                  this.recordCleanupFailure('manager.scan-stop.late-failed')
                   if (!parentReleased) this.lateScanStopFailures.push({ error })
                 }
               }
@@ -2057,14 +2051,14 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
         cleanup => {
           if (reportOpen) provisionalResult = { cleanup }
           else if (cleanup.state !== 'released') {
-            this.recordLateChildFailure('manager.gatt-unsubscribe.late-failed')
+            this.recordCleanupFailure('manager.gatt-unsubscribe.late-failed')
             if (!parentReleased) this.lateProvisionalFailures.push({ cleanup })
           }
         },
         error => {
           if (reportOpen) provisionalResult = { error }
           else {
-            this.recordLateChildFailure('manager.gatt-unsubscribe.late-failed')
+            this.recordCleanupFailure('manager.gatt-unsubscribe.late-failed')
             if (!parentReleased) this.lateProvisionalFailures.push({ error })
           }
         }
@@ -2086,7 +2080,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
       reportOpen = false
       if (parentReleased) {
         if (cleanupPhaseFailed(provisionalResult)) {
-          this.recordLateChildFailure('manager.gatt-unsubscribe.failed')
+          this.recordCleanupFailure('manager.gatt-unsubscribe.failed')
         }
         this.provisionalSubscriptions.confirmManagerRelease()
       }
@@ -2117,9 +2111,9 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
     }
   }
 
-  private recordLateChildFailure(event: string): void {
+  private recordCleanupFailure(event: string, cause = 'cleanup.late-failed'): void {
     const sampled = this.now()
-    this.localCleanupTrace.push({ event, time: Number.isFinite(sampled) && sampled >= 0 ? sampled : 0 })
+    this.localCleanupTrace.push({ event, time: Number.isFinite(sampled) && sampled >= 0 ? sampled : 0, cause })
     if (this.localCleanupTrace.length > 64) {
       this.localCleanupTrace.shift()
       this.localCleanupTraceTruncated = true
@@ -2143,21 +2137,35 @@ function cleanupPhaseFailed(
   )
 }
 
+/** Trace only a normalized code; native/application error messages may be private. */
+function normalizedCleanupFailureCode(error: unknown): string | null {
+  if (error instanceof BleError) return error.code
+  if (error instanceof BackendContractError) return error.normalized.code
+  if (error instanceof BleCleanupError) return error.cleanup.failures[0]?.error.code ?? null
+  if (error instanceof AggregateError) {
+    for (const cause of error.errors) {
+      const code = normalizedCleanupFailureCode(cause)
+      if (code !== null) return code
+    }
+  }
+  return null
+}
+
 function appendLocalCleanupTrace(
   source: BleDiagnosticTraceDocument,
-  history: readonly { readonly event: string; readonly time: number }[],
+  history: readonly { readonly event: string; readonly time: number; readonly cause: string }[],
   historyTruncated: boolean
 ): BleDiagnosticTraceDocument {
   if (history.length === 0) return source
   const lastOrdinal = source.records[source.records.length - 1]?.ordinal ?? 0
   const renumber = lastOrdinal > Number.MAX_SAFE_INTEGER - history.length
   const local: DiagnosticTraceRecord[] = history.map(
-    ({ event, time }, index): DiagnosticTraceRecord => ({
+    ({ event, time, cause }, index): DiagnosticTraceRecord => ({
       ordinal: renumber ? source.records.length + index + 1 : lastOrdinal + index + 1,
       time,
       kind: 'resource',
       event,
-      cause: 'cleanup.late-failed',
+      cause,
       correlation: null,
       redactedClient: true,
       redactedPeer: true,

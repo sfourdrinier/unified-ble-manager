@@ -12,6 +12,7 @@ const {
   inspectPublicScanFingerprintAccountingForTests
 } = require('../src/public/ble-manager')
 const { CoreBoundedStream } = require('../src/core/bounded-stream')
+const { contractError } = require('../src/backend-contract/errors')
 const { capacity, resourceCount } = require('../src/backend-contract/primitives')
 const { createDeterministicTestBleManager } = require('../src/testing/deterministic/deterministic-test-manager')
 const { deterministicScenarioAdvertisement } = require('../src/testing/scenarios/manager-scenario-executor')
@@ -1647,6 +1648,127 @@ describe('canonical public ScanQuery v1', () => {
     expect(nativeStop).toHaveBeenCalledTimes(2)
     await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
     expect(nativeStop).toHaveBeenCalledTimes(2)
+    expect(manager.activeScanSessions.size).toBe(0)
+  })
+
+  test('automatic overflow stop rejection does not poison a successful native retry', async () => {
+    const firstFailure = new Error('automatic-native-stop-failed')
+    const nativeStop = jest.fn().mockRejectedValueOnce(firstFailure).mockResolvedValue({ state: 'released', failures: [] })
+    const fixture = createStopOverflowFixture({ nativeStop })
+    fixture.internal.traceDocument = () => ({ format: 'unified-ble-trace-v1', truncated: false, records: [] })
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: tinyErrorDelivery })
+    await overflowLocalScan(fixture, scan)
+    await waitForNativeStop(fixture, 1)
+    await flushMicrotasks()
+
+    await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(nativeStop).toHaveBeenCalledTimes(2)
+    expect(manager.activeScanSessions.size).toBe(0)
+    const trace = await manager.diagnostics.startTrace().stop()
+    expect(trace.records).toEqual(
+      expect.arrayContaining([expect.objectContaining({ event: 'manager.scan-stop.automatic-failed' })])
+    )
+    expect(JSON.stringify(trace)).not.toContain(firstFailure.message)
+  })
+
+  test('authoritative parent release retires a previously rejected automatic stop', async () => {
+    const firstFailure = new Error('automatic-native-stop-failed')
+    const nativeStop = jest.fn().mockRejectedValue(firstFailure)
+    const fixture = createStopOverflowFixture({ nativeStop })
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: tinyErrorDelivery })
+    await overflowLocalScan(fixture, scan)
+    await waitForNativeStop(fixture, 1)
+    await flushMicrotasks()
+
+    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(manager.activeScanSessions.size).toBe(0)
+  })
+
+  test('automatic stop diagnostics retain a normalized cause without native details', async () => {
+    const nativeStop = jest
+      .fn()
+      .mockRejectedValueOnce(contractError('scan.stop-failed', 'scan', 'fixture.private-native-operation'))
+      .mockResolvedValue({ state: 'released', failures: [] })
+    const fixture = createStopOverflowFixture({ nativeStop })
+    fixture.internal.traceDocument = () => ({ format: 'unified-ble-trace-v1', truncated: false, records: [] })
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: tinyErrorDelivery })
+    await overflowLocalScan(fixture, scan)
+    await waitForNativeStop(fixture, 1)
+    await flushMicrotasks()
+
+    await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    const trace = await manager.diagnostics.startTrace().stop()
+    expect(trace.records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ event: 'manager.scan-stop.automatic-failed', cause: 'scan.stop-failed' })
+      ])
+    )
+    expect(JSON.stringify(trace)).not.toContain('fixture.private-native-operation')
+  })
+
+  test('a current iterator failure remains visible after an automatic native stop rejection', async () => {
+    const firstFailure = new Error('automatic-native-stop-failed')
+    const viewFailure = new Error('iterator-return-still-failing')
+    let returnCalls = 0
+    const fixture = createStopOverflowFixture({
+      nativeStop: jest.fn().mockRejectedValueOnce(firstFailure).mockResolvedValue({ state: 'released', failures: [] }),
+      iteratorReturn: async () => {
+        returnCalls += 1
+        if (returnCalls <= 2) throw viewFailure
+        return { done: true, value: undefined }
+      }
+    })
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: tinyErrorDelivery })
+    await overflowLocalScan(fixture, scan)
+    await waitForNativeStop(fixture, 1)
+    await flushMicrotasks()
+
+    await expect(scan.stop()).rejects.toMatchObject({ errors: expect.arrayContaining([viewFailure]) })
+    expect(manager.activeScanSessions.size).toBe(1)
+    await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(manager.activeScanSessions.size).toBe(0)
+  })
+
+  test('a refused parent release does not retire an unresolved automatic native cleanup', async () => {
+    const nativeFailure = {
+      state: 'release-failed',
+      failures: [
+        {
+          resourceKind: 'scan',
+          error: {
+            code: 'scan.stop-failed',
+            domain: 'scan',
+            operation: 'fixture.scan-stop',
+            platform: null,
+            retryability: 'caller-decides'
+          }
+        }
+      ]
+    }
+    const nativeStop = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('automatic-native-stop-failed'))
+      .mockResolvedValueOnce(nativeFailure)
+      .mockResolvedValue({ state: 'released', failures: [] })
+    const fixture = createStopOverflowFixture({ nativeStop })
+    fixture.internal.destroy.mockResolvedValueOnce(nativeFailure).mockResolvedValue({ state: 'released', failures: [] })
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: tinyErrorDelivery })
+    await overflowLocalScan(fixture, scan)
+    await waitForNativeStop(fixture, 1)
+    await flushMicrotasks()
+
+    await expect(manager.destroy()).resolves.toMatchObject({ state: 'release-failed' })
+    expect(manager.activeScanSessions.size).toBe(1)
+    await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(manager.activeScanSessions.size).toBe(0)
+    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 
   test('authoritative manager release subsumes an unresolved native scan stop', async () => {

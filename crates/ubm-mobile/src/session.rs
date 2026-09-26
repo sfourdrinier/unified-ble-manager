@@ -1405,12 +1405,16 @@ impl MobileSession {
                 // post-start compensation must finish before replying.
                 let cancel = ctl.ticket.clone();
                 let join_host = Arc::clone(&self.host);
+                let progress = OP_RADIO.with(Arc::clone);
                 let session_id = self.state.id;
                 let (joined_tx, mut joined_rx) = tokio::sync::oneshot::channel();
                 let (orphan_tx, mut orphan_rx) = tokio::sync::oneshot::channel();
                 self.host.runtime.spawn(async move {
-                    let result = join_host
-                        .join_scan(session_id, member, android, ctl, orphan_tx)
+                    let result = OP_RADIO
+                        .scope(
+                            progress,
+                            join_host.join_scan(session_id, member, android, ctl, orphan_tx),
+                        )
                         .await;
                     let _ = joined_tx.send(result);
                 });
