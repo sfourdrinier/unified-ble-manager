@@ -4,7 +4,7 @@
 
 Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.
 
-This source targets `5.0.0-rc.11`. Main executes the shared Rust core (`DesktopCentral`) through one N-API addon. Tagged releases ship it prebuilt for Linux, macOS and Windows on `arm64`/`x64`. The addon is Node-API, so one binary serves Node and modern Electron alike.
+This source targets `5.0.0-rc.12`. Main executes the shared Rust core (`DesktopCentral`) through one N-API addon. Tagged releases ship it prebuilt for Linux, macOS and Windows on `arm64`/`x64`. The addon is Node-API, so one binary serves Node and modern Electron alike.
 
 `unified-ble-manager/electron/main` and
 `unified-ble-manager/electron/renderer` are the only Electron entrypoints.
@@ -96,6 +96,29 @@ per-stream counts. A failed event acknowledgment or event iterator likewise
 ends active streams with its failure cause. The application must call
 `manager.destroy()` after such a terminal and retry a failed cleanup receipt;
 the renderer retains its remote release ownership until cleanup succeeds.
+
+### Connection and GATT recovery
+
+The shared IPC client used by Electron and Tauri invalidates a GATT generation
+and publishes its change cause before waiting for subscription cleanup. Its
+handles become unusable immediately; an unsubscribe failure cannot restore
+validity. Subscriptions admitted during early-event replay remain owned until
+their release is confirmed.
+
+Releasing one connection closes new-work admission immediately, observes a
+bounded child-cleanup drain, then requests that connection's existing scoped
+parent release even if a child rejects or remains pending. This retains lease
+ownership semantics; it is not an unconditional physical disconnect that drops
+another client's shared connection. Confirmed parent release retires that
+generation's native obligations. Refused parent release leaves them owned and
+retryable. Neither outcome proves that arbitrary local iterator cleanup
+succeeded: local failures remain separately reportable and retryable.
+
+Discovery's wait for old database cleanup observes the caller's original
+deadline and abort signal without cancelling or forgetting the cleanup itself.
+Buffered stream replay stops after its destination terminates or is replaced,
+so one winning terminal schedules one owner-cleanup attempt while preserving
+known upstream loss counters. An explicit later cleanup retry remains possible.
 
 There is no Noble dependency, renderer Web Bluetooth fallback, legacy
 `BlePort`, `PortBleManager`, or mock-radio production fallback in these

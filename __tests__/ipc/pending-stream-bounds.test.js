@@ -123,6 +123,144 @@ async function firstStreamItem(ipc, streamId) {
 }
 
 describe('IPC pre-registration stream buffering', () => {
+  test('establishes ownership before early terminal replay', async () => {
+    const { ipc, emit } = await createIpcHarness()
+    emit('owned-early', { kind: 'terminal', reason: 'service-changed' })
+    await flushPump()
+    let ownedStream
+    const terminal = jest.fn(() => {
+      expect(ownedStream).toBeDefined()
+    })
+    const stream = ipc.registerStream('owned-early', isRecord, undefined, undefined, terminal, 'local', source => {
+      ownedStream = source
+    })
+    expect(ownedStream).toBe(stream)
+    expect(terminal).toHaveBeenCalledWith('service-changed')
+    expect(ipc.ownerCleanupLedger).toHaveLength(0)
+    await ipc.destroy()
+  })
+
+  test('a failed provisional owner retires its sink and preserves the admission failure', async () => {
+    const { ipc } = await createIpcHarness()
+    const failure = new Error('provisional admission refused')
+    let provisional
+    expect(() =>
+      ipc.registerStream('refused-owner', isRecord, undefined, undefined, undefined, 'local', source => {
+        provisional = source
+        throw failure
+      })
+    ).toThrow(failure)
+    expect(ipc.hasRegisteredStream('refused-owner')).toBe(false)
+    await expect(provisional[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason: 'source-failed' }
+    })
+    await ipc.destroy()
+  })
+
+  test.each(['tombstone', 'dead pump'])('provisional ownership precedes a %s terminal', async mode => {
+    let now = 0
+    const { ipc, emit } = await createIpcHarness({ now: () => now })
+    if (mode === 'tombstone') {
+      emit('early-owner', { kind: 'value', value: { index: 0 } })
+      await flushPump()
+      now = 5_001
+    } else {
+      await ipc.destroy()
+    }
+    const order = []
+    ipc.registerStream(
+      'early-owner',
+      isRecord,
+      undefined,
+      undefined,
+      () => {
+        order.push('terminal')
+      },
+      'local',
+      () => {
+        order.push('owner')
+      }
+    )
+    expect(order).toEqual(['owner', 'terminal'])
+    expect(ipc.hasRegisteredStream('early-owner')).toBe(false)
+    await ipc.destroy()
+  })
+
+  test('replay cannot retire a replacement sink registered by the terminal owner', async () => {
+    const { ipc, emit } = await createIpcHarness()
+    for (let index = 0; index < 5; index += 1) {
+      emit('replacement', { kind: 'value', value: { index } }, `replacement-${index}`)
+    }
+    emit('replacement', { kind: 'terminal', reason: 'source-failed' }, 'replacement-terminal')
+    await flushPump()
+    let replacement
+    const owner = jest.fn(() => {
+      replacement = ipc.registerStream('replacement', isRecord)
+    })
+    ipc.registerStream(
+      'replacement',
+      isRecord,
+      { itemCapacity: 1, byteCapacity: 4096, reservedControlCapacity: 256 },
+      'error',
+      owner
+    )
+    expect(owner.mock.calls).toEqual([['overflow']])
+    expect(ipc.hasRegisteredStream('replacement')).toBe(true)
+    emit('replacement', { kind: 'value', value: { index: 99 } }, 'replacement-live')
+    await flushPump()
+    await expect(replacement[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { index: 99 } }
+    })
+    await ipc.destroy()
+  })
+
+  test.each([1, 8])('pending replay notifies its owner once with capacity %i', async itemCapacity => {
+    const { ipc, emit } = await createIpcHarness()
+    for (let index = 0; index < 5; index += 1) {
+      emit('once-only', { kind: 'value', value: { index } }, `once-value-${index}`)
+    }
+    emit(
+      'once-only',
+      { kind: 'terminal', reason: 'source-failed', droppedItems: 3, droppedBytes: 30, replacedItems: 2 },
+      'once-terminal'
+    )
+    await flushPump()
+    const nativeRemoval = jest.fn(async () => {
+      throw new Error('native removal refused')
+    })
+    let removal
+    const owner = jest.fn(() => (removal ??= nativeRemoval()))
+    const stream = ipc.registerStream(
+      'once-only',
+      isRecord,
+      { itemCapacity, byteCapacity: 4096, reservedControlCapacity: 256 },
+      'error',
+      owner
+    )
+    await flushPump()
+    const reason = itemCapacity === 1 ? 'overflow' : 'source-failed'
+    expect(owner.mock.calls).toEqual([[reason]])
+    expect(nativeRemoval).toHaveBeenCalledTimes(1)
+    expect(ipc.ownerCleanupLedger).toHaveLength(1)
+    expect(ipc.hasRegisteredStream('once-only')).toBe(false)
+    const records = []
+    for await (const item of stream) records.push(item)
+    expect(records.filter(item => item.kind === 'terminal')).toEqual([
+      expect.objectContaining({ reason, replacedItems: 2 })
+    ])
+    if (itemCapacity === 1) {
+      expect(records.at(-1)).toMatchObject({ droppedItems: 4 })
+    } else {
+      expect(records.filter(item => item.kind === 'value').map(item => item.value.index)).toEqual([0, 1, 2, 3, 4])
+      expect(records.at(-1)).toMatchObject({ droppedItems: 3, droppedBytes: 30 })
+    }
+    // A failed owner's real retry remains possible; only replay duplicates are suppressed.
+    removal = Promise.resolve({ state: 'released', failures: [] })
+    await ipc.destroy()
+    expect(owner).toHaveBeenCalledTimes(2)
+    expect(ipc.ownerCleanupLedger).toHaveLength(0)
+  })
+
   test('active terminal-only source loss retains its counters', async () => {
     const { ipc, emit } = await createIpcHarness()
     const iterator = ipc.registerStream('active-terminal-loss', isRecord)[Symbol.asyncIterator]()

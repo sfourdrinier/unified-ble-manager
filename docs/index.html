@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>unified-ble-manager 5.0.0-rc.11 | Documentation</title>
+    <title>unified-ble-manager 5.0.0-rc.12 | Documentation</title>
     <meta
       name="description"
       content="Unified Bluetooth Low Energy manager for React Native, Electron, Tauri, Web, and desktop"
@@ -18,7 +18,7 @@
       <div id="split-left" class="overflow-auto fs0 height-viewport-100">
         <div class="py1 px2">
           <h3 class="mb0 no-anchor">unified-ble-manager</h3>
-          <div class="mb1"><code>5.0.0-rc.11</code></div>
+          <div class="mb1"><code>5.0.0-rc.12</code></div>
           <input
             placeholder="Filter"
             id="filter-input"
@@ -64,7 +64,7 @@
               This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are
               linked at the bottom. The root import does not turn Bluetooth on.
             </p>
-            <p>This source targets <code>5.0.0-rc.11</code>; verify the published version in the npm registry.</p>
+            <p>This source targets <code>5.0.0-rc.12</code>; verify the published version in the npm registry.</p>
             <h2>Pick a host</h2>
             <table>
               <thead>
@@ -143,7 +143,7 @@
             <h4>Expo / CNG v2</h4>
             <p>
               The Expo v2 schema and <code>unified-ble-manager/expo</code> factory are in this source. After the npm
-              registry lists <code>5.0.0-rc.11</code>, install that exact version and keep it in your lockfile while
+              registry lists <code>5.0.0-rc.12</code>, install that exact version and keep it in your lockfile while
               validating the native build:
             </p>
             <p>The package does not run in Expo Go.</p>
@@ -611,7 +611,7 @@
               supported BLE execution environment because it cannot contain this native module.
             </p>
             <p>
-              Use the v2 plugin options in this <code>5.0.0-rc.11</code> source. Those options match the schema
+              Use the v2 plugin options in this <code>5.0.0-rc.12</code> source. Those options match the schema
               introduced at <code>4.0.0-rc.4</code>. Expo Go cannot load this native module.
             </p>
             <h2>Installation and development build</h2>
@@ -619,7 +619,7 @@
               Pin the package so a later <code>latest</code> bump does not change native plugin options without a
               rebuild:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.11
+            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.12
 pnpm add expo@^57.0.0 expo-dev-client
 npx expo prebuild --clean
 npx expo run:ios
@@ -885,7 +885,7 @@ await manager.background.updateNotification({
             <h1>Electron</h1>
             <p>Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.</p>
             <p>
-              This source targets <code>5.0.0-rc.11</code>. Main executes the shared Rust core
+              This source targets <code>5.0.0-rc.12</code>. Main executes the shared Rust core
               (<code>DesktopCentral</code>) through one N-API addon. Tagged releases ship it prebuilt for Linux, macOS
               and Windows on <code>arm64</code>/<code>x64</code>. The addon is Node-API, so one binary serves Node and
               modern Electron alike.
@@ -958,6 +958,27 @@ await manager.background.updateNotification({
               active streams with its failure cause. The application must call <code>manager.destroy()</code> after such
               a terminal and retry a failed cleanup receipt; the renderer retains its remote release ownership until
               cleanup succeeds.
+            </p>
+            <h3>Connection and GATT recovery</h3>
+            <p>
+              The shared IPC client used by Electron and Tauri invalidates a GATT generation and publishes its change
+              cause before waiting for subscription cleanup. Its handles become unusable immediately; an unsubscribe
+              failure cannot restore validity. Subscriptions admitted during early-event replay remain owned until their
+              release is confirmed.
+            </p>
+            <p>
+              Releasing one connection closes new-work admission immediately, observes a bounded child-cleanup drain,
+              then requests that connection's existing scoped parent release even if a child rejects or remains pending.
+              This retains lease ownership semantics; it is not an unconditional physical disconnect that drops another
+              client's shared connection. Confirmed parent release retires that generation's native obligations. Refused
+              parent release leaves them owned and retryable. Neither outcome proves that arbitrary local iterator
+              cleanup succeeded: local failures remain separately reportable and retryable.
+            </p>
+            <p>
+              Discovery's wait for old database cleanup observes the caller's original deadline and abort signal without
+              cancelling or forgetting the cleanup itself. Buffered stream replay stops after its destination terminates
+              or is replaced, so one winning terminal schedules one owner-cleanup attempt while preserving known
+              upstream loss counters. An explicit later cleanup retry remains possible.
             </p>
             <p>
               There is no Noble dependency, renderer Web Bluetooth fallback, legacy <code>BlePort</code>,

@@ -169,7 +169,7 @@ async function createAdmissionHarness(options = {}) {
       if (command === 'gatt.subscribe') {
         return {
           kind: 'route',
-          payload: typeof gattSubscribePayload === 'function' ? gattSubscribePayload() : gattSubscribePayload
+          payload: typeof gattSubscribePayload === 'function' ? await gattSubscribePayload() : gattSubscribePayload
         }
       }
       if (command === 'gatt.unsubscribe') {
@@ -219,6 +219,142 @@ async function createAdmissionHarness(options = {}) {
 async function settleEventPump() {
   for (let attempt = 0; attempt < 8; attempt += 1) await new Promise(resolve => setImmediate(resolve))
 }
+
+describe('RC11 database invalidation ownership', () => {
+  test('parent confirmation reaches every subscription even when one local stream close fails', async () => {
+    let admissions = 0
+    const harness = await createAdmissionHarness({
+      gattSubscribePayload: () => ({ handle: `subscription-${++admissions}`, observedDelivery: 'unknown' })
+    })
+    const connection = await harness.ipc.connect('peer-1')
+    const database = await connection.discover()
+    const first = await database.characteristics[0].subscribe()
+    const second = await database.characteristics[0].subscribe()
+    const originalClose = harness.ipc.closeStream.bind(harness.ipc)
+    const close = jest.spyOn(harness.ipc, 'closeStream').mockImplementation((handle, reason) => {
+      if (handle === first.handle) throw new Error('local close failed')
+      originalClose(handle, reason)
+    })
+    expect(() => database.confirmParentRelease()).toThrow('local close failed')
+    expect([...database.subscriptions]).toEqual([first])
+    await expect(second.remove()).resolves.toMatchObject({ state: 'released' })
+    expect(harness.gattUnsubscribePayloads).toHaveLength(0)
+    close.mockRestore()
+    await expect(first.remove()).resolves.toMatchObject({ state: 'released' })
+    expect(database.subscriptions.size).toBe(0)
+    expect(harness.gattUnsubscribePayloads).toHaveLength(0)
+    await harness.ipc.destroy()
+  })
+
+  test('late admission during held invalidation is compensated without losing the original owner', async () => {
+    let completeAdmission
+    let completeCleanup
+    let admissions = 0
+    let removals = 0
+    const harness = await createAdmissionHarness({
+      gattSubscribePayload: () =>
+        ++admissions === 1
+          ? { handle: 'subscription-1', observedDelivery: 'unknown' }
+          : new Promise(resolve => {
+              completeAdmission = resolve
+            }),
+      gattUnsubscribe: () =>
+        ++removals === 1
+          ? new Promise(resolve => {
+              completeCleanup = resolve
+            })
+          : Promise.resolve({ kind: 'route', payload: { state: 'released', failures: [] } })
+    })
+    const connection = await harness.ipc.connect('peer-1')
+    const database = await connection.discover()
+    const original = await database.characteristics[0].subscribe()
+    const pending = database.characteristics[0].subscribe().catch(error => error)
+    await settleEventPump()
+    const firstInvalidation = database.invalidate('service-changed')
+    const concurrentInvalidation = database.invalidate()
+    completeAdmission({ handle: 'subscription-2', observedDelivery: 'unknown' })
+    expect(await pending).toMatchObject({ normalized: { code: 'gatt.stale-handle' } })
+    expect([...database.subscriptions]).toEqual([original])
+    expect(harness.gattUnsubscribePayloads.map(payload => payload.subscriptionHandle)).toEqual([
+      'subscription-1',
+      'subscription-2'
+    ])
+    const changes = database.changed[Symbol.asyncIterator]()
+    await expect(changes.next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { reason: 'service-changed' } }
+    })
+    completeCleanup({ kind: 'route', payload: { state: 'released', failures: [] } })
+    await expect(firstInvalidation).resolves.toMatchObject({ state: 'released' })
+    await expect(concurrentInvalidation).resolves.toMatchObject({ state: 'released' })
+    expect(database.subscriptions.size).toBe(0)
+    expect(removals).toBe(2)
+    await harness.ipc.destroy()
+  })
+
+  test('publishes invalidation before held cleanup and retains rejected cleanup for retry', async () => {
+    let rejectCleanup
+    const harness = await createAdmissionHarness({
+      gattUnsubscribe: () =>
+        new Promise((_, reject) => {
+          rejectCleanup = reject
+        })
+    })
+    const connection = await harness.ipc.connect('peer-1')
+    const database = await connection.discover()
+    const subscription = await database.characteristics[0].subscribe()
+    const changed = database.changed[Symbol.asyncIterator]()
+    const cleanup = database.invalidate('service-changed')
+    const observed = cleanup.catch(error => error)
+    expect(() => database.assertCurrent()).toThrow()
+    expect(database.changed.isTerminal()).toBe(true)
+    await expect(changed.next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { reason: 'service-changed' } }
+    })
+    rejectCleanup(new Error('unsubscribe refused'))
+    await observed
+    expect(database.subscriptions.has(subscription)).toBe(true)
+    harness.setGattUnsubscribe(async () => ({ kind: 'route', payload: { state: 'released', failures: [] } }))
+    await expect(database.invalidate()).resolves.toMatchObject({ state: 'released' })
+    expect(database.subscriptions.size).toBe(0)
+    expect(harness.gattUnsubscribePayloads).toHaveLength(2)
+    await harness.ipc.destroy()
+  })
+
+  test('early service-change replay owns the subscription before invalidation runs', async () => {
+    const harness = await createAdmissionHarness()
+    const connection = await harness.ipc.connect('peer-1')
+    const database = await connection.discover()
+    harness.emit('subscription-1', { kind: 'terminal', reason: 'service-changed', error: null })
+    await settleEventPump()
+    await database.characteristics[0].subscribe()
+    await settleEventPump()
+    expect(() => database.assertCurrent()).toThrow()
+    expect(harness.gattUnsubscribePayloads).toHaveLength(1)
+    expect(database.subscriptions.size).toBe(0)
+    await harness.ipc.destroy()
+  })
+
+  test('a subscription response arriving after invalidation is compensated, never published', async () => {
+    let completeAdmission
+    const harness = await createAdmissionHarness({
+      gattSubscribePayload: () =>
+        new Promise(resolve => {
+          completeAdmission = resolve
+        })
+    })
+    const connection = await harness.ipc.connect('peer-1')
+    const database = await connection.discover()
+    const pending = database.characteristics[0].subscribe()
+    const observed = pending.catch(error => error)
+    await settleEventPump()
+    await database.invalidate('service-changed')
+    completeAdmission({ handle: 'subscription-1', observedDelivery: 'unknown' })
+    expect(await observed).toMatchObject({ normalized: { code: 'gatt.stale-handle' } })
+    expect(harness.gattUnsubscribePayloads).toHaveLength(1)
+    expect(database.subscriptions.size).toBe(0)
+    await harness.ipc.destroy()
+  })
+})
 
 describe('IPC terminal owner cleanup receipts', () => {
   const failedLease = {
@@ -700,14 +836,15 @@ describe('IPC provisional admission', () => {
     expect(unsubscribeAttempts).toBe(2)
     const attemptsBeforeRelease = unsubscribeAttempts
     const released = await connection.release()
-    expect(released.state).toBe('release-failed')
-    expect(released.failures.some(cleanupFailure => cleanupFailure.resourceKind === 'gatt')).toBe(true)
+    expect(released).toEqual({ state: 'released', failures: [] })
+    expect(database.subscriptions.size).toBe(0)
+    await expect(subscription.remove()).resolves.toMatchObject({ state: 'released' })
     expect(harness.commands).toContain('connection.disconnect')
     expect(unsubscribeAttempts).toBeGreaterThan(attemptsBeforeRelease)
     await harness.ipc.destroy()
   })
 
-  test('successful CCCD retry after release-failed invalidate terminalizes the stale database changed stream', async () => {
+  test('failed invalidation publishes change immediately while CCCD cleanup remains retryable', async () => {
     const failure = {
       resourceKind: 'gatt',
       error: {
@@ -746,7 +883,7 @@ describe('IPC provisional admission', () => {
     await expect(connection.rediscoverGatt({}, 'manual-rediscovery')).rejects.toMatchObject({
       normalized: { code: 'lifecycle.invalid-state', operation: 'ipc-manager.gatt-discover.release-failed' }
     })
-    expect(database.changed.isTerminal()).toBe(false)
+    expect(database.changed.isTerminal()).toBe(true)
     await expect(subscription.remove()).resolves.toMatchObject({ state: 'released', failures: [] })
     const changed = database.changed[Symbol.asyncIterator]()
     const pending = changed.next()
@@ -791,7 +928,7 @@ describe('IPC provisional admission', () => {
     const database = await connection.discover()
     const subscription = await database.characteristics[0].subscribe()
     await expect(database.invalidate('service-changed')).resolves.toMatchObject({ state: 'release-failed' })
-    expect(database.changed.isTerminal()).toBe(false)
+    expect(database.changed.isTerminal()).toBe(true)
     const changed = database.changed[Symbol.asyncIterator]()
     const pending = changed.next()
     await expect(subscription.remove()).resolves.toMatchObject({ state: 'released', failures: [] })

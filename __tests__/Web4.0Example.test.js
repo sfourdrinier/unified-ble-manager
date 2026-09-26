@@ -111,7 +111,7 @@ describe('5.0 Web Bluetooth public example', () => {
     expect(config).toContain("root: 'example-web'")
     expect(continuousIntegrationWorkflow).toContain('run: pnpm build:example:web')
     expect(publishWorkflow).toContain('run: pnpm build:example:web')
-    expect(readme).toContain('5.0.0-rc.11 TypeScript Web Bluetooth example')
+    expect(readme).toContain('5.0.0-rc.12 TypeScript Web Bluetooth example')
     expect(readme).toMatch(/does not itself create a\s+release evidence receipt/u)
     expect(readme).not.toContain('Historical Web Bluetooth example')
   })
