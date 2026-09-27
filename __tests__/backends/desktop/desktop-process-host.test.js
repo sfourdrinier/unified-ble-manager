@@ -34,6 +34,36 @@ async function observed(manager, stage, peerId) {
   return value.peer
 }
 
+test('immutable claim admission waits for positive native collection rather than staging completion', async () => {
+  let reportCollected
+  const collected = new Promise(resolve => {
+    reportCollected = resolve
+  })
+  const controller = {
+    status: jest
+      .fn()
+      .mockResolvedValueOnce({ queuedData: 1, lastError: null })
+      .mockImplementation(() => collected)
+  }
+  const prepare = jest.fn()
+  const pending = (async () => {
+    await h.awaitContinuationQueuedData(controller, 2)
+    prepare()
+  })()
+  await new Promise(resolve => setImmediate(resolve))
+  expect(prepare).not.toHaveBeenCalled()
+  reportCollected({ queuedData: 2, lastError: null })
+  await pending
+  expect(prepare).toHaveBeenCalledTimes(1)
+})
+
+test.each([
+  [null, 'session disappeared'],
+  [{ queuedData: 1, lastError: { code: 'storage.io' } }, 'native collection failed']
+])('collection barrier retains native failure rather than admitting a partial prefix', async (status, message) => {
+  await expect(h.awaitContinuationQueuedData({ status: async () => status }, 2)).rejects.toThrow(message)
+})
+
 test.each(['bluez', 'corebluetooth', 'winrt'])(
   '%s native data survives independent foreground destruction',
   async platform => {
@@ -67,6 +97,7 @@ test.each(['bluez', 'corebluetooth', 'winrt'])(
         characteristicUuid: h.HRM_MEASUREMENT,
         value: Buffer.from([0, 73])
       })
+      await h.awaitContinuationQueuedData(host.continuation, 2)
       const acknowledgements = harness.calls.filter(([name]) => name === 'continuationAcknowledgeClaim').length
       const prepared = await host.continuationAccess.prepareClaim(256, 65536)
       expect(await host.continuationAccess.prepareClaim(256, 65536)).toEqual(prepared)
@@ -97,6 +128,7 @@ test('native cleanup refusal remains retryable and post-close backlog stays reac
     characteristicUuid: h.HRM_MEASUREMENT,
     value: Buffer.from([0, 74])
   })
+  await h.awaitContinuationQueuedData(host.continuation, 1)
   await stage.failNextRadioOp('disconnect', 'retained native disconnect refusal')
   const failed = await host.destroy()
   expect(failed.state).toBe('release-failed')
@@ -120,6 +152,7 @@ test('successful host close preserves positive native backlog for explicit later
     characteristicUuid: h.HRM_MEASUREMENT,
     value: Buffer.from([0, 75])
   })
+  await h.awaitContinuationQueuedData(host.continuation, 1)
   expect(await host.destroy()).toEqual({ state: 'released', failures: [] })
   const backlog = await host.continuation.claim()
   expect(backlog.values.map(item => [...item.value])).toContainEqual([0, 75])

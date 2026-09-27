@@ -11,7 +11,10 @@ All notable changes to `unified-ble-manager` are documented here.
   radio qualification. H10 capture preserves source-failure causes and loss
   notices, blocks a replacement scan while cleanup is refused, and retains timer
   stop failures as diagnostic history after a successful retry. A simultaneous
-  iterator exception and cleanup failure retain both original causes.
+  iterator exception and cleanup failure retain both original causes. Scan rate
+  buckets preserve the final idle seconds and actual partial window without an
+  extra zero-length bucket at an exact boundary; right-closed windows conserve
+  observations received at the boundary itself.
 - Add explicit warm native continuation controls to the Android/iOS reference
   app, using the existing process owner and shared envelope decoder. Require a
   matching persisted declaration, verify binary identity, and bound outstanding

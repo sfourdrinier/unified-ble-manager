@@ -171,6 +171,27 @@ function withTimeout(promise, timeoutMs, label) {
   return Promise.race([promise, timer]).finally(() => clearTimeout(handle))
 }
 
+/** Positive native collection proof before a test pins an immutable prefix. */
+async function awaitContinuationQueuedData(controller, expected, timeoutMs = 5000) {
+  let stopped = false
+  const collected = (async () => {
+    while (!stopped) {
+      const status = await controller.status()
+      if (stopped) return
+      if (status === null) throw new Error('native continuation session disappeared before collection')
+      if (status.lastError !== null) throw new Error(`native collection failed: ${JSON.stringify(status.lastError)}`)
+      if (status.queuedData >= expected) return status
+      // Yield to the actual native event pump/collector, not a timing estimate.
+      await new Promise(resolve => setImmediate(resolve))
+    }
+  })()
+  try {
+    return await withTimeout(collected, timeoutMs, `native collection of ${expected} data records`)
+  } finally {
+    stopped = true
+  }
+}
+
 /** Next stream item of any kind (value or terminal). */
 async function nextItem(iterator, timeoutMs = 3000) {
   const next = await withTimeout(iterator.next(), timeoutMs, 'stream item')
@@ -299,6 +320,7 @@ module.exports = {
   HRM_SERVICE,
   USER_DESCRIPTION,
   addonPath,
+  awaitContinuationQueuedData,
   callNames,
   connectAndDiscover,
   delivery,

@@ -571,6 +571,14 @@ is reported as the scan's terminal reason, not invented observation evidence.
 A completed command (including an advertisement stage's `ok: true`) with zero
 observations does not establish that advertisements were received or qualify a
 radio; inspect the counts, terminal/error events, and cleanup receipts.
+`scan-details` rate buckets retain completed idle seconds through the command's
+end and, when present, its final positive-duration partial second. An exact
+second boundary does not create an additional zero-length bucket. Windows are
+right-closed: observations at exactly a boundary belong to the window ending
+there, including multiple values at the same timestamp. Total elapsed time and
+the overall observation rate cover that same command window. A zero-duration
+window retains total observations but has no rate bucket and a null overall
+rate; bounded `perSecond` history may trim older windows.
 H10 advertisement capture emits overflow and terminal notices with their loss
 counters. Source-failure terminals mark that stage failed with the original
 structured cause; finite expiry and owner release remain normal endings. A
