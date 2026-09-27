@@ -267,6 +267,11 @@ contain device identifiers and physiological data: keep them private unless
 you explicitly choose to share them. Bulk packet data is not mirrored into
 automatic snapshots or command-result history.
 
+The live dashboard's foreground connection supervisor reissues PMD setup/start
+commands after reconnect. Native continuation's declared resubscriptions do
+not themselves replay Polar PMD start commands. Do not use a successful native
+Heart Rate resubscription as evidence of background ECG/ACC session recovery.
+
 Compare exported files locally with Node 22.18+:
 
 ```sh

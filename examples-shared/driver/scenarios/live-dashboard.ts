@@ -920,6 +920,42 @@ export class LiveDashboardScenario extends BleScenario<LiveDashboardState> {
         : null,
       accError: null
     })
+    // CoreBluetooth reports reads and indications through the same callback.
+    // Read/parse features before subscribing; never filter arbitrary callbacks
+    // by their leading byte once the control-point stream is active.
+    const featureBytes = await outcomeOf(async () =>
+      controlPointCharacteristic.read({ timeoutMs: OPERATION_TIMEOUT_MS })
+    )
+    if (!featureBytes.ok) {
+      this.emit('tile-pmd-features', { tile: peerId, ok: false, error: featureBytes.error })
+      this.recordPmd('error', peerId, { stage: 'features-read', error: featureBytes.error })
+      if (options.acc) this.patchTile(peerId, { accError: featureBytes.error })
+      return {
+        controlPointSubscription: null,
+        dataSubscription: null,
+        controlPoint: controlPointCharacteristic,
+        ecgStarted: false
+      }
+    }
+    const features = await outcomeOf(async () => parsePmdFeatures(featureBytes.value))
+    if (!features.ok) {
+      this.emit('tile-pmd-features', { tile: peerId, ok: false, error: features.error })
+      this.recordPmd('error', peerId, { stage: 'features-parse', error: features.error })
+      if (options.acc) this.patchTile(peerId, { accError: features.error })
+      return {
+        controlPointSubscription: null,
+        dataSubscription: null,
+        controlPoint: controlPointCharacteristic,
+        ecgStarted: false
+      }
+    }
+    this.emit('tile-pmd-features', { tile: peerId, ok: true, ...features.value, raw: bytesToHex(featureBytes.value) })
+    this.recordPmd('control-response', peerId, {
+      stage: 'features-read',
+      bytesHex: bytesToHex(featureBytes.value),
+      features: toJsonValue(features.value)
+    })
+    if (runtime.closing) throw new ScenarioError('operation.aborted', 'dashboard stopped during PMD feature read')
     const dataCharacteristic = gatt.characteristic(PMD_SERVICE, PMD_DATA)
     const controlPointSubscription = await controlPointCharacteristic.subscribe({
       timeoutMs: OPERATION_TIMEOUT_MS,
@@ -953,28 +989,6 @@ export class LiveDashboardScenario extends BleScenario<LiveDashboardState> {
     )
     runtime.controlPoint = controlPointCharacteristic
 
-    const featureBytes = await outcomeOf(async () =>
-      controlPointCharacteristic.read({ timeoutMs: OPERATION_TIMEOUT_MS })
-    )
-    if (!featureBytes.ok) {
-      this.emit('tile-pmd-features', { tile: peerId, ok: false, error: featureBytes.error })
-      this.recordPmd('error', peerId, { stage: 'features-read', error: featureBytes.error })
-      if (options.acc) this.patchTile(peerId, { accError: featureBytes.error })
-      return { controlPointSubscription, dataSubscription, controlPoint: controlPointCharacteristic, ecgStarted: false }
-    }
-    const features = await outcomeOf(async () => parsePmdFeatures(featureBytes.value))
-    if (!features.ok) {
-      this.emit('tile-pmd-features', { tile: peerId, ok: false, error: features.error })
-      this.recordPmd('error', peerId, { stage: 'features-parse', error: features.error })
-      if (options.acc) this.patchTile(peerId, { accError: features.error })
-      return { controlPointSubscription, dataSubscription, controlPoint: controlPointCharacteristic, ecgStarted: false }
-    }
-    this.emit('tile-pmd-features', { tile: peerId, ok: true, ...features.value, raw: bytesToHex(featureBytes.value) })
-    this.recordPmd('control-response', peerId, {
-      stage: 'features-read',
-      bytesHex: bytesToHex(featureBytes.value),
-      features: toJsonValue(features.value)
-    })
     for (const measurement of [0, 2]) {
       if (measurement === 0 ? !options.ecg : !options.acc) continue
       const name = measurement === 0 ? 'ecg' : 'acc'

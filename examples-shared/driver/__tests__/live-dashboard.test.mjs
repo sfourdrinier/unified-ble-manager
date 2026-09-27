@@ -180,6 +180,11 @@ function makeDashboardHost(overrides = {}) {
       calls.push(`read ${uuid}`)
       const bytes = reads[uuid]
       if (bytes === undefined) throw Object.assign(new Error(`no ${uuid}`), { code: 'gatt.attribute-not-found' })
+      if (overrides.echoPmdRead && uuid === PMD_CONTROL_POINT) {
+        cpStreams
+          .at(-1)
+          ?.push({ value: bytes, delivery: 'indication', observedAtMonotonicMs: runtime.now(), sequence: 0 })
+      }
       return bytes
     },
     async write(bytes) {
@@ -431,14 +436,12 @@ test('same-opcode ECG response cannot complete an ACC request; refused ACC start
     onPmdWrite(bytes, { cpStreams, runtime }) {
       if (bytes[0] !== 2 || bytes[1] !== 2) return
       const push = measurement =>
-        cpStreams
-          .at(-1)
-          .push({
-            value: new Uint8Array([0xf0, 2, measurement, measurement === 2 ? 1 : 0]),
-            delivery: 'indication',
-            sequence: 1,
-            observedAtMonotonicMs: runtime.now()
-          })
+        cpStreams.at(-1).push({
+          value: new Uint8Array([0xf0, 2, measurement, measurement === 2 ? 1 : 0]),
+          delivery: 'indication',
+          sequence: 1,
+          observedAtMonotonicMs: runtime.now()
+        })
       push(0)
       answerAcc = () => push(2)
       return false
@@ -500,15 +503,13 @@ test('link loss resubscribes the shared channel and restarts both configured str
   await scenario.dispatch('start', { acc: true, accSampleRateHz: 100, accRangeG: 4 })
   fixture.scanStream.push(fixture.observationFor(fixture.peers[0]))
   await microtaskUntil('first generation', () => tileOf(scenario, fixture.peers[0].id)?.status === 'streaming')
-  fixture
-    .connectionFor(fixture.peers[0].id)
-    .lifecycleEvents.push({
-      sequence: 1,
-      previous: 'connected',
-      current: 'lost',
-      cause: 'connection.lost',
-      connectionGeneration: 'gen-peer-h10-1'
-    })
+  fixture.connectionFor(fixture.peers[0].id).lifecycleEvents.push({
+    sequence: 1,
+    previous: 'connected',
+    current: 'lost',
+    cause: 'connection.lost',
+    connectionGeneration: 'gen-peer-h10-1'
+  })
   await microtaskUntil('backoff', () => tileOf(scenario, fixture.peers[0].id)?.supervisorState === 'backoff')
   context.mock.timers.tick(1000)
   await microtaskUntil('second generation', () => tileOf(scenario, fixture.peers[0].id)?.status === 'streaming')
@@ -599,15 +600,13 @@ test('prior-generation control responses and values cannot settle or mutate the 
   fixture.scanStream.push(fixture.observationFor(fixture.peers[0]))
   await microtaskUntil('first generation', () => tileOf(scenario, fixture.peers[0].id)?.status === 'streaming')
   const oldData = lastSubscription(fixture.subscriptions, PMD_DATA).values
-  fixture
-    .connectionFor(fixture.peers[0].id)
-    .lifecycleEvents.push({
-      sequence: 1,
-      previous: 'connected',
-      current: 'lost',
-      cause: 'connection.lost',
-      connectionGeneration: 'gen-peer-h10-1'
-    })
+  fixture.connectionFor(fixture.peers[0].id).lifecycleEvents.push({
+    sequence: 1,
+    previous: 'connected',
+    current: 'lost',
+    cause: 'connection.lost',
+    connectionGeneration: 'gen-peer-h10-1'
+  })
   await microtaskUntil('backoff', () => tileOf(scenario, fixture.peers[0].id)?.supervisorState === 'backoff')
   context.mock.timers.tick(1000)
   await microtaskUntil('old reply rejected', () =>
@@ -694,6 +693,43 @@ test('stop cancels a held ACC START response and compensates both attempts witho
     [0, 2, 0, 2]
   )
   assert.equal(fixture.runtime.pendingTimers(), 0)
+})
+
+test('PMD feature read precedes indication subscription so CoreBluetooth read echoes do not corrupt recording', async () => {
+  const fixture = makeDashboardHost({ echoPmdRead: true, reads: { [PMD_CONTROL_POINT]: new Uint8Array([0x0f, 5, 0]) } })
+  const scenario = new LiveDashboardScenario(fixture.host)
+  await scenario.dispatch('record-start', {})
+  await scenario.dispatch('start', { acc: true })
+  fixture.scanStream.push(fixture.observationFor(fixture.peers[0]))
+  await microtaskUntil('both sensors streaming', () => tileOf(scenario, fixture.peers[0].id)?.status === 'streaming')
+  assert.ok(
+    fixture.calls.indexOf(`read ${PMD_CONTROL_POINT}`) < fixture.calls.indexOf(`subscribe ${PMD_CONTROL_POINT}`)
+  )
+  assert.ok(fixture.calls.indexOf(`read ${PMD_CONTROL_POINT}`) < fixture.calls.indexOf(`subscribe ${PMD_DATA}`))
+  assert.ok(!scenario.recentEvents().some(event => event.kind === 'tile-pmd-control-point-unparsed'))
+  await scenario.dispatch('stop', {})
+  const exported = await scenario.dispatch('record-export', {})
+  assert.deepEqual(exported.summary.incompleteReasons, [])
+  assert.ok(
+    exported.records.some(record => record.kind === 'control-response' && record.data.stage === 'features-read')
+  )
+})
+
+test('failed PMD feature read remains visible without acquiring unused CP/data subscriptions', async () => {
+  const fixture = makeDashboardHost({ reads: { [PMD_CONTROL_POINT]: undefined } })
+  const scenario = new LiveDashboardScenario(fixture.host)
+  await scenario.dispatch('record-start', {})
+  await scenario.dispatch('start', { acc: true })
+  fixture.scanStream.push(fixture.observationFor(fixture.peers[0]))
+  await microtaskUntil('HR fallback streaming', () => tileOf(scenario, fixture.peers[0].id)?.status === 'streaming')
+  assert.equal(tileOf(scenario, fixture.peers[0].id).accError.code, 'gatt.attribute-not-found')
+  assert.ok(!fixture.subscriptions.some(sub => sub.uuid === PMD_CONTROL_POINT || sub.uuid === PMD_DATA))
+  await scenario.dispatch('stop', {})
+  assert.ok(
+    (await scenario.dispatch('record-export', {})).records.some(
+      record => record.kind === 'error' && record.data.stage === 'features-read'
+    )
+  )
 })
 
 test('default dashboard discovers the explicit SIM Polar H10 prefix alongside real straps', async () => {

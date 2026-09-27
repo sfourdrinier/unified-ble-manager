@@ -10,6 +10,8 @@ All notable changes to `unified-ble-manager` are documented here.
   all 12 H10 rate/range combinations and a three-axis milli-g display in Expo.
   ECG and ACC share one PMD control/data subscription and retain distinct
   command and generation identities through reconnection and cleanup.
+- Read PMD feature bytes before subscribing to the control point, avoiding
+  CoreBluetooth read callbacks being misclassified as unsolicited PMD responses.
 - Add opt-in bounded raw PMD recording, explicit loss/error and generation
   records, local JSON file export/share and an offline comparison summary.
   Keep bulk captures out of automatic snapshots and event history. Captures
