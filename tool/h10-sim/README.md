@@ -170,6 +170,12 @@ Generic SDK support for decoding 8/24-bit ACC does not make those H10-selectable
 resolutions. Compression, exact firmware error precedence, real-device packet
 batching and concurrent ECG/ACC timing still require H10 capture comparison.
 
+The shared test-app live dashboard can display and record ECG plus XYZ ACC
+at every H10 rate/range pair, export raw timestamped JSON, and compare those
+captures offline. Follow the [recording and real-H10 comparison guide](../../examples-shared/driver/README.md#record-and-compare-a-simulator-with-a-real-h10).
+This new PMD recording schema is separate from the existing `h10-capture`
+fingerprint format. Synthetic ACC recordings do not qualify real-device fidelity.
+
 `cargo test --manifest-path tool/h10-sim/Cargo.toml` covers settings, encoding,
 sample-clock and lifecycle behavior. `node tool/h10-sim/tests/xcheck/run-xcheck.cjs`
 cross-checks Rust bytes using the shared TypeScript parser. The opt-in

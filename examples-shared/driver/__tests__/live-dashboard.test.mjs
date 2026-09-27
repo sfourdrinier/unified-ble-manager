@@ -11,6 +11,7 @@ import {
   ECG_DISPLAY_MAX_POINTS,
   ECG_WINDOW_SAMPLES,
   LiveDashboardScenario,
+  parseLiveDashboardStartOptions,
   downsampleEcg
 } from '../scenarios/live-dashboard.ts'
 import { createScenarioRegistry } from '../create-driver.ts'
@@ -53,13 +54,22 @@ function makeStream() {
   const items = []
   let wake = null
   let ended = false
+  let failure = null
   return {
     push(item) {
       items.push({ kind: 'value', value: item })
       wake?.()
     },
+    notice(item) {
+      items.push(item)
+      wake?.()
+    },
     end() {
       ended = true
+      wake?.()
+    },
+    fail(error) {
+      failure = error
       wake?.()
     },
     async *[Symbol.asyncIterator]() {
@@ -68,6 +78,7 @@ function makeStream() {
           yield items.shift()
           continue
         }
+        if (failure !== null) throw failure
         if (ended) return
         await new Promise(resolve => (wake = resolve))
         wake = null
@@ -146,7 +157,9 @@ function makeDashboardHost(overrides = {}) {
   const scanStream = makeStream()
   const scanEvents = makeStream()
   const subscriptions = []
-  const peers = overrides.peers ?? [{ id: 'peer-h10-1', name: 'Polar H10 E997042F', rssi: -60, reference: null, sources: ['test'] }]
+  const peers = overrides.peers ?? [
+    { id: 'peer-h10-1', name: 'Polar H10 E997042F', rssi: -60, reference: null, sources: ['test'] }
+  ]
   const reads = {
     [BATTERY_LEVEL]: new Uint8Array([85]),
     [MANUFACTURER_NAME]: textBytes('Polar Electro Oy'),
@@ -159,6 +172,7 @@ function makeDashboardHost(overrides = {}) {
   const batteryError = overrides.batterySubscribeError ?? null
   const connections = new Map()
   const cpStreams = []
+  const writes = []
 
   const characteristic = (service, uuid) => ({
     uuid,
@@ -170,7 +184,11 @@ function makeDashboardHost(overrides = {}) {
     },
     async write(bytes) {
       calls.push(`write ${uuid}`)
+      writes.push([...bytes])
       if (uuid === PMD_CONTROL_POINT) {
+        if (overrides.onPmdWrite?.(bytes, { cpStreams, subscriptions, runtime }) === false) {
+          return { state: 'written' }
+        }
         const op = bytes[0]
         const ok = op === 0x01 || op === 0x02 || op === 0x03
         const response =
@@ -178,7 +196,9 @@ function makeDashboardHost(overrides = {}) {
             ? new Uint8Array([0xf0, op, bytes[1] ?? 0, 0x00, 0x00, 0x00, 0x01, 0x82, 0x00, 0x01, 0x01, 0x0e, 0x00])
             : new Uint8Array([0xf0, op ?? 0, bytes[1] ?? 0, ok ? 0x00 : 0x01])
         queueMicrotask(() => {
-          cpStreams.at(-1)?.push({ value: response, delivery: 'indication', observedAtMonotonicMs: runtime.now(), sequence: 1 })
+          cpStreams
+            .at(-1)
+            ?.push({ value: response, delivery: 'indication', observedAtMonotonicMs: runtime.now(), sequence: 1 })
         })
       }
       return { state: 'written' }
@@ -194,7 +214,7 @@ function makeDashboardHost(overrides = {}) {
         effectiveDelivery: uuid === PMD_CONTROL_POINT ? 'indication' : 'notification',
         async remove() {
           calls.push(`unsubscribe ${uuid}`)
-          values.end()
+          if (!overrides.keepRemovedStreams) values.end()
           return { state: 'released', failures: [] }
         }
       }
@@ -310,8 +330,442 @@ function makeDashboardHost(overrides = {}) {
     serviceData: null,
     observedAtMonotonicMs: runtime.now()
   })
-  return { host, calls, runtime, scanStream, scanEvents, subscriptions, connections, connectionFor, observationFor, peers }
+  return {
+    host,
+    calls,
+    runtime,
+    scanStream,
+    scanEvents,
+    subscriptions,
+    connections,
+    connectionFor,
+    observationFor,
+    peers,
+    writes
+  }
 }
+
+async function microtaskUntil(description, probe) {
+  for (let step = 0; step < 3000; step += 1) {
+    if (probe()) return
+    await Promise.resolve()
+  }
+  assert.fail(`did not reach ${description} through scheduled microtasks`)
+}
+
+function accFrameBytes(samples) {
+  const bytes = new Uint8Array(10 + samples.length * 6)
+  bytes[0] = 2
+  bytes[9] = 1
+  const view = new DataView(bytes.buffer)
+  view.setBigUint64(1, 123456789012345678n, true)
+  samples.forEach((point, index) =>
+    point.forEach((axis, component) => view.setInt16(10 + index * 6 + component * 2, axis, true))
+  )
+  return bytes
+}
+
+test('ACC options default off and validate every supported rate/range without coercion', () => {
+  assert.deepEqual(parseLiveDashboardStartOptions({}), {
+    devices: 'all-polar',
+    ecg: true,
+    acc: false,
+    accSampleRateHz: 200,
+    accRangeG: 8
+  })
+  for (const accSampleRateHz of [25, 50, 100, 200]) {
+    for (const accRangeG of [2, 4, 8])
+      assert.equal(
+        parseLiveDashboardStartOptions({ acc: true, accSampleRateHz, accRangeG }).accSampleRateHz,
+        accSampleRateHz
+      )
+  }
+  for (const options of [{ accSampleRateHz: 130 }, { accRangeG: 16 }, { accSampleRateHz: '200' }, { acc: 1 }]) {
+    assert.throws(() => parseLiveDashboardStartOptions(options), { code: 'scenario.invalid-argument' })
+  }
+})
+
+test('ECG and ACC share one PMD channel, route early frames independently, and stop both', async () => {
+  const fixture = makeDashboardHost({
+    reads: { [PMD_CONTROL_POINT]: new Uint8Array([0, 5, 0]) },
+    onPmdWrite(bytes, { subscriptions, runtime }) {
+      if (bytes[0] === 2) {
+        lastSubscription(subscriptions, PMD_DATA).values.push({
+          value:
+            bytes[1] === 2
+              ? accFrameBytes([
+                  [-2000, 0, 1000],
+                  [4, 5, 6]
+                ])
+              : ecgFrameBytes(123n, [7, 8]),
+          delivery: 'notification',
+          observedAtMonotonicMs: runtime.now(),
+          sequence: bytes[1]
+        })
+      }
+    }
+  })
+  const scenario = new LiveDashboardScenario(fixture.host)
+  await scenario.dispatch('start', { acc: true, accSampleRateHz: 50, accRangeG: 4 })
+  fixture.scanStream.push(fixture.observationFor(fixture.peers[0]))
+  await microtaskUntil('both sensors streaming', () => tileOf(scenario, fixture.peers[0].id)?.status === 'streaming')
+  const tile = tileOf(scenario, fixture.peers[0].id)
+  assert.equal(tile.ecgSamples, 2)
+  assert.equal(tile.accSamples, 2)
+  assert.deepEqual(tile.lastAccMilliG, { x: 4, y: 5, z: 6 })
+  assert.deepEqual(tile.accSettings, { sampleRateHz: 50, resolutionBits: 16, rangeG: 4 })
+  assert.equal(tile.parseFailures, 0)
+  for (const uuid of [PMD_CONTROL_POINT, PMD_DATA])
+    assert.equal(fixture.subscriptions.filter(sub => sub.uuid === uuid).length, 1)
+  await scenario.dispatch('stop', {})
+  assert.deepEqual(
+    fixture.writes.filter(bytes => bytes[0] === 3).map(bytes => bytes[1]),
+    [0, 2, 0, 2]
+  )
+})
+
+test('same-opcode ECG response cannot complete an ACC request; refused ACC start compensates both streams', async () => {
+  let answerAcc = null
+  const fixture = makeDashboardHost({
+    reads: { [PMD_CONTROL_POINT]: new Uint8Array([0, 5, 0]) },
+    onPmdWrite(bytes, { cpStreams, runtime }) {
+      if (bytes[0] !== 2 || bytes[1] !== 2) return
+      const push = measurement =>
+        cpStreams
+          .at(-1)
+          .push({
+            value: new Uint8Array([0xf0, 2, measurement, measurement === 2 ? 1 : 0]),
+            delivery: 'indication',
+            sequence: 1,
+            observedAtMonotonicMs: runtime.now()
+          })
+      push(0)
+      answerAcc = () => push(2)
+      return false
+    }
+  })
+  const scenario = new LiveDashboardScenario(fixture.host)
+  await scenario.dispatch('start', { acc: true })
+  fixture.scanStream.push(fixture.observationFor(fixture.peers[0]))
+  await microtaskUntil('wrong-type reply observed', () =>
+    scenario.recentEvents().some(event => event.kind === 'tile-pmd-control-point-unsolicited')
+  )
+  assert.notEqual(tileOf(scenario, fixture.peers[0].id).status, 'streaming')
+  answerAcc()
+  await microtaskUntil('failed setup unwind', () =>
+    scenario.recentEvents().some(event => event.kind === 'tile-configure-failed')
+  )
+  assert.deepEqual(
+    fixture.writes.filter(bytes => bytes[0] === 3).map(bytes => bytes[1]),
+    [0, 2, 0, 2]
+  )
+  assert.equal(tileOf(scenario, fixture.peers[0].id).accError.code, 'pmd.request-rejected')
+  await scenario.dispatch('stop', {})
+})
+
+test('ACC bounded display and shared PMD loss stay explicit, malformed ACC never poisons ECG', async () => {
+  const fixture = makeDashboardHost({ reads: { [PMD_CONTROL_POINT]: new Uint8Array([0, 5, 0]) } })
+  const scenario = new LiveDashboardScenario(fixture.host)
+  await scenario.dispatch('start', { acc: true, accSampleRateHz: 25, accRangeG: 2 })
+  fixture.scanStream.push(fixture.observationFor(fixture.peers[0]))
+  await microtaskUntil('streaming', () => tileOf(scenario, fixture.peers[0].id)?.status === 'streaming')
+  const data = lastSubscription(fixture.subscriptions, PMD_DATA).values
+  data.push({
+    value: accFrameBytes(Array.from({ length: 400 }, (_, index) => [index, -index, 1000])),
+    sequence: 1,
+    delivery: 'notification',
+    observedAtMonotonicMs: 1
+  })
+  data.push({ value: new Uint8Array([2]), sequence: 2, delivery: 'notification', observedAtMonotonicMs: 2 })
+  data.push({ value: ecgFrameBytes(5n, [42]), sequence: 3, delivery: 'notification', observedAtMonotonicMs: 3 })
+  data.notice({ kind: 'overflow', policy: 'drop-oldest', droppedItems: 2, droppedBytes: 10, replacedItems: 1 })
+  await microtaskUntil('loss counted', () => tileOf(scenario, fixture.peers[0].id)?.pmdDroppedItems === 2)
+  const tile = tileOf(scenario, fixture.peers[0].id)
+  assert.equal(tile.accSamples, 400)
+  assert.equal(tile.accBuffered, 250)
+  assert.equal(tile.accDisplay.length, 125)
+  assert.deepEqual(tile.accDisplay.at(-1), { x: 399, y: -399, z: 1000 })
+  assert.equal(tile.ecgSamples, 1)
+  assert.equal(tile.parseFailures, 1)
+  assert.notEqual(tile.accError, null)
+  assert.equal(tile.pmdDroppedBytes, 10)
+  assert.equal(tile.pmdReplacedItems, 1)
+  await scenario.dispatch('stop', {})
+})
+
+test('link loss resubscribes the shared channel and restarts both configured streams', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] })
+  const fixture = makeDashboardHost({ reads: { [PMD_CONTROL_POINT]: new Uint8Array([0, 5, 0]) } })
+  const scenario = new LiveDashboardScenario(fixture.host)
+  await scenario.dispatch('start', { acc: true, accSampleRateHz: 100, accRangeG: 4 })
+  fixture.scanStream.push(fixture.observationFor(fixture.peers[0]))
+  await microtaskUntil('first generation', () => tileOf(scenario, fixture.peers[0].id)?.status === 'streaming')
+  fixture
+    .connectionFor(fixture.peers[0].id)
+    .lifecycleEvents.push({
+      sequence: 1,
+      previous: 'connected',
+      current: 'lost',
+      cause: 'connection.lost',
+      connectionGeneration: 'gen-peer-h10-1'
+    })
+  await microtaskUntil('backoff', () => tileOf(scenario, fixture.peers[0].id)?.supervisorState === 'backoff')
+  context.mock.timers.tick(1000)
+  await microtaskUntil('second generation', () => tileOf(scenario, fixture.peers[0].id)?.status === 'streaming')
+  assert.deepEqual(
+    fixture.writes.filter(bytes => bytes[0] === 2).map(bytes => bytes[1]),
+    [0, 2, 0, 2]
+  )
+  for (const uuid of [PMD_CONTROL_POINT, PMD_DATA])
+    assert.equal(fixture.subscriptions.filter(sub => sub.uuid === uuid).length, 2)
+  lastSubscription(fixture.subscriptions, PMD_DATA).values.push({
+    value: accFrameBytes([[11, 12, 13]]),
+    sequence: 1,
+    delivery: 'notification',
+    observedAtMonotonicMs: 1
+  })
+  await microtaskUntil('post-reconnect ACC', () => tileOf(scenario, fixture.peers[0].id)?.accSamples === 1)
+  assert.deepEqual(tileOf(scenario, fixture.peers[0].id).lastAccMilliG, { x: 11, y: 12, z: 13 })
+  assert.deepEqual(tileOf(scenario, fixture.peers[0].id).accSettings, {
+    sampleRateHz: 100,
+    resolutionBits: 16,
+    rangeG: 4
+  })
+  await scenario.dispatch('stop', {})
+})
+
+test('recording exports exact raw sensor time and metadata, retains errors/loss, and never puts packets in snapshots/history', async () => {
+  const fixture = makeDashboardHost({ reads: { [PMD_CONTROL_POINT]: new Uint8Array([0, 5, 0]) } })
+  const scenario = new LiveDashboardScenario(fixture.host)
+  await scenario.dispatch('record-start', { label: 'real H10', notes: 'comparison session' })
+  await scenario.dispatch('start', { acc: true })
+  fixture.scanStream.push(fixture.observationFor(fixture.peers[0]))
+  await microtaskUntil('streaming', () => tileOf(scenario, fixture.peers[0].id)?.status === 'streaming')
+  const bytes = accFrameBytes([[1, 2, 3]])
+  const expectedHex = Buffer.from(bytes).toString('hex')
+  const data = lastSubscription(fixture.subscriptions, PMD_DATA).values
+  data.push({ value: bytes, sequence: 1, delivery: 'notification', observedAtMonotonicMs: 3 })
+  data.push({ value: new Uint8Array([2]), sequence: 2, delivery: 'notification', observedAtMonotonicMs: 4 })
+  data.notice({ kind: 'overflow', policy: 'drop-oldest', droppedItems: 1, droppedBytes: 16, replacedItems: 0 })
+  await microtaskUntil('captured loss', () => tileOf(scenario, fixture.peers[0].id)?.pmdDroppedItems === 1)
+  bytes.fill(0)
+  await scenario.dispatch('stop', {})
+  assert.equal(scenario.snapshot().recording.phase, 'stopped')
+  assert.equal(typeof scenario.snapshot().recording.records, 'number')
+  const exported = await scenario.dispatch('record-export', {})
+  assert.equal(exported.schema, 'ubm-pmd-recording/1')
+  assert.equal(exported.metadata.label, 'real H10')
+  assert.equal(exported.metadata.notes, 'comparison session')
+  const packet = exported.records.find(record => record.kind === 'packet' && record.data.sensorTimestampNs)
+  assert.equal(packet.data.sensorTimestampNs, '123456789012345678')
+  assert.equal(packet.data.bytesHex.replaceAll(' ', '').toLowerCase(), expectedHex)
+  assert.equal(packet.peerId, fixture.peers[0].id)
+  assert.equal(packet.generation, 'gen-peer-h10-1')
+  assert.deepEqual(packet.data.settings, { sampleRateHz: 200, resolutionBits: 16, rangeG: 8 })
+  assert.ok(
+    exported.records.some(record => record.kind === 'generation' && record.data.device?.firmwareRevision === '3.2.1')
+  )
+  assert.ok(exported.records.some(record => record.kind === 'error'))
+  assert.ok(exported.records.some(record => record.kind === 'loss'))
+  assert.ok(!JSON.stringify(scenario.recentEvents()).includes('123456789012345678'))
+  assert.ok(!JSON.stringify(scenario.snapshot()).includes('123456789012345678'))
+  await assert.rejects(scenario.dispatch('record-start', {}))
+  await scenario.dispatch('record-clear', {})
+  assert.equal(scenario.snapshot().recording.phase, 'empty')
+})
+
+test('prior-generation control responses and values cannot settle or mutate the new ACC session', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] })
+  let starts = 0
+  let currentReply = null
+  const fixture = makeDashboardHost({
+    keepRemovedStreams: true,
+    reads: { [PMD_CONTROL_POINT]: new Uint8Array([0, 5, 0]) },
+    onPmdWrite(bytes, { cpStreams, runtime }) {
+      if (bytes[0] !== 2 || bytes[1] !== 2 || ++starts !== 2) return
+      const response = {
+        value: new Uint8Array([0xf0, 2, 2, 0]),
+        delivery: 'indication',
+        sequence: 1,
+        observedAtMonotonicMs: runtime.now()
+      }
+      cpStreams[0].push(response)
+      currentReply = () => cpStreams.at(-1).push(response)
+      return false
+    }
+  })
+  const scenario = new LiveDashboardScenario(fixture.host)
+  await scenario.dispatch('start', { ecg: false, acc: true })
+  fixture.scanStream.push(fixture.observationFor(fixture.peers[0]))
+  await microtaskUntil('first generation', () => tileOf(scenario, fixture.peers[0].id)?.status === 'streaming')
+  const oldData = lastSubscription(fixture.subscriptions, PMD_DATA).values
+  fixture
+    .connectionFor(fixture.peers[0].id)
+    .lifecycleEvents.push({
+      sequence: 1,
+      previous: 'connected',
+      current: 'lost',
+      cause: 'connection.lost',
+      connectionGeneration: 'gen-peer-h10-1'
+    })
+  await microtaskUntil('backoff', () => tileOf(scenario, fixture.peers[0].id)?.supervisorState === 'backoff')
+  context.mock.timers.tick(1000)
+  await microtaskUntil('old reply rejected', () =>
+    scenario.recentEvents().some(event => event.kind === 'tile-pmd-stale')
+  )
+  assert.notEqual(tileOf(scenario, fixture.peers[0].id).status, 'streaming')
+  oldData.push({
+    value: accFrameBytes([[99, 99, 99]]),
+    delivery: 'notification',
+    sequence: 1,
+    observedAtMonotonicMs: 1
+  })
+  await microtaskUntil('old value rejected', () =>
+    scenario.recentEvents().some(event => event.kind === 'tile-pmd-stale' && event.data.stream === 'data')
+  )
+  assert.equal(tileOf(scenario, fixture.peers[0].id).accSamples, 0)
+  currentReply()
+  await microtaskUntil('current reply admitted', () => tileOf(scenario, fixture.peers[0].id)?.status === 'streaming')
+  await scenario.dispatch('stop', {})
+  for (const subscription of fixture.subscriptions) subscription.values.end()
+})
+
+test('normal PMD termination is not recorded as data loss', async () => {
+  const fixture = makeDashboardHost({ reads: { [PMD_CONTROL_POINT]: new Uint8Array([0, 5, 0]) } })
+  const scenario = new LiveDashboardScenario(fixture.host)
+  await scenario.dispatch('start', { acc: true })
+  fixture.scanStream.push(fixture.observationFor(fixture.peers[0]))
+  await microtaskUntil('streaming', () => tileOf(scenario, fixture.peers[0].id)?.status === 'streaming')
+  await scenario.dispatch('record-start', {})
+  lastSubscription(fixture.subscriptions, PMD_DATA).values.notice({
+    kind: 'terminal',
+    reason: 'owner-released',
+    droppedItems: 0,
+    droppedBytes: 0,
+    replacedItems: 0
+  })
+  await microtaskUntil('terminal observed', () =>
+    scenario.recentEvents().some(event => event.kind === 'stream-terminal' && event.data.reason === 'owner-released')
+  )
+  await scenario.dispatch('stop', {})
+  assert.deepEqual(scenario.snapshot().recording.incompleteReasons, [])
+})
+
+test('thrown failures from either PMD channel remain visible in tiles and recording', async () => {
+  for (const uuid of [PMD_CONTROL_POINT, PMD_DATA]) {
+    const fixture = makeDashboardHost({ reads: { [PMD_CONTROL_POINT]: new Uint8Array([0, 5, 0]) } })
+    const scenario = new LiveDashboardScenario(fixture.host)
+    await scenario.dispatch('start', { acc: true })
+    fixture.scanStream.push(fixture.observationFor(fixture.peers[0]))
+    await microtaskUntil('streaming', () => tileOf(scenario, fixture.peers[0].id)?.status === 'streaming')
+    await scenario.dispatch('record-start', {})
+    lastSubscription(fixture.subscriptions, uuid).values.fail(
+      Object.assign(new Error('PMD source failed'), { code: 'platform.failure' })
+    )
+    await microtaskUntil('failure recorded', () => scenario.snapshot().recording.incompleteReasons.includes('error'))
+    assert.equal(tileOf(scenario, fixture.peers[0].id).accError.code, 'platform.failure')
+    await scenario.dispatch('stop', {})
+    const exported = await scenario.dispatch('record-export', {})
+    assert.ok(
+      exported.records.some(record => record.kind === 'error' && record.data.error?.code === 'platform.failure')
+    )
+  }
+})
+
+test('stop cancels a held ACC START response and compensates both attempts without advancing time', async () => {
+  let held = false
+  const fixture = makeDashboardHost({
+    reads: { [PMD_CONTROL_POINT]: new Uint8Array([0, 5, 0]) },
+    onPmdWrite(bytes) {
+      if (bytes[0] === 2 && bytes[1] === 2) {
+        held = true
+        return false
+      }
+    }
+  })
+  const scenario = new LiveDashboardScenario(fixture.host)
+  await scenario.dispatch('start', { acc: true })
+  fixture.scanStream.push(fixture.observationFor(fixture.peers[0]))
+  await microtaskUntil('ACC start awaiting response', () => held)
+  await scenario.dispatch('stop', {})
+  await microtaskUntil('both compensating stops', () => fixture.writes.filter(bytes => bytes[0] === 3).length === 4)
+  assert.deepEqual(
+    fixture.writes.filter(bytes => bytes[0] === 3).map(bytes => bytes[1]),
+    [0, 2, 0, 2]
+  )
+  assert.equal(fixture.runtime.pendingTimers(), 0)
+})
+
+test('default dashboard discovers the explicit SIM Polar H10 prefix alongside real straps', async () => {
+  const fixture = makeDashboardHost({
+    peers: [{ id: 'sim-h10', name: 'SIM Polar H10 TEST', rssi: -20, reference: null, sources: ['test'] }]
+  })
+  const scenario = new LiveDashboardScenario(fixture.host)
+  await scenario.dispatch('start', { ecg: false })
+  const query = JSON.parse(fixture.calls.find(call => call.startsWith('scan ')).slice(5))
+  assert.deepEqual(
+    query.anyOf.map(filter => filter.names.prefixes),
+    [['Polar H10'], ['SIM Polar H10']]
+  )
+  fixture.scanStream.push(fixture.observationFor(fixture.peers[0]))
+  await microtaskUntil('simulator streaming', () => tileOf(scenario, 'sim-h10')?.status === 'streaming')
+  await scenario.dispatch('stop', {})
+})
+
+test('all-polar chooser offers real and simulated prefixes in a single prompt', async () => {
+  const fixture = makeDashboardHost({
+    discovery: 'system-chooser',
+    peers: [{ id: 'sim-h10', name: 'SIM Polar H10 TEST', rssi: -20, reference: null, sources: ['test'] }]
+  })
+  const scenario = new LiveDashboardScenario(fixture.host)
+  await scenario.dispatch('start', { ecg: false })
+  const choices = fixture.calls.filter(call => call.startsWith('choose '))
+  assert.equal(choices.length, 1)
+  assert.deepEqual(
+    JSON.parse(choices[0].slice(7)).filters.map(filter => filter.localNamePrefix),
+    ['Polar H10', 'SIM Polar H10']
+  )
+  await microtaskUntil('simulator streaming', () => tileOf(scenario, 'sim-h10')?.status === 'streaming')
+  await scenario.dispatch('stop', {})
+})
+
+test('recording optional metadata is JSON-safe for presets, labels alone, and blank UI fields', async () => {
+  for (const options of [{}, { label: 'simulator' }, { label: '', notes: '' }]) {
+    const scenario = new LiveDashboardScenario(makeDashboardHost().host)
+    await scenario.dispatch('record-start', options)
+    await scenario.dispatch('record-stop', {})
+    const exported = await scenario.dispatch('record-export', {})
+    assert.equal(exported.metadata.label, options.label ?? null)
+    assert.equal(exported.metadata.notes, options.notes ?? null)
+    assert.deepEqual(JSON.parse(JSON.stringify(exported)), exported)
+  }
+})
+
+test('failed cleanup is retained as recording error while the other stream still gets STOP', async () => {
+  let stopCount = 0
+  const fixture = makeDashboardHost({
+    reads: { [PMD_CONTROL_POINT]: new Uint8Array([0, 5, 0]) },
+    onPmdWrite(bytes) {
+      if (bytes[0] === 3 && ++stopCount === 3) throw new Error('ECG stop refused')
+    }
+  })
+  const scenario = new LiveDashboardScenario(fixture.host)
+  await scenario.dispatch('start', { acc: true })
+  fixture.scanStream.push(fixture.observationFor(fixture.peers[0]))
+  await microtaskUntil('streaming', () => tileOf(scenario, fixture.peers[0].id)?.status === 'streaming')
+  await scenario.dispatch('record-start', {})
+  await scenario.dispatch('stop', {})
+  const exported = await scenario.dispatch('record-export', {})
+  assert.ok(
+    exported.records.some(
+      record => record.kind === 'error' && record.data.stage === 'stop' && record.data.measurementType === 0
+    )
+  )
+  assert.deepEqual(
+    fixture.writes.filter(bytes => bytes[0] === 3).map(bytes => bytes[1]),
+    [0, 2, 0, 2]
+  )
+})
 
 function lastSubscription(subscriptions, uuid) {
   const matches = subscriptions.filter(subscription => subscription.uuid === uuid)
@@ -340,7 +794,15 @@ test('live-dashboard is registered on every host with start/stop/snapshot comman
   const scenario = registry.get('live-dashboard')
   const commands = Object.fromEntries(scenario.describe().commands.map(command => [command.name, command]))
   assert.equal(commands.start.acceptsDevice, false)
-  assert.deepEqual(Object.keys(commands).sort(), ['snapshot', 'start', 'stop'])
+  assert.deepEqual(Object.keys(commands).sort(), [
+    'record-clear',
+    'record-export',
+    'record-start',
+    'record-stop',
+    'snapshot',
+    'start',
+    'stop'
+  ])
 })
 
 test('a tile appears on scan observation and walks discovered -> connecting -> streaming', async () => {
@@ -367,7 +829,12 @@ test('a tile appears on scan observation and walks discovered -> connecting -> s
   assert.equal(streaming.supervisorState, 'connected')
   const hr = lastSubscription(subscriptions, HR_MEASUREMENT)
   assert.ok(hr !== null, 'heart-rate subscribed')
-  hr.values.push({ value: hrBytes(72, 800), delivery: 'notification', observedAtMonotonicMs: runtime.now(), sequence: 0 })
+  hr.values.push({
+    value: hrBytes(72, 800),
+    delivery: 'notification',
+    observedAtMonotonicMs: runtime.now(),
+    sequence: 0
+  })
   const withHr = await pollFor('heart-rate value', () => {
     const tile = tileOf(scenario, peers[0].id)
     return tile !== null && tile.bpm === 72 ? tile : null
@@ -398,7 +865,10 @@ test('link loss reports the supervisor backoff word as reconnecting, then stream
     const tile = tileOf(scenario, peers[0].id)
     return tile !== null && tile.status === 'reconnecting' ? tile : null
   })
-  assert.ok(['backoff', 'connecting', 'configuring', 'disconnecting'].includes(reconnecting.supervisorState), `library state shown (${reconnecting.supervisorState})`)
+  assert.ok(
+    ['backoff', 'connecting', 'configuring', 'disconnecting'].includes(reconnecting.supervisorState),
+    `library state shown (${reconnecting.supervisorState})`
+  )
   assert.equal(reconnecting.lifecycleCause, 'connection.lost')
   const backoffEvent = await pollFor('supervisor backoff event', () =>
     scenario.recentEvents().find(event => event.kind === 'tile-supervisor' && event.data.state === 'backoff')
@@ -423,7 +893,12 @@ test('battery notifies when supported and polls when the library refuses the sub
   await pollFor('plain tile streaming', () => tileOf(plainScenario, plain.peers[0].id)?.status === 'streaming')
   assert.equal(tileOf(plainScenario, plain.peers[0].id).batteryDelivery, 'notification')
   const battery = lastSubscription(plain.subscriptions, BATTERY_LEVEL)
-  battery.values.push({ value: new Uint8Array([85]), delivery: 'notification', observedAtMonotonicMs: plain.runtime.now(), sequence: 0 })
+  battery.values.push({
+    value: new Uint8Array([85]),
+    delivery: 'notification',
+    observedAtMonotonicMs: plain.runtime.now(),
+    sequence: 0
+  })
   await pollFor('battery notification', () => tileOf(plainScenario, plain.peers[0].id)?.batteryPercent === 85)
   await plainScenario.dispatch('stop', {})
 
@@ -440,7 +915,10 @@ test('battery notifies when supported and polls when the library refuses the sub
   assert.equal(polling.batteryPercent, 85, 'the configure-time read still reports a value')
   const readsBefore = refused.calls.filter(call => call === `read ${BATTERY_LEVEL}`).length
   refused.runtime.advance(BATTERY_POLL_MS + 1)
-  await pollFor('periodic battery read', () => refused.calls.filter(call => call === `read ${BATTERY_LEVEL}`).length > readsBefore)
+  await pollFor(
+    'periodic battery read',
+    () => refused.calls.filter(call => call === `read ${BATTERY_LEVEL}`).length > readsBefore
+  )
   const unsupported = refusedScenario.recentEvents().find(event => event.kind === 'tile-battery-poll')
   assert.ok(unsupported !== undefined, 'the fallback is announced, not silent')
   assert.equal(unsupported.data.reason, 'capability.unsupported')
@@ -488,7 +966,12 @@ test('the ECG buffer is bounded and the display is a downsampled ~5 s window', a
   const pushFrames = count => {
     for (let frame = 0; frame < count; frame += 1) {
       timestampNs += 53_846_154n
-      ecg.values.push({ value: ecgFrameBytes(timestampNs, [100, 200, 300, 400, 500, 600, 700]), delivery: 'notification', observedAtMonotonicMs: runtime.now(), sequence: frame })
+      ecg.values.push({
+        value: ecgFrameBytes(timestampNs, [100, 200, 300, 400, 500, 600, 700]),
+        delivery: 'notification',
+        observedAtMonotonicMs: runtime.now(),
+        sequence: frame
+      })
     }
   }
   pushFrames(200)
@@ -533,9 +1016,22 @@ test('many straps stream side by side, one tile each', async () => {
   assert.deepEqual([...scenario.snapshot().tileOrder].sort(), ['peer-h10-a', 'peer-h10-b'])
   const hrStreams = subscriptions.filter(subscription => subscription.uuid === HR_MEASUREMENT)
   assert.equal(hrStreams.length, 2, 'one heart-rate subscription per strap')
-  hrStreams[0].values.push({ value: hrBytes(70), delivery: 'notification', observedAtMonotonicMs: runtime.now(), sequence: 0 })
-  hrStreams[1].values.push({ value: hrBytes(120), delivery: 'notification', observedAtMonotonicMs: runtime.now(), sequence: 0 })
-  await pollFor('per-strap heart rates', () => scenario.snapshot().tiles[strapA.id]?.bpm === 70 && scenario.snapshot().tiles[strapB.id]?.bpm === 120)
+  hrStreams[0].values.push({
+    value: hrBytes(70),
+    delivery: 'notification',
+    observedAtMonotonicMs: runtime.now(),
+    sequence: 0
+  })
+  hrStreams[1].values.push({
+    value: hrBytes(120),
+    delivery: 'notification',
+    observedAtMonotonicMs: runtime.now(),
+    sequence: 0
+  })
+  await pollFor(
+    'per-strap heart rates',
+    () => scenario.snapshot().tiles[strapA.id]?.bpm === 70 && scenario.snapshot().tiles[strapB.id]?.bpm === 120
+  )
   await scenario.dispatch('stop', {})
   assert.equal(scenario.snapshot().tiles[strapA.id]?.status, 'off')
   assert.equal(scenario.snapshot().tiles[strapB.id]?.status, 'off')
@@ -552,7 +1048,7 @@ test('a named device list scans exact names; bad arguments are refused, never ig
   scanStream.push(observationFor(peers[0]))
   await pollFor('named tile', () => tileOf(scenario, peers[0].id)?.status === 'streaming')
   await scenario.dispatch('stop', {})
-  await assert.rejects(scenario.dispatch('start', { devices: [ '' ] }), { code: 'scenario.invalid-argument' })
+  await assert.rejects(scenario.dispatch('start', { devices: [''] }), { code: 'scenario.invalid-argument' })
   await assert.rejects(scenario.dispatch('start', { devices: 42 }), { code: 'scenario.invalid-argument' })
   await scenario.dispatch('stop', {}).catch(() => {})
 })
@@ -574,7 +1070,10 @@ test('a chooser-only backend acquires through choose, never scan', async () => {
   const scenario = new LiveDashboardScenario(host)
   await scenario.dispatch('start', { devices: ['Polar H10 E997042F'], ecg: false })
   await pollFor('chooser tile streaming', () => tileOf(scenario, peers[0].id)?.status === 'streaming')
-  assert.ok(calls.some(call => call.startsWith('choose ')), 'the system chooser acquires the peer')
+  assert.ok(
+    calls.some(call => call.startsWith('choose ')),
+    'the system chooser acquires the peer'
+  )
   assert.ok(!calls.some(call => call.startsWith('scan ')), 'no scan on a chooser-only backend')
   await scenario.dispatch('stop', {})
 })

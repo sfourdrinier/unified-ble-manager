@@ -113,7 +113,8 @@ The **Live dashboard** screen (`src/screens/MainStack/LiveDashboardScreen/`)
 renders the shared `live-dashboard` scenario: one tile per Polar H10 in
 range with the strap name, live heart rate (large), RR intervals, skin
 contact, a scrolling PMD ECG trace (~5 s, drawn with plain Views — no
-charting dependency), battery %, firmware revision, model and serial. Tile
+charting dependency), optional three-axis accelerometer trace/readings in
+milli-g, battery %, firmware revision, model and serial. Tile
 states are `discovered`, `connecting`, `streaming`, `reconnecting` (through
 the scenario's `createConnectionSupervisor`), and greyed `lost`/`off` with
 the last-seen age; each tile also shows the library's own words
@@ -137,6 +138,20 @@ UI updates ride the scenario's throttled snapshots (250 ms); heart-rate
 values, the bounded ECG ring buffer and battery-on-change keep the BLE
 delivery path unblocked. Drive it headlessly with
 `pnpm driver run <host> live-dashboard start '{"devices":"all-polar"}'`.
+
+ACC controls select 25/50/100/200 Hz and ±2/4/8 G at 16 bits; ECG remains
+independently selectable. Stop the live run before changing its settings.
+The recording controls start/stop an opt-in bounded raw PMD capture and export
+a real JSON document before opening the platform share sheet. A closed sheet
+does not prove an external save; the UI reports the retained local file URI
+separately, including sharing failures. Rebuild the development app after
+installing the `expo-file-system` and `expo-sharing` dependencies.
+
+See [the shared recording and comparison guide](../examples-shared/driver/README.md#record-and-compare-a-simulator-with-a-real-h10)
+for capture limits, privacy, exact timestamps, the offline comparison command,
+and the stationary/motion protocol to repeat with a real H10. An unexported
+recording is lost on process termination; this UI recorder does not substitute
+for native background collection or establish real-device fidelity.
 
 ## Apple TV (tvOS)
 

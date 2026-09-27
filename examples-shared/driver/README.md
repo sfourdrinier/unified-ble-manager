@@ -18,7 +18,7 @@ retained, checksum-bound records described in [`evidence/v1/`](../../evidence/).
 | `protocol.ts`                                            | Wire contract `ubm-test-driver/1`, loaded by every host and by the server                                                            |
 | `scenario-core.ts`                                       | `ScenarioController`, `ScenarioRegistry` (including `stopAll`), typed command arguments, console runtime                             |
 | `scenarios/*.ts`                                         | `h10-stream`, `link-loss`, `device-info`, `mtu`, `scan-details`, `ecg`, `background`, `restoration`, `h10-capture`, `live-dashboard` |
-| `polar-pmd.ts`                                           | Polar PMD (ECG) framing, from Polar's BLE SDK                                                                                        |
+| `polar-pmd.ts`                                           | Polar PMD ECG/ACC framing and H10 settings, from Polar's BLE SDK                                                                      |
 | `host.ts`                                                | The host-adapter seam (`DriverHost`), peer acquisition, adapter readiness, capability lease                                          |
 | `user-gesture.ts`                                        | The explicit pending-user-gesture gate (Web Bluetooth chooser)                                                                       |
 | `remote-channel.ts`, `create-driver.ts`, `driver-url.ts` | Host → server channel, registry factory, `disposeDriver` (hot-reload teardown), URL rules                                            |
@@ -224,6 +224,65 @@ node examples-shared/driver/server/cli.mjs capture <host-id> --device "Polar H10
 ```
 
 ### Live dashboard (`live-dashboard`)
+
+ECG and ACC are independently selectable. ACC accepts `acc: true`,
+`accSampleRateHz: 25 | 50 | 100 | 200` (default 200), and
+`accRangeG: 2 | 4 | 8` (default 8), with fixed 16-bit XYZ samples in milli-g.
+Both streams share the device's PMD control/data channels. Failed commands,
+malformed frames and stream loss stay visible rather than becoming empty traces.
+
+#### Record and compare a simulator with a real H10
+
+1. Stop any existing run, choose one exact device and use the same ECG/ACC
+   settings for both captures. Give each recording a meaningful `label` and
+   `notes` (simulator profile/source revision or H10 firmware, posture/motion).
+2. Run `record-start` **before** `start` to include initial commands and settings.
+   Recording can also start during a run, but cannot reconstruct earlier packets.
+3. Run the desired interval, then `stop` to retain cleanup commands and stop the
+   recording. `record-stop` stops only recording while live streams continue.
+4. `record-export` returns `ubm-pmd-recording/1` JSON. Browser panels request a
+   JSON download; Expo writes a local document then opens the native share sheet.
+   Remote driver callers receive the full artifact only on this explicit command.
+   Export before `record-clear`; clearing explicitly discards the in-memory capture.
+
+Example command arguments for `live-dashboard`:
+
+```json
+{"command":"record-start","args":{"label":"sim-200hz-8g","notes":"stationary synthetic fixture"}}
+{"command":"start","args":{"devices":["SIM Polar H10 0001"],"ecg":true,"acc":true,"accSampleRateHz":200,"accRangeG":8}}
+```
+
+Captures retain raw packet hex, exact sensor timestamps as decimal strings,
+host monotonic receipt times, peer/connection/PMD generations, selected settings,
+discovered device information, and explicit errors/loss. They are bounded to
+20,000 records and 8 MiB of serialized metadata/record payloads (JSON envelope
+and in-memory overhead are additional). At capacity, retained records stop
+growing and every omitted record is counted; the capture is marked incomplete.
+No packets are silently overwritten. Stop before clearing a capacity-limited run.
+
+The recorder is opt-in, in-memory and observes this JS host only. App/process
+termination loses unexported data. It is **not** native durable/background
+recording; the native continuation outbox is a separate mechanism. Exports
+contain device identifiers and physiological data: keep them private unless
+you explicitly choose to share them. Bulk packet data is not mirrored into
+automatic snapshots or command-result history.
+
+Compare exported files locally with Node 22.18+:
+
+```sh
+node examples-shared/driver/compare-pmd-recordings.mjs simulator.json real-h10.json > comparison.json
+```
+
+The tool re-decodes raw bytes using the live parser, groups by peer, connection,
+PMD session, measurement and settings, and reports sample counts, sensor-clock
+rate, per-axis min/max/mean, decode errors and recorded loss. Timestamp
+discontinuities use a half-sample-period tolerance and never cross generations.
+Match the settings before comparing. For a real H10, first record stationary
+orientations (gravity near 1000 milli-g on the relevant axis), then controlled
+motion; repeat every rate/range pair and both ECG/ACC stop orders. Synthetic
+waveforms and different physical motion are not expected to match byte-for-byte.
+The report explicitly does **not** establish device equivalence or hardware
+qualification; real-device captures remain required.
 
 The `live-dashboard` scenario keeps one tile per Polar H10 in range: the
 strap name, live heart rate with RR intervals and skin-contact state, a

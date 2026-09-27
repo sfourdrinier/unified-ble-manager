@@ -4,6 +4,18 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Unreleased
 
+### Test-app ECG and accelerometer comparison
+
+- Add independent H10 ACC selection beside ECG in the shared live dashboard,
+  all 12 H10 rate/range combinations and a three-axis milli-g display in Expo.
+  ECG and ACC share one PMD control/data subscription and retain distinct
+  command and generation identities through reconnection and cleanup.
+- Add opt-in bounded raw PMD recording, explicit loss/error and generation
+  records, local JSON file export/share and an offline comparison summary.
+  Keep bulk captures out of automatic snapshots and event history. Captures
+  are host-observed data, not a promise of durable background recording or
+  proof that synthetic ACC matches real H10 motion.
+
 ### H10 simulator
 
 - Implement all H10 accelerometer settings (25/50/100/200 Hz, 16-bit XYZ,

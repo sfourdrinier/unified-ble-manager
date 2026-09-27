@@ -46,6 +46,33 @@ function collect(target) {
   return updates
 }
 
+test('explicit artifact export returns full content without copying it into events or logs', async () => {
+  const runtime = createFakeRuntime()
+  const scenario = new CounterScenario(runtime)
+  scenario.commands.export = defineCommand({
+    label: 'Export',
+    description: 'explicit local artifact',
+    parse: args.none,
+    run: async () => ({ rawPackets: ['sensitive-large-payload'] }),
+    summarizeResult: () => ({ packets: 1 })
+  })
+  const updates = collect(scenario)
+  assert.deepEqual(await scenario.dispatch('export', {}), { rawPackets: ['sensitive-large-payload'] })
+  const event = updates.find(update => update.type === 'event' && update.event.kind === 'command-result')
+  assert.deepEqual(event.event.data.result, { packets: 1 })
+  assert.equal(JSON.stringify(scenario.recentEvents()).includes('sensitive-large-payload'), false)
+  scenario.commands.export = defineCommand({
+    label: 'Export',
+    description: 'artifact without log summary',
+    parse: args.none,
+    run: async () => ({ rawPackets: ['second-sensitive-payload'] }),
+    summarizeResult: () => null
+  })
+  await scenario.dispatch('export', {})
+  assert.equal(scenario.recentEvents().at(-1).data.result, null)
+  assert.equal(JSON.stringify(runtime.logs).includes('second-sensitive-payload'), false)
+})
+
 test('registry dispatch runs the command, brackets it with events and publishes the snapshot', async () => {
   const runtime = createFakeRuntime('expo/android')
   const registry = new ScenarioRegistry([new CounterScenario(runtime)])
@@ -62,8 +89,20 @@ test('registry dispatch runs the command, brackets it with events and publishes 
 test('describe lists every command with its presets (what the UI renders as buttons)', () => {
   const registry = new ScenarioRegistry([new CounterScenario(createFakeRuntime())])
   assert.deepEqual(registry.describe()[0].commands, [
-    { name: 'add', label: 'Add', description: 'adds n', presets: [{ label: 'Add 1', args: { n: 1 } }], acceptsDevice: false },
-    { name: 'fail', label: 'Fail', description: 'always fails', presets: [{ label: 'Fail', args: {} }], acceptsDevice: false }
+    {
+      name: 'add',
+      label: 'Add',
+      description: 'adds n',
+      presets: [{ label: 'Add 1', args: { n: 1 } }],
+      acceptsDevice: false
+    },
+    {
+      name: 'fail',
+      label: 'Fail',
+      description: 'always fails',
+      presets: [{ label: 'Fail', args: {} }],
+      acceptsDevice: false
+    }
   ])
 })
 
@@ -72,7 +111,10 @@ test('a failing command is reported as command-failed with its code and rethrown
   const updates = collect(registry)
   await assert.rejects(registry.dispatch('counter', 'fail', {}), { code: 'gatt.failed' })
   const failed = updates.find(update => update.type === 'event' && update.event.kind === 'command-failed')
-  assert.deepEqual(failed.event.data, { command: 'fail', error: { code: 'gatt.failed', message: 'boom', detail: null } })
+  assert.deepEqual(failed.event.data, {
+    command: 'fail',
+    error: { code: 'gatt.failed', message: 'boom', detail: null }
+  })
 })
 
 test('unknown scenario, unknown command and invalid arguments reject with typed codes', async () => {
@@ -97,9 +139,15 @@ test('snapshot publishing is throttled to one per interval with a trailing publi
   scenario.patch({ total: 1 })
   scenario.patch({ total: 2 })
   scenario.patch({ total: 3 })
-  assert.deepEqual(updates.map(update => update.snapshot.total), [1])
+  assert.deepEqual(
+    updates.map(update => update.snapshot.total),
+    [1]
+  )
   runtime.advance(SNAPSHOT_MIN_INTERVAL_MS)
-  assert.deepEqual(updates.map(update => update.snapshot.total), [1, 3])
+  assert.deepEqual(
+    updates.map(update => update.snapshot.total),
+    [1, 3]
+  )
   assert.equal(runtime.pendingTimers(), 0)
 })
 
@@ -144,13 +192,20 @@ test('a plain controller has nothing to stop', async () => {
 
 test('stopAll stops every scenario and reports what each released', async () => {
   const runtime = createFakeRuntime()
-  const holding = new HoldingScenario(runtime, 'holding', { cleanup: [{ step: 'connection.release', state: 'released', detail: null }] })
+  const holding = new HoldingScenario(runtime, 'holding', {
+    cleanup: [{ step: 'connection.release', state: 'released', detail: null }]
+  })
   const idle = new HoldingScenario(runtime, 'idle', { running: false })
   const registry = new ScenarioRegistry([holding, idle, new CounterScenario(runtime)])
   const report = await registry.stopAll()
   assert.deepEqual(report, {
     scenarios: [
-      { scenario: 'holding', wasRunning: true, cleanup: [{ step: 'connection.release', state: 'released', detail: null }], error: null },
+      {
+        scenario: 'holding',
+        wasRunning: true,
+        cleanup: [{ step: 'connection.release', state: 'released', detail: null }],
+        error: null
+      },
       { scenario: 'idle', wasRunning: false, cleanup: [], error: null },
       { scenario: 'counter', wasRunning: false, cleanup: [], error: null }
     ],
@@ -164,10 +219,16 @@ test('stopAll stops the others when one fails, then rejects with every failure i
   const leaking = new HoldingScenario(runtime, 'leaking', {
     cleanup: [
       { step: 'subscription.remove', state: 'released', detail: null },
-      { step: 'connection.release', state: 'threw', detail: { code: 'platform.failure', message: 'gatt close failed', detail: null } }
+      {
+        step: 'connection.release',
+        state: 'threw',
+        detail: { code: 'platform.failure', message: 'gatt close failed', detail: null }
+      }
     ]
   })
-  const throwing = new HoldingScenario(runtime, 'throwing', { throws: Object.assign(new Error('teardown exploded'), { code: 'teardown.bug' }) })
+  const throwing = new HoldingScenario(runtime, 'throwing', {
+    throws: Object.assign(new Error('teardown exploded'), { code: 'teardown.bug' })
+  })
   const fine = new HoldingScenario(runtime, 'fine')
   const registry = new ScenarioRegistry([leaking, throwing, fine])
   const error = await registry.stopAll().then(
@@ -178,8 +239,18 @@ test('stopAll stops the others when one fails, then rejects with every failure i
   assert.equal(error.code, 'scenario.stop-all-failed')
   assert.equal(fine.stops, 1)
   assert.deepEqual(error.report.failures, [
-    { scenario: 'leaking', step: 'connection.release', state: 'threw', detail: { code: 'platform.failure', message: 'gatt close failed', detail: null } },
-    { scenario: 'throwing', step: 'stop', state: 'threw', detail: { code: 'teardown.bug', message: 'teardown exploded', detail: null } }
+    {
+      scenario: 'leaking',
+      step: 'connection.release',
+      state: 'threw',
+      detail: { code: 'platform.failure', message: 'gatt close failed', detail: null }
+    },
+    {
+      scenario: 'throwing',
+      step: 'stop',
+      state: 'threw',
+      detail: { code: 'teardown.bug', message: 'teardown exploded', detail: null }
+    }
   ])
   assert.deepEqual(error.cause, error.report)
 })
