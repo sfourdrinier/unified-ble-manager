@@ -7,6 +7,15 @@ three precompiled artifacts. Each one carries the sealed `sourceDigest` and
 (never reimplemented anywhere else). Status compares the sealed digests
 against the current sources; a mismatch is `stale`, never silent.
 
+The library build fingerprint's `toolchain.rust` records the repository's
+pinned Rust channel. Its `toolchain.ndk` and `toolchain.xcode` record the
+producer SDKs from the validated staged Android and Apple artifact identities,
+not whichever SDK happens to be installed when JavaScript is sealed. Staged
+artifacts require matching source/schema identities and artifact hashes plus
+nonempty producer metadata. An intentionally unstaged artifact in a source or
+development-package workflow records `null` for its SDK; no installed SDK is
+inferred as a substitute. Changing producer metadata invalidates the seal.
+
 ## The artifacts
 
 | Artifact        | Tree                                                                              | Committed?                     | Canonical builder                                          | Refresh command                                                                                                                     |

@@ -68,7 +68,7 @@ async function createNodeBleManagerFromProviderInternal(
   )
 }
 
-function selectNodeAdapter(
+export function selectNodeAdapter(
   adapters: readonly AdapterDescriptor<string>[],
   selectedAdapterId: string | undefined
 ): AdapterDescriptor<string> {

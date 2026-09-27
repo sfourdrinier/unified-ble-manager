@@ -1,4 +1,5 @@
 import type { PeerReference } from './peer-reference'
+import type { ObservationOrigin, ObservationSource } from './advertisement'
 import { snapshotPeerReference } from './peer-reference'
 import { canonicalBleAddress, canonicalUuid } from './primitives'
 
@@ -45,6 +46,8 @@ export interface NormalizedScanQuery {
 }
 
 export interface NormalizedScanObservation {
+  readonly provenance?: ObservationSource
+  readonly origin?: ObservationOrigin
   readonly peerReference?: PeerReference
   readonly address?: NormalizedObservationAddress
   readonly localName: string | null

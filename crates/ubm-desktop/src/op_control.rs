@@ -407,13 +407,39 @@ pub struct OpControl {
     pub budget: Budget,
     /// The operation's cancellation handle.
     pub ticket: OpTicket,
+    /// Authenticated connection owner for GATT work on a shared topology.
+    connection_lease: Option<String>,
 }
 
 impl OpControl {
     /// Control from an explicit budget and ticket.
     #[must_use]
     pub fn new(budget: Budget, ticket: OpTicket) -> Self {
-        Self { budget, ticket }
+        Self {
+            budget,
+            ticket,
+            connection_lease: None,
+        }
+    }
+
+    /// Bind GATT admission to the caller's existing authoritative lease.
+    #[must_use]
+    pub fn with_connection_lease(mut self, lease: String) -> Self {
+        self.connection_lease = Some(lease);
+        self
+    }
+
+    /// The explicitly supplied GATT caller, never inferred from another owner.
+    #[must_use]
+    pub fn connection_lease(&self) -> Option<&str> {
+        self.connection_lease.as_deref()
+    }
+
+    pub(crate) fn gatt_path(&self, index: usize) -> ubm_core::central::GattOperationPath {
+        match self.connection_lease() {
+            Some(lease) => (index, lease).into(),
+            None => index.into(),
+        }
     }
 
     /// No caller budget, fresh ticket.

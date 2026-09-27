@@ -6,4 +6,5 @@
 // this file neither dev loading nor a release bundle can resolve the entry
 // (finding FXM physical setup: `index.bundle` failed with
 // UnableToResolveError before this file existed).
+import './src/driver/register-headless-continuation'
 import 'expo/AppEntry'

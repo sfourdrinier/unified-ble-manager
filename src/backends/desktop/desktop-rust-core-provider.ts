@@ -25,12 +25,23 @@
 // dbus-next BlueZ backends; their sources remain only as parity references
 // until they are deleted.
 
-import { BackendContractError, contractError } from '../../backend-contract/errors'
+import { contractError } from '../../backend-contract/errors'
+import { admitBluezConnectionPolicy, type BluezConnectionPolicy } from './bluez-connection-policy'
+import {
+  createNativeContinuationController,
+  createNativeContinuationControlAccess
+} from './native-continuation-controller'
+import {
+  compensateDesktopInitialization,
+  cleanupDesktopAllocation,
+  DesktopProcessHostInitializationError
+} from '../../desktop-process-initialization'
 import type { CleanupRecord, NormalizedBleError } from '../../backend-contract/errors'
 import type { BackendAttachment, BackendAttachmentRequest, BackendEvent } from '../../backend-contract/backend'
 import type {
   AdapterBackend,
   BackendConnection,
+  BackendPeerQuery,
   BackendSubscription,
   BleCentralBackend,
   ConnectionBackend,
@@ -172,6 +183,7 @@ import { createBluezPairingGenerationRegistration } from './bluez-pairing-genera
 import { createCoreBluetoothUnsupportedRegistrations } from './desktop-unsupported-capabilities'
 import {
   cleanupRecordFromCloseReport,
+  decodeDesktopRustCoreCapabilityStates,
   desktopRustCoreError,
   desktopRustCoreOperation,
   throwDesktopRustCoreError,
@@ -198,6 +210,7 @@ import {
   type DesktopRustCoreSelector,
   type DesktopRustCoreWriteReadinessEvent
 } from './desktop-rust-core-binding'
+import { createDesktopPeerDirectory } from './desktop-peer-directory'
 
 export const DESKTOP_RUST_CORE_IMPLEMENTATION_VERSION = UNIFIED_BLE_IMPLEMENTATION_VERSION
 
@@ -341,6 +354,7 @@ export interface DesktopRustCoreProviderOptions {
   readonly createOwnerId?: () => string
   /** BlueZ only: the D-Bus bus (the legacy `busKind`); `system` by default. */
   readonly bluezBus?: DesktopRustCoreBluezBus
+  readonly connectionPolicy?: BluezConnectionPolicy
   /**
    * BlueZ only: the host's privileged pairing-generation controller. The
    * package never escalates on its own; with a controller, a pair directing
@@ -478,13 +492,19 @@ function createDesktopRustCoreBackendProviderWithTestOptions(
     return bindingPromise
   }
   const listed = new Map<string, ListedAdapter>()
-  if (profile.platform !== 'bluez' && (options.bluezBus !== undefined || options.pairingGeneration !== undefined)) {
+  if (
+    profile.platform !== 'bluez' &&
+    (options.bluezBus !== undefined ||
+      options.pairingGeneration !== undefined ||
+      options.connectionPolicy !== undefined)
+  ) {
     throw contractError(
       'argument.invalid',
       'core',
       desktopRustCoreOperation(profile.operationPrefix, 'bluez-only-option')
     )
   }
+  const connectionPolicy = admitBluezConnectionPolicy(options.connectionPolicy)
   const context = (resolved: DesktopRustCoreBinding): BackendOpenContext => ({
     profile,
     owner: options.owner,
@@ -494,6 +514,7 @@ function createDesktopRustCoreBackendProviderWithTestOptions(
     hostKind,
     createOwnerId,
     bluezBus: options.bluezBus ?? 'system',
+    connectionPolicy,
     pairingGeneration: options.pairingGeneration ?? null,
     firstStateTimeoutMs: options.firstStateTimeoutMs ?? ADAPTER_INITIALIZATION_TIMEOUT_MS
   })
@@ -540,6 +561,7 @@ interface BackendOpenContext {
   readonly hostKind: 'node' | 'desktop-native'
   readonly createOwnerId: () => string
   readonly bluezBus: DesktopRustCoreBluezBus
+  readonly connectionPolicy: BluezConnectionPolicy | undefined
   readonly pairingGeneration: DesktopRustCoreGenerationController | null
   readonly firstStateTimeoutMs: number
 }
@@ -601,7 +623,10 @@ async function listRustCoreAdapters(context: BackendOpenContext): Promise<readon
         }
       ])
     } finally {
-      await backend.destroy()
+      await cleanupDesktopAllocation(
+        contractError('platform.failure', 'cleanup', 'desktop.list-adapters.cleanup'),
+        () => backend.destroy()
+      )
     }
   }
   let listings
@@ -638,6 +663,7 @@ async function listRustCoreAdapters(context: BackendOpenContext): Promise<readon
     try {
       backend = await openRustCoreBackend(context, pending, 'listing')
     } catch (error) {
+      if (error instanceof DesktopProcessHostInitializationError) throw error
       const normalized = desktopRustCoreError(
         error,
         desktopRustCoreOperation(profile.operationPrefix, 'list-adapters.open')
@@ -656,11 +682,9 @@ async function listRustCoreAdapters(context: BackendOpenContext): Promise<readon
       continue
     }
     const descriptor = backend.identity.attachment.adapter
-    const cleanup = await backend.destroy()
-    const failure = cleanup.failures[0]
-    if (cleanup.state !== 'released' && failure !== undefined) {
-      throw new BackendContractError(failure.error)
-    }
+    await cleanupDesktopAllocation(contractError('platform.failure', 'cleanup', 'desktop.list-adapters.cleanup'), () =>
+      backend.destroy()
+    )
     adapters.push({ adapterId, label: listing.label, deployment: listing.deployment ?? null, descriptor })
   }
   if (adapters.length === 0) {
@@ -819,45 +843,49 @@ async function openRustCoreBackend(
             platform: profile.platform,
             adapterId: adapter.label,
             ...(profile.platform === 'bluez' ? { bluezBus: context.bluezBus } : {}),
+            ...(context.connectionPolicy === undefined ? {} : { connectionPolicy: context.connectionPolicy }),
             ...(context.pairingGeneration === null ? {} : { pairingGeneration: true })
           })
   } catch (error) {
     throwDesktopRustCoreError(error, desktopRustCoreOperation(profile.operationPrefix, 'rust-core-open'))
   }
-  const backend = new DesktopRustCoreBackend({
-    profile,
-    owner: coreOwner,
-    central,
-    now: context.now,
-    radio: context.radio,
-    hostKind: context.hostKind,
-    adapter: adapter.descriptor,
-    bindingDiagnostics: Object.freeze({
-      ...(context.binding.diagnostics ?? {}),
-      ...(adapter.deployment === undefined || adapter.deployment === null ? {} : { deployment: adapter.deployment })
-    }),
-    coreStates: context.binding.capabilityStates(profile.platform, context.pairingGeneration !== null),
-    pairingGeneration: context.pairingGeneration,
-    firstStateTimeoutMs: context.firstStateTimeoutMs,
-    // Legacy listings opened no backend: a listing probe takes no instance number.
-    backendInstance:
-      purpose === 'listing' ? `${profile.platform}-backend-listing` : allocateLegacyInstance(profile.platform)
-  })
+  let backend: DesktopRustCoreBackend | undefined
   try {
+    backend = new DesktopRustCoreBackend({
+      profile,
+      owner: coreOwner,
+      central,
+      now: context.now,
+      radio: context.radio,
+      hostKind: context.hostKind,
+      adapter: adapter.descriptor,
+      bindingDiagnostics: Object.freeze({
+        ...(context.binding.diagnostics ?? {}),
+        ...(adapter.deployment === undefined || adapter.deployment === null ? {} : { deployment: adapter.deployment })
+      }),
+      coreStates: decodeDesktopRustCoreCapabilityStates(
+        await central.runtimeCapabilityStates(),
+        desktopRustCoreOperation(profile.operationPrefix, 'capability-states.instance')
+      ),
+      pairingGeneration: context.pairingGeneration,
+      firstStateTimeoutMs: context.firstStateTimeoutMs,
+      // Legacy listings opened no backend: a listing probe takes no instance number.
+      backendInstance:
+        purpose === 'listing' ? `${profile.platform}-backend-listing` : allocateLegacyInstance(profile.platform)
+    })
     await backend.open()
     return backend
   } catch (error) {
-    const cleanup = await backend.destroy().catch((destroyError: unknown) => {
-      throw new AggregateError([error, destroyError], 'desktop rust core open failed and its cleanup failed')
-    })
-    const failure = cleanup.failures[0]
-    if (cleanup.state !== 'released' && failure !== undefined) {
-      throw new AggregateError(
-        [error, new BackendContractError(failure.error)],
-        'desktop rust core open failed and its cleanup did not release'
-      )
-    }
-    throw error
+    const allocatedBackend = backend
+    return compensateDesktopInitialization(error, () =>
+      allocatedBackend === undefined
+        ? central
+            .close()
+            .then(report =>
+              cleanupRecordFromCloseReport(report, desktopRustCoreOperation(profile.operationPrefix, 'session.dispose'))
+            )
+        : allocatedBackend.destroy()
+    )
   }
 }
 
@@ -1012,11 +1040,21 @@ const PROPERTY_INDICATE = 0x10
  * plan and fan-out, the delivery property check, and event mapping.
  */
 export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeutralBackendIdentity<string>> {
+  /** Trusted process-host seam. Shares this backend's native owner, never opens another central. */
+  nativeContinuationController() {
+    this.assertAlive('desktop-process-host.continuation')
+    return createNativeContinuationController(this.central)
+  }
+  /** Trusted bridge operations; claim preparation never acknowledges its payload. */
+  nativeContinuationControlAccess() {
+    this.assertAlive('desktop-process-host.continuation')
+    return createNativeContinuationControlAccess(this.central)
+  }
   readonly adapter: AdapterBackend<string>
   readonly scanner: ScannerBackend<string>
   readonly connections: ConnectionBackend<string>
   readonly gatt: GattBackend<string>
-  readonly peers?: PeerDirectoryBackend<string> = undefined
+  readonly peers: PeerDirectoryBackend<string> | undefined
   /**
    * Link security through the core's OS adapters (WinRT
    * DeviceInformationPairing, BlueZ Device1.Pair + Agent1), present only
@@ -1122,6 +1160,20 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       Object.freeze({ invoke: (input: MaximumWriteLengthFeatureInput) => this.observeMaximumWriteLength(input) })
     )
     this.security = this.wiring.security ? this.createSecurityBackend() : undefined
+    this.peers = this.wiring.peerDirectory
+      ? createDesktopPeerDirectory({
+          backendId: this.profile.backendId,
+          generation: () => this.generation,
+          connected: (services, options) =>
+            this.runPeerQuery('peers.connected', options, control =>
+              this.central.connectedPeers({ services, ...control })
+            ),
+          resolve: (peerId, options) =>
+            this.runPeerQuery('peers.resolve', options, control => this.central.resolvePeer({ peerId, ...control })),
+          peerId: nativeId => this.peerIdForNativeId(nativeId),
+          assertUsable: (operation, options) => this.assertPeerQueryUsable(operation, options)
+        })
+      : undefined
     const controller = construction.pairingGeneration
     if (controller !== null) {
       this.central.installPairingGenerationController(
@@ -2242,6 +2294,31 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
 
   // -- peers ---------------------------------------------------------------
 
+  private assertPeerQueryUsable(operation: string, options: BackendPeerQuery): void {
+    this.assertOperational(operation)
+    if (options.signal?.aborted === true) throw contractError('operation.aborted', 'core', operation)
+    if (options.deadline !== null && options.deadline !== undefined && options.deadline <= this.now()) {
+      throw contractError('operation.timed-out', 'core', operation)
+    }
+  }
+
+  private async runPeerQuery<Result>(
+    operation: string,
+    options: BackendPeerQuery,
+    read: (control: DesktopRustCoreControl) => Promise<Result>
+  ): Promise<Result> {
+    this.assertPeerQueryUsable(operation, options)
+    const generation = this.generation
+    const result = await this.withTicket(`peer-query-${this.nextOrdinal()}`, options.signal, operation, ticket =>
+      read({ ticket, ...this.budget(options) })
+    )
+    // A read-only lookup may finish after cancellation, destruction or an
+    // adapter reset. Retain observation, but never publish a stale mapping.
+    this.assertPeerQueryUsable(operation, options)
+    if (generation !== this.generation) throw contractError('lifecycle.invalid-state', 'core', operation)
+    return result
+  }
+
   private peerIdForNativeId(nativePeerId: string): PeerId<string> {
     const existing = this.peerIdsByNativeId.get(nativePeerId)
     if (existing !== undefined) return existing
@@ -2643,6 +2720,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
             : null
       }),
       provenance,
+      ...(value.source === undefined ? {} : { origin: value.source }),
       sourceTimestamp: unprovided<SourceTimestamp>('source timestamp not reported by the dispatch surface'),
       receivedAtMonotonicMs: monotonicTimestamp(receivedAt),
       ingressOrdinal: this.nextEventOrdinal(),
@@ -3966,7 +4044,13 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     this.admitGattVerb(gattConnection, 'gatt.read')
     const completion = (async (): Promise<CharacteristicReadResult<string, string>> => {
       const raw = await this.withTicket(correlation, request.operation.signal, operation, ticket =>
-        this.central.read({ peerId: record.nativePeerId, selector, ticket, ...this.budget(request.operation) })
+        this.central.read({
+          peerId: record.nativePeerId,
+          lease: record.lease,
+          selector,
+          ticket,
+          ...this.budget(request.operation)
+        })
       )
       return Object.freeze({
         value: ownedBytes(bytesFromCore(raw.value, operation)),
@@ -4002,6 +4086,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       await this.withTicket(correlation, request.operation.signal, operation, ticket =>
         this.central.write({
           peerId: record.nativePeerId,
+          lease: record.lease,
           selector,
           value,
           mode,
@@ -4034,6 +4119,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       const raw = await this.withTicket(correlation, request.operation.signal, operation, ticket =>
         this.central.readDescriptor({
           peerId: record.nativePeerId,
+          lease: record.lease,
           selector,
           ticket,
           ...this.budget(request.operation)
@@ -4080,6 +4166,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       await this.withTicket(correlation, request.operation.signal, operation, ticket =>
         this.central.writeDescriptor({
           peerId: record.nativePeerId,
+          lease: record.lease,
           selector,
           value,
           ticket,
@@ -4167,6 +4254,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       const enabled = await this.withTicket(correlation, request.operation.signal, operation, ticket =>
         this.central.subscribe({
           peerId: record.nativePeerId,
+          lease: record.lease,
           selector,
           consumer,
           ticket,
@@ -4734,6 +4822,9 @@ const CORE_BACKED_FEATURES = Object.freeze({
 
 /** Which core-backed capabilities this backend wires: the core must implement them on the OS. */
 export interface DesktopRustCoreWiring {
+  readonly connectionDirect: boolean
+  readonly connectionRefusals: readonly DesktopRustCoreCapabilityState[]
+  readonly peerDirectory: boolean
   readonly rssi: boolean
   readonly effectiveMtu: boolean
   readonly maximumWriteLength: boolean
@@ -4750,22 +4841,32 @@ export interface DesktopRustCoreWiring {
  * provider wires through to the contract.
  */
 export function desktopRustCoreWiring(states: readonly DesktopRustCoreCapabilityState[]): DesktopRustCoreWiring {
-  const limited = new Set(states.filter(row => row.state === 'limited').map(row => row.id))
+  const usable = new Set(states.filter(row => row.state === 'supported' || row.state === 'limited').map(row => row.id))
   return Object.freeze({
-    rssi: limited.has(CORE_BACKED_FEATURES.rssi),
-    effectiveMtu: limited.has(CORE_BACKED_FEATURES.effectiveMtu),
-    maximumWriteLength: limited.has(CORE_BACKED_FEATURES.maximumWriteLength),
-    addressTargeting: limited.has(CORE_BACKED_FEATURES.addressTargeting),
-    security: CORE_BACKED_FEATURES.security.every(id => limited.has(id)),
-    maintainConnection: limited.has(BUILT_IN_FEATURE_IDS.backgroundDesktopMaintainConnection),
-    pairingGeneration: limited.has(BUILT_IN_FEATURE_IDS.securityPairingGeneration),
+    connectionDirect: usable.has(BUILT_IN_FEATURE_IDS.connectionDirect),
+    connectionRefusals: Object.freeze(
+      states.filter(
+        row =>
+          (row.state === 'unsupported' || row.state === 'unavailable') &&
+          (row.id === BUILT_IN_FEATURE_IDS.connectionDirect ||
+            row.id === BUILT_IN_FEATURE_IDS.backgroundDesktopMaintainConnection)
+      )
+    ),
+    peerDirectory: usable.has(BUILT_IN_FEATURE_IDS.peerKnown) && usable.has(BUILT_IN_FEATURE_IDS.peerSystemConnected),
+    rssi: usable.has(CORE_BACKED_FEATURES.rssi),
+    effectiveMtu: usable.has(CORE_BACKED_FEATURES.effectiveMtu),
+    maximumWriteLength: usable.has(CORE_BACKED_FEATURES.maximumWriteLength),
+    addressTargeting: usable.has(CORE_BACKED_FEATURES.addressTargeting),
+    security: CORE_BACKED_FEATURES.security.every(id => usable.has(id)),
+    maintainConnection: usable.has(BUILT_IN_FEATURE_IDS.backgroundDesktopMaintainConnection),
+    pairingGeneration: usable.has(BUILT_IN_FEATURE_IDS.securityPairingGeneration),
     // The core registers readiness `limited` everywhere, but only an OS
     // with a real readiness signal answers the probe; elsewhere the row's
     // limitation says there is none, and a watch would be a false claim.
     writeReadiness: states.some(
       row =>
         row.id === BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness &&
-        row.state === 'limited' &&
+        (row.state === 'supported' || row.state === 'limited') &&
         row.limitation !== 'no-readiness-signal'
     )
   })
@@ -4794,10 +4895,77 @@ export function createDesktopRustCoreFeatureRegistry(
       requiredScenarioIds: [...desktopRustCoreSuiteScenarios(suiteId)],
       operation: `${id}.invoke-without-rust-core-dispatch`
     })
-  const registrations: FeatureRegistry['registrations'][number][] = [
-    registration(BUILT_IN_FEATURE_IDS.connectionDirect, 'capability.catalog-v2'),
-    registration(BUILT_IN_FEATURE_IDS.gattDescriptors, 'capability.catalog-v2')
-  ]
+  const registrations: FeatureRegistry['registrations'][number][] = []
+  const refused = (
+    id: typeof BUILT_IN_FEATURE_IDS.connectionDirect | typeof BUILT_IN_FEATURE_IDS.backgroundDesktopMaintainConnection
+  ) => {
+    const base = registration(id, 'capability.catalog-v2')
+    const refusal = wiring.connectionRefusals.find(row => row.id === id)
+    const reason = refusal?.limitation ?? 'native-connection-capability-unreported'
+    const state = refusal?.state === 'unavailable' ? 'unavailable' : 'unsupported'
+    const limitations = Object.freeze([
+      Object.freeze({
+        code: reason,
+        explanation: `The instantiated native radio refuses this connection mechanism: ${reason}.`,
+        affectedGuarantee: 'connection acquisition and retention'
+      })
+    ])
+    return Object.freeze({
+      ...base,
+      state,
+      limitations,
+      evidence: Object.freeze({
+        ...base.evidence,
+        receiptId: `${base.evidence.sourceDigest}:instance-blocked`,
+        evidenceLevel: 'blocked' as const,
+        limitations
+      }),
+      limits: Object.freeze({ availability: Object.freeze({ maximum: 0, minimum: null, unit: 'boolean' }) })
+    })
+  }
+  registrations.push(
+    wiring.connectionDirect
+      ? registration(BUILT_IN_FEATURE_IDS.connectionDirect, 'capability.catalog-v2')
+      : refused(BUILT_IN_FEATURE_IDS.connectionDirect)
+  )
+  registrations.push(registration(BUILT_IN_FEATURE_IDS.gattDescriptors, 'capability.catalog-v2'))
+  if (wiring.connectionRefusals.some(row => row.id === BUILT_IN_FEATURE_IDS.backgroundDesktopMaintainConnection)) {
+    registrations.push(refused(BUILT_IN_FEATURE_IDS.backgroundDesktopMaintainConnection))
+  }
+  if (wiring.peerDirectory) {
+    registrations.push(
+      createBackendOperationCapabilityRegistration({
+        id: BUILT_IN_FEATURE_IDS.peerKnown,
+        implementationVersion: DESKTOP_RUST_CORE_IMPLEMENTATION_VERSION,
+        sourceDigest: `${profile.platform}-rust-core-peer-known-v1`,
+        tckSuiteId: 'capability.catalog-v2',
+        requiredScenarioIds: [...desktopRustCoreSuiteScenarios('capability.catalog-v2')],
+        limitations: [
+          {
+            code: 'references-required',
+            explanation:
+              'Known peer retrieval resolves explicit application-scoped references; it does not enumerate every OS-known peer.',
+            affectedGuarantee: 'unfiltered OS-known enumeration'
+          }
+        ]
+      }),
+      createBackendOperationCapabilityRegistration({
+        id: BUILT_IN_FEATURE_IDS.peerSystemConnected,
+        implementationVersion: DESKTOP_RUST_CORE_IMPLEMENTATION_VERSION,
+        sourceDigest: `${profile.platform}-rust-core-peer-system-connected-v1`,
+        tckSuiteId: 'capability.catalog-v2',
+        requiredScenarioIds: [...desktopRustCoreSuiteScenarios('capability.catalog-v2')],
+        limitations: [
+          {
+            code: 'services-required',
+            explanation:
+              'CoreBluetooth requires one or more service UUIDs for its system-connected directory. Retrieval does not acquire a connection lease.',
+            affectedGuarantee: 'unfiltered system-connected enumeration'
+          }
+        ]
+      })
+    )
+  }
   // F7: RSSI reports integer dBm precision, as the legacy registry did.
   if (wiring.rssi) {
     registrations.push(

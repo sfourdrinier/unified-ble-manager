@@ -44,7 +44,13 @@ import type {
   PortableWritePolicy
 } from '../manager/consumer-handles'
 import { isReadProvenance } from '../backend-contract/operations'
-import type { AdvertisementObservation } from '../backend-contract/advertisement'
+import {
+  isObservationOrigin,
+  isObservationSource,
+  type AdvertisementObservation,
+  type ObservationOrigin,
+  type ObservationSource
+} from '../backend-contract/advertisement'
 import type { AttachmentRecord } from '../backend-contract/identity'
 import type { PeerReference } from '../backend-contract/peer-reference'
 import { snapshotScanPlan } from '../backend-contract/scan-planning'
@@ -239,6 +245,8 @@ export interface IpcServiceData {
 }
 
 export interface IpcAdvertisement {
+  readonly provenance?: ObservationSource
+  readonly origin?: ObservationOrigin
   readonly peerId: string
   readonly peerReference?: PeerReference
   readonly localName: string | null
@@ -3360,6 +3368,9 @@ function isIpcServiceData(value: unknown): value is IpcServiceData {
 
 function isIpcAdvertisement(value: unknown): value is IpcAdvertisement {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  if (Reflect.get(value, 'origin') !== undefined && !isObservationOrigin(Reflect.get(value, 'origin'))) return false
+  if (Reflect.get(value, 'provenance') !== undefined && !isObservationSource(Reflect.get(value, 'provenance')))
+    return false
   if (
     !('peerId' in value) ||
     !('localName' in value) ||
@@ -3415,7 +3426,14 @@ function isNativeScanObservation(value: unknown): value is AdvertisementObservat
     'rawRecord',
     'scanResponseRecord'
   ]
-  return typeof value === 'object' && value !== null && !Array.isArray(value) && requiredKeys.every(key => key in value)
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    requiredKeys.every(key => key in value) &&
+    isObservationSource(Reflect.get(value, 'provenance')) &&
+    (Reflect.get(value, 'origin') === undefined || isObservationOrigin(Reflect.get(value, 'origin')))
+  )
 }
 
 function isIpcCharacteristicRecord(value: unknown): value is IpcCharacteristicRecord {

@@ -51,7 +51,26 @@ The addon is found only from the installed package's own location: never through
 
 ### Scan observations
 
-As in 4.x, a scan reports only what the radio saw while that scan ran. The core queues sightings only while a scan is live and clears the queue when a scan starts or stops, and the provider refuses (with a `scan-observation-foreign` diagnostic) any observation the core queued for another scan. Each observation's `receivedAtMonotonicMs` is when the core received it, on the host's clock, not when the host took it. `provenance` says what it is: the OS's merged device state (BlueZ `Device1`, a known-device report) is `platform-derived`; a single advertisement's own data is `platform-raw` on WinRT and `platform-derived` on CoreBluetooth (a parsed advertisement dictionary) and BlueZ, as the 4.x backends labelled them.
+The core queues reports only while a scan is live and clears the queue when a scan starts or stops, and the provider refuses (with a `scan-observation-foreign` diagnostic) any observation the core queued for another scan. A report is not necessarily a fresh over-air advertisement: scan admission can reobserve known OS device state. Each native observation's `receivedAtMonotonicMs` is when the core received it, on the host's clock, not when the host took it. `provenance` distinguishes `platform-raw`, `platform-derived`, and `core-merged`. The OS's merged device state (BlueZ `Device1`, a known-device report) is `platform-derived`; a single advertisement's own data is `platform-raw` on WinRT and `platform-derived` on CoreBluetooth (a parsed advertisement dictionary) and BlueZ.
+
+Public scan observations preserve this provenance and the optional exact `origin`:
+`advertisement` or `device-state`. The latter may contain the OS's cached service
+UUID union, including Classic services; it is not a claim that those UUIDs were
+advertised in one BLE packet. Electron and Tauri preserve supplied origin through
+IPC. Either metadata field remains absent when the producer does not supply it;
+clients must not infer origin from RSSI, platform, or service UUIDs.
+
+### System-connected peers on macOS
+
+A peripheral already connected elsewhere may no longer advertise. Use
+`manager.peers.connected({ services: ['180d'], timeoutMs: 10_000 })` to retrieve
+matching CoreBluetooth peers, then `manager.connect(peer)` to acquire your own
+connection lease. Lookup does not connect, disconnect, or claim ownership. The
+service filter is mandatory and uses OR semantics. Persisted application-scoped
+references can be resolved without scanning; identifier resolution alone reports
+connection state as unknown. See [peer directories](PEERS.md#corebluetooth-desktop-retrieval)
+for query limitations, cancellation and the distinction between OS connection
+membership and local ownership.
 
 ### Error operation ids
 
@@ -59,9 +78,46 @@ Every public error reports the 4.x operation id of its host and operation, as th
 
 Source mode, for contributors only: `UBM_NAPI_ADDON=/absolute/path/to/ubm_echo.<platform>-<arch>.node` loads that checkout build exclusively (built by `node scripts/ci/build-napi-addon.js`). Digests are still checked. Only the release-profile rule is relaxed.
 
-### BlueZ bus and pairing generation
+### BlueZ connection policy, bus and pairing generation
 
-`createBluezBleManager`, `createDbusNextBluezBackendProvider` and Electron main's `createElectronMainBluezBackendProvider` take the same two options.
+`createBluezBleManager`, `createBluezProcessHost`, `createDbusNextBluezBackendProvider` and Electron main's `createElectronMainBluezBackendProvider` share these trusted host options.
+
+`connectionPolicy: { mode: 'le-bearer', daemonUniqueOwner }` attests that the
+current unique D-Bus owner of `org.bluez` actually implements LE-only bearer
+connect/disconnect. Obtain and verify that owner in trusted host setup; do not
+copy an example owner string. An introspection entry alone is not proof: BlueZ
+5.85 can expose an unimplemented LE interface. The backend checks the owner pin
+before connection effects and never substitutes a restarted daemon or generic
+device-wide `Device1.Connect`/`Disconnect`. It does not run privileged commands,
+modify daemon configuration, or add a compatibility fallback.
+
+Migration from earlier candidates: omission now leaves discovery available but
+connection acquisition unsupported. Use a daemon with the implemented LE bearer
+API and explicitly attest its current owner; older unsupported implementations
+must be upgraded, not opted into device-wide lifecycle behavior. There is no
+legacy policy mode. The same policy applies to a process host's borrowed managers
+and native continuation because they share its central. Policy is BlueZ-only;
+CoreBluetooth and WinRT reject it.
+
+Accepted LE connect/disconnect replies remain owned when a caller cancels.
+An indeterminate reply is not permission to resend the effect or acquire a new
+generation; a refused release stays retryable. Resolving an unknown address uses
+separately owned, adapter-scoped LE discovery, never `ConnectDevice`. Its accepted
+start/stop replies also survive cancellation. A refused discovery stop remains
+cleanup debt and is reported by transport close rather than logged as success.
+All resulting peer identities remain fenced to the original daemon owner.
+
+LE lifecycle support does **not** establish authoritative GATT discovery
+readiness. Stock BlueZ's aggregate `ServicesResolved`, exported service objects,
+and MTU are insufficient to prove successful, current LE-specific discovery.
+That qualification remains open; daemon-owner attestation does not resolve it.
+
+Capabilities come from that instantiated central. Without LE authority,
+`connection:direct` and its dependent `background:desktop-maintain-connection`
+report `unsupported` with `bluez-le-bearer-attestation-required`; a static
+platform table never overrides that refusal. Native continuation cannot bypass
+the same connection boundary. Deterministic radios and other host backends keep
+their own capability answers.
 
 `busKind` reaches the core as the central's D-Bus bus. `'system'` is the default. `'session'` serves a BlueZ exported on the session bus (mock or sandboxed daemons). A build that cannot reach that bus answers `capability.unsupported`; it never falls back silently to the system bus. Any other value is `argument.invalid`.
 
@@ -114,7 +170,7 @@ Cancellation: an aborted `AbortSignal` cancels exactly the in-flight core operat
 
 ### Parity with the 4.x desktop backends
 
-Every capability the TypeScript CoreBluetooth, WinRT and dbus-next BlueZ backends offered is tracked in `DESKTOP_RUST_CORE_PARITY`, which `unified-ble-manager/testing` exports (no production entrypoint exports it). A capability is registered only when the loaded core implements it on this OS (`UbmCentral.capabilityStates`) and this provider wires it.
+Every capability the TypeScript CoreBluetooth, WinRT and dbus-next BlueZ backends offered is tracked in `DESKTOP_RUST_CORE_PARITY`, which `unified-ble-manager/testing` exports (no production entrypoint exports it). Runtime registration reads the instantiated central's `runtimeCapabilityStates`, not the static OS diagnostic table, and is narrowed to mechanisms this provider wires. The native snapshot accepts all four canonical states. Connection refusals retain `unavailable` versus `unsupported` and the instance's reason; a native `supported` mechanism does not by itself promote the public provider's deterministic evidence label.
 
 **Implemented on the Rust path:**
 
@@ -149,6 +205,51 @@ Every capability the TypeScript CoreBluetooth, WinRT and dbus-next BlueZ backend
 **Open release blockers:** none on the TypeScript/N-API path. `__tests__/backends/desktop/desktop-parity-blockers.test.js` fails if a row is ever marked `blocked` without a probe. The deterministic synthetic radio does not prove physical-radio behaviour. The physical checks listed under [Verification](#verification) are still outstanding.
 
 ## Native continuation in a trusted process host
+
+The explicit `createCoreBluetoothProcessHost`, `createWinRtProcessHost`, and
+`createBluezProcessHost` factories select one adapter and retain one native
+central/backend for the process lifetime. `host.createManager()` returns an
+ordinary public manager borrowing that owner; destroying it releases its own
+resources, not another manager or the native continuation. Trusted main-process
+routers can use `host.createInternalManager()` with the same ownership authority.
+The ordinary one-call manager factories keep their existing lifetime semantics.
+
+Use `host.continuation` for native execution and explicit backlog claims.
+`host.continuationAccess` is the narrow canonical-envelope bridge for an
+authenticated renderer: preparation and acknowledgement remain separate.
+Host destruction immediately seals new manager/execute/storage-configuration
+admission, revokes borrowing managers, and closes the native owner. Failed
+cleanup retains the same host for retry. Status and explicit claims remain
+available after closure; destroying the host does not implicitly consume a
+volatile backlog or acknowledge/delete a durable journal. A confirmed parent
+release permits exact retained child cleanup without reopening the radio.
+
+If initialization fails while cleanup is still owned,
+`DesktopProcessHostInitializationError` preserves `originalCause`,
+`cleanupCause`, and `retryCleanup()`. Retain and retry that handle until its
+receipt is `released`; it never opens a replacement radio. An ordinary
+initialization error retains no JavaScript process-host/central cleanup handle:
+it either precedes that allocation or follows confirmed compensation. Native
+radio-open failures still follow the platform's documented partial-open cleanup
+policy; this is not a claim that all OS bookkeeping has disappeared.
+Offline recording retrieval continues to use the separate existing recording
+store factory, without creating a process host or opening BLE.
+
+For an authenticated application bridge, `createNativeContinuationControl(access)`
+provides the same `execute`, `status`, and `claim` decoding without exposing a
+central or filesystem configuration. The access supplies `execute(peerId,
+declarationJson)`, `describeBacklog()`, `prepareClaim(maxItems, maxBytes)`, and
+`acknowledgeClaim(token)`, returning the existing canonical native envelopes.
+It is also exported from `/electron/renderer` and `/tauri`; those entrypoints
+export `createNativeContinuationRecordingController` for ID-only offline journal
+controls. These helpers do not install a transport or authenticate its caller:
+the trusted host must enforce sender authorization and response bounds.
+
+Run the claim helper on the receiving side. It decodes the prepared bytes
+before acknowledging, never acknowledges a malformed or undelivered prepared
+response, and retains decoded values with `disposed: false` if acknowledgement
+is uncertain. Do not replace this handshake with a main-process `claim()` call
+whose already-acknowledged result can be lost when a renderer disappears.
 
 For a recorder that must keep collecting while its UI is absent, the trusted
 host can attach a native continuation controller to its **already-open** Rust
@@ -219,8 +320,27 @@ returns the decoded values with `disposed: false`, never hides them in a rejecte
 promise. Preserve those values and retry cleanup. Report control loss, overflow
 terminals and after-cutoff loss; a buffer is not a promise of lossless recording.
 
-The backlog is bounded process memory, **not durable storage**. Keep the owning
-process and central alive while recording. OS service registration, process
+The default backlog is bounded process memory, **not durable storage**. For
+opt-in durable collection, first call `continuation.recordings(privateDirectory)`
+on this same central, then include `recording: { id, maxBytes, maxRecords }`
+in the native declaration. The trusted host chooses its private directory;
+never forward an arbitrary renderer path. Data records go to the bounded
+journal instead of the volatile data queue, and native claims retain a recording
+ID without reading or acknowledging that independent journal.
+
+The returned recording controller exposes `status`, `prepare`, `acknowledge`,
+`stop` and `clear`. Save or process a prepared batch before acknowledging its
+exact token. `stop` ends recording admission, not radio ownership; its receipt
+says `radioRelease: 'not-requested'`. After central cleanup or a process restart,
+`openNativeContinuationRecordings(binding, privateDirectory)` from the same
+explicit Node entrypoint opens the journal without enumerating or creating a
+radio. It verifies the native binding identity as usual. The journal is plaintext
+(`encrypted: false`); quotas and storage failures are explicit. See the
+[durable storage contract](BACKGROUND.md) for bounds, protection and failure
+semantics. Generic declared `setup` steps can restore an application protocol
+after resubscription; UBM itself contains no Polar command recipe.
+
+Keep the owning process and central alive while collecting. OS service registration, process
 relaunch and persistence of the standing declaration remain explicit host
 integration; this API does not install a daemon, elevate privileges or promise
 collection after process death. Ordinary one-call manager factories therefore
@@ -275,6 +395,10 @@ const provider = createDbusNextBluezBackendProvider({ busKind: 'system', now })
 The name `createDbusNextBluezBackendProvider` is historical: it returns the shared Rust core provider, and no dbus-next transport is involved. All three are `createDesktopRustCoreBackendProvider({ platform, owner, now })` underneath, which every desktop entrypoint also exports. Deterministic suites use `createTestDesktopRustCoreBackendProvider` from `unified-ble-manager/testing` instead, which additionally accepts the synthetic radio and the binding, platform and first-state-timeout seams.
 
 Then scan and GATT through the same `BleManager` as React Native. Await `manager.destroy()` when the process session ends. Its cleanup record reports every release failure the core recorded.
+
+Failed cleanup does not reopen admission or discard native ownership. Retain the owner and retry teardown when its receipt reports incomplete release. Desktop shutdown retains unresolved scan, subscription and event-transport obligations; a later confirmed release clears current cleanup debt without erasing earlier diagnostics.
+
+WinRT retries only unconfirmed handler, watcher and maintained-session cleanup stages. Additional leases reuse a healthy maintained session. If opening a watcher fails and compensating cleanup is also refused, a process-owned cleanup vault retains that partial watcher for the next native radio open or explicit close on the same adapter. An unrelated adapter does not inherit that cleanup debt. There is no background retry loop; without either trigger, the retained owner lasts until process exit. These ownership rules do not constitute Windows physical-radio qualification.
 
 ## Verification
 

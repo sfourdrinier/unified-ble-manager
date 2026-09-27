@@ -202,6 +202,10 @@ jobs:
         if: runner.os == 'Linux'
         run: pnpm prepack
 
+      - name: Typecheck cross-host reference apps
+        if: runner.os == 'Linux' && matrix.node == '22'
+        run: pnpm typecheck:references
+
       # Shared/app driver tests import the built public package. Reuse the
       # example's canonical glob-based suite so new scenarios join this gate.
       - name: Run cross-host test-driver regressions
@@ -479,6 +483,10 @@ jobs:
         # case runs serially until the harness is made concurrency-safe.
         run: cargo test --locked -- --test-threads=1
 
+      - name: Test BlueZ lifecycle on isolated private buses
+        if: runner.os == 'Linux'
+        run: bash scripts/ci/test-bluez-private-bus.sh
+
   # UBM 5.0 Rust/JS parity (napi roundtrip + staged-fault proofs). Linux-only:
   # the napi toolchain build is host-sensitive and parity is OS-independent.
   rust-parity-5-0:
@@ -708,7 +716,7 @@ jobs:
         run: npx expo install --fix
 
       - name: Typecheck Expo example
-        run: pnpm --dir example-expo exec tsc --noEmit -p tsconfig.json
+        run: pnpm typecheck:references:expo
 
       - name: Run Expo Doctor
         working-directory: example-expo

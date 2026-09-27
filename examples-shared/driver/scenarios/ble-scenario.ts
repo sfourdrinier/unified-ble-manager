@@ -96,8 +96,12 @@ export const POLAR_H10_CHOOSER: ChooseOptions = deviceChooser(DEFAULT_DEVICE)
 
 /** Whether a scan observation advertises the strap a selector names (exact name, or name prefix). */
 export function matchesDevice(observation: PublicScanObservation, device: DeviceSelector): boolean {
-  const name = observation.localName ?? observation.peer.name ?? ''
-  return device.match === 'exact' ? name === device.name : name.startsWith(device.name)
+  return matchesDeviceName(observation.localName ?? observation.peer.name, device)
+}
+
+/** The same explicit name policy for advertisements and genuine directory peers. */
+export function matchesDeviceName(name: string | null, device: DeviceSelector): boolean {
+  return device.match === 'exact' ? name === device.name : (name ?? '').startsWith(device.name)
 }
 
 /** The peer a run acquired and the selector that found it; reported in every snapshot and result. */
@@ -138,6 +142,7 @@ export abstract class BleScenario<State extends BleScenarioState> extends Scenar
   protected readonly host: DriverHost
   private readonly idleState: State
   private ledger: LedgerEntry[] = []
+  private cleanupAttempt: Promise<readonly CleanupStep[]> | null = null
   private runAbort: AbortController | null = null
 
   protected constructor(host: DriverHost, idle: State) {
@@ -165,7 +170,7 @@ export abstract class BleScenario<State extends BleScenarioState> extends Scenar
 
   /** Releases the current run, if any, exactly like the `stop` command. */
   override async stop(): Promise<ScenarioStopOutcome> {
-    if (!this.isRunning()) return { wasRunning: false, cleanup: [] }
+    if (!this.isRunning() && this.ledger.length === 0 && this.cleanupAttempt === null) return { wasRunning: false, cleanup: [] }
     return { wasRunning: true, cleanup: await this.teardown('stopped') }
   }
 
@@ -176,7 +181,7 @@ export abstract class BleScenario<State extends BleScenarioState> extends Scenar
 
   /** Starts a run from a fresh state; a second start while one is active is refused, not ignored. */
   private beginRun(): AbortSignal {
-    if (this.runAbort !== null) {
+    if (this.runAbort !== null || this.ledger.length > 0 || this.cleanupAttempt !== null) {
       throw new ScenarioError('scenario.busy', `${this.id} is already running (phase ${this.snapshot().phase}); run "stop" first`)
     }
     const abort = new AbortController()
@@ -192,6 +197,7 @@ export abstract class BleScenario<State extends BleScenarioState> extends Scenar
    * caused by `stop` is reported as `run-aborted` (stop already released).
    */
   protected async runJourney<Result>(body: (signal: AbortSignal) => Promise<Result>): Promise<Result> {
+    if (this.runAbort === null && this.cleanupAttempt === null && this.ledger.length > 0) await this.teardown('stopped')
     const signal = this.beginRun()
     try {
       return await body(signal)
@@ -200,6 +206,16 @@ export abstract class BleScenario<State extends BleScenarioState> extends Scenar
       else await this.failRun(error)
       throw error
     }
+  }
+
+  /** A completed command releases its temporary manager, retaining any refused cleanup for stop/retry. */
+  protected async runOneShotJourney<Result>(body: (signal: AbortSignal) => Promise<Result>): Promise<Result> {
+    const result = await this.runJourney(body)
+    const cleanup = await this.teardown('stopped')
+    if (cleanup.some(step => step.state !== 'released')) {
+      throw new ScenarioError('scenario.cleanup-failed', `${this.id} command cleanup failed; retry stop before another command`)
+    }
+    return result
   }
 
   /**
@@ -211,9 +227,20 @@ export abstract class BleScenario<State extends BleScenarioState> extends Scenar
       this.ledger.push({ step, release })
       return
     }
-    void release().then(
-      outcome => this.emit('cleanup', cleanupStep(`${step} (arrived after teardown)`, outcome)),
-      error => this.emit('cleanup', { step: `${step} (arrived after teardown)`, state: 'threw', detail: describeError(error) })
+    let pending: Promise<CleanupRecord | JsonValue> | null = Promise.resolve().then(release)
+    const entry: LedgerEntry = { step, release: () => pending ?? release() }
+    this.ledger.push(entry)
+    void pending.then(
+      outcome => {
+        pending = null
+        const result = cleanupStep(`${step} (arrived after teardown)`, outcome)
+        if (result.state === 'released') this.ledger = this.ledger.filter(owned => owned !== entry)
+        this.emit('cleanup', result)
+      },
+      error => {
+        pending = null
+        this.emit('cleanup', { step: `${step} (arrived after teardown)`, state: 'threw', detail: describeError(error) })
+      }
     )
   }
 
@@ -225,7 +252,16 @@ export abstract class BleScenario<State extends BleScenarioState> extends Scenar
   }
 
   /** Aborts in-flight work and releases every owned resource, recording each outcome in `cleanup`. */
-  protected async teardown(finalPhase: string): Promise<readonly CleanupStep[]> {
+  protected teardown(finalPhase: string): Promise<readonly CleanupStep[]> {
+    if (this.cleanupAttempt !== null) return this.cleanupAttempt
+    const tracked = this.drainCleanup(finalPhase).finally(() => {
+      if (this.cleanupAttempt === tracked) this.cleanupAttempt = null
+    })
+    this.cleanupAttempt = tracked
+    return tracked
+  }
+
+  private async drainCleanup(finalPhase: string): Promise<readonly CleanupStep[]> {
     this.runAbort?.abort()
     this.runAbort = null
     const entries = this.ledger.reverse()
@@ -240,6 +276,7 @@ export abstract class BleScenario<State extends BleScenarioState> extends Scenar
         step = { step: entry.step, state: 'threw', detail: describeError(error) }
       }
       steps.push(step)
+      if (step.state !== 'released') this.ledger.unshift(entry)
       this.emit('cleanup', step)
     }
     this.patchBase({ phase: finalPhase, cleanup: steps })

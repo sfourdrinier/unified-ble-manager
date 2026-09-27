@@ -103,7 +103,7 @@ describe('WinRT scan planner', () => {
   test('does not project unsafe service UUID shapes', () => {
     const inputs = [
       {},
-      { anyOf: [{ services: { any: ['180d'] } }] },
+      { anyOf: [{ services: { any: ['180d', '180f'] } }] },
       { anyOf: [{ services: { all: ['180d'] } }, { services: { all: ['180f'] } }] },
       { exclude: [{ services: { any: ['180d'] } }] }
     ]

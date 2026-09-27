@@ -18,6 +18,10 @@ import type {
   GattSubscribeOptions,
   OperationOptions,
   BleManagerCreateOptions,
+  BackgroundContinuationDeclaration,
+  ContinuationRecordingConfiguration,
+  ContinuationLinkConfiguration,
+  ContinuationSetupStep,
   StreamPreset,
   ScanQuery,
   ScanClause,
@@ -28,6 +32,32 @@ import type {
   AdapterReadinessOptions,
   BleDiagnostics
 } from 'unified-ble-manager'
+const recordingConfiguration: ContinuationRecordingConfiguration = {
+  id: 'session-1',
+  maxBytes: 1048576,
+  maxRecords: 1000
+}
+const continuationLink: ContinuationLinkConfiguration = {
+  mtu: { requested: 512, timeoutMs: 10000, onUnsupported: 'continue' }
+}
+const continuationSetup: ContinuationSetupStep = {
+  selector: {
+    serviceUuid: 'fb005c80-02e7-f387-1cad-8acd2d8df0c8',
+    serviceOccurrence: 1,
+    characteristicUuid: 'fb005c81-02e7-f387-1cad-8acd2d8df0c8',
+    characteristicOccurrence: 1
+  },
+  value: Uint8Array.of(3, 0),
+  timeoutMs: 1000
+}
+const durableContinuation: BackgroundContinuationDeclaration = {
+  onAppearance: 'native',
+  resubscribe: [],
+  recording: recordingConfiguration,
+  link: continuationLink,
+  setup: [continuationSetup]
+}
+observe<BackgroundContinuationDeclaration>(durableContinuation)
 import type {
   BleConnectionControls,
   BleControlObservationMetadata,
@@ -445,7 +475,10 @@ interface PeerStream<Value> extends AsyncIterable<PeerStreamItem<Value>, undefin
 interface PeerSubscriptionDeclaration {
   readonly subscriptionId: string
   readonly path: PeerCharacteristicPath
-  readonly values: PeerStream<{ readonly value: Uint8Array; readonly delivery: 'notification' | 'indication' | 'unknown' }>
+  readonly values: PeerStream<{
+    readonly value: Uint8Array
+    readonly delivery: 'notification' | 'indication' | 'unknown'
+  }>
   remove(): Promise<PeerCleanupRecord>
 }
 
@@ -661,7 +694,15 @@ interface PeerConnectionDeclaration {
     readonly observedAtMonotonicMs: number
     readonly terminal: {
       readonly correlation: string
-      readonly outcome: 'succeeded' | 'failed' | 'aborted' | 'timed-out' | 'disconnected' | 'reset' | 'adapter-unavailable' | 'destroyed'
+      readonly outcome:
+        | 'succeeded'
+        | 'failed'
+        | 'aborted'
+        | 'timed-out'
+        | 'disconnected'
+        | 'reset'
+        | 'adapter-unavailable'
+        | 'destroyed'
       readonly cause: never
     }
   }>
@@ -765,14 +806,20 @@ declare class PeerOneSubscription implements PeerSubscriptionDeclaration {
   private readonly peerOneSubscriptionBrand: undefined
   readonly subscriptionId: string
   readonly path: PeerCharacteristicPath
-  readonly values: PeerStream<{ readonly value: Uint8Array; readonly delivery: 'notification' | 'indication' | 'unknown' }>
+  readonly values: PeerStream<{
+    readonly value: Uint8Array
+    readonly delivery: 'notification' | 'indication' | 'unknown'
+  }>
   remove(): Promise<PeerCleanupRecord>
 }
 declare class PeerTwoSubscription implements PeerSubscriptionDeclaration {
   private readonly peerTwoSubscriptionBrand: undefined
   readonly subscriptionId: string
   readonly path: PeerCharacteristicPath
-  readonly values: PeerStream<{ readonly value: Uint8Array; readonly delivery: 'notification' | 'indication' | 'unknown' }>
+  readonly values: PeerStream<{
+    readonly value: Uint8Array
+    readonly delivery: 'notification' | 'indication' | 'unknown'
+  }>
   remove(): Promise<PeerCleanupRecord>
 }
 

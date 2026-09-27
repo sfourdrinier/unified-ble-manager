@@ -10,7 +10,12 @@
 
 import { AppState, Platform, TurboModuleRegistry, type AppStateStatus, type TurboModule } from 'react-native'
 import { resolveExpoDriverPlatform } from './expo-driver-platform.ts'
-import { createExpoBleManager, type BleReadinessAction, type ExpoBleManager } from 'unified-ble-manager/expo'
+import { headlessHistory } from './register-headless-continuation.ts'
+import { createReferenceNativeContinuation, type ReferenceNativeContinuationModule } from './native-continuation.ts'
+import { createNativeContinuationControl } from 'unified-ble-manager/backend-sdk'
+import { createReactNativeRustCoreBinding } from 'unified-ble-manager/react-native'
+import { createExpoBleManager, createReactNativeContinuationRecordings, type BleReadinessAction, type ExpoBleManager } from 'unified-ble-manager/expo'
+import type { BackgroundContinuationDeclaration } from 'unified-ble-manager'
 import ubmPackage from 'unified-ble-manager/package.json'
 import {
   DRIVER_PORT,
@@ -126,8 +131,8 @@ function describeReadinessAction(action: BleReadinessAction): string {
   }
 }
 
-async function createExpoHostManager(instanceId: string): Promise<HostManager> {
-  const manager = await createExpoBleManager({ instanceId })
+async function createExpoHostManager(instanceId: string, continuation?: BackgroundContinuationDeclaration): Promise<HostManager> {
+  const manager = await createExpoBleManager({ instanceId, ...(continuation === undefined ? {} : { background: { continuation } }) })
   return {
     manager,
     prepare: report => prepareExpo(manager, report),
@@ -159,11 +164,21 @@ const reactNativeAppState: AppStateSource = {
 
 const facts = deviceFacts()
 const identity = { host: 'expo', platform: facts.platform, backend: `expo/${facts.platform}`, model: facts.model, osVersion: facts.osVersion, appBuild: appBuild() } as const
+const nativeContinuationModule = TurboModuleRegistry.get<ReferenceNativeContinuationModule>('UBMReferenceContinuation')
+const nativeContinuation = nativeContinuationModule === null || (Platform.OS !== 'android' && Platform.OS !== 'ios')
+  ? undefined
+  : createReferenceNativeContinuation(nativeContinuationModule,
+    () => createReactNativeRustCoreBinding({ platform: Platform.OS === 'android' ? 'android' : 'apple' }).verifyNativeIdentity(),
+    createNativeContinuationControl, createReactNativeContinuationRecordings)
 
 export const expoDriverHost: DriverHost = {
   identity,
   runtime: createConsoleRuntime(hostLabel(identity)),
   createManager: createExpoHostManager,
+  configureContinuation: declaration => createExpoHostManager('continuation-configure', declaration),
+  continuationRecordings: createReactNativeContinuationRecordings,
+  ...(nativeContinuation === undefined ? {} : { nativeContinuation }),
+  ...(Platform.OS === 'android' ? { readHeadlessContinuationHistory: () => headlessHistory.read() } : {}),
   appState: reactNativeAppState,
   userGesture: null
 }

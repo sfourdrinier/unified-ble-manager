@@ -1,0 +1,7 @@
+# Preserve the loader names of the existing Kotlin and Python artifacts.
+# These are distinct from the Rust cdylib name used for code generation.
+[bindings.kotlin]
+cdylib_name = "uniffi_ubm_echo"
+
+[bindings.python]
+cdylib_name = "uniffi"

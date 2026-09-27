@@ -1,8 +1,7 @@
 // __tests__/backends/reactnative/background-continuation-capabilities.test.js
 //
-// BGS4: per-strategy capabilities reported at runtime by the instantiated
-// backend. Deferred strategies answer `capability.unsupported` with
-// "not implemented in this release" — never "the platform cannot".
+// Per-strategy capabilities use the instantiated native binding and runtime
+// facts. Mechanism admission is separate from OS acceptance or completed work.
 
 const { BUILT_IN_FEATURE_IDS } = require('../../../src/backend-contract/capabilities')
 const {
@@ -10,6 +9,31 @@ const {
 } = require('../../../src/backends/reactnative/react-native-continuation')
 
 const VERSION = '5.0.0-alpha.1'
+
+test.each([true, false])(
+  'the actual provider derives continuation availability from native methods: %s',
+  async available => {
+    const { DeterministicRustCoreNative } = require('../../../test-support/react-native/deterministic-rust-core-native')
+    const { rustCoreHarness, environment } = require('../../../test-support/react-native/rust-core-harness')
+    const { createReactNativeBleManagerWithEnvironment } = require('../../../src/react-native-manager')
+    const native = new DeterministicRustCoreNative({ platform: 'android' })
+    if (available) {
+      native.declareBackgroundContinuation = jest.fn(async () => {})
+      native.continuationStatus = jest.fn()
+      native.prepareContinuationClaim = jest.fn()
+      native.acknowledgeContinuationClaim = jest.fn()
+    }
+    const manager = await createReactNativeBleManagerWithEnvironment(environment(rustCoreHarness({ native })))
+    try {
+      const actual = states(manager.attachedBackend.backend.features)
+      for (const id of ['background:headless-task', 'background:wake-notification', 'background:native-resubscribe']) {
+        expect(actual[id]).toBe(available ? 'limited' : 'unsupported')
+      }
+    } finally {
+      expect((await manager.destroy()).state).toBe('released')
+    }
+  }
+)
 
 function states(registry) {
   const out = {}
@@ -32,21 +56,43 @@ describe('background.continuation capabilities are built-in', () => {
 })
 
 describe('android runtime capabilities', () => {
+  it.each([null, 30, NaN, Infinity, 31.5])(
+    'does not advertise Android task/service wake on invalid or old API %s',
+    api => {
+      const registry = createReactNativeContinuationFeatureRegistry('android', VERSION, {
+        androidApiLevel: api,
+        continuationBindingAvailable: true
+      })
+      expect(states(registry)['background:headless-task']).toBe('unsupported')
+      expect(states(registry)['background:wake-notification']).toBe('unsupported')
+    }
+  )
+  it.each(['android', 'apple'])('requires native ownership methods for %s native resubscribe', platform => {
+    const registry = createReactNativeContinuationFeatureRegistry(platform, VERSION, {
+      androidApiLevel: 34,
+      appleRestorationConfigured: true
+    })
+    expect(states(registry)['background:native-resubscribe']).toBe('unsupported')
+  })
   it('reports wake + native as limited on API 31+ (deterministic evidence)', () => {
-    const registry = createReactNativeContinuationFeatureRegistry('android', VERSION, { androidApiLevel: 34 })
+    const registry = createReactNativeContinuationFeatureRegistry('android', VERSION, {
+      androidApiLevel: 34,
+      continuationBindingAvailable: true
+    })
     expect(states(registry)).toMatchObject({
       'background:wake-on-appearance': 'limited',
       'background:native-resubscribe': 'limited',
-      'background:headless-task': 'unsupported',
-      'background:wake-notification': 'unsupported'
+      'background:headless-task': 'limited',
+      'background:wake-notification': 'limited'
     })
   })
 
-  it('says "not implemented in this release" for deferred strategies, not "platform cannot"', () => {
+  it('fails closed when the running native continuation binding is absent', () => {
     const registry = createReactNativeContinuationFeatureRegistry('android', VERSION, { androidApiLevel: 34 })
     for (const id of ['background:headless-task', 'background:wake-notification']) {
       const limitation = limitationFor(registry, id)
-      expect(limitation.explanation).toMatch(/not implemented in this release/)
+      expect(states(registry)[id]).toBe('unsupported')
+      expect(limitation.code).toBe('native-continuation-binding-required')
     }
   })
 
@@ -64,6 +110,7 @@ describe('apple runtime continuation capabilities', () => {
   it('reports native continuation only with configured restoration authority', () => {
     const registry = createReactNativeContinuationFeatureRegistry('apple', VERSION, {
       androidApiLevel: null,
+      continuationBindingAvailable: true,
       appleRestorationConfigured: true
     })
     expect(states(registry)['background:native-resubscribe']).toBe('limited')
@@ -73,13 +120,19 @@ describe('apple runtime continuation capabilities', () => {
   it('does not advertise native wake streaming without restoration configuration', () => {
     const registry = createReactNativeContinuationFeatureRegistry('apple', VERSION, { androidApiLevel: null })
     expect(states(registry)).toMatchObject({
-      'background:wake-on-appearance': 'limited',
+      'background:wake-on-appearance': 'unsupported',
       'background:native-resubscribe': 'unsupported',
       'background:headless-task': 'unsupported',
       'background:wake-notification': 'unsupported'
     })
-    expect(limitationFor(registry, 'background:native-resubscribe').explanation).toMatch(
-      /configured restoration/
-    )
+    expect(limitationFor(registry, 'background:wake-on-appearance').explanation).toMatch(/configured restoration/)
+  })
+
+  it('reports actual Apple platform limits for Android-only strategies', () => {
+    const registry = createReactNativeContinuationFeatureRegistry('apple', VERSION, { androidApiLevel: null })
+    for (const id of ['background:headless-task', 'background:wake-notification']) {
+      expect(limitationFor(registry, id).code).toBe('android-only-wake-mechanism')
+      expect(limitationFor(registry, id).explanation).not.toMatch(/not implemented/)
+    }
   })
 })

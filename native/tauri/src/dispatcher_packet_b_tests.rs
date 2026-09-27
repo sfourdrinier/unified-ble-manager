@@ -43,6 +43,1286 @@ const LEASE_ID: &str = "lease-1";
 const LEASE_GENERATION: &str = "generation-1";
 const WAIT: Duration = Duration::from_secs(5);
 
+#[test]
+fn scan_projection_preserves_exact_native_origin_and_service_union() {
+    for source in [
+        ubm_desktop::ObservationSource::Advertisement,
+        ubm_desktop::ObservationSource::DeviceState,
+    ] {
+        let RadioEvent::Advertisement(mut snapshot) = advertisement("origin-peer") else {
+            unreachable!()
+        };
+        snapshot.extras.source = source;
+        snapshot
+            .service_uuids
+            .push("0000110b-0000-1000-8000-00805f9b34fb".into());
+        let value = super::core_scan_observation(&snapshot);
+        assert_eq!(field(&value, "origin"), &string(source.as_str()));
+        assert_eq!(
+            field(&value, "serviceUuids"),
+            &IpcValue::Array(
+                snapshot
+                    .service_uuids
+                    .iter()
+                    .map(|uuid| string(uuid.clone()))
+                    .collect()
+            )
+        );
+    }
+}
+
+#[tokio::test]
+async fn idle_process_handoff_never_opens_bluetooth_even_after_shutdown() {
+    let opens = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&opens);
+    let dispatcher = BtleplugDispatcher::with_authority_opener(Arc::new(move || {
+        counted.fetch_add(1, AtomicOrdering::SeqCst);
+        Box::pin(async {
+            Err(DispatchError::new(
+                ubm_core::contracts::BleErrorCode::AdapterUnavailable,
+                "adapter",
+                "test.unexpected-open",
+            ))
+        })
+    }));
+    let harness = Harness::new().await;
+    let canonical = ubm_desktop::continuation::NativeContinuation::new(Arc::new(
+        ubm_desktop::continuation_adapter::DesktopContinuationHost::new(harness.central.clone()),
+    ));
+    let empty = canonical.prepare_claim(256, 65536).await.unwrap();
+    let no_token = canonical.acknowledge_claim("unknown").await.unwrap_err();
+    let bad_bounds = canonical.prepare_claim(0, 65536).await.unwrap_err();
+    for closed in [false, true] {
+        if closed {
+            assert!(dispatcher.authority_shutdown().await.core.is_none());
+        }
+        assert_eq!(
+            dispatcher.continuation_describe_backlog().await.unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            dispatcher
+                .continuation_prepare_claim(256, 65536)
+                .await
+                .unwrap(),
+            empty
+        );
+        assert_eq!(
+            dispatcher
+                .continuation_prepare_claim(0, 65536)
+                .await
+                .unwrap_err(),
+            bad_bounds
+        );
+        assert_eq!(
+            dispatcher
+                .continuation_acknowledge_claim("unknown")
+                .await
+                .unwrap_err(),
+            no_token
+        );
+        assert_eq!(opens.load(AtomicOrdering::SeqCst), 0);
+    }
+    assert!(harness
+        .dispatcher
+        .authority_shutdown()
+        .await
+        .core
+        .unwrap()
+        .is_released());
+}
+
+#[tokio::test]
+async fn process_shutdown_retains_native_claim_and_retry_owner() {
+    let harness = Harness::new().await;
+    let peer = "native-parent-close";
+    harness.advertise(peer).await;
+    let declaration = serde_json::json!({"onAppearance":"native","peerId":peer,
+        "resubscribe":[{"serviceUuid":HRM_SERVICE,"characteristicUuid":NOTIFY_ONLY}]})
+    .to_string();
+    harness
+        .dispatcher
+        .continuation_execute(peer, &declaration)
+        .await
+        .unwrap();
+    let mut wakes = harness.central.native_wakes();
+    harness.radio().push_event(RadioEvent::Notification {
+        peer_id: peer.into(),
+        service_uuid: HRM_SERVICE.into(),
+        service_occurrence: 0,
+        characteristic_uuid: NOTIFY_ONLY.into(),
+        characteristic_occurrence: 0,
+        value: vec![0, 75],
+        epoch: harness.central.routing_epoch(peer).await,
+    });
+    tokio::time::timeout(WAIT, wakes.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    harness
+        .radio()
+        .fail_next(FaultOp::Disconnect, "retained cleanup");
+    assert!(!harness
+        .dispatcher
+        .authority_shutdown()
+        .await
+        .core
+        .unwrap()
+        .is_released());
+    assert!(harness
+        .dispatcher
+        .continuation_describe_backlog()
+        .await
+        .unwrap()
+        .is_object());
+    assert!(harness
+        .dispatcher
+        .authority_shutdown()
+        .await
+        .core
+        .unwrap()
+        .is_released());
+    let claim = harness
+        .dispatcher
+        .continuation_prepare_claim(256, 65536)
+        .await
+        .unwrap();
+    let batches = claim["batches"].as_array().unwrap();
+    assert!(
+        batches.iter().any(|batch| {
+            let drain: Value = serde_json::from_str(batch.as_str().unwrap()).unwrap();
+            drain["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|record| record["valueB64"] == "AEs=")
+        }),
+        "{claim}"
+    );
+    let token = claim["claimToken"].as_str().unwrap();
+    assert_eq!(
+        harness
+            .dispatcher
+            .continuation_prepare_claim(256, 65536)
+            .await
+            .unwrap(),
+        claim
+    );
+    assert_eq!(
+        harness
+            .dispatcher
+            .continuation_acknowledge_claim(token)
+            .await
+            .unwrap()["disposed"],
+        true
+    );
+    assert!(harness
+        .dispatcher
+        .continuation_execute(peer, &declaration)
+        .await
+        .is_err());
+}
+
+fn directory_mac_profile(
+    core: &mut ubm_core::central::Central,
+) -> Result<(), ubm_core::contracts::CoreError> {
+    ubm_desktop::register_desktop_capabilities_for(core, Some(ubm_desktop::DesktopOs::MacOs), false)
+}
+
+async fn directory_harness() -> Harness {
+    let mut profile = ubm_desktop::CentralProfile::desktop("tauri-directory-test");
+    profile.register_capabilities = directory_mac_profile;
+    Harness::over(
+        DesktopCentral::open_with(os_radio(AdmissionPolicy::LifecycleOnly), profile)
+            .await
+            .unwrap(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn peer_directory_connected_returns_identity_without_connection_ownership() {
+    let harness = directory_harness().await;
+    let id = "00112233-4455-6677-8899-aabbccddeeff";
+    harness
+        .radio()
+        .set_directory_peers(vec![ubm_desktop::DirectoryPeer {
+            peer_id: id.to_owned(),
+            name: Some("directory peer".to_owned()),
+            connection: "connected",
+        }]);
+    let result = harness
+        .route(
+            "peers.connected",
+            "directory-positive",
+            vec![(
+                "query",
+                object([("services", IpcValue::Array(vec![string(HRM_SERVICE)]))]),
+            )],
+            None,
+        )
+        .await
+        .expect("directory supported");
+    let json = result.into_wire();
+    assert_eq!(json["peers"][0]["peerId"], id);
+    assert_eq!(
+        json["peers"][0]["reference"]["backendId"],
+        "unified-ble:corebluetooth"
+    );
+    assert_eq!(
+        json["peers"][0]["state"]["lastSeenAtMonotonicMs"],
+        Value::Null
+    );
+    assert!(
+        harness.dispatcher.inner.lock().await.callers[&harness.key()]
+            .connections
+            .is_empty()
+    );
+    assert!(!harness
+        .radio()
+        .calls()
+        .iter()
+        .any(|call| call.starts_with("connect:")));
+}
+
+fn directory_reference(id: &str) -> IpcValue {
+    object([
+        ("version", IpcValue::Number(1.into())),
+        ("backendId", string("unified-ble:corebluetooth")),
+        ("scope", string("application")),
+        ("opaqueId", string(id)),
+    ])
+}
+
+#[tokio::test]
+async fn peer_directory_validates_entire_query_before_native_dispatch() {
+    let harness = directory_harness().await;
+    for (command, query, code, operation) in [
+        (
+            "peers.connected",
+            object([]),
+            BleErrorCode::CapabilityUnsupported,
+            "peers.connected.services-required",
+        ),
+        (
+            "peers.known",
+            object([]),
+            BleErrorCode::CapabilityUnsupported,
+            "peers.known.references-required",
+        ),
+        (
+            "peers.bonded",
+            object([]),
+            BleErrorCode::CapabilityUnsupported,
+            "peers.bonded",
+        ),
+        (
+            "peers.authorized",
+            object([]),
+            BleErrorCode::CapabilityUnsupported,
+            "peers.authorized",
+        ),
+        (
+            "peers.restored",
+            object([]),
+            BleErrorCode::CapabilityUnsupported,
+            "peers.restored",
+        ),
+        (
+            "peers.known",
+            object([(
+                "references",
+                IpcValue::Array(vec![
+                    directory_reference("00112233-4455-6677-8899-aabbccddeeff"),
+                    directory_reference("bad-id"),
+                ]),
+            )]),
+            BleErrorCode::PeerReferenceInvalid,
+            "peers.reference",
+        ),
+        (
+            "peers.connected",
+            object([("services", IpcValue::Array(vec![string("180d")]))]),
+            BleErrorCode::ProtocolMalformed,
+            "peers.connected",
+        ),
+        (
+            "peers.connected",
+            object([("includeUnavailable", IpcValue::Null)]),
+            BleErrorCode::ProtocolMalformed,
+            "peers.connected",
+        ),
+    ] {
+        let error = harness
+            .execute(command, vec![("query", query)], None, OpControl::default())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, code);
+        assert_eq!(error.operation, operation);
+    }
+    assert!(!harness
+        .radio()
+        .calls()
+        .iter()
+        .any(|call| call == "resolve_peer" || call == "connected_peers"));
+}
+
+#[tokio::test]
+async fn peer_directory_known_resolve_null_and_existing_connect_path() {
+    let harness = directory_harness().await;
+    let id = "00112233-4455-6677-8899-aabbccddeeff";
+    harness
+        .radio()
+        .set_directory_peers(vec![ubm_desktop::DirectoryPeer {
+            peer_id: id.to_owned(),
+            name: None,
+            connection: "connected",
+        }]);
+    let result = harness
+        .execute(
+            "peers.known",
+            vec![(
+                "query",
+                object([(
+                    "references",
+                    IpcValue::Array(vec![
+                        directory_reference(&id.to_uppercase()),
+                        directory_reference(id),
+                    ]),
+                )]),
+            )],
+            None,
+            OpControl::default(),
+        )
+        .await
+        .unwrap()
+        .into_wire();
+    assert_eq!(result["peers"].as_array().unwrap().len(), 1);
+    assert_eq!(result["peers"][0]["state"]["connection"], "unknown");
+    let missing = harness
+        .execute(
+            "peers.resolve",
+            vec![(
+                "reference",
+                directory_reference("ffffffff-ffff-ffff-ffff-ffffffffffff"),
+            )],
+            None,
+            OpControl::default(),
+        )
+        .await
+        .unwrap()
+        .into_wire();
+    assert_eq!(missing["peer"], Value::Null);
+    // Explicit connect uses the returned OS identity, without manufacturing an advertisement.
+    let connected = harness
+        .execute(
+            "connection.connect",
+            vec![("peerId", string(id))],
+            None,
+            OpControl::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(text(&connected, "peerId"), id);
+}
+
+#[tokio::test]
+async fn peer_directory_known_second_lookup_keeps_caller_cancellation() {
+    let harness = directory_harness().await;
+    harness.radio().set_directory_peers(Vec::new());
+    harness.radio().block_op(FaultOp::PeerDirectory);
+    harness.radio().set_directory_unblocked_reads(1);
+    let ctl = OpControl::default();
+    let ticket = ctl.ticket.clone();
+    let work = harness.execute(
+        "peers.known",
+        vec![(
+            "query",
+            object([(
+                "references",
+                IpcValue::Array(vec![
+                    directory_reference("00112233-4455-6677-8899-aabbccddeeff"),
+                    directory_reference("11112233-4455-6677-8899-aabbccddeeff"),
+                    directory_reference("22112233-4455-6677-8899-aabbccddeeff"),
+                ]),
+            )]),
+        )],
+        None,
+        ctl,
+    );
+    tokio::pin!(work);
+    tokio::select! { result = &mut work => panic!("unexpected completion {result:?}"), observed = tokio::time::timeout(WAIT,harness.radio().wait_for_calls("resolve_peer",2)) => { observed.unwrap(); } }
+    ticket.request_cancel();
+    let error = tokio::time::timeout(WAIT, &mut work)
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.code, BleErrorCode::OperationAborted);
+    harness.radio().unblock_op(FaultOp::PeerDirectory);
+    assert_eq!(count(&harness.radio().calls(), "resolve_peer"), 2);
+}
+
+#[tokio::test]
+async fn peer_directory_reset_during_batch_never_publishes_partial_records() {
+    let harness = directory_harness().await;
+    harness
+        .radio()
+        .set_directory_peers(vec![ubm_desktop::DirectoryPeer {
+            peer_id: "00112233-4455-6677-8899-aabbccddeeff".to_owned(),
+            name: None,
+            connection: "connected",
+        }]);
+    harness.radio().block_op(FaultOp::PeerDirectory);
+    harness.radio().set_directory_unblocked_reads(1);
+    let work = harness.execute(
+        "peers.known",
+        vec![(
+            "query",
+            object([(
+                "references",
+                IpcValue::Array(vec![
+                    directory_reference("00112233-4455-6677-8899-aabbccddeeff"),
+                    directory_reference("11112233-4455-6677-8899-aabbccddeeff"),
+                ]),
+            )]),
+        )],
+        None,
+        OpControl::default(),
+    );
+    tokio::pin!(work);
+    tokio::select! { result = &mut work => panic!("unexpected {result:?}"), observed = tokio::time::timeout(WAIT,harness.radio().wait_for_calls("resolve_peer",2)) => { observed.unwrap(); } }
+    harness.lose_adapter().await;
+    harness.radio().unblock_op(FaultOp::PeerDirectory);
+    let error = tokio::time::timeout(WAIT, work).await.unwrap().unwrap_err();
+    assert!(matches!(
+        error.code,
+        BleErrorCode::OperationReset | BleErrorCode::BackendReset
+    ));
+    assert_eq!(count(&harness.radio().calls(), "resolve_peer"), 2);
+}
+
+#[tokio::test]
+async fn peer_directory_unavailable_hosts_never_short_circuit_to_success_or_mac_requirements() {
+    fn linux(core: &mut ubm_core::central::Central) -> Result<(), ubm_core::contracts::CoreError> {
+        ubm_desktop::register_desktop_capabilities_for(
+            core,
+            Some(ubm_desktop::DesktopOs::Linux),
+            false,
+        )
+    }
+    fn windows(
+        core: &mut ubm_core::central::Central,
+    ) -> Result<(), ubm_core::contracts::CoreError> {
+        ubm_desktop::register_desktop_capabilities_for(
+            core,
+            Some(ubm_desktop::DesktopOs::Windows),
+            false,
+        )
+    }
+    for registration in [
+        linux as fn(&mut ubm_core::central::Central) -> Result<(), ubm_core::contracts::CoreError>,
+        windows,
+    ] {
+        let mut profile = ubm_desktop::CentralProfile::desktop("directory-unsupported");
+        profile.register_capabilities = registration;
+        let harness = Harness::over(
+            DesktopCentral::open_with(FakeRadio::new(), profile)
+                .await
+                .unwrap(),
+        )
+        .await;
+        for (command, query) in [
+            ("peers.connected", object([])),
+            (
+                "peers.connected",
+                object([
+                    ("services", IpcValue::Array(vec![string(HRM_SERVICE)])),
+                    ("sources", IpcValue::Array(vec![])),
+                ]),
+            ),
+            (
+                "peers.known",
+                object([("references", IpcValue::Array(vec![]))]),
+            ),
+        ] {
+            let error = harness
+                .execute(command, vec![("query", query)], None, OpControl::default())
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, BleErrorCode::CapabilityUnsupported);
+            assert_eq!(error.operation, command);
+        }
+        assert!(!harness
+            .radio()
+            .calls()
+            .iter()
+            .any(|call| call == "resolve_peer" || call == "connected_peers"));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn peer_directory_deadline_bounds_held_read() {
+    let harness = directory_harness().await;
+    harness.radio().set_directory_peers(Vec::new());
+    harness.radio().block_op(FaultOp::PeerDirectory);
+    let ctl = OpControl::budget_ms(20);
+    let work = harness.execute(
+        "peers.connected",
+        vec![(
+            "query",
+            object([("services", IpcValue::Array(vec![string(HRM_SERVICE)]))]),
+        )],
+        None,
+        ctl,
+    );
+    tokio::pin!(work);
+    tokio::select! { result = &mut work => panic!("unexpected {result:?}"), _ = harness.radio().wait_for_calls("connected_peers",1) => {} }
+    tokio::time::advance(Duration::from_millis(20)).await;
+    assert_eq!(
+        work.await.unwrap_err().code,
+        BleErrorCode::OperationTimedOut
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn peer_directory_batch_keeps_original_budget_after_first_read() {
+    let harness = directory_harness().await;
+    harness.radio().set_directory_peers(Vec::new());
+    harness.radio().block_op(FaultOp::PeerDirectory);
+    harness.radio().set_directory_unblocked_reads(1);
+    let ctl = OpControl::budget_ms(20);
+    tokio::time::advance(Duration::from_millis(10)).await;
+    let work = harness.execute(
+        "peers.known",
+        vec![(
+            "query",
+            object([(
+                "references",
+                IpcValue::Array(vec![
+                    directory_reference("00112233-4455-6677-8899-aabbccddeeff"),
+                    directory_reference("11112233-4455-6677-8899-aabbccddeeff"),
+                    directory_reference("22112233-4455-6677-8899-aabbccddeeff"),
+                ]),
+            )]),
+        )],
+        None,
+        ctl,
+    );
+    tokio::pin!(work);
+    tokio::select! { result = &mut work => panic!("unexpected {result:?}"), observed = tokio::time::timeout(WAIT,harness.radio().wait_for_calls("resolve_peer",2)) => { observed.unwrap(); } }
+    tokio::time::advance(Duration::from_millis(10)).await;
+    assert_eq!(
+        work.await.unwrap_err().code,
+        BleErrorCode::OperationTimedOut
+    );
+    assert_eq!(count(&harness.radio().calls(), "resolve_peer"), 2);
+}
+
+#[tokio::test]
+async fn peer_directory_retired_caller_cannot_receive_held_lookup() {
+    let harness = directory_harness().await;
+    harness.radio().set_directory_peers(Vec::new());
+    harness.radio().block_op(FaultOp::PeerDirectory);
+    let work = harness.execute(
+        "peers.connected",
+        vec![(
+            "query",
+            object([("services", IpcValue::Array(vec![string(HRM_SERVICE)]))]),
+        )],
+        None,
+        OpControl::default(),
+    );
+    tokio::pin!(work);
+    tokio::select! { result = &mut work => panic!("unexpected {result:?}"), observed = tokio::time::timeout(WAIT,harness.radio().wait_for_calls("connected_peers",1)) => { observed.unwrap(); } }
+    harness
+        .dispatcher
+        .inner
+        .lock()
+        .await
+        .callers
+        .get_mut(&harness.key())
+        .unwrap()
+        .retired = true;
+    harness.radio().unblock_op(FaultOp::PeerDirectory);
+    assert_eq!(
+        tokio::time::timeout(WAIT, work)
+            .await
+            .unwrap()
+            .unwrap_err()
+            .code,
+        BleErrorCode::OwnershipDenied
+    );
+}
+
+#[tokio::test]
+async fn peer_directory_excluded_source_preserves_native_refusal() {
+    let harness = directory_harness().await;
+    // Capability exists, but this boundary refuses the actual lookup.
+    let error = harness
+        .execute(
+            "peers.connected",
+            vec![(
+                "query",
+                object([
+                    ("services", IpcValue::Array(vec![string(HRM_SERVICE)])),
+                    ("sources", IpcValue::Array(vec![string("app-reference")])),
+                ]),
+            )],
+            None,
+            OpControl::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, BleErrorCode::CapabilityUnsupported);
+    assert_eq!(error.operation, "peers.connected");
+    assert_eq!(count(&harness.radio().calls(), "connected_peers"), 1);
+}
+
+#[tokio::test]
+async fn peer_directory_foreign_reference_and_malformed_reply_fail_closed() {
+    let harness = directory_harness().await;
+    let mut foreign = into_object(
+        directory_reference("00112233-4455-6677-8899-aabbccddeeff"),
+        "test",
+    )
+    .unwrap();
+    foreign.insert("backendId".to_owned(), string("other-backend"));
+    let error = harness
+        .execute(
+            "peers.resolve",
+            vec![("reference", IpcValue::Object(foreign))],
+            None,
+            OpControl::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, BleErrorCode::PeerScopeMismatch);
+    assert_eq!(count(&harness.radio().calls(), "resolve_peer"), 0);
+    harness
+        .radio()
+        .set_directory_peers(vec![ubm_desktop::DirectoryPeer {
+            peer_id: "invalid".to_owned(),
+            name: None,
+            connection: "connected",
+        }]);
+    let error = harness
+        .execute(
+            "peers.connected",
+            vec![(
+                "query",
+                object([("services", IpcValue::Array(vec![string(HRM_SERVICE)]))]),
+            )],
+            None,
+            OpControl::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, BleErrorCode::ProtocolMalformed);
+}
+
+#[tokio::test(start_paused = true)]
+async fn authority_shutdown_retains_half_open_compensation_cause_until_confirmed_retry() {
+    let harness = Harness::on_current_runtime().await;
+    harness
+        .radio()
+        .fail_next(FaultOp::Connect, "connect refused");
+    harness
+        .radio()
+        .fail_next(FaultOp::Disconnect, "initial compensation refused");
+    assert!(harness
+        .central
+        .connect("half-open", "owner", OpControl::unbounded())
+        .await
+        .is_err());
+    let platform = PlatformDetail::new("android", "133").with_message("disconnect refused");
+    harness
+        .radio()
+        .fail_next_with_platform(FaultOp::Disconnect, "retry refused", platform.clone());
+    let first = harness
+        .dispatcher
+        .authority_shutdown()
+        .await
+        .core
+        .expect("report");
+    assert!(!first.is_released());
+    assert_eq!(first.half_open_close_failures.len(), 1);
+    let failure = &first.half_open_close_failures[0];
+    assert_eq!(failure.code_str(), "connection.lost");
+    assert_eq!(failure.domain().as_str(), "connection");
+    assert_eq!(failure.operation(), "connection.disconnect");
+    assert_eq!(failure.platform(), Some(&platform));
+    let retry = harness
+        .dispatcher
+        .authority_shutdown()
+        .await
+        .core
+        .expect("debt retains retry owner");
+    assert!(retry.half_open_close_failures.is_empty());
+    assert!(retry.is_released());
+    assert!(harness.dispatcher.authority_shutdown().await.core.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn caller_connection_release_preserves_another_native_lease() {
+    let harness = Harness::new().await;
+    let link = harness.connect("shared-release").await;
+    let other = harness.other_caller().await;
+    let other_link = other.connect("shared-release").await;
+    harness
+        .connection_events(&link, "released-owner-events")
+        .await;
+    harness.ready("released-owner-events").await;
+    other
+        .connection_events(&other_link, "remaining-owner-events")
+        .await;
+    other.ready("remaining-owner-events").await;
+    harness
+        .execute(
+            "connection.disconnect",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        count(&harness.radio().calls(), "disconnect"),
+        0,
+        "releasing one caller must not physically disconnect the other owner"
+    );
+    let items = harness.items("released-owner-events");
+    assert_eq!(
+        items.len(),
+        2,
+        "one initial lifecycle and one owner terminal only"
+    );
+    assert_eq!(items[1]["kind"], "terminal");
+    assert_eq!(items[1]["reason"], "owner-released");
+    assert_eq!(other.items("remaining-owner-events").len(), 1);
+    assert!(
+        harness
+            .with_caller(|caller| caller.connection_events.is_empty())
+            .await
+    );
+    other.discover(&other_link).await;
+    assert!(harness
+        .execute(
+            "gatt.discover",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded()
+        )
+        .await
+        .is_err());
+    harness.dispatcher.authority_shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn caller_connection_release_retires_only_its_subscription() {
+    let harness = Harness::new().await;
+    let link = harness.connect("shared-subscriptions").await;
+    let database = harness.discover(&link).await;
+    harness
+        .subscribe(&link, &database, NOTIFY_ONLY, None)
+        .await
+        .unwrap();
+    let other = harness.other_caller().await;
+    let other_link = other.connect("shared-subscriptions").await;
+    assert_eq!(count(&harness.radio().calls(), "set_notifications"), 1);
+    harness
+        .execute(
+            "connection.disconnect",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(count(&harness.radio().calls(), "disconnect"), 0);
+    assert_eq!(
+        count(&harness.radio().calls(), "set_notifications"),
+        2,
+        "caller release must disable its native subscription before forgetting the handle"
+    );
+    other.discover(&other_link).await;
+    harness.dispatcher.authority_shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn caller_owner_stream_send_failure_retains_exact_retry() {
+    let harness = Harness::new().await;
+    let link = harness.connect("shared-stream-retry").await;
+    let other = harness.other_caller().await;
+    let other_link = other.connect("shared-stream-retry").await;
+    harness.connection_events(&link, "owner-stream").await;
+    harness.ready("owner-stream").await;
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let sends = attempts.clone();
+    let events = harness.events.clone();
+    let sink = IpcEventSink::new(Channel::new(move |body| {
+        if sends.fetch_add(1, AtomicOrdering::SeqCst) == 0 {
+            return Err(tauri::Error::Io(std::io::Error::other("terminal refused")));
+        }
+        if let InvokeResponseBody::Json(json) = body {
+            events
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(&json).unwrap());
+        }
+        Ok(())
+    }));
+    harness
+        .dispatcher
+        .inner
+        .lock()
+        .await
+        .callers
+        .get_mut(&harness.key())
+        .unwrap()
+        .event_sink = sink;
+    let first = harness
+        .execute(
+            "connection.disconnect",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(first.code, BleErrorCode::PlatformTransport);
+    assert!(
+        harness
+            .with_caller(|caller| caller.connections.contains_key(&link.handle)
+                && caller.connection_events.contains_key("owner-stream"))
+            .await
+    );
+    let (native_lease, native_release) = harness
+        .with_caller(|caller| {
+            let connection = &caller.connections[&link.handle];
+            (connection.lease.clone(), connection.native_release)
+        })
+        .await;
+    assert_eq!(native_release, Some(false));
+    // The core deliberately refuses an already-retired lease. Thus the
+    // successful dispatcher retry below proves it skips the native stage,
+    // rather than relying on global released-lease tombstones.
+    let repeated_native = harness
+        .central
+        .release_connection_lease("shared-stream-retry", &native_lease, OpControl::unbounded())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        DispatchError::from_core(&repeated_native).code,
+        BleErrorCode::OwnershipDenied
+    );
+    other.discover(&other_link).await;
+    harness
+        .execute(
+            "connection.disconnect",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    harness
+        .execute(
+            "connection.disconnect",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        attempts.load(AtomicOrdering::SeqCst),
+        2,
+        "one refused send and one successful terminal"
+    );
+    assert_eq!(harness.items("owner-stream").len(), 2);
+    assert_eq!(count(&harness.radio().calls(), "disconnect"), 0);
+    other.discover(&other_link).await;
+    harness.dispatcher.authority_shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn caller_gatt_operation_cannot_borrow_another_native_lease() {
+    let harness = Harness::new().await;
+    let link = harness.connect("shared-gatt").await;
+    let mut services = vec![hrm_service()];
+    services[0].characteristics[2]
+        .descriptors
+        .push(DescriptorSnapshot {
+            uuid: "00002901-0000-1000-8000-00805f9b34fb".into(),
+            occurrence: 0,
+        });
+    harness.radio().set_services("shared-gatt", services);
+    let database = harness.discover(&link).await;
+    let other = harness.other_caller().await;
+    let other_link = other.connect("shared-gatt").await;
+    let own_lease = harness
+        .with_caller(|caller| caller.connections[&link.handle].lease.clone())
+        .await;
+    assert_ne!(
+        own_lease, LEASE_ID,
+        "native connection lease is not renderer authority lease"
+    );
+    harness
+        .execute(
+            "gatt.read",
+            Harness::gatt_entries(&link, &database, CONTROL_POINT),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    let descriptor = harness
+        .with_caller(|caller| {
+            caller.databases[&database.handle]
+                .descriptors
+                .keys()
+                .next()
+                .unwrap()
+                .clone()
+        })
+        .await;
+    harness
+        .central
+        .release_connection_lease("shared-gatt", &own_lease, OpControl::unbounded())
+        .await
+        .unwrap();
+    let before = harness.radio().calls();
+    for operation in [
+        "gatt.read",
+        "gatt.write",
+        "gatt.subscribe",
+        "gatt.descriptor.read",
+        "gatt.descriptor.write",
+    ] {
+        let mut entries = Harness::gatt_entries(
+            &link,
+            &database,
+            if operation == "gatt.subscribe" {
+                NOTIFY_ONLY
+            } else {
+                CONTROL_POINT
+            },
+        );
+        entries.push(("descriptorHandle", string(descriptor.clone())));
+        entries.push(("mode", string("with-response")));
+        let bytes = operation.ends_with("write").then(|| vec![1]);
+        let error = harness
+            .execute(operation, entries, bytes, OpControl::unbounded())
+            .await
+            .expect_err("stale caller cannot borrow another owner's lease");
+        assert_eq!(
+            error.code,
+            BleErrorCode::OwnershipDenied,
+            "{operation}: {error:?}"
+        );
+    }
+    assert_eq!(
+        harness.radio().calls(),
+        before,
+        "refused GATT work never reaches native radio"
+    );
+    other.discover(&other_link).await;
+    harness.dispatcher.authority_shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_orphan_drain_keeps_its_exact_identity_owned() {
+    let harness = Harness::new().await;
+    let scan = harness.orphan_a_scan(1).await;
+    harness.radio().block_op(FaultOp::StopScan);
+    let dispatcher = harness.dispatcher.clone();
+    let authority = harness.dispatcher.ensure_authority().await.unwrap();
+    let drain = tokio::spawn(async move { dispatcher.settle_orphan_debt(&authority, None).await });
+    harness.wait_calls("stop_scan", 2).await;
+    drain.abort();
+    assert!(matches!(drain.await, Err(error) if error.is_cancelled()));
+    assert!(harness
+        .dispatcher
+        .inner
+        .lock()
+        .await
+        .orphan_debt
+        .iter()
+        .any(|debt| matches!(&debt.resource, OrphanResource::Scan(id) if *id == scan)));
+    harness.radio().unblock_op(FaultOp::StopScan);
+    harness.dispatcher.authority_shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn held_orphan_drain_cannot_prevent_authoritative_shutdown() {
+    let harness = Harness::on_current_runtime().await;
+    harness.orphan_a_scan(1).await;
+    harness.radio().block_op(FaultOp::StopScan);
+    elapse(100).await;
+    assert_eq!(harness.stops(), 2, "automatic release is held in flight");
+    let dispatcher = harness.dispatcher.clone();
+    let shutdown = tokio::spawn(async move { dispatcher.authority_shutdown().await });
+    elapse(6_000).await;
+    assert!(
+        harness.central.is_shut_down(),
+        "authoritative parent shutdown must start after the bounded orphan drain"
+    );
+    harness.radio().unblock_op(FaultOp::StopScan);
+    let report = shutdown.await.unwrap();
+    assert!(report.core.is_some());
+    assert!(
+        !report.orphan_failures.is_empty(),
+        "timed-out drain remains diagnostic evidence"
+    );
+    assert!(
+        harness.debt().await.is_empty(),
+        "confirmed parent cleanup retires child debt"
+    );
+    assert!(harness.dispatcher.authority_shutdown().await.core.is_none());
+    let stops = harness.stops();
+    elapse(60_000).await;
+    assert_eq!(
+        harness.stops(),
+        stops,
+        "retired debt cannot restart a native release"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelling_orphan_snapshot_keeps_both_resources_and_other_callers() {
+    let harness = Harness::on_current_runtime().await;
+    let link = harness.connect("peer-a").await;
+    let lease = harness
+        .with_caller(|caller| caller.connections[&link.handle].lease.clone())
+        .await;
+    let authority = harness.dispatcher.ensure_authority().await.unwrap();
+    harness
+        .radio()
+        .fail_next(FaultOp::Disconnect, "orphan disconnect refused");
+    harness
+        .dispatcher
+        .compensate(
+            &authority,
+            &harness.key(),
+            OrphanResource::Link {
+                peer_id: link.peer_id,
+                lease,
+            },
+        )
+        .await;
+    let scan = harness.orphan_a_scan(1).await;
+    assert_eq!(harness.debt().await.len(), 2);
+    assert!(harness
+        .dispatcher
+        .settle_orphan_debt(&authority, Some("unrelated-caller"))
+        .await
+        .is_empty());
+    assert_eq!(
+        harness.debt().await.len(),
+        2,
+        "caller-scoped release preserves other callers"
+    );
+    harness.radio().block_op(FaultOp::Disconnect);
+    let dispatcher = harness.dispatcher.clone();
+    let drain = tokio::spawn(async move { dispatcher.settle_orphan_debt(&authority, None).await });
+    harness.wait_calls("disconnect", 2).await;
+    drain.abort();
+    assert!(matches!(drain.await, Err(error) if error.is_cancelled()));
+    let state = harness.dispatcher.inner.lock().await;
+    assert_eq!(
+        state.orphan_debt.len(),
+        2,
+        "both the in-flight and unvisited identity stay owned"
+    );
+    assert!(state
+        .orphan_debt
+        .iter()
+        .any(|debt| matches!(&debt.resource, OrphanResource::Scan(id) if *id == scan)));
+    drop(state);
+    harness.radio().unblock_op(FaultOp::Disconnect);
+    harness.dispatcher.authority_shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn refused_parent_retains_timed_out_orphan_debt_until_clean_retry() {
+    let harness = Harness::on_current_runtime().await;
+    let scan = harness.orphan_a_scan(1).await;
+    harness.radio().block_op(FaultOp::StopScan);
+    harness
+        .radio()
+        .fail_next(FaultOp::FinishClose, "parent transport close refused");
+    let dispatcher = harness.dispatcher.clone();
+    let shutdown = tokio::spawn(async move { dispatcher.authority_shutdown().await });
+    elapse(6_000).await;
+    assert!(harness.stops() >= 3);
+    harness.radio().unblock_op(FaultOp::StopScan);
+    let first = shutdown.await.unwrap();
+    assert!(!first.core.unwrap().transport_close_failures.is_empty());
+    assert!(harness
+        .dispatcher
+        .inner
+        .lock()
+        .await
+        .orphan_debt
+        .iter()
+        .any(|debt| matches!(&debt.resource, OrphanResource::Scan(id) if *id == scan)));
+    assert!(harness.dispatcher.ensure_authority().await.is_err());
+    let retry = harness.dispatcher.authority_shutdown().await;
+    assert!(retry.core.unwrap().transport_close_failures.is_empty());
+    assert!(harness.debt().await.is_empty());
+    assert!(harness.dispatcher.authority_shutdown().await.core.is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn held_orphan_release_still_reaches_bounded_parent_transport_close() {
+    let harness = Harness::on_current_runtime().await;
+    harness.orphan_a_scan(1).await;
+    harness.radio().block_op(FaultOp::StopScan);
+    elapse(100).await;
+    let dispatcher = harness.dispatcher.clone();
+    let shutdown = tokio::spawn(async move { dispatcher.authority_shutdown().await });
+    elapse(16_000).await;
+    assert_eq!(
+        count(&harness.radio().calls(), "finish_close"),
+        1,
+        "parent transport close runs even while child radio gate stays blocked"
+    );
+    let report = shutdown.await.unwrap();
+    assert!(report.core.unwrap().scan_stop_failure.is_some());
+    assert_eq!(
+        harness.debt().await.len(),
+        1,
+        "unconfirmed parent preserves child identity"
+    );
+    harness.radio().unblock_op(FaultOp::StopScan);
+    let stops_before_retry = harness.stops();
+    let retry = harness.dispatcher.authority_shutdown().await;
+    assert!(
+        harness.stops() > stops_before_retry,
+        "retry must reach the retained native scan"
+    );
+    assert!(
+        !harness.radio().scan_active(),
+        "successful cleanup stops the physical scan"
+    );
+    assert_eq!(
+        retry.core.unwrap().record.unwrap().state(),
+        ubm_core::ownership::CleanupState::Released,
+        "a later successful radio release must clear current parent debt"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn authority_shutdown_retains_transport_cleanup_until_a_clean_retry() {
+    let harness = Harness::new().await;
+    harness
+        .radio()
+        .fail_next(FaultOp::FinishClose, "transport close refused");
+    let first = harness.dispatcher.authority_shutdown().await;
+    assert!(!first
+        .core
+        .expect("first shutdown report")
+        .transport_close_failures
+        .is_empty());
+    assert!(
+        harness.dispatcher.ensure_authority().await.is_err(),
+        "failed shutdown never reopens admission"
+    );
+
+    let second = harness.dispatcher.authority_shutdown().await;
+    let report = second
+        .core
+        .expect("failed cleanup authority must survive for retry");
+    assert!(
+        report.transport_close_failures.is_empty(),
+        "the latest successful retry is not poisoned by history"
+    );
+    assert_eq!(
+        report.record.expect("clean core report").state(),
+        ubm_core::ownership::CleanupState::Released
+    );
+    assert!(report.scan_stop_failure.is_none());
+    assert!(report.radio_close_failures.is_empty());
+    assert!(second.orphan_failures.is_empty());
+    assert_eq!(count(&harness.radio().calls(), "finish_close"), 2);
+    assert!(
+        harness.dispatcher.authority_shutdown().await.core.is_none(),
+        "successful cleanup retires authority debt"
+    );
+    assert!(harness.dispatcher.ensure_authority().await.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn authority_shutdown_closes_admission_during_transport_cleanup() {
+    let harness = Harness::new().await;
+    harness.radio().block_op(FaultOp::FinishClose);
+    let dispatcher = harness.dispatcher.clone();
+    let shutdown = tokio::spawn(async move { dispatcher.authority_shutdown().await });
+    harness.wait_calls("finish_close", 1).await;
+    assert!(tokio::time::timeout(
+        Duration::from_millis(100),
+        harness.dispatcher.ensure_authority()
+    )
+    .await
+    .expect("closed admission must not wait behind cleanup")
+    .is_err());
+    harness.radio().unblock_op(FaultOp::FinishClose);
+    assert!(shutdown
+        .await
+        .expect("shutdown task")
+        .core
+        .expect("report")
+        .transport_close_failures
+        .is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_authority_shutdown_preserves_the_closed_retry_owner() {
+    let harness = Harness::new().await;
+    harness.radio().block_op(FaultOp::FinishClose);
+    let dispatcher = harness.dispatcher.clone();
+    let shutdown = tokio::spawn(async move { dispatcher.authority_shutdown().await });
+    harness.wait_calls("finish_close", 1).await;
+    shutdown.abort();
+    assert!(matches!(shutdown.await, Err(error) if error.is_cancelled()));
+    assert!(harness.dispatcher.ensure_authority().await.is_err());
+    harness.radio().unblock_op(FaultOp::FinishClose);
+    let retry = harness.dispatcher.authority_shutdown().await;
+    assert!(retry
+        .core
+        .expect("cancelled shutdown retains authority")
+        .transport_close_failures
+        .is_empty());
+    assert_eq!(count(&harness.radio().calls(), "finish_close"), 2);
+    assert!(harness.dispatcher.authority_shutdown().await.core.is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn hung_authority_transport_cleanup_is_bounded_and_retryable() {
+    let harness = Harness::on_current_runtime().await;
+    harness.radio().block_op(FaultOp::FinishClose);
+    let start = tokio::time::Instant::now();
+    let first = harness.dispatcher.authority_shutdown().await;
+    let failure = first
+        .core
+        .expect("bounded report")
+        .transport_close_failures
+        .into_iter()
+        .next()
+        .expect("transport timeout is reported");
+    assert_eq!(failure.code(), BleErrorCode::OperationTimedOut);
+    assert!(start.elapsed() <= Duration::from_secs(6));
+    assert!(harness.dispatcher.ensure_authority().await.is_err());
+    harness.radio().unblock_op(FaultOp::FinishClose);
+    let retry = harness.dispatcher.authority_shutdown().await;
+    assert!(retry
+        .core
+        .expect("timeout retains authority")
+        .transport_close_failures
+        .is_empty());
+    assert!(harness.dispatcher.authority_shutdown().await.core.is_none());
+}
+
 fn flags(read: bool, write: bool, notify: bool, indicate: bool) -> PropertyFlags {
     PropertyFlags {
         read,
@@ -181,6 +1461,23 @@ impl Harness {
         let authority: Arc<dyn CoreAuthority> = Arc::new(central.clone());
         let dispatcher = BtleplugDispatcher::with_core_authority(authority);
         let caller = AuthenticatedCaller::new("test-app".to_owned(), "main".to_owned());
+        Self::over_dispatcher(central, dispatcher, caller).await
+    }
+
+    async fn other_caller(&self) -> Self {
+        Self::over_dispatcher(
+            self.central.clone(),
+            self.dispatcher.clone(),
+            AuthenticatedCaller::new("test-app".to_owned(), "other-window".to_owned()),
+        )
+        .await
+    }
+
+    async fn over_dispatcher(
+        central: DesktopCentral<FakeRadio>,
+        dispatcher: BtleplugDispatcher,
+        caller: AuthenticatedCaller,
+    ) -> Self {
         let events = Arc::new(StdMutex::new(Vec::new()));
         let log = Arc::clone(&events);
         let sink = IpcEventSink::new(Channel::new(move |body| {
@@ -608,6 +1905,262 @@ fn empty_scan_query() -> IpcValue {
 
 fn wire_error(error: &DispatchError) -> Value {
     error.normalized_error().into_wire()
+}
+
+// Trusted continuation and offline recording use the same Tauri authority.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn trusted_continuation_replays_setup_and_retains_recording_without_offline_radio_open() {
+    let harness = Harness::new().await;
+    let peer = "native-recorded-peer";
+    harness.advertise(peer).await;
+    let directory = std::env::temp_dir().join(format!(
+        "ubm-tauri-recording-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    harness
+        .dispatcher
+        .continuation_configure_recording_directory(&directory)
+        .await
+        .unwrap();
+    let declaration = serde_json::json!({
+        "onAppearance":"native", "peerId":peer,
+        "resubscribe":[{"serviceUuid":HRM_SERVICE,"characteristicUuid":NOTIFY_ONLY}],
+        "setup":[{"selector":{"serviceUuid":HRM_SERVICE,"characteristicUuid":CONTROL_POINT},
+            "value":[2,0],"timeoutMs":4000,
+            "response":{"subscriptionIndex":0,"prefix":[240,2,0],"minLength":4,"maxLength":4,
+                "status":{"offset":3,"accepted":[0]}}}],
+        "recording":{"id":"tauri-native","maxBytes":1048576,"maxRecords":1000}
+    })
+    .to_string();
+    harness.radio().block_op(FaultOp::Write);
+    let dispatcher = harness.dispatcher.clone();
+    let first =
+        tokio::spawn(async move { dispatcher.continuation_execute(peer, &declaration).await });
+    harness.wait_calls("write_characteristic", 1).await;
+    let notify = |value, epoch| RadioEvent::Notification {
+        peer_id: peer.into(),
+        service_uuid: HRM_SERVICE.into(),
+        service_occurrence: 0,
+        characteristic_uuid: NOTIFY_ONLY.into(),
+        characteristic_occurrence: 0,
+        value,
+        epoch,
+    };
+    let before_ack = harness
+        .dispatcher
+        .continuation_recording_status("tauri-native")
+        .await
+        .unwrap()["records"]
+        .as_u64()
+        .unwrap();
+    harness.radio().push_event(notify(
+        vec![240, 2, 0, 0],
+        harness.central.routing_epoch(peer).await,
+    ));
+    tokio::time::timeout(WAIT, async {
+        loop {
+            if harness
+                .dispatcher
+                .continuation_recording_status("tauri-native")
+                .await
+                .unwrap()["records"]
+                .as_u64()
+                .unwrap()
+                > before_ack
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let early = harness
+        .dispatcher
+        .continuation_recording_prepare("tauri-native", 256, 65536)
+        .await
+        .unwrap();
+    assert!(
+        early["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["record"]["valueB64"] == "8AIAAA=="),
+        "prove actual ACK ingress before the negative completion assertion"
+    );
+    assert_eq!(
+        harness
+            .dispatcher
+            .continuation_recording_acknowledge("tauri-native", early["token"].as_str().unwrap())
+            .await
+            .unwrap()["acknowledged"],
+        true
+    );
+    assert!(
+        !first.is_finished(),
+        "early application ACK must not bypass held ATT"
+    );
+    harness.radio().unblock_op(FaultOp::Write);
+    assert_eq!(
+        tokio::time::timeout(WAIT, first)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()["event"],
+        "continuation.completed"
+    );
+    for (generation, value) in [(1, 72), (2, 73)] {
+        if generation == 2 {
+            harness.radio().block_op(FaultOp::Write);
+            harness.central.remote_peer_loss(peer).await.unwrap();
+            harness.wait_calls("write_characteristic", 2).await;
+            harness.radio().push_event(notify(
+                vec![240, 2, 0, 0],
+                harness.central.routing_epoch(peer).await,
+            ));
+            harness.radio().unblock_op(FaultOp::Write);
+            tokio::time::timeout(WAIT, async {
+                loop {
+                    match harness.dispatcher.continuation_describe_backlog().await {
+                        Ok(status)
+                            if status["continuationOutcome"]["event"]
+                                == "continuation.completed" =>
+                        {
+                            break;
+                        }
+                        Ok(_) => {}
+                        Err(error) => assert_eq!(error["code"], "lifecycle.invalid-state"),
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+        let before = harness
+            .dispatcher
+            .continuation_recording_status("tauri-native")
+            .await
+            .unwrap()["records"]
+            .as_u64()
+            .unwrap();
+        harness.radio().push_event(notify(
+            vec![0, value],
+            harness.central.routing_epoch(peer).await,
+        ));
+        tokio::time::timeout(WAIT, async {
+            loop {
+                if harness
+                    .dispatcher
+                    .continuation_recording_status("tauri-native")
+                    .await
+                    .unwrap()["records"]
+                    .as_u64()
+                    .unwrap()
+                    > before
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+    harness
+        .dispatcher
+        .continuation_recording_stop("tauri-native")
+        .await
+        .unwrap();
+    let claim = harness
+        .dispatcher
+        .continuation_prepare_claim(256, 65536)
+        .await
+        .unwrap();
+    assert_eq!(claim["recording"]["id"], "tauri-native");
+    assert_eq!(
+        harness
+            .dispatcher
+            .continuation_acknowledge_claim(claim["claimToken"].as_str().unwrap())
+            .await
+            .unwrap()["disposed"],
+        true
+    );
+    let batch = harness
+        .dispatcher
+        .continuation_recording_prepare("tauri-native", 256, 65536)
+        .await
+        .unwrap();
+    let records = batch["records"].as_array().unwrap();
+    for value in ["AEg=", "AEk="] {
+        assert!(
+            records
+                .iter()
+                .any(|entry| entry["record"]["valueB64"] == value),
+            "missing durable positive value {value}"
+        );
+    }
+    let generations: Vec<_> = ["AEg=", "AEk="]
+        .into_iter()
+        .map(|value| {
+            let entry = records
+                .iter()
+                .find(|entry| entry["record"]["valueB64"] == value)
+                .unwrap();
+            assert_eq!(entry["metadata"]["session"]["peerId"], peer);
+            entry["metadata"]["consumer"]["connectionGeneration"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert_ne!(
+        generations[0], generations[1],
+        "recovery must retain a new generation identity"
+    );
+    let report = harness.dispatcher.authority_shutdown().await;
+    assert!(report.core.is_some());
+    assert!(report.orphan_failures.is_empty());
+    assert!(!harness.radio().link_connected(peer));
+    drop(harness);
+
+    // A fresh trusted dispatcher must retrieve the same durable prefix without
+    // initializing an adapter, even after the original radio owner is gone.
+    let offline = BtleplugDispatcher::with_authority_opener(Arc::new(|| {
+        panic!("offline recording opened radio")
+    }));
+    offline
+        .continuation_configure_recording_directory(&directory)
+        .await
+        .unwrap();
+    assert_eq!(
+        offline
+            .continuation_recording_prepare("tauri-native", 256, 65536)
+            .await
+            .unwrap(),
+        batch
+    );
+    let token = batch["token"].as_str().unwrap();
+    let receipt = offline
+        .continuation_recording_acknowledge("tauri-native", token)
+        .await
+        .unwrap();
+    assert_eq!(receipt["acknowledged"], true);
+    assert_eq!(receipt["records"].as_u64().unwrap(), records.len() as u64);
+    assert_eq!(
+        offline
+            .continuation_recording_status("tauri-native")
+            .await
+            .unwrap()["records"],
+        0
+    );
+    drop(offline);
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 // PR210-04 — one peer's hung discovery must not stall another peer's
@@ -1318,6 +2871,7 @@ async fn pr210_09_a_failed_disconnect_keeps_the_link_for_a_real_retry() {
                 .get(&link.handle)
                 .is_some_and(|connection| {
                     matches!(connection.phase, ReleasePhase::ReleaseFailed)
+                        && connection.native_release.is_none()
                 }))
             .await,
         "the link mapping survives the failure"
@@ -1679,6 +3233,12 @@ async fn a_failed_owner_terminal_send_keeps_the_disconnect_retryable() {
             .await
     );
     assert!(harness.items(&notifications).is_empty());
+    assert_eq!(
+        harness
+            .with_caller(|caller| caller.connections[&link.handle].native_release)
+            .await,
+        Some(true)
+    );
 
     harness
         .execute(
@@ -1693,6 +3253,7 @@ async fn a_failed_owner_terminal_send_keeps_the_disconnect_retryable() {
     assert_eq!(ended[0]["reason"], "owner-released");
     assert_eq!(ended.len(), 1);
     assert_eq!(attempts.load(AtomicOrdering::SeqCst), 2);
+    assert_eq!(count(&harness.radio().calls(), "disconnect"), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2834,6 +4395,31 @@ async fn finding_114_a_failed_compensation_retries_until_the_release_lands() {
     assert_eq!(harness.stops(), 4, "nothing retries a settled debt");
     let cleanup = harness.dispatcher.release(&harness.key()).await;
     assert_eq!(cleanup.into_wire()["state"], "released");
+}
+
+#[tokio::test(start_paused = true)]
+async fn orphan_retry_survives_transient_authority_lock_contention() {
+    let harness = Harness::on_current_runtime().await;
+    harness.orphan_a_scan(1).await;
+    assert_eq!(harness.stops(), 1);
+    let slot = harness.dispatcher.authority.lock().await;
+    elapse(100).await;
+    assert_eq!(
+        harness.stops(),
+        1,
+        "authority inspection is momentarily held"
+    );
+    drop(slot);
+    elapse(100).await;
+    assert_eq!(
+        harness.stops(),
+        2,
+        "retry resumes when authority is readable"
+    );
+    assert!(
+        harness.debt().await.is_empty(),
+        "native cleanup settles exact debt"
+    );
 }
 
 #[tokio::test(start_paused = true)]

@@ -16,6 +16,7 @@ import { describeError, isJsonObject, type JsonObject, type JsonValue } from '..
 import { useScenarioView } from '../../../driver/use-driver'
 import type { MainStackParamList } from '../../../navigation/navigators'
 import { accTileView } from '../../../driver/live-dashboard-acc-view'
+import { tileFailureView } from '../../../driver/live-dashboard-error-view'
 import { exportNativeRecording } from '../../../driver/native-recording-export'
 import { recordingControls } from '../../../driver/recording-controls'
 import { streamToggleProps } from '../../../driver/stream-toggle-props'
@@ -64,6 +65,7 @@ interface TileView {
   readonly peerId: string
   readonly name: string | null
   readonly status: string
+  readonly error: string | null
   readonly supervisorState: string | null
   readonly supervisorAttempt: number | null
   readonly lifecycleCause: string | null
@@ -115,6 +117,7 @@ function tileViewOf(peerId: string, value: JsonValue | undefined): TileView | nu
     peerId,
     name: stringOrNull(record.name),
     status: stringOrNull(record.status) ?? 'off',
+    error: tileFailureView(record),
     supervisorState: stringOrNull(record.supervisorState),
     supervisorAttempt: numberOrNull(record.supervisorAttempt),
     lifecycleCause: stringOrNull(record.lifecycleCause),
@@ -300,6 +303,7 @@ const DashboardTile = React.memo(function DashboardTile({
         {statusLine}
         {causeLine}
       </AppText>
+      {tile.error === null ? null : <AppText selectable style={styles.error}>{tile.error}</AppText>}
       <AppText style={styles.row}>Last seen: {lastSeenAge(tile.lastSeenAtMs)}</AppText>
       {selected ? (
         <View>

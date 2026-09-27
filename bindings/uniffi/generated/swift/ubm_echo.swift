@@ -398,7 +398,7 @@ private func uniffiTraitInterfaceCallWithError<T, E>(
         callStatus.pointee.errorBuf = FfiConverterString.lower(String(describing: error))
     }
 }
-// Initial value and increment amount for handles. 
+// Initial value and increment amount for handles.
 // These ensure that SWIFT handles always have the lowest bit set
 fileprivate let UNIFFI_HANDLEMAP_INITIAL: UInt64 = 1
 fileprivate let UNIFFI_HANDLEMAP_DELTA: UInt64 = 2
@@ -656,37 +656,37 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 
 
 public protocol EchoSessionProtocol: AnyObject, Sendable {
-    
+
     func bleScanStart(owner: String, timeoutMs: String, nowMs: String)  -> EchoCounterResult
-    
+
     func bleScanStop(opId: String, nowMs: String)  -> EchoCounterResult
-    
+
     func bleScanTake()  -> EchoCounterResult
-    
+
     func cancelInflight()  -> EchoStatus
-    
+
     func centralStatus()  -> EchoCounterResult
-    
+
     func close()  -> EchoStatus
-    
+
     func driveDestroy()  -> EchoCounterResult
-    
+
     func driveExpireSweep(nowMs: String)  -> EchoCounterResult
-    
+
     func echoBytes(input: Data)  -> EchoBytesResult
-    
+
     func echoBytesChunked(input: Data, chunks: UInt32)  -> EchoBytesResult
-    
+
     func echoCounter(decimal: String)  -> EchoCounterResult
-    
+
     func requestBleTransition(transition: String)  -> EchoStatus
-    
+
     func stagedCounters()  -> EchoCounterResult
-    
+
     func stagedDrainLog()  -> EchoCounterResult
-    
+
     func stagedStep(line: String)  -> EchoCounterResult
-    
+
 }
 open class EchoSession: EchoSessionProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -747,9 +747,9 @@ public convenience init(revision: String) {
         try! rustCall { uniffi_ubm5_uniffi_echo_fn_free_echosession(handle, $0) }
     }
 
-    
 
-    
+
+
 open func bleScanStart(owner: String, timeoutMs: String, nowMs: String) -> EchoCounterResult  {
     return try!  FfiConverterTypeEchoCounterResult_lift(try! rustCall() {
         uniffiCallStatus in
@@ -761,7 +761,7 @@ open func bleScanStart(owner: String, timeoutMs: String, nowMs: String) -> EchoC
     )
 })
 }
-    
+
 open func bleScanStop(opId: String, nowMs: String) -> EchoCounterResult  {
     return try!  FfiConverterTypeEchoCounterResult_lift(try! rustCall() {
         uniffiCallStatus in
@@ -772,7 +772,7 @@ open func bleScanStop(opId: String, nowMs: String) -> EchoCounterResult  {
     )
 })
 }
-    
+
 open func bleScanTake() -> EchoCounterResult  {
     return try!  FfiConverterTypeEchoCounterResult_lift(try! rustCall() {
         uniffiCallStatus in
@@ -781,7 +781,7 @@ open func bleScanTake() -> EchoCounterResult  {
     )
 })
 }
-    
+
 open func cancelInflight() -> EchoStatus  {
     return try!  FfiConverterTypeEchoStatus_lift(try! rustCall() {
         uniffiCallStatus in
@@ -790,7 +790,7 @@ open func cancelInflight() -> EchoStatus  {
     )
 })
 }
-    
+
 open func centralStatus() -> EchoCounterResult  {
     return try!  FfiConverterTypeEchoCounterResult_lift(try! rustCall() {
         uniffiCallStatus in
@@ -799,7 +799,7 @@ open func centralStatus() -> EchoCounterResult  {
     )
 })
 }
-    
+
 open func close() -> EchoStatus  {
     return try!  FfiConverterTypeEchoStatus_lift(try! rustCall() {
         uniffiCallStatus in
@@ -808,7 +808,7 @@ open func close() -> EchoStatus  {
     )
 })
 }
-    
+
 open func driveDestroy() -> EchoCounterResult  {
     return try!  FfiConverterTypeEchoCounterResult_lift(try! rustCall() {
         uniffiCallStatus in
@@ -817,7 +817,7 @@ open func driveDestroy() -> EchoCounterResult  {
     )
 })
 }
-    
+
 open func driveExpireSweep(nowMs: String) -> EchoCounterResult  {
     return try!  FfiConverterTypeEchoCounterResult_lift(try! rustCall() {
         uniffiCallStatus in
@@ -827,7 +827,7 @@ open func driveExpireSweep(nowMs: String) -> EchoCounterResult  {
     )
 })
 }
-    
+
 open func echoBytes(input: Data) -> EchoBytesResult  {
     return try!  FfiConverterTypeEchoBytesResult_lift(try! rustCall() {
         uniffiCallStatus in
@@ -837,7 +837,7 @@ open func echoBytes(input: Data) -> EchoBytesResult  {
     )
 })
 }
-    
+
 open func echoBytesChunked(input: Data, chunks: UInt32) -> EchoBytesResult  {
     return try!  FfiConverterTypeEchoBytesResult_lift(try! rustCall() {
         uniffiCallStatus in
@@ -848,7 +848,7 @@ open func echoBytesChunked(input: Data, chunks: UInt32) -> EchoBytesResult  {
     )
 })
 }
-    
+
 open func echoCounter(decimal: String) -> EchoCounterResult  {
     return try!  FfiConverterTypeEchoCounterResult_lift(try! rustCall() {
         uniffiCallStatus in
@@ -858,7 +858,7 @@ open func echoCounter(decimal: String) -> EchoCounterResult  {
     )
 })
 }
-    
+
 open func requestBleTransition(transition: String) -> EchoStatus  {
     return try!  FfiConverterTypeEchoStatus_lift(try! rustCall() {
         uniffiCallStatus in
@@ -868,7 +868,7 @@ open func requestBleTransition(transition: String) -> EchoStatus  {
     )
 })
 }
-    
+
 open func stagedCounters() -> EchoCounterResult  {
     return try!  FfiConverterTypeEchoCounterResult_lift(try! rustCall() {
         uniffiCallStatus in
@@ -877,7 +877,7 @@ open func stagedCounters() -> EchoCounterResult  {
     )
 })
 }
-    
+
 open func stagedDrainLog() -> EchoCounterResult  {
     return try!  FfiConverterTypeEchoCounterResult_lift(try! rustCall() {
         uniffiCallStatus in
@@ -886,7 +886,7 @@ open func stagedDrainLog() -> EchoCounterResult  {
     )
 })
 }
-    
+
 open func stagedStep(line: String) -> EchoCounterResult  {
     return try!  FfiConverterTypeEchoCounterResult_lift(try! rustCall() {
         uniffiCallStatus in
@@ -896,9 +896,9 @@ open func stagedStep(line: String) -> EchoCounterResult  {
     )
 })
 }
-    
 
-    
+
+
 }
 
 
@@ -948,33 +948,37 @@ public func FfiConverterTypeEchoSession_lower(_ value: EchoSession) -> UInt64 {
 
 
 public protocol MobileCoreHostProtocol: AnyObject, Sendable {
-    
+
     func complete(requestId: UInt64, completion: MobileRadioCompletion)  -> String
-    
-    func continuationAcknowledgeClaim(claimToken: String, completion: MobileInvokeCompletion) 
-    
+
+    func continuationAcknowledgeClaim(claimToken: String, completion: MobileInvokeCompletion)
+
     func continuationCancelDeclaration(reservationToken: String)  -> String
-    
+
     func continuationCommitDeclaration(reservationToken: String)  -> String
-    
+
+    func continuationConfigureRecordingDirectory(path: String)  -> String
+
     func continuationDeclarationReplacementFailure(declarationJson: String)  -> String?
-    
-    func continuationDescribeBacklog(completion: MobileInvokeCompletion) 
-    
-    func continuationExecute(peerId: String, declarationJson: String, completion: MobileInvokeCompletion) 
-    
-    func continuationPrepareClaim(maxItems: UInt32, maxBytes: UInt32, completion: MobileInvokeCompletion) 
-    
+
+    func continuationDescribeBacklog(completion: MobileInvokeCompletion)
+
+    func continuationExecute(peerId: String, declarationJson: String, completion: MobileInvokeCompletion)
+
+    func continuationPrepareClaim(maxItems: UInt32, maxBytes: UInt32, completion: MobileInvokeCompletion)
+
+    func continuationRecordingControl(operation: String, id: String, token: String, maxItems: UInt32, maxBytes: UInt32)  -> String
+
     func continuationReserveDeclaration(declarationJson: String)  -> String
-    
+
     func continuationSeedDeclaration(declarationJson: String)  -> String
-    
+
     func ingest(ingress: MobileRadioIngress)  -> String
-    
+
     func openSession(owner: String, expectedWireRevision: String) throws  -> MobileCoreSession
-    
+
     func shutdown()  -> String
-    
+
 }
 open class MobileCoreHost: MobileCoreHostProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -1026,9 +1030,9 @@ open class MobileCoreHost: MobileCoreHostProtocol, @unchecked Sendable {
         try! rustCall { uniffi_ubm5_uniffi_echo_fn_free_mobilecorehost(handle, $0) }
     }
 
-    
 
-    
+
+
 open func complete(requestId: UInt64, completion: MobileRadioCompletion) -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
@@ -1039,7 +1043,7 @@ open func complete(requestId: UInt64, completion: MobileRadioCompletion) -> Stri
     )
 })
 }
-    
+
 open func continuationAcknowledgeClaim(claimToken: String, completion: MobileInvokeCompletion)  {try! rustCall() {
         uniffiCallStatus in
     uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_claim(
@@ -1049,7 +1053,7 @@ open func continuationAcknowledgeClaim(claimToken: String, completion: MobileInv
     )
 }
 }
-    
+
 open func continuationCancelDeclaration(reservationToken: String) -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
@@ -1059,7 +1063,7 @@ open func continuationCancelDeclaration(reservationToken: String) -> String  {
     )
 })
 }
-    
+
 open func continuationCommitDeclaration(reservationToken: String) -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
@@ -1069,7 +1073,17 @@ open func continuationCommitDeclaration(reservationToken: String) -> String  {
     )
 })
 }
-    
+
+open func continuationConfigureRecordingDirectory(path: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_configure_recording_directory(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(path),uniffiCallStatus
+    )
+})
+}
+
 open func continuationDeclarationReplacementFailure(declarationJson: String) -> String?  {
     return try!  FfiConverterOptionString.lift(try! rustCall() {
         uniffiCallStatus in
@@ -1079,7 +1093,7 @@ open func continuationDeclarationReplacementFailure(declarationJson: String) -> 
     )
 })
 }
-    
+
 open func continuationDescribeBacklog(completion: MobileInvokeCompletion)  {try! rustCall() {
         uniffiCallStatus in
     uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_describe_backlog(
@@ -1088,7 +1102,7 @@ open func continuationDescribeBacklog(completion: MobileInvokeCompletion)  {try!
     )
 }
 }
-    
+
 open func continuationExecute(peerId: String, declarationJson: String, completion: MobileInvokeCompletion)  {try! rustCall() {
         uniffiCallStatus in
     uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_execute(
@@ -1099,7 +1113,7 @@ open func continuationExecute(peerId: String, declarationJson: String, completio
     )
 }
 }
-    
+
 open func continuationPrepareClaim(maxItems: UInt32, maxBytes: UInt32, completion: MobileInvokeCompletion)  {try! rustCall() {
         uniffiCallStatus in
     uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_claim(
@@ -1110,7 +1124,21 @@ open func continuationPrepareClaim(maxItems: UInt32, maxBytes: UInt32, completio
     )
 }
 }
-    
+
+open func continuationRecordingControl(operation: String, id: String, token: String, maxItems: UInt32, maxBytes: UInt32) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_recording_control(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(operation),
+        FfiConverterString.lower(id),
+        FfiConverterString.lower(token),
+        FfiConverterUInt32.lower(maxItems),
+        FfiConverterUInt32.lower(maxBytes),uniffiCallStatus
+    )
+})
+}
+
 open func continuationReserveDeclaration(declarationJson: String) -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
@@ -1120,7 +1148,7 @@ open func continuationReserveDeclaration(declarationJson: String) -> String  {
     )
 })
 }
-    
+
 open func continuationSeedDeclaration(declarationJson: String) -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
@@ -1130,7 +1158,7 @@ open func continuationSeedDeclaration(declarationJson: String) -> String  {
     )
 })
 }
-    
+
 open func ingest(ingress: MobileRadioIngress) -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
@@ -1140,7 +1168,7 @@ open func ingest(ingress: MobileRadioIngress) -> String  {
     )
 })
 }
-    
+
 open func openSession(owner: String, expectedWireRevision: String)throws  -> MobileCoreSession  {
     return try  FfiConverterTypeMobileCoreSession_lift(try rustCallWithError(FfiConverterTypeMobileCoreError_lift) {
         uniffiCallStatus in
@@ -1151,7 +1179,7 @@ open func openSession(owner: String, expectedWireRevision: String)throws  -> Mob
     )
 })
 }
-    
+
 open func shutdown() -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
@@ -1160,9 +1188,9 @@ open func shutdown() -> String  {
     )
 })
 }
-    
 
-    
+
+
 }
 
 
@@ -1212,15 +1240,15 @@ public func FfiConverterTypeMobileCoreHost_lower(_ value: MobileCoreHost) -> UIn
 
 
 public protocol MobileCoreSessionProtocol: AnyObject, Sendable {
-    
+
     func admissionJson()  -> String
-    
+
     func drain(maxItems: UInt32, maxBytes: UInt32)  -> String
-    
-    func invoke(op: String, argsJson: String, completion: MobileInvokeCompletion) 
-    
+
+    func invoke(op: String, argsJson: String, completion: MobileInvokeCompletion)
+
     func sessionId()  -> UInt64
-    
+
 }
 open class MobileCoreSession: MobileCoreSessionProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -1272,9 +1300,9 @@ open class MobileCoreSession: MobileCoreSessionProtocol, @unchecked Sendable {
         try! rustCall { uniffi_ubm5_uniffi_echo_fn_free_mobilecoresession(handle, $0) }
     }
 
-    
 
-    
+
+
 open func admissionJson() -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
@@ -1283,7 +1311,7 @@ open func admissionJson() -> String  {
     )
 })
 }
-    
+
 open func drain(maxItems: UInt32, maxBytes: UInt32) -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
@@ -1294,7 +1322,7 @@ open func drain(maxItems: UInt32, maxBytes: UInt32) -> String  {
     )
 })
 }
-    
+
 open func invoke(op: String, argsJson: String, completion: MobileInvokeCompletion)  {try! rustCall() {
         uniffiCallStatus in
     uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_invoke(
@@ -1305,7 +1333,7 @@ open func invoke(op: String, argsJson: String, completion: MobileInvokeCompletio
     )
 }
 }
-    
+
 open func sessionId() -> UInt64  {
     return try!  FfiConverterUInt64.lift(try! rustCall() {
         uniffiCallStatus in
@@ -1314,9 +1342,9 @@ open func sessionId() -> UInt64  {
     )
 })
 }
-    
 
-    
+
+
 }
 
 
@@ -1380,9 +1408,9 @@ public struct EchoBytesResult: Equatable, Hashable {
         self.operation = operation
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1396,10 +1424,10 @@ public struct FfiConverterTypeEchoBytesResult: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EchoBytesResult {
         return
             try EchoBytesResult(
-                ok: FfiConverterBool.read(from: &buf), 
-                data: FfiConverterData.read(from: &buf), 
-                code: FfiConverterString.read(from: &buf), 
-                domain: FfiConverterString.read(from: &buf), 
+                ok: FfiConverterBool.read(from: &buf),
+                data: FfiConverterData.read(from: &buf),
+                code: FfiConverterString.read(from: &buf),
+                domain: FfiConverterString.read(from: &buf),
                 operation: FfiConverterString.read(from: &buf)
         )
     }
@@ -1446,9 +1474,9 @@ public struct EchoCounterResult: Equatable, Hashable {
         self.operation = operation
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1462,10 +1490,10 @@ public struct FfiConverterTypeEchoCounterResult: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EchoCounterResult {
         return
             try EchoCounterResult(
-                ok: FfiConverterBool.read(from: &buf), 
-                value: FfiConverterString.read(from: &buf), 
-                code: FfiConverterString.read(from: &buf), 
-                domain: FfiConverterString.read(from: &buf), 
+                ok: FfiConverterBool.read(from: &buf),
+                value: FfiConverterString.read(from: &buf),
+                code: FfiConverterString.read(from: &buf),
+                domain: FfiConverterString.read(from: &buf),
                 operation: FfiConverterString.read(from: &buf)
         )
     }
@@ -1510,9 +1538,9 @@ public struct EchoStatus: Equatable, Hashable {
         self.operation = operation
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1526,9 +1554,9 @@ public struct FfiConverterTypeEchoStatus: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EchoStatus {
         return
             try EchoStatus(
-                ok: FfiConverterBool.read(from: &buf), 
-                code: FfiConverterString.read(from: &buf), 
-                domain: FfiConverterString.read(from: &buf), 
+                ok: FfiConverterBool.read(from: &buf),
+                code: FfiConverterString.read(from: &buf),
+                domain: FfiConverterString.read(from: &buf),
                 operation: FfiConverterString.read(from: &buf)
         )
     }
@@ -1572,9 +1600,9 @@ public struct MobileAdapterSnapshot: Equatable, Hashable {
         self.safeReason = safeReason
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1588,9 +1616,9 @@ public struct FfiConverterTypeMobileAdapterSnapshot: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileAdapterSnapshot {
         return
             try MobileAdapterSnapshot(
-                availability: FfiConverterString.read(from: &buf), 
-                authorization: FfiConverterString.read(from: &buf), 
-                power: FfiConverterString.read(from: &buf), 
+                availability: FfiConverterString.read(from: &buf),
+                authorization: FfiConverterString.read(from: &buf),
+                power: FfiConverterString.read(from: &buf),
                 safeReason: FfiConverterOptionString.read(from: &buf)
         )
     }
@@ -1648,9 +1676,9 @@ public struct MobileAdvertisement: Equatable, Hashable {
         self.overflowServiceUuids = overflowServiceUuids
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1664,16 +1692,16 @@ public struct FfiConverterTypeMobileAdvertisement: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileAdvertisement {
         return
             try MobileAdvertisement(
-                peerId: FfiConverterString.read(from: &buf), 
-                address: FfiConverterOptionString.read(from: &buf), 
-                localName: FfiConverterOptionString.read(from: &buf), 
-                rssi: FfiConverterOptionInt16.read(from: &buf), 
-                txPowerLevel: FfiConverterOptionInt16.read(from: &buf), 
-                serviceUuids: FfiConverterSequenceString.read(from: &buf), 
-                manufacturerData: FfiConverterSequenceTypeMobileManufacturerData.read(from: &buf), 
-                serviceData: FfiConverterSequenceTypeMobileServiceData.read(from: &buf), 
-                connectable: FfiConverterOptionBool.read(from: &buf), 
-                solicitedServiceUuids: FfiConverterOptionSequenceString.read(from: &buf), 
+                peerId: FfiConverterString.read(from: &buf),
+                address: FfiConverterOptionString.read(from: &buf),
+                localName: FfiConverterOptionString.read(from: &buf),
+                rssi: FfiConverterOptionInt16.read(from: &buf),
+                txPowerLevel: FfiConverterOptionInt16.read(from: &buf),
+                serviceUuids: FfiConverterSequenceString.read(from: &buf),
+                manufacturerData: FfiConverterSequenceTypeMobileManufacturerData.read(from: &buf),
+                serviceData: FfiConverterSequenceTypeMobileServiceData.read(from: &buf),
+                connectable: FfiConverterOptionBool.read(from: &buf),
+                solicitedServiceUuids: FfiConverterOptionSequenceString.read(from: &buf),
                 overflowServiceUuids: FfiConverterOptionSequenceString.read(from: &buf)
         )
     }
@@ -1720,9 +1748,9 @@ public struct MobileCloseFailure: Equatable, Hashable {
         self.detail = detail
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1736,7 +1764,7 @@ public struct FfiConverterTypeMobileCloseFailure: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileCloseFailure {
         return
             try MobileCloseFailure(
-                instance: FfiConverterTypeMobileInstance.read(from: &buf), 
+                instance: FfiConverterTypeMobileInstance.read(from: &buf),
                 detail: FfiConverterString.read(from: &buf)
         )
     }
@@ -1776,9 +1804,9 @@ public struct MobileCompanionRecord: Equatable, Hashable {
         self.displayName = displayName
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1792,8 +1820,8 @@ public struct FfiConverterTypeMobileCompanionRecord: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileCompanionRecord {
         return
             try MobileCompanionRecord(
-                associationId: FfiConverterInt64.read(from: &buf), 
-                peerId: FfiConverterOptionString.read(from: &buf), 
+                associationId: FfiConverterInt64.read(from: &buf),
+                peerId: FfiConverterOptionString.read(from: &buf),
                 displayName: FfiConverterOptionString.read(from: &buf)
         )
     }
@@ -1836,9 +1864,9 @@ public struct MobileGattCharacteristic: Equatable, Hashable {
         self.descriptors = descriptors
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1852,9 +1880,9 @@ public struct FfiConverterTypeMobileGattCharacteristic: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileGattCharacteristic {
         return
             try MobileGattCharacteristic(
-                uuid: FfiConverterString.read(from: &buf), 
-                occurrence: FfiConverterUInt64.read(from: &buf), 
-                properties: FfiConverterTypeMobileGattProperties.read(from: &buf), 
+                uuid: FfiConverterString.read(from: &buf),
+                occurrence: FfiConverterUInt64.read(from: &buf),
+                properties: FfiConverterTypeMobileGattProperties.read(from: &buf),
                 descriptors: FfiConverterSequenceTypeMobileGattDescriptor.read(from: &buf)
         )
     }
@@ -1894,9 +1922,9 @@ public struct MobileGattDescriptor: Equatable, Hashable {
         self.occurrence = occurrence
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1910,7 +1938,7 @@ public struct FfiConverterTypeMobileGattDescriptor: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileGattDescriptor {
         return
             try MobileGattDescriptor(
-                uuid: FfiConverterString.read(from: &buf), 
+                uuid: FfiConverterString.read(from: &buf),
                 occurrence: FfiConverterUInt64.read(from: &buf)
         )
     }
@@ -1954,9 +1982,9 @@ public struct MobileGattProperties: Equatable, Hashable {
         self.indicate = indicate
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1970,10 +1998,10 @@ public struct FfiConverterTypeMobileGattProperties: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileGattProperties {
         return
             try MobileGattProperties(
-                read: FfiConverterBool.read(from: &buf), 
-                write: FfiConverterBool.read(from: &buf), 
-                writeWithoutResponse: FfiConverterBool.read(from: &buf), 
-                notify: FfiConverterBool.read(from: &buf), 
+                read: FfiConverterBool.read(from: &buf),
+                write: FfiConverterBool.read(from: &buf),
+                writeWithoutResponse: FfiConverterBool.read(from: &buf),
+                notify: FfiConverterBool.read(from: &buf),
                 indicate: FfiConverterBool.read(from: &buf)
         )
     }
@@ -2016,9 +2044,9 @@ public struct MobileGattService: Equatable, Hashable {
         self.characteristics = characteristics
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2032,8 +2060,8 @@ public struct FfiConverterTypeMobileGattService: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileGattService {
         return
             try MobileGattService(
-                uuid: FfiConverterString.read(from: &buf), 
-                occurrence: FfiConverterUInt64.read(from: &buf), 
+                uuid: FfiConverterString.read(from: &buf),
+                occurrence: FfiConverterUInt64.read(from: &buf),
                 characteristics: FfiConverterSequenceTypeMobileGattCharacteristic.read(from: &buf)
         )
     }
@@ -2078,9 +2106,9 @@ public struct MobileInstance: Equatable, Hashable {
         self.characteristicOccurrence = characteristicOccurrence
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2094,10 +2122,10 @@ public struct FfiConverterTypeMobileInstance: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileInstance {
         return
             try MobileInstance(
-                peerId: FfiConverterString.read(from: &buf), 
-                serviceUuid: FfiConverterString.read(from: &buf), 
-                serviceOccurrence: FfiConverterUInt64.read(from: &buf), 
-                characteristicUuid: FfiConverterString.read(from: &buf), 
+                peerId: FfiConverterString.read(from: &buf),
+                serviceUuid: FfiConverterString.read(from: &buf),
+                serviceOccurrence: FfiConverterUInt64.read(from: &buf),
+                characteristicUuid: FfiConverterString.read(from: &buf),
                 characteristicOccurrence: FfiConverterUInt64.read(from: &buf)
         )
     }
@@ -2138,9 +2166,9 @@ public struct MobileManufacturerData: Equatable, Hashable {
         self.payload = payload
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2154,7 +2182,7 @@ public struct FfiConverterTypeMobileManufacturerData: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileManufacturerData {
         return
             try MobileManufacturerData(
-                companyId: FfiConverterUInt16.read(from: &buf), 
+                companyId: FfiConverterUInt16.read(from: &buf),
                 payload: FfiConverterData.read(from: &buf)
         )
     }
@@ -2192,9 +2220,9 @@ public struct MobilePeerName: Equatable, Hashable {
         self.name = name
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2208,7 +2236,7 @@ public struct FfiConverterTypeMobilePeerName: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobilePeerName {
         return
             try MobilePeerName(
-                peerId: FfiConverterString.read(from: &buf), 
+                peerId: FfiConverterString.read(from: &buf),
                 name: FfiConverterOptionString.read(from: &buf)
         )
     }
@@ -2248,9 +2276,9 @@ public struct MobileRestoredPeer: Equatable, Hashable {
         self.connected = connected
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2264,8 +2292,8 @@ public struct FfiConverterTypeMobileRestoredPeer: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileRestoredPeer {
         return
             try MobileRestoredPeer(
-                peerId: FfiConverterString.read(from: &buf), 
-                name: FfiConverterOptionString.read(from: &buf), 
+                peerId: FfiConverterString.read(from: &buf),
+                name: FfiConverterOptionString.read(from: &buf),
                 connected: FfiConverterBool.read(from: &buf)
         )
     }
@@ -2310,9 +2338,9 @@ public struct MobileSecurityState: Equatable, Hashable {
         self.pairingPossible = pairingPossible
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2326,10 +2354,10 @@ public struct FfiConverterTypeMobileSecurityState: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileSecurityState {
         return
             try MobileSecurityState(
-                bond: FfiConverterString.read(from: &buf), 
-                encryption: FfiConverterString.read(from: &buf), 
-                authentication: FfiConverterString.read(from: &buf), 
-                secureConnections: FfiConverterString.read(from: &buf), 
+                bond: FfiConverterString.read(from: &buf),
+                encryption: FfiConverterString.read(from: &buf),
+                authentication: FfiConverterString.read(from: &buf),
+                secureConnections: FfiConverterString.read(from: &buf),
                 pairingPossible: FfiConverterOptionBool.read(from: &buf)
         )
     }
@@ -2370,9 +2398,9 @@ public struct MobileServiceData: Equatable, Hashable {
         self.payload = payload
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2386,7 +2414,7 @@ public struct FfiConverterTypeMobileServiceData: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileServiceData {
         return
             try MobileServiceData(
-                uuid: FfiConverterString.read(from: &buf), 
+                uuid: FfiConverterString.read(from: &buf),
                 payload: FfiConverterData.read(from: &buf)
         )
     }
@@ -2413,23 +2441,23 @@ public func FfiConverterTypeMobileServiceData_lower(_ value: MobileServiceData) 
 }
 
 
-public 
+public
 enum MobileCoreError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
-    
-    
+
+
     case Failed(code: String, domain: String, operation: String, detail: String?
     )
 
-    
 
-    
 
-    
+
+
+
     public var errorDescription: String? {
         String(reflecting: self)
     }
-    
+
 }
 
 #if compiler(>=6)
@@ -2446,13 +2474,13 @@ public struct FfiConverterTypeMobileCoreError: FfiConverterRustBuffer {
         let variant: Int32 = try readInt(&buf)
         switch variant {
 
-        
 
-        
+
+
         case 1: return .Failed(
-            code: try FfiConverterString.read(from: &buf), 
-            domain: try FfiConverterString.read(from: &buf), 
-            operation: try FfiConverterString.read(from: &buf), 
+            code: try FfiConverterString.read(from: &buf),
+            domain: try FfiConverterString.read(from: &buf),
+            operation: try FfiConverterString.read(from: &buf),
             detail: try FfiConverterOptionString.read(from: &buf)
             )
 
@@ -2463,17 +2491,17 @@ public struct FfiConverterTypeMobileCoreError: FfiConverterRustBuffer {
     public static func write(_ value: MobileCoreError, into buf: inout [UInt8]) {
         switch value {
 
-        
 
-        
-        
+
+
+
         case let .Failed(code,domain,operation,detail):
             writeInt(&buf, Int32(1))
             FfiConverterString.write(code, into: &buf)
             FfiConverterString.write(domain, into: &buf)
             FfiConverterString.write(operation, into: &buf)
             FfiConverterOptionString.write(detail, into: &buf)
-            
+
         }
     }
 }
@@ -2496,7 +2524,7 @@ public func FfiConverterTypeMobileCoreError_lower(_ value: MobileCoreError) -> R
 
 
 public enum MobileRadioCompletion: Equatable, Hashable {
-    
+
     case unit
     case bytes(value: Data
     )
@@ -2554,168 +2582,168 @@ public struct FfiConverterTypeMobileRadioCompletion: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileRadioCompletion {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .unit
-        
+
         case 2: return .bytes(value: try FfiConverterData.read(from: &buf)
         )
-        
+
         case 3: return .read(value: try FfiConverterData.read(from: &buf), provenance: try FfiConverterString.read(from: &buf)
         )
-        
+
         case 4: return .adapter(snapshot: try FfiConverterTypeMobileAdapterSnapshot.read(from: &buf)
         )
-        
+
         case 5: return .discovered(services: try FfiConverterSequenceTypeMobileGattService.read(from: &buf)
         )
-        
+
         case 6: return .notifyEnabled(delivery: try FfiConverterString.read(from: &buf)
         )
-        
+
         case 7: return .mtu(mtu: try FfiConverterOptionUInt16.read(from: &buf)
         )
-        
+
         case 8: return .writeLimits(withResponse: try FfiConverterUInt16.read(from: &buf), withoutResponse: try FfiConverterUInt16.read(from: &buf)
         )
-        
+
         case 9: return .rssi(rssi: try FfiConverterInt16.read(from: &buf)
         )
-        
+
         case 10: return .accepted(accepted: try FfiConverterBool.read(from: &buf)
         )
-        
+
         case 11: return .phy(tx: try FfiConverterString.read(from: &buf), rx: try FfiConverterString.read(from: &buf)
         )
-        
+
         case 12: return .phyRequest(accepted: try FfiConverterBool.read(from: &buf), tx: try FfiConverterOptionString.read(from: &buf), rx: try FfiConverterOptionString.read(from: &buf)
         )
-        
+
         case 13: return .security(state: try FfiConverterTypeMobileSecurityState.read(from: &buf)
         )
-        
+
         case 14: return .bondedPeers(peers: try FfiConverterSequenceTypeMobilePeerName.read(from: &buf)
         )
-        
+
         case 15: return .lease(leaseId: try FfiConverterString.read(from: &buf)
         )
-        
+
         case 16: return .companion(associationId: try FfiConverterInt64.read(from: &buf), peerId: try FfiConverterOptionString.read(from: &buf), displayName: try FfiConverterOptionString.read(from: &buf), alreadyAssociated: try FfiConverterBool.read(from: &buf)
         )
-        
+
         case 17: return .companionList(records: try FfiConverterSequenceTypeMobileCompanionRecord.read(from: &buf)
         )
-        
+
         case 18: return .closed(failures: try FfiConverterSequenceTypeMobileCloseFailure.read(from: &buf)
         )
-        
+
         case 19: return .failed(kind: try FfiConverterString.read(from: &buf), gattStatus: try FfiConverterOptionInt32.read(from: &buf), nativeDomain: try FfiConverterOptionString.read(from: &buf), nativeCode: try FfiConverterOptionInt64.read(from: &buf), detail: try FfiConverterString.read(from: &buf), dispatched: try FfiConverterBool.read(from: &buf)
         )
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: MobileRadioCompletion, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case .unit:
             writeInt(&buf, Int32(1))
-        
-        
+
+
         case let .bytes(value):
             writeInt(&buf, Int32(2))
             FfiConverterData.write(value, into: &buf)
-            
-        
+
+
         case let .read(value,provenance):
             writeInt(&buf, Int32(3))
             FfiConverterData.write(value, into: &buf)
             FfiConverterString.write(provenance, into: &buf)
-            
-        
+
+
         case let .adapter(snapshot):
             writeInt(&buf, Int32(4))
             FfiConverterTypeMobileAdapterSnapshot.write(snapshot, into: &buf)
-            
-        
+
+
         case let .discovered(services):
             writeInt(&buf, Int32(5))
             FfiConverterSequenceTypeMobileGattService.write(services, into: &buf)
-            
-        
+
+
         case let .notifyEnabled(delivery):
             writeInt(&buf, Int32(6))
             FfiConverterString.write(delivery, into: &buf)
-            
-        
+
+
         case let .mtu(mtu):
             writeInt(&buf, Int32(7))
             FfiConverterOptionUInt16.write(mtu, into: &buf)
-            
-        
+
+
         case let .writeLimits(withResponse,withoutResponse):
             writeInt(&buf, Int32(8))
             FfiConverterUInt16.write(withResponse, into: &buf)
             FfiConverterUInt16.write(withoutResponse, into: &buf)
-            
-        
+
+
         case let .rssi(rssi):
             writeInt(&buf, Int32(9))
             FfiConverterInt16.write(rssi, into: &buf)
-            
-        
+
+
         case let .accepted(accepted):
             writeInt(&buf, Int32(10))
             FfiConverterBool.write(accepted, into: &buf)
-            
-        
+
+
         case let .phy(tx,rx):
             writeInt(&buf, Int32(11))
             FfiConverterString.write(tx, into: &buf)
             FfiConverterString.write(rx, into: &buf)
-            
-        
+
+
         case let .phyRequest(accepted,tx,rx):
             writeInt(&buf, Int32(12))
             FfiConverterBool.write(accepted, into: &buf)
             FfiConverterOptionString.write(tx, into: &buf)
             FfiConverterOptionString.write(rx, into: &buf)
-            
-        
+
+
         case let .security(state):
             writeInt(&buf, Int32(13))
             FfiConverterTypeMobileSecurityState.write(state, into: &buf)
-            
-        
+
+
         case let .bondedPeers(peers):
             writeInt(&buf, Int32(14))
             FfiConverterSequenceTypeMobilePeerName.write(peers, into: &buf)
-            
-        
+
+
         case let .lease(leaseId):
             writeInt(&buf, Int32(15))
             FfiConverterString.write(leaseId, into: &buf)
-            
-        
+
+
         case let .companion(associationId,peerId,displayName,alreadyAssociated):
             writeInt(&buf, Int32(16))
             FfiConverterInt64.write(associationId, into: &buf)
             FfiConverterOptionString.write(peerId, into: &buf)
             FfiConverterOptionString.write(displayName, into: &buf)
             FfiConverterBool.write(alreadyAssociated, into: &buf)
-            
-        
+
+
         case let .companionList(records):
             writeInt(&buf, Int32(17))
             FfiConverterSequenceTypeMobileCompanionRecord.write(records, into: &buf)
-            
-        
+
+
         case let .closed(failures):
             writeInt(&buf, Int32(18))
             FfiConverterSequenceTypeMobileCloseFailure.write(failures, into: &buf)
-            
-        
+
+
         case let .failed(kind,gattStatus,nativeDomain,nativeCode,detail,dispatched):
             writeInt(&buf, Int32(19))
             FfiConverterString.write(kind, into: &buf)
@@ -2724,7 +2752,7 @@ public struct FfiConverterTypeMobileRadioCompletion: FfiConverterRustBuffer {
             FfiConverterOptionInt64.write(nativeCode, into: &buf)
             FfiConverterString.write(detail, into: &buf)
             FfiConverterBool.write(dispatched, into: &buf)
-            
+
         }
     }
 }
@@ -2748,7 +2776,7 @@ public func FfiConverterTypeMobileRadioCompletion_lower(_ value: MobileRadioComp
 
 
 public enum MobileRadioIngress: Equatable, Hashable {
-    
+
     case advertisement(advertisement: MobileAdvertisement
     )
     case connection(peerId: String, connected: Bool, status: Int32?
@@ -2787,92 +2815,92 @@ public struct FfiConverterTypeMobileRadioIngress: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileRadioIngress {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .advertisement(advertisement: try FfiConverterTypeMobileAdvertisement.read(from: &buf)
         )
-        
+
         case 2: return .connection(peerId: try FfiConverterString.read(from: &buf), connected: try FfiConverterBool.read(from: &buf), status: try FfiConverterOptionInt32.read(from: &buf)
         )
-        
+
         case 3: return .servicesChanged(peerId: try FfiConverterString.read(from: &buf)
         )
-        
+
         case 4: return .notification(instance: try FfiConverterTypeMobileInstance.read(from: &buf), epoch: try FfiConverterUInt64.read(from: &buf), value: try FfiConverterData.read(from: &buf)
         )
-        
+
         case 5: return .adapterState(snapshot: try FfiConverterTypeMobileAdapterSnapshot.read(from: &buf)
         )
-        
+
         case 6: return .scanFailed(detail: try FfiConverterString.read(from: &buf)
         )
-        
+
         case 7: return .securityChanged(peerId: try FfiConverterString.read(from: &buf), state: try FfiConverterTypeMobileSecurityState.read(from: &buf)
         )
-        
+
         case 8: return .restored(peers: try FfiConverterSequenceTypeMobileRestoredPeer.read(from: &buf)
         )
-        
+
         case 9: return .dropped(ingressClass: try FfiConverterString.read(from: &buf), detail: try FfiConverterString.read(from: &buf)
         )
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: MobileRadioIngress, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case let .advertisement(advertisement):
             writeInt(&buf, Int32(1))
             FfiConverterTypeMobileAdvertisement.write(advertisement, into: &buf)
-            
-        
+
+
         case let .connection(peerId,connected,status):
             writeInt(&buf, Int32(2))
             FfiConverterString.write(peerId, into: &buf)
             FfiConverterBool.write(connected, into: &buf)
             FfiConverterOptionInt32.write(status, into: &buf)
-            
-        
+
+
         case let .servicesChanged(peerId):
             writeInt(&buf, Int32(3))
             FfiConverterString.write(peerId, into: &buf)
-            
-        
+
+
         case let .notification(instance,epoch,value):
             writeInt(&buf, Int32(4))
             FfiConverterTypeMobileInstance.write(instance, into: &buf)
             FfiConverterUInt64.write(epoch, into: &buf)
             FfiConverterData.write(value, into: &buf)
-            
-        
+
+
         case let .adapterState(snapshot):
             writeInt(&buf, Int32(5))
             FfiConverterTypeMobileAdapterSnapshot.write(snapshot, into: &buf)
-            
-        
+
+
         case let .scanFailed(detail):
             writeInt(&buf, Int32(6))
             FfiConverterString.write(detail, into: &buf)
-            
-        
+
+
         case let .securityChanged(peerId,state):
             writeInt(&buf, Int32(7))
             FfiConverterString.write(peerId, into: &buf)
             FfiConverterTypeMobileSecurityState.write(state, into: &buf)
-            
-        
+
+
         case let .restored(peers):
             writeInt(&buf, Int32(8))
             FfiConverterSequenceTypeMobileRestoredPeer.write(peers, into: &buf)
-            
-        
+
+
         case let .dropped(ingressClass,detail):
             writeInt(&buf, Int32(9))
             FfiConverterString.write(ingressClass, into: &buf)
             FfiConverterString.write(detail, into: &buf)
-            
+
         }
     }
 }
@@ -2896,7 +2924,7 @@ public func FfiConverterTypeMobileRadioIngress_lower(_ value: MobileRadioIngress
 
 
 public enum MobileRadioRequest: Equatable, Hashable {
-    
+
     case adapterState(id: UInt64
     )
     case startScan(id: UInt64, serviceUuids: [String], deviceAddresses: [String], scanMode: String?, callbackType: String?, legacy: Bool?
@@ -2981,116 +3009,116 @@ public struct FfiConverterTypeMobileRadioRequest: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MobileRadioRequest {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .adapterState(id: try FfiConverterUInt64.read(from: &buf)
         )
-        
+
         case 2: return .startScan(id: try FfiConverterUInt64.read(from: &buf), serviceUuids: try FfiConverterSequenceString.read(from: &buf), deviceAddresses: try FfiConverterSequenceString.read(from: &buf), scanMode: try FfiConverterOptionString.read(from: &buf), callbackType: try FfiConverterOptionString.read(from: &buf), legacy: try FfiConverterOptionBool.read(from: &buf)
         )
-        
+
         case 3: return .stopScan(id: try FfiConverterUInt64.read(from: &buf)
         )
-        
+
         case 4: return .connect(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), autoConnect: try FfiConverterBool.read(from: &buf), preferredPhy: try FfiConverterSequenceString.read(from: &buf)
         )
-        
+
         case 5: return .disconnect(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
         )
-        
+
         case 6: return .discover(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
         )
-        
+
         case 7: return .read(id: try FfiConverterUInt64.read(from: &buf), instance: try FfiConverterTypeMobileInstance.read(from: &buf)
         )
-        
+
         case 8: return .write(id: try FfiConverterUInt64.read(from: &buf), instance: try FfiConverterTypeMobileInstance.read(from: &buf), value: try FfiConverterData.read(from: &buf), withResponse: try FfiConverterBool.read(from: &buf)
         )
-        
+
         case 9: return .readDescriptor(id: try FfiConverterUInt64.read(from: &buf), instance: try FfiConverterTypeMobileInstance.read(from: &buf), descriptorUuid: try FfiConverterString.read(from: &buf), descriptorOccurrence: try FfiConverterUInt64.read(from: &buf)
         )
-        
+
         case 10: return .writeDescriptor(id: try FfiConverterUInt64.read(from: &buf), instance: try FfiConverterTypeMobileInstance.read(from: &buf), descriptorUuid: try FfiConverterString.read(from: &buf), descriptorOccurrence: try FfiConverterUInt64.read(from: &buf), value: try FfiConverterData.read(from: &buf)
         )
-        
+
         case 11: return .enableNotifications(id: try FfiConverterUInt64.read(from: &buf), instance: try FfiConverterTypeMobileInstance.read(from: &buf), epoch: try FfiConverterUInt64.read(from: &buf), requested: try FfiConverterOptionString.read(from: &buf), preferred: try FfiConverterOptionString.read(from: &buf)
         )
-        
+
         case 12: return .disableNotifications(id: try FfiConverterUInt64.read(from: &buf), instance: try FfiConverterTypeMobileInstance.read(from: &buf)
         )
-        
+
         case 13: return .readMtu(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
         )
-        
+
         case 14: return .readWriteLimits(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
         )
-        
+
         case 15: return .requestMtu(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), mtu: try FfiConverterUInt16.read(from: &buf)
         )
-        
+
         case 16: return .readRssi(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
         )
-        
+
         case 17: return .requestConnectionPriority(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), priority: try FfiConverterString.read(from: &buf)
         )
-        
+
         case 18: return .readPhy(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
         )
-        
+
         case 19: return .requestPhy(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), tx: try FfiConverterOptionString.read(from: &buf), rx: try FfiConverterOptionString.read(from: &buf)
         )
-        
+
         case 20: return .securityState(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
         )
-        
+
         case 21: return .createBond(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), transport: try FfiConverterString.read(from: &buf)
         )
-        
+
         case 22: return .cancelBond(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
         )
-        
+
         case 23: return .bondedPeers(id: try FfiConverterUInt64.read(from: &buf)
         )
-        
+
         case 24: return .acquireBackground(id: try FfiConverterUInt64.read(from: &buf), kind: try FfiConverterString.read(from: &buf), reason: try FfiConverterString.read(from: &buf)
         )
-        
+
         case 25: return .releaseBackground(id: try FfiConverterUInt64.read(from: &buf), leaseId: try FfiConverterString.read(from: &buf)
         )
-        
+
         case 26: return .updateBackgroundNotification(id: try FfiConverterUInt64.read(from: &buf), leaseId: try FfiConverterString.read(from: &buf), title: try FfiConverterString.read(from: &buf), body: try FfiConverterOptionString.read(from: &buf)
         )
-        
+
         case 27: return .associateCompanion(id: try FfiConverterUInt64.read(from: &buf), name: try FfiConverterOptionString.read(from: &buf), serviceUuid: try FfiConverterOptionString.read(from: &buf)
         )
-        
+
         case 28: return .listCompanion(id: try FfiConverterUInt64.read(from: &buf)
         )
-        
+
         case 29: return .disassociateCompanion(id: try FfiConverterUInt64.read(from: &buf), associationId: try FfiConverterInt64.read(from: &buf)
         )
-        
+
         case 30: return .observePresence(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
         )
-        
+
         case 31: return .stopPresence(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
         )
-        
+
         case 32: return .close(id: try FfiConverterUInt64.read(from: &buf)
         )
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: MobileRadioRequest, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case let .adapterState(id):
             writeInt(&buf, Int32(1))
             FfiConverterUInt64.write(id, into: &buf)
-            
-        
+
+
         case let .startScan(id,serviceUuids,deviceAddresses,scanMode,callbackType,legacy):
             writeInt(&buf, Int32(2))
             FfiConverterUInt64.write(id, into: &buf)
@@ -3099,55 +3127,55 @@ public struct FfiConverterTypeMobileRadioRequest: FfiConverterRustBuffer {
             FfiConverterOptionString.write(scanMode, into: &buf)
             FfiConverterOptionString.write(callbackType, into: &buf)
             FfiConverterOptionBool.write(legacy, into: &buf)
-            
-        
+
+
         case let .stopScan(id):
             writeInt(&buf, Int32(3))
             FfiConverterUInt64.write(id, into: &buf)
-            
-        
+
+
         case let .connect(id,peerId,autoConnect,preferredPhy):
             writeInt(&buf, Int32(4))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
             FfiConverterBool.write(autoConnect, into: &buf)
             FfiConverterSequenceString.write(preferredPhy, into: &buf)
-            
-        
+
+
         case let .disconnect(id,peerId):
             writeInt(&buf, Int32(5))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
-            
-        
+
+
         case let .discover(id,peerId):
             writeInt(&buf, Int32(6))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
-            
-        
+
+
         case let .read(id,instance):
             writeInt(&buf, Int32(7))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterTypeMobileInstance.write(instance, into: &buf)
-            
-        
+
+
         case let .write(id,instance,value,withResponse):
             writeInt(&buf, Int32(8))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterTypeMobileInstance.write(instance, into: &buf)
             FfiConverterData.write(value, into: &buf)
             FfiConverterBool.write(withResponse, into: &buf)
-            
-        
+
+
         case let .readDescriptor(id,instance,descriptorUuid,descriptorOccurrence):
             writeInt(&buf, Int32(9))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterTypeMobileInstance.write(instance, into: &buf)
             FfiConverterString.write(descriptorUuid, into: &buf)
             FfiConverterUInt64.write(descriptorOccurrence, into: &buf)
-            
-        
+
+
         case let .writeDescriptor(id,instance,descriptorUuid,descriptorOccurrence,value):
             writeInt(&buf, Int32(10))
             FfiConverterUInt64.write(id, into: &buf)
@@ -3155,8 +3183,8 @@ public struct FfiConverterTypeMobileRadioRequest: FfiConverterRustBuffer {
             FfiConverterString.write(descriptorUuid, into: &buf)
             FfiConverterUInt64.write(descriptorOccurrence, into: &buf)
             FfiConverterData.write(value, into: &buf)
-            
-        
+
+
         case let .enableNotifications(id,instance,epoch,requested,preferred):
             writeInt(&buf, Int32(11))
             FfiConverterUInt64.write(id, into: &buf)
@@ -3164,139 +3192,139 @@ public struct FfiConverterTypeMobileRadioRequest: FfiConverterRustBuffer {
             FfiConverterUInt64.write(epoch, into: &buf)
             FfiConverterOptionString.write(requested, into: &buf)
             FfiConverterOptionString.write(preferred, into: &buf)
-            
-        
+
+
         case let .disableNotifications(id,instance):
             writeInt(&buf, Int32(12))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterTypeMobileInstance.write(instance, into: &buf)
-            
-        
+
+
         case let .readMtu(id,peerId):
             writeInt(&buf, Int32(13))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
-            
-        
+
+
         case let .readWriteLimits(id,peerId):
             writeInt(&buf, Int32(14))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
-            
-        
+
+
         case let .requestMtu(id,peerId,mtu):
             writeInt(&buf, Int32(15))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
             FfiConverterUInt16.write(mtu, into: &buf)
-            
-        
+
+
         case let .readRssi(id,peerId):
             writeInt(&buf, Int32(16))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
-            
-        
+
+
         case let .requestConnectionPriority(id,peerId,priority):
             writeInt(&buf, Int32(17))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
             FfiConverterString.write(priority, into: &buf)
-            
-        
+
+
         case let .readPhy(id,peerId):
             writeInt(&buf, Int32(18))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
-            
-        
+
+
         case let .requestPhy(id,peerId,tx,rx):
             writeInt(&buf, Int32(19))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
             FfiConverterOptionString.write(tx, into: &buf)
             FfiConverterOptionString.write(rx, into: &buf)
-            
-        
+
+
         case let .securityState(id,peerId):
             writeInt(&buf, Int32(20))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
-            
-        
+
+
         case let .createBond(id,peerId,transport):
             writeInt(&buf, Int32(21))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
             FfiConverterString.write(transport, into: &buf)
-            
-        
+
+
         case let .cancelBond(id,peerId):
             writeInt(&buf, Int32(22))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
-            
-        
+
+
         case let .bondedPeers(id):
             writeInt(&buf, Int32(23))
             FfiConverterUInt64.write(id, into: &buf)
-            
-        
+
+
         case let .acquireBackground(id,kind,reason):
             writeInt(&buf, Int32(24))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(kind, into: &buf)
             FfiConverterString.write(reason, into: &buf)
-            
-        
+
+
         case let .releaseBackground(id,leaseId):
             writeInt(&buf, Int32(25))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(leaseId, into: &buf)
-            
-        
+
+
         case let .updateBackgroundNotification(id,leaseId,title,body):
             writeInt(&buf, Int32(26))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(leaseId, into: &buf)
             FfiConverterString.write(title, into: &buf)
             FfiConverterOptionString.write(body, into: &buf)
-            
-        
+
+
         case let .associateCompanion(id,name,serviceUuid):
             writeInt(&buf, Int32(27))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterOptionString.write(name, into: &buf)
             FfiConverterOptionString.write(serviceUuid, into: &buf)
-            
-        
+
+
         case let .listCompanion(id):
             writeInt(&buf, Int32(28))
             FfiConverterUInt64.write(id, into: &buf)
-            
-        
+
+
         case let .disassociateCompanion(id,associationId):
             writeInt(&buf, Int32(29))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterInt64.write(associationId, into: &buf)
-            
-        
+
+
         case let .observePresence(id,peerId):
             writeInt(&buf, Int32(30))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
-            
-        
+
+
         case let .stopPresence(id,peerId):
             writeInt(&buf, Int32(31))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
-            
-        
+
+
         case let .close(id):
             writeInt(&buf, Int32(32))
             FfiConverterUInt64.write(id, into: &buf)
-            
+
         }
     }
 }
@@ -3321,9 +3349,9 @@ public func FfiConverterTypeMobileRadioRequest_lower(_ value: MobileRadioRequest
 
 
 public protocol MobileInvokeCompletion: AnyObject, Sendable {
-    
-    func complete(envelope: String) 
-    
+
+    func complete(envelope: String)
+
 }
 
 
@@ -3365,7 +3393,7 @@ fileprivate struct UniffiCallbackInterfaceMobileInvokeCompletion {
                 )
             }
 
-            
+
             let writeReturn = { () }
             uniffiTraitInterfaceCall(
                 callStatus: uniffiCallStatus,
@@ -3456,11 +3484,11 @@ public func FfiConverterCallbackInterfaceMobileInvokeCompletion_lower(_ v: Mobil
 
 
 public protocol MobilePlatformRadio: AnyObject, Sendable {
-    
-    func submit(request: MobileRadioRequest) 
-    
-    func cancel(requestId: UInt64) 
-    
+
+    func submit(request: MobileRadioRequest)
+
+    func cancel(requestId: UInt64)
+
 }
 
 
@@ -3502,7 +3530,7 @@ fileprivate struct UniffiCallbackInterfaceMobilePlatformRadio {
                 )
             }
 
-            
+
             let writeReturn = { () }
             uniffiTraitInterfaceCall(
                 callStatus: uniffiCallStatus,
@@ -3526,7 +3554,7 @@ fileprivate struct UniffiCallbackInterfaceMobilePlatformRadio {
                 )
             }
 
-            
+
             let writeReturn = { () }
             uniffiTraitInterfaceCall(
                 callStatus: uniffiCallStatus,
@@ -3617,9 +3645,9 @@ public func FfiConverterCallbackInterfaceMobilePlatformRadio_lower(_ v: MobilePl
 
 
 public protocol MobileWakeSink: AnyObject, Sendable {
-    
-    func wake(sessionId: UInt64) 
-    
+
+    func wake(sessionId: UInt64)
+
 }
 
 
@@ -3661,7 +3689,7 @@ fileprivate struct UniffiCallbackInterfaceMobileWakeSink {
                 )
             }
 
-            
+
             let writeReturn = { () }
             uniffiTraitInterfaceCall(
                 callStatus: uniffiCallStatus,
@@ -4222,6 +4250,26 @@ public func mobileHostInstall(radio: MobilePlatformRadio, wake: MobileWakeSink, 
     )
 })
 }
+public func mobileRecordingConfigureDirectory(path: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_func_mobile_recording_configure_directory(
+        FfiConverterString.lower(path),uniffiCallStatus
+    )
+})
+}
+public func mobileRecordingControl(operation: String, id: String, token: String, maxItems: UInt32, maxBytes: UInt32) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_func_mobile_recording_control(
+        FfiConverterString.lower(operation),
+        FfiConverterString.lower(id),
+        FfiConverterString.lower(token),
+        FfiConverterUInt32.lower(maxItems),
+        FfiConverterUInt32.lower(maxBytes),uniffiCallStatus
+    )
+})
+}
 public func mobileWireRevision() -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
@@ -4255,6 +4303,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_install() != 16863) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_configure_directory() != 4705) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_control() != 47672) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ubm5_uniffi_echo_checksum_func_mobile_wire_revision() != 16069) {
@@ -4317,6 +4371,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_commit_declaration() != 7090) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_configure_recording_directory() != 14238) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_declaration_replacement_failure() != 61722) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -4327,6 +4384,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_claim() != 27863) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_recording_control() != 50250) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_reserve_declaration() != 64088) {

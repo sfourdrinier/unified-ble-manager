@@ -6,7 +6,7 @@ use std::time::Duration;
 
 pub struct Stream {
     settings: acc::Settings,
-    next_sample: u64,
+    clock: crate::sample_clock::SampleClock,
 }
 
 pub struct Batch {
@@ -19,7 +19,7 @@ impl Stream {
     pub fn new(settings: acc::Settings) -> Self {
         Self {
             settings,
-            next_sample: 0,
+            clock: crate::sample_clock::SampleClock::new(settings.sample_rate_hz),
         }
     }
 
@@ -35,26 +35,13 @@ impl Stream {
         }
         let rate = u64::from(self.settings.sample_rate_hz);
         let count = fit.min(usize::from(self.settings.sample_rate_hz / 10).max(1)) as u64;
-        let due = u64::try_from(elapsed.as_nanos() * u128::from(rate) / 1_000_000_000)
-            .map_err(|_| "ACC sample clock exhausted".to_owned())?;
-        let available = due.saturating_sub(self.next_sample);
-        if available < count {
+        let Some(batch) = self.clock.next(elapsed, count)? else {
             return Ok(None);
-        }
-        let dropped_samples = available.saturating_sub(rate);
-        let first = self
-            .next_sample
-            .checked_add(dropped_samples)
-            .ok_or_else(|| "ACC sample index exhausted".to_owned())?;
-        let end = first
-            .checked_add(count)
-            .ok_or_else(|| "ACC sample index exhausted".to_owned())?;
-        let last_sample_ns = u64::try_from(u128::from(end - 1) * 1_000_000_000 / u128::from(rate))
-            .map_err(|_| "ACC timestamp exhausted".to_owned())?;
+        };
         // Synthetic, repeatable three-axis movement, not a captured H10 trace.
         // One gravity component plus bounded motion remains within every range.
         let amplitude = f64::from(self.settings.range_g) * 400.0;
-        let samples = (first..end)
+        let samples = (batch.first..batch.end)
             .map(|index| {
                 let phase = (index % (rate * 4)) as f64 / rate as f64 * std::f64::consts::TAU;
                 [
@@ -64,11 +51,10 @@ impl Stream {
                 ]
             })
             .collect();
-        self.next_sample = end;
         Ok(Some(Batch {
             samples,
-            last_sample_ns,
-            dropped_samples,
+            last_sample_ns: batch.last_sample_ns,
+            dropped_samples: batch.dropped_samples,
         }))
     }
 }

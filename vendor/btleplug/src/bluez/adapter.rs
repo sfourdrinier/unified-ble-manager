@@ -17,8 +17,24 @@ pub struct Adapter {
 }
 
 impl Adapter {
+    /// Release only this session's accepted LE acquisition, without requiring
+    /// a device-directory read that can fail after daemon/object loss.
+    pub async fn disconnect_le(&self, id: &PeripheralId, owner: &str) -> Result<()> {
+        self.session.disconnect_le(&id.0, owner).await?;
+        Ok(())
+    }
+
     pub(crate) fn new(session: BluetoothSession, adapter: AdapterId) -> Self {
-        Self { session, adapter }
+        Self {
+            session: session.scoped_match_cleanup(),
+            adapter,
+        }
+    }
+
+    /// UBM: await owned event-match release after event consumers have stopped.
+    pub async fn drain_match_cleanup(&self) -> Result<()> {
+        self.session.drain_match_cleanup().await?;
+        Ok(())
     }
 }
 

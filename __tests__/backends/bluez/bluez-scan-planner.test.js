@@ -126,7 +126,7 @@ describe('BlueZ scan planner', () => {
 
   test.each([
     ['no positive clauses', {}],
-    ['services.any', { anyOf: [{ services: { any: ['180d'] } }] }],
+    ['multiple services.any alternatives', { anyOf: [{ services: { any: ['180d', '180f'] } }] }],
     ['different required services', { anyOf: [{ services: { all: ['180d'] } }, { services: { all: ['180f'] } }] }],
     ['exclusion only', { exclude: [{ services: { any: ['180d'] } }] }]
   ])('does not push unsafe UUIDs for %s', (_label, input) => {

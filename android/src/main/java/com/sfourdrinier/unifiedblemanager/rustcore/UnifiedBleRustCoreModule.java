@@ -117,6 +117,22 @@ public class UnifiedBleRustCoreModule extends NativeUnifiedBleRustCoreSpec {
     sessions.continuationStatus(reply(promise));
   }
 
+  @Override public void continuationRecordingStatus(String id, Promise promise) {
+    sessions.recordingControl("status", id, "", 0, 0, reply(promise));
+  }
+  @Override public void continuationRecordingPrepare(String id, double maxItems, double maxBytes, Promise promise) {
+    sessions.recordingControl("prepare", id, "", maxItems, maxBytes, reply(promise));
+  }
+  @Override public void continuationRecordingAcknowledge(String id, String token, Promise promise) {
+    sessions.recordingControl("acknowledge", id, token, 0, 0, reply(promise));
+  }
+  @Override public void continuationRecordingStop(String id, Promise promise) {
+    sessions.recordingControl("stop", id, "", 0, 0, reply(promise));
+  }
+  @Override public void continuationRecordingClear(String id, Promise promise) {
+    sessions.recordingControl("clear", id, "", 0, 0, reply(promise));
+  }
+
   @Override
   public void prepareContinuationClaim(double maxItems, double maxBytes, Promise promise) {
     sessions.prepareContinuationClaim(maxItems, maxBytes, reply(promise));

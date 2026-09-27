@@ -2,7 +2,18 @@
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
     "strict": true,
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "unified-ble-manager": ["./node_modules/unified-ble-manager/lib/typescript/module/src/index.d.ts"],
+      "unified-ble-manager/backend-sdk": [
+        "./node_modules/unified-ble-manager/lib/typescript/module/src/backend-sdk.d.ts"
+      ],
+      "unified-ble-manager/expo": ["./node_modules/unified-ble-manager/lib/typescript/module/src/expo.d.ts"],
+      "unified-ble-manager/react-native": [
+        "./node_modules/unified-ble-manager/lib/typescript/module/src/react-native.d.ts"
+      ],
+      "unified-ble-manager/profiles/*": ["./node_modules/unified-ble-manager/lib/typescript/module/src/profiles/*.d.ts"]
+    }
   },
   "exclude": ["ios-tv"]
 }

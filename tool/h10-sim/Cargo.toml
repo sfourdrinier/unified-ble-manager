@@ -32,6 +32,8 @@ chrono = "0.4"
 # Linux (it already did transitively through ble-peripheral-rust).
 [target.'cfg(target_os = "linux")'.dependencies]
 bluer = { version = "=0.17.4", features = ["bluetoothd"] }
+dbus = { version = "0.9", features = ["futures"] }
+dbus-tokio = "0.7"
 # `--linux-advertising mgmt-legacy`: the kernel's Bluetooth management socket
 # (socket/bind/poll/read/write on AF_BLUETOOTH). Already in the lock file
 # through tokio; declared for the direct use.

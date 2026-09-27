@@ -7,6 +7,7 @@
 // addon itself is loaded by `src/desktop-core-addon.ts`.
 
 import { BackendContractError, BLE_ERROR_CODES, BLE_ERROR_DOMAINS, contractError } from '../../backend-contract/errors'
+import type { ObservationOrigin } from '../../backend-contract/advertisement'
 import type {
   BleCommitUncertainty,
   BleErrorCode,
@@ -42,6 +43,13 @@ export interface DesktopRustCoreControl {
   readonly ticket?: string
 }
 
+/** Native GATT admission retains the authenticated connection's actual lease. */
+export interface DesktopRustCoreGattTarget extends DesktopRustCoreControl {
+  readonly peerId: string
+  readonly lease: string
+  readonly selector: DesktopRustCoreSelector
+}
+
 export interface DesktopRustCoreAdvertisement {
   readonly peerId: string
   readonly address?: string | null
@@ -60,7 +68,7 @@ export interface DesktopRustCoreAdvertisement {
    * data) or `device-state` (the OS's merged device state: BlueZ `Device1`,
    * a known-device report).
    */
-  readonly source?: 'advertisement' | 'device-state'
+  readonly source?: ObservationOrigin
 }
 
 /** One observation of the live scan (finding 121). */
@@ -142,8 +150,45 @@ export interface DesktopRustCoreScanTerminalEvent {
 /** One row of the core's capability registration for a desktop OS. */
 export interface DesktopRustCoreCapabilityState {
   readonly id: string
-  readonly state: 'limited' | 'unsupported'
+  readonly state: 'supported' | 'limited' | 'unavailable' | 'unsupported'
   readonly limitation?: string | null
+}
+
+/** One decoder for static diagnostic rows and instantiated native capability truth. */
+export function decodeDesktopRustCoreCapabilityStates(
+  value: unknown,
+  operation: string
+): readonly DesktopRustCoreCapabilityState[] {
+  const malformed = () => contractError('protocol.malformed', 'core', operation)
+  if (!Array.isArray(value)) throw malformed()
+  const ids = new Set<string>()
+  return Object.freeze(
+    Array.from(value, (row: unknown): DesktopRustCoreCapabilityState => {
+      if (
+        typeof row !== 'object' ||
+        row === null ||
+        !('id' in row) ||
+        typeof row.id !== 'string' ||
+        row.id.length === 0 ||
+        !('state' in row) ||
+        (row.state !== 'supported' &&
+          row.state !== 'limited' &&
+          row.state !== 'unavailable' &&
+          row.state !== 'unsupported') ||
+        ids.has(row.id)
+      )
+        throw malformed()
+      const limitation = 'limitation' in row ? row.limitation : null
+      if (
+        limitation !== null &&
+        limitation !== undefined &&
+        (typeof limitation !== 'string' || limitation.length === 0)
+      )
+        throw malformed()
+      ids.add(row.id)
+      return Object.freeze({ id: row.id, state: row.state, limitation: limitation ?? null })
+    })
+  )
 }
 
 export type DesktopRustCoreAdapterAuthorization = 'granted' | 'denied' | 'restricted' | 'not-determined'
@@ -192,6 +237,13 @@ export interface DesktopRustCorePeerRecord {
   readonly connectionGeneration?: string | null
   readonly databaseGeneration?: string | null
   readonly databaseState?: 'undiscovered' | 'discovering' | 'current' | 'changed' | 'invalid' | null
+}
+
+/** OS directory observation, not a connection lease or advertisement. */
+export interface DesktopRustCoreDirectoryPeer {
+  readonly peerId: string
+  readonly name: string | null
+  readonly connection: 'connected' | 'disconnected' | 'unknown'
 }
 
 /** The core's own attachment identities (one generation). */
@@ -303,11 +355,20 @@ export interface DesktopRustCoreAdapterListing {
  * never stages.
  */
 export interface DesktopRustCoreCentral {
+  /** Actual registered instance capabilities, including runtime authority limitations. */
+  runtimeCapabilityStates(): Promise<readonly DesktopRustCoreCapabilityState[]>
   /** Optional on injected backends; the trusted-host controller fails closed when absent. */
   continuationExecute?(peerId: string, declarationJson: string): Promise<string>
   continuationPrepareClaim?(maxItems: number, maxBytes: number): Promise<string>
   continuationAcknowledgeClaim?(claimToken: string): Promise<string>
   continuationDescribeBacklog?(): Promise<string>
+  continuationConfigureRecordingDirectory?(directory: string): Promise<string>
+  continuationRecordingStore?(): DesktopRustCoreRecordingStore
+  continuationRecordingStatus?(id: string): Promise<string>
+  continuationRecordingPrepare?(id: string, maxItems: number, maxBytes: number): Promise<string>
+  continuationRecordingAcknowledge?(id: string, token: string): Promise<string>
+  continuationRecordingStop?(id: string): Promise<string>
+  continuationRecordingClear?(id: string): Promise<string>
   createTicket(): string
   cancelTicket(ticket: string): Promise<DesktopRustCoreTicketCancel>
   releaseTicket(ticket: string): boolean
@@ -360,36 +421,26 @@ export interface DesktopRustCoreCentral {
   }>
   discoveredPaths(peerId: string): Promise<DesktopRustCorePath[]>
   /** The value and the radio's provenance word (`read-response` | `read-or-notification`). */
-  read(
-    options: { readonly peerId: string; readonly selector: DesktopRustCoreSelector } & DesktopRustCoreControl
-  ): Promise<{ readonly value: Uint8Array; readonly provenance: string }>
+  read(options: DesktopRustCoreGattTarget): Promise<{ readonly value: Uint8Array; readonly provenance: string }>
   write(
     options: {
-      readonly peerId: string
-      readonly selector: DesktopRustCoreSelector
       readonly value: Uint8Array
       readonly mode?: string
-    } & DesktopRustCoreControl
+    } & DesktopRustCoreGattTarget
   ): Promise<void>
-  readDescriptor(
-    options: { readonly peerId: string; readonly selector: DesktopRustCoreSelector } & DesktopRustCoreControl
-  ): Promise<Uint8Array>
+  readDescriptor(options: DesktopRustCoreGattTarget): Promise<Uint8Array>
   writeDescriptor(
     options: {
-      readonly peerId: string
-      readonly selector: DesktopRustCoreSelector
       readonly value: Uint8Array
-    } & DesktopRustCoreControl
+    } & DesktopRustCoreGattTarget
   ): Promise<void>
   subscribe(
     options: {
-      readonly peerId: string
-      readonly selector: DesktopRustCoreSelector
       readonly consumer: string
       readonly deliveryMode?: 'notification' | 'indication'
       /** The consumer's overflow policy in the core (`error` when absent). */
       readonly overflowPolicy?: 'error' | 'drop-oldest' | 'drop-newest' | 'latest'
-    } & DesktopRustCoreControl
+    } & DesktopRustCoreGattTarget
   ): Promise<{ delivery: 'notification' | 'indication' | 'unknown' }>
   /** One consumer's cumulative accounting in the core (`null` when it holds no record). */
   consumerCounters(options: {
@@ -458,6 +509,12 @@ export interface DesktopRustCoreCentral {
   eventWakeFailures(): number
   /** Every resolved radio peer with the core's connection facts (the re-read after a lifecycle lag). */
   peerRecords(): Promise<DesktopRustCorePeerRecord[]>
+  connectedPeers(
+    options: { readonly services: readonly string[] } & DesktopRustCoreControl
+  ): Promise<DesktopRustCoreDirectoryPeer[]>
+  resolvePeer(
+    options: { readonly peerId: string } & DesktopRustCoreControl
+  ): Promise<DesktopRustCoreDirectoryPeer | null>
   /** The core operation id of the owned scan, `null` when none (the re-read after a scan-terminal lag). */
   activeScanId(): string | null
   takeAdapterResetEvent(): Promise<DesktopRustCoreAdapterResetEvent | null>
@@ -480,12 +537,25 @@ export interface DesktopRustCoreGenerationController {
   set(adapterId: string, generation: 'legacy-only' | 'enabled' | 'required'): Promise<void>
 }
 
+/** Trusted host-only native store. Methods return canonical control envelopes. */
+export interface DesktopRustCoreRecordingStore {
+  configureDirectory(directory: string): Promise<string>
+  status(id: string): Promise<string>
+  prepare(id: string, maxItems: number, maxBytes: number): Promise<string>
+  acknowledge(id: string, token: string): Promise<string>
+  stop(id: string): Promise<string>
+  clear(id: string): Promise<string>
+}
+
 export interface DesktopRustCoreBinding {
+  /** Opens durable data without initializing, enumerating or authorizing a radio. */
+  openRecordingStore?(directory: string): Promise<DesktopRustCoreRecordingStore>
   openProduction(options: {
     readonly owner: string
     readonly platform: DesktopRustCorePlatform
     readonly adapterId: string | null
     readonly bluezBus?: DesktopRustCoreBluezBus
+    readonly connectionPolicy?: import('./bluez-connection-policy').BluezConnectionPolicy
     readonly pairingGeneration?: boolean
   }): Promise<DesktopRustCoreCentral>
   openSynthetic(

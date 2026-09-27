@@ -4,9 +4,9 @@
 //! - Link security: `Device1.Paired`/`Bonded`, `Device1.Pair` with a
 //!   just-works `org.bluez.Agent1` (`NoInputNoOutput`), `CancelPairing`,
 //!   `Adapter1.RemoveDevice`, and bond-change signals.
-//! - Address targeting: `Adapter1.ConnectDevice` (experimental in BlueZ),
-//!   else an LE discovery session on this connection until the device
-//!   object exists — the legacy backend's fallback.
+//! - Address targeting: an owned LE discovery session until the Device1
+//!   object exists. ConnectDevice is not used: its post-browse profile
+//!   auto-connect can select a Classic bearer.
 //! - Adapter power (`Adapter1.Powered`) read as a fact: btleplug 0.12's
 //!   BlueZ `adapter_state` reports `PoweredOff` when the read itself fails.
 //! - Characteristic `Flags` and the negotiated `MTU`.
@@ -33,7 +33,7 @@ use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 use super::bluez_model::{
     self, BluezCharacteristic, PAIRING_POSSIBLE, PairFailure, access_for_instances, bond_state,
     cancel_error_proves_terminal, classify_pair_error, device_path, device_path_for_address,
-    is_unknown_method, link_mtu,
+    link_mtu,
 };
 use crate::boundary::{
     AdapterPowerState, AddressType, BondState, CharacteristicAccess, InstanceKey, PairOutcome,
@@ -41,8 +41,12 @@ use crate::boundary::{
 };
 use crate::errors::DesktopError;
 
+#[path = "bluez_discovery.rs"]
+mod discovery;
+
 const BLUEZ: &str = "org.bluez";
 const DEVICE: &str = "org.bluez.Device1";
+const LE: &str = "org.bluez.Bearer.LE1";
 const ADAPTER: &str = "org.bluez.Adapter1";
 const SERVICE: &str = "org.bluez.GattService1";
 const CHARACTERISTIC: &str = "org.bluez.GattCharacteristic1";
@@ -184,14 +188,25 @@ pub(crate) struct Bluez {
     pairing: StdMutex<HashSet<String>>,
     /// Negotiated MTU per peer, read once per connection.
     mtus: StdMutex<HashMap<String, u16>>,
+    le_owner: Option<String>,
+    address_discovery: Arc<discovery::DiscoveryOwner>,
 }
 
 impl Bluez {
     /// Connect to BlueZ on `bus` for the adapter `adapter_id` (`hci0`) —
     /// the same bus the btleplug manager uses.
+    #[cfg(test)]
     pub(crate) async fn open(
         adapter_id: &str,
         bus: crate::boundary::BluezBus,
+    ) -> Result<Arc<Self>, DesktopError> {
+        Self::open_with_le_owner(adapter_id, bus, None).await
+    }
+
+    pub(crate) async fn open_with_le_owner(
+        adapter_id: &str,
+        bus: crate::boundary::BluezBus,
+        le_owner: Option<String>,
     ) -> Result<Arc<Self>, DesktopError> {
         let conn = match bus {
             crate::boundary::BluezBus::System => zbus::Connection::system().await,
@@ -206,6 +221,8 @@ impl Bluez {
             agent_registered: Mutex::new(false),
             pairing: StdMutex::new(HashSet::new()),
             mtus: StdMutex::new(HashMap::new()),
+            le_owner,
+            address_discovery: Arc::new(discovery::DiscoveryOwner::default()),
         }))
     }
 
@@ -386,65 +403,102 @@ impl Bluez {
         Ok(UnpairOutcome::Unpaired)
     }
 
-    async fn device_exists(&self, path: &str) -> Result<bool, DesktopError> {
-        match self.get_all(path, DEVICE, "peer.address-targeting").await {
-            Ok(_) => Ok(true),
-            Err(_) => {
-                // Distinguish "no such object" from a bus failure: the
-                // object manager listing is the authority.
-                let managed = self.managed_objects("peer.address-targeting").await?;
-                Ok(managed.keys().any(|known| known.as_str() == path))
-            }
-        }
-    }
-
-    /// Resolve `address` to a peer id on this adapter, materializing the
-    /// device object when bluetoothd has none: `ConnectDevice` where the
-    /// daemon offers it, otherwise an LE discovery session on this
-    /// connection until the object appears. The caller bounds the wait.
-    pub(crate) async fn resolve_address(
-        &self,
-        address: &str,
-        address_type: AddressType,
-    ) -> Result<String, DesktopError> {
-        let path = device_path_for_address(&self.adapter_path, address);
-        if self.device_exists(&path).await? {
-            return peer_of(&path);
-        }
-        let mut filter: HashMap<&str, Value<'_>> = HashMap::new();
-        filter.insert("Address", Value::from(address));
-        filter.insert("AddressType", Value::from(address_type.as_str()));
-        let adapter = object_path(&self.adapter_path, "peer.address-targeting")?;
+    async fn device_exists(&self, path: &str, owner: &str) -> Result<bool, DesktopError> {
         match self
             .conn
-            .call_method(
-                Some(BLUEZ),
-                adapter.clone(),
-                Some(ADAPTER),
-                "ConnectDevice",
-                &(filter,),
-            )
+            .call_method(Some(owner), path, Some(PROPERTIES), "GetAll", &(DEVICE,))
             .await
         {
             Ok(reply) => {
-                let created: OwnedObjectPath = reply
+                reply
                     .body()
-                    .deserialize()
+                    .deserialize::<HashMap<String, OwnedValue>>()
                     .map_err(|error| platform("peer.address-targeting", error))?;
-                return peer_of(created.as_str());
+                Ok(true)
             }
             Err(error)
-                if dbus_error_name(&error).is_some_and(|(name, _)| is_unknown_method(&name)) => {}
-            Err(error) => return Err(platform("peer.address-targeting", error)),
+                if dbus_error_name(&error).is_some_and(|(name, _)| {
+                    matches!(
+                        name.as_str(),
+                        "org.freedesktop.DBus.Error.UnknownObject" | "org.bluez.Error.DoesNotExist"
+                    )
+                }) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(platform("peer.address-targeting", error)),
         }
-        // ConnectDevice is experimental in BlueZ: discover until the object
-        // exists. The discovery session belongs to this connection and is
-        // stopped however this call ends.
+    }
+
+    async fn current_daemon_owner(&self) -> Result<String, DesktopError> {
+        let owner: String = self
+            .conn
+            .call_method(
+                Some("org.freedesktop.DBus"),
+                "/org/freedesktop/DBus",
+                Some("org.freedesktop.DBus"),
+                "GetNameOwner",
+                &(BLUEZ,),
+            )
+            .await
+            .map_err(|error| platform("peer.address-targeting", error))?
+            .body()
+            .deserialize()
+            .map_err(|error| platform("peer.address-targeting", error))?;
+        if self
+            .le_owner
+            .as_ref()
+            .is_some_and(|expected| expected != &owner)
+        {
+            return Err(DesktopError::new(
+                BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability,
+                "peer.address-targeting",
+            )
+            .with_detail("the attested BlueZ daemon owner changed"));
+        }
+        Ok(owner)
+    }
+
+    async fn verify_daemon_owner(&self, owner: &str) -> Result<(), DesktopError> {
+        if self.current_daemon_owner().await? != owner {
+            return Err(DesktopError::new(
+                BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability,
+                "peer.address-targeting",
+            )
+            .with_detail("the BlueZ daemon owner changed during address resolution"));
+        }
+        Ok(())
+    }
+
+    /// Resolve `address` to a peer id on this adapter, materializing the
+    /// device object through owned LE discovery, never ConnectDevice.
+    /// The caller bounds the wait; accepted start/stop replies remain owned
+    /// after cancellation and final transport close retries failed cleanup.
+    pub(crate) async fn resolve_address(
+        &self,
+        address: &str,
+        _address_type: AddressType,
+    ) -> Result<String, DesktopError> {
+        let path = device_path_for_address(&self.adapter_path, address);
+        let owner = self.current_daemon_owner().await?;
+        if self.device_exists(&path, &owner).await? {
+            self.verify_daemon_owner(&owner).await?;
+            return peer_of(&path);
+        }
+        let _gate = self.address_discovery.gate.lock().await;
+        self.address_discovery
+            .cleanup_locked(&self.conn, &self.adapter_path)
+            .await?;
+        let owner = self.current_daemon_owner().await?;
+        let adapter = object_path(&self.adapter_path, "peer.address-targeting")?;
+        // Discovery materializes an identity without acquiring any bearer.
         let mut scan: HashMap<&str, Value<'_>> = HashMap::new();
         scan.insert("Transport", Value::from("le"));
         self.conn
             .call_method(
-                Some(BLUEZ),
+                Some(owner.as_str()),
                 adapter.clone(),
                 Some(ADAPTER),
                 "SetDiscoveryFilter",
@@ -452,26 +506,29 @@ impl Bluez {
             )
             .await
             .map_err(|error| platform("peer.address-targeting", error))?;
-        self.conn
-            .call_method(
-                Some(BLUEZ),
-                adapter.clone(),
-                Some(ADAPTER),
-                "StartDiscovery",
-                &(),
-            )
-            .await
-            .map_err(|error| platform("peer.address-targeting", error))?;
-        let _stop = StopDiscovery {
-            conn: self.conn.clone(),
-            adapter: adapter.clone(),
-        };
+        let mut cleanup = self
+            .address_discovery
+            .guard(self.conn.clone(), self.adapter_path.clone());
+        self.address_discovery
+            .start(&self.conn, &self.adapter_path, owner.clone())
+            .await?;
         loop {
-            if self.device_exists(&path).await? {
+            if self.device_exists(&path, &owner).await? {
+                self.address_discovery
+                    .cleanup_locked(&self.conn, &self.adapter_path)
+                    .await?;
+                cleanup.armed = false;
+                self.verify_daemon_owner(&owner).await?;
                 return peer_of(&path);
             }
             tokio::time::sleep(MATERIALIZE_POLL).await;
         }
+    }
+
+    pub(crate) async fn finish_discovery(&self) -> Result<(), DesktopError> {
+        self.address_discovery
+            .cleanup(&self.conn, &self.adapter_path)
+            .await
     }
 
     async fn managed_objects(&self, operation: &str) -> Result<Managed, DesktopError> {
@@ -596,9 +653,6 @@ impl Bluez {
             let rule = zbus::MatchRule::builder()
                 .msg_type(zbus::message::Type::Signal)
                 .sender(BLUEZ)
-                .and_then(|builder| builder.interface(PROPERTIES))
-                .and_then(|builder| builder.member("PropertiesChanged"))
-                .and_then(|builder| builder.path_namespace(bluez.adapter_path.clone()))
                 .map(|builder| builder.build());
             let stream = match rule {
                 Ok(rule) => zbus::MessageStream::for_match_rule(rule, &bluez.conn, None).await,
@@ -612,34 +666,125 @@ impl Bluez {
                     return;
                 }
             };
+            // Device1 may report Connected=false and ServicesResolved=false
+            // in separate, ordered signals. Remember confirmed link loss so
+            // its later database teardown cannot masquerade as a live change.
+            let mut evidence = DeviceConnectionEvidence::default();
             while let Some(message) = stream.next().await {
                 let Ok(message) = message else {
                     WATCH_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     continue;
                 };
                 let header = message.header();
+                // The bus authenticates the well-known sender in the match.
+                // A new unique owner has a different object/connection epoch.
+                let sender = header.sender().map(|sender| sender.to_string());
+                if bluez.le_owner.as_ref().is_some_and(|owner| sender.as_ref() != Some(owner)) {
+                    continue;
+                }
+                evidence.owner(sender);
+                if header.interface().map(|name| name.as_str()) == Some(OBJECT_MANAGER) {
+                    if bluez.le_owner.is_some() && header.member().map(|name| name.as_str()) == Some("InterfacesRemoved") {
+                        match message.body().deserialize::<(OwnedObjectPath, Vec<String>)>() {
+                            Ok((path, interfaces)) => {
+                            if path.as_str().starts_with(&format!("{}/", bluez.adapter_path)) {
+                                if let Some(peer) = bluez_model::peer_id_for_path(path.as_str()) {
+                                    if interfaces.iter().any(|name| name == DEVICE) {
+                                        evidence.replace(peer, None);
+                                        if events.send(RadioEvent::Disconnected(peer.to_owned())).await.is_err() { return; }
+                                    }
+                                } else if interfaces.iter().any(|name| name == SERVICE)
+                                    && let Some((device, _)) = path.as_str().split_once("/service")
+                                    && let Some(peer) = bluez_model::peer_id_for_path(device)
+                                    && !evidence.disconnected.contains(peer)
+                                    && events.send(RadioEvent::ServicesChanged(peer.to_owned())).await.is_err() {
+                                    return;
+                                }
+                            }
+                            }
+                            Err(error) => {
+                                WATCH_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                eprintln!("ubm-desktop: BlueZ LE lifecycle signal could not be decoded: {error}");
+                            }
+                        }
+                        continue;
+                    }
+                    let object = match header.member().map(|name| name.as_str()) {
+                        Some("InterfacesRemoved") => message.body()
+                            .deserialize::<(OwnedObjectPath, Vec<String>)>()
+                            .map(|(path, interfaces)| (path, interfaces.iter().any(|name| name == DEVICE), None)),
+                        Some("InterfacesAdded") => message.body()
+                            .deserialize::<(OwnedObjectPath, HashMap<String, HashMap<String, OwnedValue>>)>()
+                            .map(|(path, interfaces)| {
+                                let device = interfaces.get(if bluez.le_owner.is_some() { LE } else { DEVICE });
+                                (path, device.is_some(), device.and_then(|properties| bool_of(properties, "Connected")))
+                            }),
+                        _ => continue,
+                    };
+                    match object {
+                        Ok((path, true, connected)) if path.as_str().starts_with(&format!("{}/", bluez.adapter_path)) => {
+                            if let Some(peer) = bluez_model::peer_id_for_path(path.as_str()) {
+                                evidence.replace(peer, connected);
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            WATCH_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            eprintln!("ubm-desktop: BlueZ device lifecycle signal could not be decoded: {error}");
+                        }
+                    }
+                    continue;
+                }
+                if header.interface().map(|name| name.as_str()) != Some(PROPERTIES)
+                    || header.member().map(|name| name.as_str()) != Some("PropertiesChanged") {
+                    continue;
+                }
                 let Some(path) = header.path().map(|path| path.as_str().to_owned()) else {
                     continue;
                 };
+                if !path.starts_with(&format!("{}/", bluez.adapter_path)) { continue; }
                 let Some(peer_id) = bluez_model::peer_id_for_path(&path).map(str::to_owned) else {
                     continue;
                 };
-                let Ok((interface, changed, _invalidated)) = message
+                let Ok((interface, changed, invalidated)) = message
                     .body()
                     .deserialize::<(String, HashMap<String, OwnedValue>, Vec<String>)>()
                 else {
                     WATCH_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     continue;
                 };
+                if bluez.le_owner.is_some() && interface == LE {
+                    match bool_of(&changed, "Connected") {
+                        Some(connected) => {
+                            evidence.replace(&peer_id, Some(connected));
+                            let event = if connected { RadioEvent::Connected(peer_id) }
+                                else { RadioEvent::Disconnected(peer_id) };
+                            if events.send(event).await.is_err() { return; }
+                        }
+                        None if invalidated.iter().any(|name| name == "Connected") => {
+                            evidence.replace(&peer_id, None);
+                        }
+                        None => {}
+                    }
+                    continue;
+                }
                 if interface != DEVICE {
                     continue;
                 }
+                if bluez.le_owner.is_none() { match bool_of(&changed, "Connected") {
+                    Some(false) => { evidence.replace(&peer_id, Some(false)); }
+                    Some(true) => { evidence.replace(&peer_id, Some(true)); }
+                    None if invalidated.iter().any(|name| name == "Connected") => {
+                        evidence.replace(&peer_id, None);
+                    }
+                    None => {}
+                } }
                 // The GATT database went away under a live link (legacy
                 // `propertiesChanged`: `ServicesResolved` false). A change
-                // that also drops `Connected` is the link ending, which the
-                // disconnect event reports instead.
-                if bool_of(&changed, "ServicesResolved") == Some(false)
-                    && bool_of(&changed, "Connected") != Some(false)
+                // after or alongside confirmed `Connected=false` is the link
+                // ending, which the disconnect event reports instead.
+                if bluez.le_owner.is_none() && bool_of(&changed, "ServicesResolved") == Some(false)
+                    && !evidence.disconnected.contains(&peer_id)
                 {
                     bluez.forget(&peer_id);
                     if events
@@ -793,31 +938,398 @@ fn peer_of(path: &str) -> Result<String, DesktopError> {
         })
 }
 
-/// Stops this connection's discovery session when address resolution
-/// ends, however it ends (success, failure or a dropped call). The stop is
-/// spawned: a failure is reported, never silently dropped.
-struct StopDiscovery {
-    conn: zbus::Connection,
-    adapter: ObjectPath<'static>,
+/// One retained link-loss fact per extant Device1 object, never historical
+/// removed objects or an earlier bluetoothd owner. Unknown is not false.
+#[derive(Default)]
+struct DeviceConnectionEvidence {
+    owner: Option<String>,
+    disconnected: HashSet<String>,
 }
 
-impl Drop for StopDiscovery {
-    fn drop(&mut self) {
-        let conn = self.conn.clone();
-        let adapter = self.adapter.clone();
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            WATCH_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            eprintln!("ubm-desktop: BlueZ address discovery could not be stopped: no runtime");
-            return;
-        };
-        handle.spawn(async move {
-            if let Err(error) = conn
-                .call_method(Some(BLUEZ), adapter, Some(ADAPTER), "StopDiscovery", &())
+impl DeviceConnectionEvidence {
+    fn owner(&mut self, owner: Option<String>) {
+        if self.owner != owner {
+            self.disconnected.clear();
+            self.owner = owner;
+        }
+    }
+
+    fn replace(&mut self, peer: &str, connected: Option<bool>) {
+        if connected == Some(false) {
+            self.disconnected.insert(peer.to_owned());
+        } else {
+            self.disconnected.remove(peer);
+        }
+    }
+}
+
+#[cfg(test)]
+mod watch_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires a dedicated dbus-run-session"]
+    async fn private_bus_strict_le_watch_ignores_aggregate_classic_state() {
+        assert_eq!(
+            std::env::var("UBM_BLUEZ_PRIVATE_BUS_TEST").as_deref(),
+            Ok("1")
+        );
+        let publisher = zbus::Connection::session().await.unwrap();
+        publisher.request_name(BLUEZ).await.unwrap();
+        let owner = publisher.unique_name().unwrap().to_string();
+        let bluez =
+            Bluez::open_with_le_owner("hci0", crate::boundary::BluezBus::Session, Some(owner))
                 .await
-            {
-                WATCH_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                eprintln!("ubm-desktop: BlueZ address discovery stop failed: {error}");
+                .unwrap();
+        let baseline = matches(&publisher).await;
+        let (tx, mut rx) = mpsc::channel(16);
+        let task = bluez.watch_security(tx, &tokio::runtime::Handle::current());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while matches(&publisher).await <= baseline {
+                tokio::task::yield_now().await;
             }
-        });
+        })
+        .await
+        .unwrap();
+        for (interface, properties) in [
+            (
+                DEVICE,
+                vec![("Connected", true), ("ServicesResolved", false)],
+            ),
+            (LE, vec![("Connected", true)]),
+            (
+                DEVICE,
+                vec![("Connected", false), ("ServicesResolved", false)],
+            ),
+            (LE, vec![("Connected", false)]),
+        ] {
+            let properties: HashMap<_, _> = properties
+                .into_iter()
+                .map(|(key, value)| (key, Value::from(value)))
+                .collect();
+            let le_connected = interface == LE
+                && properties
+                    .get("Connected")
+                    .and_then(|value| bool::try_from(value).ok())
+                    == Some(true);
+            publisher
+                .emit_signal(
+                    None::<&str>,
+                    "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF",
+                    PROPERTIES,
+                    "PropertiesChanged",
+                    &(interface, properties, Vec::<String>::new()),
+                )
+                .await
+                .unwrap();
+            if le_connected {
+                publisher
+                    .emit_signal(
+                        None::<&str>,
+                        "/",
+                        OBJECT_MANAGER,
+                        "InterfacesRemoved",
+                        &(
+                            OwnedObjectPath::try_from(
+                                "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/service0001",
+                            )
+                            .unwrap(),
+                            vec![SERVICE],
+                        ),
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+        let connected = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(connected, RadioEvent::Connected(_)),
+            "aggregate Classic state must not invalidate GATT: {connected:?}"
+        );
+        let changed = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(changed, RadioEvent::ServicesChanged(_)),
+            "actual live GATT removal remains observable: {changed:?}"
+        );
+        let disconnected = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(disconnected, RadioEvent::Disconnected(_)),
+            "LE-only loss must survive aggregate Classic state: {disconnected:?}"
+        );
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+    }
+
+    #[test]
+    fn connection_evidence_retires_objects_and_owner_epochs() {
+        let mut evidence = DeviceConnectionEvidence::default();
+        evidence.owner(Some(":1.10".into()));
+        for index in 0..10_000 {
+            let peer = format!("hci0/dev_{index}");
+            evidence.replace(&peer, Some(false));
+            assert_eq!(evidence.disconnected.len(), 1);
+            evidence.replace(&peer, None);
+            assert!(evidence.disconnected.is_empty());
+        }
+        evidence.replace("hci0/dev_1", Some(false));
+        evidence.owner(Some(":1.11".into()));
+        assert!(evidence.disconnected.is_empty());
+    }
+
+    async fn matches(connection: &zbus::Connection) -> u32 {
+        connection
+            .call_method(
+                Some("org.freedesktop.DBus"),
+                "/org/freedesktop/DBus",
+                Some("org.freedesktop.DBus.Debug.Stats"),
+                "GetStats",
+                &(),
+            )
+            .await
+            .unwrap()
+            .body()
+            .deserialize::<HashMap<String, OwnedValue>>()
+            .unwrap()
+            .get("MatchRules")
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap()
+    }
+
+    async fn changed(connection: &zbus::Connection, peer: &str, properties: &[(&str, bool)]) {
+        let values: HashMap<&str, Value<'_>> = properties
+            .iter()
+            .map(|(key, value)| (*key, Value::from(*value)))
+            .collect();
+        connection
+            .emit_signal(
+                None::<&str>,
+                format!("/org/bluez/hci0/dev_{peer}"),
+                PROPERTIES,
+                "PropertiesChanged",
+                &(DEVICE, values, Vec::<String>::new()),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires dedicated dbus-run-session, never the system bus"]
+    async fn private_bus_split_disconnect_does_not_invalidate_a_live_database() {
+        assert_eq!(
+            std::env::var("UBM_BLUEZ_PRIVATE_BUS_TEST").as_deref(),
+            Ok("1")
+        );
+        let publisher = zbus::Connection::session().await.unwrap();
+        publisher.request_name(BLUEZ).await.unwrap();
+        let bluez = Bluez::open("hci0", crate::boundary::BluezBus::Session)
+            .await
+            .unwrap();
+        let baseline = matches(&publisher).await;
+        let (tx, mut rx) = mpsc::channel(16);
+        let task = bluez.watch_security(tx, &tokio::runtime::Handle::current());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while matches(&publisher).await <= baseline {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        async fn receive(rx: &mut mpsc::Receiver<RadioEvent>) -> RadioEvent {
+            tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .unwrap()
+                .unwrap()
+        }
+        // A positive live-loss barrier proves this actual watcher is listening.
+        changed(
+            &publisher,
+            "AA_BB_CC_DD_EE_00",
+            &[("Connected", true), ("ServicesResolved", false)],
+        )
+        .await;
+        assert!(
+            matches!(receive(&mut rx).await, RadioEvent::ServicesChanged(peer) if peer == "hci0/dev_AA_BB_CC_DD_EE_00")
+        );
+        changed(&publisher, "AA_BB_CC_DD_EE_01", &[("Connected", false)]).await;
+        changed(
+            &publisher,
+            "AA_BB_CC_DD_EE_01",
+            &[("ServicesResolved", false)],
+        )
+        .await;
+        changed(
+            &publisher,
+            "AA_BB_CC_DD_EE_01",
+            &[("ServicesResolved", false)],
+        )
+        .await;
+        changed(
+            &publisher,
+            "AA_BB_CC_DD_EE_03",
+            &[("Connected", false), ("ServicesResolved", false)],
+        )
+        .await;
+        // Distinct peer sentinel preserves ordering without a negative sleep.
+        changed(
+            &publisher,
+            "AA_BB_CC_DD_EE_02",
+            &[("Connected", true), ("ServicesResolved", false)],
+        )
+        .await;
+        let observed = receive(&mut rx).await;
+        assert!(
+            matches!(observed, RadioEvent::ServicesChanged(ref peer) if peer == "hci0/dev_AA_BB_CC_DD_EE_02"),
+            "split link loss must not become service change: {observed:?}"
+        );
+        // A genuinely reconnected peer must admit a later service change.
+        changed(&publisher, "AA_BB_CC_DD_EE_01", &[("Connected", true)]).await;
+        changed(
+            &publisher,
+            "AA_BB_CC_DD_EE_01",
+            &[("ServicesResolved", false)],
+        )
+        .await;
+        assert!(
+            matches!(receive(&mut rx).await, RadioEvent::ServicesChanged(peer) if peer == "hci0/dev_AA_BB_CC_DD_EE_01")
+        );
+        // Absence of link evidence must not suppress an actual service event.
+        changed(
+            &publisher,
+            "AA_BB_CC_DD_EE_04",
+            &[("ServicesResolved", false)],
+        )
+        .await;
+        assert!(
+            matches!(receive(&mut rx).await, RadioEvent::ServicesChanged(peer) if peer == "hci0/dev_AA_BB_CC_DD_EE_04")
+        );
+        let recreated = OwnedObjectPath::try_from("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_03").unwrap();
+        publisher
+            .emit_signal(
+                None::<&str>,
+                "/",
+                OBJECT_MANAGER,
+                "InterfacesRemoved",
+                &(recreated.clone(), vec![DEVICE]),
+            )
+            .await
+            .unwrap();
+        let interfaces =
+            HashMap::from([(DEVICE, HashMap::from([("Connected", Value::from(true))]))]);
+        publisher
+            .emit_signal(
+                None::<&str>,
+                "/",
+                OBJECT_MANAGER,
+                "InterfacesAdded",
+                &(recreated, interfaces),
+            )
+            .await
+            .unwrap();
+        changed(
+            &publisher,
+            "AA_BB_CC_DD_EE_03",
+            &[("ServicesResolved", false)],
+        )
+        .await;
+        assert!(
+            matches!(receive(&mut rx).await, RadioEvent::ServicesChanged(peer) if peer == "hci0/dev_AA_BB_CC_DD_EE_03")
+        );
+        // An invalidated property is unknown, not evidence of disconnection.
+        changed(&publisher, "AA_BB_CC_DD_EE_05", &[("Connected", false)]).await;
+        publisher
+            .emit_signal(
+                None::<&str>,
+                "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_05",
+                PROPERTIES,
+                "PropertiesChanged",
+                &(
+                    DEVICE,
+                    HashMap::<String, Value<'_>>::new(),
+                    vec!["Connected"],
+                ),
+            )
+            .await
+            .unwrap();
+        changed(
+            &publisher,
+            "AA_BB_CC_DD_EE_05",
+            &[("ServicesResolved", false)],
+        )
+        .await;
+        assert!(
+            matches!(receive(&mut rx).await, RadioEvent::ServicesChanged(peer) if peer == "hci0/dev_AA_BB_CC_DD_EE_05")
+        );
+
+        // Neither a similar adapter prefix nor an unauthenticated publisher
+        // may contribute a service event. A bus roundtrip orders the foreign
+        // sender before the positive sentinel without negative sleeps.
+        publisher
+            .emit_signal(
+                None::<&str>,
+                "/org/bluez/hci01/dev_AA_BB_CC_DD_EE_06",
+                PROPERTIES,
+                "PropertiesChanged",
+                &(
+                    DEVICE,
+                    HashMap::from([("ServicesResolved", Value::from(false))]),
+                    Vec::<String>::new(),
+                ),
+            )
+            .await
+            .unwrap();
+        let unauthorized = zbus::Connection::session().await.unwrap();
+        changed(
+            &unauthorized,
+            "AA_BB_CC_DD_EE_07",
+            &[("ServicesResolved", false)],
+        )
+        .await;
+        matches(&unauthorized).await;
+        changed(
+            &publisher,
+            "AA_BB_CC_DD_EE_08",
+            &[("ServicesResolved", false)],
+        )
+        .await;
+        assert!(
+            matches!(receive(&mut rx).await, RadioEvent::ServicesChanged(peer) if peer == "hci0/dev_AA_BB_CC_DD_EE_08")
+        );
+
+        // Confirm the tombstone was consumed before replacing the real bus
+        // owner. Its successor's first signal must not inherit that evidence.
+        changed(&publisher, "AA_BB_CC_DD_EE_09", &[("Connected", false)]).await;
+        changed(
+            &publisher,
+            "AA_BB_CC_DD_EE_08",
+            &[("ServicesResolved", false)],
+        )
+        .await;
+        assert!(
+            matches!(receive(&mut rx).await, RadioEvent::ServicesChanged(peer) if peer == "hci0/dev_AA_BB_CC_DD_EE_08")
+        );
+        assert!(publisher.release_name(BLUEZ).await.unwrap());
+        let replacement = zbus::Connection::session().await.unwrap();
+        replacement.request_name(BLUEZ).await.unwrap();
+        assert_ne!(publisher.unique_name(), replacement.unique_name());
+        changed(
+            &replacement,
+            "AA_BB_CC_DD_EE_09",
+            &[("ServicesResolved", false)],
+        )
+        .await;
+        assert!(
+            matches!(receive(&mut rx).await, RadioEvent::ServicesChanged(peer) if peer == "hci0/dev_AA_BB_CC_DD_EE_09")
+        );
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
     }
 }

@@ -10,11 +10,22 @@ import java.util.concurrent.atomic.AtomicReference
 /** Transport-only adapter. The shared Rust process owner owns admission, recovery and handoff. */
 class NativeContinuationBinding(private val core: MobileCorePort, private val log: (String) -> Unit) {
   private val declarationGate = Any()
-  fun execute(peer: String, declaration: BackgroundContinuationDeclaration): ContinuationOutcome = try {
+  /** The same declaration authority guards platform dispatch and native execution.
+   * Hold admission until bounded task/service startup settles: replacement cannot
+   * commit between validation and the actual platform effect. */
+  fun executePlatform(declaration: BackgroundContinuationDeclaration, action: () -> ContinuationOutcome): ContinuationOutcome = try {
     synchronized(declarationGate) {
+      require(declaration.strategy == ContinuationStrategy.HEADLESS_TASK || declaration.strategy == ContinuationStrategy.FOREGROUND_SERVICE)
       synchronous("seed") { core.continuationSeedDeclaration(declarationJson(declaration)) }
+      action()
     }
-    val value = objectValue(await("execute") { core.continuationExecute(peer, declarationJson(declaration), it) })
+  } catch (error: NativeContinuationFailure) {
+    ContinuationOutcome.failed(declaration.strategy, error.code, error.message ?: "Continuation admission failed", error.platform?.let { RustCoreJson.write(it) })
+  } catch (error: RuntimeException) {
+    continuationPlatformFailure(declaration.strategy, error)
+  }
+  fun execute(peer: String, declaration: BackgroundContinuationDeclaration): ContinuationOutcome = try {
+    val value = objectValue(await("execute") { executeRaw(peer, declaration, it) })
     if (value["event"] != "continuation.completed" || value["strategy"] != "native" || value["peerAddress"] != peer) {
       malformed("execution identity")
     }
@@ -24,6 +35,50 @@ class NativeContinuationBinding(private val core: MobileCorePort, private val lo
   } catch (error: NativeContinuationFailure) {
     log("native continuation failed: ${error.message}")
     ContinuationOutcome.failed(ContinuationStrategy.NATIVE, error.code, error.message ?: "native continuation failed", error.platform?.let { RustCoreJson.write(it) })
+  }
+
+  /** Trusted host transport; the original native envelope reaches the caller unchanged.
+   * Invoke setup on a worker, never the UI thread. No wake outcome is fabricated. */
+  fun executeRaw(peer: String, declaration: BackgroundContinuationDeclaration, callback: MobileCoreBridge.InvokeCallback,
+                 persisted: (() -> BackgroundContinuationDeclaration)? = null) =
+    raw("execute", callback) {
+      synchronized(declarationGate) {
+      if (persisted != null && persisted() != declaration) throw RustCoreRejection(
+        "lifecycle.invalid-state", "restoration", "continuation.execute", "Explicit matching persisted native declaration required")
+      val seeded = core.continuationSeedDeclaration(declarationJson(declaration))
+      val seed = try { objectValue(RustCoreJson.parse(seeded)) }
+        catch (error: IllegalArgumentException) { malformed("declaration seed JSON") }
+      when (seed["ok"]) {
+        false -> callback.onResult(seeded)
+        true -> {
+          decode("seed", seeded)
+          core.continuationExecute(peer, declarationJson(declaration), callback)
+        }
+        else -> malformed("declaration seed envelope")
+      }
+      }
+    }
+
+  fun describeBacklogRaw(callback: MobileCoreBridge.InvokeCallback) =
+    raw("backlog", callback) { core.continuationDescribeBacklog(callback) }
+
+  fun prepareClaimRaw(maxItems: Int, maxBytes: Int, callback: MobileCoreBridge.InvokeCallback) =
+    raw("prepare", callback) { core.continuationPrepareClaim(maxItems, maxBytes, callback) }
+
+  fun acknowledgeClaimRaw(token: String, callback: MobileCoreBridge.InvokeCallback) =
+    raw("acknowledge", callback) { core.continuationAcknowledgeClaim(token, callback) }
+
+  private fun raw(operation: String, callback: MobileCoreBridge.InvokeCallback, invoke: () -> Unit) {
+    try { invoke() }
+    catch (error: RuntimeException) {
+      val failure = when (error) {
+        is RustCoreRejection -> error
+        is NativeContinuationFailure -> RustCoreRejection(error.code, error.domain, error.operation, error.message, error.platform)
+        is MobileCoreBridge.MobileCoreException -> RustCoreRejection.fromWire(error.message, "continuation.$operation")
+        else -> RustCoreRejection.platform("continuation.$operation", error)
+      }
+      callback.onResult(failure.toContinuationEnvelope())
+    }
   }
 
   fun declarationReplacementFailure(declaration: BackgroundContinuationDeclaration): String? =
@@ -60,8 +115,14 @@ class NativeContinuationBinding(private val core: MobileCorePort, private val lo
     if (value["disposed"] != false) malformed("prepared claim cannot already be disposed")
     val token = if (value.containsKey("claimToken")) value["claimToken"] as? String ?: malformed("claim token") else ""
     if (token.isEmpty() && (count != 0L || decodedBatches.isNotEmpty())) malformed("owned claim requires a token")
+    val recording = if (!value.containsKey("recording")) null else {
+      val reference = objectValue(value["recording"])
+      val id = reference["id"] as? String ?: malformed("recording id")
+      if (reference.keys != setOf("id") || !Regex("^[A-Za-z0-9_-]{1,64}$").matches(id)) malformed("recording reference")
+      id
+    }
     ContinuationClaim(count.toInt(), decodedBatches, false, nullableText(value["disposeFailure"], "disposeFailure"),
-      cutoff(value["afterCutoffLoss"]), selectors, token)
+      cutoff(value["afterCutoffLoss"]), selectors, token, recording)
   }
 
   fun acknowledgeClaim(token: String): ContinuationAcknowledgement = surface {
@@ -184,12 +245,33 @@ class NativeContinuationBinding(private val core: MobileCorePort, private val lo
   }
 
   private fun declarationJson(declaration: BackgroundContinuationDeclaration): String {
+    fun selectorJson(selector: ContinuationSelector) = linkedMapOf(
+      "serviceUuid" to selector.serviceUuid, "serviceOccurrence" to selector.serviceOccurrence,
+      "characteristicUuid" to selector.characteristicUuid, "characteristicOccurrence" to selector.characteristicOccurrence
+    )
     val value = linkedMapOf<String, Any?>("onAppearance" to declaration.strategy.wire,
-      "resubscribe" to declaration.resubscribe.map { selector -> linkedMapOf(
-        "serviceUuid" to selector.serviceUuid, "serviceOccurrence" to selector.serviceOccurrence,
-        "characteristicUuid" to selector.characteristicUuid, "characteristicOccurrence" to selector.characteristicOccurrence
-      ) })
+      "resubscribe" to declaration.resubscribe.map(::selectorJson))
+    declaration.setup?.let { steps ->
+      value["setup"] = steps.map { step ->
+        val wire = linkedMapOf<String, Any?>("selector" to selectorJson(step.selector),
+          "value" to step.value, "timeoutMs" to step.timeoutMs)
+        step.response?.let { response ->
+          val reply = linkedMapOf<String, Any?>("subscriptionIndex" to response.subscriptionIndex,
+            "prefix" to response.prefix, "minLength" to response.minLength, "maxLength" to response.maxLength,
+            "status" to linkedMapOf("offset" to response.statusOffset, "accepted" to response.accepted))
+          response.trailing?.let { trailing ->
+            reply["trailing"] = linkedMapOf("offset" to trailing.offset, "accepted" to trailing.accepted)
+          }
+          wire["response"] = reply
+        }
+        wire
+      }
+    }
     declaration.peerId?.let { value["peerId"] = it }
+    declaration.link?.let { mtu -> value["link"] = linkedMapOf("mtu" to linkedMapOf(
+      "requested" to mtu.requested, "timeoutMs" to mtu.timeoutMs, "onUnsupported" to mtu.onUnsupported)) }
+    declaration.recording?.let { recording -> value["recording"] = linkedMapOf(
+      "id" to recording.id, "maxBytes" to recording.maxBytes, "maxRecords" to recording.maxRecords) }
     declaration.headlessTaskName?.let { value["headlessTaskName"] = it }
     declaration.foregroundService?.let { service ->
       val notification = linkedMapOf<String, Any?>("channelId" to service.notification.channelId,

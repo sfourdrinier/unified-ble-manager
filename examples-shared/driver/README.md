@@ -79,6 +79,11 @@ failure is the library's own answer: a typed error such as
 `capability.unsupported` from the call itself, or the capability descriptor for
 the background lease. It is never a skip.
 
+The background snapshot's `leaseState` retains that run's acquisition/API answer,
+not live ownership after stopping. Inspect the `background.lease.release` cleanup
+receipt for release success or retained failure. Starting another run resets the
+answer to `null`; earlier acquisition events remain in the bounded event history.
+
 ### Choosing the strap: the `device` argument
 
 Every peer-acquiring command (`h10-stream start`, `link-loss start`,
@@ -132,6 +137,17 @@ retry. Supervised runs (`link-loss`, `autoReconnect: true`) keep the
 connection supervisor's own retry policy.
 
 ### Hot reload never orphans a run
+
+Stopping the dashboard cancels pending PMD response waits. Deliberate PMD aborts
+use public typed BLE errors so the supervisor preserves their exact cause;
+unrelated configuration exceptions are not relabelled from an abort signal.
+An aborted settings
+wait is reported as `operation.aborted` and does not advance into STOP/START.
+If configuration is still unwinding, a stop can truthfully report
+`connection-supervisor.late-configure-pending`; its cleanup owner is retained.
+Retry stop after settlement and inspect the new receipt rather than treating
+the first pending receipt as successful release. Cancellation of the response
+wait does not establish that a previously accepted peripheral write was undone.
 
 `ScenarioRegistry.stopAll()` stops every scenario at once and waits for each
 release. It stops all of them even when one fails, then rejects with
@@ -273,9 +289,107 @@ you explicitly choose to share them. Bulk packet data is not mirrored into
 automatic snapshots or command-result history.
 
 The live dashboard's foreground connection supervisor reissues PMD setup/start
-commands after reconnect. Native continuation's declared resubscriptions do
-not themselves replay Polar PMD start commands. Do not use a successful native
-Heart Rate resubscription as evidence of background ECG/ACC session recovery.
+commands after reconnect. The separate `continuation` scenario uses the shared
+H10 recipe to declare generic native setup commands: subscribe to HR, PMD
+control and data, then issue correlated STOP/START commands for the selected
+ECG/ACC measurements after each recovered generation. Merely resubscribing to
+HR is still not evidence of successful background ECG/ACC recovery; inspect
+the setup outcome and positive recorded PMD values from the new generation.
+
+### Native continuation and durable recording
+
+The separate `process-continuation` scenario uses an optional trusted host
+controller. Its snapshot `owned` reports this scenario's local cleanup
+obligation: initially `null` (unqueried), `true` before native execute or claim
+settles and after uncertain/refused cleanup, and `false` after confirmed disposal
+or an empty claim followed by actual null status. It does not prove native
+acquisition or global engine absence; use `status` for the process owner's answer.
+Concurrent status reads never erase a pending local cleanup obligation. The
+controller runs on the **already-owned process central**. It does not persist an OS
+wake declaration, select a backend, open another manager, or promise recovery
+after host-process exit. Hosts without this seam report `capability.unsupported`;
+the ordinary desktop factory's OS-wake refusal remains unchanged.
+
+Commands use the same driver `run <scenario> <command> --args <JSON>` transport:
+
+```text
+process-continuation execute {"peerId":"<exact observed identity>","measurements":"hr-ecg-acc","sampleRateHz":50,"rangeG":4,"recordingId":"h10_process","maxBytes":16777216,"maxRecords":100000}
+process-continuation status {}
+process-continuation claim {}
+process-continuation recording-prepare {"recordingId":"h10_process"}
+process-continuation recording-acknowledge {"recordingId":"h10_process","token":"<saved batch token>"}
+```
+
+`execute` requires an explicit peer identity and uses the same H10 setup recipe
+as mobile continuation. `claim` and `stop` return decoded volatile values
+(bytes use the driver's hex representation), loss facts and the owner's
+disposal result. Save that response: a failed disposal is retryable and does
+not authorize another execution. Registry shutdown also claims an existing
+process owner after renderer reload. An empty untouched-engine claim may report
+`disposed: false`; only a subsequent actual `status: null` establishes that
+there is no session to clean up, without rewriting the claim result.
+`last-claim` exposes its latest retained
+handoff. Normal command event history contains counts, not sensor payloads.
+The registry's final shutdown receipt includes the full decoded handoff (also
+when disposal fails), so a finite CLI does not discard its data at exit. Save
+that output privately; it can contain sensor records.
+
+Offline `recording-status`, `recording-prepare`, `recording-acknowledge`,
+`recording-stop` and `recording-clear` never acquire a radio. They reuse the
+mobile scenario's explicit journal commands. Preparing does not acknowledge;
+stopping journal admission does not stop native collection; only explicit
+`recording-clear` deletes a stopped journal. The trusted host supplies private
+storage configuration: commands accept recording IDs and quotas, never paths.
+
+On a host exposing the public continuation factory, `continuation/declare`
+persists an actual standing order rather than an intent in the driver's UI.
+Unsupported hosts refuse the operation. Validate the selected device's PMD
+features and settings in the foreground first. For example, send this command
+to the `continuation` scenario using the exact peer identity discovered there:
+
+```json
+{"command":"declare","args":{"onAppearance":"native","peerId":"<exact-peer-id>","measurements":"hr-ecg-acc","sampleRateHz":200,"rangeG":8,"recordingId":"h10_background_run_1","maxBytes":16777216,"maxRecords":100000}}
+```
+
+The recipe supports HR, HR+ECG, HR+ACC and HR+ECG+ACC, all H10 ACC rates
+(25/50/100/200 Hz) and ranges (2/4/8 g), at 16-bit resolution. The host's
+restoration/presence setup and permissions remain necessary; declaration alone
+does not manufacture an OS wake. See [background lifecycle and platform
+limits](../../docs/BACKGROUND.md). Native setup is protocol-neutral in UBM;
+the Polar command construction stays in the shared reference app.
+
+Durable recording is opt-in with explicit quotas. Unlike the live dashboard's
+JS recorder, it retains native records independently of the app's JS runtime
+and native claim cursor. Use `recording-status` with `recordingId`, then
+`recording-prepare` with that ID and bounded `maxItems`/`maxBytes`. Prepare
+returns records and a token without consuming them. Save or process the full
+result before calling `recording-acknowledge` with the same ID and token.
+Repeated prepare before acknowledgement returns the same prefix. Automatic
+command history contains counts, not the sensor payload or cursor token.
+
+`recording-stop` closes recording admission but does not release a radio or
+disarm the standing order. First run `backlog` and verify successful native radio disposal;
+a refused claim remains owned and must be retried. Then use scenario `stop` to persist
+`record-only`; neither operation clears the retained journal. Its data remains available through the offline recording
+commands. `recording-clear` explicitly deletes a stopped recording. Storage is
+app-private but not encrypted by UBM; retain exports privately. These controls
+use the public offline API and do not require a live BLE session.
+
+Android's alternate `headless-task` declaration requires an app-registered
+`headlessTaskName`. `foreground-service` requires
+`foregroundService.notification` with `channelId`, `channelName` and `title`
+(optional `body` and `icon`). A dispatched task or started service is not proof
+that application work completed. These strategies do not automatically select
+the native PMD recipe or durable collector; choose `native` for that standing
+order. Report actual platform refusal rather than treating every strategy as
+available on every host.
+
+The Expo Android reference app exposes `continuation/headless-history` with no
+arguments to read its bounded task-receipt summaries without opening BLE. A
+`completed` receipt with a battery result and released cleanup is separate proof
+from native `task-dispatched`. Peer identifiers and raw error payloads are omitted;
+malformed history or storage failure rejects, and unsupported hosts report
+`capability.unsupported`. This diagnostic does not consume the native journal.
 
 Compare exported files locally with Node 22.18+:
 
@@ -298,18 +412,30 @@ The `live-dashboard` scenario keeps one tile per Polar H10 in range: the
 strap name, live heart rate with RR intervals and skin-contact state, a
 downsampled PMD ECG trace (130 Hz, ~5 s window), battery level (180F/2A19)
 and Device Information (180A firmware revision, model, serial). A tile
-appears on the first scan observation and reconnects through an
+appears from a matching already-connected peer in the public peer directory or
+the first scan observation, and reconnects through an
 application-owned `createConnectionSupervisor` when the strap drops out and
 returns — the same code the example app's Live dashboard screen renders.
+On scanning hosts the dashboard first queries connected peers without a service
+filter, applies the same explicit name policy, and then scans for other straps.
+GATT discovery/setup remains authoritative for the actual profile. This permits
+a second dashboard owner to join a strap that stopped advertising while another
+owner holds its link. Duplicate directory/scan observations create only one tile.
+An unsupported directory is reported explicitly and scanning continues; genuine
+directory errors fail the start. The query is bounded and stopped/late results
+cannot admit a tile. Chooser-only hosts retain their user-gesture chooser path.
 
 Unlike the single-strap scenarios it takes `devices` (plural), not `device`:
 `"all-polar"` (the default, every Polar H10 in range) or a list of exact
 advertised names. Commands: `start {devices?: "all-polar" | string[],
 ecg?: boolean}`, `stop`, `snapshot`. The snapshot carries `tiles` (keyed by
 peer id) and `tileOrder`; each tile reports its coarse `status`
-(`discovered` | `connecting` | `streaming` | `reconnecting` | `lost` | `off`)
+(`discovered` | `connecting` | `streaming` | `reconnecting` | `lost` | `failed` | `off`)
 next to the library's own words (`supervisorState`, `lifecycleCause`,
-lifecycle lines, typed error codes). Battery subscribes to notifications
+lifecycle lines, typed error codes). The tile retains the precise configuration
+failure when a supervisor stops with an error; successful recovery clears it.
+Cleanup events include the complete structured receipt rather than only its state.
+Battery subscribes to notifications
 where the library allows them and falls back to a periodic read where the
 subscription is refused (`tile-battery-poll` announces the fallback with the
 refusal code). Snapshot publishes stay throttled (250 ms) and the ECG ring
@@ -451,10 +577,34 @@ to expect. They are not hardware evidence.
 | `restoration` (`start` / `reconnect` / `restored`)         | runs: associate, `presence.observe`, then `peers.restored` and a `when-available` reconnect with no scan | runs: `restoration.claim()`, then `peers.restored` and a direct reconnect with no scan                               | `capability.unsupported`: no background relaunch or presence wake; `restored` reports the owner's own answer | `capability.unsupported`: no OS restoration journal for a terminated app and no presence wake                                                                                                                                      |
 | `restoration` (`observe-presence` / `unobserve-presence`)  | runs: arms `presence.observe` for the known peer id                                                      | `capability.unsupported` from the owner: Apple restores through `willRestoreState` and there is nothing to arm       | no presence API (`scenario.presence-unavailable`); arm presence from an Expo/RN host                         | no presence API (`scenario.presence-unavailable`); arm presence from an Expo/RN host                                                                                                                                               |
 
+On Android, `restoration associate {"name":"SIM Polar H10 0001"}` opens the
+actual system consent chooser for that exact supplied name (no wildcard or
+hardcoded strap). It leaves existing associations untouched. The chooser wait is
+given a 60-second deadline; cancellation and platform refusal propagate unchanged.
+Android may suspend JS timers while its chooser covers the app. An accepted
+result arriving after the elapsed deadline still reports the actual association
+and includes `timing: {state: "deadline-expired", budgetMs, elapsedMs,
+followUp: "caller-decides"}`. It never claims the deadline cancelled OS work.
+Manager cleanup is explicit and a failed release remains owned for retry via
+`restoration stop`. Late system acceptance is reported, not undone or hidden;
+the caller decides whether to keep or explicitly remove the association.
+Then arm `restoration observe-presence` using the returned exact peer ID.
+Association, presence observe/unobserve, and restored-peer queries are one-shot
+commands: their temporary manager is released before success returns. Observation
+itself remains owned by the platform until `unobserve-presence`; no intervening
+`stop` is required. Failed temporary-manager cleanup remains retryable via `stop`.
+`continuation backlog` retains the owner's stream-end reasons/counters,
+`afterCutoffLoss`, durable recording reference and disposal failure separately.
+It summarizes sensor values without logging their bytes; zero journal loss does
+not imply zero volatile handoff loss or uninterrupted peripheral sampling.
+Remote-driver qualification uses a custom native Debug app; Release intentionally
+disables that development control surface. Label evidence accordingly.
+
 After iOS relaunch, run `restoration restored`, then pass a returned peer's
 `reference` to `restoration reconnect` as `peerReference` with `intent: "direct"`.
-For Android's presence path, pass its known `peerId` with explicit
-`intent: "when-available"`. The driver supports both inputs; the physical iOS
+For Android's presence path, likewise pass the returned durable `reference` as
+`peerReference`, with explicit `intent: "when-available"`. This command creates a
+fresh manager and rejects manager-local `peerId` strings; the physical iOS
 fresh-manager direct-reconnect qualification remains open.
 
 On Apple TV (`platform: tvos`) every scenario runs the same code as on the
@@ -470,18 +620,19 @@ check.
 ## Tests and type checks
 
 ```sh
-node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test \
-  'examples-shared/driver/__tests__/*.test.mjs' 'examples-shared/driver/server/__tests__/*.test.mjs' \
-  'example-node/__tests__/*.test.mjs' 'example-electron/driver/__tests__/*.test.mjs' 'example-tauri/__tests__/*.test.mjs'
-pnpm --dir example-expo test:driver                    # shared + server + Expo adapter tests
+pnpm --dir example-expo test:driver # shared + server + Node + Tauri + Electron + Expo tests
 
-pnpm exec tsc -p examples-shared/driver/tsconfig.json
-pnpm exec tsc -p example-node/tsconfig.json
-pnpm exec tsc --noEmit -p example-web/tsconfig.json
-pnpm exec tsc -p example-tauri/tsconfig.json
-pnpm exec tsc -p example-electron/driver/tsconfig.json
-pnpm --dir example-expo exec tsc --noEmit
+pnpm typecheck:references        # after prepack: shared, Node, web, Tauri, Electron
+pnpm typecheck:references:expo   # after the separate Expo dependency install
 ```
+
+Linux Node22 package CI and clean preflight reuse the root reference command
+after building public package imports. Expo has a separate dependency tree, so
+its canonical command runs in the existing Expo CI/Android-preflight lane after
+install and SDK alignment. `preflight.sh --fast` (or missing Android SDK/JDK)
+skips that Expo typecheck with the Android lane; it is not all-host typecheck proof.
+Both gates also run the canonical `test:driver` suite, including Tauri and
+Electron behavior regressions; the command owns the test globs in one place.
 
 The shared tests cover the protocol, the registry and scenario core, the remote
 channel, Polar PMD parsing, the scenarios against a recording manager double,

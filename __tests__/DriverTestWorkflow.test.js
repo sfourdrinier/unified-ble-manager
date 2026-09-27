@@ -5,6 +5,48 @@ const YAML = require('yaml')
 const root = path.resolve(__dirname, '..')
 const read = file => fs.readFileSync(path.join(root, file), 'utf8')
 const driverCommand = 'pnpm --dir example-expo test:driver'
+const referenceCommand = 'pnpm typecheck:references'
+const expoReferenceCommand = 'pnpm typecheck:references:expo'
+
+test('one canonical reference typecheck covers every root-installed host after prepack in CI and clean preflight', () => {
+  const scripts = JSON.parse(read('package.json')).scripts
+  const configs = ['examples-shared/driver', 'example-node', 'example-web', 'example-tauri', 'example-electron/driver']
+  expect(scripts['typecheck:references'].split(' && ')).toEqual(
+    configs.map(directory => `tsc --noEmit -p ${directory}/tsconfig.json`)
+  )
+  const steps = YAML.parse(read('.github/workflows/ci.yml')).jobs.package.steps
+  const checks = steps.filter(step => step.run === referenceCommand)
+  expect(checks).toHaveLength(1)
+  expect(checks[0].if).toBe("runner.os == 'Linux' && matrix.node == '22'")
+  expect(steps.indexOf(checks[0])).toBeGreaterThan(steps.findIndex(step => step.run === 'pnpm prepack'))
+  const preflight = read('scripts/ci/preflight.sh')
+  const body = preflight.slice(preflight.indexOf('run_package()'), preflight.indexOf('run_tauri()'))
+  expect(body.split(referenceCommand)).toHaveLength(2)
+  expect(body.indexOf(referenceCommand)).toBeGreaterThan(body.indexOf('pnpm prepack'))
+  expect(body).not.toContain('example-expo install')
+  for (const config of configs) expect(body).not.toContain(`${config}/tsconfig.json`)
+})
+
+test('Expo reference check stays mandatory after its separate dependency install in CI and preflight', () => {
+  const scripts = JSON.parse(read('package.json')).scripts
+  expect(scripts['typecheck:references:expo']).toBe('pnpm --dir example-expo exec tsc --noEmit -p tsconfig.json')
+  const jobs = Object.values(YAML.parse(read('.github/workflows/ci.yml')).jobs)
+  const job = jobs.find(candidate => candidate.steps?.some(step => step.run === expoReferenceCommand))
+  expect(job).toBeDefined()
+  const index = job.steps.findIndex(step => step.run === expoReferenceCommand)
+  expect(index).toBeGreaterThan(
+    job.steps.findIndex(step => step.run === 'pnpm --dir example-expo install --no-frozen-lockfile')
+  )
+  expect(index).toBeGreaterThan(job.steps.findIndex(step => step.run === 'npx expo install --fix'))
+  const preflight = read('scripts/ci/preflight.sh')
+  const body = preflight.slice(preflight.indexOf('run_android()'))
+  expect(body.split(expoReferenceCommand)).toHaveLength(2)
+  expect(body.indexOf(expoReferenceCommand)).toBeGreaterThan(body.indexOf('npx expo install --fix'))
+  expect(preflight).toContain('skipped (--fast; includes Expo reference typecheck)')
+  expect(preflight).toContain('skipped (no Android SDK or JDK; includes Expo reference typecheck)')
+  expect(read('examples-shared/driver/README.md')).toContain(referenceCommand)
+  expect(read('examples-shared/driver/README.md')).toContain(expoReferenceCommand)
+})
 
 test('Linux Node22 package CI runs the canonical cross-host driver suite after building public imports', () => {
   const workflow = YAML.parse(read('.github/workflows/ci.yml'))
@@ -31,6 +73,9 @@ test('clean preflight reuses the same driver command after prepack without copyi
   for (const directory of [
     '../examples-shared/driver/__tests__',
     '../examples-shared/driver/server/__tests__',
+    '../example-node/__tests__',
+    '../example-tauri/__tests__',
+    '../example-electron/driver/__tests__',
     'src/driver/__tests__'
   ]) {
     expect(scripts['test:driver']).toContain(`${directory}/*.test.mjs`)

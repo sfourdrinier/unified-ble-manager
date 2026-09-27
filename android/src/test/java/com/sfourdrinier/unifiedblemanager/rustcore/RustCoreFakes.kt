@@ -8,6 +8,10 @@ import java.util.concurrent.Executor
 
 /** Records every call the adapter/session layer makes into Rust, in order. */
 class FakeCore : MobileCorePort {
+  var recordingConfigure: (String) -> String = { "{\"ok\":true,\"value\":null}" }
+  var recordingControl: (String, String, String, Int, Int) -> String = { _, _, _, _, _ -> "{\"ok\":true,\"value\":null}" }
+  override fun continuationConfigureRecordingDirectory(path: String) = recordingConfigure(path)
+  override fun continuationRecordingControl(operation: String, id: String, token: String, maxItems: Int, maxBytes: Int) = recordingControl(operation, id, token, maxItems, maxBytes)
   val calls = mutableListOf<String>()
   var status = MobileCoreBridge.STATUS_DELIVERED
   var ingressStatus = MobileCoreBridge.STATUS_ACCEPTED

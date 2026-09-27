@@ -123,12 +123,23 @@ function install(tarball, pm) {
   fs.writeFileSync(path.join(consumer, 'package.json'), JSON.stringify(cleanConsumerPackageJson(), null, 2))
   const args =
     pm === 'npm'
-      ? ['install', '--ignore-scripts', '--omit=optional', '--omit=peer', '--no-audit', '--no-fund', '--offline', tarball]
+      ? [
+          'install',
+          '--ignore-scripts',
+          '--omit=optional',
+          '--omit=peer',
+          '--no-audit',
+          '--no-fund',
+          '--offline',
+          tarball
+        ]
       : ['add', '--ignore-scripts', '--offline', tarball]
   const binary = process.platform === 'win32' ? `${pm}.cmd` : pm
   const result = run(binary, args, { cwd: consumer, env: cleanEnvironment(), shell: process.platform === 'win32' })
   if (result.status !== 0) {
-    fail(`${pm} ${args.join(' ')} exited ${result.status} (offline install from the local cache)\n${result.stderr.slice(-3000)}`)
+    fail(
+      `${pm} ${args.join(' ')} exited ${result.status} (offline install from the local cache)\n${result.stderr.slice(-3000)}`
+    )
   }
   const packageRoot = path.join(consumer, 'node_modules', 'unified-ble-manager')
   if (!fs.existsSync(path.join(packageRoot, 'package.json'))) fail(`install produced no ${packageRoot}`)
@@ -173,7 +184,7 @@ async function probe(load) {
     await central.connect({ peerId: 'peer-1', lease: 'lease-1', timeoutMs: 5000 });
     await central.stageServices('peer-1', [{ uuid: HRM, occurrence: 0, characteristics: [{ uuid: HRM_MEASUREMENT, occurrence: 0, properties: { read: true, write: false, writeWithoutResponse: false, notify: true, indicate: false }, descriptors: [] }] }]);
     await central.discover({ peerId: 'peer-1', lease: 'lease-1' });
-    await central.subscribe({ peerId: 'peer-1', selector, consumer: 'app', timeoutMs: 5000 });
+    await central.subscribe({ peerId: 'peer-1', lease: 'lease-1', selector, consumer: 'app', timeoutMs: 5000 });
     await central.stageNotification({ peerId: 'peer-1', serviceUuid: HRM, characteristicUuid: HRM_MEASUREMENT, value: Buffer.from([6, 64]) });
     let value = null;
     for (let attempt = 0; attempt < 400 && value === null; attempt += 1) { const poll = await central.pollNotification({ peerId: 'peer-1', selector, consumer: 'app' }); if (poll.kind === 'value') value = poll.value; else await pause(); }
@@ -245,7 +256,10 @@ function runProbe(consumer, file, extraEnvironment = {}) {
 
 function prebuildPaths(packageRoot) {
   const directory = path.join(packageRoot, 'native', 'desktop-core', 'prebuilds', `${process.platform}-${process.arch}`)
-  return { addon: path.join(directory, 'ubm_desktop_core.node'), sidecar: path.join(directory, 'ubm_desktop_core.identity.json') }
+  return {
+    addon: path.join(directory, 'ubm_desktop_core.node'),
+    sidecar: path.join(directory, 'ubm_desktop_core.identity.json')
+  }
 }
 
 function acceptPositive(outcome, mode, facts) {
@@ -266,7 +280,8 @@ function negativeLeg(tarball, pm, name, mutate, expected, environment = {}) {
 
 function debugAddonForNegative() {
   const debug = path.join(repoRoot, 'bindings', 'napi', `ubm_echo.${process.platform}-${process.arch}.node`)
-  if (!fs.existsSync(debug)) fail(`the debug-identity leg needs a checkout debug build at ${debug} (node scripts/ci/build-napi-addon.js)`)
+  if (!fs.existsSync(debug))
+    fail(`the debug-identity leg needs a checkout debug build at ${debug} (node scripts/ci/build-napi-addon.js)`)
   return debug
 }
 
@@ -310,7 +325,13 @@ function main(argv) {
       outcome.failure.code === code &&
       (platformCode === null || outcome.failure.platformCode === platformCode)
     receipt.negative.push(
-      negativeLeg(tarball, options.pm, 'addon deleted', root => fs.rmSync(prebuildPaths(root).addon), failed('capability.unavailable', 'no-prebuilt-for-target')),
+      negativeLeg(
+        tarball,
+        options.pm,
+        'addon deleted',
+        root => fs.rmSync(prebuildPaths(root).addon),
+        failed('capability.unavailable', 'no-prebuilt-for-target')
+      ),
       negativeLeg(
         tarball,
         options.pm,
@@ -338,23 +359,38 @@ function main(argv) {
           const paths = prebuildPaths(root)
           const debug = debugAddonForNegative()
           fs.copyFileSync(debug, paths.addon)
-          const probe = run(process.execPath, ['-e', 'process.stdout.write(require(process.argv[1]).nativeBuildIdentity())', paths.addon], {})
+          const probe = run(
+            process.execPath,
+            ['-e', 'process.stdout.write(require(process.argv[1]).nativeBuildIdentity())', paths.addon],
+            {}
+          )
           const record = JSON.parse(fs.readFileSync(paths.sidecar, 'utf8'))
-          fs.writeFileSync(paths.sidecar, JSON.stringify({ ...record, sha256: sha256File(paths.addon), identity: probe.stdout }))
+          fs.writeFileSync(
+            paths.sidecar,
+            JSON.stringify({ ...record, sha256: sha256File(paths.addon), identity: probe.stdout })
+          )
         },
         outcome =>
           outcome.outcome === 'failed' &&
           outcome.failure.code === 'protocol.incompatible' &&
           outcome.failure.operation === `${facts.prefix}.native-boundary.version`
       ),
-      negativeLeg(tarball, options.pm, 'relative UBM_NAPI_ADDON', () => undefined, failed('argument.invalid', 'argument-invalid'), {
-        UBM_NAPI_ADDON: 'relative/ubm_desktop_core.node'
-      }),
+      negativeLeg(
+        tarball,
+        options.pm,
+        'relative UBM_NAPI_ADDON',
+        () => undefined,
+        failed('argument.invalid', 'argument-invalid'),
+        {
+          UBM_NAPI_ADDON: 'relative/ubm_desktop_core.node'
+        }
+      ),
       (() => {
         const { consumer: legacyConsumer, packageRoot: legacyRoot } = install(tarball, options.pm)
         for (const backend of ['corebluetooth', 'winrt']) {
           const legacy = path.join(legacyRoot, 'native', 'electron', backend, 'index.js')
-          if (fs.existsSync(legacy)) fs.writeFileSync(legacy, "throw new Error('legacy loader must never be reached')\n")
+          if (fs.existsSync(legacy))
+            fs.writeFileSync(legacy, "throw new Error('legacy loader must never be reached')\n")
         }
         writeProbes(legacyConsumer, legacyRoot, 'identity')
         const outcome = runProbe(legacyConsumer, 'probe.cjs')

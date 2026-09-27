@@ -52,6 +52,8 @@ describe('Native Protocol executable CI gates', () => {
     expect(script).toContain("'swiftc'")
     expect(script).toContain('AppleCoreBluetoothScanParserHarness.swift')
     expect(script).toContain('AppleCoreBluetoothReadNotifyProvenanceHarness.swift')
+    expect(script).toContain("'--test'")
+    expect(script).toContain('example-expo/src/driver/__tests__/native-continuation-apple.test.mjs')
     expect(script).toContain('No physical BLE radio or peripheral behavior was exercised.')
   })
 

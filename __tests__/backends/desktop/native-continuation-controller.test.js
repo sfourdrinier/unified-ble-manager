@@ -1,4 +1,8 @@
-const { createNativeContinuationController } = require('../../../src/backends/desktop/native-continuation-controller')
+const {
+  createNativeContinuationController,
+  createNativeContinuationControl,
+  createNativeContinuationControlAccess
+} = require('../../../src/backends/desktop/native-continuation-controller')
 
 const peer = '9828347e-45df-2eeb-e928-6e443f4065e3'
 const selector = {
@@ -50,6 +54,72 @@ class Central {
   }
 }
 
+test('internal raw access preserves envelopes and does not acknowledge a prepared claim', async () => {
+  const central = new Central()
+  const access = createNativeContinuationControlAccess(central)
+  expect(JSON.parse(await access.prepareClaim(7, 4096))).toEqual({ ok: true, value: claim() })
+  expect(central.calls).toEqual([['prepare', 7, 4096]])
+  expect(JSON.parse(await access.acknowledgeClaim('claim-1')).ok).toBe(true)
+  expect(central.calls[1]).toEqual(['ack', 'claim-1'])
+})
+
+test('transport-only controller preserves public bytes and receiver without storage path or central methods', async () => {
+  const central = new Central()
+  const access = {
+    central,
+    execute(peerId, declarationJson) {
+      return this.central.continuationExecute(peerId, declarationJson)
+    },
+    describeBacklog() {
+      return this.central.continuationDescribeBacklog()
+    },
+    prepareClaim(items, bytes) {
+      return this.central.continuationPrepareClaim(items, bytes)
+    },
+    acknowledgeClaim(token) {
+      return this.central.continuationAcknowledgeClaim(token)
+    }
+  }
+  const control = createNativeContinuationControl(access)
+  expect(Object.keys(control).sort()).toEqual(['claim', 'execute', 'status'])
+  expect(await control.execute(declaration)).toMatchObject({ peerAddress: peer, resubscribed: 1 })
+  expect(await control.status()).toMatchObject({ queuedData: 1 })
+  central.prepared.batches = ['malformed']
+  await expect(control.claim()).rejects.toMatchObject({ code: 'protocol.malformed' })
+  expect(central.calls.filter(call => call[0] === 'ack')).toHaveLength(0)
+  central.prepared = claim()
+  access.prepareClaim = async () => {
+    throw new Error('transport lost before payload')
+  }
+  await expect(control.claim()).rejects.toMatchObject({ code: 'platform.failure' })
+  expect(central.calls.filter(call => call[0] === 'ack')).toHaveLength(0)
+  access.prepareClaim = (items, bytes) => central.continuationPrepareClaim(items, bytes)
+  central.ackError = new Error('uncertain ACK')
+  const retained = await control.claim()
+  expect(retained.values[0].value).toBeInstanceOf(Uint8Array)
+  expect([...retained.values[0].value]).toEqual([0, 72])
+  expect(retained.disposed).toBe(false)
+  expect(retained.disposeFailure).toMatch(/uncertain/)
+  central.ackError = null
+  const replay = await control.claim()
+  expect([...replay.values[0].value]).toEqual([0, 72])
+  expect(replay.disposed).toBe(true)
+  expect(central.calls.filter(call => call[0] === 'ack')).toEqual([
+    ['ack', 'claim-1'],
+    ['ack', 'claim-1']
+  ])
+})
+
+test('renderer exports provide codec controls without trusted path configuration', () => {
+  for (const entrypoint of ['../../../src/electron-renderer', '../../../src/tauri']) {
+    const host = require(entrypoint)
+    expect(host.createNativeContinuationControl).toBe(createNativeContinuationControl)
+    expect(typeof host.createNativeContinuationRecordingController).toBe('function')
+    expect(host.createNativeContinuationController).toBeUndefined()
+    expect(host.loadDesktopCoreBinding).toBeUndefined()
+  }
+})
+
 test('uses the existing receiver-dependent central without opening or closing a radio', async () => {
   const central = new Central()
   const controller = createNativeContinuationController(central)
@@ -67,6 +137,24 @@ test('uses the existing receiver-dependent central without opening or closing a 
   expect(backlog.disposed).toBe(true)
   expect(backlog.afterCutoffLoss).toEqual({ items: 2, bytes: 4 })
   expect(central.calls).toHaveLength(4)
+})
+
+test('configures live recording storage on the same owned native engine', async () => {
+  const central = new Central()
+  central.continuationConfigureRecordingDirectory = async function (directory) {
+    this.calls.push(['recording-directory', directory])
+    return ok({ state: 'configured', encrypted: false })
+  }
+  central.continuationRecordingStore = function () {
+    this.calls.push(['recording-store'])
+    return { prepare: async () => ok({ token: null, records: [], bytes: 0, more: false }) }
+  }
+  const controller = createNativeContinuationController(central)
+  const recordings = await controller.recordings('/private/app/recordings')
+  await recordings.prepare('h10', { maxItems: 10, maxBytes: 4096 })
+  expect(central.calls).toEqual([['recording-directory', '/private/app/recordings'], ['recording-store']])
+  central.continuationConfigureRecordingDirectory = async () => ok({ state: 'configured', encrypted: true })
+  await expect(controller.recordings('/private/app/recordings')).rejects.toMatchObject({ code: 'protocol.malformed' })
 })
 
 test('the published Node recorder recipe executes, returns positive values and closes its one central', async () => {
@@ -130,10 +218,29 @@ test('preserves BlueZ adapter-scoped identities and rejects case-aliased outcome
   expect(central.calls[0]).toEqual(['execute', bluez, { ...declaration, peerId: bluez }])
   central.continuationExecute = async peerId =>
     ok({ event: 'continuation.completed', strategy: 'native', peerAddress: peerId.toUpperCase(), resubscribed: 1 })
-  await expect(controller.execute({ ...declaration, peerId: bluez })).rejects.toMatchObject({ code: 'protocol.malformed' })
+  await expect(controller.execute({ ...declaration, peerId: bluez })).rejects.toMatchObject({
+    code: 'protocol.malformed'
+  })
   for (const peerId of ['', 'x'.repeat(1025), ' hci1/dev_AA_BB_CC_DD_EE_FF', 'hci1/dev_AA\nBB']) {
     await expect(controller.execute({ ...declaration, peerId })).rejects.toMatchObject({ code: 'argument.invalid' })
   }
+})
+
+test('requires a link result for exactly the declared negotiation', async () => {
+  const central = new Central()
+  const controller = createNativeContinuationController(central)
+  const link = { mtu: { requested: 512, timeoutMs: 10000, onUnsupported: 'continue' } }
+  await expect(controller.execute({ ...declaration, link })).rejects.toMatchObject({ code: 'protocol.malformed' })
+  central.continuationExecute = async peerAddress =>
+    ok({
+      event: 'continuation.completed',
+      strategy: 'native',
+      peerAddress,
+      resubscribed: 1,
+      link: { mtu: { requested: 247, outcome: 'negotiated', mtu: 247 } }
+    })
+  await expect(controller.execute({ ...declaration, link })).rejects.toMatchObject({ code: 'protocol.malformed' })
+  await expect(controller.execute(declaration)).rejects.toMatchObject({ code: 'protocol.malformed' })
 })
 
 test('rejects malformed envelopes and retains the native failure identity and retryability', async () => {

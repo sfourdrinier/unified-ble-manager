@@ -168,6 +168,63 @@ async function bootstrap(current, sender) {
   return response.bootstrap
 }
 
+test('peer directories cross authenticated Electron IPC without acquiring a connection lease', async () => {
+  const reference = { version: 1, backendId: 'corebluetooth', scope: 'system', opaqueId: 'os-connected' }
+  const peer = {
+    peerId: 'os-connected',
+    reference,
+    name: 'OS connected',
+    rssi: null,
+    source: 'system-connected',
+    state: { reachability: 'reachable', connection: 'connected', bond: 'unknown', lastSeenAtMonotonicMs: null }
+  }
+  const connected = jest.fn(async () => [peer])
+  const resolve = jest.fn(async () => peer)
+  const connect = jest.fn()
+  const current = createMainFixture({ connect, monotonicNow: () => performance.now() })
+  current.manager.attachedBackend.backend = { peers: { connected, resolve } }
+  const sender = createSender('directory', 'directory-window', 'directory-session')
+  const manager = await createElectronRendererBleManager({
+    transport: {
+      invoke: request => current.port.handler({ sender }, request),
+      subscribe: () => () => undefined,
+      acknowledge: async () => ({ kind: 'event.ack' })
+    }
+  })
+  await expect(manager.peers.connected({ services: ['180d'], timeoutMs: 1000 })).resolves.toMatchObject([
+    { id: 'os-connected', reference, state: { connection: 'connected', lastSeenAtMonotonicMs: null } }
+  ])
+  expect(connected.mock.calls[0][0]).toMatchObject({
+    services: ['0000180d-0000-1000-8000-00805f9b34fb'],
+    signal: expect.any(AbortSignal),
+    deadline: expect.any(Number)
+  })
+  await expect(manager.peers.resolve(reference)).resolves.toMatchObject({ id: 'os-connected' })
+  expect(resolve.mock.calls[0][0]).toEqual(reference)
+  expect(connect).not.toHaveBeenCalled()
+  await manager.destroy()
+})
+
+test('directory IPC refuses a stolen renderer lease before OS lookup and preserves unsupported', async () => {
+  const connected = jest.fn(async () => {
+    throw contractError('capability.unsupported', 'connection', 'os.connected.service-filter-required')
+  })
+  const current = createMainFixture({ monotonicNow: () => 1000 })
+  current.manager.attachedBackend.backend = { peers: { connected } }
+  const owner = createSender('directory-owner', 'owner-window', 'owner-session')
+  const other = createSender('directory-other', 'other-window', 'other-session')
+  const admitted = await bootstrap(current, owner)
+  const envelope = routeEnvelope(current, admitted, 1, 'peers.connected', { query: {}, budgetMs: 500 })
+  const refused = await current.port.handler({ sender: other }, envelope)
+  expect(refused.kind).toBe('failure')
+  expect(connected).not.toHaveBeenCalled()
+  const result = await current.port.handler({ sender: owner }, envelope)
+  expect(result).toMatchObject({
+    kind: 'failure',
+    error: { code: 'capability.unsupported', operation: 'os.connected.service-filter-required' }
+  })
+})
+
 test('renderer observes the main-side effective MTU like the Tauri route', async () => {
   const effectiveMtu = jest.fn(async () => ({ attMtu: 185, payloadBytes: 182, platformPduBytes: null }))
   const connection = {

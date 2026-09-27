@@ -83,6 +83,7 @@ import type {
 import {
   BackendContractError,
   contractError,
+  serializeNormalizedError,
   type CleanupFailure,
   type CleanupRecord,
   type NormalizedBleError
@@ -408,7 +409,14 @@ async function openBackend(
       options.platform,
       session,
       options.now,
-      options.runtime,
+      {
+        ...options.runtime,
+        continuationBindingAvailable:
+          typeof binding.declareBackgroundContinuation === 'function' &&
+          typeof binding.continuationStatus === 'function' &&
+          typeof binding.prepareContinuationClaim === 'function' &&
+          typeof binding.acknowledgeContinuationClaim === 'function'
+      },
       state,
       options.trace ?? null,
       leaseId => releaseBackgroundThroughModule(binding, `${options.owner}/${ownerId}/background`, leaseId),
@@ -720,16 +728,28 @@ interface ScanConsumer {
   ingressDropped: number
 }
 
-interface ScanGroup {
+interface PendingScanStart {
+  readonly startOperationId: string
+  readonly delivery: ScanDelivery
+  observedMembership: string | null
+  terminal: Extract<WireDrainRecord, { t: 'scan-end' }> | null
+  ambiguous: boolean
+}
+
+interface ScanDelivery {
+  readonly scanSessionId: ScanSessionId<string, string>
+  readonly consumers: Map<string, ScanConsumer>
+}
+
+interface ScanGroup extends ScanDelivery {
   /** The owner's membership id (`s{n}-scan-{k}`), retained until release is confirmed. */
   readonly membership: string
-  readonly scanSessionId: ScanSessionId<string, string>
+  readonly startOperationId: string
   readonly ownerLeaseId: LeaseId<string, string>
   readonly shareToken: ScanShareToken<string, string> | null
-  readonly consumers: Map<string, ScanConsumer>
+  nativeReleaseConfirmed: boolean
   state: 'active' | 'stopping' | 'release-failed' | 'released'
   stopping: Promise<CleanupRecord> | null
-  deadlineTimer: ReturnType<typeof setTimeout> | null
   removeAbort: (() => void) | null
 }
 
@@ -804,6 +824,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private readonly peerIdsByNativeId = new Map<string, PeerId<string>>()
   private readonly nativeIdsByPeerId = new Map<string, string>()
   private readonly scanGroups = new Map<string, ScanGroup>()
+  private pendingScanStart: PendingScanStart | null = null
   private readonly connectionsByKey = new Map<string, ConnectionEntry>()
   private readonly connectionsByLink = new Map<string, ConnectionEntry>()
   /**
@@ -1184,6 +1205,9 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
 
   /** Ends every JS-side stream and forgets the handles (the owner released their resources). */
   private retireLocalState(reason: CoreStreamTerminalReason, error: NormalizedBleError | null = null): void {
+    for (const consumer of this.pendingScanStart?.delivery.consumers.values() ?? []) {
+      consumer.stream.closeWithReason(reason, error)
+    }
     for (const group of this.scanGroups.values()) this.endScanGroup(group, reason, error)
     this.scanGroups.clear()
     for (const entry of this.subscriptions.values()) {
@@ -1215,7 +1239,13 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       dispatchedOperations: this.tracedInFlight,
       quarantinedOperations: 0
     })
-    for (const group of this.scanGroups.values()) this.endScanGroup(group, 'source-failed', normalized)
+    for (const group of this.scanGroups.values()) {
+      this.endScanDelivery(group, 'source-failed', normalized)
+      if (!group.nativeReleaseConfirmed) group.state = 'release-failed'
+    }
+    for (const consumer of this.pendingScanStart?.delivery.consumers.values() ?? []) {
+      consumer.stream.closeWithReason('source-failed', normalized)
+    }
     for (const entry of this.subscriptions.values()) entry.stream.closeWithReason('source-failed', normalized)
     for (const watch of [...this.adapterWatches]) watch.closeWithReason('source-failed', normalized)
     for (const stream of [...this.eventStreams]) stream.closeWithReason('source-failed', normalized)
@@ -1328,9 +1358,14 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     }
   }
 
+  private *scanDeliveries() {
+    yield* this.scanGroups.values()
+    if (this.pendingScanStart !== null) yield this.pendingScanStart.delivery
+  }
+
   private retainedJsBytes(): number {
     let bytes = 0
-    for (const group of this.scanGroups.values()) {
+    for (const group of this.scanDeliveries()) {
       for (const consumer of group.consumers.values()) bytes += consumer.stream.retainedPayloadBytes()
     }
     for (const entry of this.subscriptions.values()) bytes += entry.stream.retainedPayloadBytes()
@@ -1628,6 +1663,10 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       name: record.name,
       rssi: record.rssi,
       source: record.source,
+      // This session remains attached to one MobileHost elapsed-time clock.
+      // Scope conservatively to this backend instance: never compare native
+      // timestamps with JavaScript time or another backend's clock epoch.
+      clockScope: `react-native-native-clock:${String(this.backendInstanceId)}`,
       state: Object.freeze({
         reachability: record.reachability,
         connection: record.connection,
@@ -1780,6 +1819,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   ): Promise<ScanLease<string, string>> {
     const operation = `${SCOPE}.scan.start`
     this.assertOperational(operation)
+    if (this.pendingScanStart !== null) throw contractError('scan.already-active', 'scan', operation)
     // Finding 185: a stop that failed keeps its membership for retry
     // (PR210-09), but nothing ever retried it — every later start then
     // failed scan.already-active until the process died. A start heals
@@ -1805,42 +1845,68 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       throw contractError('capability.unsupported', 'scan', `${operation}.device-addresses`)
     }
     const operationId = this.mintOperationId('scan')
+    if (this.pendingScanStart !== null) throw contractError('scan.already-active', 'scan', operation)
+    const budget = this.budget(options, operation)
     const args: WireJsonObject = {
       serviceUuids: nativeFilter.serviceUuids.map(uuid => String(uuid)),
       duplicatePolicy: 'all',
       operationId,
       ...(deviceAddresses.length === 0 ? {} : { deviceAddresses }),
       ...this.scanPlatformArgs(options, operation),
-      ...this.budget(options, operation)
+      ...budget,
+      ...(budget.budgetMs === undefined ? {} : { lifetimeMs: budget.budgetMs })
     }
+    const ordinal = this.nextScan
+    this.nextScan += 1
+    const delivery: ScanDelivery = {
+      scanSessionId: this.identifiers.scanSessionId(`${resourcePrefixFor(this.platform)}-scan-session-${ordinal}`),
+      consumers: new Map()
+    }
+    const ownerLeaseId = this.identifiers.leaseId(`${resourcePrefixFor(this.platform)}-scan-lease-${ordinal}`)
+    const owner = this.addScanConsumer(delivery, ownerLeaseId, options)
+    const pending: PendingScanStart = {
+      startOperationId: operationId,
+      delivery,
+      observedMembership: null,
+      terminal: null,
+      ambiguous: false
+    }
+    this.pendingScanStart = pending
     const removeAbort = this.watchAbort(options.signal, operationId, operation)
     let membership: string
     try {
       membership = (await this.invoke('scan.start', args)).operationId
     } catch (error) {
+      this.pendingScanStart = null
+      owner.stream.closeWithReason('source-failed', normalizedFrom(error, operation))
+      if (pending.terminal !== null) this.reportUnmatchedScanEnd(pending.terminal)
       throw this.describeScanRefusal(error, operation)
     } finally {
       removeAbort()
     }
-    const ordinal = this.nextScan
-    this.nextScan += 1
     const group: ScanGroup = {
+      ...delivery,
       membership,
-      scanSessionId: this.identifiers.scanSessionId(`${resourcePrefixFor(this.platform)}-scan-session-${ordinal}`),
-      ownerLeaseId: this.identifiers.leaseId(`${resourcePrefixFor(this.platform)}-scan-lease-${ordinal}`),
+      startOperationId: operationId,
+      ownerLeaseId,
       shareToken: options.sharing.allowSharing
         ? this.identifiers.scanShareToken(`${resourcePrefixFor(this.platform)}-scan-share-${ordinal}`)
         : null,
-      consumers: new Map(),
+      nativeReleaseConfirmed: false,
       state: 'active',
       stopping: null,
-      deadlineTimer: null,
       removeAbort: null
     }
-    const owner = this.addScanConsumer(group, group.ownerLeaseId, options)
     this.scanGroups.set(membership, group)
-    // The caller's scan duration ends the scan like its abort (legacy rule);
-    // `budgetMs` above bounded only the start.
+    this.pendingScanStart = null
+    if (pending.ambiguous || (pending.observedMembership !== null && pending.observedMembership !== membership)) {
+      const cleanup = await this.stopScanGroup(group)
+      if (cleanup.state !== 'released') this.reportScanCleanup(group, cleanup)
+      throw contractError('protocol.violation', 'scan', `${operation}.early-terminal-ambiguity`)
+    }
+    if (pending.terminal !== null) this.onScanEnd(pending.terminal)
+    // Native lifetime owns duration even while JS timers are suspended.
+    // The signal still requests explicit membership release.
     const end = (): void => {
       this.stopScanGroup(group).then(
         cleanup => {
@@ -1853,16 +1919,13 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
           })
       )
     }
-    if (options.signal !== null) {
+    if (options.signal !== null && group.state === 'active') {
       if (options.signal.aborted) end()
       else {
         const signal = options.signal
         signal.addEventListener('abort', end, { once: true })
         group.removeAbort = () => signal.removeEventListener('abort', end)
       }
-    }
-    if (options.deadline !== null && group.state === 'active') {
-      group.deadlineTimer = setTimeout(end, Math.max(0, Number(options.deadline) - this.now()))
     }
     await this.refreshCounters()
     return this.scanLease(group, owner)
@@ -1908,7 +1971,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   }
 
   private addScanConsumer(
-    group: ScanGroup,
+    group: ScanDelivery,
     leaseId: LeaseId<string, string>,
     options: OwnerScanOptions<string, string>
   ): ScanConsumer {
@@ -1986,7 +2049,27 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       } catch (error) {
         record = { state: 'release-failed', failures: [cleanupFailure('scan', error, `${SCOPE}.scan.stop`)] }
       }
+      if (group.nativeReleaseConfirmed) {
+        // Native scan-end can settle this exact membership while stop waits.
+        // Keep a later refusal as history, never resurrect released ownership.
+        if (record.state !== 'released') {
+          this.emitEvent({
+            kind: 'diagnostic-warning',
+            code: 'scan-stop-after-native-end',
+            message: 'Scan stop reported failure after this membership was confirmed released',
+            detail: Object.freeze({
+              scanSessionId: String(group.scanSessionId),
+              failures: record.failures.map(failure => ({
+                resourceKind: failure.resourceKind,
+                error: serializeNormalizedError(failure.error)
+              }))
+            })
+          })
+        }
+        return RELEASED
+      }
       if (record.state === 'released') {
+        group.nativeReleaseConfirmed = true
         group.state = 'released'
         this.scanGroups.delete(group.membership)
         await this.refreshCounters()
@@ -2008,24 +2091,23 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   }
 
   private suspendScanGroup(group: ScanGroup): void {
-    if (group.deadlineTimer !== null) {
-      clearTimeout(group.deadlineTimer)
-      group.deadlineTimer = null
-    }
     group.removeAbort?.()
     group.removeAbort = null
     for (const consumer of group.consumers.values()) consumer.stream.closeWithReason('owner-released')
   }
 
   private endScanGroup(group: ScanGroup, reason: CoreStreamTerminalReason, error: NormalizedBleError | null): void {
-    if (group.deadlineTimer !== null) {
-      clearTimeout(group.deadlineTimer)
-      group.deadlineTimer = null
-    }
+    // Only authoritative native release callers use this transition:
+    // scan-end, session reconciliation, or confirmed parent disposal.
+    this.endScanDelivery(group, reason, error)
+    group.nativeReleaseConfirmed = true
+    group.state = 'released'
+  }
+
+  private endScanDelivery(group: ScanGroup, reason: CoreStreamTerminalReason, error: NormalizedBleError | null): void {
     group.removeAbort?.()
     group.removeAbort = null
     for (const consumer of group.consumers.values()) consumer.stream.closeWithReason(reason, error)
-    group.state = 'released'
   }
 
   private observation(
@@ -2093,40 +2175,65 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   }
 
   private onAdvertisement(record: Extract<WireDrainRecord, { t: 'adv' }>): void {
+    const group = this.scanGroups.get(record.operationId)
+    if (group !== undefined) {
+      if (group.state === 'active' && group.startOperationId === record.startOperationId) {
+        this.deliverScanAdvertisement(group, record)
+      }
+      return
+    }
+    const pending = this.pendingScanStart
+    if (pending === null || pending.startOperationId !== record.startOperationId) return
+    if (pending.observedMembership !== null && pending.observedMembership !== record.operationId) {
+      pending.ambiguous = true
+      return
+    }
+    pending.observedMembership = record.operationId
+    this.deliverScanAdvertisement(pending.delivery, record)
+  }
+
+  private deliverScanAdvertisement(group: ScanDelivery, record: Extract<WireDrainRecord, { t: 'adv' }>): void {
     const bytes = advertisementBytes(record)
     const receivedAt = this.now()
-    for (const group of this.scanGroups.values()) {
-      if (group.state !== 'active') continue
-      const ingressOrdinal = this.nextIngressOrdinal
-      this.nextIngressOrdinal += 1
-      const observation = this.observation(record, group.scanSessionId, receivedAt, ingressOrdinal)
-      for (const consumer of group.consumers.values()) {
-        if (consumer.stream.isTerminal()) continue
-        if (!advertisementMatchesFilter(consumer.filter, observation)) continue
-        if (consumer.options.duplicatePolicy === 'first') {
-          if (consumer.seenPeers.has(record.peerId)) continue
-          consumer.seenPeers.add(record.peerId)
-        }
-        consumer.stream.emit(observation, bytes, record.peerId, bytes - RECORD_BYTES)
+    const ingressOrdinal = this.nextIngressOrdinal
+    this.nextIngressOrdinal += 1
+    const observation = this.observation(record, group.scanSessionId, receivedAt, ingressOrdinal)
+    for (const consumer of group.consumers.values()) {
+      if (consumer.stream.isTerminal()) continue
+      if (!advertisementMatchesFilter(consumer.filter, observation)) continue
+      if (consumer.options.duplicatePolicy === 'first') {
+        if (consumer.seenPeers.has(record.peerId)) continue
+        consumer.seenPeers.add(record.peerId)
       }
+      consumer.stream.emit(observation, bytes, record.peerId, bytes - RECORD_BYTES)
     }
   }
 
   private onScanEnd(record: Extract<WireDrainRecord, { t: 'scan-end' }>): void {
     const group = this.scanGroups.get(record.operationId)
     if (group === undefined) {
-      this.emitEvent({
-        kind: 'diagnostic-warning',
-        code: 'unmatched-scan-end',
-        message: 'The owner ended a scan membership this backend does not hold',
-        // The membership id is the owner's wire vocabulary; the reason is the fact.
-        detail: Object.freeze({ reason: record.reason })
-      })
+      const pending = this.pendingScanStart
+      if (pending !== null) {
+        if (pending.terminal === null) pending.terminal = record
+        else {
+          pending.ambiguous = true
+          this.reportUnmatchedScanEnd(record)
+        }
+      } else this.reportUnmatchedScanEnd(record)
       return
     }
     // The owner released the membership itself: nothing remains to stop.
     this.endScanGroup(group, record.reason, null)
     this.scanGroups.delete(record.operationId)
+  }
+
+  private reportUnmatchedScanEnd(record: Extract<WireDrainRecord, { t: 'scan-end' }>): void {
+    this.emitEvent({
+      kind: 'diagnostic-warning',
+      code: 'unmatched-scan-end',
+      message: 'The owner ended a scan membership this backend does not hold',
+      detail: Object.freeze({ reason: record.reason })
+    })
   }
 
   // -- connections -------------------------------------------------------------------------------
@@ -3218,7 +3325,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
 
   private onIngressDrop(record: Extract<WireDrainRecord, { t: 'ingress-drop' }>): void {
     if (record.class === 'advertisement') {
-      for (const group of this.scanGroups.values()) {
+      for (const group of this.scanDeliveries()) {
         for (const consumer of group.consumers.values()) this.noteIngressLoss(consumer, record.count)
       }
     } else if (record.class === 'notification') {
@@ -3287,6 +3394,9 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
 
   private async rereadAfterControlLoss(): Promise<void> {
     if (this.destroyed) return
+    // An absent native membership proves release only for owners already
+    // admitted when this snapshot was requested, not later replacements.
+    const scannedGroups = [...this.scanGroups]
     const snapshot = await this.invoke('session.reconcile', {})
     if (this.destroyed) return
     this.onAdapterRecord(snapshot.adapter)
@@ -3323,8 +3433,10 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       }
     }
     if (snapshot.restored.length > 0) this.onRestored(snapshot.restored)
-    for (const [membership, group] of [...this.scanGroups]) {
-      if (group.state !== 'active' || membership === snapshot.scan) continue
+    for (const [membership, group] of scannedGroups) {
+      if (group.nativeReleaseConfirmed || this.scanGroups.get(membership) !== group || membership === snapshot.scan) {
+        continue
+      }
       this.endScanGroup(group, 'source-failed', null)
       this.scanGroups.delete(membership)
     }

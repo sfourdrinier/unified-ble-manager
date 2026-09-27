@@ -13,6 +13,13 @@ the platforms that use it in production.
 
 Changes:
 
+- CoreBluetooth passes cached initializer values only for strictly read-only,
+  unencrypted characteristics. Read/write/notify/indicate values remain dynamic
+  (`nil`), preserving properties and permissions and serving reads through the
+  existing delegate. Apple's `CBCharacteristic.h` documents that values which
+  change or are writable must be dynamic. Native attribute-construction tests
+  cover battery/PMD-like dynamic properties and retained static read-only values;
+  they create no peripheral manager or radio session.
 - `notification_payload_capacity` exposes the minimum current subscriber value
   capacity. CoreBluetooth reads `CBCentral.maximumUpdateValueLength`; WinRT reads
   `GattSubscribedClient.MaxNotificationSize`. No subscribers is `None`; unknown

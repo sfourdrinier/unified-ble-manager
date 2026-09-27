@@ -27,6 +27,8 @@ namespace ubm_echo {
     [Throws=MobileCoreError]
     MobileCoreHost mobile_host_install(MobilePlatformRadio radio, MobileWakeSink wake, string platform, string owner, string adapter_label);
     MobileCoreHost? mobile_host_current();
+    string mobile_recording_configure_directory(string path);
+    string mobile_recording_control(string operation, string id, string token, u32 max_items, u32 max_bytes);
 };
 
 [Error]
@@ -224,6 +226,8 @@ interface MobileRadioIngress {
 };
 
 interface MobileCoreHost {
+    string continuation_configure_recording_directory(string path);
+    string continuation_recording_control(string operation, string id, string token, u32 max_items, u32 max_bytes);
     string continuation_reserve_declaration(string declaration_json);
     string continuation_commit_declaration(string reservation_token);
     string continuation_cancel_declaration(string reservation_token);

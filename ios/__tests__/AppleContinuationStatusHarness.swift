@@ -51,6 +51,35 @@ enum AppleContinuationStatusHarness {
     let sessions = UnifiedBleRustCoreSessions(installer: { _ in
       throw NSError(domain: "harness", code: 1, userInfo: nil)
     })
+    var coldStatus: String?
+    sessions.describeNativeContinuation { coldStatus = $0 }
+    check(coldStatus == "{\"ok\":true,\"value\":null}", "cold process status must not install the radio: \(coldStatus ?? "nil")")
+    var coldPrepare: String?
+    sessions.prepareNativeContinuationClaim(maxItems: 256, maxBytes: 65536) { coldPrepare = $0 }
+    check((json(coldPrepare ?? "{}")["error"] as? [String: Any])?["code"] as? String == "lifecycle.invalid-state",
+          "cold claim must refuse without installing the radio: \(coldPrepare ?? "nil")")
+    var coldAck: String?
+    sessions.acknowledgeNativeContinuationClaim("unowned-token") { coldAck = $0 }
+    check((json(coldAck ?? "{}")["error"] as? [String: Any])?["code"] as? String == "lifecycle.invalid-state",
+          "cold ACK must refuse without installing the radio: \(coldAck ?? "nil")")
+    let recordingWorker = UnifiedBleRustCoreSessions(installer: { _ in
+      check(false, "offline recording controls must not install the BLE owner")
+      throw MobileCoreError.Failed(code: "platform.failure", domain: "restoration",
+        operation: "continuation.recording.configure", detail: "test storage owner unavailable")
+    })
+    let recordingDone = DispatchSemaphore(value: 0)
+    recordingWorker.recordingControl("unknown-operation", id: "recording_1", token: "", maxItems: 0, maxBytes: 0) { value, failure in
+      check(!Thread.isMainThread, "durable control runs on its native storage worker")
+      check(failure == nil, "an unavailable BLE installer cannot prevent offline control")
+      check((json(value ?? "{}")["error"] as? [String: Any])?["code"] as? String == "argument.invalid", "closed opcode dispatch remains authoritative offline")
+      recordingDone.signal()
+    }
+    check(recordingDone.wait(timeout: .now() + 5) == .success, "recording worker completion watchdog")
+    let storageError = NSError(domain: NSCocoaErrorDomain, code: 513, userInfo: [NSFilePathErrorKey: "/private/sensor-data", NSLocalizedDescriptionKey: "secret path /private/sensor-data"])
+    let safeStorage = UnifiedBleRustCoreSessions.recordingFailureJson(storageError)
+    let safePlatform = json(safeStorage)["platform"] as? [String: Any]
+    check(safePlatform?["domain"] as? String == NSCocoaErrorDomain && safePlatform?["code"] as? String == "513", "storage failure retains native domain and code")
+    check(!safeStorage.contains("/private/sensor-data"), "storage diagnostics never expose private paths")
 
     // A valid native standing order is accepted with the peer in canonical form.
     let selector: [String: Any] = [
@@ -58,6 +87,105 @@ enum AppleContinuationStatusHarness {
       "characteristicUuid": hrMeasurement, "characteristicOccurrence": 1,
     ]
     let native: [String: Any] = ["onAppearance": "native", "peerId": peer, "resubscribe": [selector]]
+    func accepts(_ declaration: [String: Any]) -> Bool {
+      if case .success = UnifiedBleRustCoreSessions.validatedContinuation(jsonText(declaration)) { return true }
+      return false
+    }
+    var omitted = selector
+    omitted.removeValue(forKey: "serviceOccurrence")
+    omitted.removeValue(forKey: "characteristicOccurrence")
+    check(accepts(["onAppearance": "native", "resubscribe": [omitted]]), "missing occurrences default to one")
+    for invalid in [NSNull(), NSNumber(value: true), NSNumber(value: 1.5), NSNumber(value: 9007199254740992)] {
+      var bad = selector
+      bad["serviceOccurrence"] = invalid
+      check(!accepts(["onAppearance": "native", "resubscribe": [bad]]), "invalid occurrence refused")
+    }
+    let reply: [String: Any] = ["subscriptionIndex": 0, "prefix": [240], "minLength": 2,
+      "maxLength": 512, "status": ["offset": 1, "accepted": [0, 255]]]
+    let step: [String: Any] = ["selector": omitted, "value": [0, 255], "timeoutMs": 20000, "response": reply]
+    func withSetup(_ steps: Any) -> [String: Any] {
+      var declaration = native
+      declaration["setup"] = steps
+      return declaration
+    }
+    let mtu: [String: Any] = ["requested": 517, "timeoutMs": 20000, "onUnsupported": "continue"]
+    let recording: [String: Any] = ["id": "recording_1", "maxBytes": 1073741824, "maxRecords": 1000000]
+    var durable = native
+    durable["link"] = ["mtu": mtu]
+    durable["recording"] = recording
+    check(accepts(durable), "bounded MTU and recording declaration accepted")
+    for (key, invalid) in [("requested", 22), ("requested", 518), ("timeoutMs", 0), ("timeoutMs", 20001), ("unknown", 1)] {
+      var bad = durable
+      var badMtu = mtu
+      badMtu[key] = invalid
+      bad["link"] = ["mtu": badMtu]
+      check(!accepts(bad), "invalid MTU refused")
+    }
+    for (key, invalid): (String, Any) in [("id", "../escape"), ("maxBytes", 1048575), ("maxRecords", 1000001), ("path", "/tmp")] {
+      var bad = durable
+      var badRecording = recording
+      badRecording[key] = invalid
+      bad["recording"] = badRecording
+      check(!accepts(bad), "invalid recording refused")
+    }
+    check(accepts(withSetup([step])), "bounded setup accepted")
+    var trailingReply = reply
+    trailingReply["maxLength"] = 3
+    trailingReply["trailing"] = ["offset": 2, "accepted": [0]]
+    var trailingStep = step
+    trailingStep["response"] = trailingReply
+    check(accepts(withSetup([trailingStep])), "one optional validated trailing byte accepted")
+    for invalid: [String: Any] in [["offset": 1, "accepted": [0]], ["offset": 3, "accepted": [0]],
+      ["offset": 2, "accepted": [0, 0]], ["offset": 2, "accepted": []], ["offset": 2, "accepted": [0], "unknown": 1]] {
+      var badReply = trailingReply
+      badReply["trailing"] = invalid
+      var bad = step
+      bad["response"] = badReply
+      check(!accepts(withSetup([bad])), "invalid trailing rule refused")
+    }
+    trailingReply["maxLength"] = 4
+    trailingStep["response"] = trailingReply
+    check(!accepts(withSetup([trailingStep])), "trailing maxLength must allow exactly one byte")
+    check(accepts(withSetup(Array(repeating: step, count: 3))), "aggregate timeout boundary accepted")
+    check(!accepts(withSetup(Array(repeating: step, count: 4))), "aggregate timeout overflow refused")
+    check(!accepts(withSetup(Array(repeating: step, count: 17))), "step overflow refused")
+    check(!accepts(withSetup(NSNull())), "null setup refused")
+    for (key, invalid) in [("value", []), ("value", [256]), ("value", [-1]), ("value", Array(repeating: 0, count: 513))] {
+      var bad = step
+      bad[key] = invalid
+      check(!accepts(withSetup([bad])), "invalid setup byte array refused")
+    }
+    for (key, invalid) in [("timeoutMs", 0), ("timeoutMs", 20001), ("unknown", 1)] {
+      var bad = step
+      bad[key] = invalid
+      check(!accepts(withSetup([bad])), "invalid setup step refused")
+    }
+    for (key, invalid) in [("subscriptionIndex", 1), ("minLength", 0), ("maxLength", 1), ("maxLength", 513), ("unknown", 1)] {
+      var badReply = reply
+      badReply[key] = invalid
+      var bad = step
+      bad["response"] = badReply
+      check(!accepts(withSetup([bad])), "invalid response boundary refused")
+    }
+    for invalidStatus: [String: Any] in [["offset": 0, "accepted": [0]], ["offset": 2, "accepted": [0]],
+      ["offset": 1, "accepted": [0, 0]], ["offset": 1, "accepted": []],
+      ["offset": 1, "accepted": [256]], ["offset": 1, "accepted": [0], "unknown": 1]] {
+      var badReply = reply
+      badReply["status"] = invalidStatus
+      var bad = step
+      bad["response"] = badReply
+      check(!accepts(withSetup([bad])), "invalid status refused")
+    }
+    for field in ["body", "icon"] {
+      for invalid: Any in [NSNull(), "", 2, true] {
+        let notification: [String: Any] = ["channelId": "ble", "channelName": "BLE", "title": "BLE", field: invalid]
+        check(!accepts(["onAppearance": "foreground-service", "foregroundService": ["notification": notification]]), "invalid optional text refused")
+      }
+    }
+    let setupText = jsonText(withSetup([step]))
+    let (_, setupFailure) = declare(sessions, setupText)
+    check(setupFailure == nil, "valid setup declaration must persist")
+    check(UserDefaults.standard.string(forKey: continuationKey) == setupText, "setup JSON must persist unchanged for native execution")
     let (declared, declareFailure) = declare(sessions, jsonText(native))
     check(declareFailure == nil, "valid declaration refused: \(declareFailure ?? "")")
     check(json(declared!)["state"] as? String == "declared", "declare answer: \(declared ?? "")")
@@ -115,6 +243,8 @@ enum AppleContinuationStatusHarness {
     ] {
       let (_, declarationFailure) = declare(sessions, deferred)
       check(declarationFailure == nil, "valid deferred declaration rejected: \(declarationFailure ?? "")")
+      check((statusOf(sessions)["detail"] as? String)?.contains("Android-specific") == true,
+            "Apple must describe an unavailable platform mechanism, not unfinished implementation")
       var wakeFailure: String?
       sessions.continueRestoredPeer(peer) { _, failure in wakeFailure = failure }
       check(json(wakeFailure ?? "{}")["code"] as? String == "capability.unsupported",
@@ -172,12 +302,12 @@ enum AppleContinuationStatusHarness {
     status = statusOf(sessions)
     check(status["lastWake"] is NSNull, "a malformed wake reads as no wake: \(status)")
 
-    // A claim reaches the native owner, so an installation failure must be
-    // reported as such, not disguised as an unsupported implementation.
+    // A cold claim must not install the radio just to discover that no native
+    // process owner exists. The legacy wrapper maps that same raw refusal.
     var claimFailure: String?
     sessions.prepareContinuationClaim(maxItems: 256, maxBytes: 65536) { _, failure in claimFailure = failure }
     let claim = json(claimFailure ?? "{}")
-    check(claim["code"] as? String == "platform.failure", "claim code: \(claim)")
+    check(claim["code"] as? String == "lifecycle.invalid-state", "claim code: \(claim)")
     check(claim["operation"] as? String == "continuation.claim", "claim operation: \(claim)")
 
     clear()

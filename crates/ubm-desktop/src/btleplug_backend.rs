@@ -547,7 +547,45 @@ pub fn close_receipt(
     }
 }
 
+async fn close_scope_debt<F, Fut>(
+    debt: &StdMutex<HashSet<InstanceKey>>,
+    mut release: F,
+) -> Vec<RadioCloseFailure>
+where
+    F: FnMut(InstanceKey) -> Fut,
+    Fut: std::future::Future<Output = Result<Result<(), ScopeRelease>, CloseScopeElapsed>>,
+{
+    // Snapshot identities without transferring ownership into this cancellable
+    // future. A confirmed link end can retire debt while a release is pending.
+    let mut scopes: Vec<_> = debt.lock().expect("cleanup debt").iter().cloned().collect();
+    scopes.sort();
+    let mut failures = Vec::new();
+    for scope in scopes {
+        if !debt.lock().expect("cleanup debt").contains(&scope) {
+            continue;
+        }
+        if let Some(failure) = close_receipt(&scope, release(scope.clone()).await) {
+            failures.push(failure);
+        } else {
+            debt.lock().expect("cleanup debt").remove(&scope);
+        }
+    }
+    failures
+}
+
 type EventStream = std::pin::Pin<Box<dyn futures_util::Stream<Item = CentralEvent> + Send>>;
+
+#[cfg(any(target_os = "windows", test))]
+fn maintained_connection_failure(error: DesktopError) -> DesktopError {
+    let failure = DesktopError::connection_failed(format!(
+        "GattSession.MaintainConnection could not be held: {}",
+        error.detail().unwrap_or(error.code_str())
+    ));
+    match error.platform() {
+        Some(platform) => failure.with_platform(platform.clone()),
+        None => failure,
+    }
+}
 /// One peripheral-wide notification stream as btleplug 0.12 yields it from
 /// [`btleplug::api::Peripheral::notifications`]. Public so the
 /// production-path ingress harness can inject scripted streams into the real
@@ -626,6 +664,7 @@ pub struct BtleplugRadio {
     /// of them are delivered (finding 129).
     deferred: Mutex<VecDeque<RadioEvent>>,
     forwarders: StdMutex<HashMap<String, ForwarderEntry>>,
+    closing_forwarders: Mutex<Vec<tokio::task::JoinHandle<u64>>>,
     /// Cleanup debt (F13): scopes whose native CCCD may be live without
     /// an installed forwarder — a failed setup rollback or a failed
     /// consumer-less teardown. Retry and dispose keep attempting the
@@ -649,6 +688,8 @@ pub struct BtleplugRadio {
     /// every call that needs it, never swallowed.
     #[cfg(target_os = "linux")]
     bluez: Result<Arc<crate::os::linux::Bluez>, DesktopError>,
+    #[cfg(target_os = "linux")]
+    bluez_connection_policy: Option<crate::boundary::BluezConnectionPolicy>,
     /// The BlueZ bond-change watcher task (Linux), aborted with the radio.
     #[cfg(target_os = "linux")]
     bluez_watch: Option<tokio::task::JoinHandle<()>>,
@@ -740,6 +781,25 @@ impl BtleplugRadio {
         adapter_id: Option<String>,
         bus: crate::boundary::BluezBus,
     ) -> Result<Self, DesktopError> {
+        Self::open_on_with_policy(spawn, adapter_id, bus, None).await
+    }
+
+    /// Open with an explicit trusted-host BlueZ LE daemon attestation.
+    /// Other platforms reject a supplied BlueZ policy before allocation.
+    pub async fn open_on_with_policy(
+        spawn: tokio::runtime::Handle,
+        adapter_id: Option<String>,
+        bus: crate::boundary::BluezBus,
+        connection_policy: Option<crate::boundary::BluezConnectionPolicy>,
+    ) -> Result<Self, DesktopError> {
+        if let Some(policy) = &connection_policy { policy.validate()?; }
+        if !cfg!(target_os = "linux") && connection_policy.is_some() {
+            return Err(DesktopError::new(
+                BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability,
+                "connection.policy",
+            ).with_detail("a BlueZ connection policy applies to Linux only"));
+        }
         crate::boundary::bluez_bus_supported(bus)?;
         let manager = open_manager(bus).await.map_err(|error| {
             DesktopError::adapter_unavailable("adapter.open")
@@ -760,7 +820,10 @@ impl BtleplugRadio {
         let (notifications, notification_rx) = mpsc::channel(NOTIFICATION_CAP);
         let (os_events_tx, os_events) = mpsc::channel(OS_EVENT_CAP);
         #[cfg(target_os = "linux")]
-        let bluez = crate::os::linux::Bluez::open(&adapter_label, bus).await;
+        let bluez = crate::os::linux::Bluez::open_with_le_owner(&adapter_label, bus,
+            connection_policy.as_ref().map(|policy| match policy {
+                crate::boundary::BluezConnectionPolicy::LeBearer { daemon_unique_owner } => daemon_unique_owner.clone(),
+            })).await;
         #[cfg(target_os = "linux")]
         let bluez_watch = bluez
             .as_ref()
@@ -794,11 +857,14 @@ impl BtleplugRadio {
             forwarders: StdMutex::new(HashMap::new()),
             cleanup_debt: StdMutex::new(HashSet::new()),
             close_failures: StdMutex::new(Vec::new()),
+            closing_forwarders: Mutex::new(Vec::new()),
             gatt: GattCache::new(),
             _os_events_tx: os_events_tx,
             os_events: Mutex::new(os_events),
             #[cfg(target_os = "linux")]
             bluez,
+            #[cfg(target_os = "linux")]
+            bluez_connection_policy: connection_policy,
             #[cfg(target_os = "linux")]
             bluez_watch,
             #[cfg(target_os = "linux")]
@@ -866,6 +932,30 @@ impl BtleplugRadio {
         self.bluez.as_ref().map_err(Clone::clone)
     }
 
+    #[cfg(target_os = "linux")]
+    fn bluez_owner(&self, operation: &str) -> Result<&str, DesktopError> {
+        match &self.bluez_connection_policy {
+            Some(crate::boundary::BluezConnectionPolicy::LeBearer { daemon_unique_owner }) => Ok(daemon_unique_owner),
+            None => Err(DesktopError::new(BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability, operation).with_detail(
+                    "BlueZ LE lifecycle requires a trusted host attestation for the current unique daemon owner implementing org.bluez.Bearer.LE1; Device1 fallback is not supported")),
+        }
+    }
+
+    async fn observe_link_ended(&self, peer_id: String) {
+        self.gatt.evict(&peer_id);
+        let retirement = if cfg!(target_os = "linux") {
+            PeerRetirement::LinkEndedRetainingNotifySession
+        } else { PeerRetirement::LinkEnded };
+        self.drain_peer_forwarders(&peer_id, retirement).await;
+        if let Err(error) = self.release_link_state(&peer_id) {
+            OS_RELEASE_FAILURES.fetch_add(1, Ordering::Relaxed);
+            eprintln!("ubm-desktop: link state of {peer_id} not released after loss: {}",
+                error.detail().unwrap_or(error.code_str()));
+        }
+        self.deferred.lock().await.push_back(RadioEvent::Disconnected(peer_id));
+    }
+
     /// Bytes currently queued in the bounded notification ingress (F07).
     #[must_use]
     pub fn ingress_queued_bytes(&self) -> u64 {
@@ -882,7 +972,7 @@ impl BtleplugRadio {
         let found = find_peer(self.adapter.peripherals().await, peer_id, |peripheral| {
             peripheral.id().to_string()
         });
-        match found {
+        let peripheral = match found {
             Err(error) if error.code() == BleErrorCode::PeerNotFound => {
                 // Finding 127: a peer the adapter no longer lists is resolved
                 // by identity, as the legacy backends reconnected without a
@@ -898,7 +988,11 @@ impl BtleplugRadio {
                 }
             }
             other => other,
-        }
+        }?;
+        #[cfg(target_os = "linux")]
+        let peripheral = peripheral.with_le_owner(self.bluez_owner("connection.authority")?).await
+            .map_err(|error| DesktopError::connection_failed(error.to_string()).with_os(&error))?;
+        Ok(peripheral)
     }
 
     async fn discover_services_on(peripheral: Peripheral) -> Result<Peripheral, DesktopError> {
@@ -2124,6 +2218,51 @@ fn map_radio(
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn map_directory_error(operation: &'static str) -> impl Fn(btleplug::Error) -> DesktopError {
+    move |error| {
+        let state = match &error {
+            btleplug::Error::Platform(detail) if detail.domain == "corebluetooth" => {
+                match detail.code.as_str() {
+                    "manager-state-0" => Some(AdapterPowerState::Unknown),
+                    "manager-state-1" => Some(AdapterPowerState::Resetting),
+                    "manager-state-2" => Some(AdapterPowerState::Unsupported),
+                    "manager-state-3" => Some(AdapterPowerState::Unauthorized),
+                    "manager-state-4" => Some(AdapterPowerState::PoweredOff),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        state
+            .and_then(|power| {
+                crate::central::admission_refusal(
+                    crate::boundary::AdmissionPolicy::CoreBluetooth,
+                    crate::central::AdapterStatus {
+                        power: Some(power),
+                        authorization: None,
+                        availability: if power == AdapterPowerState::Unsupported {
+                            crate::boundary::AdapterAvailability::Unsupported
+                        } else {
+                            crate::boundary::AdapterAvailability::Available
+                        },
+                        lost: false,
+                    },
+                    operation,
+                )
+            })
+            .unwrap_or_else(|| {
+                DesktopError::new(
+                    ubm_core::contracts::BleErrorCode::PlatformFailure,
+                    ubm_core::contracts::BleErrorDomain::Platform,
+                    operation,
+                )
+            })
+            .with_detail(error.to_string())
+            .with_os(&error)
+    }
+}
+
 fn property_flags(flags: CharPropFlags) -> PropertyFlags {
     PropertyFlags {
         read: flags.contains(CharPropFlags::READ),
@@ -2217,6 +2356,90 @@ fn sorted_service_data(sections: &HashMap<uuid::Uuid, Vec<u8>>) -> Vec<ServiceDa
 }
 
 impl RadioBoundary for BtleplugRadio {
+    async fn connected_peers(
+        &self,
+        services: &[String],
+    ) -> Result<Vec<crate::boundary::DirectoryPeer>, DesktopError> {
+        #[cfg(target_os = "macos")]
+        {
+            if services.is_empty() {
+                return Err(DesktopError::new(BleErrorCode::CapabilityUnsupported, BleErrorDomain::Capability, "peers.connected.services-required").with_detail("CoreBluetooth requires at least one service UUID for system-connected retrieval"));
+            }
+            let services = services
+                .iter()
+                .map(|value| {
+                    uuid::Uuid::parse_str(value).map_err(|_| {
+                        DesktopError::new(
+                            BleErrorCode::ArgumentInvalid,
+                            BleErrorDomain::Connection,
+                            "peers.connected.services",
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let peers = self
+                .adapter
+                .directory_peers(Some(services), None)
+                .await
+                .map_err(map_directory_error("peers.connected"))?;
+            Ok(peers
+                .into_iter()
+                .map(|(id, name)| crate::boundary::DirectoryPeer {
+                    peer_id: id.to_string(),
+                    name,
+                    connection: "connected",
+                })
+                .collect())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = services;
+            Err(DesktopError::new(
+                BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability,
+                "peers.connected",
+            ))
+        }
+    }
+
+    async fn resolve_peer(
+        &self,
+        peer_id: &str,
+    ) -> Result<Option<crate::boundary::DirectoryPeer>, DesktopError> {
+        #[cfg(target_os = "macos")]
+        {
+            let id = uuid::Uuid::parse_str(peer_id).map_err(|_| {
+                DesktopError::new(
+                    BleErrorCode::ArgumentInvalid,
+                    BleErrorDomain::Connection,
+                    "peers.resolve",
+                )
+            })?;
+            let peers = self
+                .adapter
+                .directory_peers(None, Some(id))
+                .await
+                .map_err(map_directory_error("peers.resolve"))?;
+            Ok(peers
+                .into_iter()
+                .find(|(candidate, _)| *candidate == id)
+                .map(|(id, name)| crate::boundary::DirectoryPeer {
+                    peer_id: id.to_string(),
+                    name,
+                    connection: "unknown",
+                }))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = peer_id;
+            Err(DesktopError::new(
+                BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability,
+                "peers.resolve",
+            ))
+        }
+    }
+
     fn canonical_peer_id(&self, peer_id: &str) -> String {
         canonical_platform_peer_id(peer_id)
     }
@@ -2227,6 +2450,14 @@ impl RadioBoundary for BtleplugRadio {
 
     fn admission_policy(&self) -> crate::boundary::AdmissionPolicy {
         host_admission_policy()
+    }
+
+    fn connection_capability_limitation(&self) -> Option<&'static str> {
+        #[cfg(target_os = "linux")]
+        if self.bluez_connection_policy.is_none() {
+            return Some(crate::capabilities::BLUEZ_LE_AUTHORITY_REQUIRED);
+        }
+        None
     }
 
     fn tears_down_on_adapter_loss(&self) -> bool {
@@ -2302,6 +2533,8 @@ impl RadioBoundary for BtleplugRadio {
     }
 
     async fn connect(&self, peer_id: &str) -> Result<(), DesktopError> {
+        #[cfg(target_os = "linux")]
+        let owner = self.bluez_owner("connection.connect")?;
         self.validate_peer_identity(peer_id, "connection.connect")?;
         // A new connection gets a fresh GATT state.
         self.gatt.evict(peer_id);
@@ -2310,9 +2543,11 @@ impl RadioBoundary for BtleplugRadio {
             bluez.forget(peer_id);
         }
         let peripheral = self.peripheral_by_id(peer_id).await?;
-        peripheral
-            .connect()
-            .await
+        #[cfg(target_os = "linux")]
+        let connected = peripheral.connect_le(owner).await;
+        #[cfg(not(target_os = "linux"))]
+        let connected = peripheral.connect().await;
+        connected
             .map_err(|error| DesktopError::connection_failed(error.to_string()).with_os(&error))?;
         // Windows: hold the link like the legacy addon's connect did. A
         // link that cannot be maintained fails the connect; the central
@@ -2323,10 +2558,7 @@ impl RadioBoundary for BtleplugRadio {
             .maintain(peer_id, self._os_events_tx.clone())
             .await
         {
-            return Err(DesktopError::connection_failed(format!(
-                "GattSession.MaintainConnection could not be held: {}",
-                error.detail().unwrap_or(error.code_str())
-            )));
+            return Err(maintained_connection_failure(error));
         }
         self.watch_write_readiness(peer_id, &peripheral);
         Ok(())
@@ -2336,8 +2568,17 @@ impl RadioBoundary for BtleplugRadio {
         // T-R2: straight to the radio, as legacy went straight to
         // `peripheral.disconnect()` — no pre-disconnect `is_connected()`
         // query (an extra D-Bus read the legacy path never made).
-        let peripheral = self.peripheral_by_id(peer_id).await?;
-        if let Err(error) = peripheral.disconnect().await {
+        #[cfg(target_os = "linux")]
+        let disconnected = match &self.bluez_connection_policy {
+            None => Ok(()), // No acquisition can be admitted by this radio.
+            Some(crate::boundary::BluezConnectionPolicy::LeBearer { daemon_unique_owner }) => {
+                let id = platform_peripheral_id(peer_id).ok_or_else(|| DesktopError::connection_failed("invalid BlueZ peer identity"))?;
+                self.adapter.disconnect_le(&id, daemon_unique_owner).await
+            }
+        };
+        #[cfg(not(target_os = "linux"))]
+        let disconnected = self.peripheral_by_id(peer_id).await?.disconnect().await;
+        if let Err(error) = disconnected {
             // T-R1: a removed device object is not a failure of this
             // release — it is the answer. BlueZ drops the D-Bus object, so
             // the object never comes back and every retry would fail
@@ -2696,8 +2937,8 @@ impl RadioBoundary for BtleplugRadio {
         // NOTE: the adapter event stream is deliberately NOT taken here.
         // The scan loop holds the events guard across its select until
         // loop_stop (sent after this returns), so taking it here deadlocks
-        // shutdown. The stream releases via the `Drop` impl instead: by
-        // then the loop is joined and the handoff is uncontended.
+        // shutdown. finish_close releases it after the loop is joined,
+        // so the transport cleanup receipt includes its stream lease.
         let entries: Vec<ForwarderEntry> = self
             .forwarders
             .lock()
@@ -2708,40 +2949,78 @@ impl RadioBoundary for BtleplugRadio {
         for entry in &entries {
             entry.task.abort();
         }
-        let mut scopes: Vec<InstanceKey> = entries.iter().map(ForwarderEntry::scope).collect();
-        scopes.extend(self.cleanup_debt.lock().expect("cleanup debt").drain());
-        scopes.sort();
-        let mut failures = Vec::new();
-        for scope in &scopes {
-            let outcome = tokio::time::timeout(CLOSE_SCOPE_BOUND, self.release_scope(scope))
+        self.cleanup_debt
+            .lock()
+            .expect("cleanup debt")
+            .extend(entries.iter().map(ForwarderEntry::scope));
+        self.closing_forwarders
+            .lock()
+            .await
+            .extend(entries.into_iter().map(|entry| entry.task.handle));
+        let failures = close_scope_debt(&self.cleanup_debt, |scope| async move {
+            tokio::time::timeout(CLOSE_SCOPE_BOUND, self.release_scope(&scope))
                 .await
-                .map_err(|_| CloseScopeElapsed);
-            if let Some(failure) = close_receipt(scope, outcome) {
-                failures.push(failure);
-            }
-        }
+                .map_err(|_| CloseScopeElapsed)
+        })
+        .await;
         self.gatt.clear();
-        #[cfg(target_os = "windows")]
-        for (peer_id, error) in self.winrt.release_all() {
-            OS_RELEASE_FAILURES.fetch_add(1, Ordering::Relaxed);
-            eprintln!(
-                "ubm-desktop: maintained session of {peer_id} not released at close: {}",
-                error.detail().unwrap_or(error.code_str())
-            );
-        }
-        #[cfg(target_os = "windows")]
-        if let Err(error) = self.winrt.stop_adapter_watch() {
-            OS_RELEASE_FAILURES.fetch_add(1, Ordering::Relaxed);
-            eprintln!(
-                "ubm-desktop: adapter presence watch not stopped at close: {}",
-                error.detail().unwrap_or(error.code_str())
-            );
-        }
         *self.close_failures.lock().expect("close failures") = failures;
     }
 
     fn take_close_failures(&self) -> Vec<RadioCloseFailure> {
         std::mem::take(&mut self.close_failures.lock().expect("close failures"))
+    }
+
+    async fn finish_close(&self) -> Vec<DesktopError> {
+        let mut failures = Vec::new();
+        // Cancellation of the bounded waiter leaves unjoined handles here.
+        // A subsequent close retries; no late stream Drop escapes accounting.
+        let mut forwarders = self.closing_forwarders.lock().await;
+        while let Some(task) = forwarders.last_mut() {
+            let outcome = task.await;
+            forwarders.pop();
+            if outcome.is_err_and(|error| !error.is_cancelled()) {
+                failures.push(
+                    DesktopError::new(
+                        BleErrorCode::PlatformFailure,
+                        BleErrorDomain::Cleanup,
+                        "radio.close.transport",
+                    )
+                    .with_detail("Notification forwarder failed during transport teardown"),
+                );
+            }
+        }
+        drop(forwarders);
+        drop(self.events.lock().await.take());
+        #[cfg(target_os = "linux")]
+        if let Ok(bluez) = self.bluez()
+            && let Err(error) = bluez.finish_discovery().await {
+            failures.push(error);
+        }
+        #[cfg(target_os = "linux")]
+        if let Err(error) = self.adapter.drain_match_cleanup().await {
+            failures.push(
+                DesktopError::new(
+                    BleErrorCode::PlatformFailure,
+                    BleErrorDomain::Cleanup,
+                    "radio.close.transport",
+                )
+                .with_detail(error.to_string())
+                .with_os(&error),
+            );
+        }
+        #[cfg(target_os = "windows")]
+        {
+            for (_, error) in self.winrt.release_all() {
+                OS_RELEASE_FAILURES.fetch_add(1, Ordering::Relaxed);
+                failures.push(error);
+            }
+            for error in self.winrt.stop_adapter_watch() {
+                OS_RELEASE_FAILURES.fetch_add(1, Ordering::Relaxed);
+                failures.push(error);
+            }
+        }
+        failures
     }
 
     /// Connected RSSI is a link measurement only on CoreBluetooth
@@ -3138,6 +3417,9 @@ impl RadioBoundary for BtleplugRadio {
                         .await
                         .push_back(RadioEvent::ServicesChanged(peer_id));
                 }
+                Step::Os(Some(RadioEvent::Disconnected(peer_id))) => {
+                    self.observe_link_ended(peer_id).await;
+                }
                 Step::Os(Some(event)) => return Some(event),
                 Step::Os(None) => {}
                 Step::Adapter(None) => return None,
@@ -3198,30 +3480,12 @@ impl RadioBoundary for BtleplugRadio {
                     return Some(RadioEvent::AdapterState(power_state(state)));
                 }
                 Step::Adapter(Some(CentralEvent::DeviceConnected(id))) => {
+                    if cfg!(target_os = "linux") { continue; }
                     return Some(RadioEvent::Connected(id.to_string()));
                 }
                 Step::Adapter(Some(CentralEvent::DeviceDisconnected(id))) => {
-                    let peer_id = id.to_string();
-                    self.gatt.evict(&peer_id);
-                    // Finding 129: values that arrived before the loss are
-                    // delivered (or counted) before it.
-                    let retirement = if cfg!(target_os = "linux") {
-                        PeerRetirement::LinkEndedRetainingNotifySession
-                    } else {
-                        PeerRetirement::LinkEnded
-                    };
-                    self.drain_peer_forwarders(&peer_id, retirement).await;
-                    if let Err(error) = self.release_link_state(&peer_id) {
-                        OS_RELEASE_FAILURES.fetch_add(1, Ordering::Relaxed);
-                        eprintln!(
-                            "ubm-desktop: link state of {peer_id} not released after loss: {}",
-                            error.detail().unwrap_or(error.code_str())
-                        );
-                    }
-                    self.deferred
-                        .lock()
-                        .await
-                        .push_back(RadioEvent::Disconnected(peer_id));
+                    if cfg!(target_os = "linux") { continue; }
+                    self.observe_link_ended(id.to_string()).await;
                 }
                 Step::Adapter(Some(_)) => {}
             }
@@ -3478,6 +3742,42 @@ pub fn core_property_bits(flags: PropertyFlags) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn directory_nonplatform_failures_preserve_diagnostic_detail() {
+        for detail in ["Channel closed", "Unexpected directory reply"] {
+            let cause = btleplug::Error::Other(detail.into());
+            let rendered = cause.to_string();
+            let error = super::map_directory_error("peers.connected")(cause);
+            assert_eq!(
+                error.code(),
+                ubm_core::contracts::BleErrorCode::PlatformFailure
+            );
+            assert_eq!(error.detail(), Some(rendered.as_str()));
+        }
+    }
+
+    #[test]
+    fn directory_queued_manager_state_preserves_specific_refusal() {
+        for (state, code) in [
+            (
+                "manager-state-3",
+                ubm_core::contracts::BleErrorCode::PermissionDenied,
+            ),
+            (
+                "manager-state-4",
+                ubm_core::contracts::BleErrorCode::AdapterPoweredOff,
+            ),
+        ] {
+            let cause = btleplug::Error::Platform(btleplug::PlatformError::new(
+                "corebluetooth",
+                state,
+                "state changed before lookup",
+            ));
+            let error = super::map_directory_error("peers.connected")(cause);
+            assert_eq!(error.code(), code);
+            assert_eq!(error.platform().unwrap().code, state);
+        }
+    }
     use std::collections::{BTreeSet, HashMap};
 
     use btleplug::api::{CharPropFlags, Characteristic, Descriptor, Service, ValueNotification};
@@ -4414,6 +4714,7 @@ mod tests {
                     "disconnect-lifecycle",
                     "winrt-att-error",
                     "bluez-optional-modalias",
+                    "bluez-match-cleanup",
                 ],
             "DEP_BTLEPLUG_UBM_PATCHES missing: the vendored btleplug is not linked"
         );
@@ -4543,6 +4844,35 @@ mod tests {
     }
 
     #[test]
+    fn maintained_connect_preserves_every_structured_cleanup_failure() {
+        use crate::errors::{DesktopError, PlatformDetail, PlatformValue};
+        use ubm_core::contracts::{BleErrorCode, BleErrorDomain};
+        let errors = ["maintain", "close"].map(|operation| {
+            DesktopError::new(
+                BleErrorCode::PlatformFailure,
+                BleErrorDomain::Platform,
+                operation,
+            )
+            .with_platform(
+                PlatformDetail::new("winrt", "hresult")
+                    .with_metadata("hresult", PlatformValue::Text(operation.into())),
+            )
+        });
+        let original = crate::os::winrt_cleanup::cleanup_result(errors.into()).unwrap_err();
+        let mapped = super::maintained_connection_failure(original.clone());
+        assert_eq!(mapped.code(), BleErrorCode::ConnectionFailed);
+        assert_eq!(mapped.operation(), "connection.connect");
+        assert_eq!(mapped.platform(), original.platform());
+        assert!(
+            mapped
+                .platform()
+                .unwrap()
+                .metadata
+                .contains_key("failure.1.platform.metadata.hresult")
+        );
+    }
+
+    #[test]
     fn close_scope_outcomes_skip_only_a_confirmed_missing_peer() {
         let scope = scope("peer-1", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
         let missing = crate::errors::DesktopError::new(
@@ -4573,6 +4903,86 @@ mod tests {
             close_receipt(&scope, Ok(Ok(()))),
             None,
             "a released scope has no receipt"
+        );
+    }
+
+    #[tokio::test]
+    async fn close_retains_failed_scopes_until_actual_retry_succeeds() {
+        let failed = scope("peer-1", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let released = scope("peer-2", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let debt = std::sync::Mutex::new(std::collections::HashSet::from([
+            failed.clone(),
+            released.clone(),
+        ]));
+        let failures = super::close_scope_debt(&debt, |owned| {
+            let refused = owned == failed;
+            async move {
+                if refused {
+                    Ok(Err(ScopeRelease::Failed("refused".into())))
+                } else {
+                    Ok(Ok(()))
+                }
+            }
+        })
+        .await;
+        assert_eq!(failures.len(), 1);
+        assert_eq!(
+            *debt.lock().unwrap(),
+            std::collections::HashSet::from([failed.clone()])
+        );
+        let mut calls = Vec::new();
+        assert!(
+            super::close_scope_debt(&debt, |owned| {
+                calls.push(owned);
+                async { Ok(Ok(())) }
+            })
+            .await
+            .is_empty()
+        );
+        assert_eq!(calls, vec![failed]);
+        assert!(debt.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelling_close_keeps_every_pending_scope_owned() {
+        let first = scope("peer-1", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let second = scope("peer-2", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let expected = std::collections::HashSet::from([first, second]);
+        let debt = std::sync::Mutex::new(expected.clone());
+        let mut calls = 0;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(1),
+            super::close_scope_debt(&debt, |_| {
+                calls += 1;
+                std::future::pending()
+            }),
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
+        assert_eq!(*debt.lock().unwrap(), expected);
+    }
+
+    #[tokio::test]
+    async fn close_timeout_retains_debt_but_late_failure_never_revives_released_parent() {
+        let owned = scope("peer-1", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let debt = std::sync::Mutex::new(std::collections::HashSet::from([owned.clone()]));
+        assert_eq!(
+            super::close_scope_debt(&debt, |_| async { Err(CloseScopeElapsed) })
+                .await
+                .len(),
+            1
+        );
+        assert!(debt.lock().unwrap().contains(&owned));
+        let failures = super::close_scope_debt(&debt, |_| {
+            debt.lock().unwrap().remove(&owned);
+            async { Ok(Err(ScopeRelease::Failed("late refusal".into()))) }
+        })
+        .await;
+        assert_eq!(failures.len(), 1, "attempt failure remains diagnostic");
+        assert!(
+            debt.lock().unwrap().is_empty(),
+            "confirmed parent release stays retired"
         );
     }
 

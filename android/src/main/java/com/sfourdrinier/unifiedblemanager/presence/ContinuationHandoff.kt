@@ -15,7 +15,8 @@ data class ContinuationClaim(
   val disposeFailure: String? = null,
   val afterCutoffLoss: CutoffLoss = CutoffLoss(0, 0),
   val selectors: List<ContinuationSelector> = emptyList(),
-  val claimToken: String = ""
+  val claimToken: String = "",
+  val recordingId: String? = null
 )
 
 /** Native cleanup result after the application acknowledged decoded bytes. */

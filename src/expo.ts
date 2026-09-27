@@ -2,9 +2,13 @@
 
 import { BackendContractError, contractError } from './backend-contract/errors'
 import type { BleErrorCode } from './backend-contract/errors'
+import type { ContinuationRecordingController } from './core/continuation-recording'
 import type { RestorationAdoptionResult } from './backend-contract/restoration'
 import type { BackgroundContinuationResubscribeSelector } from './backend-contract/background-continuation'
-import type { ContinuationRecoveryStatus } from './backends/reactnative/react-native-continuation-claim'
+import type {
+  ContinuationRecoveryStatus,
+  ContinuationWakeStatus
+} from './backends/reactnative/react-native-continuation-claim'
 import { Platform, TurboModuleRegistry } from 'react-native'
 import { rehydratePublicError } from './public/error-bridge'
 import { BleError } from './public/errors'
@@ -24,6 +28,15 @@ import type { ReactNativeBleManagerOptions } from './react-native-manager'
 
 export type { BleManagerCreateOptions } from './public/host-identity'
 export { normalizeBleManagerCreateOptions } from './public/host-identity'
+export { createReactNativeContinuationRecordings } from './react-native-continuation-recording'
+export type {
+  ContinuationRecordingController,
+  ContinuationRecordingStatus,
+  ContinuationRecordingBatch,
+  ContinuationRecordingMetadata,
+  ContinuationRecordingFailure,
+  ContinuationRecordingPrepareOptions
+} from './core/continuation-recording'
 
 export type BlePermission = 'bluetooth'
 export type ExpoSettingsTarget = 'app' | 'bluetooth' | 'location-services'
@@ -105,14 +118,7 @@ export interface ExpoPresenceObservationRequest {
   readonly peerId: string
 }
 
-export interface ExpoContinuationWakeReport {
-  readonly observedAtMs: number
-  readonly event: 'continuation.completed' | 'continuation.failed'
-  readonly strategy: string
-  readonly peerAddress: string | null
-  readonly code: string | null
-  readonly reason: string | null
-}
+export type ExpoContinuationWakeReport = ContinuationWakeStatus
 
 export interface ExpoContinuationStatus {
   readonly strategy: string
@@ -144,6 +150,8 @@ export interface ExpoContinuationStreamEnd {
 }
 
 export interface ExpoContinuationBacklog {
+  /** Independent durable recording; native claim does not acknowledge or erase its records. */
+  readonly recording?: { readonly id: string }
   /** Immutable selector identity for each numeric continuation consumer. */
   readonly selectors: readonly BackgroundContinuationResubscribeSelector[]
   readonly values: readonly ExpoContinuationValue[]
@@ -221,6 +229,8 @@ export interface ExpoBleManager extends BleManager {
    * `capability.unsupported`, never an invented empty backlog.
    */
   readonly continuation: {
+    /** Durable storage access independent of this manager's radio lifetime. */
+    readonly recordings: ContinuationRecordingController
     readonly status: () => Promise<ExpoContinuationStatus>
     readonly claim: (request?: ExpoContinuationClaimRequest) => Promise<ExpoContinuationBacklog>
   }
@@ -560,6 +570,7 @@ function withExpoRuntime(
       unobserve: (request: ExpoPresenceObservationRequest) => unobserveExpoPresence(request, host)
     }),
     continuation: Object.freeze({
+      recordings: host.recordings,
       status: () => readExpoContinuationStatus(host),
       claim: (request: ExpoContinuationClaimRequest = {}) => claimExpoContinuationBacklog(request, host)
     })
@@ -924,6 +935,7 @@ async function claimExpoContinuationBacklog(
   try {
     const backlog = await host.services.claimContinuationBacklog({ ...request })
     return Object.freeze({
+      ...(backlog.recording === undefined ? {} : { recording: Object.freeze({ id: backlog.recording.id }) }),
       selectors: Object.freeze(backlog.selectors.map(selector => Object.freeze({ ...selector }))),
       values: Object.freeze(backlog.values.map(record => Object.freeze({ ...record }))),
       streamEnds: Object.freeze(backlog.streamEnds.map(record => Object.freeze({ ...record }))),

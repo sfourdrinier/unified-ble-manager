@@ -108,7 +108,8 @@ pub enum ControlCommand {
     PairPolicy { policy: crate::sim::PairPolicy },
     /// Load a profile file live: `{"cmd":"load-profile","path":"profiles/stock-h10.json"}`.
     LoadProfile { path: String },
-    /// Change stream rates: `{"cmd":"set-rates","hrHz":2.0,"ecgFramesPerSec":4.0}`.
+    /// Change HR rate / ECG dispatch opportunities: `{"cmd":"set-rates","hrHz":2.0,"ecgFramesPerSec":4.0}`.
+    /// ECG acquisition remains 130 Hz; a dispatch may send zero or multiple frames.
     /// ECG frames carry `ecgFrameSamples` samples (1..=167 so a frame fits MTU 512).
     SetRates {
         #[serde(rename = "hrHz")]

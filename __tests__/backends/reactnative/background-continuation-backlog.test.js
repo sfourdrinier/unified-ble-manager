@@ -36,6 +36,13 @@ function claimPayload(consumerCount, batches, disposed) {
 }
 
 describe('continuation backlog drains with accounted loss', () => {
+  it('retains the independent durable recording reference after native release', () => {
+    const payload = { ...claimPayload(0, [], true), recording: { id: 'h10-1' } }
+    expect(aggregateContinuationClaim(payload).recording).toEqual({ id: 'h10-1' })
+    for (const recording of [null, {}, { id: '../escape' }, { id: 'h10-1', acknowledged: true }]) {
+      expect(() => aggregateContinuationClaim({ ...payload, recording })).toThrow()
+    }
+  })
   it('aggregates value records across chained batches with ordinal continuity', () => {
     const claim = aggregateContinuationClaim(
       {

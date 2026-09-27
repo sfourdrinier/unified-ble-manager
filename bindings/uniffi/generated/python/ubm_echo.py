@@ -251,7 +251,7 @@ class _UniffiRustBufferBuilder:
             packed = struct.pack(format, value)
             if size > 0:
                 ctypes.memmove(ctypes.addressof(self.rbuf.data.contents) + self.rbuf.len, packed, size)
-    
+
     def write(self, value):
         length = len(value)
         with self._reserve(length):
@@ -379,7 +379,7 @@ def _uniffi_trait_interface_call_with_error(call_status, make_call, write_return
     except Exception as e:
         call_status.code = _UniffiRustCallStatus.CALL_UNEXPECTED_ERROR
         call_status.error_buf = _UniffiFfiConverterString.lower(repr(e))
-# Initial value and increment amount for handles. 
+# Initial value and increment amount for handles.
 # These ensure that Python-generated handles always have the lowest bit set
 _UNIFFI_HANDLEMAP_INITIAL = 1
 _UNIFFI_HANDLEMAP_DELTA = 2
@@ -541,7 +541,7 @@ def _uniffi_load_indirect():
         # Anything else must be an ELF platform - Linux, *BSD, Solaris/illumos
         libname = "lib{}.so"
 
-    libname = libname.format("ubm5_uniffi_echo")
+    libname = libname.format("uniffi")
     path = os.path.join(os.path.dirname(__file__), libname)
     lib = ctypes.cdll.LoadLibrary(path)
     return lib
@@ -562,6 +562,10 @@ def _uniffi_check_api_checksums(lib):
     if lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_current() != 45739:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_install() != 16863:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_configure_directory() != 4705:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_control() != 47672:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_wire_revision() != 16069:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
@@ -605,6 +609,8 @@ def _uniffi_check_api_checksums(lib):
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_commit_declaration() != 7090:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_configure_recording_directory() != 14238:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_declaration_replacement_failure() != 61722:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_describe_backlog() != 38878:
@@ -612,6 +618,8 @@ def _uniffi_check_api_checksums(lib):
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_execute() != 53239:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_claim() != 27863:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_recording_control() != 50250:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_reserve_declaration() != 64088:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
@@ -672,6 +680,12 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_current.restype = c
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_install.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_install.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_configure_directory.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_configure_directory.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_control.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_control.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_wire_revision.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_wire_revision.restype = ctypes.c_uint16
@@ -735,6 +749,9 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_c
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_commit_declaration.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_commit_declaration.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_configure_recording_directory.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_configure_recording_directory.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_declaration_replacement_failure.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_declaration_replacement_failure.restype = ctypes.c_uint16
@@ -747,6 +764,9 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_e
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_claim.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_claim.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_recording_control.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_recording_control.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_reserve_declaration.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_reserve_declaration.restype = ctypes.c_uint16
@@ -795,6 +815,20 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_install.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_install.restype = ctypes.c_uint64
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_recording_configure_directory.argtypes = (
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_recording_configure_directory.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_recording_control.argtypes = (
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_recording_control.restype = _UniffiRustBuffer
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_wire_revision.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
@@ -917,6 +951,12 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_commit_
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_commit_declaration.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_configure_recording_directory.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_configure_recording_directory.restype = _UniffiRustBuffer
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_declaration_replacement_failure.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
@@ -945,6 +985,16 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_claim.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_recording_control.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_recording_control.restype = _UniffiRustBuffer
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_reserve_declaration.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
@@ -1175,10 +1225,10 @@ class EchoBytesResult:
         self.code = code
         self.domain = domain
         self.operation = operation
-        
-        
 
-    
+
+
+
     def __str__(self):
         return "EchoBytesResult(ok={}, data={}, code={}, domain={}, operation={})".format(self.ok, self.data, self.code, self.domain, self.operation)
     def __eq__(self, other):
@@ -1229,10 +1279,10 @@ class EchoCounterResult:
         self.code = code
         self.domain = domain
         self.operation = operation
-        
-        
 
-    
+
+
+
     def __str__(self):
         return "EchoCounterResult(ok={}, value={}, code={}, domain={}, operation={})".format(self.ok, self.value, self.code, self.domain, self.operation)
     def __eq__(self, other):
@@ -1282,10 +1332,10 @@ class EchoStatus:
         self.code = code
         self.domain = domain
         self.operation = operation
-        
-        
 
-    
+
+
+
     def __str__(self):
         return "EchoStatus(ok={}, code={}, domain={}, operation={})".format(self.ok, self.code, self.domain, self.operation)
     def __eq__(self, other):
@@ -1355,10 +1405,10 @@ class MobileAdapterSnapshot:
         self.authorization = authorization
         self.power = power
         self.safe_reason = safe_reason
-        
-        
 
-    
+
+
+
     def __str__(self):
         return "MobileAdapterSnapshot(availability={}, authorization={}, power={}, safe_reason={})".format(self.availability, self.authorization, self.power, self.safe_reason)
     def __eq__(self, other):
@@ -1475,10 +1525,10 @@ class MobileManufacturerData:
     def __init__(self, *, company_id:int, payload:bytes):
         self.company_id = company_id
         self.payload = payload
-        
-        
 
-    
+
+
+
     def __str__(self):
         return "MobileManufacturerData(company_id={}, payload={})".format(self.company_id, self.payload)
     def __eq__(self, other):
@@ -1534,10 +1584,10 @@ class MobileServiceData:
     def __init__(self, *, uuid:str, payload:bytes):
         self.uuid = uuid
         self.payload = payload
-        
-        
 
-    
+
+
+
     def __str__(self):
         return "MobileServiceData(uuid={}, payload={})".format(self.uuid, self.payload)
     def __eq__(self, other):
@@ -1652,10 +1702,10 @@ class MobileAdvertisement:
         self.connectable = connectable
         self.solicited_service_uuids = solicited_service_uuids
         self.overflow_service_uuids = overflow_service_uuids
-        
-        
 
-    
+
+
+
     def __str__(self):
         return "MobileAdvertisement(peer_id={}, address={}, local_name={}, rssi={}, tx_power_level={}, service_uuids={}, manufacturer_data={}, service_data={}, connectable={}, solicited_service_uuids={}, overflow_service_uuids={})".format(self.peer_id, self.address, self.local_name, self.rssi, self.tx_power_level, self.service_uuids, self.manufacturer_data, self.service_data, self.connectable, self.solicited_service_uuids, self.overflow_service_uuids)
     def __eq__(self, other):
@@ -1749,10 +1799,10 @@ class MobileInstance:
         self.service_occurrence = service_occurrence
         self.characteristic_uuid = characteristic_uuid
         self.characteristic_occurrence = characteristic_occurrence
-        
-        
 
-    
+
+
+
     def __str__(self):
         return "MobileInstance(peer_id={}, service_uuid={}, service_occurrence={}, characteristic_uuid={}, characteristic_occurrence={})".format(self.peer_id, self.service_uuid, self.service_occurrence, self.characteristic_uuid, self.characteristic_occurrence)
     def __eq__(self, other):
@@ -1800,10 +1850,10 @@ class MobileCloseFailure:
     def __init__(self, *, instance:MobileInstance, detail:str):
         self.instance = instance
         self.detail = detail
-        
-        
 
-    
+
+
+
     def __str__(self):
         return "MobileCloseFailure(instance={}, detail={})".format(self.instance, self.detail)
     def __eq__(self, other):
@@ -1850,10 +1900,10 @@ class MobileCompanionRecord:
         self.association_id = association_id
         self.peer_id = peer_id
         self.display_name = display_name
-        
-        
 
-    
+
+
+
     def __str__(self):
         return "MobileCompanionRecord(association_id={}, peer_id={}, display_name={})".format(self.association_id, self.peer_id, self.display_name)
     def __eq__(self, other):
@@ -1894,10 +1944,10 @@ class MobileGattProperties:
         self.write_without_response = write_without_response
         self.notify = notify
         self.indicate = indicate
-        
-        
 
-    
+
+
+
     def __str__(self):
         return "MobileGattProperties(read={}, write={}, write_without_response={}, notify={}, indicate={})".format(self.read, self.write, self.write_without_response, self.notify, self.indicate)
     def __eq__(self, other):
@@ -1945,10 +1995,10 @@ class MobileGattDescriptor:
     def __init__(self, *, uuid:str, occurrence:int):
         self.uuid = uuid
         self.occurrence = occurrence
-        
-        
 
-    
+
+
+
     def __str__(self):
         return "MobileGattDescriptor(uuid={}, occurrence={})".format(self.uuid, self.occurrence)
     def __eq__(self, other):
@@ -2006,10 +2056,10 @@ class MobileGattCharacteristic:
         self.occurrence = occurrence
         self.properties = properties
         self.descriptors = descriptors
-        
-        
 
-    
+
+
+
     def __str__(self):
         return "MobileGattCharacteristic(uuid={}, occurrence={}, properties={}, descriptors={})".format(self.uuid, self.occurrence, self.properties, self.descriptors)
     def __eq__(self, other):
@@ -2076,10 +2126,10 @@ class MobileGattService:
         self.uuid = uuid
         self.occurrence = occurrence
         self.characteristics = characteristics
-        
-        
 
-    
+
+
+
     def __str__(self):
         return "MobileGattService(uuid={}, occurrence={}, characteristics={})".format(self.uuid, self.occurrence, self.characteristics)
     def __eq__(self, other):
@@ -2117,10 +2167,10 @@ class MobilePeerName:
     def __init__(self, *, peer_id:str, name:typing.Optional[str]):
         self.peer_id = peer_id
         self.name = name
-        
-        
 
-    
+
+
+
     def __str__(self):
         return "MobilePeerName(peer_id={}, name={})".format(self.peer_id, self.name)
     def __eq__(self, other):
@@ -2154,10 +2204,10 @@ class MobileRestoredPeer:
         self.peer_id = peer_id
         self.name = name
         self.connected = connected
-        
-        
 
-    
+
+
+
     def __str__(self):
         return "MobileRestoredPeer(peer_id={}, name={}, connected={})".format(self.peer_id, self.name, self.connected)
     def __eq__(self, other):
@@ -2198,10 +2248,10 @@ class MobileSecurityState:
         self.authentication = authentication
         self.secure_connections = secure_connections
         self.pairing_possible = pairing_possible
-        
-        
 
-    
+
+
+
     def __str__(self):
         return "MobileSecurityState(bond={}, encryption={}, authentication={}, secure_connections={}, pairing_possible={})".format(self.bond, self.encryption, self.authentication, self.secure_connections, self.pairing_possible)
     def __eq__(self, other):
@@ -2258,9 +2308,9 @@ class MobileCoreError(Exception):
 _UniffiTempMobileCoreError = MobileCoreError
 
 class MobileCoreError:  # type: ignore
-    
+
     class Failed(_UniffiTempMobileCoreError):
-        
+
         def __init__(self, code, domain, operation, detail):
             super().__init__(", ".join([
                 "code={!r}".format(code),
@@ -2504,14 +2554,14 @@ class MobileRadioCompletion:
     # Each enum variant is a nested class of the enum itself.
     @dataclass
     class UNIT:
-        
+
         def __init__(self, ):
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioCompletion.UNIT()".format()
         def __eq__(self, other):
@@ -2523,17 +2573,17 @@ class MobileRadioCompletion:
 
     @dataclass
     class BYTES:
-        
+
         def __init__(self, value:bytes):
             self.value = value
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioCompletion.BYTES(value={})".format(self.value)
         def __eq__(self, other):
@@ -2547,20 +2597,20 @@ class MobileRadioCompletion:
 
     @dataclass
     class READ:
-        
+
         def __init__(self, value:bytes, provenance:str):
             self.value = value
-            
-            
+
+
             self.provenance = provenance
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioCompletion.READ(value={}, provenance={})".format(self.value, self.provenance)
         def __eq__(self, other):
@@ -2576,17 +2626,17 @@ class MobileRadioCompletion:
 
     @dataclass
     class ADAPTER:
-        
+
         def __init__(self, snapshot:MobileAdapterSnapshot):
             self.snapshot = snapshot
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioCompletion.ADAPTER(snapshot={})".format(self.snapshot)
         def __eq__(self, other):
@@ -2600,17 +2650,17 @@ class MobileRadioCompletion:
 
     @dataclass
     class DISCOVERED:
-        
+
         def __init__(self, services:typing.List[MobileGattService]):
             self.services = services
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioCompletion.DISCOVERED(services={})".format(self.services)
         def __eq__(self, other):
@@ -2624,17 +2674,17 @@ class MobileRadioCompletion:
 
     @dataclass
     class NOTIFY_ENABLED:
-        
+
         def __init__(self, delivery:str):
             self.delivery = delivery
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioCompletion.NOTIFY_ENABLED(delivery={})".format(self.delivery)
         def __eq__(self, other):
@@ -2648,17 +2698,17 @@ class MobileRadioCompletion:
 
     @dataclass
     class MTU:
-        
+
         def __init__(self, mtu:typing.Optional[int]):
             self.mtu = mtu
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioCompletion.MTU(mtu={})".format(self.mtu)
         def __eq__(self, other):
@@ -2672,20 +2722,20 @@ class MobileRadioCompletion:
 
     @dataclass
     class WRITE_LIMITS:
-        
+
         def __init__(self, with_response:int, without_response:int):
             self.with_response = with_response
-            
-            
+
+
             self.without_response = without_response
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioCompletion.WRITE_LIMITS(with_response={}, without_response={})".format(self.with_response, self.without_response)
         def __eq__(self, other):
@@ -2701,17 +2751,17 @@ class MobileRadioCompletion:
 
     @dataclass
     class RSSI:
-        
+
         def __init__(self, rssi:int):
             self.rssi = rssi
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioCompletion.RSSI(rssi={})".format(self.rssi)
         def __eq__(self, other):
@@ -2725,17 +2775,17 @@ class MobileRadioCompletion:
 
     @dataclass
     class ACCEPTED:
-        
+
         def __init__(self, accepted:bool):
             self.accepted = accepted
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioCompletion.ACCEPTED(accepted={})".format(self.accepted)
         def __eq__(self, other):
@@ -2749,20 +2799,20 @@ class MobileRadioCompletion:
 
     @dataclass
     class PHY:
-        
+
         def __init__(self, tx:str, rx:str):
             self.tx = tx
-            
-            
+
+
             self.rx = rx
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioCompletion.PHY(tx={}, rx={})".format(self.tx, self.rx)
         def __eq__(self, other):
@@ -2778,23 +2828,23 @@ class MobileRadioCompletion:
 
     @dataclass
     class PHY_REQUEST:
-        
+
         def __init__(self, accepted:bool, tx:typing.Optional[str], rx:typing.Optional[str]):
             self.accepted = accepted
-            
-            
+
+
             self.tx = tx
-            
-            
+
+
             self.rx = rx
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioCompletion.PHY_REQUEST(accepted={}, tx={}, rx={})".format(self.accepted, self.tx, self.rx)
         def __eq__(self, other):
@@ -2812,17 +2862,17 @@ class MobileRadioCompletion:
 
     @dataclass
     class SECURITY:
-        
+
         def __init__(self, state:MobileSecurityState):
             self.state = state
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioCompletion.SECURITY(state={})".format(self.state)
         def __eq__(self, other):
@@ -2836,17 +2886,17 @@ class MobileRadioCompletion:
 
     @dataclass
     class BONDED_PEERS:
-        
+
         def __init__(self, peers:typing.List[MobilePeerName]):
             self.peers = peers
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioCompletion.BONDED_PEERS(peers={})".format(self.peers)
         def __eq__(self, other):
@@ -2860,17 +2910,17 @@ class MobileRadioCompletion:
 
     @dataclass
     class LEASE:
-        
+
         def __init__(self, lease_id:str):
             self.lease_id = lease_id
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioCompletion.LEASE(lease_id={})".format(self.lease_id)
         def __eq__(self, other):
@@ -2884,26 +2934,26 @@ class MobileRadioCompletion:
 
     @dataclass
     class COMPANION:
-        
+
         def __init__(self, association_id:int, peer_id:typing.Optional[str], display_name:typing.Optional[str], already_associated:bool):
             self.association_id = association_id
-            
-            
+
+
             self.peer_id = peer_id
-            
-            
+
+
             self.display_name = display_name
-            
-            
+
+
             self.already_associated = already_associated
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioCompletion.COMPANION(association_id={}, peer_id={}, display_name={}, already_associated={})".format(self.association_id, self.peer_id, self.display_name, self.already_associated)
         def __eq__(self, other):
@@ -2923,17 +2973,17 @@ class MobileRadioCompletion:
 
     @dataclass
     class COMPANION_LIST:
-        
+
         def __init__(self, records:typing.List[MobileCompanionRecord]):
             self.records = records
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioCompletion.COMPANION_LIST(records={})".format(self.records)
         def __eq__(self, other):
@@ -2947,17 +2997,17 @@ class MobileRadioCompletion:
 
     @dataclass
     class CLOSED:
-        
+
         def __init__(self, failures:typing.List[MobileCloseFailure]):
             self.failures = failures
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioCompletion.CLOSED(failures={})".format(self.failures)
         def __eq__(self, other):
@@ -2971,32 +3021,32 @@ class MobileRadioCompletion:
 
     @dataclass
     class FAILED:
-        
+
         def __init__(self, kind:str, gatt_status:typing.Optional[int], native_domain:typing.Optional[str], native_code:typing.Optional[int], detail:str, dispatched:bool):
             self.kind = kind
-            
-            
+
+
             self.gatt_status = gatt_status
-            
-            
+
+
             self.native_domain = native_domain
-            
-            
+
+
             self.native_code = native_code
-            
-            
+
+
             self.detail = detail
-            
-            
+
+
             self.dispatched = dispatched
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioCompletion.FAILED(kind={}, gatt_status={}, native_domain={}, native_code={}, detail={}, dispatched={})".format(self.kind, self.gatt_status, self.native_domain, self.native_code, self.detail, self.dispatched)
         def __eq__(self, other):
@@ -3018,7 +3068,7 @@ class MobileRadioCompletion:
                 return False
             return True
 
-    
+
 
     # For each variant, we have `is_NAME` and `is_name` methods for easily checking
     # whether an instance is that variant.
@@ -3098,7 +3148,7 @@ class MobileRadioCompletion:
         return isinstance(self, MobileRadioCompletion.FAILED)
     def is_failed(self) -> bool:
         return isinstance(self, MobileRadioCompletion.FAILED)
-    
+
 
 # Now, a little trick - we make each nested variant class be a subclass of the main
 # enum class, so that method calls and instance checks etc will work intuitively.
@@ -3402,17 +3452,17 @@ class MobileRadioIngress:
     # Each enum variant is a nested class of the enum itself.
     @dataclass
     class ADVERTISEMENT:
-        
+
         def __init__(self, advertisement:MobileAdvertisement):
             self.advertisement = advertisement
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioIngress.ADVERTISEMENT(advertisement={})".format(self.advertisement)
         def __eq__(self, other):
@@ -3426,23 +3476,23 @@ class MobileRadioIngress:
 
     @dataclass
     class CONNECTION:
-        
+
         def __init__(self, peer_id:str, connected:bool, status:typing.Optional[int]):
             self.peer_id = peer_id
-            
-            
+
+
             self.connected = connected
-            
-            
+
+
             self.status = status
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioIngress.CONNECTION(peer_id={}, connected={}, status={})".format(self.peer_id, self.connected, self.status)
         def __eq__(self, other):
@@ -3460,17 +3510,17 @@ class MobileRadioIngress:
 
     @dataclass
     class SERVICES_CHANGED:
-        
+
         def __init__(self, peer_id:str):
             self.peer_id = peer_id
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioIngress.SERVICES_CHANGED(peer_id={})".format(self.peer_id)
         def __eq__(self, other):
@@ -3484,23 +3534,23 @@ class MobileRadioIngress:
 
     @dataclass
     class NOTIFICATION:
-        
+
         def __init__(self, instance:MobileInstance, epoch:int, value:bytes):
             self.instance = instance
-            
-            
+
+
             self.epoch = epoch
-            
-            
+
+
             self.value = value
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioIngress.NOTIFICATION(instance={}, epoch={}, value={})".format(self.instance, self.epoch, self.value)
         def __eq__(self, other):
@@ -3518,17 +3568,17 @@ class MobileRadioIngress:
 
     @dataclass
     class ADAPTER_STATE:
-        
+
         def __init__(self, snapshot:MobileAdapterSnapshot):
             self.snapshot = snapshot
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioIngress.ADAPTER_STATE(snapshot={})".format(self.snapshot)
         def __eq__(self, other):
@@ -3542,17 +3592,17 @@ class MobileRadioIngress:
 
     @dataclass
     class SCAN_FAILED:
-        
+
         def __init__(self, detail:str):
             self.detail = detail
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioIngress.SCAN_FAILED(detail={})".format(self.detail)
         def __eq__(self, other):
@@ -3566,20 +3616,20 @@ class MobileRadioIngress:
 
     @dataclass
     class SECURITY_CHANGED:
-        
+
         def __init__(self, peer_id:str, state:MobileSecurityState):
             self.peer_id = peer_id
-            
-            
+
+
             self.state = state
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioIngress.SECURITY_CHANGED(peer_id={}, state={})".format(self.peer_id, self.state)
         def __eq__(self, other):
@@ -3595,17 +3645,17 @@ class MobileRadioIngress:
 
     @dataclass
     class RESTORED:
-        
+
         def __init__(self, peers:typing.List[MobileRestoredPeer]):
             self.peers = peers
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioIngress.RESTORED(peers={})".format(self.peers)
         def __eq__(self, other):
@@ -3619,20 +3669,20 @@ class MobileRadioIngress:
 
     @dataclass
     class DROPPED:
-        
+
         def __init__(self, ingress_class:str, detail:str):
             self.ingress_class = ingress_class
-            
-            
+
+
             self.detail = detail
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioIngress.DROPPED(ingress_class={}, detail={})".format(self.ingress_class, self.detail)
         def __eq__(self, other):
@@ -3646,7 +3696,7 @@ class MobileRadioIngress:
                 return False
             return True
 
-    
+
 
     # For each variant, we have `is_NAME` and `is_name` methods for easily checking
     # whether an instance is that variant.
@@ -3686,7 +3736,7 @@ class MobileRadioIngress:
         return isinstance(self, MobileRadioIngress.DROPPED)
     def is_dropped(self) -> bool:
         return isinstance(self, MobileRadioIngress.DROPPED)
-    
+
 
 # Now, a little trick - we make each nested variant class be a subclass of the main
 # enum class, so that method calls and instance checks etc will work intuitively.
@@ -3839,17 +3889,17 @@ class MobileRadioRequest:
     # Each enum variant is a nested class of the enum itself.
     @dataclass
     class ADAPTER_STATE:
-        
+
         def __init__(self, id:int):
             self.id = id
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.ADAPTER_STATE(id={})".format(self.id)
         def __eq__(self, other):
@@ -3863,32 +3913,32 @@ class MobileRadioRequest:
 
     @dataclass
     class START_SCAN:
-        
+
         def __init__(self, id:int, service_uuids:typing.List[str], device_addresses:typing.List[str], scan_mode:typing.Optional[str], callback_type:typing.Optional[str], legacy:typing.Optional[bool]):
             self.id = id
-            
-            
+
+
             self.service_uuids = service_uuids
-            
-            
+
+
             self.device_addresses = device_addresses
-            
-            
+
+
             self.scan_mode = scan_mode
-            
-            
+
+
             self.callback_type = callback_type
-            
-            
+
+
             self.legacy = legacy
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.START_SCAN(id={}, service_uuids={}, device_addresses={}, scan_mode={}, callback_type={}, legacy={})".format(self.id, self.service_uuids, self.device_addresses, self.scan_mode, self.callback_type, self.legacy)
         def __eq__(self, other):
@@ -3912,17 +3962,17 @@ class MobileRadioRequest:
 
     @dataclass
     class STOP_SCAN:
-        
+
         def __init__(self, id:int):
             self.id = id
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.STOP_SCAN(id={})".format(self.id)
         def __eq__(self, other):
@@ -3936,26 +3986,26 @@ class MobileRadioRequest:
 
     @dataclass
     class CONNECT:
-        
+
         def __init__(self, id:int, peer_id:str, auto_connect:bool, preferred_phy:typing.List[str]):
             self.id = id
-            
-            
+
+
             self.peer_id = peer_id
-            
-            
+
+
             self.auto_connect = auto_connect
-            
-            
+
+
             self.preferred_phy = preferred_phy
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.CONNECT(id={}, peer_id={}, auto_connect={}, preferred_phy={})".format(self.id, self.peer_id, self.auto_connect, self.preferred_phy)
         def __eq__(self, other):
@@ -3975,20 +4025,20 @@ class MobileRadioRequest:
 
     @dataclass
     class DISCONNECT:
-        
+
         def __init__(self, id:int, peer_id:str):
             self.id = id
-            
-            
+
+
             self.peer_id = peer_id
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.DISCONNECT(id={}, peer_id={})".format(self.id, self.peer_id)
         def __eq__(self, other):
@@ -4004,20 +4054,20 @@ class MobileRadioRequest:
 
     @dataclass
     class DISCOVER:
-        
+
         def __init__(self, id:int, peer_id:str):
             self.id = id
-            
-            
+
+
             self.peer_id = peer_id
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.DISCOVER(id={}, peer_id={})".format(self.id, self.peer_id)
         def __eq__(self, other):
@@ -4033,20 +4083,20 @@ class MobileRadioRequest:
 
     @dataclass
     class READ:
-        
+
         def __init__(self, id:int, instance:MobileInstance):
             self.id = id
-            
-            
+
+
             self.instance = instance
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.READ(id={}, instance={})".format(self.id, self.instance)
         def __eq__(self, other):
@@ -4062,26 +4112,26 @@ class MobileRadioRequest:
 
     @dataclass
     class WRITE:
-        
+
         def __init__(self, id:int, instance:MobileInstance, value:bytes, with_response:bool):
             self.id = id
-            
-            
+
+
             self.instance = instance
-            
-            
+
+
             self.value = value
-            
-            
+
+
             self.with_response = with_response
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.WRITE(id={}, instance={}, value={}, with_response={})".format(self.id, self.instance, self.value, self.with_response)
         def __eq__(self, other):
@@ -4101,26 +4151,26 @@ class MobileRadioRequest:
 
     @dataclass
     class READ_DESCRIPTOR:
-        
+
         def __init__(self, id:int, instance:MobileInstance, descriptor_uuid:str, descriptor_occurrence:int):
             self.id = id
-            
-            
+
+
             self.instance = instance
-            
-            
+
+
             self.descriptor_uuid = descriptor_uuid
-            
-            
+
+
             self.descriptor_occurrence = descriptor_occurrence
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.READ_DESCRIPTOR(id={}, instance={}, descriptor_uuid={}, descriptor_occurrence={})".format(self.id, self.instance, self.descriptor_uuid, self.descriptor_occurrence)
         def __eq__(self, other):
@@ -4140,29 +4190,29 @@ class MobileRadioRequest:
 
     @dataclass
     class WRITE_DESCRIPTOR:
-        
+
         def __init__(self, id:int, instance:MobileInstance, descriptor_uuid:str, descriptor_occurrence:int, value:bytes):
             self.id = id
-            
-            
+
+
             self.instance = instance
-            
-            
+
+
             self.descriptor_uuid = descriptor_uuid
-            
-            
+
+
             self.descriptor_occurrence = descriptor_occurrence
-            
-            
+
+
             self.value = value
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.WRITE_DESCRIPTOR(id={}, instance={}, descriptor_uuid={}, descriptor_occurrence={}, value={})".format(self.id, self.instance, self.descriptor_uuid, self.descriptor_occurrence, self.value)
         def __eq__(self, other):
@@ -4184,29 +4234,29 @@ class MobileRadioRequest:
 
     @dataclass
     class ENABLE_NOTIFICATIONS:
-        
+
         def __init__(self, id:int, instance:MobileInstance, epoch:int, requested:typing.Optional[str], preferred:typing.Optional[str]):
             self.id = id
-            
-            
+
+
             self.instance = instance
-            
-            
+
+
             self.epoch = epoch
-            
-            
+
+
             self.requested = requested
-            
-            
+
+
             self.preferred = preferred
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.ENABLE_NOTIFICATIONS(id={}, instance={}, epoch={}, requested={}, preferred={})".format(self.id, self.instance, self.epoch, self.requested, self.preferred)
         def __eq__(self, other):
@@ -4228,20 +4278,20 @@ class MobileRadioRequest:
 
     @dataclass
     class DISABLE_NOTIFICATIONS:
-        
+
         def __init__(self, id:int, instance:MobileInstance):
             self.id = id
-            
-            
+
+
             self.instance = instance
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.DISABLE_NOTIFICATIONS(id={}, instance={})".format(self.id, self.instance)
         def __eq__(self, other):
@@ -4257,20 +4307,20 @@ class MobileRadioRequest:
 
     @dataclass
     class READ_MTU:
-        
+
         def __init__(self, id:int, peer_id:str):
             self.id = id
-            
-            
+
+
             self.peer_id = peer_id
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.READ_MTU(id={}, peer_id={})".format(self.id, self.peer_id)
         def __eq__(self, other):
@@ -4286,20 +4336,20 @@ class MobileRadioRequest:
 
     @dataclass
     class READ_WRITE_LIMITS:
-        
+
         def __init__(self, id:int, peer_id:str):
             self.id = id
-            
-            
+
+
             self.peer_id = peer_id
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.READ_WRITE_LIMITS(id={}, peer_id={})".format(self.id, self.peer_id)
         def __eq__(self, other):
@@ -4315,23 +4365,23 @@ class MobileRadioRequest:
 
     @dataclass
     class REQUEST_MTU:
-        
+
         def __init__(self, id:int, peer_id:str, mtu:int):
             self.id = id
-            
-            
+
+
             self.peer_id = peer_id
-            
-            
+
+
             self.mtu = mtu
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.REQUEST_MTU(id={}, peer_id={}, mtu={})".format(self.id, self.peer_id, self.mtu)
         def __eq__(self, other):
@@ -4349,20 +4399,20 @@ class MobileRadioRequest:
 
     @dataclass
     class READ_RSSI:
-        
+
         def __init__(self, id:int, peer_id:str):
             self.id = id
-            
-            
+
+
             self.peer_id = peer_id
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.READ_RSSI(id={}, peer_id={})".format(self.id, self.peer_id)
         def __eq__(self, other):
@@ -4378,23 +4428,23 @@ class MobileRadioRequest:
 
     @dataclass
     class REQUEST_CONNECTION_PRIORITY:
-        
+
         def __init__(self, id:int, peer_id:str, priority:str):
             self.id = id
-            
-            
+
+
             self.peer_id = peer_id
-            
-            
+
+
             self.priority = priority
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.REQUEST_CONNECTION_PRIORITY(id={}, peer_id={}, priority={})".format(self.id, self.peer_id, self.priority)
         def __eq__(self, other):
@@ -4412,20 +4462,20 @@ class MobileRadioRequest:
 
     @dataclass
     class READ_PHY:
-        
+
         def __init__(self, id:int, peer_id:str):
             self.id = id
-            
-            
+
+
             self.peer_id = peer_id
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.READ_PHY(id={}, peer_id={})".format(self.id, self.peer_id)
         def __eq__(self, other):
@@ -4441,26 +4491,26 @@ class MobileRadioRequest:
 
     @dataclass
     class REQUEST_PHY:
-        
+
         def __init__(self, id:int, peer_id:str, tx:typing.Optional[str], rx:typing.Optional[str]):
             self.id = id
-            
-            
+
+
             self.peer_id = peer_id
-            
-            
+
+
             self.tx = tx
-            
-            
+
+
             self.rx = rx
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.REQUEST_PHY(id={}, peer_id={}, tx={}, rx={})".format(self.id, self.peer_id, self.tx, self.rx)
         def __eq__(self, other):
@@ -4480,20 +4530,20 @@ class MobileRadioRequest:
 
     @dataclass
     class SECURITY_STATE:
-        
+
         def __init__(self, id:int, peer_id:str):
             self.id = id
-            
-            
+
+
             self.peer_id = peer_id
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.SECURITY_STATE(id={}, peer_id={})".format(self.id, self.peer_id)
         def __eq__(self, other):
@@ -4509,23 +4559,23 @@ class MobileRadioRequest:
 
     @dataclass
     class CREATE_BOND:
-        
+
         def __init__(self, id:int, peer_id:str, transport:str):
             self.id = id
-            
-            
+
+
             self.peer_id = peer_id
-            
-            
+
+
             self.transport = transport
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.CREATE_BOND(id={}, peer_id={}, transport={})".format(self.id, self.peer_id, self.transport)
         def __eq__(self, other):
@@ -4543,20 +4593,20 @@ class MobileRadioRequest:
 
     @dataclass
     class CANCEL_BOND:
-        
+
         def __init__(self, id:int, peer_id:str):
             self.id = id
-            
-            
+
+
             self.peer_id = peer_id
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.CANCEL_BOND(id={}, peer_id={})".format(self.id, self.peer_id)
         def __eq__(self, other):
@@ -4572,17 +4622,17 @@ class MobileRadioRequest:
 
     @dataclass
     class BONDED_PEERS:
-        
+
         def __init__(self, id:int):
             self.id = id
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.BONDED_PEERS(id={})".format(self.id)
         def __eq__(self, other):
@@ -4596,23 +4646,23 @@ class MobileRadioRequest:
 
     @dataclass
     class ACQUIRE_BACKGROUND:
-        
+
         def __init__(self, id:int, kind:str, reason:str):
             self.id = id
-            
-            
+
+
             self.kind = kind
-            
-            
+
+
             self.reason = reason
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.ACQUIRE_BACKGROUND(id={}, kind={}, reason={})".format(self.id, self.kind, self.reason)
         def __eq__(self, other):
@@ -4630,20 +4680,20 @@ class MobileRadioRequest:
 
     @dataclass
     class RELEASE_BACKGROUND:
-        
+
         def __init__(self, id:int, lease_id:str):
             self.id = id
-            
-            
+
+
             self.lease_id = lease_id
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.RELEASE_BACKGROUND(id={}, lease_id={})".format(self.id, self.lease_id)
         def __eq__(self, other):
@@ -4659,26 +4709,26 @@ class MobileRadioRequest:
 
     @dataclass
     class UPDATE_BACKGROUND_NOTIFICATION:
-        
+
         def __init__(self, id:int, lease_id:str, title:str, body:typing.Optional[str]):
             self.id = id
-            
-            
+
+
             self.lease_id = lease_id
-            
-            
+
+
             self.title = title
-            
-            
+
+
             self.body = body
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.UPDATE_BACKGROUND_NOTIFICATION(id={}, lease_id={}, title={}, body={})".format(self.id, self.lease_id, self.title, self.body)
         def __eq__(self, other):
@@ -4698,23 +4748,23 @@ class MobileRadioRequest:
 
     @dataclass
     class ASSOCIATE_COMPANION:
-        
+
         def __init__(self, id:int, name:typing.Optional[str], service_uuid:typing.Optional[str]):
             self.id = id
-            
-            
+
+
             self.name = name
-            
-            
+
+
             self.service_uuid = service_uuid
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.ASSOCIATE_COMPANION(id={}, name={}, service_uuid={})".format(self.id, self.name, self.service_uuid)
         def __eq__(self, other):
@@ -4732,17 +4782,17 @@ class MobileRadioRequest:
 
     @dataclass
     class LIST_COMPANION:
-        
+
         def __init__(self, id:int):
             self.id = id
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.LIST_COMPANION(id={})".format(self.id)
         def __eq__(self, other):
@@ -4756,20 +4806,20 @@ class MobileRadioRequest:
 
     @dataclass
     class DISASSOCIATE_COMPANION:
-        
+
         def __init__(self, id:int, association_id:int):
             self.id = id
-            
-            
+
+
             self.association_id = association_id
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.DISASSOCIATE_COMPANION(id={}, association_id={})".format(self.id, self.association_id)
         def __eq__(self, other):
@@ -4785,20 +4835,20 @@ class MobileRadioRequest:
 
     @dataclass
     class OBSERVE_PRESENCE:
-        
+
         def __init__(self, id:int, peer_id:str):
             self.id = id
-            
-            
+
+
             self.peer_id = peer_id
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.OBSERVE_PRESENCE(id={}, peer_id={})".format(self.id, self.peer_id)
         def __eq__(self, other):
@@ -4814,20 +4864,20 @@ class MobileRadioRequest:
 
     @dataclass
     class STOP_PRESENCE:
-        
+
         def __init__(self, id:int, peer_id:str):
             self.id = id
-            
-            
+
+
             self.peer_id = peer_id
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.STOP_PRESENCE(id={}, peer_id={})".format(self.id, self.peer_id)
         def __eq__(self, other):
@@ -4843,17 +4893,17 @@ class MobileRadioRequest:
 
     @dataclass
     class CLOSE:
-        
+
         def __init__(self, id:int):
             self.id = id
-            
-            
+
+
             pass
 
-    
-            
-            
-    
+
+
+
+
         def __str__(self):
             return "MobileRadioRequest.CLOSE(id={})".format(self.id)
         def __eq__(self, other):
@@ -4865,7 +4915,7 @@ class MobileRadioRequest:
                 return False
             return True
 
-    
+
 
     # For each variant, we have `is_NAME` and `is_name` methods for easily checking
     # whether an instance is that variant.
@@ -4997,7 +5047,7 @@ class MobileRadioRequest:
         return isinstance(self, MobileRadioRequest.CLOSE)
     def is_close(self) -> bool:
         return isinstance(self, MobileRadioRequest.CLOSE)
-    
+
 
 # Now, a little trick - we make each nested variant class be a subclass of the main
 # enum class, so that method calls and instance checks etc will work intuitively.
@@ -5544,7 +5594,7 @@ class _UniffiFfiConverterUInt32(_UniffiConverterPrimitiveInt):
 
 
 class EchoSessionProtocol(typing.Protocol):
-    
+
     def ble_scan_start(self, owner: str,timeout_ms: str,now_ms: str) -> EchoCounterResult:
         raise NotImplementedError
     def ble_scan_stop(self, op_id: str,now_ms: str) -> EchoCounterResult:
@@ -5577,10 +5627,10 @@ class EchoSessionProtocol(typing.Protocol):
         raise NotImplementedError
 
 class EchoSession(EchoSessionProtocol):
-    
+
     _handle: ctypes.c_uint64
     def __init__(self, revision: str):
-        
+
         _UniffiFfiConverterString.check_lower(revision)
         _uniffi_lowered_args = (
             _UniffiFfiConverterString.lower(revision),
@@ -5612,7 +5662,7 @@ class EchoSession(EchoSessionProtocol):
         inst._handle = handle
         return inst
     def ble_scan_start(self, owner: str,timeout_ms: str,now_ms: str) -> EchoCounterResult:
-        
+
         _UniffiFfiConverterString.check_lower(owner)
 
         _UniffiFfiConverterString.check_lower(timeout_ms)
@@ -5633,7 +5683,7 @@ class EchoSession(EchoSessionProtocol):
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
     def ble_scan_stop(self, op_id: str,now_ms: str) -> EchoCounterResult:
-        
+
         _UniffiFfiConverterString.check_lower(op_id)
 
         _UniffiFfiConverterString.check_lower(now_ms)
@@ -5711,7 +5761,7 @@ class EchoSession(EchoSessionProtocol):
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
     def drive_expire_sweep(self, now_ms: str) -> EchoCounterResult:
-        
+
         _UniffiFfiConverterString.check_lower(now_ms)
         _uniffi_lowered_args = (
             self._uniffi_clone_handle(),
@@ -5726,7 +5776,7 @@ class EchoSession(EchoSessionProtocol):
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
     def echo_bytes(self, input: bytes) -> EchoBytesResult:
-        
+
         _UniffiFfiConverterBytes.check_lower(input)
         _uniffi_lowered_args = (
             self._uniffi_clone_handle(),
@@ -5741,7 +5791,7 @@ class EchoSession(EchoSessionProtocol):
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
     def echo_bytes_chunked(self, input: bytes,chunks: int) -> EchoBytesResult:
-        
+
         _UniffiFfiConverterBytes.check_lower(input)
 
         _UniffiFfiConverterUInt32.check_lower(chunks)
@@ -5759,7 +5809,7 @@ class EchoSession(EchoSessionProtocol):
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
     def echo_counter(self, decimal: str) -> EchoCounterResult:
-        
+
         _UniffiFfiConverterString.check_lower(decimal)
         _uniffi_lowered_args = (
             self._uniffi_clone_handle(),
@@ -5774,7 +5824,7 @@ class EchoSession(EchoSessionProtocol):
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
     def request_ble_transition(self, transition: str) -> EchoStatus:
-        
+
         _UniffiFfiConverterString.check_lower(transition)
         _uniffi_lowered_args = (
             self._uniffi_clone_handle(),
@@ -5813,7 +5863,7 @@ class EchoSession(EchoSessionProtocol):
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
     def staged_step(self, line: str) -> EchoCounterResult:
-        
+
         _UniffiFfiConverterString.check_lower(line)
         _uniffi_lowered_args = (
             self._uniffi_clone_handle(),
@@ -5861,7 +5911,7 @@ class _UniffiFfiConverterTypeEchoSession:
 
 
 class MobileInvokeCompletion(typing.Protocol):
-    
+
     def complete(self, envelope: str) -> None:
         raise NotImplementedError
 # Put all the bits inside a class to keep the top-level namespace clean
@@ -5910,7 +5960,7 @@ _UniffiFfiConverterTypeMobileInvokeCompletion = _UniffiCallbackInterfaceFfiConve
 
 
 class MobileCoreSessionProtocol(typing.Protocol):
-    
+
     def admission_json(self, ) -> str:
         raise NotImplementedError
     def drain(self, max_items: int,max_bytes: int) -> str:
@@ -5921,9 +5971,9 @@ class MobileCoreSessionProtocol(typing.Protocol):
         raise NotImplementedError
 
 class MobileCoreSession(MobileCoreSessionProtocol):
-    
+
     _handle: ctypes.c_uint64
-    
+
     def __init__(self, *args, **kwargs):
         raise ValueError("This class has no default constructor")
 
@@ -5957,7 +6007,7 @@ class MobileCoreSession(MobileCoreSessionProtocol):
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
     def drain(self, max_items: int,max_bytes: int) -> str:
-        
+
         _UniffiFfiConverterUInt32.check_lower(max_items)
 
         _UniffiFfiConverterUInt32.check_lower(max_bytes)
@@ -5975,7 +6025,7 @@ class MobileCoreSession(MobileCoreSessionProtocol):
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
     def invoke(self, op: str,args_json: str,completion: MobileInvokeCompletion) -> None:
-        
+
         _UniffiFfiConverterString.check_lower(op)
 
         _UniffiFfiConverterString.check_lower(args_json)
@@ -6039,7 +6089,7 @@ class _UniffiFfiConverterTypeMobileCoreSession:
 
 
 class MobileCoreHostProtocol(typing.Protocol):
-    
+
     def complete(self, request_id: int,completion: MobileRadioCompletion) -> str:
         raise NotImplementedError
     def continuation_acknowledge_claim(self, claim_token: str,completion: MobileInvokeCompletion) -> None:
@@ -6048,6 +6098,8 @@ class MobileCoreHostProtocol(typing.Protocol):
         raise NotImplementedError
     def continuation_commit_declaration(self, reservation_token: str) -> str:
         raise NotImplementedError
+    def continuation_configure_recording_directory(self, path: str) -> str:
+        raise NotImplementedError
     def continuation_declaration_replacement_failure(self, declaration_json: str) -> typing.Optional[str]:
         raise NotImplementedError
     def continuation_describe_backlog(self, completion: MobileInvokeCompletion) -> None:
@@ -6055,6 +6107,8 @@ class MobileCoreHostProtocol(typing.Protocol):
     def continuation_execute(self, peer_id: str,declaration_json: str,completion: MobileInvokeCompletion) -> None:
         raise NotImplementedError
     def continuation_prepare_claim(self, max_items: int,max_bytes: int,completion: MobileInvokeCompletion) -> None:
+        raise NotImplementedError
+    def continuation_recording_control(self, operation: str,id: str,token: str,max_items: int,max_bytes: int) -> str:
         raise NotImplementedError
     def continuation_reserve_declaration(self, declaration_json: str) -> str:
         raise NotImplementedError
@@ -6068,9 +6122,9 @@ class MobileCoreHostProtocol(typing.Protocol):
         raise NotImplementedError
 
 class MobileCoreHost(MobileCoreHostProtocol):
-    
+
     _handle: ctypes.c_uint64
-    
+
     def __init__(self, *args, **kwargs):
         raise ValueError("This class has no default constructor")
 
@@ -6092,7 +6146,7 @@ class MobileCoreHost(MobileCoreHostProtocol):
         inst._handle = handle
         return inst
     def complete(self, request_id: int,completion: MobileRadioCompletion) -> str:
-        
+
         _UniffiFfiConverterUInt64.check_lower(request_id)
 
         _UniffiFfiConverterTypeMobileRadioCompletion.check_lower(completion)
@@ -6110,7 +6164,7 @@ class MobileCoreHost(MobileCoreHostProtocol):
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
     def continuation_acknowledge_claim(self, claim_token: str,completion: MobileInvokeCompletion) -> None:
-        
+
         _UniffiFfiConverterString.check_lower(claim_token)
 
         _UniffiFfiConverterTypeMobileInvokeCompletion.check_lower(completion)
@@ -6128,7 +6182,7 @@ class MobileCoreHost(MobileCoreHostProtocol):
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
     def continuation_cancel_declaration(self, reservation_token: str) -> str:
-        
+
         _UniffiFfiConverterString.check_lower(reservation_token)
         _uniffi_lowered_args = (
             self._uniffi_clone_handle(),
@@ -6143,7 +6197,7 @@ class MobileCoreHost(MobileCoreHostProtocol):
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
     def continuation_commit_declaration(self, reservation_token: str) -> str:
-        
+
         _UniffiFfiConverterString.check_lower(reservation_token)
         _uniffi_lowered_args = (
             self._uniffi_clone_handle(),
@@ -6157,8 +6211,23 @@ class MobileCoreHost(MobileCoreHostProtocol):
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
+    def continuation_configure_recording_directory(self, path: str) -> str:
+
+        _UniffiFfiConverterString.check_lower(path)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(path),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_configure_recording_directory,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
     def continuation_declaration_replacement_failure(self, declaration_json: str) -> typing.Optional[str]:
-        
+
         _UniffiFfiConverterString.check_lower(declaration_json)
         _uniffi_lowered_args = (
             self._uniffi_clone_handle(),
@@ -6173,7 +6242,7 @@ class MobileCoreHost(MobileCoreHostProtocol):
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
     def continuation_describe_backlog(self, completion: MobileInvokeCompletion) -> None:
-        
+
         _UniffiFfiConverterTypeMobileInvokeCompletion.check_lower(completion)
         _uniffi_lowered_args = (
             self._uniffi_clone_handle(),
@@ -6188,7 +6257,7 @@ class MobileCoreHost(MobileCoreHostProtocol):
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
     def continuation_execute(self, peer_id: str,declaration_json: str,completion: MobileInvokeCompletion) -> None:
-        
+
         _UniffiFfiConverterString.check_lower(peer_id)
 
         _UniffiFfiConverterString.check_lower(declaration_json)
@@ -6209,7 +6278,7 @@ class MobileCoreHost(MobileCoreHostProtocol):
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
     def continuation_prepare_claim(self, max_items: int,max_bytes: int,completion: MobileInvokeCompletion) -> None:
-        
+
         _UniffiFfiConverterUInt32.check_lower(max_items)
 
         _UniffiFfiConverterUInt32.check_lower(max_bytes)
@@ -6229,8 +6298,35 @@ class MobileCoreHost(MobileCoreHostProtocol):
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
+    def continuation_recording_control(self, operation: str,id: str,token: str,max_items: int,max_bytes: int) -> str:
+
+        _UniffiFfiConverterString.check_lower(operation)
+
+        _UniffiFfiConverterString.check_lower(id)
+
+        _UniffiFfiConverterString.check_lower(token)
+
+        _UniffiFfiConverterUInt32.check_lower(max_items)
+
+        _UniffiFfiConverterUInt32.check_lower(max_bytes)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(operation),
+            _UniffiFfiConverterString.lower(id),
+            _UniffiFfiConverterString.lower(token),
+            _UniffiFfiConverterUInt32.lower(max_items),
+            _UniffiFfiConverterUInt32.lower(max_bytes),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_recording_control,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
     def continuation_reserve_declaration(self, declaration_json: str) -> str:
-        
+
         _UniffiFfiConverterString.check_lower(declaration_json)
         _uniffi_lowered_args = (
             self._uniffi_clone_handle(),
@@ -6245,7 +6341,7 @@ class MobileCoreHost(MobileCoreHostProtocol):
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
     def continuation_seed_declaration(self, declaration_json: str) -> str:
-        
+
         _UniffiFfiConverterString.check_lower(declaration_json)
         _uniffi_lowered_args = (
             self._uniffi_clone_handle(),
@@ -6260,7 +6356,7 @@ class MobileCoreHost(MobileCoreHostProtocol):
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
     def ingest(self, ingress: MobileRadioIngress) -> str:
-        
+
         _UniffiFfiConverterTypeMobileRadioIngress.check_lower(ingress)
         _uniffi_lowered_args = (
             self._uniffi_clone_handle(),
@@ -6275,7 +6371,7 @@ class MobileCoreHost(MobileCoreHostProtocol):
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
     def open_session(self, owner: str,expected_wire_revision: str) -> MobileCoreSession:
-        
+
         _UniffiFfiConverterString.check_lower(owner)
 
         _UniffiFfiConverterString.check_lower(expected_wire_revision)
@@ -6338,7 +6434,7 @@ class _UniffiFfiConverterTypeMobileCoreHost:
 
 
 class MobilePlatformRadio(typing.Protocol):
-    
+
     def submit(self, request: MobileRadioRequest) -> None:
         raise NotImplementedError
     def cancel(self, request_id: int) -> None:
@@ -6411,7 +6507,7 @@ _UniffiFfiConverterTypeMobilePlatformRadio = _UniffiCallbackInterfaceFfiConverte
 
 
 class MobileWakeSink(typing.Protocol):
-    
+
     def wake(self, session_id: int) -> None:
         raise NotImplementedError
 # Put all the bits inside a class to keep the top-level namespace clean
@@ -6516,7 +6612,7 @@ def mobile_host_current() -> typing.Optional[MobileCoreHost]:
     )
     return _uniffi_lift_return(_uniffi_ffi_result)
 def mobile_host_install(radio: MobilePlatformRadio,wake: MobileWakeSink,platform: str,owner: str,adapter_label: str) -> MobileCoreHost:
-    
+
     _UniffiFfiConverterTypeMobilePlatformRadio.check_lower(radio)
 
     _UniffiFfiConverterTypeMobileWakeSink.check_lower(wake)
@@ -6538,6 +6634,46 @@ def mobile_host_install(radio: MobilePlatformRadio,wake: MobileWakeSink,platform
     _uniffi_ffi_result = _uniffi_rust_call_with_error(
         _uniffi_error_converter,
         _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_install,
+        *_uniffi_lowered_args,
+    )
+    return _uniffi_lift_return(_uniffi_ffi_result)
+def mobile_recording_configure_directory(path: str) -> str:
+
+    _UniffiFfiConverterString.check_lower(path)
+    _uniffi_lowered_args = (
+        _UniffiFfiConverterString.lower(path),
+    )
+    _uniffi_lift_return = _UniffiFfiConverterString.lift
+    _uniffi_error_converter = None
+    _uniffi_ffi_result = _uniffi_rust_call_with_error(
+        _uniffi_error_converter,
+        _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_recording_configure_directory,
+        *_uniffi_lowered_args,
+    )
+    return _uniffi_lift_return(_uniffi_ffi_result)
+def mobile_recording_control(operation: str,id: str,token: str,max_items: int,max_bytes: int) -> str:
+
+    _UniffiFfiConverterString.check_lower(operation)
+
+    _UniffiFfiConverterString.check_lower(id)
+
+    _UniffiFfiConverterString.check_lower(token)
+
+    _UniffiFfiConverterUInt32.check_lower(max_items)
+
+    _UniffiFfiConverterUInt32.check_lower(max_bytes)
+    _uniffi_lowered_args = (
+        _UniffiFfiConverterString.lower(operation),
+        _UniffiFfiConverterString.lower(id),
+        _UniffiFfiConverterString.lower(token),
+        _UniffiFfiConverterUInt32.lower(max_items),
+        _UniffiFfiConverterUInt32.lower(max_bytes),
+    )
+    _uniffi_lift_return = _UniffiFfiConverterString.lift
+    _uniffi_error_converter = None
+    _uniffi_ffi_result = _uniffi_rust_call_with_error(
+        _uniffi_error_converter,
+        _UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_recording_control,
         *_uniffi_lowered_args,
     )
     return _uniffi_lift_return(_uniffi_ffi_result)
@@ -6580,6 +6716,8 @@ __all__ = [
     "mobile_contract_revision",
     "mobile_host_current",
     "mobile_host_install",
+    "mobile_recording_configure_directory",
+    "mobile_recording_control",
     "mobile_wire_revision",
     "EchoSession",
     "EchoSessionProtocol",

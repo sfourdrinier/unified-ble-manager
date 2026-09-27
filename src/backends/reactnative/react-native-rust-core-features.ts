@@ -29,6 +29,7 @@ export type ReactNativeRustCoreFeaturePlatform = 'android' | 'apple'
 
 /** Facts about the running OS the host supplies (never inferred). */
 export interface ReactNativeRustCoreRuntimeFacts {
+  readonly continuationBindingAvailable?: boolean
   /** Android API level (`Platform.Version`); LE PHY control needs API 26+. */
   readonly androidApiLevel: number | null
   /** Whether this Apple host has a configured native restoration authority. */
@@ -220,6 +221,7 @@ export function createReactNativeRustCoreFeatureRegistry(
     // for the instantiated platform — never a static matrix.
     createReactNativeContinuationFeatureRegistry(platform, implementationVersion, {
       androidApiLevel: facts.androidApiLevel,
+      continuationBindingAvailable: facts.continuationBindingAvailable === true,
       appleRestorationConfigured: facts.appleRestorationConfigured === true
     }),
     createFeatureRegistry(

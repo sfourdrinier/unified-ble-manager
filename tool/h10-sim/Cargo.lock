@@ -438,6 +438,8 @@ dependencies = [
  "ble-peripheral-rust",
  "bluer",
  "chrono",
+ "dbus",
+ "dbus-tokio",
  "futures",
  "libc",
  "serde",

@@ -29,12 +29,13 @@ use core_backend::{CoreSession, EchoError, SharedCore, StagedError};
 // generated scaffolding.
 pub use mobile::{
     mobile_build_identity_json, mobile_contract_revision, mobile_host_current, mobile_host_install,
-    mobile_wire_revision, MobileAdapterSnapshot, MobileAdvertisement, MobileCloseFailure,
-    MobileCompanionRecord, MobileCoreError, MobileCoreHost, MobileCoreSession,
-    MobileGattCharacteristic, MobileGattDescriptor, MobileGattProperties, MobileGattService,
-    MobileInstance, MobileInvokeCompletion, MobileManufacturerData, MobilePeerName,
-    MobilePlatformRadio, MobileRadioCompletion, MobileRadioIngress, MobileRadioRequest,
-    MobileRestoredPeer, MobileSecurityState, MobileServiceData, MobileWakeSink,
+    mobile_recording_configure_directory, mobile_recording_control, mobile_wire_revision,
+    MobileAdapterSnapshot, MobileAdvertisement, MobileCloseFailure, MobileCompanionRecord,
+    MobileCoreError, MobileCoreHost, MobileCoreSession, MobileGattCharacteristic,
+    MobileGattDescriptor, MobileGattProperties, MobileGattService, MobileInstance,
+    MobileInvokeCompletion, MobileManufacturerData, MobilePeerName, MobilePlatformRadio,
+    MobileRadioCompletion, MobileRadioIngress, MobileRadioRequest, MobileRestoredPeer,
+    MobileSecurityState, MobileServiceData, MobileWakeSink,
 };
 
 uniffi::include_scaffolding!("ubm_echo");

@@ -26,13 +26,17 @@ import {
   type WriteMode
 } from '../../backend-contract/operations'
 import type { StreamTerminalNotice } from '../../backend-contract/streams'
+import {
+  MAX_RECORDING_PREPARE_TEXT_BYTES,
+  type RecordingControlOperation
+} from '../../backend-contract/continuation-recording-bounds'
 
 export const WIRE_REVISION = 'ubm-mobile-wire/1'
 /** Frozen C-UBM per-operation byte ceiling (`contracts/src/bounds.ts`, `ubm_core::contracts`). */
 export const MAX_OPERATION_BYTES = 524288
 /** Longest padded base64 text that can encode `MAX_OPERATION_BYTES`. */
 export const MAX_BASE64_LENGTH = 4 * Math.ceil(MAX_OPERATION_BYTES / 3)
-/** Bound on any JSON text crossing the native boundary, in UTF-8 bytes. */
+/** Ordinary operation JSON ceiling; durable prepare has its own bounded contract. */
 export const MAX_WIRE_TEXT_BYTES = 1048576
 /** Union of `ubm_core::central::GATT_PROP_*` bits the core can report. */
 export const GATT_PROPERTY_MASK = 0x1f
@@ -436,6 +440,8 @@ export interface WireOpResults {
 export interface WireAdvertisementRecord {
   readonly t: 'adv'
   readonly ordinal: number
+  readonly operationId: string
+  readonly startOperationId: string
   readonly peerId: string
   readonly localName: string | null
   readonly rssi: number | null
@@ -667,17 +673,22 @@ function utf8LengthExceeds(text: string, limit: number): boolean {
   return false
 }
 
-function assertTextWithinBound(text: string, path: string, domain: BleErrorDomain): void {
+function assertTextWithinBound(
+  text: string,
+  path: string,
+  domain: BleErrorDomain,
+  maximumBytes = MAX_WIRE_TEXT_BYTES
+): void {
   // A UTF-16 code unit is never less than one UTF-8 byte, so the length
   // check is a sound early reject before the exact byte count.
-  if (text.length > MAX_WIRE_TEXT_BYTES || utf8LengthExceeds(text, MAX_WIRE_TEXT_BYTES)) {
+  if (text.length > maximumBytes || utf8LengthExceeds(text, maximumBytes)) {
     throw contractError('bytes.too-large', domain, operationName(path))
   }
 }
 
-function parseWireTextOrThrow(text: unknown, path: string): unknown {
+function parseWireTextOrThrow(text: unknown, path: string, maximumBytes = MAX_WIRE_TEXT_BYTES): unknown {
   if (typeof text !== 'string') throw malformed(path)
-  assertTextWithinBound(text, path, 'core')
+  assertTextWithinBound(text, path, 'core', maximumBytes)
   try {
     const parsed: unknown = JSON.parse(text)
     return parsed
@@ -917,25 +928,55 @@ function wireOpOrThrow(op: unknown, path: string): WireOp {
 export function parseInvokeEnvelope(text: unknown, op: WireOp): WireResult<WireInvokeEnvelope> {
   return capture(() => {
     const knownOp = wireOpOrThrow(op, 'envelope.op')
-    const path = `${knownOp}.envelope`
-    const value = parseWireTextOrThrow(text, path)
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw malformed(path)
-    const ok = new Map<string, unknown>(Object.entries(value)).get('ok')
-    if (ok === true) {
-      const fields = exactObject(value, ['ok', 'value'], path)
-      return Object.freeze({ kind: 'value', value: fields.get('value') })
-    }
-    if (ok !== false) throw malformed(`${path}.ok`)
-    const fields = exactObject(value, ['ok', 'error', 'commit', 'retryability'], path)
-    const failure = remoteFailureOrThrow(fields.get('error'), `${path}.error`)
-    const commit = nullable(fields.get('commit'), `${path}.commit`, (entry, entryPath) =>
-      enumOrThrow(entry, COMMIT_STATES, entryPath)
-    )
-    if (WRITE_OPS.includes(knownOp) !== (commit !== null)) throw malformed(`${path}.commit`)
-    const retryability = enumOrThrow(fields.get('retryability'), BLE_RETRYABILITIES, `${path}.retryability`)
-    if (commit === 'uncertain' && retryability !== 'never') throw malformed(`${path}.retryability`)
-    return Object.freeze({ kind: 'failure', failure, commit, retryability })
+    return invokeEnvelopeOrThrow(text, `${knownOp}.envelope`, WRITE_OPS.includes(knownOp))
   })
+}
+
+/** Native control methods are not session-wire operations and must not be
+ * mislabeled as counters.describe. They retain the ordinary response ceiling. */
+export function parseNativeControlEnvelope(text: unknown, operation: string): WireResult<WireInvokeEnvelope> {
+  return capture(() => invokeEnvelopeOrThrow(text, `${operation}.envelope`, false))
+}
+
+/** Only durable prepare admits the documented 4 MiB serialized-record budget. */
+export function parseRecordingControlEnvelope(
+  text: unknown,
+  operation: RecordingControlOperation
+): WireResult<WireInvokeEnvelope> {
+  return capture(() => {
+    enumOrThrow(operation, ['status', 'prepare', 'acknowledge', 'stop', 'clear'], 'continuation.recording.operation')
+    return invokeEnvelopeOrThrow(
+      text,
+      `continuation.recording.${operation}.envelope`,
+      false,
+      operation === 'prepare' ? MAX_RECORDING_PREPARE_TEXT_BYTES : MAX_WIRE_TEXT_BYTES
+    )
+  })
+}
+
+function invokeEnvelopeOrThrow(
+  text: unknown,
+  path: string,
+  writing: boolean,
+  maximumBytes = MAX_WIRE_TEXT_BYTES
+): WireInvokeEnvelope {
+  const value = parseWireTextOrThrow(text, path, maximumBytes)
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw malformed(path)
+  const ok = new Map<string, unknown>(Object.entries(value)).get('ok')
+  if (ok === true) {
+    const fields = exactObject(value, ['ok', 'value'], path)
+    return Object.freeze({ kind: 'value', value: fields.get('value') })
+  }
+  if (ok !== false) throw malformed(`${path}.ok`)
+  const fields = exactObject(value, ['ok', 'error', 'commit', 'retryability'], path)
+  const failure = remoteFailureOrThrow(fields.get('error'), `${path}.error`)
+  const commit = nullable(fields.get('commit'), `${path}.commit`, (entry, entryPath) =>
+    enumOrThrow(entry, COMMIT_STATES, entryPath)
+  )
+  if (writing !== (commit !== null)) throw malformed(`${path}.commit`)
+  const retryability = enumOrThrow(fields.get('retryability'), BLE_RETRYABILITIES, `${path}.retryability`)
+  if (commit === 'uncertain' && retryability !== 'never') throw malformed(`${path}.retryability`)
+  return Object.freeze({ kind: 'failure', failure, commit, retryability })
 }
 
 /**
@@ -1612,6 +1653,8 @@ function advertisementOrThrow(fields: ReadonlyMap<string, unknown>, ordinal: num
   const record: WireAdvertisementRecord = {
     t: 'adv',
     ordinal,
+    operationId: stringOrThrow(fields.get('operationId'), `${path}.operationId`),
+    startOperationId: stringOrThrow(fields.get('startOperationId'), `${path}.startOperationId`),
     peerId: stringOrThrow(fields.get('peerId'), `${path}.peerId`),
     localName: optionalTextOrThrow(fields.get('localName'), `${path}.localName`),
     rssi: nullable(fields.get('rssi'), `${path}.rssi`, (entry, entryPath) =>
@@ -1670,6 +1713,8 @@ function drainRecordOrThrow(value: unknown, path: string): WireDrainRecord {
   switch (type) {
     case 'adv': {
       const { fields, ordinal } = read([
+        'operationId',
+        'startOperationId',
         'peerId',
         'localName',
         'rssi',

@@ -100,7 +100,8 @@ describe('React Native Rust core provider (F01 factory routing)', () => {
     expect(native.opsInvoked('scan.start')[0]).toMatchObject({
       serviceUuids: [],
       duplicatePolicy: 'all',
-      budgetMs: 500
+      budgetMs: 500,
+      lifetimeMs: 500
     })
     native.emitAdvertisement(DEFAULT_PEER, { rssi: -60, localName: 'Movesense' })
     const item = await lease.observations[Symbol.asyncIterator]().next()
@@ -109,6 +110,323 @@ describe('React Native Rust core provider (F01 factory routing)', () => {
     await lease.stop()
     expect(native.opsInvoked('scan.stop')).toEqual([{ operationId: 's1-scan-1' }])
     await backend.destroy()
+  })
+
+  test('native expiry ends owner and shared consumers while JS timers are suspended', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'clearImmediate', 'nextTick', 'queueMicrotask'] })
+    try {
+      const { native, backend } = await openBackend()
+      const owner = await backend.scanner.start(
+        scanOptions({ deadline: 1500, sharing: { mode: 'owner', allowSharing: true } }),
+        opaqueId('client', 'client', 'test')
+      )
+      const shared = await backend.scanner.join(owner.leaseId, owner.shareToken, opaqueId('other', 'client', 'test'))
+      native.endScans('operation-timed-out')
+      await settle(80)
+      native.emitAdvertisement(DEFAULT_PEER)
+      for (const lease of [owner, shared]) {
+        const item = await lease.observations[Symbol.asyncIterator]().next()
+        expect(item.value).toMatchObject({ kind: 'terminal', reason: 'operation-timed-out' })
+        expect(await lease.stop()).toEqual({ state: 'released', failures: [] })
+      }
+      expect(native.opsInvoked('scan.stop')).toHaveLength(0)
+      await backend.destroy()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test('replays an exact native expiry drained before scan.start returns its membership', async () => {
+    const { native, backend } = await openBackend()
+    const invoke = native.invoke.bind(native)
+    jest.spyOn(native, 'invoke').mockImplementation(async (...args) => {
+      const result = await invoke(...args)
+      if (args[1] === 'scan.start') {
+        native.endScans('operation-timed-out')
+        await settle(80)
+      }
+      return result
+    })
+    const owner = await backend.scanner.start(scanOptions(), opaqueId('client', 'client', 'test'))
+    let item
+    const pending = owner.observations[Symbol.asyncIterator]()
+      .next()
+      .then(value => {
+        item = value
+      })
+    await settle(80)
+    expect(item?.value).toMatchObject({ kind: 'terminal', reason: 'operation-timed-out' })
+    await pending
+    expect(await owner.stop()).toEqual({ state: 'released', failures: [] })
+    expect(native.opsInvoked('scan.stop')).toHaveLength(0)
+    await backend.destroy()
+  })
+
+  test('retains an authentic advertisement drained before its scan.start response settles', async () => {
+    const { native, backend } = await openBackend()
+    let releaseStart
+    const startGate = new Promise(resolve => {
+      releaseStart = resolve
+    })
+    let observedEarly
+    const earlyObservation = new Promise(resolve => {
+      observedEarly = resolve
+    })
+    const onAdvertisement = backend.onAdvertisement.bind(backend)
+    jest.spyOn(backend, 'onAdvertisement').mockImplementation(record => {
+      onAdvertisement(record)
+      observedEarly(record)
+    })
+    const invoke = native.invoke.bind(native)
+    jest.spyOn(native, 'invoke').mockImplementation(async (...args) => {
+      const result = await invoke(...args)
+      if (args[1] === 'scan.start') {
+        native.emitAdvertisement(DEFAULT_PEER, { localName: 'authentic early observation' })
+        await startGate
+      }
+      return result
+    })
+    const starting = backend.scanner.start(scanOptions(), opaqueId('client', 'client', 'test'))
+    try {
+      expect(await earlyObservation).toMatchObject({ operationId: 's1-scan-1' })
+      expect(backend.retainedJsBytes()).toBeGreaterThan(0)
+      releaseStart()
+      const scan = await starting
+      const first = scan.observations[Symbol.asyncIterator]().next()
+      await scan.stop()
+      expect((await first).value).toMatchObject({
+        kind: 'value',
+        value: { localName: { value: 'authentic early observation' } }
+      })
+    } finally {
+      releaseStart()
+      await backend.destroy()
+    }
+  })
+
+  test.each([
+    ['drop-oldest', 'second', 1, 0],
+    ['drop-newest', 'first', 1, 0],
+    ['latest', 'second', 0, 1],
+    ['error', null, 1, 0]
+  ])('early advertisements use the actual %s consumer budget', async (policy, name, dropped, replaced) => {
+    const { native, backend } = await openBackend()
+    const invoke = native.invoke.bind(native)
+    jest.spyOn(native, 'invoke').mockImplementation(async (...args) => {
+      const result = await invoke(...args)
+      if (args[1] === 'scan.start') {
+        native.emitAdvertisement(DEFAULT_PEER, { localName: 'first' })
+        native.emitAdvertisement(DEFAULT_PEER, { localName: 'second' })
+        await settle(80)
+      }
+      return result
+    })
+    try {
+      const scan = await backend.scanner.start(
+        scanOptions({
+          delivery: { itemCapacity: 1, byteCapacity: 65536, reservedControlCapacity: 4, overflowPolicy: policy }
+        }),
+        opaqueId('client', 'client', 'test')
+      )
+      const iterator = scan.observations[Symbol.asyncIterator]()
+      const items = Promise.all(name === null ? [iterator.next()] : [iterator.next(), iterator.next()])
+      await scan.stop()
+      const values = (await items).map(item => item.value)
+      expect(values[0]).toMatchObject({
+        kind: name === null ? 'terminal' : 'overflow',
+        droppedItems: dropped,
+        replacedItems: replaced
+      })
+      if (name !== null) expect(values[1]).toMatchObject({ kind: 'value', value: { localName: { value: name } } })
+      else expect(values[0].reason).toBe('overflow')
+    } finally {
+      await backend.destroy()
+    }
+  })
+
+  test('stale request advertisements cannot occupy the provisional consumer budget', async () => {
+    const { native, backend } = await openBackend()
+    const invoke = native.invoke.bind(native)
+    jest.spyOn(native, 'invoke').mockImplementation(async (...args) => {
+      const result = await invoke(...args)
+      if (args[1] === 'scan.start') {
+        native.emitAdvertisement(DEFAULT_PEER, { startOperationId: 'old-request', localName: 'stale' })
+        native.emitAdvertisement(DEFAULT_PEER, { localName: 'current' })
+        await settle(80)
+      }
+      return result
+    })
+    try {
+      const scan = await backend.scanner.start(
+        scanOptions({
+          delivery: { itemCapacity: 1, byteCapacity: 65536, reservedControlCapacity: 4, overflowPolicy: 'error' }
+        }),
+        opaqueId('client', 'client', 'test')
+      )
+      const first = scan.observations[Symbol.asyncIterator]().next()
+      await scan.stop()
+      expect((await first).value).toMatchObject({ kind: 'value', value: { localName: { value: 'current' } } })
+    } finally {
+      await backend.destroy()
+    }
+  })
+
+  test('native ingress loss during provisional admission reaches the same consumer accounting', async () => {
+    const { native, backend } = await openBackend()
+    const invoke = native.invoke.bind(native)
+    jest.spyOn(native, 'invoke').mockImplementation(async (...args) => {
+      const result = await invoke(...args)
+      if (args[1] === 'scan.start') {
+        native.push([...native.sessions.values()][0], { t: 'ingress-drop', class: 'advertisement', count: 3 })
+        native.emitAdvertisement(DEFAULT_PEER, { localName: 'kept' })
+        await settle(80)
+      }
+      return result
+    })
+    try {
+      const scan = await backend.scanner.start(scanOptions(), opaqueId('client', 'client', 'test'))
+      const iterator = scan.observations[Symbol.asyncIterator]()
+      const items = Promise.all([iterator.next(), iterator.next()])
+      await scan.stop()
+      const values = (await items).map(item => item.value)
+      expect(values[0]).toMatchObject({ kind: 'overflow', droppedItems: 3 })
+      expect(values[1]).toMatchObject({ kind: 'value', value: { localName: { value: 'kept' } } })
+    } finally {
+      await backend.destroy()
+    }
+  })
+
+  test('early membership mismatch fails closed and retains refused cleanup of the returned membership', async () => {
+    const { native, backend } = await openBackend()
+    const invoke = native.invoke.bind(native)
+    jest.spyOn(native, 'invoke').mockImplementation(async (...args) => {
+      const result = await invoke(...args)
+      if (args[1] === 'scan.start') {
+        native.emitAdvertisement(DEFAULT_PEER, { operationId: 'wrong-native-membership' })
+        await settle(80)
+        native.failNext('scan.stop', 'platform.failure', 'platform', 'ubm-mobile.scan.stop')
+      }
+      return result
+    })
+    await expect(backend.scanner.start(scanOptions(), opaqueId('client', 'client', 'test'))).rejects.toMatchObject({
+      normalized: { code: 'protocol.violation' }
+    })
+    expect(native.opsInvoked('scan.stop')).toEqual([{ operationId: 's1-scan-1' }])
+    expect([...native.sessions.values()][0].scans.size).toBe(1)
+    expect(await backend.destroy()).toEqual({ state: 'released', failures: [] })
+  })
+
+  test('bounds provisional scan admission and admits a new start after its refusal', async () => {
+    const { native, backend } = await openBackend()
+    const client = opaqueId('client', 'client', 'test')
+    native.hold('scan.start')
+    const first = backend.scanner.start(scanOptions(), client)
+    await settle(40)
+    await expect(backend.scanner.start(scanOptions(), client)).rejects.toMatchObject({
+      normalized: { code: 'scan.already-active' }
+    })
+    expect(native.opsInvoked('scan.start')).toHaveLength(1)
+    native.release('scan.start')
+    const scan = await first
+    expect(native.opsInvoked('scan.start')[0]).not.toHaveProperty('lifetimeMs')
+    await scan.stop()
+    const next = await backend.scanner.start(scanOptions({ deadline: 1000 + 2147483648 }), client)
+    expect(native.opsInvoked('scan.start')[1]).toMatchObject({ budgetMs: 2147483647, lifetimeMs: 2147483647 })
+    await next.stop()
+    await backend.destroy()
+  })
+
+  test('drain failure is not native release proof for an in-flight scan stop', async () => {
+    const { native, backend } = await openBackend()
+    const scan = await backend.scanner.start(scanOptions(), opaqueId('client', 'client', 'test'))
+    native.hold('scan.stop')
+    const stopping = scan.stop()
+    await settle(40)
+    backend.drainFailed(new Error('drain parsing failed'))
+    native.release('scan.stop', {
+      state: 'release-failed',
+      failures: [
+        {
+          resourceKind: 'scan',
+          code: 'platform.failure',
+          domain: 'platform',
+          operation: 'ubm-mobile.scan.stop',
+          detail: 'refused held stop',
+          platform: null
+        }
+      ]
+    })
+    const receipt = await stopping
+    const retained = [...native.sessions.values()][0].scans.size
+    await backend.destroy()
+    expect(receipt).toMatchObject({ state: 'release-failed', failures: [{ error: { code: 'platform.failure' } }] })
+    expect(retained).toBe(1)
+  })
+
+  test('scan delivery failure alone never skips its later native cleanup attempt', async () => {
+    const { native, backend } = await openBackend()
+    const scan = await backend.scanner.start(scanOptions(), opaqueId('client', 'client', 'test'))
+    backend.drainFailed(new Error('drain parsing failed'))
+    native.failNext('scan.stop', 'platform.failure', 'platform', 'ubm-mobile.scan.stop')
+    const receipt = await scan.stop()
+    const calls = native.opsInvoked('scan.stop').length
+    await backend.destroy()
+    expect(receipt).toMatchObject({ state: 'release-failed', failures: [{ error: { code: 'platform.failure' } }] })
+    expect(calls).toBe(1)
+  })
+
+  test('old queued advertisements and scan-end cannot leak into a replacement membership', async () => {
+    const { native, backend } = await openBackend()
+    const client = opaqueId('client', 'client', 'test')
+    const old = await backend.scanner.start(scanOptions(), client)
+    const drain = native.drain.bind(native)
+    let release
+    let held = false
+    const gate = new Promise(resolve => {
+      release = resolve
+    })
+    jest.spyOn(native, 'drain').mockImplementation(async (...args) => {
+      const result = await drain(...args)
+      if (!held && JSON.parse(result).records.some(record => record.t === 'adv')) {
+        held = true
+        await gate
+      }
+      return result
+    })
+    native.emitAdvertisement(DEFAULT_PEER, { localName: 'old membership value' })
+    await settle(80)
+    expect(held).toBe(true)
+    native.endScans('operation-timed-out')
+    const replacement = await backend.scanner.start(scanOptions(), client)
+    release()
+    native.emitAdvertisement(DEFAULT_PEER, { localName: 'replacement membership value' })
+    const item = await replacement.observations[Symbol.asyncIterator]().next()
+    expect(item.value.value.localName.value).toBe('replacement membership value')
+    await old.stop()
+    await replacement.stop()
+    await backend.destroy()
+  })
+
+  test('ambiguous early terminals fail closed and keep refused cleanup reachable', async () => {
+    const { native, backend } = await openBackend()
+    const invoke = native.invoke.bind(native)
+    jest.spyOn(native, 'invoke').mockImplementation(async (...args) => {
+      const result = await invoke(...args)
+      if (args[1] === 'scan.start') {
+        const session = [...native.sessions.values()][0]
+        native.push(session, { t: 'scan-end', operationId: 'foreign-1', reason: 'operation-timed-out' })
+        native.push(session, { t: 'scan-end', operationId: 'foreign-2', reason: 'operation-timed-out' })
+        await settle(80)
+        native.failNext('scan.stop', 'platform.failure', 'platform', 'ubm-mobile.scan.stop')
+      }
+      return result
+    })
+    await expect(backend.scanner.start(scanOptions(), opaqueId('client', 'client', 'test'))).rejects.toMatchObject({
+      normalized: { code: 'protocol.violation' }
+    })
+    expect([...native.sessions.values()][0].scans.size).toBe(1)
+    expect(await backend.destroy()).toEqual({ state: 'released', failures: [] })
+    expect([...native.sessions.values()][0].scans.size).toBe(0)
   })
 
   test('connect/discover/read/write/subscribe/unsubscribe/dispose execute the owner with one lease', async () => {

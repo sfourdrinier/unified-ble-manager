@@ -6,6 +6,7 @@ readonly profile="${1:-}"
 readonly -a bluez_packages=(
   libdbus-1-dev
   pkg-config
+  dbus-daemon
 )
 readonly -a tauri_packages=(
   libwebkit2gtk-4.1-dev

@@ -8,14 +8,17 @@ codegen/runtime checksum-mismatch rejection. Fails loudly; no skips.
 """
 import importlib.util
 import os
+import platform
 import sys
 import tempfile
 import threading
 import time
 
 BIND_DIR = sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(os.path.abspath(__file__))
+LIB_SUFFIX = "dylib" if platform.system() == "Darwin" else "so"
+LIB_NAME = "libuniffi." + LIB_SUFFIX
 assert os.path.isfile(os.path.join(BIND_DIR, "ubm_echo.py")), f"bindings missing in {BIND_DIR}"
-assert os.path.isfile(os.path.join(BIND_DIR, "libubm5_uniffi_echo.so")), f"cdylib missing in {BIND_DIR}"
+assert os.path.isfile(os.path.join(BIND_DIR, LIB_NAME)), f"cdylib missing in {BIND_DIR}"
 
 sys.path.insert(0, BIND_DIR)
 import ubm_echo
@@ -168,8 +171,8 @@ with tempfile.TemporaryDirectory() as tmp:
                           "bindings_contract_version = 0", src, count=1)
     assert n == 1, "contract-version anchor not found"
     open(os.path.join(tmp, "ubm_echo.py"), "w").write(tampered)
-    open(os.path.join(tmp, "libubm5_uniffi_echo.so"), "wb").write(
-        open(os.path.join(BIND_DIR, "libubm5_uniffi_echo.so"), "rb").read())
+    open(os.path.join(tmp, LIB_NAME), "wb").write(
+        open(os.path.join(BIND_DIR, LIB_NAME), "rb").read())
     spec = importlib.util.spec_from_file_location("ubm_echo_tampered",
                                                   os.path.join(tmp, "ubm_echo.py"))
     mod = importlib.util.module_from_spec(spec)

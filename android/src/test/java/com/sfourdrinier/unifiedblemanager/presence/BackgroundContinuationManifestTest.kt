@@ -4,6 +4,7 @@ package com.sfourdrinier.unifiedblemanager.presence
 
 import android.content.SharedPreferences
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** The wake reads the build-time manifest default when the app never declared at runtime. */
@@ -16,6 +17,8 @@ class BackgroundContinuationManifestTest {
 
   /** Map-backed preferences: edits apply, so malformed counts persist like the device store. */
   private class FakePrefs(seed: Map<String, Any?> = emptyMap()) : SharedPreferences {
+    var failCommits = 0
+    var throwCommit = false
     private val map = LinkedHashMap<String, Any?>(seed)
 
     override fun getAll(): Map<String, *> = synchronized(this) { HashMap<String, Any?>(map) }
@@ -66,6 +69,8 @@ class BackgroundContinuationManifestTest {
       }
       override fun commit(): Boolean {
         flush()
+        if (throwCommit) { throwCommit = false; throw SecurityException("Preferences write refused") }
+        if (failCommits > 0) { failCommits--; return false }
         return true
       }
       override fun apply() = flush()
@@ -74,6 +79,32 @@ class BackgroundContinuationManifestTest {
       override fun putBoolean(key: String, value: Boolean): SharedPreferences.Editor = this
       override fun putStringSet(key: String, values: Set<String>?): SharedPreferences.Editor = this
     }
+  }
+
+  @Test fun failedDeclarationCommitRestoresThePreviousVisibleDeclaration() {
+    val prefs = FakePrefs()
+    val store = SharedPreferencesBackgroundContinuationStore(prefs, manifestJson = { manifestJson }, log = {})
+    store.saveDeclaration("{\"onAppearance\":\"record-only\"}")
+    prefs.failCommits = 1
+    assertTrue(runCatching { store.saveDeclaration(manifestJson) }.isFailure)
+    assertEquals(ContinuationStrategy.RECORD_ONLY, store.loadDeclaration().strategy)
+    assertEquals(ContinuationStrategy.RECORD_ONLY, SharedPreferencesBackgroundContinuationStore(prefs, { null }, {}).loadDeclaration().strategy)
+  }
+
+  @Test fun failedDeclarationRollbackFencesEveryStoreOverTheSamePreferences() {
+    val prefs = FakePrefs()
+    val store = SharedPreferencesBackgroundContinuationStore(prefs, manifestJson = { null }, log = {})
+    prefs.failCommits = 2
+    assertTrue(runCatching { store.saveDeclaration(manifestJson) }.isFailure)
+    assertTrue(runCatching { SharedPreferencesBackgroundContinuationStore(prefs, { null }, {}).loadDeclaration() }.isFailure)
+  }
+
+  @Test fun thrownDeclarationCommitAlsoRestoresThePreviousVisibleDeclaration() {
+    val prefs = FakePrefs()
+    val store = SharedPreferencesBackgroundContinuationStore(prefs, manifestJson = { null }, log = {})
+    prefs.throwCommit = true
+    assertTrue(runCatching { store.saveDeclaration(manifestJson) }.exceptionOrNull() is SecurityException)
+    assertEquals(ContinuationStrategy.RECORD_ONLY, store.loadDeclaration().strategy)
   }
 
   @Test

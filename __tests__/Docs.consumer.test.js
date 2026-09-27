@@ -77,6 +77,109 @@ const deletedTransitionalAdrs = [
 ]
 
 describe('consumer documentation matches the published package', () => {
+  test.each(['empty', 'reference-less', 'persistable'])(
+    'peer persistence example executes with %s results',
+    async kind => {
+      const { encodePeerReference, decodePeerReference } = require('../src/public/peer-reference')
+      const reference = { version: 1, backendId: 'web', scope: 'origin', opaqueId: 'documented-peer' }
+      const peers = kind === 'empty' ? [] : [{ reference: kind === 'reference-less' ? null : reference }]
+      const discover = jest.fn(async () => ({}))
+      const manager = {
+        peers: { authorized: jest.fn(async () => peers), resolve: jest.fn(async () => peers[0]) },
+        withConnection: jest.fn(async (_peer, _options, action) => action({ discover }))
+      }
+      const code = read('docs/PEERS.md')
+        .match(/```ts\n([\s\S]*?)\n```/u)[1]
+        .replace(/^import .*\n/mu, '')
+      await new Function('manager', 'encodePeerReference', 'decodePeerReference', `return (async () => { ${code} })()`)(
+        manager,
+        encodePeerReference,
+        decodePeerReference
+      )
+      expect(manager.peers.resolve).toHaveBeenCalledTimes(kind === 'persistable' ? 1 : 0)
+      expect(discover).toHaveBeenCalledTimes(kind === 'persistable' ? 1 : 0)
+    }
+  )
+
+  test('desktop cleanup documents retained WinRT ownership and explicit retry triggers', () => {
+    const node = read('docs/NODE.md')
+    expect(node).toContain('Failed cleanup does not reopen admission')
+    expect(node).toContain('next native radio open or explicit close')
+    expect(node).toContain('no background retry loop')
+  })
+  test('Apple status limits Android-specific strategies without denying native continuation', () => {
+    const background = read('docs/BACKGROUND.md')
+    expect(background).not.toMatch(/Apple uses it to say[\s\S]{0,160}not\s+implemented in this release/)
+    expect(background).toContain('Android-specific task/service strategies')
+    expect(background).toMatch(/configured iOS `native`\s+continuation/)
+  })
+  test('Android restoration distinguishes the authenticated process presence queue from an OS journal', () => {
+    const background = read('docs/BACKGROUND.md')
+    expect(background).toContain('authenticated process-local presence queue')
+    expect(background).toContain('Without a configured restoration authority')
+    expect(background).toContain('same manager that returned that record')
+    expect(background).not.toContain('so claim nothing')
+    expect(background).not.toContain('This proves wake and adoption')
+    expect(background).not.toContain('reconnect` with the recorded peer id')
+    expect(background).toContain('Directory reads are non-consuming')
+    expect(background).toContain('Android also reconnects with the durable `peerReference`')
+    expect(read('examples-shared/driver/README.md')).toContain('`backlog` and verify successful native radio disposal')
+    expect(read('examples-shared/driver/README.md')).not.toContain('driver supports both inputs')
+    expect(read('examples-shared/driver/README.md')).not.toContain('pass its known `peerId`')
+    const restorationAdr = read('docs/ADR/2026-09-5.0-restoration-known-peer-reconnect.md')
+    expect(restorationAdr).toContain('record-only default does not reconnect')
+    expect(restorationAdr).toContain('opt-in native standing order')
+  })
+
+  test('Android presence documents modern source aggregation and legacy compatibility', () => {
+    const background = read('docs/BACKGROUND.md')
+    expect(background).toContain('API 36+ uses association-ID observation requests')
+    expect(background).toMatch(/only the last\s+remaining source disappearing/)
+    expect(background).toContain('API 31–35 retain the legacy callbacks')
+    expect(background).toMatch(/successful explicit\s+unobserve fences pending and late callbacks/)
+  })
+  test('background guide describes current contracts and arms policy before appearance observation', () => {
+    const background = read('docs/BACKGROUND.md')
+    expect(background).toContain('Current 5.0 configuration and lifecycle guidance')
+    expect(background).not.toContain('configuration flags are transitional')
+    expect(background).toContain('declare the continuation → `presence.observe`')
+    expect(background).toContain('An appearance can arrive as soon as observation starts')
+    expect(background.indexOf('3. **Persist wake policy.**')).toBeGreaterThan(0)
+    expect(background.indexOf('4. **Arm presence.**')).toBeGreaterThan(
+      background.indexOf('3. **Persist wake policy.**')
+    )
+  })
+  test('Android native prerequisites distinguish CDM wake from explicit warm execution', () => {
+    const background = read('docs/BACKGROUND.md')
+    const prerequisites = background.split('### Prerequisites on Android')[1].split('\n### ')[0]
+    expect(prerequisites).toContain('Presence-triggered `native` execution requires')
+    expect(prerequisites).toMatch(/explicit warm execution on the existing process owner/)
+    expect(prerequisites).toMatch(/must match the persisted declaration/)
+    expect(prerequisites).toMatch(/does not require CDM association or observation/)
+    expect(prerequisites).toMatch(/Neither declaring an order nor completing warm execution proves an OS wake/)
+    expect(prerequisites).not.toContain('A `native` order only executes if')
+  })
+  test('Android wake troubleshooting distinguishes retained CDM presence from a new callback', () => {
+    const background = read('docs/BACKGROUND.md')
+    expect(background).toContain('### Android observation succeeds but no new wake arrives')
+    expect(background).toContain('The association is already present')
+    expect(background).toContain('RUNNING_UNLOCKED')
+    expect(background).toContain('GATT teardown does not prove CDM disappearance')
+    expect(background).toContain('Do not fabricate callbacks, delete associations, or reset Bluetooth')
+    expect(background).toContain('not native-wake qualification')
+    expect(background).toContain('a fresh `lastWake.observedAtMs`')
+  })
+  test('physical restoration procedure resolves a PID and distinguishes record-only from native continuation', () => {
+    const background = read('docs/BACKGROUND.md')
+    expect(background).toContain('device info processes --device <device-id> --json-output -')
+    expect(background).toContain('device process terminate --device <device-id> --pid <verified-pid>')
+    expect(background).not.toContain('device process terminate --device <device-id> <bundle-id>')
+    expect(background).toContain('exact app executable path')
+    expect(background).toContain('record-only baseline')
+    expect(background).toContain('opt-in native standing order')
+    expect(background).toContain('Never swipe-kill')
+    expect(background).toContain('am force-stop')
+  })
   test('current public documentation follows the package release channel', () => {
     if (stable40 || rcVersionMatch || rc50VersionMatch) {
       expect(packageVersion).toMatch(/^(?:4\.0\.\d+(?:-rc\.\d+(?:\.\d+)?)?|5\.0\.0-rc\.\d+)$/u)

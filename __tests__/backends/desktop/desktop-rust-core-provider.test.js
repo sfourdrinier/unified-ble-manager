@@ -178,6 +178,70 @@ describe('5.0 read while notifying over the real addon: the result reports what 
 })
 
 describe('real addon, synthetic radio: every verb executes Rust', () => {
+  test('native disconnect releases only its lease while a second native caller still owns the link', async () => {
+    await withBackend('bluez', async ({ backend, stage, harness }) => {
+      await connectAndDiscover(backend, stage)
+      const firstLease = harness.calls.find(([name]) => name === 'connect')[1][0].lease
+      await stage.connect({ peerId: 'peer-1', lease: 'native-second-owner' })
+      await stage.discover({ peerId: 'peer-1', lease: 'native-second-owner' })
+      await expect(stage.disconnect({ peerId: 'peer-1', lease: firstLease })).resolves.toBe('released')
+      const read = await stage.read({
+        peerId: 'peer-1',
+        lease: 'native-second-owner',
+        selector: {
+          serviceUuid: HRM_SERVICE,
+          serviceOccurrence: 0,
+          characteristicUuid: HRM_MEASUREMENT,
+          characteristicOccurrence: 0
+        }
+      })
+      expect(read.value.length).toBeGreaterThan(0)
+      await stage.disconnect({ peerId: 'peer-1', lease: 'native-second-owner' })
+    })
+  })
+
+  test('native GATT admission refuses an unowned caller lease despite a valid peer and selector', async () => {
+    await withBackend('bluez', async ({ backend, stage }) => {
+      await connectAndDiscover(backend, stage)
+      await expect(
+        stage.read({
+          peerId: 'peer-1',
+          lease: 'not-owned',
+          selector: {
+            serviceUuid: HRM_SERVICE,
+            serviceOccurrence: 0,
+            characteristicUuid: HRM_MEASUREMENT,
+            characteristicOccurrence: 0
+          }
+        })
+      ).rejects.toThrow(/ownership.denied/)
+    })
+  })
+
+  test.each(PLATFORMS)('%s: every GATT admission carries its actual native connection lease', async platform => {
+    await withBackend(platform, async ({ backend, stage, harness }) => {
+      const { database, measurement, control, snapshot } = await connectAndDiscover(backend, stage)
+      const nativeLease = harness.calls.find(([name]) => name === 'connect')[1][0].lease
+      expect(nativeLease).toEqual(expect.any(String))
+      await database.read(measurement.path, { signal: null, deadline: null })
+      await database.write(control.path, Uint8Array.of(1), { signal: null, deadline: null, mode: 'with-response' })
+      await database.readDescriptor(snapshot.descriptors[0].path, { signal: null, deadline: null })
+      await database.writeDescriptor(snapshot.descriptors[0].path, Uint8Array.of(1), {
+        signal: null,
+        deadline: null,
+        mode: 'with-response'
+      })
+      const subscription = await database.subscribe(measurement.path, subscribeOptions())
+      await subscription.remove()
+      for (const method of ['read', 'write', 'readDescriptor', 'writeDescriptor', 'subscribe']) {
+        const calls = harness.calls.filter(([name]) => name === method)
+        expect(calls.length).toBeGreaterThan(0)
+        for (const [, [request]] of calls)
+          expect({ method, lease: request.lease }).toEqual({ method, lease: nativeLease })
+      }
+    })
+  })
+
   test.each(PLATFORMS)(
     '%s: scan/connect/discover/read/write/subscribe/notify/unsubscribe/disconnect',
     async platform => {
@@ -248,27 +312,30 @@ describe('real addon, synthetic radio: every verb executes Rust', () => {
     })
   })
 
-  test.each(PLATFORMS)('%s: provider-minted operation correlations keep the legacy operation-{n} shape (D7)', async platform => {
-    await withBackend(platform, async ({ backend, stage }) => {
-      const { database, measurement } = await connectAndDiscover(backend, stage)
-      // The database handle mints the write's correlation (gdb-write): it
-      // must read `operation-{n}` as the legacy core's did, never a
-      // host-scoped `{platform}-core-{kind}-{n}` label.
-      const first = await database.write(measurement.path, new Uint8Array([0x02]), {
-        signal: null,
-        deadline: null,
-        mode: 'without-response'
+  test.each(PLATFORMS)(
+    '%s: provider-minted operation correlations keep the legacy operation-{n} shape (D7)',
+    async platform => {
+      await withBackend(platform, async ({ backend, stage }) => {
+        const { database, measurement } = await connectAndDiscover(backend, stage)
+        // The database handle mints the write's correlation (gdb-write): it
+        // must read `operation-{n}` as the legacy core's did, never a
+        // host-scoped `{platform}-core-{kind}-{n}` label.
+        const first = await database.write(measurement.path, new Uint8Array([0x02]), {
+          signal: null,
+          deadline: null,
+          mode: 'without-response'
+        })
+        const second = await database.write(measurement.path, new Uint8Array([0x03]), {
+          signal: null,
+          deadline: null,
+          mode: 'without-response'
+        })
+        const correlations = [first, second].map(receipt => String(receipt.terminal.correlation))
+        for (const correlation of correlations) expect(correlation).toMatch(/^operation-\d+$/)
+        expect(new Set(correlations).size).toBe(2)
       })
-      const second = await database.write(measurement.path, new Uint8Array([0x03]), {
-        signal: null,
-        deadline: null,
-        mode: 'without-response'
-      })
-      const correlations = [first, second].map(receipt => String(receipt.terminal.correlation))
-      for (const correlation of correlations) expect(correlation).toMatch(/^operation-\d+$/)
-      expect(new Set(correlations).size).toBe(2)
-    })
-  })
+    }
+  )
 
   test('descriptors read and write through the core', async () => {
     await withBackend('winrt', async ({ backend, stage }) => {
@@ -643,27 +710,32 @@ describe('connected RSSI (parity row connection.rssi)', () => {
 })
 
 describe('effective ATT MTU (finding 217 follow-up: every desktop OS answers)', () => {
-  test.each(PLATFORMS)('%s registers connection:effective-mtu limited and measures it through the core', async platform => {
-    await withBackend(platform, async ({ backend, stage }) => {
-      expect(backend.features.registrations.map(registration => registration.id)).toContain(
-        BUILT_IN_FEATURE_IDS.connectionEffectiveMtu
-      )
-      const row = backend.features.registrations.find(entry => entry.id === BUILT_IN_FEATURE_IDS.connectionEffectiveMtu)
-      expect(row).toMatchObject({
-        state: 'limited',
-        limits: { attMtu: { minimum: 23, maximum: 517, unit: 'bytes' } }
+  test.each(PLATFORMS)(
+    '%s registers connection:effective-mtu limited and measures it through the core',
+    async platform => {
+      await withBackend(platform, async ({ backend, stage }) => {
+        expect(backend.features.registrations.map(registration => registration.id)).toContain(
+          BUILT_IN_FEATURE_IDS.connectionEffectiveMtu
+        )
+        const row = backend.features.registrations.find(
+          entry => entry.id === BUILT_IN_FEATURE_IDS.connectionEffectiveMtu
+        )
+        expect(row).toMatchObject({
+          state: 'limited',
+          limits: { attMtu: { minimum: 23, maximum: 517, unit: 'bytes' } }
+        })
+        const { lease } = await connectAndDiscover(backend, stage)
+        await stage.stageEffectiveMtu('peer-1', 515)
+        const measurement = await backend.connections.effectiveMtu(lease.connection, {
+          operation: { signal: null, deadline: null, correlation: 'corr-mtu' }
+        }).completion
+        expect(measurement.attMtu).toBe(515)
+        expect(measurement.payloadBytes).toBe(512)
+        expect(measurement.platformPduBytes).toBeNull()
+        expect(backend.dispatchCounters().readEffectiveMtu).toBe(1)
       })
-      const { lease } = await connectAndDiscover(backend, stage)
-      await stage.stageEffectiveMtu('peer-1', 515)
-      const measurement = await backend.connections.effectiveMtu(lease.connection, {
-        operation: { signal: null, deadline: null, correlation: 'corr-mtu' }
-      }).completion
-      expect(measurement.attMtu).toBe(515)
-      expect(measurement.payloadBytes).toBe(512)
-      expect(measurement.platformPduBytes).toBeNull()
-      expect(backend.dispatchCounters().readEffectiveMtu).toBe(1)
-    })
-  })
+    }
+  )
 })
 
 describe('adapter enumeration and selection (parity row adapter.enumerate-select)', () => {
@@ -874,7 +946,10 @@ describe('error and cleanup mapping', () => {
       { domain: 'bluez-dbus', code: 'org.bluez.Error.NotPermitted', safeMessage: 'Read not permitted', metadata: {} }
     ]
   ])('%s platform detail restores the legacy error identity', (_host, platform, expected) => {
-    const error = desktopRustCoreError(wire('gatt.read-failed', 'gatt', 'gatt.read', platform, 'core text'), 'x.gatt.read')
+    const error = desktopRustCoreError(
+      wire('gatt.read-failed', 'gatt', 'gatt.read', platform, 'core text'),
+      'x.gatt.read'
+    )
     expect(error.normalized).toMatchObject({ code: 'gatt.read-failed', domain: 'gatt', operation: 'x.gatt.read' })
     expect(error.normalized.platform).toEqual(expected)
   })
@@ -1652,9 +1727,9 @@ describe('public errors report the 4.x operation id of each host', () => {
       await lease.release()
       const peerId = await observePeer(backend, stage)
       await stage.failNextRadioOp('connect', 'os')
-      expect((await failure(backend.connections.connect(peerId, 'client-1', { signal: null, deadline: null }))).operation).toBe(
-        `${PREFIX[platform]}.connect`
-      )
+      expect(
+        (await failure(backend.connections.connect(peerId, 'client-1', { signal: null, deadline: null }))).operation
+      ).toBe(`${PREFIX[platform]}.connect`)
       const again = await backend.connections.connect(peerId, 'client-1', { signal: null, deadline: null })
       await stage.failNextRadioOp('discover', 'os')
       expect((await failure(backend.gatt.discover(again.connection, { signal: null, deadline: null }))).operation).toBe(

@@ -27,7 +27,7 @@
       },
       {
         "name": "unified-ble-manager:cargo-lock-sha256",
-        "value": "3708483fc2b1922308085716f2b14c17cb42414791b906ffd7c45b4e008abb87"
+        "value": "d0c13e1b2911974e94a7615ee8f30be76bdc9f0e4381b6e1ccc647cb7491ba72"
       },
       {
         "name": "unified-ble-manager:rust-dependency-scope",
@@ -818,6 +818,24 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/cc@1.5.1",
+      "name": "cc",
+      "version": "1.5.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/cc@1.5.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/cesu8@1.1.0",
       "name": "cesu8",
       "version": "1.1.0",
@@ -1124,6 +1142,42 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/fallible-iterator@0.3.0",
+      "name": "fallible-iterator",
+      "version": "0.3.0",
+      "licenses": [
+        {
+          "expression": "(MIT OR Apache-2.0)"
+        }
+      ],
+      "purl": "pkg:cargo/fallible-iterator@0.3.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license-normalized"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/fallible-streaming-iterator@0.1.9",
+      "name": "fallible-streaming-iterator",
+      "version": "0.1.9",
+      "licenses": [
+        {
+          "expression": "(MIT OR Apache-2.0)"
+        }
+      ],
+      "purl": "pkg:cargo/fallible-streaming-iterator@0.1.9",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license-normalized"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/fastrand@2.5.0",
       "name": "fastrand",
       "version": "2.5.0",
@@ -1133,6 +1187,42 @@
         }
       ],
       "purl": "pkg:cargo/fastrand@2.5.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/find-msvc-tools@0.1.14",
+      "name": "find-msvc-tools",
+      "version": "0.1.14",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/find-msvc-tools@0.1.14",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/foldhash@0.2.0",
+      "name": "foldhash",
+      "version": "0.2.0",
+      "licenses": [
+        {
+          "expression": "Zlib"
+        }
+      ],
+      "purl": "pkg:cargo/foldhash@0.2.0",
       "properties": [
         {
           "name": "unified-ble-manager:license-source",
@@ -1412,6 +1502,24 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/hashbrown@0.16.1",
+      "name": "hashbrown",
+      "version": "0.16.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/hashbrown@0.16.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/hashbrown@0.17.1",
       "name": "hashbrown",
       "version": "0.17.1",
@@ -1421,6 +1529,24 @@
         }
       ],
       "purl": "pkg:cargo/hashbrown@0.17.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/hashlink@0.12.2",
+      "name": "hashlink",
+      "version": "0.12.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/hashlink@0.12.2",
       "properties": [
         {
           "name": "unified-ble-manager:license-source",
@@ -1691,6 +1817,24 @@
         }
       ],
       "purl": "pkg:cargo/libloading@0.8.9",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/libsqlite3-sys@0.38.2",
+      "name": "libsqlite3-sys",
+      "version": "0.38.2",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/libsqlite3-sys@0.38.2",
       "properties": [
         {
           "name": "unified-ble-manager:license-source",
@@ -2312,6 +2456,42 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/rsqlite-vfs@0.1.1",
+      "name": "rsqlite-vfs",
+      "version": "0.1.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/rsqlite-vfs@0.1.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/rusqlite@0.40.2",
+      "name": "rusqlite",
+      "version": "0.40.2",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/rusqlite@0.40.2",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/rustc_version@0.4.1",
       "name": "rustc_version",
       "version": "0.4.1",
@@ -2600,6 +2780,24 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/shlex@2.0.1",
+      "name": "shlex",
+      "version": "2.0.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/shlex@2.0.1",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/signal-hook-registry@1.4.8",
       "name": "signal-hook-registry",
       "version": "1.4.8",
@@ -2735,6 +2933,24 @@
         }
       ],
       "purl": "pkg:cargo/socket2@0.6.5",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/sqlite-wasm-rs@0.5.5",
+      "name": "sqlite-wasm-rs",
+      "version": "0.5.5",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/sqlite-wasm-rs@0.5.5",
       "properties": [
         {
           "name": "unified-ble-manager:license-source",
@@ -3545,6 +3761,24 @@
         {
           "name": "unified-ble-manager:license-source",
           "value": "cargo-manifest-license"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/vcpkg@0.2.15",
+      "name": "vcpkg",
+      "version": "0.2.15",
+      "licenses": [
+        {
+          "expression": "(MIT OR Apache-2.0)"
+        }
+      ],
+      "purl": "pkg:cargo/vcpkg@0.2.15",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license-normalized"
         }
       ]
     },
@@ -4392,6 +4626,13 @@
       ]
     },
     {
+      "ref": "pkg:cargo/cc@1.5.1",
+      "dependsOn": [
+        "pkg:cargo/find-msvc-tools@0.1.14",
+        "pkg:cargo/shlex@2.0.1"
+      ]
+    },
+    {
       "ref": "pkg:cargo/cesu8@1.1.0",
       "dependsOn": []
     },
@@ -4501,7 +4742,23 @@
       ]
     },
     {
+      "ref": "pkg:cargo/fallible-iterator@0.3.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/fallible-streaming-iterator@0.1.9",
+      "dependsOn": []
+    },
+    {
       "ref": "pkg:cargo/fastrand@2.5.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/find-msvc-tools@0.1.14",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/foldhash@0.2.0",
       "dependsOn": []
     },
     {
@@ -4610,8 +4867,22 @@
       "dependsOn": []
     },
     {
+      "ref": "pkg:cargo/hashbrown@0.16.1",
+      "dependsOn": [
+        "pkg:cargo/foldhash@0.2.0"
+      ]
+    },
+    {
       "ref": "pkg:cargo/hashbrown@0.17.1",
-      "dependsOn": []
+      "dependsOn": [
+        "pkg:cargo/foldhash@0.2.0"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/hashlink@0.12.2",
+      "dependsOn": [
+        "pkg:cargo/hashbrown@0.17.1"
+      ]
     },
     {
       "ref": "pkg:cargo/heck@0.5.0",
@@ -4717,6 +4988,14 @@
       "dependsOn": [
         "pkg:cargo/cfg-if@1.0.4",
         "pkg:cargo/windows-link@0.2.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/libsqlite3-sys@0.38.2",
+      "dependsOn": [
+        "pkg:cargo/cc@1.5.1",
+        "pkg:cargo/pkg-config@0.3.34",
+        "pkg:cargo/vcpkg@0.2.15"
       ]
     },
     {
@@ -4929,6 +5208,25 @@
       ]
     },
     {
+      "ref": "pkg:cargo/rsqlite-vfs@0.1.1",
+      "dependsOn": [
+        "pkg:cargo/hashbrown@0.16.1",
+        "pkg:cargo/thiserror@2.0.20"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/rusqlite@0.40.2",
+      "dependsOn": [
+        "pkg:cargo/bitflags@2.13.2",
+        "pkg:cargo/fallible-iterator@0.3.0",
+        "pkg:cargo/fallible-streaming-iterator@0.1.9",
+        "pkg:cargo/hashlink@0.12.2",
+        "pkg:cargo/libsqlite3-sys@0.38.2",
+        "pkg:cargo/smallvec@1.16.1",
+        "pkg:cargo/sqlite-wasm-rs@0.5.5"
+      ]
+    },
+    {
       "ref": "pkg:cargo/rustc_version@0.4.1",
       "dependsOn": [
         "pkg:cargo/semver@1.0.28"
@@ -5038,6 +5336,10 @@
       ]
     },
     {
+      "ref": "pkg:cargo/shlex@2.0.1",
+      "dependsOn": []
+    },
+    {
       "ref": "pkg:cargo/signal-hook-registry@1.4.8",
       "dependsOn": [
         "pkg:cargo/errno@0.3.14",
@@ -5076,6 +5378,15 @@
       "dependsOn": [
         "pkg:cargo/libc@0.2.189",
         "pkg:cargo/windows-sys@0.61.2"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/sqlite-wasm-rs@0.5.5",
+      "dependsOn": [
+        "pkg:cargo/cc@1.5.1",
+        "pkg:cargo/js-sys@0.3.105",
+        "pkg:cargo/rsqlite-vfs@0.1.1",
+        "pkg:cargo/wasm-bindgen@0.2.128"
       ]
     },
     {
@@ -5250,11 +5561,16 @@
     {
       "ref": "pkg:cargo/ubm-desktop@0.1.0",
       "dependsOn": [
+        "pkg:cargo/bluez-async@0.8.2",
         "pkg:cargo/btleplug@0.12.0",
+        "pkg:cargo/dbus-tokio@0.7.6",
+        "pkg:cargo/dbus@0.9.12",
         "pkg:cargo/futures-util@0.3.34",
+        "pkg:cargo/futures@0.3.34",
         "pkg:cargo/objc2-core-bluetooth@0.2.2",
         "pkg:cargo/objc2-foundation@0.2.2",
         "pkg:cargo/objc2@0.5.2",
+        "pkg:cargo/rusqlite@0.40.2",
         "pkg:cargo/serde_json@1.0.151",
         "pkg:cargo/tokio@1.53.1",
         "pkg:cargo/ubm-core@0.1.0",
@@ -5295,6 +5611,7 @@
         "pkg:cargo/napi-build@2.4.2",
         "pkg:cargo/napi-derive@2.16.13",
         "pkg:cargo/napi@2.16.17",
+        "pkg:cargo/serde_json@1.0.151",
         "pkg:cargo/tokio@1.53.1",
         "pkg:cargo/ubm-core@0.1.0",
         "pkg:cargo/ubm-desktop@0.1.0",
@@ -5449,6 +5766,10 @@
         "pkg:cargo/serde_core@1.0.229",
         "pkg:cargo/wasm-bindgen@0.2.128"
       ]
+    },
+    {
+      "ref": "pkg:cargo/vcpkg@0.2.15",
+      "dependsOn": []
     },
     {
       "ref": "pkg:cargo/walkdir@2.5.0",

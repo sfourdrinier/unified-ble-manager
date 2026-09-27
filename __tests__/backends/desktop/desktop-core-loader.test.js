@@ -10,6 +10,7 @@ const crypto = require('node:crypto')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
+const { spawnSync } = require('node:child_process')
 
 const { EXPECTED_NATIVE_BUILD_IDENTITY } = require('../../../src/generated/native-build-identity')
 const {
@@ -25,6 +26,20 @@ const { addonPath, loadAddon } = require('../../helpers/desktop-rust-core-harnes
 
 const ROOT = path.join(__dirname, '..', '..', '..')
 const HOST = Object.freeze({ platform: 'corebluetooth', operationPrefix: 'direct-gatt' })
+const stagedRoots = []
+
+afterEach(() => {
+  for (const root of stagedRoots) fs.rmSync(root, { recursive: true, force: true })
+})
+
+afterAll(() => {
+  try {
+    for (const root of stagedRoots) expect(fs.existsSync(root)).toBe(false)
+  } finally {
+    // Retire only fixtures this suite created, even when a regression fails.
+    for (const root of stagedRoots) fs.rmSync(root, { recursive: true, force: true })
+  }
+})
 
 function sealedIdentity(overrides = {}) {
   return {
@@ -52,6 +67,7 @@ function fakeModule(identity) {
 /** A throwaway copy of native/desktop-core + its loader helper, anchored at a temp dir. */
 function stagePackageCopy() {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-desktop-core-loader-')))
+  stagedRoots.push(root)
   fs.mkdirSync(path.join(root, 'native', 'desktop-core'), { recursive: true })
   fs.copyFileSync(
     path.join(ROOT, 'native', 'load-node-api-addon.js'),
@@ -129,16 +145,33 @@ describe('native/desktop-core loader (PR210-03)', () => {
     fs.copyFileSync(addonPath, staged)
     const identity = loadAddon().nativeBuildIdentity()
     writeSidecar(copy.prebuildDir, staged, identity)
-    const cwd = process.cwd()
-    process.chdir(os.tmpdir())
-    try {
-      const { loadDesktopCore } = require(copy.loader)
+    // A loaded DLL cannot be removed on Windows until its process exits.
+    // Keep the real addon load, but bound its lifetime to this child so the
+    // suite can retire its copied binary on every supported host.
+    const child = spawnSync(
+      process.execPath,
+      [
+        '-e',
+        `
+      const { loadDesktopCore } = require(process.argv[1])
       const loaded = loadDesktopCore({})
-      expect(loaded).toMatchObject({ mode: 'prebuilt', path: staged, sidecar: { identity } })
-      expect(typeof loaded.module.UbmCentral.open).toBe('function')
-    } finally {
-      process.chdir(cwd)
-    }
+      process.stdout.write(JSON.stringify({
+        mode: loaded.mode, path: loaded.path, sidecar: loaded.sidecar,
+        openType: typeof loaded.module.UbmCentral.open
+      }))
+    `,
+        copy.loader
+      ],
+      { cwd: os.tmpdir(), encoding: 'utf8', timeout: 30_000 }
+    )
+    expect(child.error).toBeUndefined()
+    expect({ status: child.status, stderr: child.stderr }).toEqual({ status: 0, stderr: '' })
+    expect(JSON.parse(child.stdout)).toMatchObject({
+      mode: 'prebuilt',
+      path: staged,
+      sidecar: { identity },
+      openType: 'function'
+    })
   })
 
   test('UBM_NAPI_ADDON must be absolute and is used exclusively (source mode)', () => {

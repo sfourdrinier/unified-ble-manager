@@ -85,6 +85,7 @@ describe('queued records are delivered one per native task, with JS timers pause
         query: { anyOf: [{ services: { any: [HEART_RATE_SERVICE] }, names: { prefixes: ['Polar H10'] } }] }
       })
       await until(() => session.scans.size > 0, 'the scan to start')
+      expect([...session.scans.values()][0].serviceUuids).toEqual([HEART_RATE_SERVICE])
       await settle(60)
       const other =
         platform === 'android'

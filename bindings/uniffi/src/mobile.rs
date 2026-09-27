@@ -1063,7 +1063,7 @@ pub fn mobile_host_install(
             "a mobile host is already installed in this process",
         ));
     }
-    let host = MobileHost::open_blocking(
+    let host = MobileHost::open_blocking_with_recording_registry(
         Arc::new(ForeignPlatformRadio { radio }),
         Arc::new(ForeignWake { wake }),
         HostOptions {
@@ -1072,6 +1072,7 @@ pub fn mobile_host_install(
             adapter_label,
         },
         ubm_desktop::executor::desktop_runtime(),
+        ubm_mobile::continuation::process_recording_registry(),
     )?;
     let handle = Arc::new(MobileCoreHost { host });
     *slot = Some(Arc::clone(&handle));
@@ -1086,12 +1087,59 @@ pub fn mobile_host_current() -> Option<Arc<MobileCoreHost>> {
         .clone()
 }
 
+pub fn mobile_recording_configure_directory(path: String) -> String {
+    ubm_desktop::continuation::envelope(
+        ubm_mobile::continuation::process_recording_registry()
+            .configure_directory(std::path::Path::new(&path))
+            .map_err(ubm_desktop::continuation::recording_failure),
+    )
+}
+
+pub fn mobile_recording_control(
+    operation: String,
+    id: String,
+    token: String,
+    max_items: u32,
+    max_bytes: u32,
+) -> String {
+    if let Some(owner) = mobile_host_current() {
+        owner
+            .host
+            .continuation_recording_control(&operation, &id, &token, max_items, max_bytes)
+    } else {
+        ubm_mobile::continuation::recording_control(
+            &ubm_mobile::continuation::process_recording_registry(),
+            None,
+            &operation,
+            &id,
+            &token,
+            max_items,
+            max_bytes,
+        )
+    }
+}
+
 /// Mirrors UDL `interface MobileCoreHost`.
 pub struct MobileCoreHost {
     host: MobileHost,
 }
 
 impl MobileCoreHost {
+    pub fn continuation_configure_recording_directory(&self, path: String) -> String {
+        self.host
+            .continuation_configure_recording_directory(std::path::Path::new(&path))
+    }
+    pub fn continuation_recording_control(
+        &self,
+        operation: String,
+        id: String,
+        token: String,
+        max_items: u32,
+        max_bytes: u32,
+    ) -> String {
+        self.host
+            .continuation_recording_control(&operation, &id, &token, max_items, max_bytes)
+    }
     pub fn continuation_reserve_declaration(&self, declaration_json: String) -> String {
         self.host
             .continuation_reserve_declaration(&declaration_json)

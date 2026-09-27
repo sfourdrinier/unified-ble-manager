@@ -66,7 +66,12 @@ The app connects out to `ws://<Metro host>:8795/host` (protocol
 `ubm-test-driver/1`). It takes the host from the URL of the bundle it loaded;
 set `EXPO_PUBLIC_UBM_DRIVER_URL` (or `off`) to override it. `metro.config.js`
 watches `../examples-shared` and resolves its `unified-ble-manager` imports to
-this app's installed copy, so the bundle holds one package instance.
+this app's installed copy, so the bundle holds one package instance. The
+TypeScript paths use that same installed copy for app and shared-driver types;
+the resolver regression checks those paths against its package export targets.
+Every target ends in `.d.ts`, which Expo's runtime resolver excludes; a regression
+also executes the installed Expo resolver to check that runtime imports fall
+through to normal Metro resolution rather than these type-only aliases.
 
 ```sh
 pnpm driver serve                                        # control server: JSON lines on stdout + log file
@@ -212,3 +217,54 @@ focusable for the Siri Remote with no UI fork (`TouchableOpacity` is
 TV-focusable by default). Do not run Bluetooth scenarios against hardware
 the owner has not made available: launch, driver `hosts`, and the
 `readiness` report are the no-hardware check.
+
+### Android headless continuation reference task
+
+The application entrypoint registers `UBMContinuationWake` before mounting the
+UI. The continuation scenario's **Android headless battery check** preset
+declares that exact name. Associate the intended device and arm its presence
+observation after persisting the preset; this preset does not scan, choose, associate, or request
+permissions on a cold wake.
+
+The task accepts the native `{peerId, event: 'companion.appeared'}` payload,
+uses the public Expo manager's explicit `{address: peerId, addressType: 'public'}`
+target to connect only that known H10/simulator public address, discovers GATT,
+and reads the standard Battery Level once. Connection, discovery and read share
+a 15-second work budget and cancellation signal. The public scoped helper
+releases its connection; manager cleanup is awaited separately, and failed
+cleanup remains owned for retry before the next task.
+The native MAC is not a fresh manager's opaque peer id. This reference job's
+public-address policy is specific to these fixtures; applications using random
+or private addresses must supply their own address-kind/durable-reference policy,
+not reinterpret an arbitrary opaque peer id as a MAC.
+The JavaScript runner admits at most four active-plus-pending invocations and
+rejects additional wakes promptly. Admission capacity returns only when the
+actual promise settles; Android task bookkeeping timeout does not cancel JS.
+The process-owned runner also survives Metro module reevaluation, preserving
+its pending jobs and failed-cleanup ledger. A task implementation change requires
+a full JS reload; Fast Refresh must not replace that owner.
+
+Up to 16 structured started/completed/failed records are retained in app-private
+AsyncStorage under `ubm.reference.headless-continuation.v1`, including the
+battery result and cleanup receipt. They are not automatically logged or
+exported. Storage failure rejects the task instead of claiming persisted
+success. This bounded diagnostic history is not the native durable sensor
+journal. Native `task-dispatched` means dispatch acceptance only; actual job
+completion requires the separate persisted `completed` record with successful
+cleanup. Read it explicitly through the `continuation` scenario's
+`headless-history` command (no arguments), for example:
+
+```sh
+node examples-shared/driver/server/cli.mjs run <android-host-id> continuation headless-history '{}'
+```
+
+This offline diagnostic returns at most 16 summaries: state, observation time,
+battery percentage when measured, cleanup state/failure count and failure flag.
+Failed summaries also retain bounded error code, domain and operation tokens
+when present. Invalid or overlong tokens are omitted and marked with
+`errorIdentityRedacted`; this token filter is not general-purpose anonymization.
+It omits peer identifiers and raw error/detail payloads. Malformed persisted
+entries and storage failures reject the command; they are never silently filtered.
+Other hosts report `capability.unsupported`. Reading does not acknowledge or
+delete history, open BLE, or alter the durable native sensor journal.
+Deterministic task tests are not physical Android background evidence.

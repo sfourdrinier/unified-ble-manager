@@ -151,10 +151,36 @@ hosts fail explicitly.
   the iOS Info.plist `UnifiedBleBackgroundContinuation` key (not tvOS), and
   removes them again when the option is dropped. A native iOS order also needs
   configured restoration authority and the Bluetooth background mode. Schema
-  validation does not imply that a deferred strategy has an executor: runtime
+  validation does not imply that the selected platform provides the mechanism: runtime
   capabilities and refusal outcomes remain authoritative. The strategies, what the wake
   does, and how an app reads the outcome and drains the backlog are in
   [`BACKGROUND.md`](BACKGROUND.md).
+
+For `onAppearance: "native"`, the continuation options also accept:
+
+- `setup`: up to 16 sequential device setup steps, each with a canonical
+  `selector`, `value` as a JSON array of integer bytes (0–255, length 1–512),
+  and `timeoutMs` (1–20,000; total at most 60,000). Optional `response`
+  correlates a declared `subscriptionIndex` with byte-array `prefix`,
+  `minLength`/`maxLength`, and `status: { offset, accepted }`; optional
+  `trailing: { offset, accepted }` verifies a final byte. The native observer
+  is installed before the write. These are application protocol commands,
+  not another set of subscriptions.
+- `link.mtu`: `{ requested, timeoutMs, onUnsupported }`, with requested ATT
+  MTU 23–517, timeout 1–20,000 ms, and explicit `onUnsupported: "continue"`
+  or `"fail"`. The actual native outcome is reported; a request is not proof
+  of negotiation. Apple may provide no explicit MTU negotiation mechanism.
+- `recording`: `{ id, maxBytes, maxRecords }`, with an ID of 1–64 ASCII
+  letters/digits/underscores/hyphens, explicit quota of 1 MiB–1 GiB and
+  1–1,000,000 records. Native selects app-private storage; JSON never accepts
+  a filesystem path. This opts into a plaintext durable journal, separate
+  from the volatile claim cursor. No recording is enabled by default.
+
+These fields are rejected for non-native strategies, and unknown fields or
+out-of-range bytes are rejected rather than truncated. Runtime TypeScript uses
+`Uint8Array` for payloads; only the plugin's JSON configuration uses number
+arrays. See [per-generation setup and recording](BACKGROUND.md#per-generation-device-setup)
+for the exact response, ownership, storage and explicit-acknowledgement contract.
 
 When the Android connected-device service is active, applications can publish
 current user-facing state without changing service ownership:

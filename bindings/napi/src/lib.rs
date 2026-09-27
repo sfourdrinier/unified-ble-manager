@@ -25,6 +25,7 @@
 
 mod core_backend;
 mod dispatch;
+mod recording;
 
 /// Compile-time build identity (PR210-18): the `ubm-native-build-identity/1`
 /// constants `build.rs` sealed into this binary from

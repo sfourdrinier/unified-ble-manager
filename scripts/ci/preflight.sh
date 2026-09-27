@@ -123,8 +123,10 @@ run_package() {
   pnpm native:status --only android
   pnpm test:plugin
   pnpm test:native-protocol
+  bash scripts/ci/test-bluez-private-bus.sh
   pnpm lint
   pnpm prepack
+  pnpm typecheck:references
   pnpm --dir example-expo test:driver
   pnpm run docs:check
   pnpm build:example:web
@@ -168,7 +170,7 @@ run_android() {
   # expo-cng-android
   pnpm --dir example-expo install --no-frozen-lockfile
   (cd example-expo && npx expo install --fix)
-  pnpm --dir example-expo exec tsc --noEmit -p tsconfig.json
+  pnpm typecheck:references:expo
   (cd example-expo && NODE_ENV=development npx expo prebuild --clean --no-install)
   (cd example-expo/android && NODE_ENV=development ./gradlew :app:assembleDebug \
       --no-daemon --console=plain)
@@ -224,8 +226,8 @@ printf '\033[1m── summary ──\033[0m\n'
 report package "$pkg_status" "$pkg_elapsed" "$CACHE/package.log"
 report tauri-plugin "$tau_status" "$tau_elapsed" "$CACHE/tauri.log"
 case "$and_status" in
-  -1) printf '\033[33m  – %-16s skipped (--fast)\033[0m\n' "android" ;;
-  -2) printf '\033[33m  – %-16s skipped (no Android SDK or JDK)\033[0m\n' "android" ;;
+  -1) printf '\033[33m  – %-16s skipped (--fast; includes Expo reference typecheck)\033[0m\n' "android" ;;
+  -2) printf '\033[33m  – %-16s skipped (no Android SDK or JDK; includes Expo reference typecheck)\033[0m\n' "android" ;;
   *) report android "$and_status" "$and_elapsed" "$CACHE/android.log" ;;
 esac
 printf '  total %ss\n' "$(( $(date +%s) - started ))"

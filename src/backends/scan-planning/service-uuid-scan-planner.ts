@@ -86,7 +86,13 @@ export function diagnosticServiceUuidScanPlan(execution: BackendScanExecutionPla
 
 function commonRequiredServices(query: NormalizedScanQuery): readonly Uuid[] {
   if (query.anyOf === null || query.anyOf.length === 0) return []
-  const requiredByEveryClause = query.anyOf.map(clause => clause.services?.all ?? [])
+  const requiredByEveryClause = query.anyOf.map(clause => {
+    const services = clause.services
+    if (services === null) return []
+    // A singleton disjunction is required just like an `all` entry. Multiple
+    // alternatives cannot individually constrain every matching observation.
+    return [...new Set([...services.all, ...(services.any.length === 1 ? services.any : [])])]
+  })
   if (requiredByEveryClause.some(services => services.length === 0)) return []
   const firstClause = requiredByEveryClause[0]
   if (firstClause === undefined) return []
@@ -149,7 +155,7 @@ function nativeServicePredicates(
       predicate =>
         predicate.clauseSet === 'anyOf' &&
         predicate.field === 'services' &&
-        predicate.operator === 'all' &&
+        (predicate.operator === 'all' || predicate.operator === 'any') &&
         fullyPushedServicePredicate(query, predicate, serviceUuids)
     )
   )
@@ -162,7 +168,9 @@ function fullyPushedServicePredicate(
 ): boolean {
   const clause = query.anyOf?.[predicate.clauseIndex]
   if (clause === undefined || clause.services === null) return false
-  const requiredServices = clause.services.all.map(service => canonicalUuid(service))
+  const services = predicate.operator === 'any' ? clause.services.any : clause.services.all
+  if (predicate.operator === 'any' && services.length !== 1) return false
+  const requiredServices = services.map(service => canonicalUuid(service))
   return (
     requiredServices.length === serviceUuids.length &&
     serviceUuids.every(serviceUuid => requiredServices.includes(serviceUuid))

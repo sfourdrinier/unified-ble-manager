@@ -16,6 +16,543 @@ fn declaration() -> String {
 }
 
 #[tokio::test]
+async fn public_session_disposal_preserves_native_continuation_lease() {
+    for platform in [MobilePlatform::Android, MobilePlatform::Apple] {
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, platform).await;
+        let engine = host.continuation();
+        engine.execute(POLAR, &declaration()).await.unwrap();
+        let foreground = host.open_session("foreground").unwrap();
+        ok(&call(
+            &foreground,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"foreground", "operationId":"connect"}).to_string(),
+        )
+        .await);
+        ok(&call(
+            &foreground,
+            "gatt.discover",
+            &json!({"peerId":POLAR,"lease":"foreground", "operationId":"discover"}).to_string(),
+        )
+        .await);
+        ok(&call(&foreground, "session.dispose", "{}").await);
+        assert_eq!(
+            radio.count(RequestKind::Disconnect),
+            0,
+            "disposing a public session cannot disconnect the native owner's shared link"
+        );
+        let claim = engine.prepare_claim(256, 65536).await.unwrap();
+        assert_eq!(
+            engine
+                .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+                .await
+                .unwrap()["disposed"],
+            true
+        );
+        assert_eq!(radio.count(RequestKind::Disconnect), 1);
+        host.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn native_claim_preserves_public_lease_until_its_own_disposal() {
+    for platform in [MobilePlatform::Android, MobilePlatform::Apple] {
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, platform).await;
+        let engine = host.continuation();
+        engine.execute(POLAR, &declaration()).await.unwrap();
+        let foreground = host.open_session("foreground").unwrap();
+        ok(&call(
+            &foreground,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"foreground", "operationId":"connect"}).to_string(),
+        )
+        .await);
+        ok(&call(
+            &foreground,
+            "gatt.discover",
+            &json!({"peerId":POLAR,"lease":"foreground", "operationId":"discover"}).to_string(),
+        )
+        .await);
+        let claim = engine.prepare_claim(256, 65536).await.unwrap();
+        assert_eq!(
+            engine
+                .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+                .await
+                .unwrap()["disposed"],
+            true
+        );
+        assert_eq!(radio.count(RequestKind::Disconnect), 0);
+        ok(&call(
+            &foreground,
+            "gatt.read",
+            &json!({"peerId":POLAR,"selector":selector(),"operationId":"read"}).to_string(),
+        )
+        .await);
+        ok(&call(&foreground, "session.dispose", "{}").await);
+        let (error, _) = failure(
+            &call(
+                &foreground,
+                "gatt.read",
+                &json!({"peerId":POLAR,"selector":selector(),"operationId":"after-dispose"})
+                    .to_string(),
+            )
+            .await,
+        );
+        assert_eq!(error["code"], "lifecycle.destroyed");
+        assert_eq!(radio.count(RequestKind::Disconnect), 1);
+        host.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn public_discovery_and_native_wake_share_the_same_physical_snapshot() {
+    for platform in [MobilePlatform::Android, MobilePlatform::Apple] {
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, platform).await;
+        let foreground = host.open_session("foreground").unwrap();
+        ok(&call(
+            &foreground,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"foreground", "operationId":"connect"}).to_string(),
+        )
+        .await);
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+        radio.set_responder(Box::new(move |request| {
+            events.send((request.kind(), request.id())).unwrap();
+            if matches!(request, RadioRequest::Discover { .. }) {
+                Reply::Hold
+            } else {
+                polar_responder(request)
+            }
+        }));
+        let public = foreground.clone();
+        let discovery = tokio::spawn(async move {
+            call(
+                &public,
+                "gatt.discover",
+                &json!({"peerId":POLAR,"lease":"foreground", "operationId":"discover"}).to_string(),
+            )
+            .await
+        });
+        let held = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let (kind, id) = received.recv().await.unwrap();
+                if kind == RequestKind::Discover {
+                    break id;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let engine = host.continuation();
+        let native = engine.clone();
+        let continuation = tokio::spawn(async move { native.execute(POLAR, &declaration()).await });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if received.recv().await.unwrap().0 == RequestKind::Connect {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        radio.answer(held, RadioCompletion::Discovered(polar_services()));
+        ok(&discovery.await.unwrap());
+        tokio::time::timeout(std::time::Duration::from_secs(2), continuation)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            radio.count(RequestKind::Discover),
+            1,
+            "both owners use one physical generation"
+        );
+        ok(&call(
+            &foreground,
+            "gatt.read",
+            &json!({"peerId":POLAR,"selector":selector(),"operationId":"read"}).to_string(),
+        )
+        .await);
+        ok(&call(&foreground, "session.dispose", "{}").await);
+        assert_eq!(radio.count(RequestKind::Disconnect), 0);
+        let claim = engine.prepare_claim(256, 65536).await.unwrap();
+        assert_eq!(
+            engine
+                .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+                .await
+                .unwrap()["disposed"],
+            true
+        );
+        assert_eq!(radio.count(RequestKind::Disconnect), 1);
+        host.shutdown().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn foreground_claim_queues_behind_autonomous_recovery_and_prevents_another_retry() {
+    use std::future::Future;
+    use std::task::Poll;
+    for platform in [MobilePlatform::Android, MobilePlatform::Apple] {
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, platform).await;
+        let engine = host.continuation();
+        engine.execute(POLAR, &declaration()).await.unwrap();
+        radio.set_responder(Box::new(|request| match request {
+            RadioRequest::Connect { .. } => Reply::Hold,
+            _ => polar_responder(request),
+        }));
+        host.ingest(RadioIngress::Connection {
+            peer_id: POLAR.into(),
+            connected: false,
+            status: None,
+        });
+        let connect = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Some(id) = radio.held_of(RequestKind::Connect).first() {
+                    break *id;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let claim = engine.prepare_claim(256, 65536);
+        tokio::pin!(claim);
+        let pending =
+            std::future::poll_fn(|cx| Poll::Ready(claim.as_mut().poll(cx).is_pending())).await;
+        assert!(
+            pending,
+            "foreground handoff must queue fairly behind autonomous recovery instead of returning busy"
+        );
+        radio.answer(
+            connect,
+            RadioCompletion::Failed(PlatformFailure::new(
+                FailureKind::Platform,
+                "temporary transport refusal",
+            )),
+        );
+        let prepared = tokio::time::timeout(std::time::Duration::from_secs(2), claim)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(prepared["consumerCount"], 1);
+        assert_eq!(engine.prepare_claim(256, 65536).await.unwrap(), prepared);
+        let released = engine
+            .acknowledge_claim(prepared["claimToken"].as_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(released["disposed"], true, "{released}");
+        engine.request_recovery(&tokio::runtime::Handle::current());
+        // The cached claim awaits the recovery worker's idle notification.
+        // A scheduler yield alone cannot prove a delayed retry stayed stopped.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            engine.prepare_claim(256, 65536),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(radio.count(RequestKind::Connect), 2);
+        host.shutdown().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn durable_mobile_collection_retains_context_and_survives_native_claim() {
+    for platform in [MobilePlatform::Android, MobilePlatform::Apple] {
+        let directory = std::env::temp_dir().join(format!(
+            "ubm-mobile-recording-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, platform).await;
+        let engine = host.continuation();
+        engine.configure_recording_directory(&directory).unwrap();
+        let mut order: serde_json::Value = serde_json::from_str(&declaration()).unwrap();
+        order["recording"] = json!({"id":"native-mobile","maxBytes":1048576,"maxRecords":1000});
+        engine.execute(POLAR, &order.to_string()).await.unwrap();
+        let epoch = radio
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find_map(|request| match request {
+                RadioRequest::EnableNotifications { epoch, .. } => Some(*epoch),
+                _ => None,
+            })
+            .unwrap();
+        host.ingest(RadioIngress::Notification {
+            instance: Instance {
+                peer_id: POLAR.into(),
+                service_uuid: HR_SERVICE.into(),
+                service_occurrence: 0,
+                characteristic_uuid: HR_MEASUREMENT.into(),
+                characteristic_occurrence: 0,
+            },
+            epoch,
+            value: vec![0, 72],
+        });
+        let prepared = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let prepared = engine
+                    .recording_prepare("native-mobile", 100, 65536)
+                    .unwrap();
+                if prepared["records"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|entry| entry["record"]["valueB64"] == "AEg=")
+                {
+                    break prepared;
+                }
+                if let Some(token) = prepared["token"].as_str() {
+                    engine
+                        .recording_acknowledge("native-mobile", token)
+                        .unwrap();
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let entry = prepared["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["record"]["valueB64"] == "AEg=")
+            .unwrap();
+        assert_eq!(entry["metadata"]["consumer"]["peerId"], POLAR);
+        assert!(entry["metadata"]["consumer"]["databaseGeneration"].is_string());
+        let claim = engine.prepare_claim(256, 65536).await.unwrap();
+        assert_eq!(claim["recording"], json!({"id":"native-mobile"}));
+        engine
+            .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            engine
+                .recording_prepare("native-mobile", 100, 65536)
+                .unwrap(),
+            prepared
+        );
+        engine
+            .recording_acknowledge("native-mobile", prepared["token"].as_str().unwrap())
+            .unwrap();
+        engine.recording_stop("native-mobile").unwrap();
+        host.shutdown().await;
+        drop(engine);
+        drop(host);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn durable_refused_subscription_then_new_database_never_reuses_committed_identity() {
+    let directory = std::env::temp_dir().join(format!(
+        "ubm-recording-recovery-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let mut first = true;
+    let radio = Scripted::new(Box::new(move |request| {
+        if matches!(request, RadioRequest::EnableNotifications { .. }) && first {
+            first = false;
+            return Reply::Now(RadioCompletion::Failed(PlatformFailure::new(
+                FailureKind::PermissionDenied,
+                "first enable refused",
+            )));
+        }
+        polar_responder(request)
+    }));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let engine = host.continuation();
+    engine.configure_recording_directory(&directory).unwrap();
+    let mut order: serde_json::Value = serde_json::from_str(&declaration()).unwrap();
+    order["recording"] = json!({"id":"recovery","maxBytes":1048576,"maxRecords":1000});
+    assert_eq!(
+        engine.execute(POLAR, &order.to_string()).await.unwrap_err()["code"],
+        "permission.denied"
+    );
+    host.ingest(RadioIngress::ServicesChanged {
+        peer_id: POLAR.into(),
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if radio.count(RequestKind::EnableNotifications) == 2
+                && engine.describe_backlog().await.is_ok()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("new database must admit a fresh durable consumer identity");
+    let prepared = engine.recording_prepare("recovery", 100, 65536).unwrap();
+    let registrations: Vec<_> = prepared["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["record"]["t"] == "consumer-registration")
+        .collect();
+    assert_eq!(registrations.len(), 2);
+    assert_ne!(
+        registrations[0]["record"]["consumer"],
+        registrations[1]["record"]["consumer"]
+    );
+    assert_ne!(
+        registrations[0]["metadata"]["consumer"]["databaseGeneration"],
+        registrations[1]["metadata"]["consumer"]["databaseGeneration"]
+    );
+    let claim = engine.prepare_claim(256, 65536).await.unwrap();
+    assert_eq!(claim["consumerCount"], 2);
+    engine
+        .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+        .await
+        .unwrap();
+    engine.recording_stop("recovery").unwrap();
+    host.shutdown().await;
+    drop(engine);
+    drop(host);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn setup_ack_before_att_completion_is_retained_and_replayed_after_native_link_recovery() {
+    for platform in [MobilePlatform::Android, MobilePlatform::Apple] {
+        let radio = Scripted::new(Box::new(|request| match request {
+            RadioRequest::Discover { .. } => {
+                let mut services = polar_services();
+                services[0].characteristics[0].properties.write = true;
+                Reply::Now(RadioCompletion::Discovered(services))
+            }
+            RadioRequest::Write { .. } => Reply::Hold,
+            _ => polar_responder(request),
+        }));
+        let (host, _) = open(&radio, platform).await;
+        let engine = host.continuation();
+        let mut order: serde_json::Value = serde_json::from_str(&declaration()).unwrap();
+        order["link"] =
+            json!({"mtu":{"requested":512,"timeoutMs":1000,"onUnsupported":"continue"}});
+        order["setup"] = json!([{"selector":order["resubscribe"][0],"value":[2,0],"timeoutMs":2000,"response":{"subscriptionIndex":0,"prefix":[240,2,0],"minLength":4,"maxLength":5,"status":{"offset":3,"accepted":[0]},"trailing":{"offset":4,"accepted":[0]}}}]);
+        let run = engine.clone();
+        let first = tokio::spawn(async move { run.execute(POLAR, &order.to_string()).await });
+        for generation in 0..2 {
+            let write = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                loop {
+                    if let Some(id) = radio.held_of(RequestKind::Write).first() {
+                        break *id;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("native recipe must reach write without JavaScript");
+            let epoch = radio
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find_map(|request| match request {
+                    RadioRequest::EnableNotifications { epoch, .. } => Some(*epoch),
+                    _ => None,
+                })
+                .unwrap();
+            host.ingest(RadioIngress::Notification {
+                instance: Instance {
+                    peer_id: POLAR.into(),
+                    service_uuid: HR_SERVICE.into(),
+                    service_occurrence: 0,
+                    characteristic_uuid: HR_MEASUREMENT.into(),
+                    characteristic_occurrence: 0,
+                },
+                epoch,
+                value: vec![240, 2, 0, 0, 0],
+            });
+            radio.answer(write, RadioCompletion::Unit);
+            if generation == 0 {
+                // Wait until ownership leaves execute before provoking actual
+                // link recovery; no second execute/wake call drives it.
+                tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                    loop {
+                        if engine.describe_backlog().await.is_ok() {
+                            break;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                host.ingest(RadioIngress::Connection {
+                    peer_id: POLAR.into(),
+                    connected: false,
+                    status: None,
+                });
+            }
+        }
+        let initial = first.await.unwrap().unwrap();
+        assert_eq!(
+            initial["link"]["mtu"]["outcome"],
+            if platform == MobilePlatform::Android {
+                "negotiated"
+            } else {
+                "unsupported"
+            }
+        );
+        assert_eq!(
+            radio.count(RequestKind::RequestMtu),
+            if platform == MobilePlatform::Android {
+                2
+            } else {
+                0
+            }
+        );
+        let claim = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if let Ok(claim) = engine.prepare_claim(256, 65536).await {
+                    break claim;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let values: Vec<_> = claim["batches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|batch| serde_json::from_str::<serde_json::Value>(batch.as_str().unwrap()).unwrap()["records"].as_array().unwrap().clone())
+            .filter(|record| record["t"] == "value")
+            .collect();
+        assert_eq!(
+            values.len(),
+            2,
+            "application acknowledgements are retained across both native generations"
+        );
+        assert_eq!(radio.count(RequestKind::Write), 2);
+        assert_eq!(claim["consumerCount"], 2);
+        engine
+            .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+            .await
+            .unwrap();
+        host.shutdown().await;
+    }
+}
+
+#[tokio::test]
 async fn mobile_case_equivalent_peers_share_authority_and_canonical_radio_identity() {
     let radio = Scripted::polar();
     let (host, _) = open(&radio, MobilePlatform::Android).await;
@@ -155,8 +692,8 @@ async fn partial_resubscription_recovers_only_missing_selector_without_a_claim()
         }
     };
     assert_eq!(
-        claim["consumerCount"], 2,
-        "successful first selector is neither forgotten nor duplicated"
+        claim["consumerCount"], 3,
+        "successful first selector plus refused and successful second admissions retain distinct identities"
     );
     engine
         .acknowledge_claim(claim["claimToken"].as_str().unwrap())
@@ -224,8 +761,8 @@ async fn partial_replacement_after_link_loss_keeps_both_generations_owned() {
     .await
     .unwrap();
     assert_eq!(
-        claim["consumerCount"], 4,
-        "each generation retains its immutable selector identities"
+        claim["consumerCount"], 5,
+        "each generation and the refused replacement retain immutable selector identities"
     );
     assert_eq!(claim["selectors"][0], claim["selectors"][2]);
     assert_eq!(claim["selectors"][1], claim["selectors"][3]);

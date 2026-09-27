@@ -1,5 +1,76 @@
 # UBM patches to btleplug 0.12.0
 
+## Explicit BlueZ LE-bearer lifecycle
+
+The Linux peripheral and adapter expose narrow LE lifecycle methods backed by
+the vendored bluez-async session's `org.bluez.Bearer.LE1` calls. UBM never falls
+back from these methods to device-wide connect/disconnect. Trusted host policy
+attests an implemented interface and pins its unique daemon owner; interface
+introspection alone cannot distinguish the older unimplemented placeholder.
+
+Accepted acquisition and release replies remain in one session-owned per-peer
+operation entry when a caller cancels its wait. Cleanup settles the original
+acquisition before release; indeterminate replies retain debt rather than
+authorizing another request. A definitive missing-method refusal creates no
+physical cleanup obligation, even if the daemon subsequently departs. Empty
+entries retire only after their final queued user leaves, preserving one lock
+for concurrent callers. GATT object calls and matches use the same unique owner.
+
+Private D-Bus tests in `crates/ubm-desktop/tests/bluez_bearer_scope.rs` distinguish
+LE and Classic effects, held and refused replies, daemon replacement, and
+unowned cleanup. The canonical `scripts/ci/test-bluez-private-bus.sh` runs them
+alongside discovery-session ownership and watcher tests. These tests do not
+establish physical-radio support or authoritative LE GATT readiness: aggregate
+`Device1.ServicesResolved` and cached objects are not such proof.
+
+## CoreBluetooth read-only peer directory
+
+The existing CoreBluetooth manager queue implements service-filtered system-connected
+retrieval and explicit identifier resolution. Returned peripherals are registered
+without connecting, acquiring a lease, emitting an advertisement, or fabricating a
+connected event. A FIFO completion marker follows cache registration; callers do
+not poll for a guessed registration delay. Existing internal peripherals are not
+replaced, preserving active callback ownership. System-connected membership is
+independent of the peripheral's local connection state. UUID/name are the OS's
+values; retrieval supplies neither RSSI nor advertisement timestamps.
+
+The desktop boundary requires nonempty service UUIDs for connected retrieval and
+returns an explicit unsupported-services-required error otherwise. Identifier
+resolution reports unknown connection state. Other radio implementations default
+to unsupported unless they explicitly implement these read-only methods.
+
+## 24. BlueZ owned D-Bus match cleanup
+
+`bluez-match-cleanup` is mandatory. The old `MessageStream::drop` scheduled
+`remove_match(token)` after destroying its receiver. A racing signal could
+retire the local callback first; dbus-rs then returned `No match with that id
+found` before sending any server `RemoveMatch`, and the detached task panicked.
+Local callback absence was not proof that the server registration was released.
+
+- `bluez-async/src/messagestream.rs` retires the local callback synchronously;
+  server ownership is a separate connection-owned lease, not the local token.
+- `match_cleanup.rs` coalesces identical server rules across adapter scopes.
+  Only the final lease removes a rule. New acquisition waits for unresolved
+  removal; genuine refusals remain owned and retryable. Only the server's
+  `org.freedesktop.DBus.Error.MatchRuleNotFound` confirms idempotent absence.
+  Bounded drain cancellation does not cancel a running cleanup request.
+- `BluetoothSession::scoped_match_cleanup` gives each adapter independent
+  release accounting while sharing its connection's registrations. An owned
+  live stream is reported as pending, never mistaken for an empty cleanup queue.
+- The desktop boundary joins aborted notification forwarders and drops its
+  adapter stream after the central event loop and admitted native work settle.
+  A bounded post-loop drain reports backend cleanup failures separately from
+  GATT scope failures; subsequent shutdown retries without reopening admission.
+- `crates/ubm-desktop/tests/bluez_match_cleanup.rs` compiles the exact registry
+  on every host. `crates/ubm-desktop/tests/bluez_private_bus.rs` additionally
+  exercises real D-Bus dispatch without a radio or system bus. The existing
+  Linux Rust CI lane runs it against root-locked dependencies:
+  `UBM_BLUEZ_PRIVATE_BUS_TEST=1 dbus-run-session -- cargo test --locked -p ubm-desktop --test bluez_private_bus -- --ignored --test-threads=1`.
+
+An unexpected finalizer/runtime shutdown is not an awaited release receipt.
+Outstanding cleanup remains in the connection owner while it exists, and
+executor refusal/cancellation is explicitly diagnosed rather than panicking.
+
 ## 23. BlueZ optional adapter Modalias and enumeration failures
 
 `bluez-optional-modalias` is mandatory. BlueZ explicitly marks Adapter1

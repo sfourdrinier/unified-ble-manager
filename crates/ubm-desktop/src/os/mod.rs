@@ -5,6 +5,8 @@
 //! data and compile everywhere, so they are tested on every host.
 
 pub mod bluez_model;
+#[cfg(any(test, all(feature = "btleplug", target_os = "windows")))]
+pub(crate) mod winrt_cleanup;
 pub mod winrt_model;
 
 #[cfg(all(feature = "btleplug", target_os = "linux"))]

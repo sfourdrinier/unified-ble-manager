@@ -122,6 +122,25 @@ fn get_characteristic<'a>(
 }
 
 impl Peripheral {
+    /// Pin this peripheral's GATT calls to an explicitly attested BlueZ
+    /// daemon epoch. No connection or subscription is created here.
+    pub async fn with_le_owner(mut self, owner: &str) -> Result<Self> {
+        self.session = self.session.with_le_owner(owner).await?;
+        Ok(self)
+    }
+
+    /// Strict LE-only acquisition; never invokes Device1.Connect.
+    pub async fn connect_le(&self, owner: &str) -> Result<()> {
+        self.session.connect_le(&self.device, owner).await?;
+        Ok(())
+    }
+
+    /// Retryable LE-only release of accepted work on the same daemon epoch.
+    pub async fn disconnect_le(&self, owner: &str) -> Result<()> {
+        self.session.disconnect_le(&self.device, owner).await?;
+        Ok(())
+    }
+
     pub(crate) fn new(session: BluetoothSession, device: DeviceInfo) -> Self {
         Peripheral {
             session,

@@ -48,6 +48,7 @@ use tokio::sync::{mpsc, oneshot, Notify};
 use uuid::Uuid;
 
 use super::mgmt_socket::MgmtAdvertiser;
+use crate::daemon_lifetime::DaemonLifetime;
 use crate::linux_advertising::{self, AliasRecord, BluezRegistrationFailure};
 use crate::radio::{
     short_of, CharPermission, CharProperty, CharSpec, DisconnectReport, GattClientSet,
@@ -79,6 +80,8 @@ struct AdapterAliasClaim {
 
 /// [`PeripheralRadio`] implemented with `bluer` on Linux.
 pub struct BluerRadio {
+    daemon: DaemonWatch,
+    pump_task: tokio::task::JoinHandle<()>,
     adapter: Adapter,
     services: Vec<ServiceSpec>,
     adv_handle: Option<AdvertisementHandle>,
@@ -116,6 +119,91 @@ pub struct BluerRadio {
     _drop_tx: oneshot::Sender<()>,
 }
 
+struct DaemonWatch {
+    lifetime: Arc<DaemonLifetime>,
+    connection: Arc<dbus::nonblock::SyncConnection>,
+    _subscription: dbus::nonblock::MsgMatch,
+    worker: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for DaemonWatch {
+    fn drop(&mut self) {
+        self.worker.abort();
+    }
+}
+
+impl DaemonWatch {
+    async fn owner(connection: &Arc<dbus::nonblock::SyncConnection>) -> Result<String, RadioError> {
+        let proxy = dbus::nonblock::Proxy::new(
+            "org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            std::time::Duration::from_secs(2),
+            connection.clone(),
+        );
+        let (owner,): (String,) = proxy
+            .method_call("org.freedesktop.DBus", "GetNameOwner", ("org.bluez",))
+            .await
+            .map_err(|error| RadioError(format!("BlueZ owner query: {error}")))?;
+        Ok(owner)
+    }
+
+    async fn open() -> Result<Self, RadioError> {
+        Self::open_on_bus(dbus::channel::BusType::System).await
+    }
+
+    async fn open_on_bus(bus: dbus::channel::BusType) -> Result<Self, RadioError> {
+        let (resource, connection) =
+            dbus_tokio::connection::new::<dbus::nonblock::SyncConnection>(bus)
+                .map_err(|error| RadioError(format!("BlueZ lifetime connection: {error}")))?;
+        let lifetime = Arc::new(DaemonLifetime::default());
+        let failure = lifetime.clone();
+        let worker = tokio::spawn(async move {
+            let error = resource.await;
+            failure.owner_changed();
+            eprintln!("h10-sim: BlueZ lifetime connection ended: {error}");
+        });
+        let state = lifetime.clone();
+        let subscribed = connection
+            .add_match(
+                dbus::message::MatchRule::new_signal("org.freedesktop.DBus", "NameOwnerChanged")
+                    .with_sender("org.freedesktop.DBus"),
+            )
+            .await;
+        let subscription = match subscribed {
+            Ok(value) => value.cb(move |_, (name, _old, _new): (String, String, String)| {
+                if name == "org.bluez" {
+                    state.owner_changed();
+                }
+                true
+            }),
+            Err(error) => {
+                worker.abort();
+                return Err(RadioError(format!("BlueZ lifetime watch: {error}")));
+            }
+        };
+        let watch = Self {
+            lifetime,
+            connection,
+            _subscription: subscription,
+            worker,
+        };
+        let owner = Self::owner(&watch.connection).await?;
+        watch.lifetime.bind(&owner).map_err(RadioError)?;
+        Ok(watch)
+    }
+
+    async fn verify(&self) -> Result<(), RadioError> {
+        self.lifetime.admit().map_err(RadioError)?;
+        match Self::owner(&self.connection).await {
+            Ok(owner) => self.lifetime.check(&owner).map_err(RadioError),
+            Err(error) => {
+                self.lifetime.owner_changed();
+                Err(error)
+            }
+        }
+    }
+}
+
 /// Records one GATT interaction's central address in the client set. A
 /// malformed address or a dead lock is loud on stderr, never a silent skip.
 fn note_client(clients: &Arc<Mutex<GattClientSet>>, address: bluer::Address) {
@@ -141,8 +229,39 @@ fn prune_client(clients: &Arc<Mutex<GattClientSet>>, canonical: &str) {
     }
 }
 
+fn retire_failed_sends(
+    pump: &tokio::task::JoinHandle<()>,
+    writers: &Arc<Mutex<HashMap<Uuid, Arc<CharacteristicWriter>>>>,
+    queue: &Arc<Mutex<SendQueue>>,
+) -> serde_json::Value {
+    pump.abort();
+    let mut failures = Vec::new();
+    match writers.lock() {
+        Ok(mut writers) => writers.clear(),
+        Err(_) => failures.push("writer lock poisoned"),
+    }
+    let mut queued = Vec::new();
+    match queue.lock() {
+        Ok(mut queue) => {
+            while let Some(send) = queue.pop() {
+                queued.push(serde_json::json!({"id": send.id, "bytes": send.value.len(), "characteristic": send.characteristic.to_string()}));
+            }
+        }
+        Err(_) => failures.push("send queue lock poisoned"),
+    }
+    serde_json::json!({"queuedSendsNotConfirmed": queued, "inFlightDelivery": "unknown-at-most-one", "failures": failures})
+}
+
 #[async_trait]
 impl PeripheralRadio for BluerRadio {
+    fn fatal_failure(&self) -> Option<String> {
+        self.daemon.lifetime.admit().err()
+    }
+
+    fn retire_failed_collection(&mut self) -> serde_json::Value {
+        self.app_handle = None;
+        retire_failed_sends(&self.pump_task, &self.writers, &self.pump_queue)
+    }
     async fn notification_payload_capacity(
         &self,
         characteristic: Uuid,
@@ -167,6 +286,7 @@ impl PeripheralRadio for BluerRadio {
     }
 
     async fn open(events: mpsc::Sender<RadioEvent>) -> Result<Self, RadioError> {
+        let daemon = DaemonWatch::open().await?;
         let session = bluer::Session::new()
             .await
             .map_err(|error| backend_error("open session", error))?;
@@ -209,7 +329,8 @@ impl PeripheralRadio for BluerRadio {
         let ledger = Arc::new(Mutex::new(SubscriptionLedger::new()));
         let pump_queue = Arc::new(Mutex::new(SendQueue::new(SEND_QUEUE_CAPACITY)));
         let pump_wake = Arc::new(Notify::new());
-        tokio::spawn(send_pump(
+        daemon.verify().await?;
+        let pump_task = tokio::spawn(send_pump(
             pump_queue.clone(),
             pump_wake.clone(),
             writers.clone(),
@@ -218,6 +339,8 @@ impl PeripheralRadio for BluerRadio {
         ));
 
         Ok(Self {
+            daemon,
+            pump_task,
             adapter,
             services: Vec::new(),
             adv_handle: None,
@@ -244,6 +367,7 @@ impl PeripheralRadio for BluerRadio {
     }
 
     async fn is_advertising(&mut self) -> Result<bool, RadioError> {
+        self.daemon.lifetime.admit().map_err(RadioError)?;
         if let Some(mgmt) = self.mgmt.as_mut() {
             let active = tokio::task::block_in_place(|| mgmt.is_active()).map_err(RadioError)?;
             return Ok(active && self.app_handle.is_some());
@@ -257,6 +381,7 @@ impl PeripheralRadio for BluerRadio {
     }
 
     async fn start_advertising(&mut self, name: &str, uuids: &[Uuid]) -> Result<(), RadioError> {
+        self.daemon.verify().await?;
         // GATT application first — but only once: re-registering an identical
         // application makes BlueZ emit Service Changed to connected centrals,
         // and a real H10 never re-registers on re-advertise. The declarations
@@ -282,6 +407,8 @@ impl PeripheralRadio for BluerRadio {
             self.setup_char_handlers(handlers);
             self.app_handle = Some(app_handle);
         }
+
+        self.daemon.verify().await?;
 
         if let Some(mgmt) = self.mgmt.as_mut() {
             let uuids16 = uuids
@@ -325,7 +452,7 @@ impl PeripheralRadio for BluerRadio {
                 }
                 return Err(error);
             }
-            return Ok(());
+            return self.daemon.verify().await;
         }
 
         let instances_before = self.advertising_instances().await;
@@ -340,7 +467,7 @@ impl PeripheralRadio for BluerRadio {
                     self.adv_handle = None;
                     return Err(error);
                 }
-                Ok(())
+                self.daemon.verify().await
             }
             Err(error) => {
                 // Never leave a half-registered peripheral behind after a
@@ -568,6 +695,7 @@ impl PeripheralRadio for BluerRadio {
         characteristic: Uuid,
         value: Vec<u8>,
     ) -> Result<SendOutcome, RadioError> {
+        self.daemon.lifetime.admit().map_err(RadioError)?;
         let generation = match self.ledger.lock() {
             Ok(ledger) => {
                 if !ledger.is_subscribed(characteristic) {
@@ -1419,6 +1547,127 @@ fn build_services(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn fatal_retirement_reports_queued_values_and_cancels_held_pump() {
+        let delivered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ready = std::sync::Arc::new(tokio::sync::Notify::new());
+        let task = {
+            let ready = ready.clone();
+            let delivered = delivered.clone();
+            tokio::spawn(async move {
+                ready.notified().await;
+                delivered.store(true, std::sync::atomic::Ordering::SeqCst);
+            })
+        };
+        let queue = std::sync::Arc::new(std::sync::Mutex::new(crate::radio::SendQueue::new(2)));
+        let characteristic = uuid::Uuid::nil();
+        queue
+            .lock()
+            .unwrap()
+            .push(crate::radio::QueuedSend {
+                id: 0,
+                service: "test".into(),
+                characteristic,
+                generation: 1,
+                value: vec![1, 2, 3],
+            })
+            .unwrap();
+        let writers = Default::default();
+        let receipt = super::retire_failed_sends(&task, &writers, &queue);
+        ready.notify_one();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(!delivered.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(receipt["queuedSendsNotConfirmed"][0]["bytes"], 3);
+        assert_eq!(receipt["queuedSendsNotConfirmed"][0]["id"], 1);
+        assert_eq!(receipt["inFlightDelivery"], "unknown-at-most-one");
+        assert!(queue.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn daemon_watch_uses_a_private_bus_and_detects_real_owner_loss() {
+        let output = std::process::Command::new("dbus-run-session")
+            .arg("--")
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "radio::bluer_radio::tests::daemon_watch_private_bus_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("UBM_PRIVATE_DAEMON_WATCH_TEST", "1")
+            .output()
+            .expect("dbus-run-session is required for the Linux daemon-lifetime regression");
+        assert!(
+            output.status.success(),
+            "private daemon watcher regression: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "child test must actually execute"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "invoked only by private dbus-run-session parent test"]
+    async fn daemon_watch_private_bus_child() {
+        assert_eq!(
+            std::env::var("UBM_PRIVATE_DAEMON_WATCH_TEST").as_deref(),
+            Ok("1")
+        );
+        let (resource, owner) = dbus_tokio::connection::new_session_sync().unwrap();
+        let worker = tokio::spawn(resource);
+        owner
+            .request_name("org.bluez", true, false, true)
+            .await
+            .unwrap();
+        let watch = super::DaemonWatch::open_on_bus(dbus::channel::BusType::Session)
+            .await
+            .unwrap();
+        watch.verify().await.unwrap();
+        // Release and reacquire on the SAME unique connection: checking only
+        // the current owner would miss loss of every daemon registration.
+        owner.release_name("org.bluez").await.unwrap();
+        owner
+            .request_name("org.bluez", true, false, true)
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while watch.lifetime.admit().is_ok() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("real NameOwnerChanged must close admission");
+        assert!(watch.verify().await.is_err());
+        drop(watch);
+        // A DISTINCT owner replacing the daemon after open but before the
+        // caller's registration fence must also fail, without relying on a
+        // second owner query inside open itself.
+        let unopened_registration =
+            super::DaemonWatch::open_on_bus(dbus::channel::BusType::Session)
+                .await
+                .unwrap();
+        let (replacement_resource, replacement) =
+            dbus_tokio::connection::new_session_sync().unwrap();
+        let replacement_worker = tokio::spawn(replacement_resource);
+        replacement
+            .request_name("org.bluez", true, true, true)
+            .await
+            .unwrap();
+        assert!(unopened_registration.verify().await.is_err());
+        drop(unopened_registration);
+        replacement.release_name("org.bluez").await.unwrap();
+        replacement_worker.abort();
+        // A late owner change after watcher disposal cannot resurrect or panic it.
+        owner.release_name("org.bluez").await.unwrap();
+        assert!(
+            super::DaemonWatch::open_on_bus(dbus::channel::BusType::Session)
+                .await
+                .is_err()
+        );
+        worker.abort();
+    }
     use super::*;
 
     #[tokio::test]

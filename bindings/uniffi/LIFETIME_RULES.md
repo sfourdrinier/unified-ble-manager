@@ -39,7 +39,7 @@ built cdylib. Contract `C-UBM.0.1.2-DRAFT`, single-owned by `ubm-core`
   radio, scripted observations) and returns the start observation JSON
   carrying the core-minted scan op id (`"op_id"`); `ble_scan_take()`
   drains queued observation JSON (`""` when quiet); `ble_scan_stop(op_id,
-  now_ms)` stops the admitted scan. Times cross as decimal strings
+now_ms)` stops the admitted scan. Times cross as decimal strings
   (DATA-02); the core owns duplicate/merge/timeout admission and the
   deadline. Unknown stop op ids fail closed (`argument.invalid`); stops are
   never fabricated.
@@ -135,9 +135,11 @@ built cdylib. Contract `C-UBM.0.1.2-DRAFT`, single-owned by `ubm-core`
 ## Codegen / runtime contract (FFI-NATIVE recipe)
 
 - `uniffi-bindgen 0.32.1` generates Kotlin + Swift + Python from the built
-  cdylib. The runner regenerates and DIFFS against the committed
+  cdylib. The runner strips emitter-only trailing spaces from source lines,
+  then regenerates and DIFFS against the committed
   `generated/` recipe (must be byte-identical): Kotlin, Swift, and Python
-  outputs are all reproducibility-pinned.
+  outputs are all reproducibility-pinned. `uniffi.toml` pins the existing
+  Kotlin and Python dynamic-library loader names.
 - Import-time contract-version verification is LIVE in the generated
   bindings and is negatively proven (tampered version → `InternalError` on
   import). The per-method checksum call is commented out in uniffi 0.32

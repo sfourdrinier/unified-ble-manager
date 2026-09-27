@@ -36,20 +36,9 @@ void rejectWithFailure(RCTPromiseRejectBlock reject, NSString *failureJson) {
 
 RCT_EXPORT_MODULE(UnifiedBleRustCore)
 
-- (instancetype)init {
-  self = [super init];
-  if (self != nil) {
-    // Restoration: CoreBluetooth hands restored peripherals only to a central
-    // created with the restore identifier, so the process host and its radio
-    // come up when JavaScript first loads this module (legacy timing). A
-    // failure here is reported again, as data, by every openSession.
-    NSString *failure = [[UnifiedBleRustCoreSessions shared] ensureHost];
-    if (failure != nil) {
-      NSLog(@"[UnifiedBleRustCore] process host install failed: %@", failure);
-    }
-  }
-  return self;
-}
+// Loading this module also exposes offline recording controls. Radio ownership
+// begins at openSession or the separate configured native launch bootstrap,
+// never as a side effect of requesting retained data.
 
 - (std::shared_ptr<facebook::react::TurboModule>)getTurboModule:
     (const facebook::react::ObjCTurboModule::InitParams &)params {
@@ -176,6 +165,27 @@ RCT_EXPORT_MODULE(UnifiedBleRustCore)
                                                           }];
 }
 
+- (void)recordingControl:(NSString *)operation id:(NSString *)recordingId token:(NSString *)token maxItems:(double)maxItems maxBytes:(double)maxBytes resolve:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
+  [[UnifiedBleRustCoreSessions shared] recordingControl:operation id:recordingId token:token maxItems:maxItems maxBytes:maxBytes completion:^(NSString *value, NSString *failure) {
+    if (failure != nil) { rejectWithFailure(reject, failure); return; }
+    resolve(value);
+  }];
+}
+- (void)continuationRecordingStatus:(NSString *)recordingId resolve:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
+  [self recordingControl:@"status" id:recordingId token:@"" maxItems:0 maxBytes:0 resolve:resolve reject:reject];
+}
+- (void)continuationRecordingPrepare:(NSString *)recordingId maxItems:(double)maxItems maxBytes:(double)maxBytes resolve:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
+  [self recordingControl:@"prepare" id:recordingId token:@"" maxItems:maxItems maxBytes:maxBytes resolve:resolve reject:reject];
+}
+- (void)continuationRecordingAcknowledge:(NSString *)recordingId token:(NSString *)token resolve:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
+  [self recordingControl:@"acknowledge" id:recordingId token:token maxItems:0 maxBytes:0 resolve:resolve reject:reject];
+}
+- (void)continuationRecordingStop:(NSString *)recordingId resolve:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
+  [self recordingControl:@"stop" id:recordingId token:@"" maxItems:0 maxBytes:0 resolve:resolve reject:reject];
+}
+- (void)continuationRecordingClear:(NSString *)recordingId resolve:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
+  [self recordingControl:@"clear" id:recordingId token:@"" maxItems:0 maxBytes:0 resolve:resolve reject:reject];
+}
 - (void)continuationStatus:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
   [[UnifiedBleRustCoreSessions shared] continuationStatus:^(NSString *status, NSString *failure) {
     if (failure != nil) {

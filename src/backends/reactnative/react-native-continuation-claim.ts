@@ -14,16 +14,19 @@ import {
   type BackgroundContinuationResubscribeSelector
 } from '../../backend-contract/background-continuation'
 import { BLE_RETRYABILITIES, contractError, type BleRetryability } from '../../backend-contract/errors'
+import { parseContinuationLinkOutcome, type ContinuationLinkOutcome } from '../../core/native-continuation-link'
 import {
   parseDrainText,
   parseRemoteFailureText,
   type WireRemoteFailure,
+  type WirePlatformDetail,
   type WireDrainRecord,
   type WireDelivery
 } from './rust-core-wire'
 
 /** The native prepared-claim shape (`sessions.prepareContinuationClaim`): verbatim batches. */
 export interface ContinuationClaimPayload {
+  readonly recording?: { readonly id: string }
   /** Opaque native ownership token; it is acknowledged only after this payload decodes. */
   readonly claimToken: string
   /** Consumer count captured from the exact native session being claimed. */
@@ -56,6 +59,8 @@ export interface ContinuationBacklogStreamEnd {
 }
 
 export interface ContinuationBacklog {
+  /** Separate durable cursor: claiming radio ownership never acknowledges or deletes this recording. */
+  readonly recording?: { readonly id: string }
   /** Immutable selector identity from the session that produced this backlog. */
   readonly selectors: readonly BackgroundContinuationResubscribeSelector[]
   readonly values: readonly ContinuationBacklogValue[]
@@ -80,6 +85,15 @@ export interface ContinuationClaimAcknowledgement {
 function assertClaimPayload(value: unknown): asserts value is ContinuationClaimPayload {
   if (!isRecord(value)) {
     throw contractError('protocol.malformed', 'restoration', 'continuation-claim.payload')
+  }
+  if (
+    value.recording !== undefined &&
+    (!isRecord(value.recording) ||
+      Object.keys(value.recording).length !== 1 ||
+      typeof value.recording.id !== 'string' ||
+      !/^[A-Za-z0-9_-]{1,64}$/.test(value.recording.id))
+  ) {
+    throw contractError('protocol.malformed', 'restoration', 'continuation-claim.recording')
   }
   const batches = value.batches
   const claimToken = value.claimToken
@@ -220,6 +234,9 @@ function continuationConsumerIndex(consumer: string): number | null {
 
 /** One wake outcome in the status answer (null fields stay null, never invented). */
 export interface ContinuationWakeStatus {
+  /** Acceptance stage, never proof the dispatched application task completed. */
+  readonly stage?: 'task-dispatched' | 'foreground-service-started'
+  readonly platform?: WirePlatformDetail
   readonly observedAtMs: number
   readonly event: 'continuation.completed' | 'continuation.failed'
   readonly strategy: string
@@ -236,6 +253,7 @@ export type ContinuationRecoveryStatus =
       readonly attempt: number
       readonly peerAddress: string
       readonly resubscribed: number
+      readonly link?: ContinuationLinkOutcome
     }
   | {
       readonly event: 'continuation.failed'
@@ -254,9 +272,8 @@ export interface ContinuationStatus {
   readonly lastWake: ContinuationWakeStatus | null
   readonly lastRecovery: ContinuationRecoveryStatus | null
   /**
-   * Deferred-execution disclaimer on hosts where the strategy is not
-   * implemented (Apple: "<strategy> continuation is not implemented in this
-   * release"); absent (null) where the order executes.
+   * The host's reason a declared mechanism is unavailable (for example an
+   * Android-specific task/service strategy on Apple); null where it executes.
    */
   readonly detail: string | null
 }
@@ -335,7 +352,7 @@ export function parseContinuationRecoveryStatus(value: unknown): ContinuationRec
     throw contractError('protocol.malformed', 'restoration', operation)
   }
   if (value.event === 'continuation.completed') {
-    unexpectedKeys(value, ['event', 'strategy', 'attempt', 'peerAddress', 'resubscribed'], operation)
+    unexpectedKeys(value, ['event', 'strategy', 'attempt', 'peerAddress', 'resubscribed', 'link'], operation)
     if (
       typeof value.peerAddress !== 'string' ||
       value.peerAddress.length === 0 ||
@@ -345,12 +362,14 @@ export function parseContinuationRecoveryStatus(value: unknown): ContinuationRec
     ) {
       throw contractError('protocol.malformed', 'restoration', operation)
     }
+    const link = parseContinuationLinkOutcome(value.link)
     return Object.freeze({
       event: value.event,
       strategy: value.strategy,
       attempt: value.attempt,
       peerAddress: value.peerAddress,
-      resubscribed: value.resubscribed
+      resubscribed: value.resubscribed,
+      ...(link === undefined ? {} : { link })
     })
   }
   if (value.event === 'continuation.failed') {
@@ -376,7 +395,7 @@ function parseWakeStatus(value: unknown): ContinuationWakeStatus | null {
   }
   unexpectedKeys(
     value,
-    ['observedAtMs', 'event', 'strategy', 'peerAddress', 'code', 'reason'],
+    ['observedAtMs', 'event', 'strategy', 'peerAddress', 'code', 'reason', 'stage', 'platform'],
     'continuation-status.last-wake.keys'
   )
   if (typeof value.observedAtMs !== 'number' || !Number.isSafeInteger(value.observedAtMs)) {
@@ -395,7 +414,37 @@ function parseWakeStatus(value: unknown): ContinuationWakeStatus | null {
   ) {
     throw contractError('protocol.malformed', 'restoration', 'continuation-status.last-wake.detail')
   }
+  const expectedStage =
+    value.event !== 'continuation.completed'
+      ? undefined
+      : value.strategy === 'headless-task'
+        ? 'task-dispatched'
+        : value.strategy === 'foreground-service'
+          ? 'foreground-service-started'
+          : undefined
+  if (value.stage !== expectedStage) {
+    throw contractError('protocol.malformed', 'restoration', 'continuation-status.last-wake.stage')
+  }
+  let platform: WirePlatformDetail | undefined
+  if (value.platform !== undefined) {
+    const parsed = parseRemoteFailureText(
+      JSON.stringify({
+        code: 'platform.failure',
+        domain: 'platform',
+        operation: 'continuation.wake',
+        detail: null,
+        platform: value.platform
+      }),
+      'continuation.wake.platform'
+    )
+    if (value.event !== 'continuation.failed' || !parsed.ok || parsed.value.platform === null) {
+      throw contractError('protocol.malformed', 'restoration', 'continuation-status.last-wake.platform')
+    }
+    platform = parsed.value.platform
+  }
   return Object.freeze({
+    ...(expectedStage === undefined ? {} : { stage: expectedStage }),
+    ...(platform === undefined ? {} : { platform }),
     observedAtMs: value.observedAtMs,
     event: value.event,
     strategy: value.strategy,
@@ -467,6 +516,7 @@ export function aggregateContinuationClaim(claim: unknown): ContinuationBacklog 
   }
   return Object.freeze({
     selectors,
+    ...(claim.recording === undefined ? {} : { recording: Object.freeze({ id: claim.recording.id }) }),
     values: Object.freeze(values),
     streamEnds: Object.freeze(streamEnds),
     control: Object.freeze(control),

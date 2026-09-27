@@ -19,6 +19,23 @@ function bounded(promise, timeoutMs, operation) {
   ]).finally(() => clearTimeout(timer))
 }
 
+// A watchdog ends a wait, not the owned operation. Share that pending work
+// through final cleanup; only a settled failure may admit a retry.
+function singleFlight(action) {
+  let pending
+  return () => {
+    if (!pending) {
+      const tracked = Promise.resolve()
+        .then(action)
+        .finally(() => {
+          if (pending === tracked) pending = undefined
+        })
+      pending = tracked
+    }
+    return pending
+  }
+}
+
 // One pump owns each iterator. No polling, discarded stream errors, or unbounded history.
 function inbox(stream, label, parse = value => value) {
   const iterator = stream[Symbol.asyncIterator]()
@@ -34,10 +51,14 @@ function inbox(stream, label, parse = value => value) {
     try {
       while (!stopped) {
         const item = await iterator.next()
-        if (stopped) break
+        if (stopped && item.done) break
         if (item.done) throw new Error(`${label} ended unexpectedly`)
         assert.equal(item.value.kind, 'value', `${label} loss or terminal: ${JSON.stringify(item.value)}`)
         const value = parse(item.value.value.value)
+        if (stopped) {
+          queued.push(value)
+          break
+        }
         const waiter = pending.shift()
         if (waiter) waiter.resolve(value)
         else {
@@ -116,15 +137,55 @@ async function run(options, pmd) {
     own('control subscription', () => cpSub.remove())
     const cpInbox = inbox(cpSub.values, 'control point')
     own('control iterator', () => cpInbox.close(), false)
-    const dataSub = await data.subscribe({ ...operation, delivery: 'prefer-notification', stream: 'lossless-bounded' })
-    own('data subscription', () => dataSub.remove())
-    const dataInbox = inbox(dataSub.values, 'PMD data', bytes => {
+    const parseData = bytes => {
       const measurement = bytes[0] % 64
       if (measurement === 2) return { measurement, frame: pmd.parseAccFrame(bytes) }
       if (measurement === 0) return { measurement, frame: pmd.parseEcgFrame(bytes) }
       throw new Error(`unexpected PMD measurement ${measurement}`)
-    })
-    own('data iterator', () => dataInbox.close(), false)
+    }
+    let dataInbox, retireData
+    async function openDataPhase() {
+      const subscription = await data.subscribe({
+        ...operation,
+        delivery: 'prefer-notification',
+        stream: 'lossless-bounded'
+      })
+      let released = false,
+        closed = false
+      const remove = singleFlight(async () => {
+        if (released) return { state: 'released', failures: [] }
+        const receipt = await subscription.remove()
+        released = receipt.state === 'released' && receipt.failures.length === 0
+        return receipt
+      })
+      own('data subscription', remove)
+      const current = inbox(subscription.values, 'PMD data', parseData)
+      const close = singleFlight(async () => {
+        if (!closed) {
+          await current.close()
+          closed = true
+        }
+      })
+      own('data iterator', close, false)
+      dataInbox = current
+      retireData = async () => {
+        // End the old local consumer before awaiting authoritative removal.
+        // Independent CP/data queues make a STOP response insufficient as a
+        // data-generation fence. Never admit the next consumer on failed release.
+        await bounded(close(), timeoutMs, 'phase data iterator cleanup')
+        const count = current.clear()
+        log({
+          phase: 'phase-boundary',
+          validatedFramesExcluded: count,
+          scope: 'locally-buffered',
+          iteratorClosed: true
+        })
+        const receipt = await bounded(remove(), timeoutMs, 'phase data subscription cleanup')
+        assert.equal(receipt.state, 'released', 'phase data subscription cleanup remained unresolved')
+        assert.deepEqual(receipt.failures, [])
+      }
+    }
+    await openDataPhase()
     const phaseBoundary = () => {
       const count = dataInbox.clear()
       if (count) log({ phase: 'phase-boundary', validatedFramesExcluded: count })
@@ -168,6 +229,17 @@ async function run(options, pmd) {
         phaseBoundary()
         await command(pmd.buildStartAccCommand({ sampleRateHz, resolutionBits: 16, rangeG }))
         const [first, second] = await frames(2)
+        // Exactly two metadata-only records per setting: retain the evidence
+        // even when the following strict timing assertion fails. No raw values.
+        log({
+          phase: 'acc-frame-pair',
+          sampleRateHz,
+          rangeG,
+          frames: [first, second].map(frame => ({
+            timestampNs: frame.timestampNs.toString(),
+            samples: frame.samplesMilliG.length
+          }))
+        })
         for (const frame of [first, second]) {
           assert.equal(frame.frameType, 1, 'H10 selected16-bit ACC must use raw type1')
           assert.ok(
@@ -184,12 +256,14 @@ async function run(options, pmd) {
           'ACC timestamp/sample-rate mismatch'
         )
         await command(pmd.buildStopAccCommand())
+        await retireData()
         log({
           phase: 'acc-setting',
           sampleRateHz,
           rangeG,
           samples: first.samplesMilliG.length + second.samplesMilliG.length
         })
+        await openDataPhase()
       }
     const startAcc = () => command(pmd.buildStartAccCommand({ sampleRateHz: 200, resolutionBits: 16, rangeG: 8 }))
     phaseBoundary()

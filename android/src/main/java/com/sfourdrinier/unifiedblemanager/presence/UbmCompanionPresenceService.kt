@@ -5,6 +5,7 @@ package com.sfourdrinier.unifiedblemanager.presence
 import android.companion.AssociationInfo
 import android.companion.CompanionDeviceManager
 import android.companion.CompanionDeviceService
+import android.companion.DevicePresenceEvent
 import android.content.Context
 import android.os.Build
 import android.util.Log
@@ -17,11 +18,11 @@ import java.util.concurrent.RejectedExecutionException
  * The Companion Device Manager presence endpoint (issue #212). The system
  * binds this service — creating the process when it is dead — when a device
  * the app observes through [CompanionPresenceObserver] appears or
- * disappears. Both callback overloads are overridden: the API 33+
- * [AssociationInfo] variant carries the real association id, and the
- * `String`-address variant covers older dispatch paths. If one physical
- * event ever reaches both overloads, the coordinator treats the second as
- * the duplicate it is (finding 236) instead of running the wake twice.
+ * disappears. API 36+ uses source-aware events and ignores the compatibility
+ * callbacks Android also delivers. BLE, Bluetooth connection and self-managed
+ * presence are aggregated per owned association; only the last source's
+ * disappearance releases a peer's continuation. API 31–35 retain their legacy
+ * address/AssociationInfo callbacks and duplicate-appearance protection.
  *
  * The service surfaces the appearance; it never scans for unknown peers. A
  * cold-start appearance installs the process radio owner
@@ -31,9 +32,10 @@ import java.util.concurrent.RejectedExecutionException
  * session open. After the record-only ingest, the declared standing order
  * ([BackgroundContinuationDeclaration]) executes: `record-only` stops here,
  * `native` reconnects the declared known peer and resubscribes the declared
- * characteristics through the Rust core with no JavaScript, and the deferred
- * strategies record their `capability.unsupported` refusal. The callback
- * only admits the work to this service's single serial worker, then returns
+ * characteristics through the Rust core with no JavaScript; headless-task
+ * dispatches the registered RN task and foreground-service acquires a scoped
+ * process-owned connected-device lease. Platform refusals remain explicit. The callback
+ * only admits the work to the process-owned single serial worker, then returns
  * to the system promptly; the worker performs the bounded connect and
  * operation waits in callback order. Destroying the service closes admission
  * without interrupting a wake already admitted to that worker.
@@ -57,15 +59,43 @@ import java.util.concurrent.RejectedExecutionException
  * unguarded host service.
  */
 open class UbmCompanionPresenceService : CompanionDeviceService() {
+  protected open fun presenceSdkInt(): Int = Build.VERSION.SDK_INT
+  protected open fun associationForPresence(id: Int): AssociationInfo? {
+    val manager = applicationContext.getSystemService(Context.COMPANION_DEVICE_SERVICE) as? CompanionDeviceManager
+      ?: return null
+    return manager.myAssociations.singleOrNull { it.id == id }
+  }
+
+  override fun onDevicePresenceEvent(event: DevicePresenceEvent) {
+    if (presenceSdkInt() < 36) return
+    val ticket = coordinator.admissionTicket()
+    enqueue("source-event") {
+      if (event.uuid != null || event.associationId < 0) {
+        Log.w(TAG, "presence UUID-only event unsupported: no scoped association")
+        return@enqueue
+      }
+      val kind = event.event
+      if (kind !in 0..5) {
+        Log.w(TAG, "presence event unsupported: event=$kind")
+        return@enqueue
+      }
+      val association = associationForPresence(event.associationId)
+      val address = association?.deviceMacAddress?.toString()
+      if (address == null) {
+        Log.w(TAG, "presence event refused: association is absent or has no address")
+        return@enqueue
+      }
+      if (!coordinator.acceptsTicket(address, ticket)) return@enqueue
+      coordinator.presenceEvent(address, association.id, kind / 2, kind % 2 == 0)
+    }
+  }
   /**
    * CompanionDeviceService callbacks may arrive on the main thread. Native
    * continuation has deliberately bounded but long radio waits, so it must
    * never occupy that callback. One worker also preserves the callback order
    * that the coordinator's duplicate and disappearance semantics require.
    */
-  private val callbackWorker: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
-    Thread(runnable, "ubm-companion-presence").also { it.isDaemon = true }
-  }
+  private var closed = false
 
   private val coordinator: PresenceWakeCoordinator by lazy {
     // The override short-circuits before any Context use: unit tests drive
@@ -74,7 +104,10 @@ open class UbmCompanionPresenceService : CompanionDeviceService() {
   }
 
   override fun onDeviceAppeared(address: String) {
+    if (presenceSdkInt() >= 36) return
+    val ticket = coordinator.admissionTicket()
     enqueue("appeared") {
+      if (!coordinator.acceptsTicket(address, ticket)) return@enqueue
       if (coordinator.appeared(address, null)) {
         Log.i(TAG, "presence wake delivered for $address (associationId=none)")
       }
@@ -82,12 +115,15 @@ open class UbmCompanionPresenceService : CompanionDeviceService() {
   }
 
   override fun onDeviceAppeared(association: AssociationInfo) {
+    if (presenceSdkInt() >= 36) return
     val address = association.deviceMacAddress?.toString()
     if (address == null) {
       Log.w(TAG, "presence appearance without a device address ignored (associationId=${association.id})")
       return
     }
+    val ticket = coordinator.admissionTicket()
     enqueue("appeared") {
+      if (!coordinator.acceptsTicket(address, ticket)) return@enqueue
       if (coordinator.appeared(address, association.id)) {
         Log.i(TAG, "presence wake delivered for $address (associationId=${association.id})")
       }
@@ -95,31 +131,44 @@ open class UbmCompanionPresenceService : CompanionDeviceService() {
   }
 
   override fun onDeviceDisappeared(address: String) {
-    enqueue("disappeared") { coordinator.disappeared(address, null) }
+    if (presenceSdkInt() >= 36) return
+    val ticket = coordinator.admissionTicket()
+    enqueue("disappeared") {
+      if (coordinator.acceptsTicket(address, ticket)) coordinator.disappeared(address, null)
+    }
   }
 
   override fun onDeviceDisappeared(association: AssociationInfo) {
+    if (presenceSdkInt() >= 36) return
     val address = association.deviceMacAddress?.toString()
     if (address == null) {
       Log.w(TAG, "presence disappearance without a device address ignored (associationId=${association.id})")
       return
     }
-    enqueue("disappeared") { coordinator.disappeared(address, association.id) }
+    val ticket = coordinator.admissionTicket()
+    enqueue("disappeared") {
+      if (coordinator.acceptsTicket(address, ticket)) coordinator.disappeared(address, association.id)
+    }
   }
 
   override fun onDestroy() {
-    // shutdown(), unlike shutdownNow(), drains work that a system callback
-    // already admitted. A later callback after destruction is rejected and
-    // logged visibly by enqueue rather than run against a dead service.
-    callbackWorker.shutdown()
+    // The process worker outlives this service: admitted work drains before
+    // callbacks from a replacement service, without interrupting ownership.
+    synchronized(this) { closed = true }
     super.onDestroy()
   }
 
   private fun enqueue(what: String, body: () -> Unit) {
-    try {
-      callbackWorker.execute { run(what, body) }
-    } catch (error: RejectedExecutionException) {
-      Log.w(TAG, "presence $what rejected after service teardown: ${error.message ?: error.javaClass.simpleName}")
+    synchronized(this) {
+      if (closed) {
+        Log.w(TAG, "presence $what rejected after service teardown")
+        return
+      }
+      try {
+        callbackWorker.execute { run(what, body) }
+      } catch (error: RejectedExecutionException) {
+        Log.w(TAG, "presence $what worker rejected: ${error.message ?: error.javaClass.simpleName}")
+      }
     }
   }
 
@@ -135,6 +184,39 @@ open class UbmCompanionPresenceService : CompanionDeviceService() {
 
   companion object {
     private const val TAG = "UbmPresenceService"
+    @Volatile private var callbackThread: Thread? = null
+    private val callbackWorker: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
+      Thread(runnable, "ubm-companion-presence").also { it.isDaemon = true; callbackThread = it }
+    }
+
+    /** Reopen wake admission only after the OS accepts observation on the shared worker. */
+    internal fun observe(context: Context, address: String, start: () -> Unit) = onWorker {
+      val owner = coordinatorFor(context)
+      start()
+      owner.observationStarted(address)
+    }
+
+    /** Confirmed OS stop fences pending wakes, then settles already-admitted work. */
+    internal fun retireObservation(context: Context, address: String, cleanup: () -> Unit) {
+      val owner = coordinatorFor(context)
+      owner.retireObservation(address)
+      onWorker {
+        owner.clearRetiredAppearance(address)
+        cleanup()
+      }
+    }
+
+    private fun onWorker(action: () -> Unit) {
+      if (Thread.currentThread() === callbackThread) action()
+      else try {
+        callbackWorker.submit(action).get()
+      } catch (error: java.util.concurrent.ExecutionException) {
+        throw (error.cause ?: error)
+      } catch (error: InterruptedException) {
+        Thread.currentThread().interrupt()
+        throw error
+      }
+    }
 
     /**
      * Test seam: replaces the context-built coordinator (production builds
@@ -143,8 +225,12 @@ open class UbmCompanionPresenceService : CompanionDeviceService() {
     @Volatile
     var coordinatorOverride: PresenceWakeCoordinator? = null
 
+    private var processCoordinator: PresenceWakeCoordinator? = null
+
+    @Synchronized
     private fun coordinatorFor(context: Context): PresenceWakeCoordinator {
       coordinatorOverride?.let { return it }
+      processCoordinator?.let { return it }
       val application = context.applicationContext
       val store = SharedPreferencesPresenceStore(application)
       val continuationStore = SharedPreferencesBackgroundContinuationStore(application)
@@ -172,16 +258,15 @@ open class UbmCompanionPresenceService : CompanionDeviceService() {
         log = { message -> Log.w(TAG, message) },
         continuation = { continuationStore.loadDeclaration() },
         executeContinuation = { address, declaration ->
-          try {
-            RustCoreProcessHost.shared(application).continuationExecutor().execute(address, declaration)
-          } catch (error: Throwable) {
-            Log.w(TAG, "presence native continuation failed: ${error.message ?: error.javaClass.simpleName}")
-            ContinuationOutcome.failed(
-              ContinuationStrategy.NATIVE,
-              "lifecycle.invariant-violation",
-              "continuation executor threw: ${error.message ?: error.javaClass.simpleName}",
-              null
-            )
+          executePresenceContinuation(declaration.strategy) {
+            when (declaration.strategy) {
+              ContinuationStrategy.NATIVE -> RustCoreProcessHost.shared(application).executeNativeContinuation(address, declaration)
+              ContinuationStrategy.FOREGROUND_SERVICE, ContinuationStrategy.HEADLESS_TASK -> RustCoreProcessHost.shared(application).continuationExecutor().executePlatform(declaration) {
+                if (declaration.strategy == ContinuationStrategy.FOREGROUND_SERVICE) RustCoreProcessHost.shared(application).foregroundContinuation().execute(address, declaration)
+                else UbmHeadlessContinuationService.dispatch(application, address, declaration)
+              }
+              ContinuationStrategy.RECORD_ONLY -> error("Record-only must not dispatch a continuation")
+            }
           }
         },
         recordWakeOutcome = { outcome ->
@@ -191,7 +276,7 @@ open class UbmCompanionPresenceService : CompanionDeviceService() {
               TAG,
               "continuation completed strategy=${outcome.strategy.wire} peer=${outcome.peerAddress}"
             )
-            scheduleBacklogProof(application)
+            if (outcome.strategy == ContinuationStrategy.NATIVE) scheduleBacklogProof(application)
           } else {
             Log.w(
               TAG,
@@ -199,8 +284,9 @@ open class UbmCompanionPresenceService : CompanionDeviceService() {
                 "code=${outcome.code} reason=${outcome.reason}"
             )
           }
-        }
-      )
+        },
+        releaseContinuation = { address -> RustCoreProcessHost.shared(application).foregroundContinuation().release(address) }
+      ).also { processCoordinator = it }
     }
 
     private val proofScheduler =

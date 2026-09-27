@@ -1,6 +1,12 @@
 import { canonicalBleAddress, canonicalUuid } from '../backend-contract/primitives'
 import { contractError } from '../backend-contract/errors'
-import type { AdvertisementObservation } from '../backend-contract/advertisement'
+import {
+  isObservationOrigin,
+  isObservationSource,
+  type AdvertisementObservation,
+  type ObservationOrigin,
+  type ObservationSource
+} from '../backend-contract/advertisement'
 import { canonicalScanQueryJson, scanQueryDigest } from '../backend-contract/scan-query'
 import { assertPeerReference, encodePeerReference, isPeerReference, snapshotPeerReference } from './peer-reference'
 import type { PeerReference } from './peer-reference'
@@ -18,6 +24,7 @@ export type {
   NormalizedScanQuery,
   NormalizedServiceDataPattern
 } from '../backend-contract/scan-query'
+export type { ObservationOrigin, ObservationSource } from '../backend-contract/advertisement'
 
 export interface ManufacturerDataPattern {
   readonly companyId: number
@@ -68,6 +75,8 @@ export interface ScanClause {
 }
 
 interface CompactScanAdvertisement {
+  readonly provenance?: ObservationSource
+  readonly origin?: ObservationOrigin
   readonly peerId: string
   readonly peerReference?: PeerReference
   readonly localName: string | null
@@ -105,6 +114,8 @@ export function normalizeScanObservation(observation: ScanObservation): Normaliz
         ? undefined
         : snapshotPeerReference(observation.peerReference, 'scan.observation.peer-reference')
     return Object.freeze({
+      ...(observation.provenance === undefined ? {} : { provenance: observation.provenance }),
+      ...(observation.origin === undefined ? {} : { origin: observation.origin }),
       ...(peerReference === undefined ? {} : { peerReference }),
       localName: observation.localName,
       rssi: observation.rssi,
@@ -129,6 +140,8 @@ export function normalizeScanObservation(observation: ScanObservation): Normaliz
       : snapshotPeerReference(observation.peerReference, 'scan.observation.peer-reference')
   const address = normalizedObservationAddress(observation.device.address)
   return Object.freeze({
+    provenance: observation.provenance,
+    ...(observation.origin === undefined ? {} : { origin: observation.origin }),
     ...(peerReference === undefined ? {} : { peerReference }),
     ...(address === undefined ? {} : { address }),
     localName: fieldValue(observation.localName),
@@ -553,7 +566,7 @@ function isIpcAdvertisement(value: ScanObservation): value is CompactScanAdverti
     hasExactObservationKeys(
       value,
       ['peerId', 'localName', 'rssi', 'serviceUuids', 'manufacturerData', 'serviceData'],
-      ['peerReference', 'txPowerLevel']
+      ['peerReference', 'txPowerLevel', 'provenance', 'origin']
     ) &&
     isIpcAdvertisementValues(value)
   )
@@ -563,6 +576,8 @@ function isIpcAdvertisementValues(value: ScanObservation): boolean {
   if (typeof value !== 'object' || value === null || !('peerId' in value)) return false
   const candidate = value
   return (
+    (candidate.provenance === undefined || isObservationSource(candidate.provenance)) &&
+    (candidate.origin === undefined || isObservationOrigin(candidate.origin)) &&
     typeof candidate.peerId === 'string' &&
     candidate.peerId.length > 0 &&
     (candidate.peerReference === undefined || isPeerReference(candidate.peerReference)) &&
@@ -634,7 +649,7 @@ function isNativeObservationShape(value: ScanObservation): boolean {
     'scanResponseRecord'
   ]
   const keys = Object.keys(value)
-    .filter(key => key !== 'peerReference')
+    .filter(key => key !== 'peerReference' && key !== 'origin')
     .sort()
   return (
     required
@@ -652,6 +667,7 @@ function isNativeObservationValues(value: ScanObservation): boolean {
   return (
     isDeviceIdentity(native.device) &&
     isObservationSource(native.provenance) &&
+    (native.origin === undefined || isObservationOrigin(native.origin)) &&
     isAdvertisementField(native.sourceTimestamp, isSourceTimestamp) &&
     Number.isFinite(native.receivedAtMonotonicMs) &&
     Number.isSafeInteger(native.ingressOrdinal) &&
@@ -690,10 +706,6 @@ function isAdvertisementField(field: unknown, isValue: (value: unknown) => boole
 
 function isFieldProvenance(value: unknown): boolean {
   return value === 'observed' || value === 'derived' || value === 'synthesized' || value === 'not-provided'
-}
-
-function isObservationSource(value: unknown): boolean {
-  return value === 'platform-raw' || value === 'platform-derived' || value === 'core-merged'
 }
 
 function isSourceTimestamp(value: unknown): boolean {
@@ -771,7 +783,7 @@ function isNormalizedObservation(value: ScanObservation): value is NormalizedSca
     !hasExactObservationKeys(
       value,
       ['localName', 'rssi', 'connectable', 'serviceUuids', 'manufacturerData', 'serviceData'],
-      ['peerReference', 'address']
+      ['peerReference', 'address', 'provenance', 'origin']
     )
   )
     return false
@@ -783,6 +795,8 @@ function isNormalizedObservation(value: ScanObservation): value is NormalizedSca
   const manufacturerData = Reflect.get(value, 'manufacturerData')
   const serviceData = Reflect.get(value, 'serviceData')
   return (
+    (value.provenance === undefined || isObservationSource(value.provenance)) &&
+    (value.origin === undefined || isObservationOrigin(value.origin)) &&
     (typeof localName === 'string' || localName === null) &&
     (typeof rssi === 'number' ? Number.isFinite(rssi) : rssi === null) &&
     (typeof connectable === 'boolean' || connectable === null) &&
@@ -869,6 +883,8 @@ function cloneNormalizedObservation(value: NormalizedScanObservation): Normalize
       ? undefined
       : snapshotPeerReference(value.peerReference, 'scan.observation.peer-reference')
   return Object.freeze({
+    ...(value.provenance === undefined ? {} : { provenance: value.provenance }),
+    ...(value.origin === undefined ? {} : { origin: value.origin }),
     ...(peerReference === undefined ? {} : { peerReference }),
     ...(value.address === undefined
       ? {}

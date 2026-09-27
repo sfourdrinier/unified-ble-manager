@@ -9,6 +9,7 @@ import { describeError, toJsonValue } from './protocol.ts'
 import { ScenarioRegistry, type ScenarioRuntime, type StopAllReport } from './scenario-core.ts'
 import { BackgroundScenario } from './scenarios/background.ts'
 import { ContinuationScenario } from './scenarios/continuation.ts'
+import { ProcessContinuationScenario } from './scenarios/process-continuation.ts'
 import { DeviceInfoScenario } from './scenarios/device-info.ts'
 import { EcgScenario } from './scenarios/ecg.ts'
 import { LiveDashboardScenario } from './scenarios/live-dashboard.ts'
@@ -33,6 +34,7 @@ export const SCENARIO_IDS = [
   'background',
   'restoration',
   'continuation',
+  'process-continuation',
   'h10-capture',
   'live-dashboard',
   'w6-shared-scan',
@@ -51,6 +53,7 @@ export function createScenarioRegistry(host: DriverHost): ScenarioRegistry {
     new BackgroundScenario(host),
     new RestorationScenario(host),
     new ContinuationScenario(host),
+    new ProcessContinuationScenario(host),
     new H10CaptureScenario(host),
     new LiveDashboardScenario(host),
     new W6SharedScanScenario(host),

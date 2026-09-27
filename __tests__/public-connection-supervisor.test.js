@@ -794,13 +794,20 @@ describe('public connection supervisor', () => {
     await expect(supervisor.stop()).resolves.toMatchObject({ state: 'released' })
   })
 
-  test('does not reconnect after configure fails with a released connection', async () => {
+  test.each([
+    [new Error('configuration failed'), 'connection.failed', 'connection-supervisor.attempt'],
+    [
+      new BleError('operation.aborted', 'gatt', 'live-dashboard.pmd.configure'),
+      'operation.aborted',
+      'live-dashboard.pmd.configure'
+    ]
+  ])('does not reconnect and preserves typed configure failure %s', async (failure, code, operation) => {
     const current = connection()
     const ble = manager(current)
     const supervisor = createConnectionSupervisor(ble, 'peer-configure-failure', {
       retry: { initialDelayMs: 0, maximumDelayMs: 0, multiplier: 1, jitter: 0, maximumAttempts: 3 },
       configure: async () => {
-        throw new Error('configuration failed')
+        throw failure
       }
     })
 
@@ -809,6 +816,7 @@ describe('public connection supervisor', () => {
 
     expect(ble.connect).toHaveBeenCalledTimes(1)
     expect(supervisor.snapshot.state).toBe('stopped')
+    expect(supervisor.snapshot.lastError).toMatchObject({ code, operation })
     await expect(supervisor.stop()).resolves.toMatchObject({ state: 'released' })
   })
 

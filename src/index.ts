@@ -97,6 +97,8 @@ export type {
   PeerReference,
   PeerReferenceScope,
   ScanQuery,
+  ObservationOrigin,
+  ObservationSource,
   ScanClause,
   ManufacturerDataPattern,
   ServiceDataPattern
@@ -145,6 +147,26 @@ export type {
 
 // --- Host identity (ephemeral vs restoration) ---
 export type { BleManagerCreateOptions, DiagnosticsOptions } from './public/host-identity'
+export type {
+  BackgroundContinuationDeclaration,
+  BackgroundContinuationStrategy,
+  BackgroundContinuationResubscribeSelector,
+  BackgroundContinuationForegroundService
+} from './backend-contract/background-continuation'
+export type {
+  ContinuationSetupStep,
+  ContinuationSetupResponse,
+  ContinuationLinkConfiguration,
+  ContinuationRecordingConfiguration
+} from './backend-contract/continuation-setup'
+export type {
+  ContinuationRecordingController,
+  ContinuationRecordingStatus,
+  ContinuationRecordingBatch,
+  ContinuationRecordingMetadata,
+  ContinuationRecordingFailure,
+  ContinuationRecordingPrepareOptions
+} from './core/continuation-recording'
 
 // --- Errors & recovery (public) ---
 export { BleError } from './public/errors'

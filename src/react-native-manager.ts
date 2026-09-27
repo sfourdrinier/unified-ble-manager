@@ -23,6 +23,8 @@ import {
   type ReactNativeRustCoreHostServices
 } from './backends/reactnative/react-native-rust-core-provider'
 import type { ReactNativeRustCoreBinding } from './backends/reactnative/react-native-rust-core'
+import { createReactNativeContinuationRecordings } from './react-native-continuation-recording'
+import type { ContinuationRecordingController } from './core/continuation-recording'
 import { createReactNativeRustCoreBinding } from './backends/reactnative/react-native-rust-core-binding'
 import { createReactNativeRustCoreManager } from './backends/reactnative/react-native-rust-core-manager'
 import type { ReactNativeRestorationAuthority } from './backends/reactnative/react-native-rust-core-restoration'
@@ -79,6 +81,7 @@ export interface ReactNativeBleManagerOptions {
 
 /** What an Expo host reaches besides the public manager. */
 export interface ReactNativeManagerHost {
+  readonly recordings: ContinuationRecordingController
   readonly manager: BleManager<string, NativeBackendIdentity<string>>
   readonly services: ReactNativeRustCoreHostServices
   /** Adopts restoration with the configured authority (Expo `restoration.claim`). */
@@ -181,6 +184,7 @@ export async function createReactNativeManagerHost(
   return Object.freeze({
     manager,
     services: backend.hostServices,
+    recordings: createReactNativeContinuationRecordings({ rustCore: binding }),
     continuation,
     claimRestoration: () => {
       if (authority === null) {

@@ -31,6 +31,13 @@ pub fn parse_characteristic(characteristic: &Characteristic) -> Retained<CBMutab
         let value_data = characteristic
             .value
             .as_ref()
+            // CoreBluetooth cached values are immutable read-only attributes.
+            // Dynamic read/write/notify values must use the existing delegate
+            // callbacks, not a non-nil initializer that invalidates publication.
+            .filter(|_| {
+                properties == CBCharacteristicProperties::CBCharacteristicPropertyRead
+                    && permissions == CBAttributePermissions::Readable
+            })
             .map(|value| NSData::from_vec(value.clone()));
 
         let mutable_char = CBMutableCharacteristic::initWithType_properties_value_permissions(
@@ -121,5 +128,65 @@ impl AttributePermission {
                 CBAttributePermissions::WriteEncryptionRequired
             }
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    #[test]
+    fn dynamic_values_preserve_properties_without_corebluetooth_cached_values() {
+        for properties in [
+            vec![CharacteristicProperty::Read, CharacteristicProperty::Notify],
+            vec![
+                CharacteristicProperty::Read,
+                CharacteristicProperty::Write,
+                CharacteristicProperty::Indicate,
+            ],
+        ] {
+            let source = Characteristic {
+                uuid: Uuid::from_u128(0x2a19),
+                properties,
+                permissions: vec![
+                    AttributePermission::Readable,
+                    AttributePermission::Writeable,
+                ],
+                value: Some(vec![72]),
+                descriptors: Vec::new(),
+            };
+            // Constructs the native attribute only: no manager, adapter or advertising.
+            let characteristic = parse_characteristic(&source);
+            unsafe {
+                assert!(characteristic.value().is_none());
+                let expected = source
+                    .properties
+                    .iter()
+                    .fold(CBCharacteristicProperties::empty(), |all, property| {
+                        all | property.clone().to_cb_property()
+                    });
+                assert_eq!(characteristic.properties(), expected);
+                assert_eq!(
+                    characteristic.permissions(),
+                    CBAttributePermissions::Readable | CBAttributePermissions::Writeable
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn immutable_read_only_value_remains_cached() {
+        let source = Characteristic {
+            uuid: Uuid::from_u128(0x2a29),
+            properties: vec![CharacteristicProperty::Read],
+            permissions: vec![AttributePermission::Readable],
+            value: Some(vec![72]),
+            descriptors: Vec::new(),
+        };
+        let characteristic = parse_characteristic(&source);
+        unsafe {
+            assert_eq!(characteristic.value().unwrap().length(), 1);
+        }
     }
 }

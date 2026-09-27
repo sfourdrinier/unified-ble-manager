@@ -1,0 +1,19 @@
+{
+  "observedAtMs": 1,
+  "event": "continuation.failed",
+  "strategy": "foreground-service",
+  "peerAddress": "AA:BB:CC:DD:EE:FF",
+  "code": "platform.failure",
+  "reason": "accepted",
+  "platform": {
+    "domain": "android",
+    "code": "foregroundServiceStartInterrupted",
+    "message": "accepted",
+    "metadata": {
+      "cleanupFailureCount": 1,
+      "cleanupFailure0Code": "java.lang.IllegalStateException",
+      "cleanupFailure0Message": "stop refused",
+      "cleanupPending": true
+    }
+  }
+}

@@ -58,11 +58,16 @@ function harness({
   malformed = false,
   wrongRate = false,
   unconfirmedWrite = false,
-  stoppedOther = false
+  stoppedOther = false,
+  delayedOldFrame = false,
+  dataRemovalFailure = false
 } = {}) {
   const cpStream = stream(),
-    dataStream = stream(),
-    logs = []
+    logs = [],
+    dataStreams = []
+  let dataStream = stream(),
+    oldFrame,
+    previousDataStream
   const released = { state: 'released', failures: [] }
   let signalStall
   const stalled = new Promise(resolve => {
@@ -114,12 +119,21 @@ function harness({
       let parameters = []
       if (op === 1) parameters = [0, 4, 25, 0, 50, 0, 100, 0, 200, 0, 1, 1, 16, 0, 2, 3, 2, 0, 4, 0, 8, 0]
       if (op === 2 && type === 2 && status === 0) {
+        if (delayedOldFrame && oldFrame) previousDataStream.push(oldFrame)
         acc = true
         accSample = 0n
         rate = bytes[4]
       }
       if (op === 2 && type === 0) ecg = true
       if (op === 3) {
+        if (type === 2 && delayedOldFrame) {
+          oldFrame = new Uint8Array(16)
+          oldFrame[0] = 2
+          oldFrame[9] = 1
+          new DataView(oldFrame.buffer).setInt16(10, 100, true)
+          new DataView(oldFrame.buffer).setBigUint64(1, 123456789n, true)
+          previousDataStream = dataStream
+        }
         const losesOther = stoppedOther && ((type === 2 && ecg) || (type === 0 && acc))
         if (type === 2) acc = false
         else ecg = false
@@ -132,13 +146,20 @@ function harness({
     })
   }
   const data = {
-    subscribe: jest.fn(async () => ({
-      values: dataStream,
-      remove: async () => {
-        dataStream.end()
-        return released
+    subscribe: jest.fn(async () => {
+      if (dataStreams.length) dataStream = stream()
+      dataStream.onWaiting = frames
+      const owned = dataStream
+      dataStreams.push(owned)
+      return {
+        values: owned,
+        remove: async () => {
+          if (dataRemovalFailure) return { state: 'release-failed', failures: [{}] }
+          owned.end()
+          return released
+        }
       }
-    }))
+    })
   }
   const connection = {
     discover: async () => ({ characteristic: (_service, uuid) => (uuid === pmd.PMD_CONTROL_POINT ? cp : data) }),
@@ -158,6 +179,7 @@ function harness({
     connection,
     cp,
     dataStream,
+    data,
     logs,
     stalled,
     options: {
@@ -169,6 +191,78 @@ function harness({
     }
   }
 }
+
+test('settings retire their data consumer before a delayed old-generation frame arrives', async () => {
+  const run = harness({ delayedOldFrame: true })
+  await main(run.options)
+  expect(run.data.subscribe).toHaveBeenCalledTimes(13)
+  expect(run.logs.filter(entry => entry.phase === 'acc-setting')).toHaveLength(12)
+  const boundaries = run.logs.filter(entry => entry.iteratorClosed)
+  expect(boundaries).toHaveLength(12)
+  expect(
+    boundaries.every(entry => entry.scope === 'locally-buffered' && Number.isInteger(entry.validatedFramesExcluded))
+  ).toBe(true)
+})
+
+test('failed phase subscription removal prevents admission of the next setting', async () => {
+  const run = harness({ dataRemovalFailure: true })
+  await expect(main(run.options)).rejects.toThrow('cleanup remained unresolved')
+  expect(run.data.subscribe).toHaveBeenCalledTimes(1)
+  expect(run.cp.write.mock.calls.filter(([bytes]) => bytes[0] === 2)).toHaveLength(1)
+})
+
+test.each(['iterator', 'subscription'])(
+  'timed-out %s cleanup stays single-flight through final cleanup',
+  async kind => {
+    const run = harness()
+    let entered, finish
+    const started = new Promise(resolve => {
+      entered = resolve
+    })
+    const gate = new Promise(resolve => {
+      finish = resolve
+    })
+    const subscribe = run.data.subscribe.getMockImplementation()
+    let cleanup
+    run.data.subscribe.mockImplementationOnce(async (...args) => {
+      const resource = await subscribe(...args)
+      const target = kind === 'iterator' ? resource.values : resource
+      const method = kind === 'iterator' ? 'return' : 'remove'
+      const original = target[method].bind(target)
+      cleanup = jest.fn(async () => {
+        entered()
+        await gate
+        return original()
+      })
+      target[method] = cleanup
+      return resource
+    })
+    const result = expect(main(run.options)).rejects.toThrow('timed out')
+    await started
+    await jest.advanceTimersByTimeAsync(run.options.timeoutMs)
+    const callsWhileHeld = cleanup.mock.calls.length
+    finish()
+    await result
+    expect(callsWhileHeld).toBe(1)
+    expect(cleanup).toHaveBeenCalledTimes(1)
+    expect(run.data.subscribe).toHaveBeenCalledTimes(1)
+    expect(run.manager.destroy).toHaveBeenCalledTimes(1)
+  }
+)
+
+test('a settled failed removal is retried by final cleanup without starting another phase', async () => {
+  const run = harness()
+  const subscribe = run.data.subscribe.getMockImplementation()
+  let remove
+  run.data.subscribe.mockImplementationOnce(async (...args) => {
+    const resource = await subscribe(...args)
+    remove = jest.fn(resource.remove).mockResolvedValueOnce({ state: 'release-failed', failures: [{}] })
+    return { ...resource, remove }
+  })
+  await expect(main(run.options)).rejects.toThrow('cleanup remained unresolved')
+  expect(remove).toHaveBeenCalledTimes(2)
+  expect(run.data.subscribe).toHaveBeenCalledTimes(1)
+})
 
 test('ACC probe exercises all twelve settings plus both interleaved stop orders through public UBM APIs', async () => {
   const run = harness()
@@ -189,6 +283,24 @@ test('fixture ACC sample time remains monotonic across generated batches', async
   }
   expect(timestamps).toEqual([40000000n, 80000000n, 120000000n, 160000000n, 200000000n, 240000000n])
   await run.dataStream.return()
+})
+
+test('a timestamp failure retains bounded exact frame metadata before cleanup', async () => {
+  const run = harness({ wrongRate: true })
+  await expect(main(run.options)).rejects.toThrow('timestamp/sample-rate mismatch')
+  expect(run.logs.filter(entry => entry.phase === 'acc-frame-pair')).toEqual([
+    {
+      phase: 'acc-frame-pair',
+      sampleRateHz: 25,
+      rangeG: 2,
+      frames: [
+        { timestampNs: '40000001', samples: 1 },
+        { timestampNs: '80000002', samples: 1 }
+      ]
+    }
+  ])
+  expect(run.manager.destroy).toHaveBeenCalledTimes(1)
+  expect(run.logs.some(entry => entry.phase === 'passed')).toBe(false)
 })
 
 test.each([

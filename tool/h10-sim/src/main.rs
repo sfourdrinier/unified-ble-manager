@@ -3,6 +3,8 @@ mod acc_stream;
 mod advertisement;
 mod compare;
 mod control;
+#[cfg(any(test, target_os = "linux"))]
+mod daemon_lifetime;
 mod driver;
 mod ecg;
 mod events;
@@ -12,6 +14,7 @@ mod linux_advertising;
 mod mgmt;
 mod profile;
 mod radio;
+mod sample_clock;
 mod sim;
 mod timing;
 mod vectors;
@@ -720,6 +723,9 @@ async fn serve(
     );
 
     if let Err(message) = start_advertising(&mut radio, &sim, &mut log).await {
+        if radio.fatal_failure().is_some() {
+            stop_failed_radio(&mut radio, &mut sim, &mut log, &message).await;
+        }
         return Err(if radio.advertising_unavailable() {
             Fatal::unavailable(message)
         } else {
@@ -764,6 +770,7 @@ async fn serve(
 
     let mut next_hr = Instant::now();
     let mut next_ecg = Instant::now();
+    let mut ecg_runtime = None;
     let mut acc_runtime = None;
     let mut next_battery = Instant::now() + Duration::from_secs(60);
     let mut last_tick = Instant::now();
@@ -797,6 +804,11 @@ async fn serve(
                 };
             }
             _ = tick.tick() => {
+                if let Some(reason) = radio.fatal_failure() {
+                    control_server.abort();
+                    stop_failed_radio(&mut radio, &mut sim, &mut log, &reason).await;
+                    return Err(Fatal::from(reason));
+                }
                 let now = Instant::now();
                 let elapsed_s = now.duration_since(last_tick).as_secs_f64();
                 last_tick = now;
@@ -811,8 +823,11 @@ async fn serve(
                     send_hr(&mut radio, &mut sim, &mut log).await;
                 }
                 if now >= next_ecg {
-                    next_ecg = now + Duration::from_secs_f64(timing.ecg_interval_s(sim.config.ecg_frames_per_sec));
-                    send_ecg(&mut radio, &mut sim, &mut log, boot_epoch_ns).await;
+                    let interval = Duration::from_secs_f64(timing.ecg_interval_s(sim.config.ecg_frames_per_sec));
+                    // Skip missed dispatch slots, not sensor time. Acquisition
+                    // accounting below reports any samples that cannot catch up.
+                    next_ecg = now + sample_clock::next_dispatch_delay(now.duration_since(next_ecg), interval);
+                    send_ecg(&mut radio, &mut sim, &mut log, &mut ecg_runtime, sample_clock_boot, boot_epoch_ns).await;
                 }
                 send_acc(&mut radio, &mut sim, &mut log, &mut acc_runtime, sample_clock_boot, boot_epoch_ns).await;
                 if now >= next_battery {
@@ -828,6 +843,25 @@ async fn serve(
                 handle_control(request, &mut radio, &mut sim, &mut log).await;
             }
         }
+    }
+}
+
+async fn stop_failed_radio(
+    radio: &mut PlatformRadio,
+    sim: &mut SimState,
+    log: &mut EventLog,
+    reason: &str,
+) {
+    let loss = radio.retire_failed_collection();
+    sim.reset_pmd_session();
+    log.log(
+        "radio-fatal",
+        json!({"reason": reason, "collectionStopped": true, "delivery": loss}),
+    );
+    match tokio::time::timeout(Duration::from_secs(5), radio.stop_advertising()).await {
+        Ok(Ok(())) => log.log("advertising-stopped", json!({"reason": "radio-fatal"})),
+        Ok(Err(error)) => log.log("radio-error", json!({"op": "fatal-stop-advertising", "error": error.to_string(), "ownedInstanceCleanup": "unconfirmed"})),
+        Err(_) => log.log("radio-error", json!({"op": "fatal-stop-advertising", "error": "cleanup deadline expired", "ownedInstanceCleanup": "unconfirmed"})),
     }
 }
 
@@ -855,7 +889,7 @@ async fn wait_powered(radio: &mut PlatformRadio, log: &mut EventLog) -> Result<(
 }
 
 async fn start_advertising(
-    radio: &mut PlatformRadio,
+    radio: &mut impl PeripheralRadio,
     sim: &SimState,
     log: &mut EventLog,
 ) -> Result<(), String> {
@@ -873,6 +907,7 @@ async fn start_advertising(
                 "radio-error",
                 json!({"op": "is-advertising", "error": error.to_string()}),
             );
+            return Err(error.to_string());
         }
     }
     // Manufacturer data spends advertisement-data budget: refuse loudly when
@@ -990,47 +1025,97 @@ async fn send_ecg(
     radio: &mut PlatformRadio,
     sim: &mut SimState,
     log: &mut EventLog,
+    runtime: &mut Option<(Instant, sample_clock::SampleClock)>,
+    clock_boot: Instant,
     boot_epoch_ns: u64,
 ) {
+    let Some(started) = sim.ecg_started_at.filter(|_| sim.ecg_streaming) else {
+        *runtime = None;
+        return;
+    };
+    if runtime
+        .as_ref()
+        .is_none_or(|(generation, _)| *generation != started)
+    {
+        *runtime = Some((started, sample_clock::SampleClock::new(130)));
+    }
     let count = sim.config.ecg_frame_samples;
-    let index = sim.ecg_sample_index;
-    sim.ecg_sample_index = index.saturating_add(count as u64);
-    if !sim.ecg_streaming || sim.silent {
+    let Some((_, clock)) = runtime.as_mut() else {
         return;
-    }
-    // Adversarial constrained delivery: shed frames with a loud line each.
-    // The sample index above still advances, so the timeline never jumps.
-    let seq = sim.delivery_seq;
-    sim.delivery_seq = sim.delivery_seq.saturating_add(1);
-    if !sim::should_deliver(seq, sim.delivery_keep_every) {
-        log.log(
-            "ecg-frame-shed",
-            json!({"seq": seq, "keepEvery": sim.delivery_keep_every}),
+    };
+    for _ in 0..32 {
+        let batch = match clock.next(started.elapsed(), count as u64) {
+            Ok(Some(batch)) => batch,
+            Ok(None) => break,
+            Err(error) => {
+                log.log("ecg-stream-failed", json!({"error":error}));
+                sim.apply_pmd_action(PmdAction::StopEcg);
+                break;
+            }
+        };
+        if batch.dropped_samples > 0 {
+            log.log(
+                "ecg-samples-shed",
+                json!({"reason":"host-loop-backlog","samples":batch.dropped_samples}),
+            );
+        }
+        let origin = started.saturating_duration_since(clock_boot);
+        let indices = u64::try_from(origin.as_nanos() * 130 / 1_000_000_000)
+            .ok()
+            .and_then(|offset| offset.checked_add(batch.first))
+            .and_then(|first| first.checked_add(count as u64).map(|end| (first, end)));
+        let Some((index, end)) = indices else {
+            log.log(
+                "ecg-stream-failed",
+                json!({"error":"ECG waveform sample index exhausted"}),
+            );
+            sim.apply_pmd_action(PmdAction::StopEcg);
+            break;
+        };
+        sim.ecg_sample_index = end;
+        if sim.silent {
+            continue;
+        }
+        // Adversarial constrained delivery: shed frames with a loud line each.
+        // The sample index still advances; missing frames leave honest gaps.
+        let seq = sim.delivery_seq;
+        sim.delivery_seq = sim.delivery_seq.saturating_add(1);
+        if !sim::should_deliver(seq, sim.delivery_keep_every) {
+            log.log(
+                "ecg-frame-shed",
+                json!({"seq": seq, "keepEvery": sim.delivery_keep_every}),
+            );
+            continue;
+        }
+        let mut samples = Vec::with_capacity(count);
+        match &sim.ecg_replay {
+            Some(recorded) => ecg::replay_samples(recorded, index, count, &mut samples),
+            None => ecg::ecg_frame_samples(index, count, f64::from(sim.config.bpm), &mut samples),
+        }
+        // Device time, not Unix time: the strap stamps Polar-epoch nanoseconds
+        // (or boot-relative time in explicitly unsynchronised mode) of the
+        // frame's last sample.
+        let timestamp_ns = match sample_clock::sample_timestamp_ns(origin, batch.last_sample_ns)
+            .and_then(|elapsed| {
+                sim::device_timestamp_from_elapsed_ns(sim.config.clock, boot_epoch_ns, elapsed)
+            }) {
+            Ok(timestamp) => timestamp,
+            Err(error) => {
+                log.log("ecg-stream-failed", json!({"error":error}));
+                sim.apply_pmd_action(PmdAction::StopEcg);
+                break;
+            }
+        };
+        let frame = gatt_spec::encode_ecg_frame(timestamp_ns, &samples);
+        let uuid = Uuid::parse_str(gatt_spec::pmd::DATA).unwrap_or_else(|_| Uuid::nil());
+        let outcome = radio.notify(uuid, frame.clone()).await;
+        report_stream_notify(
+            log,
+            "ecg-notify",
+            outcome,
+            json!({"samples": samples.len(), "bytes": frame.len(), "timestampNs": timestamp_ns.to_string()}),
         );
-        return;
     }
-    let mut samples = Vec::with_capacity(count);
-    match &sim.ecg_replay {
-        Some(recorded) => ecg::replay_samples(recorded, index, count, &mut samples),
-        None => ecg::ecg_frame_samples(index, count, f64::from(sim.config.bpm), &mut samples),
-    }
-    // Device time, not Unix time: the strap stamps Polar-epoch nanoseconds
-    // (or boot-relative time in explicitly unsynchronised mode) of the
-    // frame's last sample.
-    let timestamp_ns = sim::device_timestamp_ns(
-        sim.config.clock,
-        boot_epoch_ns,
-        ecg_frame_last_sample_index(index, count),
-    );
-    let frame = gatt_spec::encode_ecg_frame(timestamp_ns, &samples);
-    let uuid = Uuid::parse_str(gatt_spec::pmd::DATA).unwrap_or_else(|_| Uuid::nil());
-    let outcome = radio.notify(uuid, frame.clone()).await;
-    report_stream_notify(
-        log,
-        "ecg-notify",
-        outcome,
-        json!({"samples": samples.len(), "bytes": frame.len(), "timestampNs": timestamp_ns.to_string()}),
-    );
 }
 
 /// ACC generation is reset only by a new successful START, not by timer jitter
@@ -1089,13 +1174,13 @@ async fn send_acc(
         if sim.silent {
             continue;
         }
-        let elapsed = started.saturating_duration_since(clock_boot).as_nanos()
-            + u128::from(batch.last_sample_ns);
-        let timestamp = u64::try_from(elapsed)
-            .map_err(|_| "ACC elapsed clock exhausted".to_owned())
-            .and_then(|elapsed| {
-                sim::device_timestamp_from_elapsed_ns(sim.config.clock, boot_epoch_ns, elapsed)
-            });
+        let timestamp = sample_clock::sample_timestamp_ns(
+            started.saturating_duration_since(clock_boot),
+            batch.last_sample_ns,
+        )
+        .and_then(|elapsed| {
+            sim::device_timestamp_from_elapsed_ns(sim.config.clock, boot_epoch_ns, elapsed)
+        });
         let frame = timestamp.and_then(|timestamp| {
             acc::frame(timestamp, &batch.samples).map(|frame| (timestamp, frame))
         });
@@ -1148,15 +1233,6 @@ fn notify_settled_log(
             json!({"id": id, "op": "notify-settled", "service": service, "characteristic": characteristic, "error": reason}),
         ),
     }
-}
-
-/// Index of the frame's last sample for a frame holding `count` samples
-/// starting at `index`: samples `[index, index+count)`, so the stamp trails
-/// the frame start by `count - 1` samples (Polar timestamps the last sample,
-/// and a constant one-sample bias is invisible in capture deltas, so this is
-/// pinned here rather than in the captures).
-fn ecg_frame_last_sample_index(index: u64, count: usize) -> u64 {
-    index.saturating_add((count as u64).saturating_sub(1))
 }
 
 fn slice_at(value: &[u8], offset: u64) -> Option<Vec<u8>> {
@@ -1621,7 +1697,7 @@ async fn handle_control(
 /// is re-registered so the new name takes effect over the air.
 async fn load_profile_into(
     sim: &mut SimState,
-    radio: &mut PlatformRadio,
+    radio: &mut impl PeripheralRadio,
     log: &mut EventLog,
     path: &str,
 ) -> Result<(), String> {
@@ -1640,7 +1716,6 @@ async fn load_profile_into(
     sim.hr_replay = hr_replay;
     sim.hr_replay_index = 0;
     sim.pending_indications.clear();
-    log.log("profile-loaded", json!({"path": path}));
     let radio_outcome = match radio.is_advertising().await {
         Ok(true) => start_advertising(radio, sim, log).await,
         Ok(false) => Ok(()),
@@ -1649,7 +1724,7 @@ async fn load_profile_into(
                 "radio-error",
                 json!({"op": "is-advertising", "error": error.to_string()}),
             );
-            Ok(())
+            Err(error.to_string())
         }
     };
     if let Err(error) = radio_outcome {
@@ -1663,6 +1738,7 @@ async fn load_profile_into(
         log.log("profile-rolled-back", json!({"path": path, "error": error}));
         return Err(error);
     }
+    log.log("profile-loaded", json!({"path": path}));
     Ok(())
 }
 
@@ -1862,6 +1938,164 @@ async fn stale_callback(
 mod tests {
     use super::*;
 
+    struct ProfileRadio {
+        advertising: std::collections::VecDeque<Result<bool, radio::RadioError>>,
+        starts: usize,
+        fail_start: bool,
+    }
+    #[async_trait::async_trait]
+    impl PeripheralRadio for ProfileRadio {
+        async fn open(_: tokio::sync::mpsc::Sender<RadioEvent>) -> Result<Self, radio::RadioError> {
+            unreachable!()
+        }
+        async fn is_powered(&mut self) -> Result<bool, radio::RadioError> {
+            unreachable!()
+        }
+        async fn is_advertising(&mut self) -> Result<bool, radio::RadioError> {
+            self.advertising.pop_front().expect("unexpected query")
+        }
+        async fn start_advertising(
+            &mut self,
+            _: &str,
+            _: &[Uuid],
+        ) -> Result<(), radio::RadioError> {
+            self.starts += 1;
+            if self.fail_start {
+                Err(radio::RadioError("registration refused".into()))
+            } else {
+                Ok(())
+            }
+        }
+        async fn stop_advertising(&mut self) -> Result<(), radio::RadioError> {
+            Ok(())
+        }
+        async fn add_service(&mut self, _: &radio::ServiceSpec) -> Result<(), radio::RadioError> {
+            unreachable!()
+        }
+        async fn notification_payload_capacity(
+            &self,
+            _: Uuid,
+        ) -> Result<Option<usize>, radio::RadioError> {
+            unreachable!()
+        }
+        async fn notify(&mut self, _: Uuid, _: Vec<u8>) -> Result<SendOutcome, radio::RadioError> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn profile_radio_failure_restores_config_replays_and_pending_work() {
+        for (queries, fail_start, expected_starts) in [
+            (
+                vec![Err(radio::RadioError("query refused".into()))],
+                false,
+                0,
+            ),
+            (
+                vec![
+                    Ok(true),
+                    Err(radio::RadioError("replacement query refused".into())),
+                ],
+                false,
+                0,
+            ),
+            (vec![Ok(true), Ok(true)], true, 1),
+        ] {
+            let mut sim = SimState::new(SimConfig::default());
+            sim.ecg_replay = Some(vec![19, -4]);
+            sim.hr_replay = Some(sim::HrReplay {
+                packets: vec![vec![0, 72]],
+            });
+            sim.hr_replay_index = 9;
+            sim.pending_indications.push(sim::PendingIndication {
+                due: Instant::now(),
+                response: vec![1, 2],
+                action: sim::PmdAction::StartEcg,
+            });
+            let before = format!("{:?}", sim);
+            let mut radio = ProfileRadio {
+                advertising: queries.into(),
+                starts: 0,
+                fail_start,
+            };
+            let mut log = EventLog::new();
+            let (sender, mut events) = tokio::sync::mpsc::channel(16);
+            log.add_listener(sender);
+            let result = load_profile_into(
+                &mut sim,
+                &mut radio,
+                &mut log,
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/profiles/low-battery-legacy.json"
+                ),
+            )
+            .await;
+            assert!(result
+                .expect_err("uncertain/rejected radio must not acknowledge profile success")
+                .contains("refused"));
+            assert_eq!(format!("{:?}", sim), before);
+            assert_eq!(radio.starts, expected_starts);
+            let mut rollback = false;
+            while let Ok(event) = events.try_recv() {
+                assert_ne!(event["kind"], "profile-loaded");
+                rollback |= event["kind"] == "profile-rolled-back";
+            }
+            assert!(rollback);
+        }
+    }
+
+    #[tokio::test]
+    async fn profile_success_commits_only_after_known_radio_outcome() {
+        for (queries, expected_starts) in [(vec![Ok(false)], 0), (vec![Ok(true), Ok(true)], 1)] {
+            let mut sim = SimState::new(SimConfig::default());
+            sim.ecg_replay = Some(vec![19]);
+            sim.hr_replay = Some(sim::HrReplay {
+                packets: vec![vec![0, 72]],
+            });
+            sim.hr_replay_index = 9;
+            sim.pending_indications.push(sim::PendingIndication {
+                due: Instant::now(),
+                response: vec![1],
+                action: sim::PmdAction::StartEcg,
+            });
+            let mut radio = ProfileRadio {
+                advertising: queries.into(),
+                starts: 0,
+                fail_start: false,
+            };
+            let mut log = EventLog::new();
+            let (sender, mut events) = tokio::sync::mpsc::channel(16);
+            log.add_listener(sender);
+            let path = concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/profiles/low-battery-legacy.json"
+            );
+            load_profile_into(&mut sim, &mut radio, &mut log, path)
+                .await
+                .unwrap();
+            assert_eq!(sim.config.profile_path.as_deref(), Some(path));
+            assert_eq!(sim.ecg_replay, None);
+            assert_eq!(sim.hr_replay, None);
+            assert_eq!(sim.hr_replay_index, 0);
+            assert!(sim.pending_indications.is_empty());
+            assert_eq!(radio.starts, expected_starts);
+            let mut kinds = Vec::new();
+            while let Ok(event) = events.try_recv() {
+                kinds.push(event["kind"].as_str().unwrap().to_owned());
+            }
+            assert_eq!(kinds.last().map(String::as_str), Some("profile-loaded"));
+            assert_eq!(
+                kinds
+                    .iter()
+                    .filter(|kind| *kind == "profile-loaded")
+                    .count(),
+                1
+            );
+            assert!(!kinds.iter().any(|kind| kind == "profile-rolled-back"));
+        }
+    }
+
     fn comparison_report(passed: bool, complete: bool) -> compare::ComparisonReport {
         compare::ComparisonReport {
             passed,
@@ -1902,15 +2136,14 @@ mod tests {
         // The frame holds samples [index, index+count); the strap stamps the
         // last sample, so the first frame (73 samples @130 Hz) stamps sample
         // 72, i.e. 72/130 s after boot — not 73/130 s.
-        assert_eq!(ecg_frame_last_sample_index(0, 73), 72);
-        assert_eq!(ecg_frame_last_sample_index(73, 73), 145);
-        assert_eq!(ecg_frame_last_sample_index(0, 1), 0);
-        assert_eq!(ecg_frame_last_sample_index(0, 0), 0);
-        let first_ns = sim::device_timestamp_ns(
+        let mut clock = sample_clock::SampleClock::new(130);
+        let first = clock.next(Duration::from_secs(1), 73).unwrap().unwrap();
+        let first_ns = sim::device_timestamp_from_elapsed_ns(
             sim::DeviceClock::Unsynchronized,
             0,
-            ecg_frame_last_sample_index(0, 73),
-        );
+            first.last_sample_ns,
+        )
+        .unwrap();
         assert_eq!(first_ns, 72 * 1_000_000_000 / 130);
     }
 

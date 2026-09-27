@@ -184,7 +184,7 @@ its owner completes cleanup; it never becomes ready by implication.
 | scan session | starting, active, stopping, stopped, failed | starting → active, stopping, or failed; active → stopping, stopped, or failed; stop/abort/deadline → stopping → stopped, except an authoritative native start refusal after an early stop takes stopping → failed (`start-failed`); host/source terminals leave `active` without `stop()` (`failed` for `source-failed`/`connection-lost`/`overflow`, `stopped` for ordinary close) and that event is ended delivery, not physical cleanup; an already-terminal source publishes that projected terminal as the initial state and never `active`; drop-policy overflow notices keep the session `active` and the radio scanning; subscriber overflow that fail-closes a consumed view (`overflowPolicy: 'error'`) is `failed`/`overflow` and physical stop is cleanup; reset/restart/destroy → failed | stopped includes one terminal cause; failed rejects reuse. |
 | chooser session | requesting, selected, cancelled, failed, closed | requesting → selected/cancelled/failed; every terminal → closed; abort/deadline → failed → closed | closed cannot request or grant access. |
 | connection | connecting, connected, disconnecting, disconnected, lost, invalid | connecting → connected/disconnecting/lost/invalid; connected → disconnecting/lost/invalid; disconnecting → disconnected/lost/invalid; reset/restart/destroy → invalid | invalid rejects every path from its attachment. |
-| database | undiscovered, discovering, current, changed, invalid | undiscovered/current → discovering; discovering → current/undiscovered/invalid; current → changed → undiscovered; connection loss → invalid | a failed or interrupted discovery leaves no current partial snapshot. |
+| database | undiscovered, discovering, current, changed, invalid | undiscovered/current → discovering; discovering → current/undiscovered/changed/invalid; current → changed → undiscovered; connection loss → invalid | a failed, interrupted, or service-invalidated discovery leaves no current partial snapshot. |
 | subscription | enabling, ready, removing, removed, failed, invalid | enabling → ready/removing/failed/invalid; ready → removing/failed/invalid; removing → removed/invalid; loss/reset/destroy → invalid | remove during enabling never publishes ready. |
 
 Generation increments happen-before publication of `lost`, `changed`,
@@ -242,6 +242,14 @@ fields fail `capability.unsupported`; a backend MUST NOT silently broaden or
 narrow a filter. The response exposes a session identity, one bounded
 observation stream, and a terminal outcome.
 
+The shared service-UUID planner treats a singleton `services.any` as a required
+service, just like an `all` entry. Native filtering uses only services required
+by every positive OR clause; a branch without a required service keeps the
+native filter broad. Multi-service `any` alternatives and exact/prefix name
+matching remain in the canonical residual query. Shared native scanning must
+still widen for other members, including a member with no service filter;
+one member's required service never narrows another member's observations.
+
 | Policy | Required observation semantics |
 | --- | --- |
 | `all` | Deliver each valid native observation in ingress order, subject to stream overflow. |
@@ -272,6 +280,14 @@ stands in for the latter two states. A synthesized projection is labeled
 `first`, `merged`, and `latest` is the session-scoped peer identity; where
 privacy rotation prevents a stable key, each unlinked identity is distinct and
 the observation states that limitation.
+
+Public scan projections retain supplied observation `provenance`
+(`platform-raw`, `platform-derived`, or `core-merged`) and exact producer `origin`
+(`advertisement` or `device-state`). These are independent facts: a parsed
+advertisement may be platform-derived. A device-state report can include cached
+OS fields and service UUIDs and does not prove a fresh over-air packet. Unknown
+origin remains absent, including across IPC; it is never inferred from RSSI or
+the host platform.
 
 `stop` is idempotent. The first stop transition closes ingress, asks the backend
 to stop, settles the session, then releases physical ownership. A later stop
@@ -361,6 +377,24 @@ occurrence)`; a descriptor adds `(canonical descriptor UUID, descriptor
 occurrence)`. The complete path also carries the attachment and owner lease.
 Occurrence is not a numeric native handle and is meaningful only inside its
 complete path.
+
+On a shared native connection, concurrent discovery callers join the same
+physical snapshot; a newly attached lease may reuse it only while the core's
+current connection and database generations still match. This does not transfer
+another caller's logical path ownership or bypass its owner-lease validation.
+A subsequent explicit rediscovery by an already attached lease refreshes the
+physical database. Waiting for another discovery consumes the original caller
+budget and remains independently cancellable; releasing one lease does not
+cancel another lease's admitted GATT work or release the shared physical link.
+A traversal whose caller is released before publication cannot publish success
+or register paths under that retired lease; another live caller can discover
+with its own remaining budget.
+The authoritative caller lease, not the first physical discovery owner, owns
+each GATT admission. A subscription retains its own consumer identity together
+with that parent connection lease. Scoped release first closes new admission
+for that lease, then retires its children; refused cleanup retains the exact
+ownership for retry while unrelated leases remain usable. A final physical
+release remains authoritative for the connection's native obligations.
 
 UUID comparison canonicalizes valid 16-bit, 32-bit, and 128-bit UUID input to
 lowercase 128-bit Bluetooth-base or vendor form before matching, indexing, or

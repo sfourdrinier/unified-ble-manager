@@ -58,7 +58,7 @@ capability truth matches this report row for row.
 | `scan:platform-options` | scan.platform-options | Active/passive/PHY scan knobs are not exposed; every OS scans with the legacy defaults (WinRT passive without extended advertisements, vendored patch 11, and the caller's service UUIDs on the OS watcher filter, patch 16). BlueZ receives the caller's name prefix as `Pattern` (patch 12). |
 | `peer:restored` | peer.restored | Adopting OS-restored peers across process restarts; desktop processes start without restored handles. |
 | `peer:address-targeting` | peer.address-targeting | OS peer identity (CoreBluetooth hides addresses entirely). |
-| `peer:known` | peer.known-peers | OS-known peer retrieval. |
+| `peer:known` | peer.known-peers | Unrestricted OS-known peer enumeration remains unavailable; explicit CoreBluetooth identifier lookup has the override below. |
 | `peer:system-connected` | peer.system-connected | Adopting OS-connected peripherals. |
 | `peer:bonded` | peer.bonded | OS bond-store readout. |
 | `connection:when-available` | connection.when-available | Deferred auto-connect / reconnect daemon path. |
@@ -122,7 +122,9 @@ available here (provenance per row).
 | `security:unpair` | linux | os-adapter-provides | os-adapter-compile-verified | `Adapter1.RemoveDevice`. |
 | `security:unpair` | windows | os-adapter-provides | os-adapter-compile-verified | `UnpairAsync`. |
 | `security:pairing-generation` | linux | os-adapter-provides | host-supplied-controller | Registered only through `register_desktop_capabilities_with_pairing_generation`; the pair request carries the host's privileged `PairingGenerationController`, and the previous generation is restored (a failed restore is counted). |
-| `peer:address-targeting` | linux | os-adapter-provides | os-adapter-compile-verified | Existing device object, else `Adapter1.ConnectDevice`, else (experimental method missing) an LE discovery session until the object exists. |
+| `peer:address-targeting` | linux | os-adapter-provides | os-adapter-compile-verified | Existing device object, otherwise an owned LE discovery session until the object exists; address resolution never establishes a link. |
+| `peer:known` | macos | os-adapter-provides | os-adapter-compile-verified | Explicit UUID retrieval on the existing CoreBluetooth manager; no connection lease or unrestricted enumeration. |
+| `peer:system-connected` | macos | os-adapter-provides | os-adapter-compile-verified | Service-filtered system-connected lookup; local peripheral state does not imply global disconnection. No connection ownership is acquired. |
 | `gatt:maximum-write-length` | windows | btleplug-provides | deterministic-only | Commands: btleplug's MTU (`GattSession.MaxPduSize`, 23 until the first change) - 3; requests and descriptor writes: a whole attribute value (512), because `WriteValueAsync` performs the long write, as the legacy addon and Tauri 4.x relied on (finding 81, `WriteLimits::os_long_write`). |
 | `gatt:maximum-write-length` | linux | os-adapter-provides | os-adapter-compile-verified | Commands: `GattCharacteristic1.MTU` - 3; when BlueZ withholds the MTU, no gate below the 512-byte attribute value (the legacy BlueZ backend let BlueZ answer, finding 97); requests: a whole attribute value (BlueZ performs the long write). |
 | `gatt:maximum-write-length` | macos | os-adapter-provides | deterministic-only | Vendored btleplug patch 1 (`vendor/btleplug/UBM_PATCHES.md`): `maximumWriteValueLengthForType:` per write type. Unsupported in a workspace linking crates.io btleplug. |

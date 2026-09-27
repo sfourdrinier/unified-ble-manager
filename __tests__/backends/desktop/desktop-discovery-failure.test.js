@@ -24,7 +24,11 @@ const readNotify = { read: true, write: false, writeWithoutResponse: false, noti
 const ATT_HANDLE_SPACE = 65535
 
 /** LEGACY-AUDIT-5 S5: the public id is the host's 4.x discover id; the core's stays in the core detail. */
-const DISCOVER = { corebluetooth: 'direct-gatt.gatt.discover', bluez: 'bluez.gatt.discover', winrt: 'winrt.gatt.discover' }
+const DISCOVER = {
+  corebluetooth: 'direct-gatt.gatt.discover',
+  bluez: 'bluez.gatt.discover',
+  winrt: 'winrt.gatt.discover'
+}
 const expectCoreOperation = (error, leg, coreOperation) => {
   expect(error.operation).toBe(DISCOVER[leg.platform])
   expect(error.platform).toMatchObject({ domain: 'desktop-rust-core', code: 'core-detail' })
@@ -73,7 +77,7 @@ async function connectedLeg({ platform, os, module, factory }, services, binding
     throw new Error(`the scan did not observe the peer: ${JSON.stringify(observation)}`)
   }
   const connection = await manager.connect(observation.value.value.peer)
-  return { manager, connection }
+  return { manager, connection, stage }
 }
 
 async function discoveryFailure(connection) {
@@ -139,15 +143,15 @@ describe.each(LEGS)('$platform discovery fails whole, typed, through the public 
     }
   })
 
-  test("the core's argument.invalid at path.owner reaches the public API unchanged", async () => {
+  test("the core's ownership.denied at discovery admission reaches the public API unchanged", async () => {
     const ownerRejection = binding => ({
       ...binding,
       openProduction: async options => {
         const central = await binding.openProduction(options)
         return new Proxy(central, {
           get(target, property) {
-            // The core's own answer to a discovery with no lease: the
-            // provider never sends one, so the lease is withheld here.
+            // The provider supplies its actual lease. Withhold it here to
+            // prove the core refuses before traversing the native database.
             if (property === 'discover') return options => target.discover({ ...options, lease: '' })
             const value = Reflect.get(target, property)
             return typeof value === 'function' ? (...args) => Reflect.apply(value, target, args) : value
@@ -155,12 +159,14 @@ describe.each(LEGS)('$platform discovery fails whole, typed, through the public 
         })
       }
     })
-    const { manager, connection } = await connectedLeg(leg, oneService(levelCharacteristics(1)), ownerRejection)
+    const { manager, connection, stage } = await connectedLeg(leg, oneService(levelCharacteristics(1)), ownerRejection)
     try {
+      const discoveriesBefore = (await stage.stagedRadioCalls()).filter(call => call === 'discover').length
       const error = await discoveryFailure(connection)
       expect(error).toBeInstanceOf(BleError)
-      expect(error).toMatchObject({ code: 'argument.invalid', domain: 'core' })
-      expectCoreOperation(error, leg, 'path.owner')
+      expect(error).toMatchObject({ code: 'ownership.denied', domain: 'core' })
+      expectCoreOperation(error, leg, 'discovery.lease')
+      expect((await stage.stagedRadioCalls()).filter(call => call === 'discover')).toHaveLength(discoveriesBefore)
     } finally {
       await manager.destroy()
     }

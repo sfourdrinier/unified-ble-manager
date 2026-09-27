@@ -31,6 +31,8 @@ use crate::ATTACH_REQUEST_KIND;
 use crate::{AuthenticatedCaller, DispatchFuture, IpcDispatcher, IpcEventSink, IpcValue};
 
 const MAX_PENDING_EVENTS: usize = 256;
+#[path = "peer_directory.rs"]
+mod peer_directory;
 const MAX_CORRELATIONS: usize = 256;
 const COMPLETED_CORRELATION_TTL: Duration = Duration::from_secs(30);
 /// Delivery pacing between core polls (scan observations and notification
@@ -49,6 +51,9 @@ fn btleplug_runtime() -> tokio::runtime::Handle {
 
 #[derive(Clone, Debug, Default)]
 pub struct BtleplugDispatcherOptions {
+    /// Trusted Linux host attestation of implemented LE-only lifecycle methods.
+    /// Omission permits scanning, not connections; never supplied by a renderer.
+    pub connection_policy: Option<ubm_desktop::boundary::BluezConnectionPolicy>,
     /// The adapter the shared central runs on, by its selectable identity
     /// (`ubm_desktop::btleplug_backend::list_adapters` labels; BlueZ `hci0`,
     /// the Windows device id, `CoreBluetooth` on macOS). `None` selects the
@@ -76,8 +81,10 @@ pub struct BtleplugDispatcher {
     started_at: Arc<Instant>,
     revoked_callers: Arc<SyncMutex<HashMap<String, u64>>>,
     authority: Arc<Mutex<AuthoritySlot>>,
+    authority_shutdown_admission: Arc<Mutex<()>>,
     lifecycle_pump: Arc<SyncMutex<Option<TauriJoinHandle<()>>>>,
     continuation: Arc<Mutex<Option<ubm_desktop::continuation_adapter::DesktopContinuation>>>,
+    recordings: Arc<ubm_desktop::continuation_journal::JournalRegistry>,
 }
 
 type AuthorityOpenFuture =
@@ -93,6 +100,8 @@ type AuthorityOpener = Arc<dyn Fn() -> AuthorityOpenFuture + Send + Sync>;
 enum AuthoritySlot {
     Unopened(AuthorityOpener),
     Open(Arc<dyn CoreAuthority>),
+    /// Admission is closed, but cleanup remains owned until a clean report.
+    Closing(Arc<dyn CoreAuthority>),
     ShutDown,
 }
 
@@ -210,6 +219,9 @@ struct CoreConnection {
     connection_generation: String,
     /// The core's generation of this link, which its lifecycle events carry.
     core_generation: String,
+    /// Confirmed native stage, retained until owner-channel cleanup succeeds.
+    /// False means another lease still owns the physical link.
+    native_release: Option<bool>,
     phase: ReleasePhase,
 }
 
@@ -304,6 +316,14 @@ enum StreamEnd {
     Claimed,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TerminalAdmission {
+    Any,
+    ActiveSubscription,
+    Connection,
+    OwnerConnection,
+}
+
 struct ConnectionEventResource {
     connection_handle: String,
     stream_handle: String,
@@ -331,6 +351,7 @@ struct ConnectionEventIdentity<'a> {
 /// retried automatically on the Tauri 4.x quarantine schedule (finding
 /// 114) and stays here, observable, until a release lands; the owning
 /// window's release and authority shutdown retry it too.
+#[derive(Clone)]
 struct OrphanDebt {
     /// Stable identity for the automatic retries.
     id: u64,
@@ -341,6 +362,7 @@ struct OrphanDebt {
     /// Every automatic attempt was refused: no further automatic retry;
     /// releases report it as `tauri.quarantine.exhausted`.
     exhausted: bool,
+    release: Arc<Mutex<()>>,
 }
 
 /// Automatic release attempts per orphan, the compensation included
@@ -350,6 +372,7 @@ const ORPHAN_RELEASE_ATTEMPTS: u32 = 8;
 /// [`ORPHAN_RETRY_MAX_DELAY`] (Tauri 4.x quarantine backoff).
 const ORPHAN_RETRY_FIRST_DELAY: Duration = Duration::from_millis(100);
 const ORPHAN_RETRY_MAX_DELAY: Duration = Duration::from_secs(5);
+const SHUTDOWN_ORPHAN_DRAIN: Duration = Duration::from_secs(5);
 
 /// One orphan whose release failed, as a release or shutdown reports it.
 struct OrphanFailure {
@@ -633,7 +656,7 @@ async fn join_release(mut receiver: watch::Receiver<ReleaseAnswer>) -> Result<()
 
 /// Core disconnect verdicts that mean "no link to release": the core holds
 /// no record of the peer or of a connection to it. A link that already
-/// ended is the core's `LinkRelease::AlreadyReleased` answer, not an error;
+/// ended is the core's successful scoped lease-release answer, not an error;
 /// every error — including a radio failure worded `connection.lost` — keeps
 /// the link owned for a real retry.
 fn is_released_link(error: &DispatchError) -> bool {
@@ -751,17 +774,26 @@ fn tauri_profile(next_id: Arc<AtomicU64>) -> CentralProfile {
 }
 
 /// Opens the scheduling authority for one Tauri profile.
-type ProfiledOpener = Arc<dyn Fn(CentralProfile) -> AuthorityOpenFuture + Send + Sync>;
+type ProfiledOpener = Arc<
+    dyn Fn(
+            CentralProfile,
+            Option<ubm_desktop::boundary::BluezConnectionPolicy>,
+        ) -> AuthorityOpenFuture
+        + Send
+        + Sync,
+>;
 
 /// The production opener: the btleplug radio and its central open on the
 /// shared desktop executor (never on Tauri's runtime), on the adapter the
 /// profile names, with the core's selection rule (ambiguity refused).
 fn btleplug_opener() -> ProfiledOpener {
-    Arc::new(move |profile| {
+    Arc::new(move |profile, connection_policy| {
         Box::pin(async move {
             let central = btleplug_runtime()
                 .spawn(async move {
-                    let central = DesktopCentral::open_btleplug(profile).await?;
+                    let central =
+                        DesktopCentral::open_btleplug_with_policy(profile, connection_policy)
+                            .await?;
                     // Finding 120: Tauri 4.x re-read every known peripheral
                     // every 2 s during a scan; its observation cadence stays.
                     central.set_known_peer_refresh(Some(TAURI_KNOWN_PEER_REFRESH));
@@ -798,19 +830,19 @@ impl Default for BtleplugDispatcher {
 
 impl BtleplugDispatcher {
     pub fn new(options: BtleplugDispatcherOptions) -> Self {
-        Self::with_profiled_opener(options.adapter_id, btleplug_opener())
+        Self::with_profiled_opener(options, btleplug_opener())
     }
 
     /// Dispatcher whose authority opens through `open` on first use, with
     /// the Tauri profile numbered by this dispatcher's own id counter.
-    fn with_profiled_opener(adapter_id: Option<String>, open: ProfiledOpener) -> Self {
+    fn with_profiled_opener(options: BtleplugDispatcherOptions, open: ProfiledOpener) -> Self {
         let next_id = Arc::new(AtomicU64::new(1));
         let opener: AuthorityOpener = {
             let next_id = Arc::clone(&next_id);
             Arc::new(move || {
                 let mut profile = tauri_profile(Arc::clone(&next_id));
-                profile.adapter_id = adapter_id.clone();
-                open(profile)
+                profile.adapter_id = options.adapter_id.clone();
+                open(profile, options.connection_policy.clone())
             })
         };
         Self::with_slot_and_ids(AuthoritySlot::Unopened(opener), next_id)
@@ -835,8 +867,10 @@ impl BtleplugDispatcher {
             started_at: Arc::new(Instant::now()),
             revoked_callers: Arc::new(SyncMutex::new(HashMap::new())),
             authority: Arc::new(Mutex::new(slot)),
+            authority_shutdown_admission: Arc::new(Mutex::new(())),
             lifecycle_pump: Arc::new(SyncMutex::new(None)),
             continuation: Arc::new(Mutex::new(None)),
+            recordings: Arc::default(),
         }
     }
 
@@ -865,12 +899,12 @@ impl BtleplugDispatcher {
         let mut slot = self.authority.lock().await;
         let opener = match &*slot {
             AuthoritySlot::Open(authority) => return Ok(Arc::clone(authority)),
-            AuthoritySlot::ShutDown => {
+            AuthoritySlot::Closing(_) | AuthoritySlot::ShutDown => {
                 return Err(DispatchError::new(
                     BleErrorCode::AdapterUnavailable,
                     "adapter",
                     "tauri.core-shutdown",
-                ))
+                ));
             }
             AuthoritySlot::Unopened(opener) => Arc::clone(opener),
         };
@@ -889,20 +923,36 @@ impl BtleplugDispatcher {
         let slot = self.authority.try_lock().ok()?;
         match &*slot {
             AuthoritySlot::Open(authority) => Some(Arc::clone(authority)),
-            AuthoritySlot::Unopened(_) | AuthoritySlot::ShutDown => None,
+            AuthoritySlot::Unopened(_) | AuthoritySlot::Closing(_) | AuthoritySlot::ShutDown => {
+                None
+            }
         }
+    }
+
+    // Cleanup retries must distinguish a closed authority from a temporarily
+    // contended mutex. Ordinary admission retains the nonblocking check above.
+    async fn authority_open_for_retry(&self) -> bool {
+        matches!(&*self.authority.lock().await, AuthoritySlot::Open(_))
     }
 
     async fn continuation_engine(
         &self,
     ) -> Result<ubm_desktop::continuation::NativeContinuation, serde_json::Value> {
+        // Publish the retained engine before shutdown can inspect it. Do not
+        // hold this lock during execution: shutdown must cancel held BLE work.
+        let _admission = self.authority_shutdown_admission.lock().await;
         let authority = self
             .ensure_authority()
             .await
             .map_err(|error| error.normalized_error().into_wire())?;
+        if let Some(existing) = self.continuation.lock().await.as_ref() {
+            return Ok(existing.engine.clone());
+        }
         let mut continuation = self.continuation.lock().await;
         Ok(continuation
-            .get_or_insert_with(|| authority.native_continuation(btleplug_runtime()))
+            .get_or_insert_with(|| {
+                authority.native_continuation(btleplug_runtime(), self.recordings.clone())
+            })
             .engine
             .clone())
     }
@@ -914,6 +964,7 @@ impl BtleplugDispatcher {
         peer: &str,
         declaration: &str,
     ) -> Result<serde_json::Value, serde_json::Value> {
+        // Retained handoff remains readable after shutdown, never executable.
         self.continuation_engine()
             .await?
             .execute(peer, declaration)
@@ -925,41 +976,188 @@ impl BtleplugDispatcher {
         max_items: u32,
         max_bytes: u32,
     ) -> Result<serde_json::Value, serde_json::Value> {
-        self.continuation_engine()
-            .await?
-            .prepare_claim(max_items, max_bytes)
+        let engine = self
+            .continuation
+            .lock()
             .await
+            .as_ref()
+            .map(|owned| owned.engine.clone());
+        match engine {
+            Some(engine) => engine.prepare_claim(max_items, max_bytes).await,
+            None if max_items == 0 || max_bytes == 0 => Err(
+                serde_json::json!({"code":"argument.invalid","domain":"restoration","operation":"continuation","detail":"claim bounds must be positive"}),
+            ),
+            None => Ok(
+                serde_json::json!({"consumerCount":0,"batches":[],"disposed":false,"disposeFailure":null,"afterCutoffLoss":{"items":0,"bytes":0},"selectors":[]}),
+            ),
+        }
     }
 
     pub async fn continuation_acknowledge_claim(
         &self,
         token: &str,
     ) -> Result<serde_json::Value, serde_json::Value> {
-        self.continuation_engine()
-            .await?
-            .acknowledge_claim(token)
+        let engine = self
+            .continuation
+            .lock()
             .await
+            .as_ref()
+            .map(|owned| owned.engine.clone());
+        match engine {
+            Some(engine) => engine.acknowledge_claim(token).await,
+            None => Err(
+                serde_json::json!({"code":"argument.invalid","domain":"restoration","operation":"continuation","detail":"no prepared claim"}),
+            ),
+        }
     }
 
     pub async fn continuation_describe_backlog(
         &self,
     ) -> Result<serde_json::Value, serde_json::Value> {
-        self.continuation_engine().await?.describe_backlog().await
+        let engine = self
+            .continuation
+            .lock()
+            .await
+            .as_ref()
+            .map(|owned| owned.engine.clone());
+        match engine {
+            Some(engine) => engine.describe_backlog().await,
+            None => Ok(serde_json::Value::Null),
+        }
+    }
+
+    /// Trusted Rust-host configuration only. Paths never enter renderer commands.
+    pub async fn continuation_configure_recording_directory(
+        &self,
+        directory: &std::path::Path,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        let recordings = self.recordings.clone();
+        let directory = directory.to_owned();
+        ubm_desktop::continuation_journal::run_blocking(move || {
+            recordings
+                .configure_directory(&directory)
+                .map_err(ubm_desktop::continuation::recording_failure)
+        })
+        .await
+    }
+    pub async fn continuation_recording_status(
+        &self,
+        id: &str,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        let recordings = self.recordings.clone();
+        let id = id.to_owned();
+        ubm_desktop::continuation_journal::run_blocking(move || {
+            recordings
+                .get(&id)
+                .and_then(|journal| journal.status())
+                .map_err(ubm_desktop::continuation::recording_failure)
+        })
+        .await
+    }
+    pub async fn continuation_recording_prepare(
+        &self,
+        id: &str,
+        max_items: u32,
+        max_bytes: u32,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        let recordings = self.recordings.clone();
+        let id = id.to_owned();
+        ubm_desktop::continuation_journal::run_blocking(move || {
+            recordings
+                .get(&id)
+                .and_then(|journal| journal.prepare(max_items, max_bytes))
+                .map_err(ubm_desktop::continuation::recording_failure)
+        })
+        .await
+    }
+    pub async fn continuation_recording_acknowledge(
+        &self,
+        id: &str,
+        token: &str,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        let recordings = self.recordings.clone();
+        let id = id.to_owned();
+        let token = token.to_owned();
+        ubm_desktop::continuation_journal::run_blocking(move || {
+            recordings
+                .get(&id)
+                .and_then(|journal| journal.acknowledge(&token))
+                .map_err(ubm_desktop::continuation::recording_failure)
+        })
+        .await
+    }
+    pub async fn continuation_recording_stop(
+        &self,
+        id: &str,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        let engine = self
+            .continuation
+            .lock()
+            .await
+            .as_ref()
+            .map(|continuation| continuation.engine.clone());
+        let recordings = self.recordings.clone();
+        let id = id.to_owned();
+        ubm_desktop::continuation_journal::run_blocking(move || {
+            if let Some(engine) = engine {
+                engine.recording_stop(&id)
+            } else {
+                let mut receipt = recordings
+                    .get(&id)
+                    .and_then(|journal| journal.stop())
+                    .map_err(ubm_desktop::continuation::recording_failure)?;
+                receipt["radioRelease"] = serde_json::json!("not-requested");
+                Ok(receipt)
+            }
+        })
+        .await
+    }
+    pub async fn continuation_recording_clear(
+        &self,
+        id: &str,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        let recordings = self.recordings.clone();
+        let id = id.to_owned();
+        ubm_desktop::continuation_journal::run_blocking(move || {
+            recordings
+                .get(&id)
+                .and_then(|journal| journal.clear())
+                .map_err(ubm_desktop::continuation::recording_failure)
+        })
+        .await
     }
 
     /// Shut the admitted authority down and refuse further BLE work loudly.
-    /// Orphaned core resources get a final release first; failures are
-    /// reported, never dropped. Production never calls it (the
+    /// Orphaned core resources get a release first; failures are reported
+    /// and keep the closed authority owned for the next shutdown retry.
+    /// Cancellation also leaves that ownership in the slot. Production never calls it (the
     /// process-lifetime central outlives every caller).
     pub async fn authority_shutdown(&self) -> AuthorityShutdown {
-        self.continuation.lock().await.take();
-        let previous =
-            std::mem::replace(&mut *self.authority.lock().await, AuthoritySlot::ShutDown);
-        let (core, orphan_failures) = match previous {
-            AuthoritySlot::Open(authority) => {
-                let orphan_failures = self
-                    .settle_orphan_debt(&authority, None)
-                    .await
+        let _shutdown = self.authority_shutdown_admission.lock().await;
+        let authority = {
+            let mut slot = self.authority.lock().await;
+            match &*slot {
+                AuthoritySlot::Open(authority) | AuthoritySlot::Closing(authority) => {
+                    let authority = Arc::clone(authority);
+                    *slot = AuthoritySlot::Closing(Arc::clone(&authority));
+                    Some(authority)
+                }
+                AuthoritySlot::Unopened(_) | AuthoritySlot::ShutDown => {
+                    *slot = AuthoritySlot::ShutDown;
+                    None
+                }
+            }
+        };
+        if let Some(continuation) = self.continuation.lock().await.as_ref() {
+            continuation.engine.stop_recovery();
+        }
+        let (core, orphan_failures) = match authority {
+            Some(authority) => {
+                let orphan_failures = match tokio::time::timeout(
+                    SHUTDOWN_ORPHAN_DRAIN,
+                    self.settle_orphan_debt(&authority, None),
+                ).await {
+                    Ok(failures) => failures
                     .into_iter()
                     .map(|failure| {
                         format!(
@@ -969,10 +1167,19 @@ impl BtleplugDispatcher {
                             failure.describe()
                         )
                     })
-                    .collect();
-                (Some(authority.shutdown().await), orphan_failures)
+                    .collect::<Vec<_>>(),
+                    Err(_) => vec!["tauri.shutdown.orphan-drain: cleanup exceeded five seconds; identities remain owned until authoritative parent release".to_owned()],
+                };
+                let report = authority.shutdown().await;
+                if report.is_released() {
+                    // Current authoritative parent success retires child
+                    // obligations, not the diagnostic failures above.
+                    self.inner.lock().await.orphan_debt.clear();
+                    *self.authority.lock().await = AuthoritySlot::ShutDown;
+                }
+                (Some(report), orphan_failures)
             }
-            AuthoritySlot::Unopened(_) | AuthoritySlot::ShutDown => (None, Vec::new()),
+            None => (None, Vec::new()),
         };
         let pump = self
             .lifecycle_pump
@@ -1122,6 +1329,12 @@ impl BtleplugDispatcher {
             ("sessionScope", string(lease_generation.clone())),
         ]);
         let attachment_record = attachment_record(&attachment);
+        let native_capabilities = self
+            .ensure_authority()
+            .await?
+            .capability_descriptors()
+            .await
+            .map_err(|error| DispatchError::from_core(&error))?;
         Ok(object([
             ("kind", string("bootstrap")),
             (
@@ -1132,7 +1345,10 @@ impl BtleplugDispatcher {
                     ("versions", versions),
                     (
                         "capabilities",
-                        capabilities::snapshot(&attachment.backend_generation),
+                        capabilities::snapshot(
+                            &attachment.backend_generation,
+                            &native_capabilities,
+                        ),
                     ),
                     ("core", core_identity()),
                     ("discovery", object([("kind", string("continuous-scan"))])),
@@ -1185,7 +1401,7 @@ impl BtleplugDispatcher {
                     BleErrorCode::BytesInvalid,
                     "ipc",
                     "tauri.route-binary",
-                ))
+                ));
             }
         };
         // Keep the exact attachment that this request validated. The caller
@@ -1505,6 +1721,18 @@ impl BtleplugDispatcher {
         self.refuse_stale_attachment(route_attachment, command)
             .await?;
         match command {
+            "peers.resolve" | "peers.known" | "peers.connected" | "peers.bonded"
+            | "peers.authorized" | "peers.restored" => {
+                if binary_payload.is_some() {
+                    return Err(DispatchError::new(
+                        BleErrorCode::ProtocolMalformed,
+                        "ipc",
+                        command,
+                    ));
+                }
+                self.peer_directory(caller, command, route_attachment, payload, ctl)
+                    .await
+            }
             "adapter.state" => self.adapter_state(caller, ctl).await,
             "scan.start" => self.start_scan(caller, payload, ctl).await,
             "scan.stop" => self.stop_scan(caller, payload, ctl).await,
@@ -1637,6 +1865,7 @@ impl BtleplugDispatcher {
             resource,
             attempts: 1,
             exhausted: false,
+            release: Arc::new(Mutex::new(())),
         });
         self.spawn_orphan_retries(Arc::clone(authority), id);
     }
@@ -1644,9 +1873,8 @@ impl BtleplugDispatcher {
     /// Retry one orphan's release automatically: 100 ms after the failed
     /// compensation, doubling to 5 s, until a release lands or
     /// [`ORPHAN_RELEASE_ATTEMPTS`] attempts were refused (then it is marked
-    /// exhausted and stays owed). A round that finds the debt held by a
-    /// window release in flight skips; a debt that is gone for good ends
-    /// the schedule. Runs on the ambient runtime, so it follows the
+    /// exhausted and stays owed). A round joins the resource's release
+    /// admission; a debt that is gone for good ends the schedule. Runs on the ambient runtime, so it follows the
     /// caller's clock.
     fn spawn_orphan_retries(&self, authority: Arc<dyn CoreAuthority>, id: u64) {
         let dispatcher = self.clone();
@@ -1655,26 +1883,43 @@ impl BtleplugDispatcher {
             for _ in 1..ORPHAN_RELEASE_ATTEMPTS {
                 tokio::time::sleep(delay).await;
                 delay = std::cmp::min(delay.saturating_mul(2), ORPHAN_RETRY_MAX_DELAY);
-                if dispatcher.authority_if_open().is_none() {
+                if !dispatcher.authority_open_for_retry().await {
                     return;
                 }
                 let debt = {
-                    let mut state = dispatcher.inner.lock().await;
-                    let Some(index) = state.orphan_debt.iter().position(|debt| debt.id == id)
-                    else {
-                        continue;
+                    let state = dispatcher.inner.lock().await;
+                    let Some(debt) = state.orphan_debt.iter().find(|debt| debt.id == id) else {
+                        return;
                     };
-                    state.orphan_debt.swap_remove(index)
+                    debt.clone()
                 };
-                if release_orphan(&authority, &debt.resource).await.is_ok() {
+                let _release = debt.release.lock().await;
+                if !dispatcher.authority_open_for_retry().await {
                     return;
                 }
-                let mut debt = debt;
-                debt.attempts = debt.attempts.saturating_add(1);
-                debt.exhausted = debt.attempts >= ORPHAN_RELEASE_ATTEMPTS;
-                let exhausted = debt.exhausted;
-                dispatcher.inner.lock().await.orphan_debt.push(debt);
-                if exhausted {
+                if !dispatcher
+                    .inner
+                    .lock()
+                    .await
+                    .orphan_debt
+                    .iter()
+                    .any(|entry| entry.id == id)
+                {
+                    return;
+                }
+                let result = release_orphan(&authority, &debt.resource).await;
+                let mut state = dispatcher.inner.lock().await;
+                if result.is_ok() {
+                    state.orphan_debt.retain(|entry| entry.id != id);
+                    return;
+                }
+                let Some(current) = state.orphan_debt.iter_mut().find(|entry| entry.id == id)
+                else {
+                    return;
+                };
+                current.attempts = current.attempts.saturating_add(1);
+                current.exhausted = current.attempts >= ORPHAN_RELEASE_ATTEMPTS;
+                if current.exhausted {
                     return;
                 }
             }
@@ -1691,23 +1936,42 @@ impl BtleplugDispatcher {
         caller_key: Option<&str>,
     ) -> Vec<OrphanFailure> {
         let owed = {
-            let mut state = self.inner.lock().await;
-            let (owed, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut state.orphan_debt)
-                .into_iter()
-                .partition(|debt| caller_key.is_none_or(|key| debt.caller_key == key));
-            state.orphan_debt = kept;
-            owed
+            self.inner
+                .lock()
+                .await
+                .orphan_debt
+                .iter()
+                .filter(|debt| caller_key.is_none_or(|key| debt.caller_key == key))
+                .cloned()
+                .collect::<Vec<_>>()
         };
         let mut failures = Vec::new();
         for debt in owed {
+            let _release = debt.release.lock().await;
+            let current = self
+                .inner
+                .lock()
+                .await
+                .orphan_debt
+                .iter()
+                .find(|entry| entry.id == debt.id)
+                .cloned();
+            let Some(current) = current else {
+                continue;
+            };
             if let Err(error) = release_orphan(authority, &debt.resource).await {
                 failures.push(OrphanFailure {
                     resource: debt.resource.clone(),
                     error,
-                    exhausted: debt.exhausted,
-                    attempts: debt.attempts,
+                    exhausted: current.exhausted,
+                    attempts: current.attempts,
                 });
-                self.inner.lock().await.orphan_debt.push(debt);
+            } else {
+                self.inner
+                    .lock()
+                    .await
+                    .orphan_debt
+                    .retain(|entry| entry.id != debt.id);
             }
         }
         failures
@@ -2072,6 +2336,7 @@ impl BtleplugDispatcher {
                                 owner_lease_id: owner_lease_id.clone(),
                                 connection_generation: public_generation.clone(),
                                 core_generation,
+                                native_release: None,
                                 phase: ReleasePhase::Active,
                             },
                         );
@@ -2152,31 +2417,51 @@ impl BtleplugDispatcher {
                 begin_release(&mut connection.phase),
                 connection.peer_id.clone(),
                 connection.lease.clone(),
+                connection.native_release,
             )
         };
-        let (sender, peer_id, lease) = match step {
-            (ReleaseStep::Join(receiver), _, _) => return join_release(receiver).await,
-            (ReleaseStep::Lead(sender), peer_id, lease) => (sender, peer_id, lease),
+        let (sender, peer_id, lease, native_release) = match step {
+            (ReleaseStep::Join(receiver), _, _, _) => return join_release(receiver).await,
+            (ReleaseStep::Lead(sender), peer_id, lease, native_release) => {
+                (sender, peer_id, lease, native_release)
+            }
         };
-        let mut result = match self.ensure_authority().await {
-            Ok(authority) => match authority.disconnect(&peer_id, &lease, ctl).await {
-                Ok(_) => Ok(()),
-                Err(error) => {
-                    let error = DispatchError::from_core(&error);
-                    if is_released_link(&error) {
-                        Ok(())
-                    } else {
-                        Err(error)
+        let released = match native_release {
+            Some(physical_ended) => Ok(physical_ended),
+            None => match self.ensure_authority().await {
+                Ok(authority) => match authority.disconnect(&peer_id, &lease, ctl).await {
+                    Ok(physical_ended) => Ok(physical_ended),
+                    Err(error) => {
+                        let error = DispatchError::from_core(&error);
+                        if is_released_link(&error) {
+                            Ok(true)
+                        } else {
+                            Err(error)
+                        }
                     }
-                }
+                },
+                Err(error) => Err(error),
             },
-            Err(error) => Err(error),
         };
+        if let Ok(physical_ended) = released.as_ref() {
+            let mut state = self.inner.lock().await;
+            if let Some(connection) = state
+                .callers
+                .get_mut(key)
+                .and_then(|caller| caller.connections.get_mut(handle))
+                .filter(|connection| connection.lease == lease)
+            {
+                connection.native_release = Some(*physical_ended);
+            }
+        }
+        let shared_link_retained = matches!(released, Ok(false));
+        let mut result = released.map(|_| ());
         // A native release can invalidate an already-running notification
         // poll before it answers. Once it does answer, send each remaining
         // owner terminal before forgetting its mapping. A failed channel
-        // send keeps that mapping and the link retryable; an earlier terminal
-        // is marked and never sent again. The snapshot cannot race a new
+        // send keeps that mapping and the confirmed native receipt so only
+        // local cleanup retries; an earlier terminal is never sent again.
+        // The snapshot cannot race a new
         // notification terminal: `begin_release` already set `Releasing`
         // under the same lock that guards its channel send and sent marker.
         if result.is_ok() {
@@ -2230,6 +2515,48 @@ impl BtleplugDispatcher {
                 }
             }
         }
+        // A shared lease release need not produce a physical link event.
+        // End only this owner's still-open streams, without inventing one.
+        // A core-event delivery that already claimed a stream keeps ownership.
+        if result.is_ok() && shared_link_retained {
+            let targets = {
+                let state = self.inner.lock().await;
+                state
+                    .callers
+                    .get(key)
+                    .filter(|caller| !caller.retired)
+                    .map(|caller| {
+                        (
+                            caller.lease_id.clone(),
+                            caller.lease_generation.clone(),
+                            caller
+                                .connection_events
+                                .values()
+                                .filter(|stream| stream.connection_handle == handle)
+                                .map(|stream| stream.stream_handle.clone())
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+            };
+            if let Some((owner, generation, streams)) = targets {
+                for stream in streams {
+                    if let Err(error) = self
+                        .terminal_with_admission(
+                            key,
+                            (&owner, &generation),
+                            &stream,
+                            "owner-released",
+                            None,
+                            TerminalAdmission::OwnerConnection,
+                        )
+                        .await
+                    {
+                        result = Err(error);
+                        break;
+                    }
+                }
+            }
+        }
         let detached = {
             let mut state = self.inner.lock().await;
             match state.callers.get_mut(key) {
@@ -2257,9 +2584,9 @@ impl BtleplugDispatcher {
     }
 
     /// Drop the GATT mappings owned by one released connection handle and
-    /// return the detached subscriptions for the caller to stop. The link's
-    /// CCCDs ended with it in the core. Connection-event streams stay: the
-    /// core's lifecycle event ends them with the transition that happened.
+    /// return the detached subscriptions for the caller to stop. The core
+    /// released this lease's consumers, not another owner's shared link.
+    /// A connection-event delivery already claimed by the core keeps ownership.
     fn detach_connection_mappings(
         caller_state: &mut CallerState,
         connection_handle: &str,
@@ -3103,7 +3430,11 @@ impl BtleplugDispatcher {
         let target = self.gatt_target(caller, &payload).await?;
         let authority = self.ensure_authority().await?;
         let read = authority
-            .read(&target.peer_id, &target.characteristic.selector, ctl)
+            .read(
+                &target.peer_id,
+                &target.characteristic.selector,
+                ctl.with_connection_lease(target.lease),
+            )
             .await
             .map_err(|error| DispatchError::from_core(&error))?;
         Ok(object([
@@ -3139,7 +3470,7 @@ impl BtleplugDispatcher {
                 &target.characteristic.selector,
                 bytes.clone(),
                 &mode,
-                ctl,
+                ctl.with_connection_lease(target.lease),
             )
             .await
             .map_err(|error| DispatchError::from_core(&error))?;
@@ -3224,7 +3555,13 @@ impl BtleplugDispatcher {
         let consumer = self.internal_id("consumer");
         let selector = target.characteristic.selector.clone();
         let delivery = authority
-            .subscribe(&target.peer_id, &selector, &consumer, requirement, ctl)
+            .subscribe(
+                &target.peer_id,
+                &selector,
+                &consumer,
+                requirement,
+                ctl.with_connection_lease(target.lease),
+            )
             .await
             .map_err(|error| DispatchError::from_core(&error))?;
         let handle = self.id("subscription");
@@ -3571,12 +3908,12 @@ impl BtleplugDispatcher {
         payload: BTreeMap<String, IpcValue>,
         ctl: OpControl,
     ) -> Result<IpcValue, DispatchError> {
-        let (peer_id, selector) = self
+        let (peer_id, selector, lease) = self
             .descriptor_target(caller, &payload, "tauri.descriptor-read")
             .await?;
         let authority = self.ensure_authority().await?;
         let value = authority
-            .read_descriptor(&peer_id, &selector, ctl)
+            .read_descriptor(&peer_id, &selector, ctl.with_connection_lease(lease))
             .await
             .map_err(|error| DispatchError::from_core(&error))?;
         Ok(object([("value", IpcValue::Bytes(value))]))
@@ -3604,12 +3941,17 @@ impl BtleplugDispatcher {
                 "tauri.descriptor-write-bytes",
             )
         })?;
-        let (peer_id, selector) = self
+        let (peer_id, selector, lease) = self
             .descriptor_target(caller, &payload, "tauri.descriptor-write")
             .await?;
         let authority = self.ensure_authority().await?;
         authority
-            .write_descriptor(&peer_id, &selector, bytes.clone(), ctl)
+            .write_descriptor(
+                &peer_id,
+                &selector,
+                bytes.clone(),
+                ctl.with_connection_lease(lease),
+            )
             .await
             .map_err(|error| DispatchError::from_core(&error))?;
         Ok(object([
@@ -3689,7 +4031,7 @@ impl BtleplugDispatcher {
                         BleErrorCode::ArgumentInvalid,
                         "gatt",
                         "tauri.maximum-write-length-mode",
-                    ))
+                    ));
                 }
             };
         let connection = self
@@ -3801,6 +4143,7 @@ impl BtleplugDispatcher {
         )?;
         Ok(GattTarget {
             peer_id: connection.peer_id.clone(),
+            lease: connection.lease.clone(),
             characteristic,
             connection_handle: database.connection_handle.clone(),
         })
@@ -3813,7 +4156,7 @@ impl BtleplugDispatcher {
         // Reserved: every failure below pins its own per-path identity, so
         // the caller's operation name never renames a wire error.
         _operation: &str,
-    ) -> Result<(String, CoreSelector), DispatchError> {
+    ) -> Result<(String, CoreSelector, String), DispatchError> {
         let database_handle =
             required_string(payload, "databaseHandle", "tauri.descriptor-database")?;
         let descriptor_handle =
@@ -3871,7 +4214,11 @@ impl BtleplugDispatcher {
             &caller_state.lease_id,
             "tauri.descriptor-connection",
         )?;
-        Ok((connection.peer_id.clone(), selector))
+        Ok((
+            connection.peer_id.clone(),
+            selector,
+            connection.lease.clone(),
+        ))
     }
 
     async fn acknowledge(
@@ -4098,22 +4445,23 @@ impl BtleplugDispatcher {
         let mut terminal_delay = Duration::from_millis(100);
         loop {
             match self
-                .terminal(caller_key, expected_lease, stream_id, reason, None)
+                .terminal_with_admission(
+                    caller_key,
+                    expected_lease,
+                    stream_id,
+                    reason,
+                    None,
+                    TerminalAdmission::Connection,
+                )
                 .await
             {
-                Ok(()) => break,
+                Ok(_) => break,
                 Err(error) if error.code == BleErrorCode::OwnershipDenied => return Err(error),
                 Err(_error) => {
                     tokio::time::sleep(terminal_delay).await;
                     terminal_delay =
                         std::cmp::min(terminal_delay.saturating_mul(2), Duration::from_secs(5));
                 }
-            }
-        }
-        let mut state = self.inner.lock().await;
-        if let Some(caller) = state.callers.get_mut(caller_key) {
-            if caller.lease_id == expected_lease.0 && caller.lease_generation == expected_lease.1 {
-                caller.connection_events.remove(stream_id);
             }
         }
         Ok(())
@@ -4127,13 +4475,13 @@ impl BtleplugDispatcher {
         reason: &str,
         error: Option<&DispatchError>,
     ) -> Result<(), DispatchError> {
-        self.terminal_with_subscription_admission(
+        self.terminal_with_admission(
             caller_key,
             expected_lease,
             stream_id,
             reason,
             error,
-            false,
+            TerminalAdmission::Any,
         )
         .await
         .map(|_| ())
@@ -4151,25 +4499,25 @@ impl BtleplugDispatcher {
         reason: &str,
         error: Option<&DispatchError>,
     ) -> Result<bool, DispatchError> {
-        self.terminal_with_subscription_admission(
+        self.terminal_with_admission(
             caller_key,
             expected_lease,
             stream_id,
             reason,
             error,
-            true,
+            TerminalAdmission::ActiveSubscription,
         )
         .await
     }
 
-    async fn terminal_with_subscription_admission(
+    async fn terminal_with_admission(
         &self,
         caller_key: &str,
         expected_lease: (&str, &str),
         stream_id: &str,
         reason: &str,
         error: Option<&DispatchError>,
-        require_active_subscription: bool,
+        admission: TerminalAdmission,
     ) -> Result<bool, DispatchError> {
         let mut state = self.inner.lock().await;
         let caller_state = state
@@ -4192,7 +4540,18 @@ impl BtleplugDispatcher {
                 "tauri.terminal-stale-lease",
             ));
         }
-        if require_active_subscription {
+        if matches!(
+            admission,
+            TerminalAdmission::Connection | TerminalAdmission::OwnerConnection
+        ) {
+            let Some(stream) = caller_state.connection_events.get(stream_id) else {
+                return Ok(false);
+            };
+            if admission == TerminalAdmission::OwnerConnection && stream.end != StreamEnd::Open {
+                return Ok(false);
+            }
+        }
+        if admission == TerminalAdmission::ActiveSubscription {
             let Some(subscription) = caller_state.subscriptions.get(stream_id) else {
                 return Ok(false);
             };
@@ -4235,7 +4594,13 @@ impl BtleplugDispatcher {
             )
             .platform(error.to_string())
         })?;
-        if require_active_subscription {
+        if matches!(
+            admission,
+            TerminalAdmission::Connection | TerminalAdmission::OwnerConnection
+        ) {
+            caller_state.connection_events.remove(stream_id);
+        }
+        if admission == TerminalAdmission::ActiveSubscription {
             if let Some(subscription) = caller_state.subscriptions.get_mut(stream_id) {
                 subscription.terminal_sent = true;
             }
@@ -4411,6 +4776,7 @@ impl BtleplugDispatcher {
 /// One resolved characteristic target for a GATT verb.
 struct GattTarget {
     peer_id: String,
+    lease: String,
     characteristic: CoreCharacteristic,
     connection_handle: String,
 }
@@ -4743,7 +5109,7 @@ fn scan_properties_match_optional(
 
 /// Verbatim core observation mapping: a [`PeerSnapshot`] becomes the exact
 /// IPC observation wire shape (`peerId`, `localName`, `rssi`,
-/// `txPowerLevel`, `serviceUuids`, `manufacturerData`, `serviceData`) with
+/// `txPowerLevel`, `serviceUuids`, `manufacturerData`, `serviceData`, `origin`) with
 /// no filtering, merging, or re-sampling. The radio facts cross unchanged;
 /// delivery policy is the core's.
 fn core_scan_observation(snapshot: &ubm_desktop::PeerSnapshot) -> IpcValue {
@@ -4769,6 +5135,7 @@ fn core_scan_observation(snapshot: &ubm_desktop::PeerSnapshot) -> IpcValue {
         .collect();
     object([
         ("peerId", string(snapshot.id.clone())),
+        ("origin", string(snapshot.extras.source.as_str())),
         (
             "localName",
             snapshot.local_name.clone().map_or(IpcValue::Null, string),
@@ -4954,8 +5321,7 @@ fn adapter_limitations() -> IpcValue {
     )
 }
 
-const UNSAMPLED_SNAPSHOT_REASON: &str =
-    "This snapshot carries attachment identity only; availability, authorization, power, and the heard peer count are not sampled here, so route adapter.state for a live reading.";
+const UNSAMPLED_SNAPSHOT_REASON: &str = "This snapshot carries attachment identity only; availability, authorization, power, and the heard peer count are not sampled here, so route adapter.state for a live reading.";
 
 /// What one `adapter.state` read measured through the shared central.
 /// `None` means the radio cannot answer that question on this platform;
@@ -5068,10 +5434,8 @@ const AUTHORIZATION_UNKNOWN: &str = "unknown";
 /// threads even when the host clock steps backwards.
 static LAST_REPORTED_EPOCH_MILLIS: AtomicI64 = AtomicI64::new(0);
 
-const CLOCK_BEFORE_EPOCH_REASON: &str =
-    "The host wall clock reads before the Unix epoch; updatedAt reports the newest timestamp this host has observed instead.";
-const CLOCK_MOVED_BACKWARDS_REASON: &str =
-    "The host wall clock moved backwards; updatedAt is held at the newest timestamp this host has observed.";
+const CLOCK_BEFORE_EPOCH_REASON: &str = "The host wall clock reads before the Unix epoch; updatedAt reports the newest timestamp this host has observed instead.";
+const CLOCK_MOVED_BACKWARDS_REASON: &str = "The host wall clock moved backwards; updatedAt is held at the newest timestamp this host has observed.";
 
 /// A wall-clock reading for one snapshot, with the caveat it carries.
 struct SampleClock {
@@ -5481,6 +5845,54 @@ mod tests {
     };
     use btleplug::api::CharPropFlags;
     use ubm_core::contracts::BleErrorCode;
+
+    #[test]
+    fn trusted_bluez_policy_is_not_a_renderer_option() {
+        let options = super::BtleplugDispatcherOptions {
+            connection_policy: Some(ubm_desktop::boundary::BluezConnectionPolicy::LeBearer {
+                daemon_unique_owner: ":1.42".into(),
+            }),
+            ..Default::default()
+        };
+        let _dispatcher = super::BtleplugDispatcher::new(options);
+        assert!(super::BtleplugDispatcherOptions::default()
+            .connection_policy
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn trusted_bluez_policy_reaches_the_same_lazy_authority_opener() {
+        let expected = ubm_desktop::boundary::BluezConnectionPolicy::LeBearer {
+            daemon_unique_owner: ":1.42".into(),
+        };
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = seen.clone();
+        let dispatcher = super::BtleplugDispatcher::with_profiled_opener(
+            super::BtleplugDispatcherOptions {
+                adapter_id: Some("hci1".into()),
+                connection_policy: Some(expected.clone()),
+            },
+            std::sync::Arc::new(move |profile, policy| {
+                captured
+                    .lock()
+                    .unwrap()
+                    .push((profile.adapter_id.clone(), policy));
+                Box::pin(async {
+                    Err(super::DispatchError::new(
+                        BleErrorCode::AdapterUnavailable,
+                        "adapter",
+                        "test.open",
+                    ))
+                })
+            }),
+        );
+        assert!(seen.lock().unwrap().is_empty());
+        assert!(dispatcher.ensure_authority().await.is_err());
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![(Some("hci1".into()), Some(expected))]
+        );
+    }
 
     #[test]
     fn capability_projection_is_data_only() {
@@ -6159,6 +6571,83 @@ mod tests {
                 .callers
                 .insert(caller_key(&caller), test_caller_state(attachment));
             (dispatcher, caller)
+        }
+
+        #[tokio::test]
+        async fn trusted_recording_controls_reopen_and_acknowledge_one_native_cursor() {
+            let directory = std::env::temp_dir().join(format!(
+                "ubm-tauri-recording-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir(&directory).unwrap();
+            let journal = ubm_desktop::continuation_journal::ContinuationJournal::open(
+                &directory.join("sample.sqlite"),
+                "sample",
+                &serde_json::json!({}),
+                ubm_desktop::continuation_journal::JournalQuota {
+                    max_bytes: 1 << 20,
+                    max_records: 10,
+                },
+            )
+            .unwrap();
+            journal
+                .append(&serde_json::json!({}), &serde_json::json!({"value":1}))
+                .unwrap();
+            drop(journal);
+            let dispatcher = BtleplugDispatcher::default();
+            dispatcher
+                .continuation_configure_recording_directory(&directory)
+                .await
+                .unwrap();
+            let batch = dispatcher
+                .continuation_recording_prepare("sample", 1, 4096)
+                .await
+                .unwrap();
+            assert_eq!(batch["records"][0]["record"]["value"], 1);
+            let token = batch["token"].as_str().unwrap();
+            assert_eq!(
+                dispatcher
+                    .continuation_recording_acknowledge("sample", token)
+                    .await
+                    .unwrap(),
+                dispatcher
+                    .continuation_recording_acknowledge("sample", token)
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                dispatcher
+                    .continuation_recording_status("sample")
+                    .await
+                    .unwrap()["records"],
+                0
+            );
+            dispatcher
+                .continuation_recording_stop("sample")
+                .await
+                .unwrap();
+            assert_eq!(
+                dispatcher
+                    .continuation_recording_clear("sample")
+                    .await
+                    .unwrap()["cleared"],
+                true
+            );
+            assert_eq!(
+                dispatcher
+                    .continuation_recording_status("../sample")
+                    .await
+                    .unwrap_err()["code"],
+                "argument.invalid"
+            );
+            assert!(matches!(
+                *dispatcher.authority.lock().await,
+                super::super::AuthoritySlot::Unopened(_)
+            ));
         }
 
         /// BLE work executes the core: connecting headless succeeds through

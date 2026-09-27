@@ -18,8 +18,8 @@
 // Identities sealed alongside the file map:
 //   package          name@version that produced the build (version skew fails)
 //   contractRevision C-UBM revision from crates/ubm-core/src/contracts.rs
-//   toolchain        pinned Rust channel + CI producer SDKs (Xcode/NDK,
-//                    null where unresolvable on this machine)
+//   toolchain        pinned Rust channel + validated staged artifact producer
+//                    SDKs (Xcode/NDK, null when that artifact is unstaged)
 //   features         enabled feature set per shipped Rust crate
 //                    (default-only when the manifest declares no [features])
 //   targets          per-artifact target triple / slice
@@ -189,40 +189,38 @@ const ANDROID_ABI_TRIPLES = {
   x86_64: 'x86_64-linux-android'
 }
 
-function readToolchain(root) {
+function readProducerSdk(root, relative, field, staged, validate) {
+  if (!staged) return null
+  validate(root)
+  const record = JSON.parse(fs.readFileSync(path.join(root, relative), 'utf8'))
+  const value = record[field]
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error(`Build fingerprint: invalid producer ${field} in ${relative}`)
+  }
+  return value
+}
+
+function readToolchain(root, android, apple) {
   const toolchainFile = path.join(root, 'rust-toolchain.toml')
   let rust = null
   if (fs.existsSync(toolchainFile)) {
     const pin = /^channel\s*=\s*"([^"]+)"/m.exec(fs.readFileSync(toolchainFile, 'utf8'))
     rust = pin ? pin[1] : null
   }
-  let xcode = null
-  if (process.platform === 'darwin') {
-    try {
-      const { execFileSync } = require('node:child_process')
-      xcode = execFileSync('xcodebuild', ['-version'], { encoding: 'utf8' }).split('\n')[0].trim() || null
-    } catch {
-      xcode = null
-    }
-  }
-  let ndk = null
-  const ndkHome = process.env.ANDROID_NDK_HOME
-  if (ndkHome !== undefined && ndkHome !== '' && fs.existsSync(ndkHome)) {
-    ndk = path.basename(ndkHome)
-  } else {
-    const os = require('node:os')
-    const sdk =
-      process.env.ANDROID_HOME ?? process.env.ANDROID_SDK_ROOT ?? path.join(os.homedir(), 'Android', 'Sdk')
-    const sdkNdk = path.join(sdk, 'ndk')
-    if (fs.existsSync(sdkNdk)) {
-      const installed = fs
-        .readdirSync(sdkNdk, { withFileTypes: true })
-        .filter(entry => entry.isDirectory())
-        .map(entry => entry.name)
-        .sort()
-      ndk = installed.length > 0 ? installed[installed.length - 1] : null
-    }
-  }
+  const xcode = readProducerSdk(
+    root,
+    'ios/RustCore/build-identity.json',
+    'xcodebuild',
+    apple.staged,
+    nativeBuildIdentity.checkAppleStaging
+  )
+  const ndk = readProducerSdk(
+    root,
+    'android/src/main/jniLibs/build-identity.json',
+    'ndk',
+    android.length > 0,
+    nativeBuildIdentity.checkAndroidPrebuilts
+  )
   return { rust, xcode, ndk }
 }
 
@@ -317,9 +315,7 @@ function napiNativeIdentity(root) {
 
 function nativeTargets(android, apple) {
   return {
-    android: Object.fromEntries(
-      android.map(entry => [entry.abi, ANDROID_ABI_TRIPLES[entry.abi] ?? null])
-    ),
+    android: Object.fromEntries(android.map(entry => [entry.abi, ANDROID_ABI_TRIPLES[entry.abi] ?? null])),
     apple: [...apple.libraryIdentifiers]
   }
 }
@@ -370,7 +366,7 @@ function generateBuildFingerprint(root) {
     packageName: manifest.name,
     packageVersion: manifest.version,
     contractRevision: readContractRevision(absoluteRoot),
-    toolchain: readToolchain(absoluteRoot),
+    toolchain: readToolchain(absoluteRoot, android, apple),
     features: readFeatures(absoluteRoot),
     targets: nativeTargets(android, apple),
     deploymentMinimum: readDeploymentMinimum(absoluteRoot),

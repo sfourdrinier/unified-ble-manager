@@ -154,6 +154,16 @@ explicit native resubscription declaration. `claim` validates values before
 acknowledging native handoff, reports loss and cleanup uncertainty, and ends the
 recording generation. Persist returned values according to your application.
 
+For an authenticated application bridge that forwards raw native control
+envelopes, main may use `encodeNativeContinuationFailure(error)` when a typed
+native-compatible failure was already decoded before dispatch (for example,
+recording-store configuration). This preserves the error code, operation,
+retryability and platform message/metadata across Electron's string-only error
+rejection transport. Keep authentication and request validation outside this
+conversion. Unknown exceptions are rethrown. This is not general `BleError`
+serialization: write commit states, limitations and nested/binary metadata are
+not representable in the native control envelope and are explicitly refused.
+
 This survives loss of a renderer, **not loss of the main process**. A bounded
 in-memory backlog is not disk persistence, and Electron relaunch/start-at-login
 configuration is the application's responsibility. On main shutdown, await the

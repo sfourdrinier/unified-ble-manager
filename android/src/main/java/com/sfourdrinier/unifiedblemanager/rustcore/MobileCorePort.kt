@@ -24,6 +24,8 @@ interface MobileCorePort {
   fun releaseBackgroundScope(backgroundScope: String): String
   fun invoke(sessionId: Long, op: String, argsJson: String, callback: MobileCoreBridge.InvokeCallback)
   fun drain(sessionId: Long, maxItems: Int, maxBytes: Int): String
+  fun continuationConfigureRecordingDirectory(path: String): String
+  fun continuationRecordingControl(operation: String, id: String, token: String, maxItems: Int, maxBytes: Int): String
   fun continuationExecute(peerId: String, declarationJson: String, callback: MobileCoreBridge.InvokeCallback)
   fun continuationPrepareClaim(maxItems: Int, maxBytes: Int, callback: MobileCoreBridge.InvokeCallback)
   fun continuationAcknowledgeClaim(claimToken: String, callback: MobileCoreBridge.InvokeCallback)
@@ -87,6 +89,9 @@ data class CloseFailure(val instance: CharacteristicInstance, val detail: String
 
 /** Production port: every call is the matching [MobileCoreBridge] native. */
 object JniMobileCorePort : MobileCorePort {
+  override fun continuationConfigureRecordingDirectory(path: String) = MobileCoreBridge.nativeContinuationConfigureRecordingDirectory(path)
+  override fun continuationRecordingControl(operation: String, id: String, token: String, maxItems: Int, maxBytes: Int) =
+    MobileCoreBridge.nativeContinuationRecordingControl(operation, id, token, maxItems, maxBytes)
   private fun optional(value: Int?): Int = value ?: MobileCoreBridge.ABSENT_INT
 
   private fun tristate(value: Boolean?): Int = when (value) {

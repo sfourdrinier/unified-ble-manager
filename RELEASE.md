@@ -75,6 +75,18 @@ npm pack --dry-run
 
 CI additionally owns the platform-specific native compilation and ABI lanes.
 
+On Linux, the existing Rust CI lane and clean preflight share the same BlueZ
+lifecycle regression gate:
+
+```sh
+bash scripts/ci/test-bluez-private-bus.sh
+```
+
+Each suite runs on a separate private D-Bus, covering owned match cleanup,
+split connection signals, and LE bearer ownership. A failing suite stops the
+gate. This tests protocol handling against controlled services; it does not
+qualify physical-radio behavior or replace native binary matrix checks.
+
 ## Historical 4.0.0-rc.\* release train
 
 The former `4.0.0-rc.*` release-train candidates published to npm `latest` so a bare `pnpm add unified-ble-manager` installed the then-current 4.0 line. The GitHub Release was marked prerelease. Each candidate was cut from the exact current `main` merge commit; the workflow verifies tag/package version equality.
@@ -116,6 +128,10 @@ git tag -a v4.0.0 -m "v4.0.0"
 
 ## Releasing 5.0.0-rc.12
 
+The instructions below record the historical rc.12 IPC remediation, not the
+subsequent native-continuation work. The published `v5.0.0-rc.12` tag is
+immutable; do not execute its tag-creation instructions again.
+
 `v5.0.0-rc.11` is immutable published history. Release `v5.0.0-rc.12` only
 from the exact current `main` commit after the review-remediation PR and
 canonical CI succeed. Verify `package.json` is `5.0.0-rc.12`, the worktree is
@@ -130,9 +146,16 @@ scoped parent-release outcomes, retry and late completion, discovery timeout
 and cancellation while old cleanup is pending, and once-only pending-replay
 terminal notification with retained upstream loss counters. Keep unrelated
 connections usable and local iterator failures distinct from confirmed native
-release. No native implementation changed in this candidate; retain the
-source-bound native artifacts and run their existing identity checks. These
+release. No native implementation changed in that historical IPC remediation;
+its source-bound native artifacts required their existing identity checks. These
 checks do not constitute physical-radio qualification.
+
+Current native-continuation work changes native sources and must follow the
+[native artifact lifecycle](docs/NATIVE_ARTIFACTS.md): regenerate the expected
+identity, refresh each affected source-bound artifact through its canonical
+builder, and rerun native identity, native host, and packaged-consumer gates.
+The historical no-native-change statement is not an exemption for this work.
+This clarification does not select a new release version or authorize publication.
 
 ## Releasing 5.0.0-rc.11
 

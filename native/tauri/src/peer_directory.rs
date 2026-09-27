@@ -1,0 +1,334 @@
+//! Read-only IPC directory projection. No connection leases or scan observations
+//! are created by a lookup; the OS remains the identity authority.
+use super::*;
+
+const BACKEND: &str = "unified-ble:corebluetooth";
+
+fn malformed(operation: &str) -> DispatchError {
+    DispatchError::new(BleErrorCode::ProtocolMalformed, "ipc", operation)
+}
+
+fn unsupported(operation: &str) -> DispatchError {
+    DispatchError::new(BleErrorCode::CapabilityUnsupported, "connection", operation)
+        .platform("The selected directory mechanism cannot answer this query")
+}
+
+fn admit(ctl: &OpControl, operation: &str) -> Result<(), DispatchError> {
+    if ctl.ticket.is_cancel_requested() || ctl.ticket.is_reset() {
+        return Err(DispatchError::from_core(
+            &ctl.ticket.interruption(operation),
+        ));
+    }
+    if ctl
+        .budget
+        .remaining()
+        .is_some_and(|remaining| remaining.is_zero())
+    {
+        return Err(DispatchError::new(
+            BleErrorCode::OperationTimedOut,
+            "connection",
+            operation,
+        ));
+    }
+    Ok(())
+}
+
+fn keys(
+    value: &BTreeMap<String, IpcValue>,
+    allowed: &[&str],
+    op: &str,
+) -> Result<(), DispatchError> {
+    if value.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err(malformed(op));
+    }
+    Ok(())
+}
+
+fn uuid(value: &str, op: &str) -> Result<String, DispatchError> {
+    let parsed = Uuid::parse_str(value).map_err(|_| malformed(op))?;
+    let canonical = parsed.hyphenated().to_string();
+    if value != canonical {
+        return Err(malformed(op));
+    }
+    Ok(canonical)
+}
+
+fn reference(value: &IpcValue) -> Result<String, DispatchError> {
+    decode_reference(value).map_err(|error| {
+        if error.code == BleErrorCode::ProtocolMalformed {
+            DispatchError::new(
+                BleErrorCode::PeerReferenceInvalid,
+                "connection",
+                "peers.reference",
+            )
+        } else {
+            error
+        }
+    })
+}
+
+fn decode_reference(value: &IpcValue) -> Result<String, DispatchError> {
+    let op = "peers.reference";
+    let record = into_object(value.clone(), op)?;
+    keys(&record, &["version", "backendId", "scope", "opaqueId"], op)?;
+    if record.get("version") != Some(&IpcValue::Number(Number::from(1))) {
+        return Err(DispatchError::new(
+            BleErrorCode::PeerReferenceInvalid,
+            "connection",
+            op,
+        ));
+    }
+    let opaque = required_string(&record, "opaqueId", op)?;
+    let canonical = uuid(&opaque.to_lowercase(), op)
+        .map_err(|_| DispatchError::new(BleErrorCode::PeerReferenceInvalid, "connection", op))?;
+    if required_string(&record, "backendId", op)? != BACKEND
+        || required_string(&record, "scope", op)? != "application"
+    {
+        return Err(DispatchError::new(
+            BleErrorCode::PeerScopeMismatch,
+            "connection",
+            op,
+        ));
+    }
+    Ok(canonical)
+}
+
+fn strings(value: Option<&IpcValue>, op: &str) -> Result<Option<Vec<String>>, DispatchError> {
+    value
+        .map(|value| match value {
+            IpcValue::Array(values) => values
+                .iter()
+                .map(|item| match item {
+                    IpcValue::String(value) => Ok(value.clone()),
+                    _ => Err(malformed(op)),
+                })
+                .collect(),
+            _ => Err(malformed(op)),
+        })
+        .transpose()
+}
+
+fn record(peer: ubm_desktop::DirectoryPeer, source: &str) -> Result<IpcValue, DispatchError> {
+    let id = uuid(&peer.peer_id, "peers.record")?;
+    if !matches!(peer.connection, "connected" | "unknown") {
+        return Err(malformed("peers.record"));
+    }
+    Ok(object([
+        (
+            "reference",
+            object([
+                ("version", IpcValue::Number(Number::from(1))),
+                ("backendId", string(BACKEND)),
+                ("scope", string("application")),
+                ("opaqueId", string(&id)),
+            ]),
+        ),
+        ("peerId", string(id)),
+        ("name", peer.name.map(string).unwrap_or(IpcValue::Null)),
+        ("rssi", IpcValue::Null),
+        ("source", string(source)),
+        (
+            "state",
+            object([
+                ("reachability", string("unknown")),
+                ("connection", string(peer.connection)),
+                ("bond", string("unsupported")),
+                ("lastSeenAtMonotonicMs", IpcValue::Null),
+            ]),
+        ),
+    ]))
+}
+
+impl BtleplugDispatcher {
+    pub(super) async fn peer_directory(
+        &self,
+        caller: &AuthenticatedCaller,
+        command: &str,
+        attachment: &Attachment,
+        payload: BTreeMap<String, IpcValue>,
+        ctl: OpControl,
+    ) -> Result<IpcValue, DispatchError> {
+        keys(
+            &payload,
+            &[
+                "reference",
+                "query",
+                "deadline",
+                "budgetMs",
+                "__expectedLeaseId",
+                "__expectedLeaseGeneration",
+            ],
+            command,
+        )?;
+        if payload.get("deadline").is_some_and(|value| !matches!(value,IpcValue::Null) && !matches!(value,IpcValue::Number(number) if number.as_f64().is_some_and(|value| value.is_finite() && value >= 0.0 && value <= MAX_SAFE_INTEGER as f64))) { return Err(malformed(command)); }
+        let resolving = command == "peers.resolve";
+        let mut references = if resolving {
+            Some(vec![reference(required_value(
+                &payload,
+                "reference",
+                command,
+            )?)?])
+        } else {
+            None
+        };
+        let query = if resolving {
+            if payload.contains_key("query") {
+                return Err(malformed(command));
+            }
+            BTreeMap::new()
+        } else {
+            if payload.contains_key("reference") {
+                return Err(malformed(command));
+            }
+            into_object(required_value(&payload, "query", command)?.clone(), command)?
+        };
+        keys(
+            &query,
+            &["sources", "services", "references", "includeUnavailable"],
+            command,
+        )?;
+        if query
+            .get("includeUnavailable")
+            .is_some_and(|v| !matches!(v, IpcValue::Bool(_)))
+        {
+            return Err(malformed(command));
+        }
+        let sources = strings(query.get("sources"), command)?;
+        if sources.as_ref().is_some_and(|sources| {
+            sources.iter().any(|source| {
+                ![
+                    "scan-observed",
+                    "app-reference",
+                    "system-connected",
+                    "system-bonded",
+                    "origin-authorized",
+                    "restored",
+                    "backend-cache",
+                ]
+                .contains(&source.as_str())
+            })
+        }) {
+            return Err(malformed(command));
+        }
+        let services = strings(query.get("services"), command)?
+            .unwrap_or_default()
+            .iter()
+            .map(|s| uuid(s, command))
+            .collect::<Result<Vec<_>, _>>()?;
+        if let Some(value) = query.get("references") {
+            let IpcValue::Array(values) = value else {
+                return Err(malformed(command));
+            };
+            references = Some(
+                values
+                    .iter()
+                    .map(reference)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+        }
+        let authority = self.ensure_authority().await?;
+        let capability = match command {
+            "peers.resolve" | "peers.known" => "peer:known",
+            "peers.connected" => "peer:system-connected",
+            _ => return Err(unsupported(command)),
+        };
+        let states = authority
+            .capability_descriptors()
+            .await
+            .map_err(|error| DispatchError::from_core(&error))?;
+        match states
+            .iter()
+            .find(|row| row.id() == capability)
+            .map(|row| row.state())
+        {
+            Some(
+                ubm_core::central::CapabilityState::Supported
+                | ubm_core::central::CapabilityState::Limited,
+            ) => {}
+            Some(ubm_core::central::CapabilityState::Unavailable) => {
+                return Err(DispatchError::new(
+                    BleErrorCode::CapabilityUnavailable,
+                    "connection",
+                    command,
+                ))
+            }
+            _ => return Err(unsupported(command)),
+        }
+        match command {
+            "peers.connected" if services.is_empty() => {
+                return Err(unsupported("peers.connected.services-required"))
+            }
+            "peers.known" if references.is_none() => {
+                return Err(unsupported("peers.known.references-required"))
+            }
+            "peers.known" if !services.is_empty() => {
+                return Err(unsupported("peers.known.services"))
+            }
+            "peers.resolve" | "peers.connected" | "peers.known" => {}
+            _ => return Err(unsupported(command)),
+        }
+        admit(&ctl, command)?;
+        let source = if command == "peers.connected" {
+            "system-connected"
+        } else {
+            "app-reference"
+        };
+        let mut records = Vec::new();
+        let mut seen = HashSet::new();
+        {
+            if command == "peers.connected" {
+                let peers = authority
+                    .connected_peers(&services, ctl.clone())
+                    .await
+                    .map_err(|error| DispatchError::from_core(&error))?;
+                for peer in peers {
+                    if peer.connection != "connected" {
+                        return Err(malformed("peers.connected.record"));
+                    }
+                    let id = uuid(&peer.peer_id, "peers.record")?;
+                    if references.as_ref().is_none_or(|refs| refs.contains(&id)) && seen.insert(id)
+                    {
+                        records.push(record(peer, source)?);
+                    }
+                }
+            } else {
+                for id in references.unwrap_or_default() {
+                    if !seen.insert(id.clone()) {
+                        continue;
+                    }
+                    self.refuse_stale_attachment(attachment, command).await?;
+                    let child = OpControl::new(ctl.budget, OpTicket::new());
+                    let resolved = tokio::select! {
+                        biased;
+                        _ = ctl.ticket.cancelled() => return Err(DispatchError::from_core(&ctl.ticket.interruption(command))),
+                        result = authority.resolve_peer(&id, child) => result.map_err(|error| DispatchError::from_core(&error))?,
+                    };
+                    if let Some(peer) = resolved {
+                        if peer.peer_id != id {
+                            return Err(malformed("peers.resolve.identity"));
+                        }
+                        records.push(record(peer, source)?);
+                    }
+                }
+            }
+        }
+        if sources
+            .as_ref()
+            .is_some_and(|sources| !sources.iter().any(|s| s == source))
+        {
+            records.clear();
+        }
+        // One batch cannot publish mixed adapter generations or outlive its caller.
+        self.refuse_stale_attachment(attachment, command).await?;
+        self.validate_expected_lease(caller, &payload).await?;
+        admit(&ctl, command)?;
+        if resolving {
+            Ok(object([(
+                "peer",
+                records.into_iter().next().unwrap_or(IpcValue::Null),
+            )]))
+        } else {
+            Ok(object([("peers", IpcValue::Array(records))]))
+        }
+    }
+}

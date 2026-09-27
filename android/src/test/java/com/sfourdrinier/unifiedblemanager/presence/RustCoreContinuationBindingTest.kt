@@ -21,6 +21,60 @@ class RustCoreContinuationBindingTest {
   private val logs = mutableListOf<String>()
   private val executor = NativeContinuationBinding(core, logs::add)
 
+  @Test fun trustedRawExecutionPreservesCanonicalEnvelopeAndSeedRefusalWithoutWakeMapping() {
+    val answer = "{\"ok\":false,\"error\":{\"code\":\"connection.failed\",\"domain\":\"connection\",\"operation\":\"connect\",\"detail\":\"refused\",\"platform\":{\"domain\":\"android\",\"code\":\"133\",\"message\":\"refused\",\"metadata\":{}}},\"commit\":null,\"retryability\":\"caller-decides\"}"
+    var calls = 0
+    core.continuationExecuteAnswer = { _, _, callback -> calls++; callback.onResult(answer) }
+    var actual: String? = null
+    executor.executeRaw(peer, declaration, MobileCoreBridge.InvokeCallback { actual = it })
+    assertEquals(answer, actual)
+    assertEquals(1, calls)
+    core.continuationSeedAnswer = { answer }
+    actual = null
+    executor.executeRaw(peer, declaration, MobileCoreBridge.InvokeCallback { actual = it })
+    assertEquals(answer, actual)
+    assertEquals("seed refusal cannot dispatch", 1, calls)
+    assertTrue(core.invokes.isEmpty() && core.openScopes.isEmpty())
+  }
+
+  @Test fun trustedRawHandoffPreservesCountersValuesAndFailureWithoutAutomaticAcknowledgement() {
+    val prepared = prepared()
+    var acknowledgements = 0
+    core.continuationPrepareAnswer = { items, bytes, callback ->
+      assertEquals(7, items)
+      assertEquals(8192, bytes)
+      callback.onResult(prepared)
+    }
+    val acknowledgement = "{\"ok\":false,\"error\":{\"code\":\"connection.failed\",\"domain\":\"connection\",\"operation\":\"disconnect\",\"detail\":\"retained\"}}"
+    core.continuationAcknowledgeAnswer = { token, callback ->
+      assertEquals("exact-token", token)
+      acknowledgements++
+      callback.onResult(acknowledgement)
+    }
+    core.continuationBacklog = "{\"ok\":true,\"value\":{\"counters\":{\"retainedByteBuffers\":9},\"continuationOutcome\":null}}"
+    var actual: String? = null
+    val callback = MobileCoreBridge.InvokeCallback { actual = it }
+    executor.describeBacklogRaw(callback)
+    assertEquals(core.continuationBacklog, actual)
+    executor.prepareClaimRaw(7, 8192, callback)
+    assertEquals(prepared, actual)
+    assertEquals(0, acknowledgements)
+    executor.acknowledgeClaimRaw("exact-token", callback)
+    assertEquals(acknowledgement, actual)
+    assertEquals(1, acknowledgements)
+  }
+
+  @Test fun platformExecutionRejectsCapturedDeclarationAfterSharedAuthorityChanged() {
+    val captured = declaration.copy(strategy = ContinuationStrategy.HEADLESS_TASK, resubscribe = emptyList(), headlessTaskName = "BleWake")
+    executor.persistDeclaration(BackgroundContinuationDeclaration.recordOnly()) {}
+    core.continuationSeedAnswer = { "{\"ok\":false,\"error\":{\"code\":\"lifecycle.invalid-state\",\"detail\":\"captured declaration replaced\"}}" }
+    var calls = 0
+    val outcome = executor.executePlatform(captured) { calls++; ContinuationOutcome.Completed(captured.strategy, peer, 0, "task-dispatched") }
+    assertEquals(0, calls)
+    assertEquals("lifecycle.invalid-state", (outcome as ContinuationOutcome.Failed).code)
+    assertEquals(captured.strategy, outcome.strategy)
+  }
+
   @Test fun replacementAuthorityComesFromSharedOwner() {
     core.continuationReplacementFailure = "old generation still owns values"
     assertEquals("old generation still owns values", executor.declarationReplacementFailure(declaration))
@@ -62,6 +116,21 @@ class RustCoreContinuationBindingTest {
     assertEquals("platform.failure", outcome.code)
     assertTrue(outcome.reason.contains("JNI owner unavailable"))
     assertTrue(core.invokes.isEmpty() && core.openScopes.isEmpty())
+  }
+
+  @Test fun setupIsForwardedToTheSharedOwnerWithoutDroppingAnyField() {
+    val declared = declaration.copy(setup = listOf(
+      ContinuationSetupStep(selector, listOf(0, 255), 20000,
+        ContinuationSetupResponse(0, listOf(240, 2), 4, 5, 3, listOf(0, 255),
+          ContinuationSetupTrailing(4, listOf(0)))),
+      ContinuationSetupStep(selector, listOf(1), 1, null)
+    ), link = ContinuationLinkMtu(517, 20000, "continue"),
+      recording = ContinuationRecording("session_1", 1048576, 1000000))
+    core.continuationExecuteAnswer = { _, json, callback ->
+      assertEquals(declared, BackgroundContinuationDeclaration.parse(json))
+      callback.onResult("{\"ok\":true,\"value\":{\"event\":\"continuation.completed\",\"strategy\":\"native\",\"peerAddress\":\"$peer\",\"resubscribed\":1}}")
+    }
+    assertEquals(ContinuationOutcome.completed(ContinuationStrategy.NATIVE, peer, 1), executor.execute(peer, declared))
   }
 
   @Test fun refusedExecutionPreservesPlatformFailure() {
@@ -119,6 +188,15 @@ class RustCoreContinuationBindingTest {
       } catch (expected: RuntimeException) {
         assertNotNull(expected.message)
       }
+    }
+  }
+
+  @Test fun claimCarriesOnlyDurableRecordingIdentityWithoutAcknowledgingItsCursor() {
+    core.continuationPrepareAnswer = { _, _, callback -> callback.onResult(prepared(mapOf("recording" to mapOf("id" to "session_1")))) }
+    assertEquals("session_1", executor.prepareClaim(128, 4096).recordingId)
+    for (reference in listOf(mapOf("id" to "../escape"), mapOf("id" to "session_1", "cursor" to "unauthorized"))) {
+      core.continuationPrepareAnswer = { _, _, callback -> callback.onResult(prepared(mapOf("recording" to reference))) }
+      assertThrows(RuntimeException::class.java) { executor.prepareClaim(128, 4096) }
     }
   }
 

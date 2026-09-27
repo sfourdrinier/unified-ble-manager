@@ -7,6 +7,55 @@ pub use ubm_desktop::continuation::NativeContinuation;
 use ubm_desktop::continuation::{
     ContinuationFuture, ContinuationHost, ContinuationSession, Result, envelope,
 };
+use ubm_desktop::continuation_journal::JournalRegistry;
+
+/// Production binding authority, available before a platform radio is installed.
+pub fn process_recording_registry() -> Arc<JournalRegistry> {
+    static REGISTRY: std::sync::OnceLock<Arc<JournalRegistry>> = std::sync::OnceLock::new();
+    Arc::clone(REGISTRY.get_or_init(|| Arc::new(JournalRegistry::default())))
+}
+
+/// Closed, path-free controls shared by JNI/UniFFI and the installed owner.
+/// Call on a native worker: SQLite operations are synchronous.
+pub fn recording_control(
+    registry: &JournalRegistry,
+    engine: Option<&NativeContinuation>,
+    operation: &str,
+    id: &str,
+    token: &str,
+    max_items: u32,
+    max_bytes: u32,
+) -> String {
+    use ubm_desktop::continuation::recording_failure;
+    if !matches!(
+        operation,
+        "status" | "prepare" | "acknowledge" | "stop" | "clear"
+    ) {
+        return envelope(Err(
+            json!({"code":"argument.invalid","domain":"restoration","operation":"continuation.recording","detail":"unknown recording control"}),
+        ));
+    }
+    if operation == "stop"
+        && let Some(engine) = engine
+    {
+        return envelope(engine.recording_stop(id));
+    }
+    let result = registry
+        .get(id)
+        .and_then(|journal| match operation {
+            "status" => journal.status(),
+            "prepare" => journal.prepare(max_items, max_bytes),
+            "acknowledge" => journal.acknowledge(token),
+            "stop" => journal.stop().map(|mut receipt| {
+                receipt["radioRelease"] = json!("not-requested");
+                receipt
+            }),
+            "clear" => journal.clear(),
+            _ => unreachable!("validated above"),
+        })
+        .map_err(recording_failure);
+    envelope(result)
+}
 
 struct HostAdapter(Weak<crate::host::HostInner>);
 struct SessionAdapter {
@@ -69,11 +118,42 @@ impl SessionAdapter {
 }
 
 impl ContinuationSession for SessionAdapter {
+    fn seal_collection(&self) -> Result<()> {
+        self.resolve()?.seal_continuation_collection();
+        Ok(())
+    }
+    fn collection_sealed(&self) -> bool {
+        self.resolve()
+            .is_ok_and(|session| session.continuation_collection_sealed())
+    }
+    fn attach_journal(
+        &self,
+        journal: Arc<ubm_desktop::continuation_journal::ContinuationJournal>,
+        context: Value,
+    ) -> Result<()> {
+        self.resolve()?
+            .attach_continuation_journal(journal, context)
+    }
+    fn register_journal_consumer(&self, consumer: &str, metadata: Value) -> Result<()> {
+        self.resolve()?
+            .register_continuation_consumer(consumer, metadata)
+    }
+    fn observe(
+        &self,
+        consumer: &str,
+        matcher: ubm_desktop::continuation_outbox::RecordMatcher,
+    ) -> Result<ubm_desktop::continuation_outbox::Observation> {
+        self.resolve()?.observe_continuation(consumer, matcher).map_err(|detail|json!({"code":"lifecycle.invalid-state","domain":"restoration","operation":"continuation","detail":detail}))
+    }
     fn call<'a>(&'a self, op: &'a str, args: &'a str) -> ContinuationFuture<'a> {
         Box::pin(async move {
             if matches!(
                 op,
-                "connection.connect" | "gatt.discover" | "gatt.subscribe"
+                "connection.connect"
+                    | "connection.request-mtu"
+                    | "gatt.discover"
+                    | "gatt.subscribe"
+                    | "gatt.write"
             ) && self
                 .host
                 .upgrade()
@@ -98,6 +178,50 @@ impl ContinuationSession for SessionAdapter {
 }
 
 impl MobileHost {
+    pub fn continuation_recording_control(
+        &self,
+        operation: &str,
+        id: &str,
+        token: &str,
+        max_items: u32,
+        max_bytes: u32,
+    ) -> String {
+        recording_control(
+            &self.inner.recording_registry,
+            self.inner.continuation.get(),
+            operation,
+            id,
+            token,
+            max_items,
+            max_bytes,
+        )
+    }
+    pub fn continuation_configure_recording_directory(&self, path: &std::path::Path) -> String {
+        envelope(self.continuation().configure_recording_directory(path))
+    }
+    pub fn continuation_recording_status(&self, id: &str) -> String {
+        envelope(self.continuation().recording_status(id))
+    }
+    pub fn continuation_recording_prepare(
+        &self,
+        id: &str,
+        max_items: u32,
+        max_bytes: u32,
+    ) -> String {
+        envelope(
+            self.continuation()
+                .recording_prepare(id, max_items, max_bytes),
+        )
+    }
+    pub fn continuation_recording_acknowledge(&self, id: &str, token: &str) -> String {
+        envelope(self.continuation().recording_acknowledge(id, token))
+    }
+    pub fn continuation_recording_stop(&self, id: &str) -> String {
+        envelope(self.continuation().recording_stop(id))
+    }
+    pub fn continuation_recording_clear(&self, id: &str) -> String {
+        envelope(self.continuation().recording_clear(id))
+    }
     pub fn continuation_reserve_declaration(&self, declaration: &str) -> String {
         envelope(self.continuation().reserve_declaration(declaration))
     }
@@ -114,7 +238,10 @@ impl MobileHost {
         self.inner
             .continuation
             .get_or_init(|| {
-                NativeContinuation::new(Arc::new(HostAdapter(Arc::downgrade(&self.inner))))
+                NativeContinuation::new_with_recording_registry(
+                    Arc::new(HostAdapter(Arc::downgrade(&self.inner))),
+                    Arc::clone(&self.inner.recording_registry),
+                )
             })
             .clone()
     }

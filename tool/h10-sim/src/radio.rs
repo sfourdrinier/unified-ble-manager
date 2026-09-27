@@ -451,6 +451,14 @@ pub struct ServiceSpec {
 /// backends without the OS API inherit a counted no-op.
 #[async_trait]
 pub trait PeripheralRadio: Send {
+    /// Sticky backend authority loss; a healthy process must never outlive its GATT registration.
+    fn fatal_failure(&self) -> Option<String> {
+        None
+    }
+    /// Stop the local send pump and return explicit unresolved-send accounting.
+    fn retire_failed_collection(&mut self) -> serde_json::Value {
+        serde_json::json!({})
+    }
     async fn open(events: mpsc::Sender<RadioEvent>) -> Result<Self, RadioError>
     where
         Self: Sized;

@@ -5,10 +5,30 @@
 // one binding contract, one parity table.
 
 export { loadDesktopCoreBinding } from './desktop-core-addon'
+export type {
+  DesktopProcessHost,
+  DesktopProcessManagerOptions,
+  DesktopProcessInternalManager
+} from './desktop-process-host'
+export { DesktopProcessHostInitializationError } from './desktop-process-host'
 export type { DesktopCoreHost } from './desktop-core-addon'
-export { createNativeContinuationController } from './backends/desktop/native-continuation-controller'
+export {
+  createNativeContinuationController,
+  createNativeContinuationControl
+} from './backends/desktop/native-continuation-controller'
+export { openNativeContinuationRecordings } from './backends/desktop/native-continuation-recording'
+export type {
+  ContinuationRecordingController,
+  ContinuationRecordingStatus,
+  ContinuationRecordingBatch,
+  ContinuationRecordingMetadata,
+  ContinuationRecordingFailure,
+  ContinuationRecordingPrepareOptions
+} from './core/continuation-recording'
 export type {
   NativeContinuationController,
+  NativeContinuationControl,
+  NativeContinuationControlAccess,
   NativeContinuationCompleted,
   NativeContinuationFailed,
   NativeContinuationStatus

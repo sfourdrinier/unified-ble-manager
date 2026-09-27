@@ -194,6 +194,8 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
     expect(fs.existsSync(path.join(directory, 'electron-main.fragment.ts'))).toBe(false)
 
     const nodeText = fs.readFileSync(path.join(directory, 'node-factory.fragment.ts'), 'utf8')
+    expect(nodeText).toContain("connectionPolicy: { mode: 'le-bearer', daemonUniqueOwner }")
+    expect(nodeText).toContain('Omission permits scanning only')
     expect(nodeText).toContain('createCoreBluetoothBleManager')
     expect(nodeText).toContain('createWinRtBleManager')
     expect(nodeText).toContain('createBluezBleManager')

@@ -243,6 +243,8 @@ describe('first-party backend standard TCK registrations', () => {
     expect(report.standard.featureBindings.map(binding => binding.featureId)).toEqual([
       'connection:direct',
       'gatt:descriptors',
+      BUILT_IN_FEATURE_IDS.peerKnown,
+      BUILT_IN_FEATURE_IDS.peerSystemConnected,
       BUILT_IN_FEATURE_IDS.connectionRssi,
       // finding 217 follow-up: desktop routes measure the effective ATT MTU
       // (macOS maximumWriteValueLength + 3, WinRT MaxPduSize, BlueZ characteristic MTU).

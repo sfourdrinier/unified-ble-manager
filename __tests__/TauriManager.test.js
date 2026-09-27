@@ -79,7 +79,9 @@ function capabilitySnapshot(
     ['gatt:long-write', 'gatt.long-write'],
     effectiveMtuEntry
   ]
-  const metadata = new Map(entries.map(([id, scenario, state = 'limited', limitationCode = null]) => [id, { scenario, state, limitationCode }]))
+  const metadata = new Map(
+    entries.map(([id, scenario, state = 'limited', limitationCode = null]) => [id, { scenario, state, limitationCode }])
+  )
   return {
     schemaVersion: 2,
     backendGeneration,
@@ -165,6 +167,65 @@ function advertisement(peerId, localName, rssi) {
 }
 
 describe('Tauri v2 public manager', () => {
+  test.each(['advertisement', 'device-state'])(
+    'scan IPC preserves exact %s origin without inventing provenance',
+    async origin => {
+      const invoke = jest.fn(async (_command, { request }) => {
+        if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+        if (request.kind === 'event.ack') return { kind: 'event.ack' }
+        if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+        if (request.envelope.command === 'scan.start') return { kind: 'route', payload: { handle: 'scan-origin' } }
+        if (request.envelope.command === 'scan.stop')
+          return { kind: 'route', payload: { state: 'released', failures: [] } }
+        throw new Error(`unexpected route ${request.envelope.command}`)
+      })
+      const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+      const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+      const scan = await manager.scan({})
+      const iterator = scan.observations[Symbol.asyncIterator]()
+      const next = iterator.next()
+      streamValue('scan-origin', { ...advertisement('origin-peer', 'Peer', null), origin })
+      const item = await awaitSignal(next, 'exact native origin through IPC')
+      expect(item.value).toMatchObject({ kind: 'value', value: { origin } })
+      expect(item.value.value).not.toHaveProperty('provenance')
+      await scan.stop()
+      await manager.destroy()
+    }
+  )
+
+  test('connected and resolved OS peers use shared authenticated routes with relative budgets, not fake scans', async () => {
+    const reference = { version: 1, backendId: 'corebluetooth', scope: 'system', opaqueId: 'os-guid' }
+    const peer = {
+      peerId: 'os-guid',
+      reference,
+      name: 'OS connected',
+      rssi: null,
+      source: 'system-connected',
+      state: { reachability: 'reachable', connection: 'connected', bond: 'unknown', lastSeenAtMonotonicMs: null }
+    }
+    const requests = []
+    const invoke = jest.fn(async (_command, { request }) => {
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      requests.push(request.envelope)
+      if (request.envelope.command === 'peers.resolve') return { kind: 'route', payload: { peer } }
+      if (request.envelope.command === 'peers.connected') return { kind: 'route', payload: { peers: [peer] } }
+      throw Error(`unexpected route ${request.envelope.command}`)
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+    await expect(manager.peers.connected({ services: ['180d'], timeoutMs: 1000 })).resolves.toMatchObject([
+      { id: 'os-guid', reference, rssi: null, state: { connection: 'connected' } }
+    ])
+    expect(requests[0].payload.query.services).toEqual(['0000180d-0000-1000-8000-00805f9b34fb'])
+    expect(requests[0].payload.deadline).toBeUndefined()
+    expect(requests[0].payload.budgetMs).toBeGreaterThan(0)
+    expect(requests[0].payload.budgetMs).toBeLessThanOrEqual(1000)
+    await expect(manager.peers.resolve(reference)).resolves.toMatchObject({ id: 'os-guid' })
+    expect(requests.map(request => request.command)).toEqual(['peers.connected', 'peers.resolve'])
+    await manager.destroy()
+  })
+
   test('real shared IPC ingress overflow is visible through public scan without assigning child counts', async () => {
     const invoke = jest.fn(async (_command, args) => {
       const request = args.request
@@ -201,6 +262,17 @@ describe('Tauri v2 public manager', () => {
       if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
       if (request.kind === 'event.ack') return { kind: 'event.ack' }
       if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      if (request.envelope.command === 'peers.resolve')
+        return {
+          kind: 'failure',
+          error: {
+            code: 'capability.unsupported',
+            domain: 'connection',
+            operation: 'tauri.peers.resolve',
+            platform: null,
+            retryability: 'never'
+          }
+        }
       throw new Error(`unexpected route ${request.envelope.command}`)
     })
     const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
@@ -303,9 +375,7 @@ describe('Tauri v2 public manager', () => {
     expect(effectiveMtu).toMatchObject({ state: 'unsupported' })
     // Finding 217 follow-up: the renderer routes the control, so no
     // renderer note is appended — the native reason stands alone.
-    expect(effectiveMtu.limitations.map(limitation => limitation.code)).toEqual([
-      'effective-mtu-boundary-unavailable'
-    ])
+    expect(effectiveMtu.limitations.map(limitation => limitation.code)).toEqual(['effective-mtu-boundary-unavailable'])
 
     const connection = await manager.connect('polar-h10')
     await expect(connection.controls.maximumWriteLength('with-response')).resolves.toMatchObject({
@@ -313,9 +383,9 @@ describe('Tauri v2 public manager', () => {
       mode: 'with-response',
       maximumWriteLength: 512
     })
-    expect(invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'connection.maximum-write-length')).toBe(
-      true
-    )
+    expect(
+      invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'connection.maximum-write-length')
+    ).toBe(true)
     await expect(connection.controls.effectiveMtu()).rejects.toMatchObject({
       code: 'capability.unsupported',
       platform: expect.objectContaining({ code: 'effective-mtu-boundary-unavailable' })

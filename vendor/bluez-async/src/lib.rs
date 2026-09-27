@@ -14,7 +14,9 @@ mod descriptor;
 mod device;
 mod events;
 mod introspect;
+mod le_bearer;
 mod macaddress;
+mod match_cleanup;
 mod messagestream;
 mod modalias;
 mod serde_path;
@@ -28,6 +30,7 @@ pub use self::device::{AddressType, DeviceId, DeviceInfo};
 pub use self::events::{AdapterEvent, BluetoothEvent, CharacteristicEvent, DeviceEvent};
 use self::introspect::IntrospectParse;
 pub use self::macaddress::{MacAddress, ParseMacAddressError};
+use self::match_cleanup::{MatchFailure, MatchRegistry};
 use self::messagestream::MessageStream;
 pub use self::modalias::{Modalias, ParseModaliasError};
 pub use self::service::{ServiceId, ServiceInfo};
@@ -79,9 +82,7 @@ fn disconnection_read_confirms_released(error: &BluetoothError) -> bool {
     match error {
         BluetoothError::DbusError(dbus) => matches!(
             dbus.name(),
-            Some(
-                "org.freedesktop.DBus.Error.UnknownObject" | "org.bluez.Error.DoesNotExist"
-            )
+            Some("org.freedesktop.DBus.Error.UnknownObject" | "org.bluez.Error.DoesNotExist")
         ),
         _ => false,
     }
@@ -117,6 +118,10 @@ pub enum BluetoothError {
     /// Service discovery didn't happen within the time limit.
     #[error("Service discovery timed out")]
     ServiceDiscoveryTimedOut,
+    /// The LE method completed but its bearer did not confirm a link.
+    /// This is distinct from GATT discovery and retains acquisition cleanup.
+    #[error("LE connection was not confirmed within 5 s")]
+    LeConnectionNotConfirmed,
     /// UBM patch (vendor/btleplug/UBM_PATCHES.md #19): the device
     /// disconnected before its services resolved. Upstream kept waiting for
     /// the discovery timeout and then reported a timeout.
@@ -304,6 +309,23 @@ impl From<WriteOptions> for PropMap {
 #[derive(Clone)]
 pub struct BluetoothSession {
     connection: Arc<SyncConnection>,
+    matches: Arc<MatchRegistry>,
+    cleanup_scope: u64,
+    le: Arc<le_bearer::Registry>,
+    destination: String,
+}
+
+static NEXT_CLEANUP_SCOPE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn match_failure(error: dbus::Error) -> MatchFailure {
+    MatchFailure::new(
+        error.name().unwrap_or("org.freedesktop.DBus.Error.Failed"),
+        error.message().unwrap_or("D-Bus operation failed"),
+    )
+}
+
+fn match_error(error: MatchFailure) -> BluetoothError {
+    dbus::Error::new_custom(&error.name, &error.message).into()
 }
 
 impl Debug for BluetoothSession {
@@ -313,6 +335,56 @@ impl Debug for BluetoothSession {
 }
 
 impl BluetoothSession {
+    fn from_connection(connection: Arc<SyncConnection>) -> Self {
+        let add = connection.clone();
+        let remove = connection.clone();
+        let matches = MatchRegistry::new(
+            Arc::new(move |rule| {
+                let connection = add.clone();
+                Box::pin(async move {
+                    connection
+                        .add_match_no_cb(&rule)
+                        .await
+                        .map_err(match_failure)
+                })
+            }),
+            Arc::new(move |rule| {
+                let connection = remove.clone();
+                Box::pin(async move {
+                    connection
+                        .remove_match_no_cb(&rule)
+                        .await
+                        .map_err(match_failure)
+                })
+            }),
+        );
+        Self {
+            connection,
+            matches,
+            le: Arc::new(le_bearer::Registry::default()),
+            destination: "org.bluez".to_owned(),
+            cleanup_scope: NEXT_CLEANUP_SCOPE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+
+    /// Separate adapter release accounting; server rules remain shared by connection.
+    pub fn scoped_match_cleanup(&self) -> Self {
+        Self {
+            connection: self.connection.clone(),
+            matches: self.matches.clone(),
+            le: self.le.clone(),
+            destination: self.destination.clone(),
+            cleanup_scope: NEXT_CLEANUP_SCOPE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+
+    /// Await this adapter's event-match release without releasing another adapter's leases.
+    pub async fn drain_match_cleanup(&self) -> Result<(), BluetoothError> {
+        self.matches
+            .drain(self.cleanup_scope)
+            .await
+            .map_err(match_error)
+    }
     /// Establish a new D-Bus connection to communicate with BlueZ.
     ///
     /// Returns a tuple of (join handle, Self).
@@ -331,7 +403,10 @@ impl BluetoothSession {
             let err = dbus_resource.await;
             Err(SpawnError::DbusConnectionLost(err))
         });
-        Ok((dbus_handle.map(|res| res?), BluetoothSession { connection }))
+        Ok((
+            dbus_handle.map(|res| res?),
+            Self::from_connection(connection),
+        ))
     }
 
     /// UBM patch (vendor/btleplug/UBM_PATCHES.md #3): the same as
@@ -347,7 +422,10 @@ impl BluetoothSession {
             let err = dbus_resource.await;
             Err(SpawnError::DbusConnectionLost(err))
         });
-        Ok((dbus_handle.map(|res| res?), BluetoothSession { connection }))
+        Ok((
+            dbus_handle.map(|res| res?),
+            Self::from_connection(connection),
+        ))
     }
 
     /// Powers the given adapter on or off.
@@ -457,7 +535,7 @@ impl BluetoothSession {
     /// Get a list of all Bluetooth adapters on the system.
     pub async fn get_adapters(&self) -> Result<Vec<AdapterInfo>, BluetoothError> {
         let bluez_root = Proxy::new(
-            "org.bluez",
+            self.destination.clone(),
             "/",
             DBUS_METHOD_CALL_TIMEOUT,
             self.connection.clone(),
@@ -465,11 +543,13 @@ impl BluetoothSession {
         // TODO: See whether there is a way to do this with introspection instead, rather than
         // getting lots of objects we don't care about.
         let tree = bluez_root.get_managed_objects().await?;
-        tree
-            .into_iter()
+        tree.into_iter()
             .filter_map(|(object_path, interfaces)| {
                 let adapter_properties = OrgBluezAdapter1Properties::from_interfaces(&interfaces)?;
-                Some(AdapterInfo::from_properties(AdapterId { object_path }, adapter_properties))
+                Some(AdapterInfo::from_properties(
+                    AdapterId { object_path },
+                    adapter_properties,
+                ))
             })
             .collect()
     }
@@ -477,7 +557,7 @@ impl BluetoothSession {
     /// Get a list of all Bluetooth devices which have been discovered so far.
     pub async fn get_devices(&self) -> Result<Vec<DeviceInfo>, BluetoothError> {
         let bluez_root = Proxy::new(
-            "org.bluez",
+            self.destination.clone(),
             "/",
             DBUS_METHOD_CALL_TIMEOUT,
             self.connection.clone(),
@@ -690,7 +770,7 @@ impl BluetoothSession {
         id: &AdapterId,
     ) -> impl OrgBluezAdapter1 + Introspectable + Properties + use<> {
         Proxy::new(
-            "org.bluez",
+            self.destination.clone(),
             id.object_path.to_owned(),
             DBUS_METHOD_CALL_TIMEOUT,
             self.connection.clone(),
@@ -704,7 +784,7 @@ impl BluetoothSession {
     ) -> impl OrgBluezDevice1 + Introspectable + Properties + use<> {
         let timeout = timeout.min(DBUS_METHOD_CALL_MAX_TIMEOUT);
         Proxy::new(
-            "org.bluez",
+            self.destination.clone(),
             id.object_path.to_owned(),
             timeout,
             self.connection.clone(),
@@ -716,7 +796,7 @@ impl BluetoothSession {
         id: &ServiceId,
     ) -> impl OrgBluezGattService1 + Introspectable + Properties + use<> {
         Proxy::new(
-            "org.bluez",
+            self.destination.clone(),
             id.object_path.to_owned(),
             DBUS_METHOD_CALL_TIMEOUT,
             self.connection.clone(),
@@ -728,7 +808,7 @@ impl BluetoothSession {
         id: &CharacteristicId,
     ) -> impl OrgBluezGattCharacteristic1 + Introspectable + Properties + use<> {
         Proxy::new(
-            "org.bluez",
+            self.destination.clone(),
             id.object_path.to_owned(),
             DBUS_METHOD_CALL_TIMEOUT,
             self.connection.clone(),
@@ -740,7 +820,7 @@ impl BluetoothSession {
         id: &DescriptorId,
     ) -> impl OrgBluezGattDescriptor1 + Introspectable + Properties + use<> {
         Proxy::new(
-            "org.bluez",
+            self.destination.clone(),
             id.object_path.to_owned(),
             DBUS_METHOD_CALL_TIMEOUT,
             self.connection.clone(),
@@ -981,9 +1061,18 @@ impl BluetoothSession {
         device_discovery: bool,
     ) -> Result<impl Stream<Item = BluetoothEvent> + use<P>, BluetoothError> {
         let mut message_streams = vec![];
-        for match_rule in BluetoothEvent::match_rules(object.cloned(), device_discovery) {
-            let msg_match = self.connection.add_match(match_rule).await?;
-            message_streams.push(MessageStream::new(msg_match, self.connection.clone()));
+        for mut match_rule in BluetoothEvent::match_rules(object.cloned(), device_discovery) {
+            match_rule.sender = Some(self.destination.clone().into());
+            message_streams.push(
+                MessageStream::new(
+                    match_rule,
+                    self.connection.clone(),
+                    &self.matches,
+                    self.cleanup_scope,
+                )
+                .await
+                .map_err(match_error)?,
+            );
         }
         Ok(select_all(message_streams)
             .flat_map(|message| stream::iter(BluetoothEvent::message_to_events(message))))

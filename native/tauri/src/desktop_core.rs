@@ -24,15 +24,16 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use tokio::sync::broadcast;
 use ubm_core::contracts::{AttachmentTuple, OperationId};
 use ubm_desktop::{
     AdapterAuthorization, AdapterPowerState, AdapterResetEvent, AdapterStatus, CancelAck,
     CharacteristicRead, ConnectionHandle, DeliveryMode, DesktopCentral, DesktopError,
-    DiscoveredPath, DiscoveryReport, LifecycleEvent, LinkRelease, NotificationPoll,
-    ObservedDelivery, OpControl, OpTicket, PathSelector, PeerSnapshot, RadioBoundary, ScanStop,
-    ScanTerminalEvent, ShutdownReport,
+    DiscoveredPath, DiscoveryReport, LifecycleEvent, NotificationPoll, ObservedDelivery, OpControl,
+    OpTicket, PathSelector, PeerSnapshot, RadioBoundary, ScanStop, ScanTerminalEvent,
+    ShutdownReport,
 };
 
 /// GATT path selector parts (UUIDs plus optional duplicate occurrences).
@@ -87,10 +88,27 @@ pub type CoreFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, DesktopError>
 /// method is a direct delegation to the shared [`DesktopCentral`]; none of
 /// them takes a lock across the radio call.
 pub trait CoreAuthority: Send + Sync {
+    /// Capability descriptors from this instantiated central, including refusal reasons.
+    fn capability_descriptors(
+        &self,
+    ) -> CoreFuture<'_, Vec<ubm_core::central::CapabilityDescriptor>>;
+    /// Read the OS directory without acquiring a connection lease.
+    fn connected_peers<'a>(
+        &'a self,
+        services: &'a [String],
+        ctl: OpControl,
+    ) -> CoreFuture<'a, Vec<ubm_desktop::DirectoryPeer>>;
+    /// Resolve an app-held OS identifier without connecting.
+    fn resolve_peer<'a>(
+        &'a self,
+        peer: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, Option<ubm_desktop::DirectoryPeer>>;
     /// Trusted-host native continuation, over this exact central/lease authority.
     fn native_continuation(
         &self,
         runtime: tokio::runtime::Handle,
+        recordings: Arc<ubm_desktop::continuation_journal::JournalRegistry>,
     ) -> ubm_desktop::continuation_adapter::DesktopContinuation;
     /// Start a scan; returns the core scan operation id.
     fn start_scan<'a>(
@@ -111,13 +129,15 @@ pub trait CoreAuthority: Send + Sync {
         lease: &'a str,
         ctl: OpControl,
     ) -> CoreFuture<'a, ConnectionHandle>;
-    /// Release the link held under `lease`. A failed release keeps it.
+    /// Release this caller's lease, preserving other link owners. False means
+    /// the shared physical link remains; true means it ended/already ended.
+    /// A failed release keeps its cleanup ownership.
     fn disconnect<'a>(
         &'a self,
         peer_id: &'a str,
         lease: &'a str,
         ctl: OpControl,
-    ) -> CoreFuture<'a, LinkRelease>;
+    ) -> CoreFuture<'a, bool>;
     /// Run discovery (partial-failure report).
     fn discover<'a>(
         &'a self,
@@ -238,11 +258,35 @@ pub trait CoreAuthority: Send + Sync {
 }
 
 impl<B: RadioBoundary> CoreAuthority for DesktopCentral<B> {
+    fn capability_descriptors(
+        &self,
+    ) -> CoreFuture<'_, Vec<ubm_core::central::CapabilityDescriptor>> {
+        Box::pin(async move { Ok(DesktopCentral::capability_descriptors(self).await) })
+    }
+    fn connected_peers<'a>(
+        &'a self,
+        services: &'a [String],
+        ctl: OpControl,
+    ) -> CoreFuture<'a, Vec<ubm_desktop::DirectoryPeer>> {
+        Box::pin(DesktopCentral::connected_peers(self, services, ctl))
+    }
+    fn resolve_peer<'a>(
+        &'a self,
+        peer: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, Option<ubm_desktop::DirectoryPeer>> {
+        Box::pin(DesktopCentral::resolve_peer(self, peer, ctl))
+    }
     fn native_continuation(
         &self,
         runtime: tokio::runtime::Handle,
+        recordings: Arc<ubm_desktop::continuation_journal::JournalRegistry>,
     ) -> ubm_desktop::continuation_adapter::DesktopContinuation {
-        ubm_desktop::continuation_adapter::DesktopContinuation::new(self.clone(), runtime)
+        ubm_desktop::continuation_adapter::DesktopContinuation::new_with_recording_registry(
+            self.clone(),
+            runtime,
+            recordings,
+        )
     }
     fn start_scan<'a>(
         &'a self,
@@ -279,8 +323,10 @@ impl<B: RadioBoundary> CoreAuthority for DesktopCentral<B> {
         peer_id: &'a str,
         lease: &'a str,
         ctl: OpControl,
-    ) -> CoreFuture<'a, LinkRelease> {
-        Box::pin(DesktopCentral::disconnect(self, peer_id, lease, ctl))
+    ) -> CoreFuture<'a, bool> {
+        Box::pin(DesktopCentral::release_connection_lease(
+            self, peer_id, lease, ctl,
+        ))
     }
 
     fn discover<'a>(

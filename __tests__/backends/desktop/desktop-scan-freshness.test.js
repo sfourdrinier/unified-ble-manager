@@ -21,27 +21,30 @@ jest.setTimeout(30000)
 const PLATFORMS = ['bluez', 'corebluetooth', 'winrt']
 
 describe('only this scan’s sightings reach this scan', () => {
-  test.each(PLATFORMS)('%s: sightings between scans and from the previous scan never reach the next one', async platform => {
-    const { backend, stage } = await openBackend(platform)
-    try {
-      const first = await backend.scanner.start(scanOptions(), 'client-1')
-      const firstValues = first.observations[Symbol.asyncIterator]()
-      await stage.stageAdvertisement({ peerId: 'peer-a', rssi: -40, localName: 'During first' })
-      expect((await nextValue(firstValues, 5000)).localName).toMatchObject({ value: 'During first' })
-      // Queued for the first scan but never taken before it stops.
-      await stage.stageAdvertisement({ peerId: 'peer-b', rssi: -41, localName: 'Tail of first' })
-      await first.stop()
-      await stage.stageAdvertisement({ peerId: 'peer-c', rssi: -42, localName: 'Between scans' })
-      await new Promise(resolve => setTimeout(resolve, 30))
-      const second = await backend.scanner.start(scanOptions(), 'client-1')
-      const secondValues = second.observations[Symbol.asyncIterator]()
-      await stage.stageAdvertisement({ peerId: 'peer-d', rssi: -43, localName: 'During second' })
-      expect((await nextValue(secondValues, 5000)).localName).toMatchObject({ value: 'During second' })
-      await second.stop()
-    } finally {
-      await backend.destroy()
+  test.each(PLATFORMS)(
+    '%s: sightings between scans and from the previous scan never reach the next one',
+    async platform => {
+      const { backend, stage } = await openBackend(platform)
+      try {
+        const first = await backend.scanner.start(scanOptions(), 'client-1')
+        const firstValues = first.observations[Symbol.asyncIterator]()
+        await stage.stageAdvertisement({ peerId: 'peer-a', rssi: -40, localName: 'During first' })
+        expect((await nextValue(firstValues, 5000)).localName).toMatchObject({ value: 'During first' })
+        // Queued for the first scan but never taken before it stops.
+        await stage.stageAdvertisement({ peerId: 'peer-b', rssi: -41, localName: 'Tail of first' })
+        await first.stop()
+        await stage.stageAdvertisement({ peerId: 'peer-c', rssi: -42, localName: 'Between scans' })
+        await new Promise(resolve => setTimeout(resolve, 30))
+        const second = await backend.scanner.start(scanOptions(), 'client-1')
+        const secondValues = second.observations[Symbol.asyncIterator]()
+        await stage.stageAdvertisement({ peerId: 'peer-d', rssi: -43, localName: 'During second' })
+        expect((await nextValue(secondValues, 5000)).localName).toMatchObject({ value: 'During second' })
+        await second.stop()
+      } finally {
+        await backend.destroy()
+      }
     }
-  })
+  )
 })
 
 /**
@@ -165,7 +168,13 @@ describe('observation provenance', () => {
         const lease = await backend.scanner.start(scanOptions(), 'client-1')
         const values = lease.observations[Symbol.asyncIterator]()
         control.inject.push(ad({ source }))
-        expect((await nextValue(values, 5000)).provenance).toBe(EXPECTED[platform][source])
+        const observation = await nextValue(values, 5000)
+        expect(observation.provenance).toBe(EXPECTED[platform][source])
+        expect(observation.origin).toBe(source)
+        expect(require('../../../src/public/scan-query').normalizeScanObservation(observation)).toMatchObject({
+          provenance: EXPECTED[platform][source],
+          origin: source
+        })
         await lease.stop()
       } finally {
         await backend.destroy()
@@ -184,7 +193,11 @@ describe('observation provenance', () => {
       // The malformed record is counted on the stream, then the next one delivers.
       expect(await nextItem(values, 5000)).toMatchObject({ kind: 'overflow', droppedItems: 1 })
       expect((await nextValue(values, 5000)).localName).toMatchObject({ value: 'Good' })
-      await nextEvent(events, event => event.kind === 'diagnostic-warning' && event.code === 'scan-record-malformed', 5000)
+      await nextEvent(
+        events,
+        event => event.kind === 'diagnostic-warning' && event.code === 'scan-record-malformed',
+        5000
+      )
       await lease.stop()
     } finally {
       await backend.destroy()

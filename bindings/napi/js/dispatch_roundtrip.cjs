@@ -171,12 +171,13 @@ async function main() {
   assert.equal(paths[1].properties, 0x09, 'read+notify property bits survive');
 
   // Read (unstaged synthetic default), descriptor read, write.
-  const read = await central.read({ peerId: 'peer-1', selector: selector(), timeoutMs: 5000 });
+  const read = await central.read({ peerId: 'peer-1', lease: 'lease-a', selector: selector(), timeoutMs: 5000 });
   assert.ok(Buffer.isBuffer(read.value), 'read returns its value as a Buffer');
   assert.deepEqual([...read.value], [0x42]);
   assert.equal(read.provenance, 'read-response', 'the synthetic radio attributes its reads');
   const descValue = await central.readDescriptor({
     peerId: 'peer-1',
+    lease: 'lease-a',
     selector: { ...selector(), descriptorUuid: CHAR_USER_DESCRIPTION, descriptorOccurrence: 0 },
     timeoutMs: 5000
   });
@@ -196,6 +197,7 @@ async function main() {
   await assert.rejects(
     central.write({
       peerId: 'peer-1',
+      lease: 'lease-a',
       selector: selector(),
       value: Buffer.from([0x01]),
       mode: 'without-response',
@@ -215,6 +217,7 @@ async function main() {
   assert.equal(writesAfter, writesBefore + 1, 'write to notify-only char reached the radio (no core pre-check)');
   await central.write({
     peerId: 'peer-1',
+    lease: 'lease-a',
     selector: { ...selector(), characteristicUuid: HRM_BODY_LOCATION },
     value: Buffer.from([0x01]),
     mode: 'without-response',
@@ -222,7 +225,7 @@ async function main() {
   });
 
   // Subscribe + notification + unsubscribe.
-  await central.subscribe({ peerId: 'peer-1', selector: selector(), consumer: 'app', timeoutMs: 5000 });
+  await central.subscribe({ peerId: 'peer-1', lease: 'lease-a', selector: selector(), consumer: 'app', timeoutMs: 5000 });
   await central.stageNotification({
     peerId: 'peer-1',
     serviceUuid: HRM_SERVICE,

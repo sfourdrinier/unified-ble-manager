@@ -58,18 +58,12 @@ const TAURI_CAPABILITIES: [&str; 42] = [
     "lifecycle:page-persistence",
 ];
 
-const TAURI_LIMITED_CAPABILITIES: [(&str, &str, &str, &str); 8] = [
+const TAURI_LIMITED_CAPABILITIES: [(&str, &str, &str, &str); 7] = [
     (
         "discovery:continuous-scan",
         "scan.owner-join-authority-and-signature",
         "one-global-scan-owner",
         "The dispatcher permits one physical scan owner at a time; it does not provide independent concurrent adapter scans.",
-    ),
-    (
-        "peer:resolve-reference",
-        "peer.resolve-reference",
-        "platform-guid-only",
-        "Platform-guid resolution for observed peers is implemented, but this receipt is deterministic host evidence rather than a physical-radio qualification; address domains need OS identity adapters.",
     ),
     (
         "connection:direct",
@@ -141,7 +135,10 @@ const EFFECTIVE_MTU_STATE: (&str, &str, &str) = (
     "The dispatcher exposes no authoritative current ATT MTU observation; the OS-measured MTU already bounds every write through the core maximum-write-length.",
 );
 
-pub(crate) fn snapshot(backend_generation: &str) -> IpcValue {
+pub(crate) fn snapshot(
+    backend_generation: &str,
+    native: &[ubm_core::central::CapabilityDescriptor],
+) -> IpcValue {
     object([
         ("schemaVersion", number(2)),
         ("backendGeneration", string(backend_generation)),
@@ -149,7 +146,16 @@ pub(crate) fn snapshot(backend_generation: &str) -> IpcValue {
             "descriptors",
             IpcValue::Array(
                 TAURI_CAPABILITIES.iter().map(|id| {
-                    if *id == "connection:effective-mtu" {
+                    if matches!(*id, "connection:direct" | "background:desktop-maintain-connection") && native.iter().any(|row| row.id() == *id && matches!(row.state(), ubm_core::central::CapabilityState::Unsupported | ubm_core::central::CapabilityState::Unavailable)) {
+                        let row = native.iter().find(|row| row.id() == *id).expect("instance row checked");
+                        descriptor(id, row.state().as_str(), "capability.truth-limits-evidence-and-binding", &row.limitations().join("; "), "The instantiated native radio reports this mechanism unavailable; its reason is preserved without substituting a platform matrix.")
+                    } else if matches!(*id, "peer:resolve-reference" | "peer:known" | "peer:system-connected") {
+                        // Resolve uses the same explicit-identifier OS mechanism as
+                        // known; the older native resolve row covers observed IDs only.
+                        let native_id = if *id == "peer:resolve-reference" { "peer:known" } else { id };
+                        let state = native.iter().find(|row| row.id() == native_id).map(|row| row.state()).unwrap_or(ubm_core::central::CapabilityState::Unsupported);
+                        descriptor(id, state.as_str(), "peer.system-directory", if matches!(state,ubm_core::central::CapabilityState::Supported | ubm_core::central::CapabilityState::Limited) { "service-filter-or-explicit-reference-required" } else { "native-directory-unavailable" }, "Read-only OS directory retrieval follows the shared native adapter capability. Connected retrieval requires services; known retrieval requires explicit application references. No connection is acquired; physical qualification is separate.")
+                    } else if *id == "connection:effective-mtu" {
                         let (state, code, explanation) = EFFECTIVE_MTU_STATE;
                         descriptor(
                             id,
@@ -289,6 +295,66 @@ fn number(value: i64) -> IpcValue {
 mod tests {
     use super::*;
 
+    #[test]
+    fn instance_connection_refusal_reaches_tauri_with_its_reason() {
+        let native = vec![ubm_core::central::CapabilityDescriptor::new(
+            "connection:direct",
+            ubm_core::central::CapabilityState::Unsupported,
+            &[("availability", 0)],
+            &["bluez-le-bearer-attestation-required"],
+            "test",
+            ubm_core::central::EvidenceLevel::Blocked,
+            "test",
+            "test",
+            &["test"],
+        )
+        .unwrap()];
+        let projected = snapshot("generation", &native);
+        assert_eq!(
+            row(&projected, "connection:direct"),
+            (
+                "unsupported".into(),
+                "bluez-le-bearer-attestation-required".into()
+            )
+        );
+    }
+
+    #[test]
+    fn directory_capabilities_preserve_instantiated_core_state() {
+        use ubm_core::central::CapabilityState;
+        for state in [
+            CapabilityState::Supported,
+            CapabilityState::Limited,
+            CapabilityState::Unavailable,
+            CapabilityState::Unsupported,
+        ] {
+            let snapshot = snapshot(
+                "generation",
+                &["peer:known", "peer:system-connected"].map(|id| {
+                    ubm_core::central::CapabilityDescriptor::new(
+                        id,
+                        state,
+                        &[("availability", 1)],
+                        &["test-reason"],
+                        "test",
+                        ubm_core::central::EvidenceLevel::Deterministic,
+                        "test",
+                        "test",
+                        &["test"],
+                    )
+                    .unwrap()
+                }),
+            );
+            for id in [
+                "peer:resolve-reference",
+                "peer:known",
+                "peer:system-connected",
+            ] {
+                assert_eq!(row(&snapshot, id).0, state.as_str());
+            }
+        }
+    }
+
     fn text(value: &IpcValue, key: &str) -> String {
         match value {
             IpcValue::Object(fields) => match fields.get(key) {
@@ -334,7 +400,7 @@ mod tests {
     /// every desktop host answers the same.
     #[test]
     fn finding_190b_write_capabilities_match_the_desktop_core() {
-        let snap = snapshot("backend-generation-1");
+        let snap = snapshot("backend-generation-1", &[]);
         assert_eq!(
             row(&snap, "gatt:maximum-write-length"),
             ("limited".to_owned(), "deterministic-only".to_owned())

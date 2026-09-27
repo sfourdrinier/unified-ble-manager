@@ -10,10 +10,8 @@
 // - `background:native-resubscribe`: the wake reconnects the declared known
 //   peer and resubscribes the declared characteristics through the Rust core
 //   with no JavaScript, through the shared native continuation owner.
-// - `background:headless-task` / `background:wake-notification` answer
-//   `capability.unsupported` with "not implemented in this
-//   release" — the difference between "the platform refuses" and "we have
-//   not built it yet" stays truthful and visible.
+// - Android task/service mechanisms require the running native binding and
+//   presence API. Their availability is not proof of dispatch or app completion.
 
 import {
   BACKGROUND_CONTINUATION_FEATURE_IDS,
@@ -32,6 +30,7 @@ export type ReactNativeContinuationPlatform = 'android' | 'apple'
 
 /** Facts about the running OS the host supplies (never inferred). */
 export interface ReactNativeContinuationRuntimeFacts {
+  readonly continuationBindingAvailable?: boolean
   /** Android API level (`Platform.Version`); CDM presence needs API 31+. */
   readonly androidApiLevel: number | null
   /** The running Apple host supplied a configured native restoration authority. */
@@ -40,10 +39,6 @@ export interface ReactNativeContinuationRuntimeFacts {
 
 /** The first Android API level with CDM device-presence observation. */
 export const ANDROID_PRESENCE_API_LEVEL = 31
-
-/** The deferred-slice reason, kept distinct from any platform refusal. */
-export const NOT_IMPLEMENTED_IN_THIS_RELEASE =
-  'not implemented in this release; the platform capability is undecided by this reason'
 
 // Marker registrations bind the catalog scenario like every other
 // deterministic registration. Native execution is separately exercised by the
@@ -149,7 +144,37 @@ export function createReactNativeContinuationFeatureRegistry(
   ) {
     throw contractError('lifecycle.invariant-violation', 'restoration', 'react-native-continuation.catalog-drift')
   }
-  const androidWake = facts.androidApiLevel !== null && facts.androidApiLevel >= ANDROID_PRESENCE_API_LEVEL
+  const androidWake =
+    facts.androidApiLevel !== null &&
+    Number.isSafeInteger(facts.androidApiLevel) &&
+    facts.androidApiLevel >= ANDROID_PRESENCE_API_LEVEL
+  const bindingAvailable = facts.continuationBindingAvailable === true
+  const unavailableBinding: Limitation = {
+    code: 'native-continuation-binding-required',
+    explanation: 'The running native binding does not expose declaration, status and claim ownership methods.',
+    affectedGuarantee: 'native wake strategy admission'
+  }
+  const androidStrategy = (id: BackgroundContinuationFeatureId, explanation: string) => {
+    const limitation = !bindingAvailable
+      ? unavailableBinding
+      : !androidWake
+        ? {
+            code: 'companion-presence-needs-api-31-and-association',
+            explanation: 'Presence-triggered continuation needs an associated, armed peer on Android API 31+.',
+            affectedGuarantee: 'wake strategy admission'
+          }
+        : {
+            code: 'application-entitlements-and-os-admission-required',
+            explanation,
+            affectedGuarantee: 'guaranteed wake execution or application completion'
+          }
+    return (bindingAvailable && androidWake ? limitedRegistration : unsupportedRegistration)(
+      id,
+      platform,
+      implementationVersion,
+      limitation
+    )
+  }
   if (platform === 'android') {
     return createFeatureRegistry(
       Object.freeze([
@@ -166,60 +191,69 @@ export function createReactNativeContinuationFeatureRegistry(
                 'Device presence observation needs Android API 31+; this device runs an older API level, so no OS wake exists.',
               affectedGuarantee: 'wake of a dead process on peer appearance'
             }),
-        androidWake
-          ? limitedRegistration(ids.nativeResubscribe, platform, implementationVersion, {
-              code: 'live-radio-qualification-pending',
-              explanation:
-                'Native reconnect plus resubscribe from the wake has deterministic coverage; physical-radio qualification remains separate. Values arriving with no JS session queue in the existing bounded queues and drain with accounted loss.',
-              affectedGuarantee: 'reliability-qualified wake streaming'
-            })
-          : unsupportedRegistration(ids.nativeResubscribe, platform, implementationVersion, {
-              code: 'companion-presence-needs-api-31-and-association',
-              explanation:
-                'Native resubscribe executes from the presence wake, which needs Android API 31+; this device runs an older API level.',
-              affectedGuarantee: 'wake streaming without JavaScript'
-            }),
-        unsupportedRegistration(ids.headlessTask, platform, implementationVersion, {
-          code: 'not-implemented-in-this-release',
-          explanation: `Headless JS in the wake is ${NOT_IMPLEMENTED_IN_THIS_RELEASE}.`,
-          affectedGuarantee: 'JavaScript execution in the wake'
-        }),
-        unsupportedRegistration(ids.wakeNotification, platform, implementationVersion, {
-          code: 'not-implemented-in-this-release',
-          explanation: `Foreground-service start from the wake is ${NOT_IMPLEMENTED_IN_THIS_RELEASE}.`,
-          affectedGuarantee: 'live streaming under a wake notification'
-        })
+        !bindingAvailable
+          ? unsupportedRegistration(ids.nativeResubscribe, platform, implementationVersion, unavailableBinding)
+          : androidWake
+            ? limitedRegistration(ids.nativeResubscribe, platform, implementationVersion, {
+                code: 'live-radio-qualification-pending',
+                explanation:
+                  'Native reconnect plus resubscribe from the wake has deterministic coverage; physical-radio qualification remains separate. Values arriving with no JS session queue in the existing bounded queues and drain with accounted loss.',
+                affectedGuarantee: 'reliability-qualified wake streaming'
+              })
+            : unsupportedRegistration(ids.nativeResubscribe, platform, implementationVersion, {
+                code: 'companion-presence-needs-api-31-and-association',
+                explanation:
+                  'Native resubscribe executes from the presence wake, which needs Android API 31+; this device runs an older API level.',
+                affectedGuarantee: 'wake streaming without JavaScript'
+              }),
+        androidStrategy(
+          ids.headlessTask,
+          'The native presence owner dispatches the declared registered React Native task. Association, observation, permissions and OS startup admission are required; task-dispatched does not prove application work completed.'
+        ),
+        androidStrategy(
+          ids.wakeNotification,
+          'The native presence owner starts the configured connected-device foreground service. Association, observation, service/notification configuration, permissions and OS admission are required; foreground-service-started does not prove streaming or business completion.'
+        )
       ])
     )
   }
   return createFeatureRegistry(
     Object.freeze([
-      limitedRegistration(ids.wakeOnAppearance, platform, implementationVersion, {
-        code: 'configured-native-restoration-authority-required',
-        explanation:
-          'The system relaunches the app into the background on BLE events; restored peripherals arrive through willRestoreState for the configured restoration identifier.',
-        affectedGuarantee: 'relaunch of a terminated app on BLE events'
-      }),
-      facts.appleRestorationConfigured === true
-        ? limitedRegistration(ids.nativeResubscribe, platform, implementationVersion, {
-            code: 'live-radio-qualification-pending',
-            explanation:
-              'The configured restoration owner reconnects and resubscribes natively without JavaScript, retaining a bounded backlog with accounted loss. Physical-radio qualification remains separate.',
-            affectedGuarantee: 'reliability-qualified wake streaming'
-          })
-        : unsupportedRegistration(ids.nativeResubscribe, platform, implementationVersion, {
-            code: 'configured-native-restoration-authority-required',
-            explanation: 'Native wake streaming requires a configured restoration authority in this application.',
-            affectedGuarantee: 'wake streaming without JavaScript'
-          }),
+      (facts.appleRestorationConfigured === true ? limitedRegistration : unsupportedRegistration)(
+        ids.wakeOnAppearance,
+        platform,
+        implementationVersion,
+        {
+          code: 'configured-native-restoration-authority-required',
+          explanation:
+            'BLE relaunch requires a configured restoration authority and app background modes; restored peripherals arrive through willRestoreState. Without that configuration this host does not advertise restoration wake.',
+          affectedGuarantee: 'relaunch of a terminated app on BLE events'
+        }
+      ),
+      !bindingAvailable
+        ? unsupportedRegistration(ids.nativeResubscribe, platform, implementationVersion, unavailableBinding)
+        : facts.appleRestorationConfigured === true
+          ? limitedRegistration(ids.nativeResubscribe, platform, implementationVersion, {
+              code: 'live-radio-qualification-pending',
+              explanation:
+                'The configured restoration owner reconnects and resubscribes natively without JavaScript, retaining a bounded backlog with accounted loss. Physical-radio qualification remains separate.',
+              affectedGuarantee: 'reliability-qualified wake streaming'
+            })
+          : unsupportedRegistration(ids.nativeResubscribe, platform, implementationVersion, {
+              code: 'configured-native-restoration-authority-required',
+              explanation: 'Native wake streaming requires a configured restoration authority in this application.',
+              affectedGuarantee: 'wake streaming without JavaScript'
+            }),
       unsupportedRegistration(ids.headlessTask, platform, implementationVersion, {
-        code: 'not-implemented-in-this-release',
-        explanation: `Headless JS in the wake is ${NOT_IMPLEMENTED_IN_THIS_RELEASE}.`,
+        code: 'android-only-wake-mechanism',
+        explanation:
+          'React Native Headless JS task dispatch is an Android mechanism; Apple BLE restoration uses the native restoration owner instead.',
         affectedGuarantee: 'JavaScript execution in the wake'
       }),
       unsupportedRegistration(ids.wakeNotification, platform, implementationVersion, {
-        code: 'not-implemented-in-this-release',
-        explanation: `Foreground-service start from the wake is ${NOT_IMPLEMENTED_IN_THIS_RELEASE}.`,
+        code: 'android-only-wake-mechanism',
+        explanation:
+          'Apple does not provide Android connected-device foreground services; BLE restoration uses the native restoration owner instead.',
         affectedGuarantee: 'live streaming under a wake notification'
       })
     ])

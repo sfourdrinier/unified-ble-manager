@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-reference-process-continuation"
+description = "Enables the reference_process_continuation command without any pre-configured scope."
+commands.allow = ["reference_process_continuation"]
+
+[[permission]]
+identifier = "deny-reference-process-continuation"
+description = "Denies the reference_process_continuation command without any pre-configured scope."
+commands.deny = ["reference_process_continuation"]

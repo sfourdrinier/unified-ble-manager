@@ -398,12 +398,16 @@ describe('Expo host services on the Rust session', () => {
     async function continuationManager() {
       const harness = rustCoreHarness({ platform: 'android' })
       harness.native.declareBackgroundContinuation = async () => {}
-      harness.native.prepareContinuationClaim = async () => JSON.stringify({ ...JSON.parse(CLAIM), claimToken: 'expo-claim' })
+      harness.native.prepareContinuationClaim = async () => JSON.stringify({ ...JSON.parse(CLAIM), claimToken: 'expo-claim', recording: { id: 'h10-expo' } })
       harness.native.acknowledgeContinuationClaim = async token => {
         expect(token).toBe('expo-claim')
         return JSON.stringify({ disposed: true, afterCutoffLoss: { items: 0, bytes: 0 }, disposeFailure: null })
       }
       harness.native.continuationStatus = async () => STATUS
+      harness.native.continuationRecordingPrepare = async id => {
+        expect(id).toBe('h10-expo')
+        return JSON.stringify({ ok: true, value: { token: null, records: [], bytes: 0, more: false } })
+      }
       // The harness binds eagerly; rebuild after adding the native methods.
       const { createReactNativeRustCoreBinding } = require('../src/backends/reactnative/react-native-rust-core-binding')
       const binding = createReactNativeRustCoreBinding({ platform: 'android', native: harness.native })
@@ -421,6 +425,7 @@ describe('Expo host services on the Rust session', () => {
       expect(status.strategy).toBe('native')
       expect(status.lastWake.event).toBe('continuation.completed')
       const backlog = await manager.continuation.claim()
+      expect(backlog.recording).toEqual({ id: 'h10-expo' })
       expect(backlog.values).toHaveLength(1)
       expect([...backlog.values[0].value]).toEqual([0, 72])
       expect(backlog.streamEnds).toEqual([
@@ -428,6 +433,7 @@ describe('Expo host services on the Rust session', () => {
       ])
       expect(backlog.disposed).toBe(true)
       await manager.destroy()
+      expect(await manager.continuation.recordings.prepare('h10-expo', { maxItems: 10, maxBytes: 4096 })).toEqual({ token: null, records: [], bytes: 0, more: false })
     })
 
     test('a native module without the claim answers unsupported, never an invented backlog', async () => {

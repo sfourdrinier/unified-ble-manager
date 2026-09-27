@@ -84,8 +84,12 @@ pub(crate) struct LinkEnd {
 #[derive(Debug, Clone)]
 pub(crate) struct ScanMember {
     pub membership: String,
+    pub start_operation_id: String,
     pub service_uuids: Vec<String>,
     pub device_addresses: Vec<String>,
+    pub deadline: Option<tokio::time::Instant>,
+    /// Independent of the admission operation, which settles after start.
+    pub expiry_cancel: OpTicket,
 }
 
 #[derive(Debug)]
@@ -124,6 +128,7 @@ enum HostSignal {
     /// attachment, and whether the reset ended the owned scan.
     AdapterReset(AttachmentTuple, bool),
     ScanFailed(String),
+    ScanDeadlines,
     Security(String, SecurityState),
     Restored(Vec<RestoredPeer>),
     IngressDrop(IngressClass, u64),
@@ -132,7 +137,7 @@ enum HostSignal {
 /// Bound for queued host signals (X-R6). Value scopes share one queued
 /// marker, the advertisement signal one, and every other current-state fact
 /// merges per scope below, so a stalled pump plus a burst retains a bounded
-/// prefix: at most `SIGNALS_CAP + 2` entries whatever the number of scopes.
+/// prefix: at most `SIGNALS_CAP + 3` entries whatever the number of scopes.
 /// What the bound refuses is counted in `signal_lost` / `overflow_drops`
 /// and broadcast by the pump — never silently discarded.
 const SIGNALS_CAP: usize = 1024;
@@ -141,6 +146,24 @@ const SIGNALS_CAP: usize = 1024;
 /// cannot starve lifecycle and current-state signals; leftovers requeue
 /// the marker for another turn.
 const VALUE_SCOPE_BATCH: usize = 32;
+
+/// One advertisement turn must yield to queued lifecycle/deadline markers.
+const ADVERTISEMENT_BATCH: usize = 32;
+
+async fn pump_advertisement_batch<T, F: std::future::Future<Output = Option<T>>>(
+    mut take: impl FnMut() -> F,
+    mut deliver: impl FnMut(T),
+) -> bool {
+    for _ in 0..ADVERTISEMENT_BATCH {
+        let Some(record) = take().await else {
+            return false;
+        };
+        deliver(record);
+    }
+    // Do not probe one extra record: that would consume an undelivered
+    // observation. An empty follow-up turn is safe and constantly bounded.
+    true
+}
 
 const INGRESS_CLASSES: [IngressClass; 3] = [
     IngressClass::Advertisement,
@@ -166,6 +189,7 @@ struct SignalState {
     /// A `Values` marker already waits in the queue.
     value_marker_queued: bool,
     advertisements_pending: bool,
+    scan_deadlines_pending: bool,
     closed: bool,
     /// Non-coalescible signals refused past the bound (lifecycle
     /// transitions, and current-state facts with no queued marker to merge
@@ -209,6 +233,15 @@ impl Signals {
                     }
                     state.advertisements_pending = true;
                     state.queue.push_back(HostSignal::Advertisements);
+                }
+                HostSignal::ScanDeadlines => {
+                    if state.scan_deadlines_pending {
+                        return;
+                    }
+                    // One reserved marker drives all expired memberships. It
+                    // cannot be dropped behind ordinary control queue pressure.
+                    state.scan_deadlines_pending = true;
+                    state.queue.push_back(HostSignal::ScanDeadlines);
                 }
                 HostSignal::Adapter(snapshot, updated_at, attachment) => {
                     let signal = HostSignal::Adapter(snapshot, updated_at, attachment);
@@ -418,6 +451,7 @@ impl Signals {
         match &signal {
             HostSignal::Values => state.value_marker_queued = false,
             HostSignal::Advertisements => state.advertisements_pending = false,
+            HostSignal::ScanDeadlines => state.scan_deadlines_pending = false,
             _ => {}
         }
         Some(signal)
@@ -455,6 +489,8 @@ pub(crate) struct HostInner {
     signals: Arc<Signals>,
     pub sessions: Mutex<BTreeMap<u64, Arc<SessionState>>>,
     next_session: AtomicU64,
+    #[cfg(test)]
+    before_session_admission: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     pub scan: tokio::sync::Mutex<ScanShare>,
     pub scan_members: Mutex<BTreeMap<u64, ScanMember>>,
     pub routes: Mutex<HashMap<InstanceKey, Vec<Route>>>,
@@ -476,9 +512,11 @@ pub(crate) struct HostInner {
     /// database generation the change invalidated).
     pub database_changes: Mutex<BTreeMap<String, (String, String)>>,
     shut_down: AtomicBool,
+    ingress_failure: Mutex<Option<Value>>,
     pump: Mutex<Option<tokio::task::JoinHandle<()>>>,
     clock: Instant,
     pub(crate) continuation: std::sync::OnceLock<ubm_desktop::continuation::NativeContinuation>,
+    pub(crate) recording_registry: Arc<ubm_desktop::continuation_journal::JournalRegistry>,
     pub(crate) continuation_closed: AtomicBool,
     pub(crate) continuation_admission: Mutex<()>,
 }
@@ -563,9 +601,16 @@ fn uuid_list(uuids: Option<&[String]>) -> Value {
     )
 }
 
-pub(crate) fn advertisement_record(snapshot: &PeerSnapshot, observed_at_ms: u64) -> Value {
+pub(crate) fn advertisement_record(
+    snapshot: &PeerSnapshot,
+    observed_at_ms: u64,
+    membership: &str,
+    start_operation_id: &str,
+) -> Value {
     object(vec![
         ("t", Value::from("adv")),
+        ("operationId", Value::from(membership)),
+        ("startOperationId", Value::from(start_operation_id)),
         ("peerId", Value::from(snapshot.id.as_str())),
         ("localName", opt_text(snapshot.local_name.as_deref())),
         ("rssi", snapshot.rssi.map_or(Value::Null, Value::from)),
@@ -699,6 +744,12 @@ fn peer_connection(record: Option<&PeerRecord>) -> &'static str {
 }
 
 fn matches_member(member: &ScanMember, snapshot: &PeerSnapshot) -> bool {
+    if member
+        .deadline
+        .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+    {
+        return false;
+    }
     let service_match = member.service_uuids.is_empty()
         || snapshot
             .service_uuids
@@ -716,6 +767,53 @@ fn matches_member(member: &ScanMember, snapshot: &PeerSnapshot) -> bool {
 }
 
 impl HostInner {
+    async fn fail_pump(self: &Arc<Self>, error: Value) {
+        // Close admission before waiting for disk or native cleanup. A dead
+        // pump is not a usable owner, even when disposal must be retried.
+        {
+            let _sessions = lock(&self.sessions);
+            self.shut_down.store(true, Ordering::SeqCst);
+        }
+        self.continuation_closed.store(true, Ordering::SeqCst);
+        if let Some(executor) = self.continuation.get() {
+            executor.stop_recovery();
+        }
+        *lock(&self.ingress_failure) = Some(serde_json::json!({"error":error}));
+        // This is the pump itself: shutdown must not await its own join handle.
+        lock(&self.pump).take();
+        let owned = Arc::clone(self);
+        let runtime = self.runtime.clone();
+        let result = ubm_desktop::continuation_journal::run_blocking_result(move || {
+            for session in owned.session_list() {
+                session.outbox.fail_collection_worker();
+                session.outbox.push_ingress_drop(IngressClass::Control);
+            }
+            let routes = lock(&owned.routes).clone();
+            for (scope, entries) in routes {
+                for route in entries {
+                    if route.terminal.is_none() {
+                        owned.mark_ended(&scope, &route, ("closed", 0, 0));
+                        owned.end_route(&route, ("closed", 0, 0));
+                    }
+                }
+            }
+            // Keep membership ownership until authoritative native cleanup.
+            let scans = lock(&owned.scan_members).clone();
+            for (id, member) in scans {
+                if let Some(session) = owned.session(id) {
+                    session.outbox.push_control(serde_json::json!({"t":"scan-end","operationId":member.membership,"reason":"source-failed"}));
+                }
+            }
+            let receipt = runtime.block_on(MobileHost { inner: owned }.shutdown());
+            serde_json::from_str(&receipt).map_err(|_| serde_json::json!({"code":"protocol.malformed","domain":"core","operation":"ubm-mobile.ingress.cleanup","detail":"invalid cleanup receipt"}))
+        }).await;
+        if let Some(record) = lock(&self.ingress_failure).as_mut() {
+            match result {
+                Ok(cleanup) => record["cleanup"] = cleanup,
+                Err(error) => record["cleanupFailure"] = error,
+            }
+        }
+    }
     pub(crate) fn now_ms(&self) -> u64 {
         u64::try_from(self.clock.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
@@ -807,11 +905,17 @@ impl HostInner {
         }
     }
 
-    async fn handle(&self, signal: HostSignal) {
+    async fn handle(self: &Arc<Self>, signal: HostSignal) {
         match signal {
+            HostSignal::ScanDeadlines => self.expire_scan_members(),
             HostSignal::Advertisements => {
-                while let Some(snapshot) = self.central.take_advertisement().await {
-                    self.route_advertisement(&snapshot);
+                if pump_advertisement_batch(
+                    || self.central.take_advertisement(),
+                    |snapshot| self.route_advertisement(&snapshot),
+                )
+                .await
+                {
+                    self.signals.push(HostSignal::Advertisements);
                 }
             }
             HostSignal::Values => {
@@ -893,13 +997,20 @@ impl HostInner {
             .iter()
             .map(|(id, member)| (*id, member.clone()))
             .collect();
-        let record = advertisement_record(snapshot, now);
         for (session_id, member) in members {
             if !matches_member(&member, snapshot) {
                 continue;
             }
             if let Some(session) = self.session(session_id)
-                && session.outbox.push_data(record.clone()).is_err()
+                && session
+                    .outbox
+                    .push_data(advertisement_record(
+                        snapshot,
+                        now,
+                        &member.membership,
+                        &member.start_operation_id,
+                    ))
+                    .is_err()
             {
                 session
                     .outbox
@@ -992,7 +1103,19 @@ impl HostInner {
                     ]);
                     match session.outbox.push_data(record) {
                         Ok(()) => continue,
-                        Err(overflow) => Some(("overflow", 1, overflow.bytes as u64)),
+                        Err(ubm_desktop::continuation_outbox::DataIngressFailure::Stopped {
+                            ..
+                        }) => None,
+                        Err(ubm_desktop::continuation_outbox::DataIngressFailure::Overflow {
+                            bytes,
+                        }) => Some(("overflow", 1, bytes as u64)),
+                        // The session's journal failure retains the precise
+                        // storage cause; closed is the frozen wire lifecycle
+                        // name, never a fabricated queue overflow.
+                        Err(ubm_desktop::continuation_outbox::DataIngressFailure::Storage {
+                            bytes,
+                            ..
+                        }) => Some(("closed", 1, bytes as u64)),
                     }
                 }
                 Ok(NotificationPoll::Empty) => None,
@@ -1142,6 +1265,7 @@ impl HostInner {
 
     fn end_scan_members(&self, members: Vec<(u64, ScanMember)>, reason: &'static str) {
         for (session_id, member) in members {
+            member.expiry_cancel.request_cancel();
             if let Some(session) = self.session(session_id) {
                 session.clear_scan(&member.membership);
                 session.outbox.push_control(object(vec![
@@ -1151,6 +1275,91 @@ impl HostInner {
                 ]));
             }
         }
+    }
+
+    /// Arm a native membership clock. No JavaScript timer, event drain or
+    /// runtime activity is required to stop delivering after its deadline.
+    pub(crate) fn arm_scan_deadline(self: &Arc<Self>, session_id: u64, membership: &str) {
+        let timer = lock(&self.scan_members)
+            .get(&session_id)
+            .and_then(|member| {
+                (member.membership == membership)
+                    .then_some(member)
+                    .and_then(|member| {
+                        member
+                            .deadline
+                            .map(|deadline| (deadline, member.expiry_cancel.clone()))
+                    })
+            });
+        let Some((deadline, cancel)) = timer else {
+            return;
+        };
+        let owner = Arc::downgrade(self);
+        self.runtime.spawn(async move {
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => {},
+                () = tokio::time::sleep_until(deadline) => {
+                    if let Some(owner) = owner.upgrade() {
+                        owner.signals.push(HostSignal::ScanDeadlines);
+                    }
+                }
+            }
+        });
+    }
+
+    /// Runs on the same ordered pump as advertisement delivery: a cloned
+    /// advertisement membership cannot publish behind its terminal. Native
+    /// cleanup is separate so a slow scan stop cannot stall connected data.
+    fn expire_scan_members(self: &Arc<Self>) {
+        let now = tokio::time::Instant::now();
+        let expired = {
+            let mut members = lock(&self.scan_members);
+            let ids: Vec<_> = members
+                .iter()
+                .filter_map(|(id, member)| {
+                    member
+                        .deadline
+                        .is_some_and(|deadline| now >= deadline)
+                        .then_some(*id)
+                })
+                .collect();
+            ids.into_iter()
+                .filter_map(|id| members.remove(&id).map(|member| (id, member)))
+                .collect::<Vec<_>>()
+        };
+        if expired.is_empty() {
+            return;
+        }
+        self.end_scan_members(expired, "operation-timed-out");
+        let owner = Arc::clone(self);
+        self.runtime.spawn(async move {
+            let mut share = owner.scan.lock().await;
+            // Another live member, including one admitted while we waited,
+            // owns the physical scan. Never stop it for a retired generation.
+            if !lock(&owner.scan_members).is_empty() {
+                return;
+            }
+            let Some(operation) = share.physical.as_ref().map(|scan| scan.operation.clone()) else {
+                return;
+            };
+            match owner
+                .central
+                .stop_scan(&operation, OpControl::unbounded())
+                .await
+            {
+                Ok(_) => share.physical = None,
+                Err(error) => {
+                    eprintln!(
+                        "ubm-mobile: expired scan cleanup retained by process owner: {error}"
+                    );
+                    if !share.orphan_retry_scheduled {
+                        share.orphan_retry_scheduled = true;
+                        owner.runtime.spawn(Arc::clone(&owner).retry_orphan_scan());
+                    }
+                }
+            }
+        });
     }
 
     async fn scan_failed(&self, detail: String) {
@@ -1433,19 +1642,39 @@ impl HostInner {
     pub(crate) async fn leave_scan(
         &self,
         session_id: u64,
+        membership: &str,
         ctl: OpControl,
     ) -> Result<(), DesktopError> {
         let mut share = self.scan.lock().await;
         let last = {
             let members = lock(&self.scan_members);
-            members.len() == 1 && members.contains_key(&session_id)
+            if !members
+                .get(&session_id)
+                .is_some_and(|member| member.membership == membership)
+            {
+                return Ok(());
+            }
+            members.len() == 1
         };
         if last && let Some(physical) = &share.physical {
             let operation = physical.operation.clone();
             self.central.stop_scan(&operation, ctl).await?;
             share.physical = None;
         }
-        lock(&self.scan_members).remove(&session_id);
+        let removed = {
+            let mut members = lock(&self.scan_members);
+            if members
+                .get(&session_id)
+                .is_some_and(|member| member.membership == membership)
+            {
+                members.remove(&session_id)
+            } else {
+                None
+            }
+        };
+        if let Some(member) = removed {
+            member.expiry_cancel.request_cancel();
+        }
         Ok(())
     }
 
@@ -1581,7 +1810,24 @@ async fn pump(host: Weak<HostInner>, signals: Arc<Signals>) {
                 HostSignal::AdapterReset(..) | HostSignal::Adapter(..) => true,
                 _ => false,
             };
-            host.handle(signal).await;
+            {
+                // One awaited signal pass owns order. The existing bounded
+                // signal/native queues retain pressure while disk is busy.
+                // A journal may attach while handle awaits; never choose the
+                // execution thread from a pre-await attachment snapshot.
+                let owned = host.clone();
+                let runtime = host.runtime.clone();
+                if let Err(error) =
+                    ubm_desktop::continuation_journal::run_blocking_result(move || {
+                        runtime.block_on(owned.handle(signal));
+                        Ok(())
+                    })
+                    .await
+                {
+                    host.fail_pump(error).await;
+                    return;
+                }
+            }
             if continuation_changed
                 && !host.shut_down.load(Ordering::SeqCst)
                 && let Some(executor) = host.continuation.get()
@@ -1599,17 +1845,31 @@ async fn pump(host: Weak<HostInner>, signals: Arc<Signals>) {
                 return;
             };
             let sessions = host.session_list();
-            if lost > 0 {
-                for session in &sessions {
-                    session.outbox.push_ingress_drop(IngressClass::Control);
-                }
-            }
-            for (index, class) in INGRESS_CLASSES.iter().enumerate() {
-                let count = drops[index];
-                if count > 0 {
+            let report = move || {
+                if lost > 0 {
                     for session in &sessions {
-                        session.outbox.push_ingress_drop_count(*class, count);
+                        session.outbox.push_ingress_drop(IngressClass::Control);
                     }
+                }
+                for (index, class) in INGRESS_CLASSES.iter().enumerate() {
+                    let count = drops[index];
+                    if count > 0 {
+                        for session in &sessions {
+                            session.outbox.push_ingress_drop_count(*class, count);
+                        }
+                    }
+                }
+            };
+            {
+                if let Err(error) =
+                    ubm_desktop::continuation_journal::run_blocking_result(move || {
+                        report();
+                        Ok(())
+                    })
+                    .await
+                {
+                    host.fail_pump(error).await;
+                    return;
                 }
             }
         }
@@ -1621,6 +1881,12 @@ async fn pump(host: Weak<HostInner>, signals: Arc<Signals>) {
 }
 
 impl MobileHost {
+    /// Retained process-level source failure, including its attempted cleanup.
+    /// Reading this does not clear the diagnostic or acknowledge any recording.
+    #[must_use]
+    pub fn ingress_failure(&self) -> Option<Value> {
+        lock(&self.inner.ingress_failure).clone()
+    }
     /// Open the process owner: the central over `platform` on `runtime`
     /// (the shared desktop executor in production). Open issues no radio
     /// request, so the platform can answer requests only after it holds
@@ -1630,6 +1896,17 @@ impl MobileHost {
         wake: Arc<dyn WakeSink>,
         options: HostOptions,
         runtime: Handle,
+    ) -> Result<Self, DesktopError> {
+        Self::open_with_recording_registry(platform, wake, options, runtime, Arc::default()).await
+    }
+
+    /// Install the radio using the same authority as pre-existing offline data access.
+    pub async fn open_with_recording_registry(
+        platform: Arc<dyn PlatformRadio>,
+        wake: Arc<dyn WakeSink>,
+        options: HostOptions,
+        runtime: Handle,
+        recording_registry: Arc<ubm_desktop::continuation_journal::JournalRegistry>,
     ) -> Result<Self, DesktopError> {
         if options.owner.is_empty() {
             return Err(DesktopError::new(
@@ -1689,6 +1966,8 @@ impl MobileHost {
             signals: Arc::clone(&signals),
             sessions: Mutex::new(BTreeMap::new()),
             next_session: AtomicU64::new(1),
+            #[cfg(test)]
+            before_session_admission: Mutex::new(None),
             scan: tokio::sync::Mutex::new(ScanShare::default()),
             scan_members: Mutex::new(BTreeMap::new()),
             routes: Mutex::new(HashMap::new()),
@@ -1701,9 +1980,11 @@ impl MobileHost {
             link_ends: Mutex::new(BTreeMap::new()),
             database_changes: Mutex::new(BTreeMap::new()),
             shut_down: AtomicBool::new(false),
+            ingress_failure: Mutex::new(None),
             pump: Mutex::new(None),
             clock: Instant::now(),
             continuation: std::sync::OnceLock::new(),
+            recording_registry,
             continuation_closed: AtomicBool::new(false),
             continuation_admission: Mutex::new(()),
         });
@@ -1720,8 +2001,33 @@ impl MobileHost {
         options: HostOptions,
         runtime: Handle,
     ) -> Result<Self, DesktopError> {
+        Self::open_blocking_with_recording_registry(
+            platform,
+            wake,
+            options,
+            runtime,
+            Arc::default(),
+        )
+    }
+
+    pub fn open_blocking_with_recording_registry(
+        platform: Arc<dyn PlatformRadio>,
+        wake: Arc<dyn WakeSink>,
+        options: HostOptions,
+        runtime: Handle,
+        recording_registry: Arc<ubm_desktop::continuation_journal::JournalRegistry>,
+    ) -> Result<Self, DesktopError> {
         let (tx, rx) = std::sync::mpsc::channel();
-        runtime.spawn(Self::open(platform, wake, options, runtime.clone()).then_send(tx));
+        runtime.spawn(
+            Self::open_with_recording_registry(
+                platform,
+                wake,
+                options,
+                runtime.clone(),
+                recording_registry,
+            )
+            .then_send(tx),
+        );
         rx.recv().unwrap_or_else(|_| {
             Err(DesktopError::new(
                 BleErrorCode::LifecycleInvariantViolation,
@@ -1894,6 +2200,20 @@ impl MobileHost {
                 "ubm-mobile.session.open",
             ));
         }
+        #[cfg(test)]
+        if let Some(hook) = lock(&self.inner.before_session_admission).clone() {
+            hook();
+        }
+        // The same guard fences the fatal source transition and publication.
+        // An open already parsing options cannot publish after its snapshot.
+        let mut sessions = lock(&self.inner.sessions);
+        if self.inner.is_shut_down() {
+            return Err(DesktopError::new(
+                BleErrorCode::LifecycleDestroyed,
+                BleErrorDomain::Core,
+                "ubm-mobile.session.open",
+            ));
+        }
         let id = self.inner.next_session.fetch_add(1, Ordering::Relaxed);
         let background_scope = scope.map_or(BackgroundScope::Session(id), |scope| {
             BackgroundScope::Shared(scope.to_owned())
@@ -1903,7 +2223,7 @@ impl MobileHost {
             Outbox::new(id, wake),
             background_scope,
         ));
-        lock(&self.inner.sessions).insert(id, Arc::clone(&state));
+        sessions.insert(id, Arc::clone(&state));
         Ok(MobileSession::new(Arc::clone(&self.inner), state))
     }
 
@@ -2010,36 +2330,10 @@ impl MobileHost {
         }
         inner.shut_down.store(true, Ordering::SeqCst);
         let report = inner.central.shutdown().await;
-        for failure in report.radio_close_failures {
-            failures.push(crate::session::cleanup_failure(
-                "subscription",
-                &DesktopError::new(
-                    BleErrorCode::GattSubscribeFailed,
-                    BleErrorDomain::Cleanup,
-                    "radio.close",
-                )
-                .with_detail(failure.detail),
-            ));
-        }
+        let central_released = report.is_released();
+        failures.extend(shutdown_failures(report));
         if let Some(error) = inner.radio.close_error() {
             failures.push(crate::session::cleanup_failure("radio", &error));
-        }
-        if let Some(error) = report.scan_stop_failure {
-            failures.push(crate::session::cleanup_failure("scan", &error));
-        }
-        match report.record {
-            Ok(record) if matches!(record.state(), ubm_core::ownership::CleanupState::Released) => {
-            }
-            Ok(_) => failures.push(crate::session::cleanup_failure(
-                "central",
-                &DesktopError::new(
-                    BleErrorCode::LifecycleInvalidState,
-                    BleErrorDomain::Cleanup,
-                    "central.destroy",
-                )
-                .with_detail("the core destroy record reports release-failed"),
-            )),
-            Err(error) => failures.push(crate::session::cleanup_failure("central", &error)),
         }
         inner.radio.close_events();
         inner.radio.abandon_pending();
@@ -2048,7 +2342,11 @@ impl MobileHost {
         if let Some(worker) = worker {
             let _ = worker.await;
         }
-        crate::session::cleanup_record(failures).to_string()
+        let mut record = crate::session::cleanup_record(failures);
+        if !central_released {
+            record["state"] = Value::from("release-failed");
+        }
+        record.to_string()
     }
 
     /// End a shared background scope (React Native module invalidation):
@@ -2132,8 +2430,211 @@ trait ThenSend: std::future::Future + Sized {
 
 impl<F: std::future::Future> ThenSend for F {}
 
+fn shutdown_failures(report: ubm_desktop::ShutdownReport) -> Vec<Value> {
+    let mut failures = Vec::new();
+    for failure in report.radio_close_failures {
+        failures.push(crate::session::cleanup_failure(
+            "subscription",
+            &DesktopError::new(
+                BleErrorCode::GattSubscribeFailed,
+                BleErrorDomain::Cleanup,
+                "radio.close",
+            )
+            .with_detail(failure.detail),
+        ));
+    }
+    for error in report.half_open_close_failures {
+        failures.push(crate::session::cleanup_failure("connection", &error));
+    }
+    for error in report.transport_close_failures {
+        failures.push(crate::session::cleanup_failure("backend", &error));
+    }
+    if let Some(error) = report.scan_stop_failure {
+        failures.push(crate::session::cleanup_failure("scan", &error));
+    }
+    match report.record {
+        Ok(record) => {
+            for failure in record.failures() {
+                failures.push(crate::session::cleanup_failure(
+                    failure.resource_kind(),
+                    &DesktopError::new(failure.code(), BleErrorDomain::Cleanup, "central.destroy"),
+                ));
+            }
+        }
+        Err(error) => failures.push(crate::session::cleanup_failure("central", &error)),
+    }
+    failures
+}
+
 #[cfg(test)]
 mod signal_tests {
+    #[test]
+    fn scan_deadline_marker_is_reserved_and_coalesced_under_control_pressure() {
+        let signals = super::Signals::default();
+        for sequence in 0..super::SIGNALS_CAP as u64 {
+            signals.push(lifecycle(sequence));
+        }
+        for _ in 0..1000 {
+            signals.push(super::HostSignal::ScanDeadlines);
+        }
+        assert_eq!(signals.queue_len(), super::SIGNALS_CAP + 1);
+        let mut deadlines = 0;
+        while let Some(signal) = signals.pop() {
+            if matches!(signal, super::HostSignal::ScanDeadlines) {
+                deadlines += 1;
+            }
+        }
+        assert_eq!(deadlines, 1);
+        assert_eq!(signals.take_overflow(), (0, [0, 0, 0]));
+        signals.push(super::HostSignal::ScanDeadlines);
+        assert!(matches!(
+            signals.pop(),
+            Some(super::HostSignal::ScanDeadlines)
+        ));
+    }
+
+    #[tokio::test]
+    async fn advertisement_batch_yields_to_deadline_without_losing_remaining_records() {
+        let signals = super::Signals::default();
+        signals.push(super::HostSignal::Advertisements);
+        signals.push(super::HostSignal::ScanDeadlines);
+        assert!(matches!(
+            signals.pop(),
+            Some(super::HostSignal::Advertisements)
+        ));
+        let mut source = 0..(super::ADVERTISEMENT_BATCH * 2 + 1);
+        let mut delivered = Vec::new();
+        let filled = super::pump_advertisement_batch(
+            || std::future::ready(source.next()),
+            |value| delivered.push(value),
+        )
+        .await;
+        assert_eq!(delivered.len(), super::ADVERTISEMENT_BATCH);
+        assert!(filled);
+        signals.push(super::HostSignal::Advertisements);
+        assert!(matches!(
+            signals.pop(),
+            Some(super::HostSignal::ScanDeadlines)
+        ));
+        while let Some(signal) = signals.pop() {
+            assert!(matches!(signal, super::HostSignal::Advertisements));
+            if super::pump_advertisement_batch(
+                || std::future::ready(source.next()),
+                |value| delivered.push(value),
+            )
+            .await
+            {
+                // A producer can concurrently queue the same marker. The
+                // continuation must coalesce, not create duplicate turns.
+                signals.push(super::HostSignal::Advertisements);
+                signals.push(super::HostSignal::Advertisements);
+                assert_eq!(signals.queue_len(), 1);
+            }
+        }
+        assert_eq!(
+            delivered,
+            (0..(super::ADVERTISEMENT_BATCH * 2 + 1)).collect::<Vec<_>>()
+        );
+        assert_eq!(signals.take_overflow(), (0, [0, 0, 0]));
+    }
+
+    #[test]
+    fn half_open_shutdown_receipt_preserves_native_cause_and_unrelated_failures() {
+        let error = ubm_desktop::DesktopError::new(
+            ubm_core::contracts::BleErrorCode::PlatformFailure,
+            ubm_core::contracts::BleErrorDomain::Connection,
+            "radio.disconnect.compensation",
+        )
+        .with_platform(
+            ubm_desktop::PlatformDetail::new("android", "133").with_message("disconnect refused"),
+        );
+        let report = ubm_desktop::ShutdownReport {
+            record: Ok(ubm_core::ownership::CleanupRecord::new(
+                None,
+                ubm_core::ownership::CleanupState::Released,
+                vec![],
+            )
+            .unwrap()),
+            radio_close_failures: vec![],
+            transport_close_failures: vec![],
+            half_open_close_failures: vec![error.clone()],
+            destroy_steps: 1,
+            scan_stop_failure: None,
+        };
+        let failures = super::shutdown_failures(report);
+        assert_eq!(
+            failures,
+            vec![crate::session::cleanup_failure("connection", &error)]
+        );
+        let unrelated = ubm_core::ownership::CleanupFailure::new(
+            "subscription".into(),
+            ubm_core::contracts::BleErrorCode::GattSubscribeFailed,
+        )
+        .unwrap();
+        let retry = ubm_desktop::ShutdownReport {
+            record: Ok(ubm_core::ownership::CleanupRecord::new(
+                None,
+                ubm_core::ownership::CleanupState::ReleaseFailed,
+                vec![unrelated],
+            )
+            .unwrap()),
+            radio_close_failures: vec![],
+            transport_close_failures: vec![],
+            half_open_close_failures: vec![],
+            destroy_steps: 1,
+            scan_stop_failure: None,
+        };
+        let failures = super::shutdown_failures(retry);
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0]["resourceKind"], "subscription");
+        assert_eq!(failures[0]["code"], "gatt.subscribe-failed");
+    }
+    struct NoRadio;
+    impl super::PlatformRadio for NoRadio {
+        fn submit(&self, _: crate::RadioRequest) {
+            panic!("admission test must not use radio");
+        }
+        fn cancel(&self, _: crate::RequestId) {}
+    }
+    struct NoWake;
+    impl super::WakeSink for NoWake {
+        fn wake(&self, _: u64) {}
+    }
+    #[tokio::test]
+    async fn accepted_open_cannot_publish_after_host_closes_admission() {
+        let host = super::MobileHost::open(
+            std::sync::Arc::new(NoRadio),
+            std::sync::Arc::new(NoWake),
+            super::HostOptions {
+                platform: crate::MobilePlatform::Android,
+                owner: "test".into(),
+                adapter_label: "test".into(),
+            },
+            tokio::runtime::Handle::current(),
+        )
+        .await
+        .unwrap();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let entered = std::sync::Mutex::new(Some(entered_tx));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let waiting = release.clone();
+        *super::lock(&host.inner.before_session_admission) = Some(std::sync::Arc::new(move || {
+            entered.lock().unwrap().take().unwrap().send(()).unwrap();
+            waiting.wait();
+        }));
+        let opening = host.clone();
+        let result = tokio::task::spawn_blocking(move || opening.open_session("racing"));
+        entered_rx.await.unwrap();
+        host.inner
+            .shut_down
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        release.wait();
+        assert!(
+            result.await.unwrap().is_err(),
+            "accepted open published after source failure closed the owner"
+        );
+        assert!(super::lock(&host.inner.sessions).is_empty());
+    }
     use super::*;
     use crate::radio::{AuthenticationState, EncryptionState, SecureConnectionsState};
 

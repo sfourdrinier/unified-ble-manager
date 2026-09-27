@@ -157,8 +157,11 @@ async fn partial_subscription_failure_pins_successful_selector_identity() {
             "only the missing selector is retried; the successful resource stays owned"
         );
         let claim = executor.prepare_claim(256, 65536).await.unwrap();
-        assert_eq!(claim["consumerCount"], 1);
-        assert_eq!(claim["selectors"], json!([selector(HR_MEASUREMENT)]));
+        assert_eq!(claim["consumerCount"], 3);
+        assert_eq!(
+            claim["selectors"],
+            json!([selector(HR_MEASUREMENT), selector(SECOND), selector(SECOND)])
+        );
         assert_eq!(
             executor
                 .acknowledge_claim(claim["claimToken"].as_str().unwrap())

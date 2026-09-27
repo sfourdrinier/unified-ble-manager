@@ -8,6 +8,8 @@
 /// <reference types="vite/client" />
 
 import { createTauriBleManager } from 'unified-ble-manager/tauri'
+import { invoke } from '@tauri-apps/api/core'
+import { createTauriProcessContinuation } from './process-continuation.ts'
 import ubmPackage from 'unified-ble-manager/package.json'
 import { bootBrowserDriver } from '../../examples-shared/driver/browser/boot.ts'
 import { LOCAL_DRIVER_URL, adapterHostManager, driverUrlFromQuery } from '../../examples-shared/driver/index.ts'
@@ -19,7 +21,9 @@ if (mount === null) throw new Error('driver.html has no #driver element')
 const driver = bootBrowserDriver({
   host: 'tauri',
   backend: 'tauri/btleplug-plugin',
-  createManager: async () => adapterHostManager(await createTauriBleManager(), 'background:desktop-maintain-connection'),
+  nativeContinuation: createTauriProcessContinuation(invoke),
+  createManager: async () =>
+    adapterHostManager(await createTauriBleManager(), 'background:desktop-maintain-connection'),
   requireUserGesture: false,
   driverUrl: driverUrlFromQuery(location.search) ?? { url: LOCAL_DRIVER_URL, reason: 'default local control server' },
   mount,

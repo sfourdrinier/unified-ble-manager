@@ -52,6 +52,73 @@ private func jsonText(_ object: [String: Any]) -> String {
   String(data: try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), encoding: .utf8)!
 }
 
+private func completedRecovery(_ outcome: [String: Any]?, previousSubscription: String, currentSubscription: String) -> Bool {
+  currentSubscription != previousSubscription && outcome?["event"] as? String == "continuation.completed"
+}
+
+private func continuationStatusIsBusy(_ failure: String) -> Bool {
+  let error = json(failure)
+  return error["code"] as? String == "lifecycle.invalid-state"
+    && error["domain"] as? String == "restoration"
+    && error["operation"] as? String == "continuation"
+    && error["detail"] as? String == "continuation execution or handoff is in progress"
+}
+
+private func readyContinuationStatus(
+  deadline: Date,
+  beforeRead: () -> String,
+  read: (@escaping ((String?, String?)) -> Void) -> Void
+) -> (String, (String?, String?)) {
+  while true {
+    check(Date() < deadline, "timed out waiting for continuation status admission")
+    let identity = beforeRead()
+    let semaphore = DispatchSemaphore(value: 0)
+    let lock = NSLock()
+    var response: (String?, String?)?
+    read { value in
+      lock.lock()
+      response = value
+      lock.unlock()
+      semaphore.signal()
+    }
+    check(semaphore.wait(timeout: .now() + max(0, deadline.timeIntervalSinceNow)) == .success,
+          "timed out waiting for continuation status callback")
+    lock.lock()
+    let observed = response!
+    lock.unlock()
+    guard let failure = observed.1, continuationStatusIsBusy(failure) else {
+      return (identity, observed)
+    }
+    // This is only backoff; the exact response and absolute watchdog, not a
+    // sleep or a number of attempts, decide admission and failure.
+    Thread.sleep(forTimeInterval: min(0.01, max(0, deadline.timeIntervalSinceNow)))
+  }
+}
+
+private func continuationStatusReadinessChecks() {
+  let busy = jsonText(["code": "lifecycle.invalid-state", "domain": "restoration",
+                       "operation": "continuation", "detail": "continuation execution or handoff is in progress"])
+  var reads = 0
+  let result = readyContinuationStatus(deadline: Date().addingTimeInterval(10), beforeRead: { "subscription-\(reads)" }) { done in
+    reads += 1
+    done(reads == 1 ? (nil, busy) : ("{\"lastWake\":null}", nil))
+  }
+  check(reads == 2 && result.0 == "subscription-1" && result.1.1 == nil,
+        "status must retry exact admission contention and recapture identity before the successful read")
+  for field in ["code", "domain", "operation", "detail"] {
+    var other = json(busy)
+    other[field] = "different"
+    let failure = jsonText(other)
+    check(!continuationStatusIsBusy(failure), "status must not hide a different \(field)")
+    var attempts = 0
+    let refused = readyContinuationStatus(deadline: Date().addingTimeInterval(10), beforeRead: { "same" }) { done in
+      attempts += 1
+      done((nil, failure))
+    }
+    check(attempts == 1 && refused.1.1 == failure, "non-busy status failure must propagate unchanged")
+  }
+}
+
 private final class HarnessInvokeCompletion: MobileInvokeCompletion, @unchecked Sendable {
   private let body: (String) -> Void
   init(_ body: @escaping (String) -> Void) { self.body = body }
@@ -118,7 +185,10 @@ final class ScriptedDriver: UnifiedBleRustRadioDriver {
   var calls = [String]()
   var cancelled = [String]()
   var subscriptionIdentifiers = [String]()
+  var unsubscribeFailures = [NSError]()
   var hangingConnects = [String: (NSError?) -> Void]()
+  var holdSetupWrites = false
+  var setupWrites = [(NSError?) -> Void]()
 
   private func record(_ call: String) { calls.append(call) }
 
@@ -224,6 +294,7 @@ final class ScriptedDriver: UnifiedBleRustRadioDriver {
   ) {
     workQueue.async {
       self.record("write \(value.length) response=\(withResponse)")
+      if self.holdSetupWrites { self.setupWrites.append(completion); return }
       completion(nil)
     }
   }
@@ -247,7 +318,7 @@ final class ScriptedDriver: UnifiedBleRustRadioDriver {
   ) {
     workQueue.async {
       self.record("unsubscribe \(subscriptionIdentifier)")
-      completion(nil)
+      completion(self.unsubscribeFailures.isEmpty ? nil : self.unsubscribeFailures.removeFirst())
     }
   }
 
@@ -628,6 +699,8 @@ final class Harness {
       }
     }
 
+    unsubscribeRefusalChecks()
+
     // Adapter power loss ends the scan with a reported source failure.
     onRadioQueue {
       self.driver.snapshot = ["availability": "available", "authorization": "granted", "power": "off", "safeReason": "off"]
@@ -662,7 +735,11 @@ final class Harness {
     check(json(badDrain.1 ?? "{}")["code"] as? String == "argument.invalid", "fractional drain: \(badDrain)")
 
     lifecycleCleanupChecks()
+    coldWarmAdmissionChecks()
+    queuedWarmReplacementChecks()
     nativeContinuationChecks()
+    warmContinuationChecks()
+    durableSetupContinuationChecks()
 
     // Process shutdown disables every CCCD the radio still holds.
     let cleanup = json(host.shutdown())
@@ -672,7 +749,131 @@ final class Harness {
     check(counters.cancelledRequests >= 1, "cancel was not counted: \(counters)")
   }
 
+  func unsubscribeRefusalChecks() {
+    let selector: [String: Any] = ["serviceUuid": hrService, "serviceOccurrence": 0,
+                                  "characteristicUuid": hrMeasurement, "characteristicOccurrence": 0]
+    for parentCleanup in [false, true] {
+      let peer = parentCleanup ? "UNSUB-PARENT" : "UNSUB-RETRY"
+      let lease = "lease-\(peer)"
+      let consumer = "consumer-\(peer)"
+      _ = ok("connection.connect", ["peerId": peer, "lease": lease, "operationId": "connect-\(peer)"])
+      _ = ok("gatt.discover", ["peerId": peer, "lease": lease, "operationId": "discover-\(peer)"])
+      _ = ok("gatt.subscribe", ["peerId": peer, "selector": selector, "consumer": consumer, "operationId": "subscribe-\(peer)"])
+      let identifier = driver.onQueue { self.driver.subscriptionIdentifiers.last! }
+      driver.onQueue {
+        self.driver.unsubscribeFailures = [NSError(domain: "CBErrorDomain", code: 0,
+                                                   userInfo: [NSLocalizedDescriptionKey: "scripted unsubscribe refusal"])]
+      }
+      let refused = invoke("gatt.unsubscribe", ["peerId": peer, "selector": selector,
+                                                 "consumer": consumer, "operationId": "remove-\(peer)"])
+      check(errorCode(refused) == "platform.failure", "unsubscribe callback refusal must not become release: \(refused)")
+      let error = refused["error"] as? [String: Any]
+      let platform = error?["platform"] as? [String: Any]
+      check(error?["operation"] as? String == "gatt.unsubscribe" && error?["domain"] as? String == "platform",
+            "unsubscribe error operation/domain lost: \(refused)")
+      check(platform?["domain"] as? String == "CBErrorDomain" && platform?["code"] as? String == "0",
+            "unsubscribe native cause lost: \(refused)")
+      check(refused["retryability"] as? String == "never"
+              && (platform?["message"] as? String)?.contains("scripted unsubscribe refusal") == true,
+            "unsubscribe retry advice or native message changed: \(refused)")
+      check(driver.onQueue { self.driver.calls.filter { $0 == "unsubscribe \(identifier)" }.count } == 1,
+            "first unsubscribe did not reach exact native subscription")
+      if !parentCleanup {
+        _ = ok("gatt.unsubscribe", ["peerId": peer, "selector": selector,
+                                     "consumer": consumer, "operationId": "retry-remove-\(peer)"])
+        check(driver.onQueue { self.driver.calls.filter { $0 == "unsubscribe \(identifier)" }.count } == 2,
+              "failed unsubscribe ownership was not retained for native retry")
+      }
+      _ = ok("connection.disconnect", ["peerId": peer, "lease": lease, "operationId": "release-\(peer)"])
+      check(driver.onQueue { self.driver.calls.contains("disconnect \(peer)") }, "parent release did not reach native disconnect")
+      check(errorCode(refused) == "platform.failure", "later cleanup must not rewrite the prior failure")
+    }
+    print("[AppleRustRadioAdapterHarness] unsubscribe CBErrorDomain#0 preserved; exact-owner retry and parent disconnect passed (scripted callback only).")
+  }
+
+  func durableSetupContinuationChecks() {
+    let peer = "9828347E-45DF-2EEB-E928-6E443F4065E3"
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ubm-swift-recording-\(UUID().uuidString)")
+    try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    check(json(mobileRecordingConfigureDirectory(path: directory.path))["ok"] as? Bool == true, "configure actual offline Swift registry")
+    let selector: [String: Any] = ["serviceUuid": hrService, "serviceOccurrence": 1, "characteristicUuid": hrMeasurement, "characteristicOccurrence": 1]
+    let order = jsonText(["onAppearance":"native", "peerId":peer, "resubscribe":[selector],
+      "recording":["id":"swift-setup","maxBytes":1048576,"maxRecords":1000],
+      "setup":[["selector":selector,"value":[2,0],"timeoutMs":10000,
+        "response":["subscriptionIndex":0,"prefix":[240,2,0],"minLength":4,"maxLength":4,"status":["offset":3,"accepted":[0]]]]]])
+    let reservation = json(host.continuationReserveDeclaration(declarationJson: order))["value"] as? [String: Any] ?? [:]
+    let token = reservation["reservationToken"] as? String ?? ""
+    check(!token.isEmpty && json(host.continuationCommitDeclaration(reservationToken: token))["ok"] as? Bool == true, "commit setup recording order")
+    func cursor(_ operation: String, _ token: String = "") -> [String: Any] {
+      let answer = json(mobileRecordingControl(operation: operation, id: "swift-setup", token: token, maxItems: 256, maxBytes: 65536))
+      check(answer["ok"] as? Bool == true, "recording \(operation): \(answer)")
+      return answer["value"] as? [String: Any] ?? [:]
+    }
+    func prefix(containing bytes: String) -> [String: Any] {
+      let deadline = Date().addingTimeInterval(8)
+      while Date() < deadline {
+        let page = cursor("prepare")
+        let records = page["records"] as? [[String: Any]] ?? []
+        if records.contains(where: { ($0["record"] as? [String: Any])?["valueB64"] as? String == bytes }) { return page }
+        if let token = page["token"] as? String { check(cursor("acknowledge", token)["acknowledged"] as? Bool == true, "consume inspected control prefix") }
+        Thread.sleep(forTimeInterval: 0.005)
+      }
+      check(false, "missing durable bytes \(bytes)")
+      return [:]
+    }
+    driver.onQueue { self.driver.holdSetupWrites = true }
+    let firstCompleted = DispatchSemaphore(value: 0)
+    host.continuationExecute(peerId: peer, declarationJson: order, completion: HarnessInvokeCompletion { envelope in
+      check(json(envelope)["ok"] as? Bool == true, "setup execution refused: \(envelope)")
+      firstCompleted.signal()
+    })
+    for generation in 0..<2 {
+      let deadline = Date().addingTimeInterval(8)
+      while driver.onQueue({ self.driver.setupWrites.isEmpty }) {
+        check(Date() < deadline, "setup write never reached Swift driver")
+        Thread.sleep(forTimeInterval: 0.005)
+      }
+      let subscription = driver.onQueue { self.driver.subscriptionIdentifiers.last! }
+      onRadioQueue { self.adapter.protocolRadioDidReceiveNotification(subscription, value: Data([240,2,0,0]) as NSData) }
+      let ack = prefix(containing: "8AIAAA==")
+      if generation == 0 { check(firstCompleted.wait(timeout: .now()) == .timedOut, "ACK must not bypass held ATT") }
+      check(NSDictionary(dictionary: cursor("prepare")) == NSDictionary(dictionary: ack), "early ACK prefix replays")
+      check(cursor("acknowledge", ack["token"] as? String ?? "")["acknowledged"] as? Bool == true, "ACK inspected response prefix")
+      driver.onQueue { self.driver.setupWrites.removeFirst()(nil) }
+      if generation == 0 {
+        check(firstCompleted.wait(timeout: .now() + timeout) == .success, "setup did not settle after ATT")
+        onRadioQueue { self.adapter.protocolRadioDidDisconnectPeer(peer, error: nil) }
+      }
+    }
+    driver.onQueue { self.driver.holdSetupWrites = false }
+    let deadline = Date().addingTimeInterval(8)
+    while true {
+      let status: String = waitFor("setup recovery") { done in self.host.continuationDescribeBacklog(completion: HarnessInvokeCompletion(done)) }
+      let value = json(status)["value"] as? [String: Any]
+      if (value?["continuationOutcome"] as? [String: Any])?["event"] as? String == "continuation.completed" { break }
+      check(Date() < deadline, "setup recovery incomplete: \(status)")
+      Thread.sleep(forTimeInterval: 0.005)
+    }
+    let subscription = driver.onQueue { self.driver.subscriptionIdentifiers.last! }
+    onRadioQueue { self.adapter.protocolRadioDidReceiveNotification(subscription, value: Data([0,73]) as NSData) }
+    let retained = prefix(containing: "AEk=")
+    let prepared: String = waitFor("durable radio claim") { done in self.host.continuationPrepareClaim(maxItems: 256, maxBytes: 65536, completion: HarnessInvokeCompletion(done)) }
+    let claim = json(prepared)["value"] as? [String: Any] ?? [:]
+    check((claim["recording"] as? [String: Any])?["id"] as? String == "swift-setup", "claim retains journal reference")
+    check(claim["consumerCount"] as? Int == 2, "link recovery retains both subscription generations")
+    let released: String = waitFor("durable radio release") { done in self.host.continuationAcknowledgeClaim(claimToken: claim["claimToken"] as? String ?? "", completion: HarnessInvokeCompletion(done)) }
+    check((json(released)["value"] as? [String: Any])?["disposed"] as? Bool == true, "radio release failed: \(released)")
+    check(NSDictionary(dictionary: cursor("prepare")) == NSDictionary(dictionary: retained), "offline prefix survives radio release unchanged")
+    let receipt = cursor("acknowledge", retained["token"] as? String ?? "")
+    check(receipt["acknowledged"] as? Bool == true, "offline ACK failed")
+    check(NSDictionary(dictionary: cursor("acknowledge", retained["token"] as? String ?? "")) == NSDictionary(dictionary: receipt), "offline ACK replay differs")
+    _ = cursor("stop")
+    _ = cursor("clear")
+    // Registry owns the open DB until process exit; no unlink of an open SQLite file.
+  }
+
   func nativeContinuationChecks() {
+    continuationStatusReadinessChecks()
     // No JS manager/session owns this order. The process host must receive
     // restored peers, reconnect, discover and subscribe on its own.
     let peer = "9828347E-45DF-2EEB-E928-6E443F4065E3"
@@ -724,9 +925,10 @@ final class Harness {
     continuationDone = nil
     check(completed.1 == nil, "native continuation failed: \(String(describing: completed))")
     check(json(completed.0 ?? "{}")["event"] as? String == "continuation.completed", "native outcome: \(completed)")
-    let status: (String?, String?) = waitFor("native wake status") { done in
+    let (_, status) = readyContinuationStatus(deadline: Date().addingTimeInterval(10), beforeRead: { "" }) { done in
       self.sessions.continuationStatus { done(($0, $1)) }
     }
+    check(status.1 == nil, "native wake status failed: \(String(describing: status))")
     let lastWake = json(status.0 ?? "{}")["lastWake"] as? [String: Any] ?? [:]
     check(Set(lastWake.keys) == ["observedAtMs", "event", "strategy", "peerAddress", "code", "reason"],
           "native wake must match the strict public status codec: \(lastWake)")
@@ -739,30 +941,36 @@ final class Harness {
     }
     check(replacement.0 == nil && json(replacement.1 ?? "{}")["code"] as? String == "lifecycle.invalid-state",
           "a live native session must retain its declaration until its backlog is acknowledged")
+    let previousSubscription = driver.onQueue { self.driver.subscriptionIdentifiers.last! }
+    check(!completedRecovery(json(completed.0 ?? "{}"), previousSubscription: previousSubscription, currentSubscription: previousSubscription),
+          "a completed outcome without a replacement native subscription cannot acknowledge service-change recovery")
     onRadioQueue { self.adapter.protocolRadioDidModifyServices(peer) }
     let recoveryDeadline = Date().addingTimeInterval(10)
     var recovered = false
+    var recoveredSubscription: String?
     var lastRecoveryObservation: (String?, String?) = (nil, nil)
     while Date() < recoveryDeadline && !recovered {
-      let observation: (String?, String?) = waitFor("native recovery status") { done in
+      // Capture identity BEFORE each status read, including busy retries.
+      // Status is not an atomic generation receipt: exact replacement-ID
+      // positive intake below remains the proof that recovery is functional.
+      let (candidateSubscription, observation) = readyContinuationStatus(deadline: recoveryDeadline, beforeRead: {
+        self.driver.onQueue { self.driver.subscriptionIdentifiers.last! }
+      }) { done in
         self.sessions.continuationStatus { done(($0, $1)) }
       }
       lastRecoveryObservation = observation
-      if let failure = observation.1 {
-        check(json(failure)["code"] as? String == "lifecycle.invalid-state",
-              "only explicit in-flight ownership contention may postpone status: \(failure)")
-        Thread.sleep(forTimeInterval: 0.01)
-        continue
-      }
+      check(observation.1 == nil, "native recovery status failed: \(String(describing: observation.1))")
       let observed = json(observation.0 ?? "{}")
       let recovery = observed["lastRecovery"] as? [String: Any]
-      recovered = recovery?["event"] as? String == "continuation.completed"
+      recovered = completedRecovery(recovery, previousSubscription: previousSubscription, currentSubscription: candidateSubscription)
+      if recovered { recoveredSubscription = candidateSubscription }
       check((observed["lastWake"] as? [String: Any])?["observedAtMs"] as? Int64 == lastWake["observedAtMs"] as? Int64,
             "recovery must not overwrite the original OS wake: before=\(lastWake), after=\(String(describing: observed["lastWake"]))")
       if !recovered { Thread.sleep(forTimeInterval: 0.01) }
     }
     check(recovered, "autonomous service-change recovery must be visible in public Apple status: \(lastRecoveryObservation); calls=\(driver.onQueue { self.driver.calls })")
-    let subscription = driver.onQueue { self.driver.subscriptionIdentifiers.last! }
+    let subscription = recoveredSubscription!
+    check(subscription != previousSubscription, "recovery must publish a replacement native subscription before notification injection")
     onRadioQueue {
       self.adapter.protocolRadioDidReceiveNotification(subscription, value: Data([0, 72]) as NSData)
     }
@@ -802,6 +1010,133 @@ final class Harness {
           "native handoff did not release: \(acknowledged)")
     UserDefaults.standard.removeObject(forKey: "com.sfourdrinier.unifiedblemanager.background-continuation")
     UserDefaults.standard.removeObject(forKey: "com.sfourdrinier.unifiedblemanager.background-continuation.last-wake")
+  }
+
+  func coldWarmAdmissionChecks() {
+    let peer = "9828347E-45DF-2EEB-E928-6E443F4065E3"
+    let declaration = jsonText(["onAppearance": "native", "peerId": peer,
+      "resubscribe": [["serviceUuid": hrService, "serviceOccurrence": 1,
+                       "characteristicUuid": hrMeasurement, "characteristicOccurrence": 1]]])
+    let key = "com.sfourdrinier.unifiedblemanager.background-continuation"
+    let wakeKey = "com.sfourdrinier.unifiedblemanager.background-continuation.last-wake"
+    UserDefaults.standard.set("actual-wake", forKey: wakeKey)
+    let before = driver.onQueue { self.driver.calls.count }
+    for standingOrder in [nil, "{\"onAppearance\":\"record-only\"}", declaration.replacingOccurrences(of: peer, with: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")] {
+      if let standingOrder { UserDefaults.standard.set(standingOrder, forKey: key) }
+      else { UserDefaults.standard.removeObject(forKey: key) }
+      let result: String = waitFor("cold warm authority refusal") { done in
+        self.sessions.executeNativeContinuation(peer, declarationJson: declaration, completion: done)
+      }
+      check(errorCode(json(result)) == "lifecycle.invalid-state", "cold warm call created its own declaration authority: \(result)")
+      check(UserDefaults.standard.string(forKey: key) == standingOrder, "cold warm call persisted an order")
+    }
+    check(driver.onQueue { self.driver.calls.count } == before, "cold refusal reached native radio")
+    UserDefaults.standard.set(declaration, forKey: key)
+    onRadioQueue {
+      self.driver.snapshot = ["availability": "available", "authorization": "granted", "power": "on", "safeReason": NSNull()]
+      self.adapter.protocolRadioDidUpdateAdapterState(self.driver.snapshot)
+    }
+    let matching: String = waitFor("cold matching standing order") { done in
+      self.sessions.executeNativeContinuation(peer, declarationJson: declaration, completion: done)
+    }
+    check(json(matching)["ok"] as? Bool == true, "cold matching order refused: \(matching)")
+    let prepared: String = waitFor("cold matching prepare") { done in
+      self.sessions.prepareNativeContinuationClaim(maxItems: 256, maxBytes: 65536, completion: done)
+    }
+    let token = (json(prepared)["value"] as! [String: Any])["claimToken"] as! String
+    let ack: String = waitFor("cold matching acknowledgement") { done in
+      self.sessions.acknowledgeNativeContinuationClaim(token, completion: done)
+    }
+    check((json(ack)["value"] as? [String: Any])?["disposed"] as? Bool == true, "cold matching owner leaked")
+    check(UserDefaults.standard.string(forKey: wakeKey) == "actual-wake", "cold warm call fabricated wake")
+    UserDefaults.standard.removeObject(forKey: key)
+    UserDefaults.standard.removeObject(forKey: wakeKey)
+  }
+
+  func queuedWarmReplacementChecks() {
+    let queue = DispatchQueue(label: "test.warm.suspended-recording")
+    queue.suspend()
+    let wrapper = UnifiedBleRustCoreSessions(installer: { _ in
+      check(false, "stale queued warm order installed a host")
+      return self.host
+    }, recordingQueue: queue)
+    let peer = "9828347E-45DF-2EEB-E928-6E443F4065E3"
+    let order = jsonText(["onAppearance": "native", "peerId": peer,
+      "recording": ["id": "stale-warm", "maxBytes": 1048576, "maxRecords": 1000]])
+    let key = "com.sfourdrinier.unifiedblemanager.background-continuation"
+    UserDefaults.standard.set(order, forKey: key)
+    check(Thread.isMainThread, "recording deferral test must originate on main")
+    let result: String = waitFor("queued warm declaration replacement") { done in
+      wrapper.executeNativeContinuation(peer, declarationJson: order, completion: done)
+      UserDefaults.standard.set("{\"onAppearance\":\"record-only\"}", forKey: key)
+      queue.resume()
+    }
+    check(errorCode(json(result)) == "lifecycle.invalid-state", "queued warm order bypassed replacement: \(result)")
+    check(UserDefaults.standard.string(forKey: key) == "{\"onAppearance\":\"record-only\"}", "queued warm call overwrote replacement")
+    UserDefaults.standard.removeObject(forKey: key)
+  }
+
+  func warmContinuationChecks() {
+    let peer = "9828347E-45DF-2EEB-E928-6E443F4065E3"
+    let declaration = jsonText(["onAppearance": "native", "peerId": peer,
+      "resubscribe": [["serviceUuid": hrService, "serviceOccurrence": 1,
+                       "characteristicUuid": hrMeasurement, "characteristicOccurrence": 1]]])
+    let wakeKey = "com.sfourdrinier.unifiedblemanager.background-continuation.last-wake"
+    let declarationKey = "com.sfourdrinier.unifiedblemanager.background-continuation"
+    let declared: (String?, String?) = waitFor("warm declaration") { done in
+      self.sessions.declareBackgroundContinuation(declaration) { done(($0, $1)) }
+    }
+    check(declared.1 == nil, "warm declaration refused: \(String(describing: declared))")
+    UserDefaults.standard.set("prior-real-wake", forKey: wakeKey)
+    let reservation = (json(host.continuationReserveDeclaration(declarationJson: declaration))["value"] as! [String: Any])["reservationToken"] as! String
+    let expectedRefusal = host.continuationSeedDeclaration(declarationJson: declaration)
+    let refused: String = waitFor("warm seed refusal") { done in
+      self.sessions.executeNativeContinuation(peer, declarationJson: declaration, completion: done)
+    }
+    check(refused == expectedRefusal, "warm seed changed canonical native refusal: \(refused)")
+    check(json(host.continuationCancelDeclaration(reservationToken: reservation))["ok"] as? Bool == true, "warm reservation cancellation failed")
+    let conflicting = declaration.replacingOccurrences(of: peer, with: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")
+    let conflict: String = waitFor("warm authority conflict") { done in
+      self.sessions.executeNativeContinuation("AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA", declarationJson: conflicting, completion: done)
+    }
+    check(errorCode(json(conflict)) == "lifecycle.invalid-state",
+          "warm execution replaced committed declaration authority: \(conflict)")
+    let malformed: String = waitFor("warm malformed declaration") { done in
+      self.sessions.executeNativeContinuation(peer, declarationJson: "{\"unknown\":true}", completion: done)
+    }
+    check(errorCode(json(malformed)) == "argument.invalid", "warm declaration skipped validation: \(malformed)")
+    let executed: String = waitFor("warm execution") { done in
+      self.sessions.executeNativeContinuation(peer, declarationJson: declaration, completion: done)
+    }
+    check(json(executed)["ok"] as? Bool == true, "warm execution failed: \(executed)")
+    check((json(executed)["value"] as? [String: Any])?["event"] as? String == "continuation.completed", "warm execution lost native outcome")
+    let described: String = waitFor("warm raw backlog") { done in
+      self.sessions.describeNativeContinuation(completion: done)
+    }
+    check(json(described)["ok"] as? Bool == true && (json(described)["value"] as? [String: Any])?["counters"] != nil,
+          "warm status replaced native backlog with posture summary: \(described)")
+    let invalidBounds: String = waitFor("warm invalid bounds") { done in
+      self.sessions.prepareNativeContinuationClaim(maxItems: .nan, maxBytes: 100, completion: done)
+    }
+    check(errorCode(json(invalidBounds)) == "argument.invalid", "warm invalid claim bounds accepted")
+    let prepared: String = waitFor("warm raw prepare") { done in
+      self.sessions.prepareNativeContinuationClaim(maxItems: 256, maxBytes: 65536, completion: done)
+    }
+    let claim = json(prepared)["value"] as? [String: Any] ?? [:]
+    guard let token = claim["claimToken"] as? String else { return check(false, "warm claim lost token: \(prepared)") }
+    let replay: String = waitFor("warm raw prepare replay") { done in
+      self.host.continuationPrepareClaim(maxItems: 256, maxBytes: 65536, completion: HarnessInvokeCompletion(done))
+    }
+    check(prepared == replay, "warm prepare changed canonical replay envelope")
+    let acknowledged: String = waitFor("warm raw acknowledgement") { done in
+      self.sessions.acknowledgeNativeContinuationClaim(token, completion: done)
+    }
+    check((json(acknowledged)["value"] as? [String: Any])?["disposed"] as? Bool == true, "warm acknowledgement lost disposal: \(acknowledged)")
+    check(UserDefaults.standard.string(forKey: wakeKey) == "prior-real-wake", "warm controls fabricated an OS wake")
+    check(UserDefaults.standard.string(forKey: declarationKey) == declaration, "warm controls rewrote declaration")
+    UserDefaults.standard.removeObject(forKey: wakeKey)
+    UserDefaults.standard.removeObject(forKey: declarationKey)
+    print("[AppleRustRadioAdapterHarness] warm canonical controls preserve seed refusal, claim replay, disposal and actual wake history.")
   }
 
   func lifecycleCleanupChecks() {

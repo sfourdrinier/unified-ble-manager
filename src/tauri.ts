@@ -1,5 +1,15 @@
 // src/tauri.ts — zero-plumbing Tauri application factory
 
+export { createNativeContinuationControl } from './backends/desktop/native-continuation-controller'
+export type {
+  NativeContinuationControl,
+  NativeContinuationControlAccess,
+  NativeContinuationCompleted,
+  NativeContinuationStatus
+} from './backends/desktop/native-continuation-controller'
+export { createNativeContinuationRecordingController } from './core/continuation-recording'
+export type { ContinuationRecordingAccess, ContinuationRecordingController } from './core/continuation-recording'
+
 import { contractError } from './backend-contract/errors'
 import type { BleManagerCreateOptions } from './public/host-identity'
 import { normalizeBleManagerCreateOptions } from './public/host-identity'

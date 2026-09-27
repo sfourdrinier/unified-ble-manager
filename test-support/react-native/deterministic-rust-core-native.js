@@ -43,7 +43,7 @@ const ARG_SCHEMAS = Object.freeze({
   'peers.resolve': [['reference'], []],
   'scan.start': [
     ['serviceUuids', 'duplicatePolicy', 'operationId'],
-    ['deviceAddresses', 'platform', 'budgetMs']
+    ['deviceAddresses', 'platform', 'budgetMs', 'lifetimeMs']
   ],
   'scan.stop': [['operationId'], ['budgetMs']],
   'connection.connect': [
@@ -237,6 +237,7 @@ class DeterministicRustCoreNative {
     this.sessions = new Map()
     this.wakeListeners = new Set()
     this.peripherals = new Map(peripherals.map(peripheral => [peripheral.peerId, peripheral]))
+    this.peerObservations = new Map()
     this.initialBonds = new Map(peripherals.map(peripheral => [peripheral.peerId, peripheral.bonded]))
     this.restored = []
     // What the owner keeps for `session.reconcile` (104/105): the latest link
@@ -298,7 +299,7 @@ class DeterministicRustCoreNative {
     this.discoveryOverride = null
     /** What the scripted radio says characteristic reads are (Apple while notifying: `read-or-notification`). */
     this.readProvenance = 'read-response'
-    this.randomSource = length => Uint8Array.from({ length }, (_, index) => (index * 37 + 11) & 0xff)
+    this.randomSource = length => Uint8Array.from({ length }, (_, index) => (index * 37 + 11) % 256)
     this.onSessionWake = listener => {
       this.wakeListeners.add(listener)
       return { remove: () => this.wakeListeners.delete(listener) }
@@ -527,25 +528,33 @@ class DeterministicRustCoreNative {
 
   emitAdvertisement(peerId = DEFAULT_PEER, overrides = {}) {
     const peripheral = this.peripherals.get(peerId)
+    this.peerObservations.set(peerId, {
+      name: overrides.localName ?? peripheral?.name ?? null,
+      rssi: overrides.rssi ?? peripheral?.rssi ?? null,
+      lastSeenAtMonotonicMs: overrides.observedAtMs ?? 0
+    })
     for (const session of this.liveSessions()) {
-      if (session.scans.size === 0) continue
-      this.push(session, {
-        t: 'adv',
-        peerId,
-        localName: peripheral?.name ?? null,
-        rssi: peripheral?.rssi ?? null,
-        txPower: null,
-        serviceUuids: [SERVICE_UUID],
-        manufacturerData: [{ companyId: 107, payloadB64: b64([0x00, 0x80, 0xff]) }],
-        serviceData: null,
-        connectable: this.platform === 'android' ? true : null,
-        solicitedServiceUuids: null,
-        overflowServiceUuids: null,
-        appearance: null,
-        rawRecordB64: null,
-        observedAtMs: 0,
-        ...overrides
-      })
+      for (const [operationId, start] of session.scans) {
+        this.push(session, {
+          t: 'adv',
+          operationId,
+          startOperationId: start.operationId,
+          peerId,
+          localName: peripheral?.name ?? null,
+          rssi: peripheral?.rssi ?? null,
+          txPower: null,
+          serviceUuids: [SERVICE_UUID],
+          manufacturerData: [{ companyId: 107, payloadB64: b64([0x00, 0x80, 0xff]) }],
+          serviceData: null,
+          connectable: this.platform === 'android' ? true : null,
+          solicitedServiceUuids: null,
+          overflowServiceUuids: null,
+          appearance: null,
+          rawRecordB64: null,
+          observedAtMs: 0,
+          ...overrides
+        })
+      }
     }
   }
 
@@ -821,15 +830,16 @@ class DeterministicRustCoreNative {
   }
 
   peerRecord(peripheral, source, connected) {
+    const observation = this.peerObservations.get(peripheral.peerId)
     return {
       peerId: peripheral.peerId,
-      name: peripheral.name,
-      rssi: peripheral.rssi,
+      name: observation?.name ?? peripheral.name,
+      rssi: observation?.rssi ?? peripheral.rssi,
       source,
       reachability: connected ? 'reachable' : 'unknown',
       connection: connected ? 'connected' : 'unknown',
       bond: peripheral.bonded ? 'bonded' : 'unknown',
-      lastSeenAtMonotonicMs: null
+      lastSeenAtMonotonicMs: observation?.lastSeenAtMonotonicMs ?? null
     }
   }
 
@@ -1022,6 +1032,11 @@ class DeterministicRustCoreNative {
         return peripheral === undefined ? null : this.peerRecord(peripheral, 'app-reference', false)
       }
       case 'scan.start': {
+        if (
+          args.lifetimeMs !== undefined &&
+          (!Number.isInteger(args.lifetimeMs) || args.lifetimeMs < 1 || args.lifetimeMs > 2147483647)
+        )
+          throw invalid('args.lifetimeMs')
         if (args.duplicatePolicy !== 'all') throw new WireFault('capability.unsupported', 'capability', op)
         // One live scan per session, like the real owner (finding 185):
         // a membership kept for retry after a failed stop still occupies
@@ -1185,8 +1200,8 @@ class DeterministicRustCoreNative {
       case 'gatt.subscribe': {
         this.connectedLease(session, args.peerId)
         const characteristic = this.characteristic(args.peerId, args.selector, false)
-        const notify = (characteristic.properties & 0x08) !== 0
-        const indicate = (characteristic.properties & 0x10) !== 0
+        const notify = Math.floor(characteristic.properties / 0x08) % 2 === 1
+        const indicate = Math.floor(characteristic.properties / 0x10) % 2 === 1
         const mode = args.deliveryMode
         if ((mode === 'require-notification' && !notify) || (mode === 'require-indication' && !indicate)) {
           throw new WireFault('gatt.property-not-supported', 'gatt', op)

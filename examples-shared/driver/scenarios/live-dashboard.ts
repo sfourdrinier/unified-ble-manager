@@ -28,7 +28,7 @@ import type {
   PublicScanObservation,
   ScanQuery
 } from 'unified-ble-manager'
-import { createConnectionSupervisor } from 'unified-ble-manager'
+import { BleError, createConnectionSupervisor } from 'unified-ble-manager'
 import {
   BATTERY_LEVEL_CHARACTERISTIC,
   BATTERY_SERVICE,
@@ -50,7 +50,7 @@ import {
 import { peerAcquisition, type DriverHost } from '../host.ts'
 import { PmdRecorder } from '../pmd-recording.ts'
 import type { DriverError, JsonObject } from '../protocol.ts'
-import { bytesToHex, describeError, toJsonValue } from '../protocol.ts'
+import { bytesToHex, describeError, isJsonObject, toJsonValue } from '../protocol.ts'
 import {
   H10_ECG_SAMPLE_RATE_HZ,
   PMD_CONTROL_POINT,
@@ -86,6 +86,7 @@ import {
   deviceChooser,
   withTimeout,
   matchesDevice,
+  matchesDeviceName,
   outcomeOf,
   type BleScenarioState,
   type DeviceSelector
@@ -111,7 +112,14 @@ const RECONNECTING_SUPERVISOR_STATES: ReadonlySet<ConnectionSupervisorState> = n
   'waiting-for-gate'
 ])
 
-export type LiveDashboardTileStatus = 'discovered' | 'connecting' | 'streaming' | 'reconnecting' | 'lost' | 'off'
+export type LiveDashboardTileStatus =
+  | 'discovered'
+  | 'connecting'
+  | 'streaming'
+  | 'reconnecting'
+  | 'lost'
+  | 'failed'
+  | 'off'
 
 export type LiveDashboardTile = {
   readonly peerId: string
@@ -458,12 +466,63 @@ export class LiveDashboardScenario extends BleScenario<LiveDashboardState> {
         }
         this.patchBase({ phase: 'streaming' })
       } else {
+        // Already-connected peers may have stopped advertising. Resolve real
+        // directory peers before scanning; do not synthesize scan observations.
+        const selectors = selectorsFor(options.devices)
+        const directoryDeadline = this.runtime.now() + OPERATION_TIMEOUT_MS
+        const remainingDirectoryBudget = () => {
+          if (signal.aborted)
+            throw new BleError('operation.aborted', 'connection', 'live-dashboard.connected-directory')
+          // Public timeouts are whole milliseconds. Rounding down preserves
+          // the original deadline; a sub-millisecond remainder cannot be sent.
+          const remaining = Math.floor(directoryDeadline - this.runtime.now())
+          if (remaining <= 0)
+            throw new BleError('operation.timed-out', 'connection', 'live-dashboard.connected-directory')
+          return remaining
+        }
+        const queryConnected = async () => {
+          let peers: readonly BlePeer[]
+          try {
+            peers = await manager.peers.connected({ signal, timeoutMs: remainingDirectoryBudget() })
+          } catch (error) {
+            const diagnostic = describeError(error)
+            if (
+              diagnostic.code !== 'capability.unsupported' ||
+              !isJsonObject(diagnostic.detail) ||
+              diagnostic.detail.operation !== 'peers.connected.services-required'
+            )
+              throw error
+            remainingDirectoryBudget()
+            this.emit('connected-directory-query-limited', { error: toJsonValue(diagnostic), services: ['180d'] })
+            peers = await manager.peers.connected({ signal, timeoutMs: remainingDirectoryBudget(), services: ['180d'] })
+          }
+          remainingDirectoryBudget()
+          return peers
+        }
+        const connected = await withTimeout(
+          Promise.resolve().then(queryConnected),
+          OPERATION_TIMEOUT_MS,
+          signal,
+          'operation.timed-out',
+          'connected peer directory did not settle'
+        ).catch(error => {
+          const diagnostic = describeError(error)
+          if (diagnostic.code !== 'capability.unsupported') throw error
+          this.emit('connected-directory-unavailable', { error: toJsonValue(diagnostic) })
+          return []
+        })
+        if (signal.aborted)
+          throw new ScenarioError('operation.aborted', 'dashboard stopped during connected peer lookup')
+        for (const peer of connected) {
+          if (selectors.some(selector => matchesDeviceName(peer.name, selector)))
+            this.observePeer(manager, peer, peer.name, peer.rssi, options, signal)
+        }
+        this.emit('connected-directory', { peers: connected.length })
         const query = dashboardQuery(options.devices)
         this.patchBase({ phase: 'scanning' })
         const session = await manager.scan({ query, duplicates: 'all', delivery: 'balanced', signal })
         this.own('scan.stop', () => session.stop())
         this.emit('scan-started', { query: toJsonValue(query) })
-        const selectors = selectorsFor(options.devices)
         void this.watchObservations(manager, session.observations, selectors, options, signal)
         if (session.events !== undefined) void this.watchDiscoveryEvents(session.events)
       }
@@ -692,12 +751,18 @@ export class LiveDashboardScenario extends BleScenario<LiveDashboardState> {
       if (runtime !== undefined) runtime.everStreamed = true
       this.patchTile(peerId, {
         status: 'streaming',
+        error: null,
         supervisorState: event.state,
         supervisorAttempt: event.attempt,
         connectionGeneration: event.connectionGeneration ?? this.snapshot().tiles[peerId]?.connectionGeneration ?? null
       })
     } else if (event.state === 'stopped') {
-      this.patchTile(peerId, { status: 'off', supervisorState: event.state, supervisorAttempt: event.attempt })
+      this.patchTile(peerId, {
+        status: event.error === null ? 'off' : 'failed',
+        error: this.snapshot().tiles[peerId]?.error ?? (event.error === null ? null : describeError(event.error)),
+        supervisorState: event.state,
+        supervisorAttempt: event.attempt
+      })
     } else if (RECONNECTING_SUPERVISOR_STATES.has(event.state)) {
       this.patchTile(peerId, {
         status: runtime?.everStreamed === true ? 'reconnecting' : 'connecting',
@@ -771,7 +836,12 @@ export class LiveDashboardScenario extends BleScenario<LiveDashboardState> {
         this.emit(
           'tile-cleanup',
           outcome.ok
-            ? { tile: peerId, step: 'configure-unwind', state: outcome.value.state }
+            ? {
+                tile: peerId,
+                step: 'configure-unwind',
+                state: outcome.value.state,
+                receipt: toJsonValue(outcome.value)
+              }
             : { tile: peerId, step: 'configure-unwind', state: 'threw', error: outcome.error }
         )
         if (!outcome.ok || outcome.value.state !== 'released')
@@ -890,6 +960,7 @@ export class LiveDashboardScenario extends BleScenario<LiveDashboardState> {
         generation: pmdGeneration
       }
     } catch (error) {
+      this.patchTile(peerId, { error: describeError(error) })
       await unwind()
       this.emit('tile-configure-failed', {
         tile: peerId,
@@ -915,7 +986,7 @@ export class LiveDashboardScenario extends BleScenario<LiveDashboardState> {
     readonly controlPoint: GattCharacteristic | null
     readonly ecgStarted: boolean
   }> {
-    if (runtime.closing) throw new ScenarioError('operation.aborted', 'dashboard stopped before PMD configuration')
+    if (runtime.closing) throw new BleError('operation.aborted', 'gatt', 'live-dashboard.pmd.configure')
     const controlPointCharacteristic = gatt.characteristic(PMD_SERVICE, PMD_CONTROL_POINT)
     runtime.controlPoint = controlPointCharacteristic
     this.patchTile(peerId, {
@@ -959,7 +1030,7 @@ export class LiveDashboardScenario extends BleScenario<LiveDashboardState> {
       bytesHex: bytesToHex(featureBytes.value),
       features: toJsonValue(features.value)
     })
-    if (runtime.closing) throw new ScenarioError('operation.aborted', 'dashboard stopped during PMD feature read')
+    if (runtime.closing) throw new BleError('operation.aborted', 'gatt', 'live-dashboard.pmd.feature-read')
     const dataCharacteristic = gatt.characteristic(PMD_SERVICE, PMD_DATA)
     const controlPointSubscription = await controlPointCharacteristic.subscribe({
       timeoutMs: OPERATION_TIMEOUT_MS,
@@ -1020,6 +1091,9 @@ export class LiveDashboardScenario extends BleScenario<LiveDashboardState> {
           ? { tile: peerId, measurementType: measurement, ok: true, settings: toJsonValue(settings.value) }
           : { tile: peerId, measurementType: measurement, ok: false, error: settings.error }
       )
+      if (runtime.closing) {
+        throw new BleError('operation.aborted', 'gatt', 'live-dashboard.pmd.configure')
+      }
       const settleStop = await outcomeOf(() =>
         this.pmdCommand(
           peerId,
@@ -1174,7 +1248,7 @@ export class LiveDashboardScenario extends BleScenario<LiveDashboardState> {
     if (settled instanceof Error) throw settled
     if (settled === null) {
       runtime.ecgWaiters = runtime.ecgWaiters.filter(entry => entry !== waiter)
-      if (cancelled) throw new ScenarioError('operation.aborted', 'dashboard stopped while awaiting a PMD response')
+      if (cancelled) throw new BleError('operation.aborted', 'gatt', 'live-dashboard.pmd.response')
       throw new ScenarioError(
         'pmd.control-point-timeout',
         `no PMD response to op 0x${opCode.toString(16)} within ${CONTROL_POINT_TIMEOUT_MS.toString()} ms`
@@ -1456,7 +1530,7 @@ export class LiveDashboardScenario extends BleScenario<LiveDashboardState> {
       this.emit(
         'tile-cleanup',
         outcome.ok
-          ? { tile: peerId, step, state: outcome.value.state }
+          ? { tile: peerId, step, state: outcome.value.state, receipt: toJsonValue(outcome.value) }
           : { tile: peerId, step, state: 'threw', error: outcome.error }
       )
       if (!outcome.ok || outcome.value.state !== 'released')

@@ -12,11 +12,38 @@
 //! arms, then re-checks: a record that raced in after the take disarms
 //! again and the drain answers `more: true`.
 
-use std::collections::VecDeque;
+use crate::continuation_journal::{ContinuationJournal, JournalError};
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
+
+/// One bounded, non-destructive ingress observation. Matching is evaluated
+/// only after queue admission, so an acknowledgement never hides data loss.
+pub type RecordMatcher = Arc<dyn Fn(&Value) -> bool + Send + Sync>;
+struct Observer {
+    identity: Arc<()>,
+    consumer: String,
+    matcher: RecordMatcher,
+    sender: tokio::sync::oneshot::Sender<Value>,
+}
+pub struct Observation {
+    pub receiver: tokio::sync::oneshot::Receiver<Value>,
+    identity: Arc<()>,
+    slot: Arc<Mutex<Option<Observer>>>,
+}
+impl Drop for Observation {
+    fn drop(&mut self) {
+        let mut slot = lock(&self.slot);
+        if slot
+            .as_ref()
+            .is_some_and(|observer| Arc::ptr_eq(&observer.identity, &self.identity))
+        {
+            slot.take();
+        }
+    }
+}
 
 /// Private wire encoding, shared by native continuation hosts.
 #[must_use]
@@ -35,6 +62,70 @@ pub fn encode_base64(bytes: &[u8]) -> String {
         out.push(if chunk.len() > 2 { sextet(0) } else { '=' });
     }
     out
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Base64Error {
+    Invalid,
+    TooLarge,
+}
+
+/// Strict RFC 4648 padded decoding shared by both native adapters.
+pub fn decode_base64(text: &str, max_bytes: usize) -> Result<Vec<u8>, Base64Error> {
+    let input = text.as_bytes();
+    if input.len() > 4 * max_bytes.div_ceil(3) {
+        return Err(Base64Error::TooLarge);
+    }
+    if !input.len().is_multiple_of(4) {
+        return Err(Base64Error::Invalid);
+    }
+    if input.is_empty() {
+        return Ok(Vec::new());
+    }
+    let padding = match (input[input.len() - 2], input[input.len() - 1]) {
+        (b'=', b'=') => 2,
+        (_, b'=') => 1,
+        _ => 0,
+    };
+    let size = input.len() / 4 * 3 - padding;
+    if size > max_bytes {
+        return Err(Base64Error::TooLarge);
+    }
+    let mut output = Vec::with_capacity(size);
+    for (index, chunk) in input.as_chunks::<4>().0.iter().enumerate() {
+        let pad = if index == input.len() / 4 - 1 {
+            padding
+        } else {
+            0
+        };
+        let mut value = 0u32;
+        for (position, byte) in chunk.iter().enumerate() {
+            let digit = if position >= 4 - pad {
+                0
+            } else {
+                match byte {
+                    b'A'..=b'Z' => u32::from(byte - b'A'),
+                    b'a'..=b'z' => u32::from(byte - b'a') + 26,
+                    b'0'..=b'9' => u32::from(byte - b'0') + 52,
+                    b'+' => 62,
+                    b'/' => 63,
+                    _ => return Err(Base64Error::Invalid),
+                }
+            };
+            value = (value << 6) | digit;
+        }
+        if (pad == 1 && value & 0xff != 0) || (pad == 2 && value & 0xffff != 0) {
+            return Err(Base64Error::Invalid);
+        }
+        output.push((value >> 16) as u8);
+        if pad < 2 {
+            output.push((value >> 8) as u8);
+        }
+        if pad == 0 {
+            output.push(value as u8);
+        }
+    }
+    Ok(output)
 }
 
 use std::sync::{MutexGuard, PoisonError};
@@ -91,6 +182,7 @@ struct Entry {
 
 #[derive(Default)]
 struct Queues {
+    durable: Option<Durable>,
     data: VecDeque<Entry>,
     data_bytes: usize,
     control: VecDeque<Entry>,
@@ -105,7 +197,6 @@ struct Queues {
     /// A continuation claim sealed this outbox. Data that reaches the
     /// process after that authoritative cutoff is not silently treated as
     /// backlog for the prior owner; it is counted for the handoff result.
-    sealed: bool,
     after_cutoff_items: u64,
     after_cutoff_bytes: u64,
 }
@@ -119,9 +210,18 @@ pub struct AfterCutoffLoss {
 
 /// A data record the session could not queue: the caller turns it into a
 /// terminal (`stream-end overflow`) or an `ingress-drop`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DataOverflow {
-    pub bytes: usize,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DataIngressFailure {
+    Stopped { bytes: usize },
+    Overflow { bytes: usize },
+    Storage { bytes: usize, error: JournalError },
+}
+
+struct Durable {
+    journal: Arc<ContinuationJournal>,
+    context: Value,
+    consumers: HashMap<String, Value>,
+    failure: Option<JournalError>,
 }
 
 /// One session's outgoing records plus its wake state.
@@ -130,6 +230,9 @@ pub struct Outbox {
     queues: Mutex<Queues>,
     armed: AtomicBool,
     wake: Arc<dyn WakeSink>,
+    observer: Arc<Mutex<Option<Observer>>>,
+    sealed: AtomicBool,
+    durable_enabled: AtomicBool,
 }
 
 fn with_ordinal(mut record: Value, ordinal: u64) -> Value {
@@ -140,6 +243,143 @@ fn with_ordinal(mut record: Value, ordinal: u64) -> Value {
 }
 
 impl Outbox {
+    /// Select one durable delivery cursor before admitting any session ingress.
+    /// Native drain/claim never removes or acknowledges these durable records.
+    pub fn attach_journal(
+        &self,
+        journal: Arc<ContinuationJournal>,
+        context: Value,
+    ) -> Result<(), JournalError> {
+        ContinuationJournal::validate_metadata(&context)?;
+        let mut queues = lock(&self.queues);
+        if self.is_sealed() || queues.ordinal != 0 || queues.durable.is_some() {
+            return Err(JournalError::invalid(
+                "journal must attach before session ingress",
+            ));
+        }
+        queues.durable = Some(Durable {
+            journal,
+            context,
+            consumers: HashMap::new(),
+            failure: None,
+        });
+        self.durable_enabled.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Commit immutable generation/selector context before the corresponding
+    /// subscribe can synchronously produce its first value.
+    pub fn register_journal_consumer(
+        &self,
+        consumer: &str,
+        metadata: Value,
+    ) -> Result<(), JournalError> {
+        let mut queues = lock(&self.queues);
+        if self.is_sealed() {
+            return Err(JournalError::invalid(
+                "sealed outbox refuses journal registration",
+            ));
+        }
+        let Some(durable) = queues.durable.as_mut() else {
+            return Ok(());
+        };
+        if consumer.is_empty() || consumer.len() > 256 || durable.consumers.len() >= 4096 {
+            return Err(JournalError::invalid(
+                "invalid or excessive journal consumers",
+            ));
+        }
+        if let Some(failure) = &durable.failure {
+            return Err(failure.clone());
+        }
+        if let Some(previous) = durable.consumers.get(consumer) {
+            return if previous == &metadata {
+                Ok(())
+            } else {
+                Err(JournalError::invalid(
+                    "journal consumer metadata is immutable",
+                ))
+            };
+        }
+        ContinuationJournal::validate_metadata(&metadata)?;
+        let context = serde_json::json!({"session":durable.context,"consumer":metadata});
+        if let Err(failure) = durable.journal.append(
+            &context,
+            &serde_json::json!({"t":"consumer-registration","consumer":consumer}),
+        ) {
+            if failure.kind == "storage.stopped" {
+                self.sealed.store(true, Ordering::SeqCst);
+                lock(&self.observer).take();
+                return Err(failure);
+            }
+            durable.journal.mark_collection_failure(&failure);
+            durable.failure = Some(failure.clone());
+            return Err(failure);
+        }
+        durable.consumers.insert(consumer.to_owned(), metadata);
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn journal_failure(&self) -> Option<JournalError> {
+        lock(&self.queues)
+            .durable
+            .as_ref()
+            .and_then(|durable| durable.failure.clone())
+    }
+
+    /// Called on the blocking worker after an ingress worker failed. No pending
+    /// acknowledgement may become a success after this terminal storage fault.
+    pub fn fail_collection_worker(&self) {
+        let failure = JournalError {
+            kind: "storage.io",
+            detail: "native collection worker did not complete",
+            operation: "ingress-worker",
+            sqlite_extended_code: None,
+            sqlite_code: None,
+        };
+        let mut queues = lock(&self.queues);
+        if let Some(durable) = queues.durable.as_mut() {
+            durable.journal.mark_collection_failure(&failure);
+            durable.failure = Some(failure.clone());
+        }
+        self.storage_terminal(Value::Null, &failure);
+    }
+
+    fn persist(durable: &mut Durable, record: &Value, data: bool) -> Result<(), JournalError> {
+        if let Some(failure) = &durable.failure {
+            return Err(failure.clone());
+        }
+        let metadata = record["consumer"]
+            .as_str()
+            .and_then(|consumer| durable.consumers.get(consumer));
+        let result = if data && metadata.is_none() {
+            Err(JournalError::invalid(
+                "durable value has no committed consumer registration",
+            ))
+        } else {
+            durable
+                .journal
+                .append(
+                    &serde_json::json!({"session":durable.context,"consumer":metadata}),
+                    record,
+                )
+                .map(|_| ())
+        };
+        if let Err(failure) = &result
+            && failure.kind != "storage.stopped"
+        {
+            durable.journal.mark_collection_failure(failure);
+            durable.failure = Some(failure.clone());
+        }
+        result
+    }
+
+    fn storage_terminal(&self, consumer: Value, error: &JournalError) {
+        let mut observer = lock(&self.observer);
+        if let Some(observer) = observer.take() {
+            let _=observer.sender.send(serde_json::json!({"t":"stream-end","consumer":consumer,"reason":"source-failed","error":crate::continuation::recording_failure(error.clone())}));
+        }
+    }
     #[must_use]
     pub fn new(session_id: u64, wake: Arc<dyn WakeSink>) -> Self {
         Self {
@@ -147,6 +387,9 @@ impl Outbox {
             queues: Mutex::new(Queues::default()),
             armed: AtomicBool::new(true),
             wake,
+            observer: Arc::default(),
+            sealed: AtomicBool::new(false),
+            durable_enabled: AtomicBool::new(false),
         }
     }
 
@@ -156,23 +399,88 @@ impl Outbox {
         }
     }
 
+    /// At most one setup step owns observation admission. The queue lock
+    /// orders registration and sealing with ingress; no historical replay.
+    pub fn observe(
+        &self,
+        consumer: &str,
+        matcher: RecordMatcher,
+    ) -> Result<Observation, &'static str> {
+        let queues = lock(&self.queues);
+        let mut slot = lock(&self.observer);
+        if self.is_sealed()
+            || slot.is_some()
+            || queues
+                .durable
+                .as_ref()
+                .is_some_and(|durable| durable.failure.is_some())
+        {
+            return Err("outbox sealed or observation already active");
+        }
+        let identity = Arc::new(());
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        *slot = Some(Observer {
+            identity: identity.clone(),
+            consumer: consumer.to_owned(),
+            matcher,
+            sender,
+        });
+        Ok(Observation {
+            receiver,
+            identity,
+            slot: self.observer.clone(),
+        })
+    }
+
     /// Queue one data record (`adv` / `value`).
-    pub fn push_data(&self, record: Value) -> Result<(), DataOverflow> {
+    pub fn push_data(&self, record: Value) -> Result<(), DataIngressFailure> {
         let bytes = record.to_string().len();
         {
             let mut queues = lock(&self.queues);
-            if queues.sealed {
+            if self.is_sealed() {
                 queues.after_cutoff_items += 1;
                 queues.after_cutoff_bytes += bytes as u64;
-                return Err(DataOverflow { bytes });
+                return Err(DataIngressFailure::Overflow { bytes });
+            }
+            if let Some(durable) = queues.durable.as_mut() {
+                if let Err(error) = Self::persist(durable, &record, true) {
+                    if error.kind == "storage.stopped" {
+                        self.sealed.store(true, Ordering::SeqCst);
+                        queues.after_cutoff_items = queues.after_cutoff_items.saturating_add(1);
+                        queues.after_cutoff_bytes =
+                            queues.after_cutoff_bytes.saturating_add(bytes as u64);
+                        lock(&self.observer).take();
+                        return Err(DataIngressFailure::Stopped { bytes });
+                    }
+                    self.storage_terminal(record["consumer"].clone(), &error);
+                    return Err(DataIngressFailure::Storage { bytes, error });
+                }
+                queues.ordinal += 1;
+                let mut observer = lock(&self.observer);
+                if observer.as_ref().is_some_and(|observer| {
+                    record["consumer"] == observer.consumer && (observer.matcher)(&record)
+                }) && let Some(observer) = observer.take()
+                {
+                    let _ = observer.sender.send(record);
+                }
+                return Ok(());
             }
             if queues.data.len() >= DATA_RECORD_CAP || queues.data_bytes + bytes > DATA_RECORD_BYTES
             {
-                return Err(DataOverflow { bytes });
+                return Err(DataIngressFailure::Overflow { bytes });
             }
             queues.ordinal += 1;
             let ordinal = queues.ordinal;
             queues.data_bytes += bytes;
+            let mut observer = lock(&self.observer);
+            if observer.as_ref().is_some_and(|observer| {
+                record["consumer"] == observer.consumer && (observer.matcher)(&record)
+            }) && let Some(observer) = observer.take()
+            {
+                // A dropped receiver means its scoped step already ended;
+                // the record remains retained independently below.
+                let _ = observer.sender.send(record.clone());
+            }
             queues.data.push_back(Entry {
                 ordinal,
                 record,
@@ -187,8 +495,9 @@ impl Outbox {
     /// change with every data admission: an accepted record is before the
     /// cutoff and remains drainable; a later attempt is counted explicitly.
     pub fn seal(&self) -> AfterCutoffLoss {
-        let mut queues = lock(&self.queues);
-        queues.sealed = true;
+        let queues = lock(&self.queues);
+        self.sealed.store(true, Ordering::SeqCst);
+        lock(&self.observer).take();
         AfterCutoffLoss {
             items: queues.after_cutoff_items,
             bytes: queues.after_cutoff_bytes,
@@ -206,14 +515,19 @@ impl Outbox {
 
     #[must_use]
     pub fn is_sealed(&self) -> bool {
-        lock(&self.queues).sealed
+        self.sealed.load(Ordering::SeqCst)
+    }
+
+    #[must_use]
+    pub fn has_journal(&self) -> bool {
+        self.durable_enabled.load(Ordering::SeqCst)
     }
 
     /// Preserve upstream loss observed after handoff, even when the source
     /// could not retain bytes for an ordinary data admission.
     pub fn note_after_cutoff_loss(&self, items: u64, bytes: u64) {
         let mut queues = lock(&self.queues);
-        if queues.sealed {
+        if self.is_sealed() {
             queues.after_cutoff_items = queues.after_cutoff_items.saturating_add(items);
             queues.after_cutoff_bytes = queues.after_cutoff_bytes.saturating_add(bytes);
         }
@@ -223,6 +537,27 @@ impl Outbox {
     pub fn push_control(&self, record: Value) {
         {
             let mut queues = lock(&self.queues);
+            if !self.is_sealed()
+                && let Some(durable) = queues.durable.as_mut()
+                && let Err(error) = Self::persist(durable, &record, false)
+            {
+                if error.kind == "storage.stopped" {
+                    self.sealed.store(true, Ordering::SeqCst);
+                    lock(&self.observer).take();
+                } else {
+                    self.storage_terminal(record["consumer"].clone(), &error);
+                }
+            }
+            let mut observer = lock(&self.observer);
+            if record["t"] == "stream-end"
+                && observer
+                    .as_ref()
+                    .is_some_and(|observer| record["consumer"] == observer.consumer)
+                && let Some(observer) = observer.take()
+            {
+                // The terminal is still retained (or loss-accounted) below.
+                let _ = observer.sender.send(record.clone());
+            }
             if queues.control.len() >= CONTROL_RECORD_CAP {
                 queues.control_lost += 1;
                 queues.control_lost_total += 1;
@@ -308,6 +643,11 @@ impl Outbox {
     /// Queued data records (retained byte buffers).
     #[must_use]
     pub fn queued_data(&self) -> usize {
+        // Durable values have their own cursor and never enter this queue.
+        // Runtime diagnostics must not wait on the journal's commit mutex.
+        if self.has_journal() {
+            return 0;
+        }
         lock(&self.queues).data.len()
     }
 

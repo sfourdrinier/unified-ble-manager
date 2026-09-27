@@ -78,23 +78,8 @@ impl DeviceClock {
 /// (2000-01-01T00:00:00Z): 946684800 seconds.
 pub const POLAR_EPOCH_OFFSET_NS: u64 = 946_684_800_000_000_000;
 
-/// ECG frame timestamp in nanoseconds for the frame whose last sample is
-/// `last_sample_index` (samples counted from boot at 130 Hz). A Polar-epoch
-/// clock anchors boot in device time; an unsynchronised clock counts from
-/// boot with no wall-clock component.
-pub fn device_timestamp_ns(clock: DeviceClock, boot_unix_ns: u64, last_sample_index: u64) -> u64 {
-    let since_boot_ns = last_sample_index.saturating_mul(1_000_000_000) / 130;
-    match clock {
-        DeviceClock::Unsynchronized => since_boot_ns,
-        DeviceClock::PolarEpoch => boot_unix_ns
-            .saturating_sub(POLAR_EPOCH_OFFSET_NS)
-            .saturating_add(since_boot_ns),
-    }
-}
-
 /// Convert a rate-independent sensor elapsed time to the selected device clock.
-/// Unlike the legacy ECG counter helper, this refuses invalid epoch anchors
-/// and overflow instead of silently clipping a timestamp.
+/// Refuses invalid epoch anchors and overflow instead of clipping a timestamp.
 pub fn device_timestamp_from_elapsed_ns(
     clock: DeviceClock,
     boot_unix_ns: u64,
@@ -237,7 +222,8 @@ pub struct SimConfig {
     pub hr_hz: f64,
     /// ECG samples per data frame.
     pub ecg_frame_samples: usize,
-    /// ECG frames per second (samples/s ≈ frames × samples).
+    /// ECG dispatch opportunities per second, not sensor sample rate (fixed 130 Hz).
+    /// Each opportunity sends zero or bounded multiple acquired frames.
     pub ecg_frames_per_sec: f64,
     /// Device clock for ECG timestamps (default: the strap's Polar epoch).
     pub clock: DeviceClock,
@@ -325,6 +311,7 @@ pub struct SimState {
     pub acc_settings: Option<crate::acc::Settings>,
     /// Sensor scheduler origin, committed with ACC settings, never at write time.
     pub acc_started_at: Option<Instant>,
+    pub ecg_started_at: Option<Instant>,
     /// Status code forced onto the next PMD command response, then cleared.
     pub reject_next_status: Option<u8>,
     /// Running ECG sample index (130 Hz clock).
@@ -450,6 +437,7 @@ impl SimState {
             ecg_streaming: false,
             acc_settings: None,
             acc_started_at: None,
+            ecg_started_at: None,
             reject_next_status: None,
             ecg_sample_index: 0,
             hr_beat_index: 0,
@@ -861,8 +849,14 @@ impl SimState {
     /// out (inline answer or deferred drain), never at write time.
     pub fn apply_pmd_action(&mut self, action: PmdAction) {
         match action {
-            PmdAction::StartEcg => self.ecg_streaming = true,
-            PmdAction::StopEcg => self.ecg_streaming = false,
+            PmdAction::StartEcg => {
+                self.ecg_streaming = true;
+                self.ecg_started_at = Some(Instant::now());
+            }
+            PmdAction::StopEcg => {
+                self.ecg_streaming = false;
+                self.ecg_started_at = None;
+            }
             PmdAction::StartAcc(settings) => {
                 self.acc_settings = Some(settings);
                 self.acc_started_at = Some(Instant::now());
@@ -879,6 +873,7 @@ impl SimState {
     /// Run-wide configuration, injected faults and evidence counters survive.
     pub fn reset_pmd_session(&mut self) {
         self.ecg_streaming = false;
+        self.ecg_started_at = None;
         self.acc_settings = None;
         self.acc_started_at = None;
         self.pending_indications.clear();
@@ -1110,7 +1105,12 @@ mod tests {
         // nanoseconds — never a Unix-epoch value like the old wall clock.
         let boot_unix_ns = super::POLAR_EPOCH_OFFSET_NS + 500_000_000;
         assert_eq!(
-            super::device_timestamp_ns(super::DeviceClock::PolarEpoch, boot_unix_ns, 130),
+            super::device_timestamp_from_elapsed_ns(
+                super::DeviceClock::PolarEpoch,
+                boot_unix_ns,
+                1_000_000_000
+            )
+            .unwrap(),
             1_500_000_000
         );
     }
@@ -1119,7 +1119,12 @@ mod tests {
     fn unsynchronised_clock_counts_from_boot() {
         // Explicitly unsynchronised: the wall clock never enters the stamp.
         assert_eq!(
-            super::device_timestamp_ns(super::DeviceClock::Unsynchronized, 9_999_999_999, 130),
+            super::device_timestamp_from_elapsed_ns(
+                super::DeviceClock::Unsynchronized,
+                9_999_999_999,
+                1_000_000_000
+            )
+            .unwrap(),
             1_000_000_000
         );
     }
@@ -1128,11 +1133,12 @@ mod tests {
     fn polar_epoch_frame_encodes_exact_bytes() {
         // One second after the Polar epoch, one zero sample: the full frame
         // is pinned byte for byte.
-        let timestamp_ns = super::device_timestamp_ns(
+        let timestamp_ns = super::device_timestamp_from_elapsed_ns(
             super::DeviceClock::PolarEpoch,
             super::POLAR_EPOCH_OFFSET_NS,
-            130,
-        );
+            1_000_000_000,
+        )
+        .unwrap();
         assert_eq!(timestamp_ns, 1_000_000_000);
         let frame = gatt_spec::encode_ecg_frame(timestamp_ns, &[0]);
         assert_eq!(
@@ -1340,6 +1346,22 @@ mod tests {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
         bytes
+    }
+
+    #[test]
+    fn ecg_acquisition_origin_begins_at_start_commit_and_restarts_after_stop() {
+        let mut sim = state();
+        assert!(sim.ecg_started_at.is_none());
+        let before = Instant::now();
+        sim.apply_pmd_action(PmdAction::StartEcg);
+        let first = sim.ecg_started_at.unwrap();
+        assert!(first >= before);
+        sim.apply_pmd_action(PmdAction::StopEcg);
+        assert!(sim.ecg_started_at.is_none());
+        sim.apply_pmd_action(PmdAction::StartEcg);
+        assert!(sim.ecg_started_at.unwrap() >= first);
+        sim.reset_pmd_session();
+        assert!(sim.ecg_started_at.is_none());
     }
 
     #[test]

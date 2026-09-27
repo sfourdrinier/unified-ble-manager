@@ -5,6 +5,17 @@
  * from the application root so backend implementation dependencies are opt-in.
  */
 export * from './backend-contract'
+export { createNativeContinuationControl } from './core/native-continuation-control'
+export type {
+  NativeContinuationControl,
+  NativeContinuationControlAccess,
+  NativeContinuationControlContext,
+  NativeContinuationCompleted,
+  NativeContinuationFailed,
+  NativeContinuationStatus,
+  NativeContinuationDesktopStatus,
+  NativeContinuationMobileStatus
+} from './core/native-continuation-control'
 export {
   createBackendAuthorDefinition,
   featureRegistryOf,

@@ -7,10 +7,13 @@ import android.util.Log
 import com.sfourdrinier.unifiedblemanager.background.AndroidConnectedDeviceForegroundServiceDriver
 import com.sfourdrinier.unifiedblemanager.background.ConnectedDeviceForegroundServiceLeaseRegistry
 import com.sfourdrinier.unifiedblemanager.presence.BackgroundContinuationStore
+import com.sfourdrinier.unifiedblemanager.presence.BackgroundContinuationDeclaration
+import com.sfourdrinier.unifiedblemanager.presence.ContinuationOutcome
 import com.sfourdrinier.unifiedblemanager.presence.CompanionPresenceObserver
 import com.sfourdrinier.unifiedblemanager.presence.InMemoryBackgroundContinuationStore
 import com.sfourdrinier.unifiedblemanager.presence.PresenceRestoredPeer
 import com.sfourdrinier.unifiedblemanager.presence.PresenceRestoredStore
+import com.sfourdrinier.unifiedblemanager.presence.PresenceForegroundContinuation
 import com.sfourdrinier.unifiedblemanager.presence.NativeContinuationBinding
 import com.sfourdrinier.unifiedblemanager.presence.SharedPreferencesBackgroundContinuationStore
 import com.sfourdrinier.unifiedblemanager.presence.SharedPreferencesPresenceStore
@@ -36,6 +39,7 @@ class RustCoreProcessHost(
   },
   private val log: (String) -> Unit
 ) {
+  private var presenceForeground: PresenceForegroundContinuation? = null
   private val routes = ConcurrentHashMap<Long, (Long) -> Unit>()
   private val unroutedWakes = AtomicLong()
   private sealed interface CleanupObligation {
@@ -68,6 +72,41 @@ class RustCoreProcessHost(
 
   @Volatile
   private var continuationExecutor: NativeContinuationBinding? = null
+  private var recordingDirectory: (() -> java.io.File)? = null
+  private var recordingConfigured = false
+
+  /** Native application-private path only; never sourced from a JS declaration. */
+  fun attachRecordingDirectory(directory: () -> java.io.File) { recordingDirectory = directory }
+
+  @Synchronized
+  fun configureRecordingStorage() {
+    if (recordingConfigured) return
+    try {
+      val directory = recordingDirectory?.invoke() ?: throw RustCoreRejection("capability.unsupported", "restoration", "continuation.recording.configure", "No trusted private recording directory was configured")
+      if (!directory.isDirectory && !directory.mkdirs()) throw java.io.IOException("Directory creation failed")
+      val result = RustCoreJson.parse(core.continuationConfigureRecordingDirectory(directory.canonicalPath)) as? Map<*, *>
+      if (result?.get("ok") != true) {
+        val error = result?.get("error") as? Map<*, *>
+        val code = error?.get("code") as? String
+        val domain = error?.get("domain") as? String
+        val operation = error?.get("operation") as? String
+        if (code == null || domain == null || operation == null) throw RustCoreRejection("protocol.malformed", "protocol", "continuation.recording.configure", "Malformed storage configuration response")
+        throw RustCoreRejection(code, domain, operation, error["detail"] as? String, error["platform"] as? Map<*, *>)
+      }
+      recordingConfigured = true
+    } catch (error: RustCoreRejection) { throw error }
+      catch (error: MobileCoreBridge.MobileCoreException) { throw RustCoreRejection.fromWire(error.message, "continuation.recording.configure") }
+      catch (error: Exception) {
+        val reason = "Private recording storage could not be configured"
+        throw RustCoreRejection("platform.failure", "platform", "continuation.recording.configure", reason,
+          linkedMapOf("domain" to "android", "code" to error.javaClass.name, "message" to reason, "metadata" to emptyMap<String, Any?>()))
+      }
+  }
+
+  fun recordingControl(operation: String, id: String, token: String, maxItems: Int, maxBytes: Int): String {
+    configureRecordingStorage()
+    return core.continuationRecordingControl(operation, id, token, maxItems, maxBytes)
+  }
 
   /** Rust's single wake sink for the process. */
   val wake = MobileCoreBridge.WakeListener { sessionId ->
@@ -118,6 +157,31 @@ class RustCoreProcessHost(
     )
     continuationExecutor = built
     return built
+  }
+
+  /** Only acquisition of a recording-enabled order needs writable storage;
+   * status, handoff and disarming must remain available after storage fails. */
+  fun executeNativeContinuation(peerId: String, declaration: BackgroundContinuationDeclaration): ContinuationOutcome {
+    if (declaration.recording != null) configureRecordingStorage()
+    return continuationExecutor().execute(peerId, declaration)
+  }
+
+  /** App-owned direct execution, not an OS appearance. The host retains storage
+   * and process authority; the receiver decodes the canonical result before ACK. */
+  fun executeNativeContinuationRaw(peerId: String, declaration: BackgroundContinuationDeclaration, callback: MobileCoreBridge.InvokeCallback) {
+    try {
+      if (continuationStore().loadDeclaration() != declaration) throw RustCoreRejection(
+        "lifecycle.invalid-state", "restoration", "continuation.execute", "Explicit matching persisted native declaration required")
+      if (declaration.recording != null) configureRecordingStorage()
+      continuationExecutor().executeRaw(peerId, declaration, callback) { continuationStore().loadDeclaration() }
+    } catch (error: RuntimeException) {
+      val failure = when (error) {
+        is RustCoreRejection -> error
+        is MobileCoreBridge.MobileCoreException -> RustCoreRejection.fromWire(error.message, "continuation.execute")
+        else -> RustCoreRejection.platform("continuation.execute", error)
+      }
+      callback.onResult(failure.toContinuationEnvelope())
+    }
   }
 
   /**
@@ -265,6 +329,10 @@ class RustCoreProcessHost(
 
   fun companionChooser(): CompanionPort? = companionChooser
 
+  fun foregroundContinuation(): PresenceForegroundContinuation = checkNotNull(presenceForeground) {
+    "This process host has no connected-device foreground-service authority"
+  }
+
   companion object {
     const val OWNER = "unified-ble-manager/react-native-android"
     const val ADAPTER_LABEL = "android-default"
@@ -291,6 +359,10 @@ class RustCoreProcessHost(
     fun shared(context: Context): RustCoreProcessHost {
       shared?.let { return it }
       val application = context.applicationContext
+      val backgroundLeases = ConnectedDeviceForegroundServiceLeaseRegistry(
+        AndroidConnectedDeviceForegroundServiceDriver(application), LeaseIds()
+      )
+      val foreground = PresenceForegroundContinuation(backgroundLeases)
       lateinit var host: RustCoreProcessHost
       host = RustCoreProcessHost(
         JniMobileCorePort,
@@ -298,14 +370,9 @@ class RustCoreProcessHost(
           RustRadioHostAdapter(
             core = JniMobileCorePort,
             radio = OwnedRadioPort(OwnedAndroidGattRadio(application), ::log),
-            background = ForegroundServiceBackgroundPort(
-              ConnectedDeviceForegroundServiceLeaseRegistry(
-                AndroidConnectedDeviceForegroundServiceDriver(application),
-                LeaseIds()
-              )
-            ),
+            background = ForegroundServiceBackgroundPort(backgroundLeases),
             companion = { host.companionChooser() },
-            presence = { CompanionPresenceObserver.application(application) },
+            presence = { CompanionPresenceObserver.application(application, foreground::releaseOrThrow) },
             radioExecutor = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "ubm-rust-radio") },
             serviceExecutor = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "ubm-rust-services") },
             log = ::log
@@ -313,8 +380,10 @@ class RustCoreProcessHost(
         },
         log = ::log
       )
+      host.presenceForeground = foreground
       host.attachPresenceStore(SharedPreferencesPresenceStore(application))
       host.attachContinuationStore(SharedPreferencesBackgroundContinuationStore(application))
+      host.attachRecordingDirectory { java.io.File(application.noBackupFilesDir, "ubm-continuation") }
       shared = host
       return host
     }

@@ -67,10 +67,16 @@ describe('Unified Android native protocol structure', () => {
       'presence/BackgroundContinuationStore.kt',
       'presence/CompanionPresenceObserver.kt',
       'presence/ContinuationHandoff.kt',
+      // Bounded cold headless admission, typed wake outcomes, and shared FGS
+      // ownership are exercised by the Android continuation JVM suites.
+      'presence/HeadlessDispatchAdmission.kt',
       'presence/NativeContinuationBinding.kt',
+      'presence/PresenceContinuationExecution.kt',
+      'presence/PresenceForegroundContinuation.kt',
       'presence/PresenceRestoredStore.kt',
       'presence/PresenceWakeCoordinator.kt',
       'presence/UbmCompanionPresenceService.kt',
+      'presence/UbmHeadlessContinuationService.kt',
       // R02 contract update (justified): `CoreCommandAuthority` is the
       // admission table the dispatcher consults before radio execution
       // (covered commands + scoped exceptions + core*-coded terminals),

@@ -5,6 +5,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::continuation_journal::{ContinuationJournal, JournalQuota, JournalRegistry};
+use crate::continuation_outbox::{Observation, RecordMatcher, decode_base64, encode_base64};
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
@@ -12,8 +14,35 @@ pub type Result<T> = std::result::Result<T, Value>;
 pub type ContinuationFuture<'a> = Pin<Box<dyn Future<Output = String> + Send + 'a>>;
 
 pub trait ContinuationSession: Send + Sync {
+    fn seal_collection(&self) -> Result<()> {
+        Err(failure(
+            "capability.unsupported",
+            "session cannot seal native collection",
+        ))
+    }
+    fn collection_sealed(&self) -> bool {
+        false
+    }
+    fn attach_journal(&self, _: Arc<ContinuationJournal>, _: Value) -> Result<()> {
+        Err(failure(
+            "capability.unsupported",
+            "session cannot collect durably",
+        ))
+    }
+    fn register_journal_consumer(&self, _: &str, _: Value) -> Result<()> {
+        Err(failure(
+            "capability.unsupported",
+            "session cannot register durable consumer metadata",
+        ))
+    }
     fn call<'a>(&'a self, op: &'a str, args: &'a str) -> ContinuationFuture<'a>;
     fn drain(&self, max_items: u32, max_bytes: u32) -> ContinuationFuture<'_>;
+    fn observe(&self, _: &str, _: RecordMatcher) -> Result<Observation> {
+        Err(failure(
+            "capability.unsupported",
+            "session cannot observe setup acknowledgements",
+        ))
+    }
 }
 
 pub trait ContinuationHost: Send + Sync {
@@ -28,6 +57,19 @@ pub trait ContinuationHost: Send + Sync {
 fn failure(code: &str, detail: &str) -> Value {
     json!({"code":code,"domain":"restoration","operation":"continuation",
         "detail":detail})
+}
+
+/// Safe public error identity for durable storage. Never includes a path,
+/// SQL text, declaration contents, or sensor bytes.
+pub fn recording_failure(error: crate::continuation_journal::JournalError) -> Value {
+    let mut metadata = json!({"storageKind":error.kind,"operation":error.operation});
+    if let Some(code) = error.sqlite_extended_code {
+        metadata["sqliteExtendedCode"] = json!(code);
+    }
+    if let Some(code) = error.sqlite_code {
+        metadata["sqliteCode"] = json!(code);
+    }
+    json!({"code":if error.kind=="argument.invalid" {"argument.invalid"} else {"platform.failure"},"domain":"platform","operation":"continuation.recording","detail":error.detail,"platform":{"domain":"sqlite","code":error.kind,"message":error.detail,"metadata":metadata}})
 }
 
 fn invalid(detail: &str) -> Value {
@@ -52,6 +94,14 @@ pub(crate) struct State {
     prepared: Option<Prepared>,
     sealed: bool,
     execution_declaration: Option<Value>,
+    setup_generation: Option<Value>,
+    setup_complete: bool,
+    setup_failure: Option<Value>,
+    link_generation: Option<String>,
+    link_outcome: Option<Value>,
+    link_failure: Option<Value>,
+    recording: Option<String>,
+    recording_attached: bool,
 }
 
 #[derive(Default)]
@@ -84,6 +134,9 @@ struct Prepared {
 pub struct NativeContinuation {
     host: Arc<dyn ContinuationHost>,
     state: Arc<Mutex<State>>,
+    // Published only while holding state admission, alongside session install
+    // or confirmed disposal. Idle OS events must not contend for that lock.
+    session_owned: Arc<AtomicBool>,
     recovery_requested: Arc<AtomicBool>,
     recovering: Arc<AtomicBool>,
     recovery_stopped: Arc<AtomicBool>,
@@ -92,13 +145,101 @@ pub struct NativeContinuation {
     recovery_idle: Arc<tokio::sync::Notify>,
     declarations: Arc<std::sync::Mutex<DeclarationAuthority>>,
     recovery_runtime: Arc<std::sync::OnceLock<tokio::runtime::Handle>>,
+    recordings: Arc<JournalRegistry>,
+    recording_sessions: Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, std::sync::Weak<dyn ContinuationSession>>,
+        >,
+    >,
 }
 
 impl NativeContinuation {
+    async fn check_recording_admission(&self, state: &State) -> Result<()> {
+        // An attempted journal open can fail before attachment. Its retry must
+        // reach open again; only an attached collection has a status to fence.
+        if !state.recording_attached {
+            return Ok(());
+        }
+        let Some(id) = state.recording.clone() else {
+            return Ok(());
+        };
+        let executor = self.clone();
+        let session = state.session.clone();
+        crate::continuation_journal::run_blocking_result(move || {
+            let status = executor.recording_status(&id)?;
+            if status["accepting"] != true {
+                if let Some(session) = &session {
+                    session.seal_collection()?;
+                }
+                executor.stop_recovery();
+                return Err(failure(
+                    "lifecycle.invalid-state",
+                    "native recording collection is stopped",
+                ));
+            }
+            Ok(())
+        })
+        .await
+    }
+    pub fn configure_recording_directory(&self, path: &std::path::Path) -> Result<Value> {
+        self.recordings
+            .configure_directory(path)
+            .map_err(recording_failure)
+    }
+    pub fn recording_status(&self, id: &str) -> Result<Value> {
+        self.recordings
+            .get(id)
+            .and_then(|journal| journal.status())
+            .map_err(recording_failure)
+    }
+    pub fn recording_prepare(&self, id: &str, max_items: u32, max_bytes: u32) -> Result<Value> {
+        self.recordings
+            .get(id)
+            .and_then(|journal| journal.prepare(max_items, max_bytes))
+            .map_err(recording_failure)
+    }
+    pub fn recording_acknowledge(&self, id: &str, token: &str) -> Result<Value> {
+        self.recordings
+            .get(id)
+            .and_then(|journal| journal.acknowledge(token))
+            .map_err(recording_failure)
+    }
+    pub fn recording_stop(&self, id: &str) -> Result<Value> {
+        let sessions = self
+            .recording_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let journal = self.recordings.get(id).map_err(recording_failure)?;
+        if let Some(session) = sessions.get(id).and_then(std::sync::Weak::upgrade) {
+            session.seal_collection()?;
+            self.stop_recovery();
+        }
+        let mut receipt = journal.stop().map_err(recording_failure)?;
+        receipt["radioRelease"] = json!("not-requested");
+        Ok(receipt)
+    }
+    pub fn recording_clear(&self, id: &str) -> Result<Value> {
+        self.recordings
+            .get(id)
+            .and_then(|journal| journal.clear())
+            .map_err(recording_failure)
+    }
     pub fn new(host: Arc<dyn ContinuationHost>) -> Self {
+        Self::new_with_recording_registry(host, Arc::default())
+    }
+    pub fn recording_registry(&self) -> Arc<JournalRegistry> {
+        self.recordings.clone()
+    }
+    /// Inject a process-owned registry before publishing this executor. There
+    /// is deliberately no setter that could split already cloned authority.
+    pub fn new_with_recording_registry(
+        host: Arc<dyn ContinuationHost>,
+        recordings: Arc<JournalRegistry>,
+    ) -> Self {
         Self {
             host,
             state: Arc::default(),
+            session_owned: Arc::default(),
             recovery_requested: Arc::default(),
             recovering: Arc::default(),
             recovery_stopped: Arc::default(),
@@ -107,6 +248,8 @@ impl NativeContinuation {
             recovery_idle: Arc::default(),
             declarations: Arc::default(),
             recovery_runtime: Arc::default(),
+            recordings,
+            recording_sessions: Arc::default(),
         }
     }
 
@@ -120,10 +263,12 @@ impl NativeContinuation {
         let object = root
             .as_object()
             .ok_or_else(|| invalid("declaration must be an object"))?;
-        if object
-            .keys()
-            .any(|key| !matches!(key.as_str(), "onAppearance" | "peerId" | "resubscribe"))
-            || root["onAppearance"] != "native"
+        if object.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "onAppearance" | "peerId" | "resubscribe" | "setup" | "link" | "recording"
+            )
+        }) || root["onAppearance"] != "native"
         {
             return Err(invalid(
                 "native declaration contains invalid fields or strategy",
@@ -198,13 +343,109 @@ impl NativeContinuation {
             .collect()
     }
 
+    fn setup(&self, root: &Value, subscription_count: usize) -> Result<Vec<Value>> {
+        let Some(input) = root.get("setup") else {
+            return Ok(Vec::new());
+        };
+        let steps = input
+            .as_array()
+            .ok_or_else(|| invalid("setup must be an array"))?;
+        if steps.len() > 16 {
+            return Err(invalid("too many setup steps"));
+        }
+        let mut total = 0;
+        let mut normalized = Vec::new();
+        for step in steps {
+            exact(step, &["selector", "value", "timeoutMs", "response"])?;
+            let timeout = integer(&step["timeoutMs"], 1, 20000)?;
+            total += timeout;
+            if total > 60000 {
+                return Err(invalid("setup deadline exceeds 60000ms"));
+            }
+            bytes(&step["value"])?;
+            let selector = self
+                .parse(
+                    "setup",
+                    &json!({"onAppearance":"native","resubscribe":[step["selector"].clone()]})
+                        .to_string(),
+                )?
+                .remove(0);
+            if let Some(response) = step.get("response") {
+                exact(
+                    response,
+                    &[
+                        "subscriptionIndex",
+                        "prefix",
+                        "minLength",
+                        "maxLength",
+                        "status",
+                        "trailing",
+                    ],
+                )?;
+                if subscription_count == 0 {
+                    return Err(invalid("setup response has no subscription"));
+                }
+                integer(
+                    &response["subscriptionIndex"],
+                    0,
+                    subscription_count as u64 - 1,
+                )?;
+                let prefix = bytes(&response["prefix"])?;
+                let min = integer(&response["minLength"], prefix.len() as u64, 512)?;
+                integer(&response["maxLength"], min, 512)?;
+                exact(&response["status"], &["offset", "accepted"])?;
+                integer(
+                    &response["status"]["offset"],
+                    prefix.len() as u64,
+                    min.saturating_sub(1),
+                )?;
+                let accepted = response["status"]["accepted"]
+                    .as_array()
+                    .ok_or_else(|| invalid("missing accepted setup statuses"))?;
+                if accepted.is_empty() || accepted.len() > 256 {
+                    return Err(invalid("invalid accepted setup statuses"));
+                }
+                let mut seen = std::collections::HashSet::new();
+                for status in accepted {
+                    if !seen.insert(integer(status, 0, 255)?) {
+                        return Err(invalid("duplicate setup status"));
+                    }
+                }
+                if let Some(trailing) = response.get("trailing") {
+                    exact(trailing, &["offset", "accepted"])?;
+                    integer(&trailing["offset"], min, min)?;
+                    integer(&response["maxLength"], min + 1, min + 1)?;
+                    let accepted = trailing["accepted"]
+                        .as_array()
+                        .ok_or_else(|| invalid("missing trailing accepted bytes"))?;
+                    if accepted.is_empty() || accepted.len() > 256 {
+                        return Err(invalid("invalid trailing accepted bytes"));
+                    }
+                    let mut seen = std::collections::HashSet::new();
+                    for byte in accepted {
+                        if !seen.insert(integer(byte, 0, 255)?) {
+                            return Err(invalid("duplicate trailing byte"));
+                        }
+                    }
+                }
+            }
+            let mut step = step.clone();
+            step["selector"] = selector;
+            normalized.push(step);
+        }
+        Ok(normalized)
+    }
+
     /// Refuse replacement while any old generation still owns records/resources.
     pub async fn validate_replacement(&self, peer: &str, declaration: &str) -> Result<Value> {
         let peer = self.host.canonical_peer(peer);
         let selectors = self.parse(&peer, declaration)?;
+        let identity = self.declaration_identity(declaration)?;
         let state = self.state.try_lock().map_err(|_| busy())?;
         if state.session.is_some()
-            && (state.peer.as_deref() != Some(peer.as_str()) || state.selectors != selectors)
+            && (state.peer.as_deref() != Some(peer.as_str())
+                || state.selectors != selectors
+                || state.execution_declaration.as_ref() != Some(&identity))
         {
             return Err(failure(
                 "lifecycle.invalid-state",
@@ -244,6 +485,7 @@ impl NativeContinuation {
         identity: Value,
         state: &mut State,
     ) -> Result<Value> {
+        self.check_recording_admission(state).await?;
         {
             let declarations = self
                 .declarations
@@ -263,14 +505,22 @@ impl NativeContinuation {
                 ));
             }
         }
-        if state.sealed && state.session.is_some() {
+        if (state.sealed
+            || state
+                .session
+                .as_ref()
+                .is_some_and(|session| session.collection_sealed()))
+            && state.session.is_some()
+        {
             return Err(failure(
                 "lifecycle.invalid-state",
                 "continuation handoff is sealed",
             ));
         }
         if state.session.is_some()
-            && (state.peer.as_deref() != Some(peer) || state.selectors != selectors)
+            && (state.peer.as_deref() != Some(peer)
+                || state.selectors != selectors
+                || state.execution_declaration.as_ref() != Some(&identity))
         {
             return Err(failure(
                 "lifecycle.invalid-state",
@@ -278,14 +528,24 @@ impl NativeContinuation {
             ));
         }
         let mut current_database = false;
+        let setup = identity["setup"].as_array().cloned().unwrap_or_default();
         if state.session.is_none() {
             state.session = Some(self.host.open_session()?);
+            self.session_owned.store(true, Ordering::SeqCst);
             state.prepared = None;
             state.sealed = false;
             self.recovery_stopped.store(false, Ordering::SeqCst);
             state.peer = Some(peer.to_owned());
             state.selectors = selectors.clone();
-            state.execution_declaration = Some(identity);
+            state.execution_declaration = Some(identity.clone());
+            state.setup_generation = None;
+            state.setup_failure = None;
+            state.setup_complete = false;
+            state.link_generation = None;
+            state.link_outcome = None;
+            state.link_failure = None;
+            state.recording = identity["recording"]["id"].as_str().map(str::to_owned);
+            state.recording_attached = false;
         } else {
             let snapshot = invoke(state, "session.reconcile", json!({})).await?;
             let connected = snapshot["links"].as_array().is_some_and(|links| {
@@ -308,9 +568,60 @@ impl NativeContinuation {
                         .iter()
                         .any(|item| item["consumer"] == active.consumer && item["state"] == "live")
             });
-            if connected && state.consumers.len() == selectors.len() {
-                return Ok(completed(peer, selectors.len()));
+            if connected
+                && state.consumers.len() == selectors.len()
+                && setup.is_empty()
+                && identity.get("link").is_none()
+                && (state.recording.is_none() || state.recording_attached)
+                && !state
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| session.collection_sealed())
+            {
+                return Ok(completed(peer, selectors.len(), state));
             }
+        }
+        if let Some(id) = state.recording.clone()
+            && !state.recording_attached
+        {
+            let executor = self.clone();
+            let identity = identity.clone();
+            let peer = peer.to_owned();
+            let session = state.session.as_ref().expect("owned session").clone();
+            crate::continuation_journal::run_blocking_result(move || {
+                let options = &identity["recording"];
+                let journal = executor
+                    .recordings
+                    .open(
+                        &id,
+                        &identity,
+                        JournalQuota {
+                            max_bytes: options["maxBytes"]
+                                .as_u64()
+                                .expect("validated recording quota"),
+                            max_records: options["maxRecords"]
+                                .as_u64()
+                                .expect("validated recording quota"),
+                        },
+                    )
+                    .map_err(recording_failure)?;
+                let mut sessions = executor
+                    .recording_sessions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if journal.status().map_err(recording_failure)?["accepting"] != true {
+                    return Err(failure(
+                        "lifecycle.invalid-state",
+                        "recording is not accepting native collection",
+                    ));
+                }
+                session.attach_journal(journal, json!({"peerId":peer}))?;
+                sessions.retain(|_, session| session.strong_count() > 0);
+                sessions.insert(id, std::sync::Arc::downgrade(&session));
+                Ok(())
+            })
+            .await?;
+            state.recording_attached = true;
         }
         if state.history.len() + selectors.len() - state.consumers.len() > 4096 {
             return Err(failure(
@@ -329,6 +640,70 @@ impl NativeContinuation {
             )
             .await?;
         }
+        if let Some(link) = identity.get("link") {
+            let snapshot = invoke(state, "session.reconcile", json!({})).await?;
+            let generation = snapshot["links"]
+                .as_array()
+                .and_then(|links| {
+                    links
+                        .iter()
+                        .find(|link| link["peerId"] == peer && link["state"] == "connected")
+                })
+                .and_then(|link| link["connectionGeneration"].as_str())
+                .ok_or_else(|| {
+                    failure(
+                        "platform.failure",
+                        "MTU prerequisite requires authoritative connection generation",
+                    )
+                })?
+                .to_owned();
+            if state.link_generation.as_ref() != Some(&generation) {
+                state.link_generation = Some(generation);
+                state.link_outcome = None;
+                state.link_failure = None;
+                let mtu = &link["mtu"];
+                let request = admitted(
+                    state,
+                    "connection.request-mtu",
+                    json!({"peerId":peer,"lease":"continuation-lease","mtu":mtu["requested"],"budgetMs":mtu["timeoutMs"],"operationId":"continuation-request-mtu"}),
+                );
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_millis(
+                        mtu["timeoutMs"].as_u64().expect("validated MTU timeout"),
+                    ),
+                    request,
+                )
+                .await
+                .unwrap_or_else(|_| {
+                    Err(failure(
+                        "operation.timed-out",
+                        "MTU prerequisite deadline elapsed",
+                    ))
+                });
+                let outcome=match result {
+                    Ok(value)=>{
+                        value["mtu"].as_u64().filter(|mtu|(23..=517).contains(mtu))
+                            .map(|actual|json!({"mtu":{"requested":mtu["requested"],"outcome":"negotiated","mtu":actual}}))
+                            .ok_or_else(||failure("platform.failure","MTU prerequisite returned no valid negotiated MTU"))
+                    },
+                    Err(mut error) if error["code"]=="capability.unsupported" && mtu["onUnsupported"]=="continue" => {
+                        take_retryability(&mut error);
+                        Ok(json!({"mtu":{"requested":mtu["requested"],"outcome":"unsupported","error":error}}))
+                    },
+                    Err(error)=>Err(error),
+                };
+                match outcome {
+                    Ok(outcome) => state.link_outcome = Some(outcome),
+                    Err(mut error) => {
+                        error["retryability"] = json!("never");
+                        state.link_failure = Some(error);
+                    }
+                }
+            }
+            if let Some(error) = &state.link_failure {
+                return Err(error.clone());
+            }
+        }
         for (selector_index, selector) in selectors.iter().enumerate() {
             if state
                 .consumers
@@ -344,6 +719,42 @@ impl NativeContinuation {
                     json!(selector[field].as_u64().expect("validated occurrence") - 1);
             }
             let operation = format!("continuation-subscribe-{}", state.history.len());
+            if state.recording_attached {
+                let snapshot = invoke(state, "session.reconcile", json!({})).await?;
+                let link = snapshot["links"]
+                    .as_array()
+                    .and_then(|links| {
+                        links.iter().find(|link| {
+                            link["peerId"] == peer
+                                && link["state"] == "connected"
+                                && link["databaseState"] == "current"
+                        })
+                    })
+                    .ok_or_else(|| {
+                        failure(
+                            "lifecycle.invalid-state",
+                            "durable subscription requires a current database",
+                        )
+                    })?;
+                if !link["connectionGeneration"].is_string()
+                    || !link["databaseGeneration"].is_string()
+                {
+                    return Err(failure(
+                        "platform.failure",
+                        "durable metadata requires authoritative generations",
+                    ));
+                }
+                let metadata = json!({"consumer":consumer,"peerId":peer,"connectionGeneration":link["connectionGeneration"],"databaseGeneration":link["databaseGeneration"],"selector":selector});
+                let session = state.session.as_ref().expect("owned session").clone();
+                let consumer = consumer.clone();
+                crate::continuation_journal::run_blocking_result(move || {
+                    session.register_journal_consumer(&consumer, metadata)
+                })
+                .await?;
+            }
+            // Reserve immutable identity before dispatch: native enable may
+            // emit a value before returning a refused completion.
+            state.history.push(selector.clone());
             admitted(
                 state,
                 "gatt.subscribe",
@@ -355,16 +766,78 @@ impl NativeContinuation {
                 selector_index,
                 consumer,
             });
-            state.history.push(selector.clone());
         }
-        Ok(completed(peer, selectors.len()))
+        if !setup.is_empty() {
+            let snapshot = invoke(state, "session.reconcile", json!({})).await?;
+            let link = snapshot["links"]
+                .as_array()
+                .and_then(|links| {
+                    links.iter().find(|link| {
+                        link["peerId"] == peer
+                            && link["state"] == "connected"
+                            && link["databaseState"] == "current"
+                    })
+                })
+                .ok_or_else(|| {
+                    failure(
+                        "lifecycle.invalid-state",
+                        "setup requires a current database",
+                    )
+                })?;
+            if !link["connectionGeneration"].is_string() || !link["databaseGeneration"].is_string()
+            {
+                return Err(failure(
+                    "platform.failure",
+                    "setup requires authoritative generations",
+                ));
+            }
+            let generation = json!([link["connectionGeneration"], link["databaseGeneration"]]);
+            if state.setup_generation.as_ref() != Some(&generation) {
+                state.setup_generation = Some(generation);
+                state.setup_complete = false;
+                state.setup_failure = None;
+            }
+            if let Some(error) = &state.setup_failure {
+                return Err(error.clone());
+            }
+            if !state.setup_complete {
+                if let Err(mut error) = run_setup(self, state, peer, &setup).await {
+                    // An old reply cannot be correlated safely with a repeated
+                    // command. Only authoritative generation change clears this.
+                    error["retryability"] = json!("never");
+                    state.setup_failure = Some(error.clone());
+                    return Err(error);
+                }
+                state.setup_complete = true;
+            }
+        }
+        self.check_recording_admission(state).await?;
+        if state
+            .session
+            .as_ref()
+            .is_some_and(|session| session.collection_sealed())
+        {
+            return Err(failure(
+                "lifecycle.invalid-state",
+                "native collection was explicitly stopped",
+            ));
+        }
+        Ok(completed(peer, selectors.len(), state))
     }
 
     pub async fn prepare_claim(&self, max_items: u32, max_bytes: u32) -> Result<Value> {
         if max_items == 0 || max_bytes == 0 {
             return Err(invalid("claim bounds must be positive"));
         }
-        let mut state = self.state.try_lock().map_err(|_| busy())?;
+        let mut state = match self.state.try_lock() {
+            Ok(state) => state,
+            // Autonomous retry must not make foreground handoff depend on
+            // catching the backoff gap. Join the same FIFO admission queue,
+            // allowing the current bounded operation to settle before sealing.
+            // Explicit caller executions retain their existing busy contract.
+            Err(_) if self.recovering.load(Ordering::SeqCst) => self.state.lock().await,
+            Err(_) => return Err(busy()),
+        };
         if let Some(prepared) = &state.prepared {
             let mut claim = prepared.claim.clone();
             if prepared.acknowledged {
@@ -392,12 +865,16 @@ impl NativeContinuation {
         let mut complete = false;
         let mut drain_failure = None;
         for _ in 0..32 {
-            let batch = state
-                .session
-                .as_ref()
-                .expect("session retained")
-                .drain(max_items, max_bytes)
-                .await;
+            let session = state.session.as_ref().expect("session retained").clone();
+            let batch = if state.recording.is_some() {
+                let runtime = tokio::runtime::Handle::current();
+                crate::continuation_journal::run_blocking_result(move || {
+                    Ok(runtime.block_on(session.drain(max_items, max_bytes)))
+                })
+                .await?
+            } else {
+                session.drain(max_items, max_bytes).await
+            };
             let record: Value = match serde_json::from_str(&batch) {
                 Ok(record) => record,
                 Err(error) => {
@@ -423,9 +900,12 @@ impl NativeContinuation {
             }
         }
         state.token += 1;
-        let claim = json!({"consumerCount":state.history.len(),"batches":batches,"disposed":false,
+        let mut claim = json!({"consumerCount":state.history.len(),"batches":batches,"disposed":false,
             "disposeFailure":if complete {None} else {Some(drain_failure.unwrap_or_else(|| "continuation claim has a retained unread tail".to_owned()))},
             "afterCutoffLoss":loss,"selectors":state.history,"claimToken":format!("continuation-{}",state.token)});
+        if let Some(id) = &state.recording {
+            claim["recording"] = json!({"id":id});
+        }
         state.prepared = Some(Prepared {
             claim: claim.clone(),
             complete,
@@ -461,6 +941,11 @@ impl NativeContinuation {
             "disposeFailure":if released {None} else {Some(format!("continuation disposal remains owned: {disposal}"))}});
         if released {
             state.session = None;
+            self.session_owned.store(false, Ordering::SeqCst);
+            // The registry retains the durable journal independently. Only
+            // this released radio generation's recording attachment is retired.
+            state.recording = None;
+            state.recording_attached = false;
             state.peer = None;
             state.selectors.clear();
             state.history.clear();
@@ -508,6 +993,9 @@ impl NativeContinuation {
                     | "resubscribe"
                     | "headlessTaskName"
                     | "foregroundService"
+                    | "setup"
+                    | "link"
+                    | "recording"
             )
         }) {
             return Err(invalid("unknown declaration field"));
@@ -521,7 +1009,39 @@ impl NativeContinuation {
                         .ok_or_else(|| invalid("peerId must be a string"))
                 })?;
             let selectors = self.parse(peer, text)?;
+            let setup = self.setup(&root, selectors.len())?;
             let mut identity = json!({"onAppearance":"native","resubscribe":selectors});
+            if let Some(recording) = root.get("recording") {
+                exact(recording, &["id", "maxBytes", "maxRecords"])?;
+                let id = recording["id"]
+                    .as_str()
+                    .ok_or_else(|| invalid("recording id required"))?;
+                if id.is_empty()
+                    || id.len() > 64
+                    || !id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+                {
+                    return Err(invalid("invalid recording id"));
+                }
+                integer(&recording["maxBytes"], 1 << 20, 1 << 30)?;
+                integer(&recording["maxRecords"], 1, 1_000_000)?;
+                identity["recording"] = recording.clone();
+            }
+            if let Some(link) = root.get("link") {
+                exact(link, &["mtu"])?;
+                let mtu = &link["mtu"];
+                exact(mtu, &["requested", "timeoutMs", "onUnsupported"])?;
+                integer(&mtu["requested"], 23, 517)?;
+                integer(&mtu["timeoutMs"], 1, 20000)?;
+                if !matches!(mtu["onUnsupported"].as_str(), Some("continue" | "fail")) {
+                    return Err(invalid("invalid unsupported MTU policy"));
+                }
+                identity["link"] = link.clone();
+            }
+            if !setup.is_empty() {
+                identity["setup"] = json!(setup);
+            }
             if object.contains_key("peerId") {
                 identity["peerId"] = json!(self.host.canonical_peer(peer));
             }
@@ -531,6 +1051,12 @@ impl NativeContinuation {
             Some("record-only" | "headless-task" | "foreground-service")
         ) || !object.contains_key("onAppearance")
         {
+            if object.contains_key("setup")
+                || object.contains_key("link")
+                || object.contains_key("recording")
+            {
+                return Err(invalid("setup and link require native continuation"));
+            }
             Ok(root)
         } else {
             Err(invalid("unknown declaration strategy"))
@@ -654,7 +1180,9 @@ impl NativeContinuation {
     /// retained in diagnostics, never represented as successful recovery.
     pub fn request_recovery(&self, runtime: &tokio::runtime::Handle) {
         self.recovery_runtime.get_or_init(|| runtime.clone());
-        if self.recovery_stopped.load(Ordering::SeqCst) {
+        if self.recovery_stopped.load(Ordering::SeqCst)
+            || !self.session_owned.load(Ordering::SeqCst)
+        {
             return;
         }
         self.recovery_requested.store(true, Ordering::SeqCst);
@@ -668,7 +1196,7 @@ impl NativeContinuation {
                 executor.recovery_requested.store(false, Ordering::SeqCst);
                 let mut attempt = 0_u32;
                 loop {
-                    if executor.recovery_stopped.load(Ordering::SeqCst) { break; }
+                    if executor.recovery_stopped.load(Ordering::SeqCst) || !executor.session_owned.load(Ordering::SeqCst) { break; }
                     let result = {
                         // The internal worker waits fairly for admission. Public
                         // callers still fail promptly, but repeated status reads
@@ -720,9 +1248,8 @@ impl NativeContinuation {
             Err(_) => return Some("continuation execution or handoff is in progress".to_owned()),
         };
         state.session.as_ref()?;
-        let peer = state.peer.as_deref().unwrap_or("");
-        match self.parse(peer, declaration) {
-            Ok(selectors) if state.selectors == selectors => None,
+        match self.declaration_identity(declaration) {
+            Ok(identity) if state.execution_declaration.as_ref() == Some(&identity) => None,
             _ => Some("claim the pinned continuation before replacing its declaration".to_owned()),
         }
     }
@@ -762,8 +1289,135 @@ fn take_retryability(error: &mut Value) -> Value {
         .unwrap_or(json!("never"))
 }
 
-fn completed(peer: &str, count: usize) -> Value {
-    json!({"event":"continuation.completed","strategy":"native","peerAddress":peer,"resubscribed":count})
+fn completed(peer: &str, count: usize, state: &State) -> Value {
+    let mut result = json!({"event":"continuation.completed","strategy":"native","peerAddress":peer,"resubscribed":count});
+    if let Some(link) = &state.link_outcome {
+        result["link"] = link.clone();
+    }
+    result
+}
+
+fn exact(value: &Value, keys: &[&str]) -> Result<()> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid("setup object required"))?;
+    if object.keys().any(|key| !keys.contains(&key.as_str())) {
+        return Err(invalid("unknown setup field"));
+    }
+    Ok(())
+}
+fn integer(value: &Value, min: u64, max: u64) -> Result<u64> {
+    value
+        .as_u64()
+        .filter(|value| *value >= min && *value <= max)
+        .ok_or_else(|| invalid("invalid setup integer"))
+}
+fn bytes(value: &Value) -> Result<Vec<u8>> {
+    let bytes = value
+        .as_array()
+        .ok_or_else(|| invalid("setup bytes must be an array"))?;
+    if bytes.is_empty() || bytes.len() > 512 {
+        return Err(invalid("invalid setup byte length"));
+    }
+    bytes
+        .iter()
+        .map(|value| integer(value, 0, 255).map(|byte| byte as u8))
+        .collect()
+}
+
+async fn run_setup(
+    executor: &NativeContinuation,
+    state: &mut State,
+    peer: &str,
+    steps: &[Value],
+) -> Result<()> {
+    for (index, step) in steps.iter().enumerate() {
+        let timeout = std::time::Duration::from_millis(
+            step["timeoutMs"].as_u64().expect("validated setup timeout"),
+        );
+        let deadline = tokio::time::Instant::now() + timeout;
+        // The step budget starts before observer admission, which can wait
+        // behind durable journal I/O. A late observer must never dispatch a
+        // setup write after the caller's deadline has already elapsed.
+        let result = tokio::time::timeout_at(deadline, async {
+        executor.check_recording_admission(state).await?;
+        let mut observation = if let Some(response) = step.get("response") {
+            let subscription = response["subscriptionIndex"]
+                .as_u64()
+                .expect("validated subscription index") as usize;
+            let consumer = &state
+                .consumers
+                .iter()
+                .find(|consumer| consumer.selector_index == subscription)
+                .ok_or_else(|| {
+                    failure(
+                        "lifecycle.invalid-state",
+                        "setup response subscription is not live",
+                    )
+                })?
+                .consumer;
+            let prefix = bytes(&response["prefix"])?;
+            let matcher: RecordMatcher = Arc::new(move |record| {
+                // Malformed internal bytes are a correlated boundary failure,
+                // never silently ignored until timeout.
+                record["valueB64"]
+                    .as_str()
+                    .and_then(|value| decode_base64(value, 512).ok())
+                    .is_none_or(|value| value.starts_with(&prefix))
+            });
+            let session = state.session.as_ref().expect("owned session").clone();
+            let consumer = consumer.clone();
+            Some(if state.recording.is_some() {
+                crate::continuation_journal::run_blocking_result(move || {
+                    session.observe(&consumer, matcher)
+                })
+                .await?
+            } else {
+                session.observe(&consumer, matcher)?
+            })
+        } else {
+            None
+        };
+        let mut selector = step["selector"].clone();
+        for field in ["serviceOccurrence", "characteristicOccurrence"] {
+            selector[field] = json!(selector[field].as_u64().expect("validated occurrence") - 1);
+        }
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(failure("operation.timed-out", &format!("setup step {index} expired before its write")));
+            }
+            let mut args = json!({"peerId":peer,"selector":selector,"valueB64":encode_base64(&bytes(&step["value"])?),"mode":"with-response","operationId":format!("continuation-setup-{index}"),"budgetMs":remaining.as_millis().max(1)});
+            state.admission += 1;
+            args["admission"] = json!(state.admission);
+            invoke_with_deadline(state, "gatt.write", args, Some(deadline.into_std())).await?;
+            if let Some(observation) = &mut observation {
+                let record = (&mut observation.receiver).await.map_err(|_|failure("stream.closed", "setup acknowledgement observation closed"))?;
+                if record["t"] == "stream-end" {
+                    if let Some(error)=record.get("error") {return Err(error.clone());}
+                    return Err(failure("stream.closed", &format!("setup acknowledgement stream ended: {}",record["reason"])));
+                }
+                let value = record["valueB64"].as_str().and_then(|value|decode_base64(value,512).ok()).ok_or_else(||failure("platform.failure", "malformed setup acknowledgement bytes"))?;
+                let response = &step["response"];
+                let min = response["minLength"].as_u64().expect("validated minimum") as usize;
+                let max = response["maxLength"].as_u64().expect("validated maximum") as usize;
+                if value.len()<min || value.len()>max {return Err(failure("platform.failure", "correlated setup acknowledgement has invalid length"));}
+                let status = value[response["status"]["offset"].as_u64().expect("validated offset") as usize];
+                if !response["status"]["accepted"].as_array().expect("validated statuses").contains(&json!(status)) {
+                    return Err(failure("platform.failure", &format!("setup step {index} rejected with application status {status}")));
+                }
+                if let Some(trailing) = response.get("trailing") {
+                    let offset = trailing["offset"].as_u64().expect("validated trailing offset") as usize;
+                    if let Some(byte) = value.get(offset)
+                        && !trailing["accepted"].as_array().expect("validated trailing values").contains(&json!(byte)) {
+                            return Err(failure("platform.failure", &format!("setup step {index} rejected trailing acknowledgement byte {byte}")));
+                    }
+                }
+            }
+            Ok(())
+        }).await.map_err(|_|failure("operation.timed-out", &format!("setup step {index} exceeded its command deadline")))?;
+        result?;
+    }
+    Ok(())
 }
 
 fn cutoff_loss(value: &Value) -> Result<Value> {
@@ -780,11 +1434,66 @@ async fn admitted(state: &mut State, op: &str, mut args: Value) -> Result<Value>
 }
 
 async fn invoke(state: &State, op: &str, args: Value) -> Result<Value> {
+    invoke_with_deadline(state, op, args, None).await
+}
+
+fn setup_write_budget(args: &mut Value, deadline: std::time::Instant) -> Result<()> {
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    if remaining.is_zero() {
+        return Err(failure(
+            "operation.timed-out",
+            "setup write deadline elapsed before native dispatch",
+        ));
+    }
+    // Round a sub-millisecond remainder up so the native call has a bounded,
+    // nonzero budget; never reuse the original full step budget after admission.
+    args["budgetMs"] = json!(remaining.as_millis().max(1));
+    Ok(())
+}
+
+async fn invoke_with_deadline(
+    state: &State,
+    op: &str,
+    mut args: Value,
+    deadline: Option<std::time::Instant>,
+) -> Result<Value> {
     let session = state
         .session
         .as_ref()
         .ok_or_else(|| failure("lifecycle.invalid-state", "no continuation session"))?;
-    let envelope: Value = serde_json::from_str(&session.call(op, &args.to_string()).await)
+    if session.collection_sealed()
+        && matches!(
+            op,
+            "connection.connect"
+                | "connection.request-mtu"
+                | "gatt.discover"
+                | "gatt.subscribe"
+                | "gatt.write"
+        )
+    {
+        return Err(failure(
+            "lifecycle.invalid-state",
+            "native collection was explicitly stopped",
+        ));
+    }
+    let reply = if state.recording.is_some() {
+        let session = session.clone();
+        let op = op.to_owned();
+        let runtime = tokio::runtime::Handle::current();
+        crate::continuation_journal::run_blocking_result(move || {
+            if let Some(deadline) = deadline {
+                setup_write_budget(&mut args, deadline)?;
+            }
+            Ok(runtime.block_on(session.call(&op, &args.to_string())))
+        })
+        .await?
+    } else {
+        if let Some(deadline) = deadline {
+            setup_write_budget(&mut args, deadline)?;
+        }
+        session.call(op, &args.to_string()).await
+    };
+    let envelope: Value = serde_json::from_str(&reply)
         .map_err(|_| failure("platform.failure", "invalid core reply"))?;
     if envelope["ok"] == true && envelope.get("value").is_some() {
         Ok(envelope["value"].clone())
@@ -802,5 +1511,116 @@ async fn invoke(state: &State, op: &str, args: Value) -> Result<Value> {
             "platform.failure",
             "malformed continuation operation envelope",
         ))
+    }
+}
+
+#[cfg(test)]
+mod idle_recovery_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Host(Arc<Session>);
+    #[derive(Default)]
+    struct Session {
+        release: AtomicBool,
+        hold_connect: AtomicBool,
+        connected: tokio::sync::Notify,
+    }
+
+    impl ContinuationHost for Host {
+        fn open_session(&self) -> Result<Arc<dyn ContinuationSession>> {
+            Ok(self.0.clone())
+        }
+    }
+    impl ContinuationSession for Session {
+        fn call<'a>(&'a self, op: &'a str, _: &'a str) -> ContinuationFuture<'a> {
+            Box::pin(async move {
+                if op == "connection.connect" && self.hold_connect.load(Ordering::SeqCst) {
+                    self.connected.notified().await;
+                }
+                envelope(Ok(match op {
+                    "session.quiesce" => {
+                        json!({"state":"sealed","afterCutoffItems":0,"afterCutoffBytes":0})
+                    }
+                    "session.continuation-dispose" => {
+                        json!({"state":if self.release.load(Ordering::SeqCst) {"released"} else {"release-failed"},"afterCutoffItems":0,"afterCutoffBytes":0})
+                    }
+                    _ => json!({}),
+                }))
+            })
+        }
+        fn drain(&self, _: u32, _: u32) -> ContinuationFuture<'_> {
+            Box::pin(async { json!({"records":[],"more":false,"controlLost":0}).to_string() })
+        }
+    }
+
+    #[tokio::test]
+    async fn idle_adapter_event_cannot_compete_with_first_wake_admission() {
+        let engine = NativeContinuation::new(Arc::new(Host::default()));
+        // Deterministically hold the idle inspection point. A power-on event
+        // must not enqueue a supervisor that will acquire this admission lock
+        // ahead of the first genuine restoration wake.
+        let idle = engine.state.lock().await;
+        engine.request_recovery(&tokio::runtime::Handle::current());
+        assert!(
+            !engine.recovering.load(Ordering::SeqCst),
+            "no owned session means no recovery worker"
+        );
+        assert!(!engine.recovery_requested.load(Ordering::SeqCst));
+        drop(idle);
+        let declaration = r#"{"onAppearance":"native"}"#;
+        engine.seed_declaration(declaration).unwrap();
+        assert_eq!(
+            engine.execute("peer", declaration).await.unwrap()["event"],
+            "continuation.completed"
+        );
+        // Actual live admission still fails promptly rather than being hidden
+        // by an asynchronous retry in the public/native wake boundary.
+        let active = engine.state.lock().await;
+        assert_eq!(
+            engine.seed_declaration(declaration).unwrap_err()["code"],
+            "lifecycle.invalid-state"
+        );
+        drop(active);
+        engine.stop_recovery();
+    }
+
+    #[tokio::test]
+    async fn recovery_ownership_survives_held_install_and_failed_disposal() {
+        use std::{future::Future, task::Poll};
+        let host = Arc::new(Host::default());
+        host.0.hold_connect.store(true, Ordering::SeqCst);
+        let engine = NativeContinuation::new(host.clone());
+        let execute = engine.execute("peer", r#"{"onAppearance":"native"}"#);
+        tokio::pin!(execute);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(execute.as_mut().poll(cx).is_pending())).await
+        );
+        assert!(engine.session_owned.load(Ordering::SeqCst));
+        engine.request_recovery(&tokio::runtime::Handle::current());
+        assert!(
+            engine.recovering.load(Ordering::SeqCst),
+            "event during accepted execution remains queued"
+        );
+        // Stop this test's queued worker before draining; the obligation flag
+        // must remain true independently of the retry-policy stop flag.
+        engine.stop_recovery();
+        host.0.connected.notify_one();
+        execute.await.unwrap();
+        let claim = engine.prepare_claim(8, 1024).await.unwrap();
+        let token = claim["claimToken"].as_str().unwrap();
+        assert_eq!(
+            engine.acknowledge_claim(token).await.unwrap()["disposed"],
+            false
+        );
+        assert!(engine.session_owned.load(Ordering::SeqCst));
+        assert!(engine.state.lock().await.session.is_some());
+        host.0.release.store(true, Ordering::SeqCst);
+        assert_eq!(
+            engine.acknowledge_claim(token).await.unwrap()["disposed"],
+            true
+        );
+        assert!(!engine.session_owned.load(Ordering::SeqCst));
+        assert!(engine.state.lock().await.session.is_none());
     }
 }

@@ -46,6 +46,10 @@ function singletonVersionRange<Axis extends ProtocolAxis>(axis: Axis, value: num
  * attachment rebind after an adapter loss (`IPC_ATTACHMENT_STREAM_ID`). Both
  * ends offer exactly this version, so a peer speaking 3 is refused at
  * bootstrap as `protocol.incompatible` before any operation.
+ * Peer-directory reads are additive named routes within version 4; they do not
+ * change existing envelopes. A host without a route rejects it explicitly.
+ * Bootstrap capability descriptors, not this protocol version, describe which
+ * native directory mechanisms the instantiated host implements.
  */
 export const IPC_PROTOCOL_VERSION = 4
 

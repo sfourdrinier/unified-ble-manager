@@ -40,7 +40,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::sync::{
-    Arc, Mutex as StdMutex, MutexGuard, OnceLock, PoisonError,
+    Arc, Mutex as StdMutex, MutexGuard, OnceLock, PoisonError, Weak,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
@@ -54,7 +54,7 @@ use ubm_core::contracts::{
     AttachmentTuple, BleErrorCode, BleErrorDomain, CommitState, ContenderKind, CoreError,
     Generation, OperationId, OperationTerminalKind,
 };
-use ubm_core::ownership::{CleanupRecord, EffectBatch};
+use ubm_core::ownership::{CleanupFailure, CleanupRecord, CleanupState, EffectBatch};
 
 use crate::boundary::{
     AdapterAuthorization, AdapterAvailability, AdapterLossCause, AdapterPowerState,
@@ -520,6 +520,19 @@ fn link_end_count<B>(inner: &Inner<B>, peer_id: &str) -> u64 {
         .unwrap_or(0)
 }
 
+fn confirmed_release_count<B>(inner: &Inner<B>, peer_id: &str) -> u64 {
+    lock_std(&inner.confirmed_releases)
+        .get(peer_id)
+        .copied()
+        .unwrap_or(0)
+}
+
+fn note_confirmed_release<B>(inner: &Inner<B>, peer_id: &str) {
+    let mut releases = lock_std(&inner.confirmed_releases);
+    let count = releases.entry(peer_id.to_owned()).or_insert(0);
+    *count = count.wrapping_add(1);
+}
+
 /// Record that the OS reported `peer_id`'s link ended and wake every link
 /// operation waiting on it. Called after the core state moved, so the
 /// woken operation names the end from that state (`name_link_end`).
@@ -608,7 +621,13 @@ enum DropCleanup {
     Op,
     /// Connect: also record peer loss + a compensating disconnect (mirrors
     /// the timeout arm, aborted instead of timed out).
-    Connect { peer_id: String, peer_key: String },
+    Connect {
+        peer_id: String,
+        peer_key: String,
+        generation: Option<String>,
+        adapter_epoch: u64,
+        release_serial: u64,
+    },
     /// Subscribe: also fail the shared enable + remove routing + sweep
     /// (mirrors the timeout arm, aborted instead of timed out).
     Subscribe { key: InstanceKey, path_index: usize },
@@ -639,6 +658,12 @@ impl<B: RadioBoundary> CancelOnDrop<B> {
 
     fn defuse(&mut self) {
         self.central.take();
+    }
+
+    fn note_native_acquisition(&mut self, confirmed_release: u64) {
+        if let Some(DropCleanup::Connect { release_serial, .. }) = self.cleanup.as_mut() {
+            *release_serial = confirmed_release;
+        }
     }
 }
 
@@ -678,20 +703,34 @@ async fn run_drop_cleanup<B: RadioBoundary>(
             let _ = central.cancel_operation(&operation).await;
             reap_if_terminal(&central, &operation).await;
         }
-        DropCleanup::Connect { peer_id, peer_key } => {
+        DropCleanup::Connect {
+            peer_id,
+            peer_key,
+            generation,
+            adapter_epoch,
+            release_serial,
+        } => {
             {
                 let mut core = central.inner.core.lock().await;
+                let same = central.retain_half_open_cleanup(
+                    &core,
+                    &peer_id,
+                    &peer_key,
+                    &generation,
+                    adapter_epoch,
+                    release_serial,
+                );
                 let mut out = batch();
-                let _ = core.note_peer_loss(&peer_key, now_ms(), &mut out);
+                if same {
+                    let _ = core.note_peer_loss(&peer_key, now_ms(), &mut out);
+                }
                 let _ = out.drain();
             }
             let _ = central.cancel_operation(&operation).await;
             reap_if_terminal(&central, &operation).await;
             // A half-open OS link must not linger ownerless. Bounded and
             // outside the core lock per F24.
-            central
-                .compensate_half_open(&peer_id, &peer_key, BleErrorCode::OperationAborted)
-                .await;
+            central.compensate_half_open(&peer_id, &generation).await;
         }
         DropCleanup::Subscribe { key, path_index } => {
             central.inner.subscriptions.lock().await.remove(&key);
@@ -875,18 +914,27 @@ pub struct DiscoveredPath {
 /// what did not release.
 #[derive(Debug)]
 pub struct ShutdownReport {
-    /// Final core cleanup record, taken only after every queued op settled,
+    /// Logical core cleanup component, taken only after every queued op settled,
     /// every dispatched remainder was answered, and every terminal release
     /// was acknowledged (F15). `Released` only when disconnect failures and
     /// retained release failures are all absent; otherwise `ReleaseFailed`
     /// with every failure preserved. `Err` only when the destroy drive
     /// itself failed (a core invariant violation), never for radio faults —
-    /// those land in the record or in `radio_close_failures`.
+    /// those land in the record or the separately named physical failures.
+    /// This component alone is not an overall release verdict; use `is_released`.
     pub record: Result<CleanupRecord, DesktopError>,
     /// Close-time native release failures drained from the radio (F14
     /// receipts): one entry per characteristic scope whose unsubscribe did
     /// not complete. Empty means every live scope released.
     pub radio_close_failures: Vec<RadioCloseFailure>,
+    /// Event-transport cleanup after the event consumer joined. This is not
+    /// a GATT scope; a failure retains backend ownership for a later retry.
+    pub transport_close_failures: Vec<DesktopError>,
+    /// Current physical cleanup debt from failed or cancelled connection
+    /// acquisition. These original native causes are separate from the
+    /// immutable core cleanup record; an overall release requires this
+    /// vector to be empty. A confirmed retry retires only the exact debt.
+    pub half_open_close_failures: Vec<DesktopError>,
     /// Incremental destroy passes executed (F15): more than one when the
     /// destroy workload exceeds one effect batch.
     pub destroy_steps: usize,
@@ -894,6 +942,18 @@ pub struct ShutdownReport {
     /// stopped during shutdown (PR210-09). `None` when no scan was owned or
     /// the stop succeeded.
     pub scan_stop_failure: Option<DesktopError>,
+}
+
+impl ShutdownReport {
+    /// True only when logical ownership and every physical release stage
+    /// confirmed cleanup. Historical diagnostics do not override this answer.
+    pub fn is_released(&self) -> bool {
+        matches!(&self.record, Ok(record) if record.state() == CleanupState::Released)
+            && self.radio_close_failures.is_empty()
+            && self.transport_close_failures.is_empty()
+            && self.half_open_close_failures.is_empty()
+            && self.scan_stop_failure.is_none()
+    }
 }
 
 /// Why a notification stream was invalidated (PR210-11), derived from the
@@ -1095,6 +1155,8 @@ fn gated(policy: AdmissionPolicy, operation: &str) -> bool {
     const RADIO_WORK: &[&str] = &[
         "scan.start",
         "connection.connect",
+        "peers.connected",
+        "peers.resolve",
         "discovery.complete",
         "gatt.read",
         "gatt.write",
@@ -1128,7 +1190,7 @@ fn adapter_refusal(code: BleErrorCode, operation: &str, detail: String) -> Deskt
 
 /// The legacy per-OS adapter gate (finding 58), read from the reported
 /// facts. A fact never reported admits.
-fn admission_refusal(
+pub(crate) fn admission_refusal(
     policy: AdmissionPolicy,
     status: AdapterStatus,
     operation: &str,
@@ -1404,6 +1466,34 @@ fn instance_key(peer_id: &str, stored: &StoredPath, characteristic: &str) -> Ins
     )
 }
 
+#[derive(Default)]
+struct DiscoverySnapshot {
+    generations: Option<(String, String)>,
+    report: Option<DiscoveryReport>,
+    leases: HashSet<String>,
+}
+
+#[derive(Default)]
+struct DiscoveryCoordinator {
+    completed: AtomicU64,
+    snapshot: Mutex<DiscoverySnapshot>,
+}
+
+struct HalfOpenCleanup {
+    peer_key: String,
+    generation: Option<String>,
+    release_serial: AtomicU64,
+    adapter_epoch: u64,
+    // Serializes compensation and shutdown retries; false means not confirmed.
+    released: Mutex<bool>,
+    failure: StdMutex<Option<DesktopError>>,
+}
+
+type LeaseReleaseGate = Mutex<Option<bool>>;
+type LeaseReleaseGates = StdMutex<HashMap<(String, String), Weak<LeaseReleaseGate>>>;
+type LeaseChild = (PathSelector, String);
+type PendingLeaseChildren = StdMutex<HashMap<(String, String), Vec<LeaseChild>>>;
+
 struct Inner<B> {
     core: Mutex<Central>,
     boundary: B,
@@ -1428,12 +1518,14 @@ struct Inner<B> {
     /// Peer keys whose streams a reset invalidated; cleared by the peer's
     /// next connect.
     reset_peers: StdMutex<HashSet<String>>,
-    /// `(peer key, lease)` and `(peer key, consumer)` pairs the last adapter
-    /// resets ended: the core cleared them, and their release answers
+    /// Exact `(peer key, lease)` pairs confirmed loss or adapter resets ended: the core
+    /// cleared them, and their release answers
     /// already-released once (legacy adapter-loss cleanup left
     /// terminalized handles).
-    reset_leases: StdMutex<HashSet<(String, String)>>,
-    reset_consumers: StdMutex<HashSet<(String, String)>>,
+    retired_leases: StdMutex<HashSet<(String, String)>>,
+    /// Consumers whose physical obligation ended with a confirmed link loss
+    /// or adapter reset. A later failed reconnect may erase their old paths.
+    retired_consumers: StdMutex<HashSet<(String, String)>>,
     reset_events: broadcast::Sender<AdapterResetEvent>,
     reset_sequence: AtomicU64,
     /// The one owned scan. A plain mutex: held for short synchronous
@@ -1450,6 +1542,12 @@ struct Inner<B> {
     completed_scans: ScanTickets,
     /// Radio peripheral id -> core session peer key.
     peers: Mutex<HashMap<String, String>>,
+    /// One physical snapshot per peer; lease attachments do not rediscover
+    /// or invalidate another owner's current logical database.
+    discoveries: StdMutex<HashMap<String, Arc<DiscoveryCoordinator>>>,
+    lease_releases: LeaseReleaseGates,
+    pending_lease_children: PendingLeaseChildren,
+    half_open_cleanup: StdMutex<HashMap<String, Arc<HalfOpenCleanup>>>,
     /// Per-instance subscription routing: (peer, service uuid, service
     /// occurrence, characteristic uuid, characteristic occurrence) ->
     /// (core path, subscription epoch at install). Duplicate UUIDs never
@@ -1466,6 +1564,10 @@ struct Inner<B> {
     /// disconnect: a radio that never answers (CoreBluetooth) no longer
     /// holds it until its deadline.
     link_ends: StdMutex<HashMap<String, u64>>,
+    // Unlike link_ends (which also wakes operations at release REQUEST),
+    // this serial advances only on confirmed physical release. It orders
+    // native acquisition versus later release for delayed driver drops.
+    confirmed_releases: StdMutex<HashMap<String, u64>>,
     /// Woken on every [`Inner::link_ends`] change.
     link_end: tokio::sync::Notify,
     /// Per-instance keys whose physical disable failed and is pending
@@ -1525,6 +1627,7 @@ struct Inner<B> {
     observer: Option<CentralObserver>,
     native_wake: broadcast::Sender<()>,
     shut_down: AtomicBool,
+    shutdown_release_confirmed: AtomicBool,
     /// Stop signal for the central-lifetime event loop.
     loop_stop: watch::Sender<bool>,
     /// Event-loop worker, joined at shutdown so no advertisement can race
@@ -1710,6 +1813,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         // M4: project the backend's capability truth into the live core so
         // runtime gates match the parity report row for row.
         (profile.register_capabilities)(&mut core).map_err(DesktopError::from)?;
+        crate::capabilities::apply_connection_capability_limitation(
+            &mut core, boundary.connection_capability_limitation(),
+        ).map_err(DesktopError::from)?;
         let (loop_stop, loop_stop_rx) = watch::channel(false);
         let (lifecycle, _) = broadcast::channel(LIFECYCLE_EVENT_CAPACITY);
         let (adapter, _) = broadcast::channel(LIFECYCLE_EVENT_CAPACITY);
@@ -1730,16 +1836,21 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             tickets: StdMutex::new(Vec::new()),
             reset_ops: StdMutex::new(HashSet::new()),
             reset_peers: StdMutex::new(HashSet::new()),
-            reset_leases: StdMutex::new(HashSet::new()),
-            reset_consumers: StdMutex::new(HashSet::new()),
+            retired_leases: StdMutex::new(HashSet::new()),
+            retired_consumers: StdMutex::new(HashSet::new()),
             reset_events: broadcast::channel(LIFECYCLE_EVENT_CAPACITY).0,
             reset_sequence: AtomicU64::new(0),
             scan: StdMutex::new(None),
             completed_scans: StdMutex::new(CompletedScanTickets::new(&ticket_scope)),
             peers: Mutex::new(HashMap::new()),
+            discoveries: StdMutex::new(HashMap::new()),
+            lease_releases: StdMutex::new(HashMap::new()),
+            pending_lease_children: StdMutex::new(HashMap::new()),
+            half_open_cleanup: StdMutex::new(HashMap::new()),
             subscriptions: Mutex::new(HashMap::new()),
             epochs: Mutex::new(HashMap::new()),
             link_ends: StdMutex::new(HashMap::new()),
+            confirmed_releases: StdMutex::new(HashMap::new()),
             link_end: tokio::sync::Notify::new(),
             failed_disables: Mutex::new(HashSet::new()),
             deliveries: StdMutex::new(HashMap::new()),
@@ -1768,6 +1879,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             observer: profile.observer,
             native_wake: broadcast::channel(1).0,
             shut_down: AtomicBool::new(false),
+            shutdown_release_confirmed: AtomicBool::new(false),
             loop_stop,
             loop_done: Mutex::new(None),
         });
@@ -1872,6 +1984,87 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     #[must_use]
     pub fn adapter_events(&self) -> broadcast::Receiver<AdapterEvent> {
         self.inner.adapter.subscribe()
+    }
+
+    /// Snapshot capability states already registered on this authority.
+    pub async fn capability_states(&self) -> Vec<(String, ubm_core::central::CapabilityState)> {
+        self.inner.core.lock().await.registered_capability_states()
+    }
+
+    /// Registered instance descriptors, including the radio's actual refusal reasons.
+    pub async fn capability_descriptors(&self) -> Vec<ubm_core::central::CapabilityDescriptor> {
+        self.inner.core.lock().await.registered_capability_descriptors()
+    }
+
+    /// Read-only system directory facts; never acquires connection ownership.
+    pub async fn connected_peers(
+        &self,
+        services: &[String],
+        ctl: OpControl,
+    ) -> Result<Vec<crate::boundary::DirectoryPeer>, DesktopError> {
+        self.directory_query(
+            ctl,
+            "peers.connected",
+            self.inner.boundary.connected_peers(services),
+        )
+        .await
+    }
+
+    pub async fn resolve_peer(
+        &self,
+        peer_id: &str,
+        ctl: OpControl,
+    ) -> Result<Option<crate::boundary::DirectoryPeer>, DesktopError> {
+        self.directory_query(
+            ctl,
+            "peers.resolve",
+            self.inner.boundary.resolve_peer(peer_id),
+        )
+        .await
+    }
+
+    async fn directory_query<T>(
+        &self,
+        ctl: OpControl,
+        operation: &'static str,
+        work: impl std::future::Future<Output = Result<T, DesktopError>>,
+    ) -> Result<T, DesktopError> {
+        let _settle = SettleOnDrop(&ctl.ticket);
+        let mut shutdown = self.inner.loop_stop.subscribe();
+        let epoch = self.inner.resets.load(Ordering::SeqCst);
+        self.precheck(&ctl, operation)?;
+        if self.inner.resets.load(Ordering::SeqCst) != epoch {
+            return Err(DesktopError::new(
+                BleErrorCode::OperationReset,
+                BleErrorDomain::Connection,
+                operation,
+            ));
+        }
+        let window = ctl.budget.window(LIVENESS_OP);
+        let answer = tokio::select! {
+            answer = drive(&ctl.ticket, window, work) => answer,
+            _ = shutdown.wait_for(|closed| *closed) => return Err(DesktopError::adapter_unavailable(operation)),
+        };
+        match answer {
+            Wait::Done(Ok(value)) => {
+                self.admit(operation)?;
+                if self.inner.resets.load(Ordering::SeqCst) != epoch {
+                    return Err(DesktopError::new(
+                        BleErrorCode::OperationReset,
+                        BleErrorDomain::Connection,
+                        operation,
+                    ));
+                }
+                Ok(value)
+            }
+            Wait::Done(Err(error)) => Err(error),
+            Wait::Expired => Err(classify(timed_out(operation, window), OpKind::Read, true)),
+            Wait::Cancelled => Err(classify(
+                ctl.ticket.interruption(operation),
+                OpKind::Read,
+                true,
+            )),
+        }
     }
 
     /// Current adapter power state, read from the radio under the budget
@@ -2812,22 +3005,113 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     /// Release a possibly half-open OS link that no caller owns (failed,
     /// expired, cancelled or lost connect). Bounded by
     /// [`COMPENSATION_TIMEOUT`] and outside the core lock (F24). A failed
-    /// release is retained as a disconnect failure on the connection when
-    /// its record exists, and always counted — never swallowed.
-    async fn compensate_half_open(&self, peer_id: &str, peer_key: &str, code: BleErrorCode) {
-        let cleanup = tokio::time::timeout(
-            COMPENSATION_TIMEOUT,
-            self.inner.boundary.disconnect(peer_id),
-        )
-        .await;
-        let failure = match cleanup {
-            Ok(Ok(())) => return,
-            Ok(Err(_)) => code,
-            Err(_) => BleErrorCode::OperationTimedOut,
+    /// release remains generation-scoped physical debt independently of the
+    /// terminal logical connection. Shutdown reports current debt; historical
+    /// compensation counters remain diagnostic after a successful retry.
+    fn retain_half_open_cleanup(
+        &self,
+        core: &Central,
+        peer_id: &str,
+        peer_key: &str,
+        generation: &Option<String>,
+        adapter_epoch: u64,
+        release_serial: u64,
+    ) -> bool {
+        let current = core.connection_generation(peer_key);
+        if (current.is_some() && current != *generation)
+            || self.inner.resets.load(Ordering::SeqCst) != adapter_epoch
+            || confirmed_release_count(&self.inner, peer_id) != release_serial
+        {
+            return false;
+        }
+        let mut retained = lock_std(&self.inner.half_open_cleanup);
+        let debt = retained.entry(peer_id.to_owned()).or_insert_with(|| {
+            Arc::new(HalfOpenCleanup {
+                peer_key: peer_key.to_owned(),
+                generation: generation.clone(),
+                release_serial: AtomicU64::new(release_serial),
+                adapter_epoch,
+                released: Mutex::new(false),
+                failure: StdMutex::new(None),
+            })
+        });
+        // A pre-admitted native acquisition may finish after an earlier
+        // release in this same generation. Refresh the obligation, not its
+        // single-flight gate or Arc identity: old cleanup remains owned.
+        debt.release_serial.store(release_serial, Ordering::SeqCst);
+        true
+    }
+
+    async fn retry_half_open_cleanup(
+        &self,
+        peer_id: &str,
+        debt: &Arc<HalfOpenCleanup>,
+    ) -> Result<(), DesktopError> {
+        let work = async {
+            let mut released = debt.released.lock().await;
+            if *released {
+                return Ok(());
+            }
+            let retired = self.inner.resets.load(Ordering::SeqCst) != debt.adapter_epoch
+                || confirmed_release_count(&self.inner, peer_id)
+                    != debt.release_serial.load(Ordering::SeqCst);
+            if !retired {
+                let core = self.inner.core.lock().await;
+                let current = core.connection_generation(&debt.peer_key);
+                if current.is_some() && current != debt.generation {
+                    return Err(contract_error(
+                        BleErrorCode::ConnectionStale,
+                        BleErrorDomain::Cleanup,
+                        "connection.compensate",
+                    )
+                    .with_detail("retained cleanup belongs to an older connection generation"));
+                }
+            }
+            if !retired {
+                self.inner.boundary.disconnect(peer_id).await?;
+                note_confirmed_release(&self.inner, peer_id);
+            }
+            let mut retained = lock_std(&self.inner.half_open_cleanup);
+            // Retention can refresh the serial while this native release
+            // is in flight. Never erase a later acquisition's obligation.
+            if self.inner.resets.load(Ordering::SeqCst) == debt.adapter_epoch
+                && confirmed_release_count(&self.inner, peer_id)
+                    == debt.release_serial.load(Ordering::SeqCst)
+            {
+                return Ok(());
+            }
+            *released = true;
+            if retained
+                .get(peer_id)
+                .is_some_and(|entry| Arc::ptr_eq(entry, debt))
+            {
+                retained.remove(peer_id);
+            }
+            Ok(())
         };
+        let failure = match tokio::time::timeout(COMPENSATION_TIMEOUT, work).await {
+            Ok(Ok(())) => return Ok(()),
+            Ok(Err(error)) => error,
+            Err(_) => contract_error(
+                BleErrorCode::OperationTimedOut,
+                BleErrorDomain::Cleanup,
+                "connection.compensate",
+            )
+            .with_detail("half-open link cleanup remains owned after its bound"),
+        };
+        *lock_std(&debt.failure) = Some(failure.clone());
         self.inner.note_compensation_failure();
-        let mut core = self.inner.core.lock().await;
-        let _ = core.report_disconnect_failure(peer_key, failure);
+        Err(failure)
+    }
+
+    async fn compensate_half_open(&self, peer_id: &str, generation: &Option<String>) {
+        let debt = lock_std(&self.inner.half_open_cleanup)
+            .get(peer_id)
+            .filter(|debt| debt.generation == *generation)
+            .cloned();
+        if let Some(debt) = debt {
+            let _ = self.retry_half_open_cleanup(peer_id, &debt).await;
+        }
     }
 
     /// Connect to a radio peer id (btleplug peripheral identity): resolve
@@ -2853,6 +3137,39 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         // the OS does (legacy pending CoreBluetooth connect, Android
         // `autoConnect`); no liveness backstop ends it, a cancel does.
         let window = ctl.budget.window_without_backstop();
+        let previous = lock_std(&self.inner.half_open_cleanup)
+            .get(peer_id)
+            .cloned();
+        if let Some(previous) = previous {
+            match drive(
+                &ctl.ticket,
+                window,
+                self.retry_half_open_cleanup(peer_id, &previous),
+            )
+            .await
+            {
+                Wait::Done(result) => result.map_err(|error| {
+                    classify(error, OpKind::Connect, false)
+                        .classify_connect_failure()
+                        .classify_establishment()
+                })?,
+                Wait::Expired => {
+                    return Err(classify(
+                        timed_out("connection.connect", window),
+                        OpKind::Connect,
+                        false,
+                    ));
+                }
+                Wait::Cancelled => {
+                    return Err(classify(
+                        ctl.ticket.interruption("connection.connect"),
+                        OpKind::Connect,
+                        false,
+                    ));
+                }
+            }
+            self.refuse_before_admission(&ctl, "connection.connect")?;
+        }
         let peer_key = {
             let mut core = self.inner.core.lock().await;
             core.resolve_peer("platform-guid", peer_id)
@@ -2865,8 +3182,16 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             .lock()
             .await
             .insert(peer_id.to_owned(), peer_key.clone());
-        let operation = {
+        let (operation, connection_generation, adapter_epoch, mut release_serial) = {
             let mut core = self.inner.core.lock().await;
+            if lock_std(&self.inner.half_open_cleanup).contains_key(peer_id) {
+                return Err(contract_error(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Cleanup,
+                    "connection.connect",
+                )
+                .with_detail("previous half-open connection cleanup remains owned"));
+            }
             let mut out = batch();
             let id = core
                 .connect(
@@ -2878,9 +3203,15 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 )
                 .map_err(DesktopError::from)?;
             publish_or_refuse(&mut core, &ctl.ticket, &id, "connection.connect", None)?;
+            lock_std(&self.inner.retired_leases).remove(&(peer_key.clone(), lease.to_owned()));
             core.dispatch_op(&id, &mut out)
                 .map_err(DesktopError::from)?;
-            id
+            (
+                id,
+                core.connection_generation(&peer_key),
+                self.inner.resets.load(Ordering::SeqCst),
+                confirmed_release_count(&self.inner, peer_id),
+            )
         };
         // Finding 161: the bound the attempt runs under, for the deadline
         // fact when it expires before any link came up. A connect without
@@ -2897,22 +3228,52 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             DropCleanup::Connect {
                 peer_id: peer_id.to_owned(),
                 peer_key: peer_key.clone(),
+                generation: connection_generation.clone(),
+                adapter_epoch,
+                release_serial,
             },
         );
         let result = match drive(&ctl.ticket, window, self.inner.boundary.connect(peer_id)).await {
             Wait::Done(Ok(())) => {
+                // This fact must survive a caller drop while waiting for
+                // core settlement, including success after shutdown release.
+                release_serial = confirmed_release_count(&self.inner, peer_id);
+                drop_guard.note_native_acquisition(release_serial);
                 let settled = {
                     let mut core = self.inner.core.lock().await;
                     let mut out = batch();
-                    // Best-effort: the event loop may have recorded the
-                    // DeviceConnected event first.
-                    let _ = core.note_link_established(&peer_key);
+                    if core.connection_generation(&peer_key) != connection_generation {
+                        return Err(contract_error(
+                            BleErrorCode::ConnectionStale,
+                            BleErrorDomain::Connection,
+                            "connection.connect",
+                        ));
+                    }
+                    // A prior OS event may already have established this
+                    // generation. A terminal generation is different: a
+                    // successful late native call cannot revive its handles.
+                    let establishment_error = match core.connection_state(&peer_key) {
+                        Some(ConnectionState::Connected) => None,
+                        Some(ConnectionState::Connecting) => core
+                            .note_link_established(&peer_key)
+                            .err()
+                            .map(DesktopError::from),
+                        _ => Some(contract_error(
+                            BleErrorCode::ConnectionStale,
+                            BleErrorDomain::Connection,
+                            "connection.connect",
+                        )),
+                    };
                     let outcome = settle_and_release(
                         &mut core,
                         &operation,
-                        ContenderKind::Success,
+                        if establishment_error.is_some() {
+                            ContenderKind::Failure
+                        } else {
+                            ContenderKind::Success
+                        },
                         true,
-                        None,
+                        establishment_error.as_ref().map(DesktopError::code),
                         &mut out,
                     )?;
                     let winner = match outcome {
@@ -2938,8 +3299,24 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                             // the link is lost for the core and released
                             // below.
                             let mut out = batch();
-                            let _ = core.note_peer_loss(&peer_key, now_ms(), &mut out);
-                            Err(terminal_to_error(winner, "connection.connect"))
+                            let same = self.retain_half_open_cleanup(
+                                &core,
+                                peer_id,
+                                &peer_key,
+                                &connection_generation,
+                                adapter_epoch,
+                                release_serial,
+                            );
+                            if same {
+                                let _ = core.note_peer_loss(&peer_key, now_ms(), &mut out);
+                            }
+                            Err(if winner == OperationTerminalKind::Failed {
+                                establishment_error.unwrap_or_else(|| {
+                                    terminal_to_error(winner, "connection.connect")
+                                })
+                            } else {
+                                terminal_to_error(winner, "connection.connect")
+                            })
                         }
                         None => Err(contract_error(
                             BleErrorCode::LifecycleInvalidState,
@@ -2949,7 +3326,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     }
                 };
                 if settled.is_err() {
-                    self.compensate_half_open(peer_id, &peer_key, BleErrorCode::OperationAborted)
+                    self.compensate_half_open(peer_id, &connection_generation)
                         .await;
                 }
                 settled
@@ -2958,11 +3335,20 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 // Settle under the lock, then drop the guard before awaiting
                 // the compensating radio disconnect (F24): a stuck cleanup
                 // must never block unrelated peers behind the core lock.
-                let error_code = error.code();
                 {
                     let mut core = self.inner.core.lock().await;
+                    let same = self.retain_half_open_cleanup(
+                        &core,
+                        peer_id,
+                        &peer_key,
+                        &connection_generation,
+                        adapter_epoch,
+                        release_serial,
+                    );
                     let mut out = batch();
-                    let _ = core.note_peer_loss(&peer_key, now_ms(), &mut out);
+                    if same {
+                        let _ = core.note_peer_loss(&peer_key, now_ms(), &mut out);
+                    }
                     let _ = out.drain();
                     let _ = settle_and_release(
                         &mut core,
@@ -2975,7 +3361,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 }
                 // Partial-failure cleanup: a half-opened OS link must not
                 // linger without an owner (L5).
-                self.compensate_half_open(peer_id, &peer_key, error_code)
+                self.compensate_half_open(peer_id, &connection_generation)
                     .await;
                 Err(error)
             }
@@ -2989,26 +3375,46 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 // connect is renamed).
                 {
                     let mut core = self.inner.core.lock().await;
+                    let same = self.retain_half_open_cleanup(
+                        &core,
+                        peer_id,
+                        &peer_key,
+                        &connection_generation,
+                        adapter_epoch,
+                        release_serial,
+                    );
                     let mut out = batch();
-                    let _ = core.note_peer_loss(&peer_key, now_ms(), &mut out);
+                    if same {
+                        let _ = core.note_peer_loss(&peer_key, now_ms(), &mut out);
+                    }
                     let _ = out.drain();
                 }
                 let error = self
                     .settle_timeout(&operation, "connection.connect", window)
                     .await;
-                self.compensate_half_open(peer_id, &peer_key, BleErrorCode::OperationTimedOut)
+                self.compensate_half_open(peer_id, &connection_generation)
                     .await;
                 Err(error.classify_connect_deadline(budget_ms))
             }
             Wait::Cancelled => {
                 {
                     let mut core = self.inner.core.lock().await;
+                    let same = self.retain_half_open_cleanup(
+                        &core,
+                        peer_id,
+                        &peer_key,
+                        &connection_generation,
+                        adapter_epoch,
+                        release_serial,
+                    );
                     let mut out = batch();
-                    let _ = core.note_peer_loss(&peer_key, now_ms(), &mut out);
+                    if same {
+                        let _ = core.note_peer_loss(&peer_key, now_ms(), &mut out);
+                    }
                     let _ = out.drain();
                 }
                 let error = self.settle_abort(&operation, "connection.connect").await;
-                self.compensate_half_open(peer_id, &peer_key, BleErrorCode::OperationAborted)
+                self.compensate_half_open(peer_id, &connection_generation)
                     .await;
                 Err(error)
             }
@@ -3033,8 +3439,145 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         lease: &str,
         ctl: OpControl,
     ) -> Result<bool, DesktopError> {
+        let _settle = SettleOnDrop(&ctl.ticket);
+        if self.inner.shutdown_release_confirmed.load(Ordering::SeqCst) {
+            let peer_key = self.known_peer_key(peer_id).await?;
+            let mut core = self.inner.core.lock().await;
+            let retired = lock_std(&self.inner.retired_leases)
+                .contains(&(peer_key.clone(), lease.to_owned()));
+            if (core.connection_state(&peer_key) == Some(ConnectionState::Disconnected) || retired)
+                && !lock_std(&self.inner.half_open_cleanup).contains_key(peer_id)
+            {
+                let result = if core.connection_state(&peer_key).is_none() && retired {
+                    Ok(true)
+                } else {
+                    core.release_lease(&peer_key, lease, now_ms(), &mut batch())
+                        .map_err(DesktopError::from)
+                };
+                if result.is_ok() {
+                    lock_std(&self.inner.retired_leases).remove(&(peer_key, lease.to_owned()));
+                }
+                return result;
+            }
+        }
         self.precheck(&ctl, "connection.release")?;
+        let window = ctl.budget.window(LIVENESS_CLEANUP);
+        let release_budget = window
+            .at
+            .map_or_else(Budget::unbounded, |at| Budget::from_ms_at(at, 0));
+        let gate = {
+            let mut gates = lock_std(&self.inner.lease_releases);
+            gates.retain(|_, gate| gate.strong_count() != 0);
+            let slot = gates
+                .entry((peer_id.to_owned(), lease.to_owned()))
+                .or_default();
+            if let Some(gate) = slot.upgrade() {
+                gate
+            } else {
+                let gate = Arc::new(Mutex::new(None));
+                *slot = Arc::downgrade(&gate);
+                gate
+            }
+        };
+        let mut released = match drive(&ctl.ticket, window, gate.lock()).await {
+            Wait::Done(guard) => guard,
+            Wait::Expired => {
+                return Err(classify(
+                    timed_out("connection.release", window),
+                    OpKind::Cleanup,
+                    false,
+                ));
+            }
+            Wait::Cancelled => {
+                return Err(classify(
+                    ctl.ticket.interruption("connection.release"),
+                    OpKind::Cleanup,
+                    false,
+                ));
+            }
+        };
+        self.refuse_before_admission(&ctl, "connection.release")?;
+        if let Some(physical) = *released {
+            return Ok(physical);
+        }
         let peer_key = self.known_peer_key(peer_id).await?;
+        let children = {
+            let mut core = self.inner.core.lock().await;
+            let another = core
+                .held_leases()
+                .iter()
+                .any(|(peer, held)| peer == &peer_key && held != lease);
+            if another {
+                core.begin_lease_release(&peer_key, lease)
+                    .map_err(DesktopError::from)?;
+                let children = core
+                    .consumers_for_lease(&peer_key, lease)
+                    .into_iter()
+                    .map(|(index, consumer)| {
+                        let path = core.stored_path(index).ok_or_else(|| {
+                            contract_error(
+                                BleErrorCode::LifecycleInvariantViolation,
+                                BleErrorDomain::Core,
+                                "connection.release.path",
+                            )
+                        })?;
+                        Ok((
+                            PathSelector {
+                                service_uuid: path.service_uuid().to_owned(),
+                                service_occurrence: Some(path.service_occurrence()),
+                                characteristic_uuid: path.characteristic_uuid().map(str::to_owned),
+                                characteristic_occurrence: path.characteristic_occurrence(),
+                                descriptor_uuid: path.descriptor_uuid().map(str::to_owned),
+                                descriptor_occurrence: path.descriptor_occurrence(),
+                            },
+                            consumer,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, DesktopError>>()?;
+                let mut pending = lock_std(&self.inner.pending_lease_children);
+                let retained = pending
+                    .entry((peer_id.to_owned(), lease.to_owned()))
+                    .or_default();
+                for child in children {
+                    if !retained.contains(&child) {
+                        retained.push(child);
+                    }
+                }
+                retained.clone()
+            } else {
+                if matches!(
+                    core.connection_state(&peer_key),
+                    Some(ConnectionState::Connected | ConnectionState::Connecting)
+                ) {
+                    core.disconnect(&peer_key, lease, now_ms(), &mut batch())
+                        .map_err(DesktopError::from)?;
+                }
+                Vec::new()
+            }
+        };
+        for (selector, consumer) in children {
+            // A child gets its own settlement ticket, while the parent's
+            // original window/cancellation bounds the whole drain.
+            let child = OpControl::new(release_budget, OpTicket::new())
+                .with_connection_lease(lease.to_owned());
+            let ticket = child.ticket.clone();
+            let pending = self.unsubscribe(peer_id, &selector, &consumer, child);
+            tokio::pin!(pending);
+            tokio::select! {
+                result = &mut pending => { result?; }
+                () = ctl.ticket.cancelled() => {
+                    self.cancel(&ticket).await?;
+                    // Let the child's own cancellation path retain failed
+                    // native disable ownership; never drop it at the deadline.
+                    pending.await?;
+                }
+            }
+            if let Some(retained) = lock_std(&self.inner.pending_lease_children)
+                .get_mut(&(peer_id.to_owned(), lease.to_owned()))
+            {
+                retained.retain(|child| child != &(selector.clone(), consumer.clone()));
+            }
+        }
         {
             let mut core = self.inner.core.lock().await;
             let another = core
@@ -3044,6 +3587,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             if another {
                 core.release_lease(&peer_key, lease, now_ms(), &mut batch())
                     .map_err(DesktopError::from)?;
+                lock_std(&self.inner.pending_lease_children)
+                    .remove(&(peer_id.to_owned(), lease.to_owned()));
+                *released = Some(false);
                 return Ok(false);
             }
             if matches!(
@@ -3054,7 +3600,27 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     .map_err(DesktopError::from)?;
             }
         }
-        self.disconnect(peer_id, lease, ctl).await.map(|_| true)
+        let result = self
+            .disconnect(
+                peer_id,
+                lease,
+                OpControl::new(release_budget, ctl.ticket.clone()),
+            )
+            .await
+            .map(|_| true)
+            .map_err(|error| {
+                if window.backstop && error.code() == BleErrorCode::OperationTimedOut {
+                    error.with_detail(LIVENESS_BACKSTOP_DETAIL)
+                } else {
+                    error
+                }
+            });
+        if let Ok(physical) = result {
+            *released = Some(physical);
+            lock_std(&self.inner.retired_leases).remove(&(peer_key.clone(), lease.to_owned()));
+            lock_std(&self.inner.pending_lease_children).retain(|(peer, _), _| peer != peer_id);
+        }
+        result
     }
 
     /// Explicit disconnect (PR210-09/24): request the release in the core,
@@ -3079,7 +3645,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         {
             let mut core = self.inner.core.lock().await;
             if core.connection_state(&peer_key).is_none()
-                && lock_std(&self.inner.reset_leases).remove(&(peer_key.clone(), lease.to_owned()))
+                && lock_std(&self.inner.retired_leases)
+                    .remove(&(peer_key.clone(), lease.to_owned()))
             {
                 return Ok(LinkRelease::AlreadyReleased);
             }
@@ -3104,6 +3671,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         // app disconnect (owner decision, 5.0).
         note_link_end(&self.inner, peer_id);
         let outcome = drive(&ctl.ticket, window, self.inner.boundary.disconnect(peer_id)).await;
+        if matches!(&outcome, Wait::Done(Ok(()))) {
+            note_confirmed_release(&self.inner, peer_id);
+        }
         // Late radio completions must not resurrect the link: drop local
         // subscription routing for this peer now; the core already
         // invalidated its hubs at disconnect.
@@ -3175,8 +3745,21 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let mut out = batch();
             let generation = Generations::of(&core, &peer_key);
             let before = core.connection_state(&peer_key);
+            let consumers: Vec<_> = core
+                .held_consumers()
+                .into_iter()
+                .filter(|(owner, _)| owner == &peer_key)
+                .collect();
             core.note_peer_loss(&peer_key, now_ms(), &mut out)
                 .map_err(DesktopError::from)?;
+            if before.is_some_and(|state| !state.is_terminal()) {
+                lock_std(&self.inner.retired_consumers).extend(consumers);
+                lock_std(&self.inner.retired_leases).extend(
+                    core.held_leases()
+                        .into_iter()
+                        .filter(|(peer, _)| peer == &peer_key),
+                );
+            }
             let kind = if before == Some(ConnectionState::Disconnecting) {
                 LifecycleKind::Released { requested: true }
             } else {
@@ -3197,6 +3780,12 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     /// database can hold is `capability.limited`, and an empty snapshot
     /// fails instead of completing an empty database. An expired or
     /// cancelled discovery fails the discovery in the core.
+    /// Concurrent callers share the physical snapshot. A newly joining lease
+    /// attaches to an already-current snapshot without rotating its generation;
+    /// a later explicit discovery by an attached lease refreshes it. Cached
+    /// topology is accepted only while the authoritative connection/database
+    /// generations and current state still match. Each wait retains its own
+    /// cancellation ticket and original deadline.
     pub async fn discover(
         &self,
         peer_id: &str,
@@ -3207,6 +3796,89 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         self.precheck(&ctl, "discovery.complete")?;
         let window = ctl.budget.window(LIVENESS_OP);
         let peer_key = self.known_peer_key(peer_id).await?;
+        let coordinator = lock_std(&self.inner.discoveries)
+            .entry(peer_id.to_owned())
+            .or_default()
+            .clone();
+        let entered = coordinator.completed.load(Ordering::Acquire);
+        let mut snapshot = match drive_link(
+            &self.inner,
+            peer_id,
+            "discovery.complete",
+            &ctl.ticket,
+            window,
+            async { Ok(coordinator.snapshot.lock().await) },
+        )
+        .await
+        {
+            Wait::Done(Ok(guard)) => guard,
+            Wait::Done(Err(error)) => return Err(error),
+            Wait::Expired => {
+                return Err(classify(
+                    timed_out("discovery.complete", window),
+                    OpKind::Discover,
+                    false,
+                ));
+            }
+            Wait::Cancelled => {
+                return Err(classify(
+                    ctl.ticket.interruption("discovery.complete"),
+                    OpKind::Discover,
+                    false,
+                ));
+            }
+        };
+        self.refuse_before_admission(&ctl, "discovery.complete")?;
+        {
+            let core = self.inner.core.lock().await;
+            if !core.lease_accepts_work(&peer_key, lease) {
+                return Err(contract_error(
+                    BleErrorCode::OwnershipDenied,
+                    BleErrorDomain::Core,
+                    "discovery.lease",
+                ));
+            }
+            let generations = core
+                .connection_generation(&peer_key)
+                .zip(core.database_generation(&peer_key));
+            snapshot
+                .leases
+                .retain(|held| core.holds_lease(&peer_key, held));
+            if core.database_state(&peer_key) == Some(DatabaseState::Current)
+                && generations == snapshot.generations
+                && (entered != coordinator.completed.load(Ordering::Acquire)
+                    || !snapshot.leases.contains(lease))
+                && let Some(report) = snapshot.report.clone()
+            {
+                snapshot.leases.insert(lease.to_owned());
+                return Ok(report);
+            }
+        }
+        let result = self
+            .discover_physical(peer_id, lease, peer_key.clone(), &ctl, window)
+            .await;
+        snapshot.report = result.as_ref().ok().cloned();
+        snapshot.leases.clear();
+        snapshot.generations = None;
+        if result.is_ok() {
+            let core = self.inner.core.lock().await;
+            snapshot.generations = core
+                .connection_generation(&peer_key)
+                .zip(core.database_generation(&peer_key));
+            snapshot.leases.insert(lease.to_owned());
+        }
+        coordinator.completed.fetch_add(1, Ordering::Release);
+        result
+    }
+
+    async fn discover_physical(
+        &self,
+        peer_id: &str,
+        lease: &str,
+        peer_key: String,
+        ctl: &OpControl,
+        window: Window,
+    ) -> Result<DiscoveryReport, DesktopError> {
         {
             let mut core = self.inner.core.lock().await;
             core.begin_discovery(&peer_key)
@@ -3295,6 +3967,23 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             // UUID — so registration below cannot fail part-way and no
             // partial database is ever current. A refused snapshot fails
             // the discovery as a whole.
+            if core.database_state(&peer_key) != Some(DatabaseState::Discovering) {
+                return Err(contract_error(
+                    BleErrorCode::GattStaleHandle,
+                    BleErrorDomain::Gatt,
+                    "discovery.complete",
+                )
+                .with_detail("the database changed during discovery"));
+            }
+            if !core.lease_accepts_work(&peer_key, lease) {
+                core.fail_discovery(&peer_key).map_err(DesktopError::from)?;
+                return Err(contract_error(
+                    BleErrorCode::OwnershipDenied,
+                    BleErrorDomain::Gatt,
+                    "discovery.complete",
+                )
+                .with_detail("the discovery owner was released before publication"));
+            }
             if let Err(error) = admit_snapshot(&core, &services) {
                 let _ = core.fail_discovery(&peer_key);
                 return Err(error);
@@ -3564,7 +4253,12 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let (index, key, _) =
                 Self::resolve_instance(&core, &peer_key, peer_id, selector, "gatt.read", false)?;
             let id = core
-                .start_read(index, window.core_timeout_ms(), now_ms(), &mut out)
+                .start_read(
+                    ctl.gatt_path(index),
+                    window.core_timeout_ms(),
+                    now_ms(),
+                    &mut out,
+                )
                 .map_err(DesktopError::from)?;
             publish_or_refuse(&mut core, &ctl.ticket, &id, "gatt.read", None)?;
             core.dispatch_op(&id, &mut out)
@@ -3660,6 +4354,22 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         }
     }
 
+    async fn validate_gatt_prerequisite(
+        &self,
+        peer_id: &str,
+        selector: &PathSelector,
+        ctl: &OpControl,
+        operation: &'static str,
+        descriptor: bool,
+    ) -> Result<(), DesktopError> {
+        let peer_key = self.known_peer_key(peer_id).await?;
+        let core = self.inner.core.lock().await;
+        let (index, _, _) =
+            Self::resolve_instance(&core, &peer_key, peer_id, selector, operation, descriptor)?;
+        core.validate_gatt_admission(ctl.gatt_path(index), operation)
+            .map_err(DesktopError::from)
+    }
+
     /// GATT write. `"long-write"` is rejected up front: prepared-write
     /// transactions have no btleplug radio path (see `PARITY_GAPS.md`),
     /// and a long value must never silently degrade to a single ATT write.
@@ -3687,6 +4397,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let with_response = mode == "with-response";
         let value_len = value.len() as u64;
         let window = ctl.budget.window(LIVENESS_OP);
+        self.validate_gatt_prerequisite(peer_id, selector, &ctl, "gatt.write", false)
+            .await?;
         let measured_limit = self
             .measured_write_limit(peer_id, with_response, &ctl.ticket, window, "gatt.write")
             .await?;
@@ -3699,7 +4411,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let maximum = Self::write_maximum(&core, measured_limit, "gatt.write")?;
             let id = core
                 .start_write(
-                    index,
+                    ctl.gatt_path(index),
                     mode,
                     value_len,
                     Some(maximum),
@@ -3784,7 +4496,12 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 )
             })?;
             let id = core
-                .start_read_descriptor(index, window.core_timeout_ms(), now_ms(), &mut out)
+                .start_read_descriptor(
+                    ctl.gatt_path(index),
+                    window.core_timeout_ms(),
+                    now_ms(),
+                    &mut out,
+                )
                 .map_err(DesktopError::from)?;
             publish_or_refuse(&mut core, &ctl.ticket, &id, "gatt.read-descriptor", None)?;
             core.dispatch_op(&id, &mut out)
@@ -3849,6 +4566,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let value_len = value.len() as u64;
         let window = ctl.budget.window(LIVENESS_OP);
         // Descriptor writes are always ATT write requests (with response).
+        self.validate_gatt_prerequisite(peer_id, selector, &ctl, "gatt.write-descriptor", true)
+            .await?;
         let measured_limit = self
             .measured_write_limit(peer_id, true, &ctl.ticket, window, "gatt.write-descriptor")
             .await?;
@@ -3874,7 +4593,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let maximum = Self::write_maximum(&core, measured_limit, "gatt.write-descriptor")?;
             let id = core
                 .start_write_descriptor(
-                    index,
+                    ctl.gatt_path(index),
                     value_len,
                     Some(maximum),
                     window.core_timeout_ms(),
@@ -4054,7 +4773,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         // holds two mutexes at once.
         let key = {
             let core = self.inner.core.lock().await;
-            let (_, key, _) = Self::resolve_instance(
+            let (index, key, _) = Self::resolve_instance(
                 &core,
                 &peer_key,
                 peer_id,
@@ -4062,6 +4781,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 "gatt.subscribe",
                 false,
             )?;
+            core.validate_gatt_admission(ctl.gatt_path(index), "gatt.subscribe")
+                .map_err(DesktopError::from)?;
             key
         };
         // L7 resubscribe semantics: a pending failed disable fails the
@@ -4116,7 +4837,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let effects_before = core.typed_effects().len();
             let id = core
                 .subscribe(
-                    index,
+                    ctl.gatt_path(index),
                     policy.as_str(),
                     item_capacity,
                     byte_capacity,
@@ -4126,6 +4847,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     &mut out,
                 )
                 .map_err(DesktopError::from)?;
+            // Consumer IDs may be reused after a terminal generation. The
+            // new admission owns its own cleanup; old link-loss evidence
+            // must never waive a later generation's native disable.
+            lock_std(&self.inner.retired_consumers)
+                .remove(&(peer_key.clone(), consumer.to_owned()));
             let drive_enable = core.typed_effects()[effects_before..].iter().any(|effect| {
                 effect.kind() == CentralEffectKind::SubscribeEnable && effect.operation_id() == &id
             });
@@ -4390,25 +5116,75 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         drain: Option<&(dyn Fn(NotificationPoll) + Send + Sync)>,
     ) -> Result<bool, DesktopError> {
         let _settle = SettleOnDrop(&ctl.ticket);
+        if self.inner.shutdown_release_confirmed.load(Ordering::SeqCst) {
+            let peer_key = self.known_peer_key(peer_id).await?;
+            let mut core = self.inner.core.lock().await;
+            let retired = lock_std(&self.inner.retired_consumers)
+                .contains(&(peer_key.clone(), consumer.to_owned()));
+            if (core.connection_state(&peer_key) == Some(ConnectionState::Disconnected) || retired)
+                && !lock_std(&self.inner.half_open_cleanup).contains_key(peer_id)
+            {
+                if core.consumer_path(&peer_key, selector, consumer).is_none() && retired {
+                    lock_std(&self.inner.retired_consumers)
+                        .remove(&(peer_key, consumer.to_owned()));
+                    return Ok(false);
+                }
+                let index = core
+                    .consumer_path(&peer_key, selector, consumer)
+                    .ok_or_else(|| {
+                        contract_error(
+                            BleErrorCode::OwnershipDenied,
+                            BleErrorDomain::Gatt,
+                            "gatt.unsubscribe",
+                        )
+                    })?;
+                drain_consumer_before_retirement(&mut core, index, consumer, drain);
+                core.unsubscribe(index, consumer, now_ms(), &mut batch())
+                    .map_err(DesktopError::from)?;
+                lock_std(&self.inner.retired_consumers).remove(&(peer_key, consumer.to_owned()));
+                recycle_observations(&mut core);
+                return Ok(false);
+            }
+        }
         self.precheck(&ctl, "gatt.unsubscribe")?;
         let window = ctl.budget.window(LIVENESS_CLEANUP);
         let peer_key = self.known_peer_key(peer_id).await?;
         let (disable_physical, path_index, key) = {
             let mut core = self.inner.core.lock().await;
             let mut out = batch();
-            let resolved = Self::resolve_instance(
-                &core,
-                &peer_key,
-                peer_id,
-                selector,
-                "gatt.unsubscribe",
-                false,
-            );
+            // Cleanup addresses the exact admitted consumer, not whichever
+            // generation happens to resolve the same selector now.
+            let resolved = match core.consumer_path(&peer_key, selector, consumer) {
+                Some(index) => core
+                    .stored_path(index)
+                    .and_then(|stored| {
+                        stored
+                            .characteristic_uuid()
+                            .map(|uuid| (index, instance_key(peer_id, stored, uuid), None))
+                    })
+                    .ok_or_else(|| {
+                        contract_error(
+                            BleErrorCode::GattNotFound,
+                            BleErrorDomain::Gatt,
+                            "gatt.unsubscribe",
+                        )
+                    }),
+                None => Self::resolve_instance(
+                    &core,
+                    &peer_key,
+                    peer_id,
+                    selector,
+                    "gatt.unsubscribe",
+                    false,
+                ),
+            };
             let (index, key, _) = match resolved {
                 Ok(resolved) => resolved,
                 Err(error) => {
-                    // An adapter reset ended this consumer with its link.
-                    if lock_std(&self.inner.reset_consumers)
+                    // A confirmed link end/reset already ended this exact
+                    // consumer's physical obligation, independently of whether
+                    // a later reconnect could rediscover its former path.
+                    if lock_std(&self.inner.retired_consumers)
                         .remove(&(peer_key.clone(), consumer.to_owned()))
                     {
                         return Ok(false);
@@ -4424,12 +5200,22 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                         .await;
                 }
             };
+            // Invalid consumers may be removed immediately by unsubscribe.
+            // Hand their already accepted FIFO to the owner before retirement.
+            drain_consumer_before_retirement(&mut core, index, consumer, drain);
             let disable = core
                 .unsubscribe(index, consumer, now_ms(), &mut out)
                 .map_err(DesktopError::from)?;
+            lock_std(&self.inner.retired_consumers)
+                .remove(&(peer_key.clone(), consumer.to_owned()));
             drain_consumer_before_retirement(&mut core, index, consumer, drain);
             (disable, index, key)
         };
+        if !disable_physical && lock_std(&self.inner.retained_enablements).contains(&key) {
+            return self
+                .release_retained(peer_id, &key, &ctl.ticket, window)
+                .await;
+        }
         if !disable_physical && !self.inner.failed_disables.lock().await.contains(&key) {
             // No radio work: still recycle any terminal shares (e.g. an
             // immediate-success join that released elsewhere) so the
@@ -4597,9 +5383,22 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         selector: &PathSelector,
         consumer: &str,
     ) -> Result<NotificationPoll, DesktopError> {
-        self.admit("gatt.take-notification")?;
+        // Reading an already admitted consumer's FIFO acquires no radio work.
+        // It must remain drainable even while physical shutdown is pending.
+        if !self.inner.shut_down.load(Ordering::SeqCst) {
+            self.admit("gatt.take-notification")?;
+        }
         let peer_key = self.known_peer_key(peer_id).await?;
         let mut core = self.inner.core.lock().await;
+        if self.inner.shut_down.load(Ordering::SeqCst)
+            && core.consumer_path(&peer_key, selector, consumer).is_none()
+        {
+            return Err(contract_error(
+                BleErrorCode::OwnershipDenied,
+                BleErrorDomain::Gatt,
+                "gatt.take-notification",
+            ));
+        }
         let cause = match core.connection_state(&peer_key) {
             Some(ConnectionState::Connected | ConnectionState::Connecting) => {
                 InvalidationCause::ServicesChanged
@@ -4747,6 +5546,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     /// shutdown is a separate explicit process-owner step
     /// ([`crate::executor::shutdown_desktop_runtime`]), never implied here.
     pub async fn shutdown(&self) -> ShutdownReport {
+        self.inner
+            .shutdown_release_confirmed
+            .store(false, Ordering::SeqCst);
         // F14: admission closes before any cleanup starts, so a racing
         // starter cannot slip work in behind the scan stop.
         self.inner.shut_down.store(true, Ordering::SeqCst);
@@ -4775,7 +5577,13 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         // live subscription outlives the central. Per-scope release failures
         // are drained as receipts (F14), never swallowed.
         self.inner.boundary.close().await;
-        let radio_close_failures = self.inner.boundary.take_close_failures();
+        let half_open: Vec<_> = lock_std(&self.inner.half_open_cleanup)
+            .iter()
+            .map(|(peer, debt)| (peer.clone(), debt.clone()))
+            .collect();
+        for (peer, debt) in half_open {
+            let _ = self.retry_half_open_cleanup(&peer, &debt).await;
+        }
         // F14: release owned OS links with per-link receipts before the
         // owner is destroyed.
         self.release_owned_links().await;
@@ -4794,23 +5602,82 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         if let Some(worker) = worker {
             let _ = worker.await;
         }
+        // Settle admitted native work before accounting for its temporary
+        // event streams. No operation may acquire a new transport behind this.
+        let (record, destroy_steps) = self.drive_destroy().await;
+        // The logical scan operation can be retired while its exact physical
+        // identity remains in scan_slot. Report current physical debt here,
+        // not as irreversible kernel cleanup history that poisons a retry.
+        let record = record.and_then(|record| {
+            let mut failures = record.failures().to_vec();
+            if let Some(failure) = scan_stop_failure.as_ref() {
+                failures.push(
+                    CleanupFailure::new("scan".to_owned(), failure.code())
+                        .map_err(DesktopError::from)?,
+                );
+            }
+            if failures.is_empty() {
+                return Ok(record);
+            }
+            CleanupRecord::new(
+                record.operation_id().cloned(),
+                CleanupState::ReleaseFailed,
+                failures,
+            )
+            .map_err(DesktopError::from)
+        });
+        let half_open_close_failures = lock_std(&self.inner.half_open_cleanup)
+            .values()
+            .map(|debt| {
+                lock_std(&debt.failure).clone().unwrap_or_else(|| {
+                    contract_error(
+                        BleErrorCode::LifecycleInvalidState,
+                        BleErrorDomain::Cleanup,
+                        "connection.compensate",
+                    )
+                    .with_detail("half-open connection cleanup remains owned")
+                })
+            })
+            .collect();
+        let transport_close_failures =
+            match tokio::time::timeout(Duration::from_secs(5), self.inner.boundary.finish_close())
+                .await
+            {
+                Ok(result) => result,
+                Err(_) => vec![
+                    DesktopError::new(
+                        BleErrorCode::OperationTimedOut,
+                        BleErrorDomain::Cleanup,
+                        "radio.close.transport",
+                    )
+                    .with_detail(
+                        "Transport cleanup remains owned after the five-second close bound",
+                    ),
+                ],
+            };
+        let radio_close_failures = self.inner.boundary.take_close_failures();
         // F15: the final record is taken only after every destroy pass
         // executed, every dispatched remainder was answered, and every
         // terminal release was acknowledged — never from the legacy
         // unacknowledged `destroy()`.
-        let (record, destroy_steps) = self.drive_destroy().await;
-        ShutdownReport {
+        let report = ShutdownReport {
             record,
             radio_close_failures,
+            transport_close_failures,
+            half_open_close_failures,
             destroy_steps,
             scan_stop_failure,
-        }
+        };
+        self.inner
+            .shutdown_release_confirmed
+            .store(report.is_released(), Ordering::SeqCst);
+        report
     }
 
     /// Shutdown's final scan stop (PR210-09): one bounded attempt. When it
     /// fails, the retained scan op settles as failed with a release
-    /// failure, so the destroy record names it, and the marker goes (the
-    /// central is closing; nothing can retry it).
+    /// failure in the current shutdown report. The physical marker remains
+    /// owned for a later shutdown retry; no new scan admission is permitted.
     async fn final_scan_stop(&self) -> Option<DesktopError> {
         let id = self.active_scan_id()?;
         let window = Budget::unbounded().window(LIVENESS_CLEANUP);
@@ -4833,13 +5700,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             if let Some(kind) = terminal_kind_of(&core, &id) {
                 retain_completed_scan(&self.inner.completed_scans, &id, kind);
             }
-            report_terminal_release(&mut core, &id, false, Some(error.code()));
             recycle_observations(&mut core);
         }
-        let mut slot = self.inner.scan_slot();
-        if slot.as_ref().is_some_and(|active| active.id == id) {
-            *slot = None;
-        }
+        // stop_scan_with retains either its failed leader or an in-flight
+        // leader followed by this bounded attempt. Never erase that identity
+        // or replace its single-flight receiver merely because shutdown waited.
         Some(error)
     }
 
@@ -4878,6 +5743,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 self.inner.boundary.disconnect(&peer_id),
             )
             .await;
+            if matches!(&outcome, Ok(Ok(()))) {
+                note_confirmed_release(&self.inner, &peer_id);
+            }
             // Late radio completions must not resurrect the link: drop local
             // subscription routing for this peer now.
             self.drop_peer_subscriptions(&peer_id).await;
@@ -4986,7 +5854,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         }
         let record = {
             let mut core = self.inner.core.lock().await;
-            core.destroy_record().map_err(DesktopError::from)
+            core.current_shutdown_record().map_err(DesktopError::from)
         };
         (record, steps)
     }
@@ -5064,12 +5932,22 @@ impl DesktopCentral<crate::btleplug_backend::BtleplugRadio> {
     /// usable adapter (powered on, not refused to this process). Past the
     /// bound the open fails `capability.unavailable` with detail
     /// [`ADAPTER_INITIALIZATION_TIMED_OUT`] and the radio is closed.
-    pub async fn open_btleplug(mut profile: CentralProfile) -> Result<Self, DesktopError> {
+    pub async fn open_btleplug(profile: CentralProfile) -> Result<Self, DesktopError> {
+        Self::open_btleplug_with_policy(profile, None).await
+    }
+
+    /// The normal production open path with a trusted BlueZ LE attestation.
+    /// Adapter initialization and compensation are identical to `open_btleplug`.
+    pub async fn open_btleplug_with_policy(
+        mut profile: CentralProfile,
+        connection_policy: Option<crate::boundary::BluezConnectionPolicy>,
+    ) -> Result<Self, DesktopError> {
         let started = tokio::time::Instant::now();
-        let open = crate::btleplug_backend::BtleplugRadio::open_on(
+        let open = crate::btleplug_backend::BtleplugRadio::open_on_with_policy(
             crate::executor::desktop_runtime(),
             profile.adapter_id.clone(),
             profile.bluez_bus,
+            connection_policy,
         );
         // btleplug's CoreBluetooth manager blocks until the first
         // `centralManagerDidUpdateState:` with no bound of its own.
@@ -5104,11 +5982,7 @@ impl DesktopCentral<crate::btleplug_backend::BtleplugRadio> {
                 // radio this open created. A teardown that did not come
                 // back clean is reported, never dropped.
                 let report = central.shutdown().await;
-                let clean = matches!(
-                    &report.record,
-                    Ok(record) if record.state() == ubm_core::ownership::CleanupState::Released
-                ) && report.radio_close_failures.is_empty();
-                if !clean {
+                if !report.is_released() {
                     eprintln!(
                         "ubm-desktop: the radio opened for an adapter that never became usable \
                          did not shut down cleanly: {report:?}"
@@ -5503,11 +6377,15 @@ async fn adapter_reset<B: RadioBoundary>(
         .map(|(peer_id, peer_key)| (peer_id.clone(), peer_key.clone()))
         .collect();
     let ended_subscriptions = inner.subscriptions.lock().await.len();
-    let index = inner.resets.fetch_add(1, Ordering::SeqCst) + 1;
+    let index;
     let mut release_failures = Vec::new();
     let previous = lock_std(&inner.attachment).clone();
     let (current, cancelled_operations, links, events) = {
         let mut core = inner.core.lock().await;
+        // Publish the adapter epoch together with its generation transition.
+        // A failed connect retaining cleanup under this lock must see either
+        // the old scope and epoch or the new pair, never a mixture.
+        index = inner.resets.fetch_add(1, Ordering::SeqCst) + 1;
         let links: Vec<(String, String, Generations)> = peers
             .iter()
             .filter(|(_, peer_key)| {
@@ -5523,8 +6401,8 @@ async fn adapter_reset<B: RadioBoundary>(
             })
             .collect();
         lock_std(&inner.reset_ops).extend(core.live_operation_ids());
-        lock_std(&inner.reset_leases).extend(core.held_leases());
-        lock_std(&inner.reset_consumers).extend(core.held_consumers());
+        lock_std(&inner.retired_leases).extend(core.held_leases());
+        lock_std(&inner.retired_consumers).extend(core.held_consumers());
         if let Some(active) = &scan {
             retain_completed_scan(
                 &inner.completed_scans,
@@ -5604,7 +6482,9 @@ async fn adapter_reset<B: RadioBoundary>(
     for (peer_id, _, _) in &links {
         match tokio::time::timeout(COMPENSATION_TIMEOUT, inner.boundary.disconnect(peer_id)).await {
             // The adapter took the peer with it: nothing is left to release.
-            Ok(Ok(())) => {}
+            Ok(Ok(())) => {
+                note_confirmed_release(inner, peer_id);
+            }
             Ok(Err(error)) if error.code() == BleErrorCode::PeerNotFound => {}
             Ok(Err(error)) => {
                 inner.note_compensation_failure();
@@ -5814,6 +6694,12 @@ async fn reconcile_disconnected<B: RadioBoundary>(
     let event = {
         let mut core = inner.core.lock().await;
         let generation = Generations::of(&core, &peer_key);
+        note_confirmed_release(inner, peer_id);
+        let consumers: Vec<_> = core
+            .held_consumers()
+            .into_iter()
+            .filter(|(owner, _)| owner == &peer_key)
+            .collect();
         let kind = match core.connection_state(&peer_key) {
             Some(ConnectionState::Disconnecting) if !errored => core
                 .note_link_released(&peer_key)
@@ -5830,7 +6716,15 @@ async fn reconcile_disconnected<B: RadioBoundary>(
             }
             _ => None,
         };
-        kind.map(|kind| inner.stage_lifecycle(peer_id, &peer_key, generation, kind))
+        kind.map(|kind| {
+            lock_std(&inner.retired_consumers).extend(consumers);
+            lock_std(&inner.retired_leases).extend(
+                core.held_leases()
+                    .into_iter()
+                    .filter(|(peer, _)| peer == &peer_key),
+            );
+            inner.stage_lifecycle(peer_id, &peer_key, generation, kind)
+        })
     };
     if let Some(event) = event {
         // Only a transition of a live link ends its operations; a stale
@@ -5954,6 +6848,235 @@ async fn services_changed_invalidated<B: RadioBoundary>(inner: &Arc<Inner<B>>, p
 /// evidence source on this host.
 #[cfg(test)]
 mod adapter_tests {
+    #[tokio::test]
+    async fn peer_directory_scripted_gate_holds_only_after_allowed_reads() {
+        use futures_util::FutureExt;
+        let central = open().await;
+        central.boundary().set_directory_peers(Vec::new());
+        central.boundary().block_op(FaultOp::PeerDirectory);
+        central.boundary().set_directory_unblocked_reads(1);
+        assert!(
+            central
+                .resolve_peer("first", OpControl::unbounded())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let second = central.resolve_peer("second", OpControl::unbounded());
+        tokio::pin!(second);
+        assert!(second.as_mut().now_or_never().is_none());
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| call.as_str() == "resolve_peer")
+                .count(),
+            2
+        );
+        central.boundary().unblock_all(FaultOp::PeerDirectory);
+        assert!(second.await.unwrap().is_none());
+        assert!(central.shutdown().await.is_released());
+    }
+
+    #[tokio::test]
+    async fn peer_directory_capabilities_snapshot_is_instantiated_core_truth() {
+        let central = open().await;
+        assert_eq!(
+            central.capability_states().await,
+            central
+                .with_core(|core| core.registered_capability_states())
+                .await
+        );
+        assert!(central.shutdown().await.is_released());
+    }
+    #[test]
+    fn peer_directory_uses_normal_radio_admission() {
+        use crate::AdapterPowerState;
+        for operation in ["peers.connected", "peers.resolve"] {
+            for (power, code) in [
+                (
+                    AdapterPowerState::Unauthorized,
+                    ubm_core::contracts::BleErrorCode::PermissionDenied,
+                ),
+                (
+                    AdapterPowerState::PoweredOff,
+                    ubm_core::contracts::BleErrorCode::AdapterPoweredOff,
+                ),
+            ] {
+                let status = super::AdapterStatus {
+                    power: Some(power),
+                    authorization: None,
+                    availability: super::AdapterAvailability::Available,
+                    lost: false,
+                };
+                assert!(super::gated(
+                    crate::boundary::AdmissionPolicy::CoreBluetooth,
+                    operation
+                ));
+                assert_eq!(
+                    super::admission_refusal(
+                        crate::boundary::AdmissionPolicy::CoreBluetooth,
+                        status,
+                        operation
+                    )
+                    .unwrap()
+                    .code(),
+                    code
+                );
+            }
+        }
+    }
+    #[tokio::test]
+    async fn peer_directory_default_refuses_without_acquiring_a_link() {
+        let central = open().await;
+        let error = central
+            .connected_peers(&["180d".to_owned()], OpControl::unbounded())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.code(),
+            ubm_core::contracts::BleErrorCode::CapabilityUnsupported
+        );
+        let error = central
+            .resolve_peer("unknown", OpControl::unbounded())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.code(),
+            ubm_core::contracts::BleErrorCode::CapabilityUnsupported
+        );
+        assert!(central.peer_records().await.is_empty());
+        assert!(central.shutdown().await.is_released());
+    }
+
+    #[tokio::test]
+    async fn peer_directory_read_preserves_identity_without_owned_connection() {
+        let central = open().await;
+        let peer = crate::boundary::DirectoryPeer {
+            peer_id: "00e2ce71-3ba4-6569-e3de-3081ce0c95fb".to_owned(),
+            name: Some("SIM".to_owned()),
+            connection: "connected",
+        };
+        central.boundary().set_directory_peers(vec![peer.clone()]);
+        assert_eq!(
+            central
+                .connected_peers(
+                    &["0000180d-0000-1000-8000-00805f9b34fb".to_owned()],
+                    OpControl::unbounded()
+                )
+                .await
+                .unwrap(),
+            vec![peer.clone()]
+        );
+        let resolved = central
+            .resolve_peer(&peer.peer_id, OpControl::unbounded())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.peer_id, peer.peer_id);
+        assert_eq!(resolved.connection, "unknown");
+        assert_eq!(
+            central
+                .resolve_peer("missing", OpControl::unbounded())
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(central.peer_records().await.is_empty());
+        assert!(
+            !central
+                .boundary()
+                .calls()
+                .iter()
+                .any(|call| call == "connect" || call == "disconnect")
+        );
+        assert!(central.shutdown().await.is_released());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn peer_directory_timeout_and_preabort_preserve_no_link_ownership() {
+        use crate::{Budget, OpTicket};
+        let central = open().await;
+        central.boundary().set_directory_peers(Vec::new());
+        central.boundary().block_op(FaultOp::PeerDirectory);
+        let error = central
+            .connected_peers(&[], OpControl::budget_ms(10))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.code(),
+            ubm_core::contracts::BleErrorCode::OperationTimedOut
+        );
+        let before = central.boundary().calls();
+        let ticket = OpTicket::new();
+        ticket.request_cancel();
+        let error = central
+            .resolve_peer("peer", OpControl::new(Budget::unbounded(), ticket))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.code(),
+            ubm_core::contracts::BleErrorCode::OperationAborted
+        );
+        assert_eq!(before, central.boundary().calls());
+        central.boundary().unblock_all(FaultOp::PeerDirectory);
+        assert!(central.peer_records().await.is_empty());
+        assert!(central.shutdown().await.is_released());
+    }
+
+    #[tokio::test]
+    async fn peer_directory_held_lookup_is_retired_by_adapter_reset() {
+        let central = open().await;
+        central.boundary().set_directory_peers(Vec::new());
+        central.boundary().block_op(FaultOp::PeerDirectory);
+        let lookup = central.connected_peers(&[], OpControl::unbounded());
+        let reset = async {
+            central
+                .boundary()
+                .wait_for_calls("connected_peers", 1)
+                .await;
+            super::adapter_reset(
+                &central.inner,
+                crate::boundary::AdapterLossCause::DaemonRestarted,
+                None,
+                None,
+            )
+            .await;
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(lookup, reset)
+        })
+        .await
+        .expect("reset must retire lookup");
+        assert_eq!(
+            result.unwrap_err().code(),
+            ubm_core::contracts::BleErrorCode::OperationReset
+        );
+        central.boundary().unblock_all(FaultOp::PeerDirectory);
+        assert!(central.peer_records().await.is_empty());
+        assert!(central.shutdown().await.is_released());
+    }
+
+    #[tokio::test]
+    async fn peer_directory_held_lookup_is_retired_by_shutdown() {
+        let central = open().await;
+        central.boundary().set_directory_peers(Vec::new());
+        central.boundary().block_op(FaultOp::PeerDirectory);
+        let lookup = central.resolve_peer("peer", OpControl::unbounded());
+        let close = async {
+            central.boundary().wait_for_calls("resolve_peer", 1).await;
+            assert!(central.shutdown().await.is_released());
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(lookup, close)
+        })
+        .await
+        .expect("shutdown must retire lookup");
+        assert!(result.is_err());
+        central.boundary().unblock_all(FaultOp::PeerDirectory);
+        assert!(central.peer_records().await.is_empty());
+    }
     use std::time::Duration;
 
     use ubm_core::central::{ConnectionState, ConsumerState, ScanSessionState};
@@ -6309,6 +7432,668 @@ mod adapter_tests {
         );
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn half_open_cleanup_timeout_is_retried_by_shutdown() {
+        use ubm_core::ownership::CleanupState;
+        let central = open().await;
+        central.boundary().block_op(FaultOp::Disconnect);
+        central
+            .boundary()
+            .fail_next(FaultOp::Connect, "connect refused");
+        assert!(
+            central
+                .connect("half-open", "a", OpControl::unbounded())
+                .await
+                .is_err()
+        );
+        let attempts = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| call.as_str() == "disconnect")
+            .count();
+        assert_eq!(attempts, 1);
+        let failed = central.shutdown().await;
+        assert!(!failed.is_released());
+        assert_eq!(failed.half_open_close_failures.len(), 1);
+        assert_eq!(
+            failed.half_open_close_failures[0].code_str(),
+            "operation.timed-out"
+        );
+        assert_eq!(failed.record.unwrap().state(), CleanupState::Released);
+        central.boundary().unblock_op(FaultOp::Disconnect);
+        let released = central.shutdown().await;
+        assert!(released.is_released());
+        assert!(released.half_open_close_failures.is_empty());
+        assert_eq!(released.record.unwrap().state(), CleanupState::Released);
+        assert!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| call.as_str() == "disconnect")
+                .count()
+                > attempts
+        );
+        let disconnects = || {
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| call.as_str() == "disconnect")
+                .count()
+        };
+        let settled_calls = disconnects();
+        assert_eq!(
+            central.shutdown().await.record.unwrap().state(),
+            CleanupState::Released
+        );
+        assert_eq!(disconnects(), settled_calls);
+        assert!(central.resource_counters().await.compensation_failures > 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn half_open_cleanup_refusal_retains_actual_cause_and_retries() {
+        use ubm_core::ownership::CleanupState;
+        let central = open().await;
+        central
+            .boundary()
+            .fail_next(FaultOp::Connect, "original connect refusal");
+        central
+            .boundary()
+            .fail_next(FaultOp::Disconnect, "actual cleanup refusal");
+        assert_eq!(
+            central
+                .connect("half-open", "a", OpControl::unbounded())
+                .await
+                .unwrap_err()
+                .code_str(),
+            "connection.failed"
+        );
+        let debt = super::lock_std(&central.inner.half_open_cleanup)["half-open"].clone();
+        let failure = super::lock_std(&debt.failure).clone().unwrap();
+        assert_eq!(failure.code_str(), "connection.lost");
+        assert_eq!(failure.detail(), Some("actual cleanup refusal"));
+        central
+            .boundary()
+            .fail_next(FaultOp::Disconnect, "retry refused");
+        let failed = central.shutdown().await;
+        assert_eq!(failed.record.unwrap().state(), CleanupState::Released);
+        assert_eq!(failed.half_open_close_failures.len(), 1);
+        let reported = &failed.half_open_close_failures[0];
+        assert_eq!(reported.code_str(), "connection.lost");
+        assert_eq!(reported.detail(), Some("retry refused"));
+        assert_eq!(reported.operation(), "connection.disconnect");
+        assert_eq!(
+            central.shutdown().await.record.unwrap().state(),
+            CleanupState::Released
+        );
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| call.as_str() == "disconnect")
+                .count(),
+            3
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn half_open_cleanup_retry_preserves_unrelated_cached_failure() {
+        use super::BleErrorCode;
+        let central = open().await;
+        let other = central
+            .connect("other", "owner", OpControl::unbounded())
+            .await
+            .unwrap();
+        {
+            let mut core = central.inner.core.lock().await;
+            core.note_peer_loss(&other.peer_key, super::now_ms(), &mut super::batch())
+                .unwrap();
+            core.report_disconnect_failure(&other.peer_key, BleErrorCode::PlatformFailure)
+                .unwrap();
+        }
+        central.boundary().block_op(FaultOp::Disconnect);
+        central
+            .boundary()
+            .fail_next(FaultOp::Connect, "connect refused");
+        assert!(
+            central
+                .connect("half-open", "a", OpControl::unbounded())
+                .await
+                .is_err()
+        );
+        let failed = central.shutdown().await;
+        assert_eq!(
+            failed.half_open_close_failures[0].code(),
+            BleErrorCode::OperationTimedOut
+        );
+        central.boundary().unblock_op(FaultOp::Disconnect);
+        let retried = central.shutdown().await.record.unwrap();
+        assert_eq!(retried.failures().len(), 1);
+        assert_eq!(retried.failures()[0].code(), BleErrorCode::PlatformFailure);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn half_open_cleanup_reset_epoch_is_published_with_generation() {
+        let central = open().await;
+        let link = central
+            .connect("half-open", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        let mut core = central.inner.core.lock().await;
+        let epoch = central
+            .inner
+            .resets
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let reset = super::adapter_reset(
+            &central.inner,
+            crate::boundary::AdapterLossCause::DaemonRestarted,
+            None,
+            None,
+        );
+        tokio::pin!(reset);
+        assert!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(reset.as_mut().poll(cx).is_pending()))
+                .await
+        );
+        assert!(central.retain_half_open_cleanup(
+            &core,
+            "half-open",
+            &link.peer_key,
+            &link.connection_generation,
+            epoch,
+            super::confirmed_release_count(&central.inner, "half-open"),
+        ));
+        let debt = super::lock_std(&central.inner.half_open_cleanup)["half-open"].clone();
+        assert_eq!(
+            debt.adapter_epoch, epoch,
+            "a pending reset cannot publish its epoch before its generation transition"
+        );
+        core.note_peer_loss(&link.peer_key, super::now_ms(), &mut super::batch())
+            .unwrap();
+        drop(core);
+        reset.await;
+        let before = central.boundary().calls();
+        central
+            .retry_half_open_cleanup("half-open", &debt)
+            .await
+            .unwrap();
+        assert_eq!(central.boundary().calls(), before);
+        central.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn half_open_cleanup_confirmed_loss_and_reset_retire_only_old_debt() {
+        for reset in [false, true] {
+            let central = open().await;
+            central.boundary().block_op(FaultOp::Disconnect);
+            central
+                .boundary()
+                .fail_next(FaultOp::Connect, "connect refused");
+            assert!(
+                central
+                    .connect("half-open", "a", OpControl::unbounded())
+                    .await
+                    .is_err()
+            );
+            let old = super::lock_std(&central.inner.half_open_cleanup)["half-open"].clone();
+            if reset {
+                super::adapter_reset(
+                    &central.inner,
+                    crate::boundary::AdapterLossCause::DaemonRestarted,
+                    None,
+                    None,
+                )
+                .await;
+            } else {
+                super::reconcile_disconnected(&central.inner, "half-open", true).await;
+            }
+            central.boundary().unblock_op(FaultOp::Disconnect);
+            let before = central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| call.as_str() == "disconnect")
+                .count();
+            let new = central
+                .connect("half-open", "b", OpControl::unbounded())
+                .await
+                .unwrap();
+            assert_ne!(new.connection_generation, old.generation);
+            central
+                .retry_half_open_cleanup("half-open", &old)
+                .await
+                .unwrap();
+            assert_eq!(
+                central
+                    .boundary()
+                    .calls()
+                    .iter()
+                    .filter(|call| call.as_str() == "disconnect")
+                    .count(),
+                before
+            );
+            assert!(central.boundary().link_connected("half-open"));
+            central.shutdown().await;
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn half_open_cleanup_concurrent_acquisition_cannot_publish_lost_generation() {
+        for explicit_cancel in [false, true] {
+            let central = open().await;
+            central.boundary().block_op(FaultOp::Connect);
+            central.boundary().block_op(FaultOp::Disconnect);
+            let ctl = if explicit_cancel {
+                OpControl::unbounded()
+            } else {
+                OpControl::budget_ms(10)
+            };
+            let ticket = ctl.ticket.clone();
+            let mut first = Box::pin(central.connect("peer", "a", ctl));
+            assert!(
+                std::future::poll_fn(|cx| std::task::Poll::Ready(
+                    first.as_mut().poll(cx).is_pending()
+                ))
+                .await
+            );
+            let generation = central
+                .with_core(|core| core.connection_generation("platform-guid:peer"))
+                .await;
+            let mut second = Box::pin(central.connect("peer", "b", OpControl::unbounded()));
+            assert!(
+                std::future::poll_fn(|cx| std::task::Poll::Ready(
+                    second.as_mut().poll(cx).is_pending()
+                ))
+                .await
+            );
+            assert_eq!(
+                central
+                    .boundary()
+                    .calls()
+                    .iter()
+                    .filter(|call| call.as_str() == "connect")
+                    .count(),
+                2,
+                "both native acquisitions admitted"
+            );
+            assert_eq!(
+                central
+                    .with_core(|core| core.connection_generation("platform-guid:peer"))
+                    .await,
+                generation
+            );
+            if explicit_cancel {
+                central.cancel(&ticket).await.unwrap();
+            } else {
+                tokio::time::advance(Duration::from_millis(10)).await;
+            }
+            assert!(
+                std::future::poll_fn(|cx| std::task::Poll::Ready(
+                    first.as_mut().poll(cx).is_pending()
+                ))
+                .await
+            );
+            central.boundary().unblock_all(FaultOp::Connect);
+            let second_state =
+                std::future::poll_fn(|cx| std::task::Poll::Ready(second.as_mut().poll(cx))).await;
+            assert!(
+                !matches!(&second_state, std::task::Poll::Ready(Ok(_))),
+                "B cannot return an unusable handle: {second_state:?}"
+            );
+            central.boundary().unblock_op(FaultOp::Disconnect);
+            let a = first.await;
+            let b = match second_state {
+                std::task::Poll::Ready(result) => result,
+                std::task::Poll::Pending => second.await,
+            };
+            assert!(a.is_err());
+            assert_eq!(b.unwrap_err().code_str(), "connection.stale");
+            assert!(!central.boundary().link_connected("peer"));
+            assert!(central.shutdown().await.is_released());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn half_open_cleanup_refused_overlap_keeps_other_peer_usable() {
+        let central = open().await;
+        ready_peer(&central, "other", vec![hrm_service()]).await;
+        central.boundary().block_op(FaultOp::Connect);
+        central.boundary().block_op(FaultOp::Disconnect);
+        let mut b = Box::pin(central.connect("peer", "b", OpControl::unbounded()));
+        assert!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(b.as_mut().poll(cx).is_pending()))
+                .await
+        );
+        central
+            .boundary()
+            .fail_next(FaultOp::Connect, "ordinary A refusal");
+        let mut a = Box::pin(central.connect("peer", "a", OpControl::unbounded()));
+        assert!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(a.as_mut().poll(cx).is_pending()))
+                .await
+        );
+        assert_eq!(
+            central
+                .with_core(|core| core.connection_state("platform-guid:peer"))
+                .await,
+            Some(super::ConnectionState::Lost)
+        );
+        central.boundary().unblock_all(FaultOp::Connect);
+        assert!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(b.as_mut().poll(cx).is_pending()))
+                .await
+        );
+        central.boundary().unblock_op(FaultOp::Disconnect);
+        let (a, b) = tokio::join!(a, b);
+        assert_eq!(a.unwrap_err().code_str(), "connection.failed");
+        assert_eq!(b.unwrap_err().code_str(), "connection.stale");
+        assert!(!central.boundary().link_connected("peer"));
+        assert!(central.boundary().link_connected("other"));
+        assert_eq!(
+            central
+                .read("other", &hrm_selector(0), OpControl::unbounded())
+                .await
+                .unwrap()
+                .value,
+            vec![0x42]
+        );
+        assert!(central.shutdown().await.is_released());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn half_open_cleanup_later_acquisition_refreshes_retained_same_generation_debt() {
+        for held_cleanup in [false, true] {
+            let central = open().await;
+            let link = central
+                .connect("peer", "a", OpControl::unbounded())
+                .await
+                .unwrap();
+            {
+                let mut core = central.inner.core.lock().await;
+                assert!(central.retain_half_open_cleanup(
+                    &core,
+                    "peer",
+                    &link.peer_key,
+                    &link.connection_generation,
+                    0,
+                    0
+                ));
+                core.note_peer_loss(&link.peer_key, super::now_ms(), &mut super::batch())
+                    .unwrap();
+            }
+            let original_debt = super::lock_std(&central.inner.half_open_cleanup)["peer"].clone();
+            let cleanup = central.retry_half_open_cleanup("peer", &original_debt);
+            tokio::pin!(cleanup);
+            if held_cleanup {
+                central.boundary().block_op(FaultOp::Disconnect);
+                assert!(
+                    std::future::poll_fn(|cx| std::task::Poll::Ready(
+                        cleanup.as_mut().poll(cx).is_pending()
+                    ))
+                    .await
+                );
+            }
+            super::reconcile_disconnected(&central.inner, "peer", true).await;
+            crate::boundary::RadioBoundary::connect(central.boundary(), "peer")
+                .await
+                .unwrap();
+            let serial = super::confirmed_release_count(&central.inner, "peer");
+            {
+                let core = central.inner.core.lock().await;
+                assert!(central.retain_half_open_cleanup(
+                    &core,
+                    "peer",
+                    &link.peer_key,
+                    &link.connection_generation,
+                    0,
+                    serial
+                ));
+            }
+            assert!(std::sync::Arc::ptr_eq(
+                &original_debt,
+                &super::lock_std(&central.inner.half_open_cleanup)["peer"]
+            ));
+            if held_cleanup {
+                central.boundary().unblock_op(FaultOp::Disconnect);
+                cleanup.await.unwrap();
+            }
+            central
+                .compensate_half_open("peer", &link.connection_generation)
+                .await;
+            assert!(
+                !central.boundary().link_connected("peer"),
+                "newly acquired physical link cannot inherit the old retired receipt"
+            );
+            assert!(super::lock_std(&central.inner.half_open_cleanup).is_empty());
+            central.shutdown().await;
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn half_open_cleanup_drop_after_late_native_success_still_compensates() {
+        let central = open().await;
+        central.boundary().block_op(FaultOp::Connect);
+        let mut pending = Box::pin(central.connect("late", "a", OpControl::unbounded()));
+        assert!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(
+                pending.as_mut().poll(cx).is_pending()
+            ))
+            .await
+        );
+        central.shutdown().await;
+        let core = central.inner.core.lock().await;
+        central.boundary().unblock_op(FaultOp::Connect);
+        assert!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(
+                pending.as_mut().poll(cx).is_pending()
+            ))
+            .await
+        );
+        assert!(
+            central.boundary().link_connected("late"),
+            "native success precedes blocked core settlement"
+        );
+        drop(pending);
+        drop(core);
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("disconnect", 2),
+        )
+        .await
+        .expect("late acquisition cleanup is dispatched");
+        assert!(
+            !central.boundary().link_connected("late"),
+            "dropped late acquisition must remain cleanup-owned"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn half_open_cleanup_delayed_drop_does_not_reopen_confirmed_shutdown_release() {
+        for os_loss in [false, true] {
+            let central = open().await;
+            let old = central
+                .connect("peer", "a", OpControl::unbounded())
+                .await
+                .unwrap();
+            let operation = {
+                let mut core = central.inner.core.lock().await;
+                core.connect(
+                    &old.peer_key,
+                    "pending",
+                    1_000,
+                    super::now_ms(),
+                    &mut super::batch(),
+                )
+                .unwrap()
+            };
+            if os_loss {
+                crate::boundary::RadioBoundary::disconnect(central.boundary(), "peer")
+                    .await
+                    .unwrap();
+                super::reconcile_disconnected(&central.inner, "peer", true).await;
+            } else {
+                let report = central.shutdown().await;
+                assert!(report.half_open_close_failures.is_empty());
+            }
+            let before = central.boundary().calls();
+            central
+                .boundary()
+                .fail_next(FaultOp::Disconnect, "duplicate release must not run");
+            super::run_drop_cleanup(
+                central.clone(),
+                operation.clone(),
+                super::DropCleanup::Connect {
+                    peer_id: "peer".to_owned(),
+                    peer_key: old.peer_key.clone(),
+                    generation: old.connection_generation.clone(),
+                    adapter_epoch: 0,
+                    release_serial: 0,
+                },
+            )
+            .await;
+            assert_eq!(central.boundary().calls(), before);
+            assert!(super::lock_std(&central.inner.half_open_cleanup).is_empty());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn half_open_cleanup_old_drop_guard_cannot_retain_or_disconnect_new_generation() {
+        let central = open().await;
+        let old = central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        let operation = central
+            .inner
+            .core
+            .lock()
+            .await
+            .connect(
+                &old.peer_key,
+                "old-pending",
+                1000,
+                super::now_ms(),
+                &mut super::batch(),
+            )
+            .unwrap();
+        super::reconcile_disconnected(&central.inner, "peer", true).await;
+        let new = central
+            .connect("peer", "b", OpControl::unbounded())
+            .await
+            .unwrap();
+        assert_ne!(old.connection_generation, new.connection_generation);
+        let before = central.boundary().calls();
+        super::run_drop_cleanup(
+            central.clone(),
+            operation,
+            super::DropCleanup::Connect {
+                peer_id: "peer".to_owned(),
+                peer_key: old.peer_key,
+                generation: old.connection_generation,
+                adapter_epoch: 0,
+                release_serial: 0,
+            },
+        )
+        .await;
+        assert_eq!(central.boundary().calls(), before);
+        assert!(central.boundary().link_connected("peer"));
+        assert!(super::lock_std(&central.inner.half_open_cleanup).is_empty());
+        central.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn half_open_cleanup_wait_is_abort_aware_without_new_connect() {
+        use std::{future::Future, task::Poll};
+        let central = open().await;
+        central.boundary().block_op(FaultOp::Disconnect);
+        central
+            .boundary()
+            .fail_next(FaultOp::Connect, "connect refused");
+        assert!(
+            central
+                .connect("peer", "a", OpControl::unbounded())
+                .await
+                .is_err()
+        );
+        let ctl = OpControl::unbounded();
+        let ticket = ctl.ticket.clone();
+        let next = central.connect("peer", "b", ctl);
+        tokio::pin!(next);
+        assert!(std::future::poll_fn(|cx| Poll::Ready(next.as_mut().poll(cx).is_pending())).await);
+        central.cancel(&ticket).await.unwrap();
+        assert_eq!(next.await.unwrap_err().code_str(), "operation.aborted");
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| call.as_str() == "connect")
+                .count(),
+            1
+        );
+        assert!(!super::lock_std(&central.inner.half_open_cleanup).is_empty());
+        central.boundary().unblock_op(FaultOp::Disconnect);
+        central.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn half_open_cleanup_wait_honors_new_connect_budget_and_preserves_other_peer() {
+        let central = open().await;
+        ready_peer(&central, "other", vec![hrm_service()]).await;
+        central.boundary().block_op(FaultOp::Disconnect);
+        central
+            .boundary()
+            .fail_next(FaultOp::Connect, "connect refused");
+        assert!(
+            central
+                .connect("half-open", "a", OpControl::unbounded())
+                .await
+                .is_err()
+        );
+        let count = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| call.as_str() == "connect")
+            .count();
+        let before = tokio::time::Instant::now();
+        let error = central
+            .connect("half-open", "b", OpControl::budget_ms(5))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code_str(), "operation.timed-out");
+        assert!(before.elapsed() < Duration::from_millis(100));
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| call.as_str() == "connect")
+                .count(),
+            count
+        );
+        assert_eq!(
+            central
+                .read("other", &hrm_selector(0), OpControl::unbounded())
+                .await
+                .unwrap()
+                .value,
+            vec![0x42]
+        );
+        central.boundary().unblock_op(FaultOp::Disconnect);
+        let new = central
+            .connect("half-open", "b", OpControl::unbounded())
+            .await
+            .unwrap();
+        assert!(new.connection_generation.is_some());
+        assert!(super::lock_std(&central.inner.half_open_cleanup).is_empty());
+        assert!(central.boundary().link_connected("half-open"));
+        central.shutdown().await;
+    }
+
     #[tokio::test]
     async fn disconnect_radio_failure_stays_disconnecting() {
         let central = open().await;
@@ -6483,6 +8268,780 @@ mod adapter_tests {
             Some(ConnectionState::Disconnecting),
             "uncertain release retains ownership"
         );
+    }
+
+    #[tokio::test]
+    async fn shared_discovery_joins_without_replacing_the_first_owners_paths() {
+        use std::{future::Future, task::Poll};
+        let central = open().await;
+        for lease in ["public", "native"] {
+            central
+                .connect("peer-shared", lease, OpControl::unbounded())
+                .await
+                .unwrap();
+        }
+        central
+            .boundary()
+            .set_services("peer-shared", vec![hrm_service()]);
+        central.boundary().block_op(FaultOp::Discover);
+        let first = central.discover("peer-shared", "public", OpControl::unbounded());
+        tokio::pin!(first);
+        assert!(std::future::poll_fn(|cx| Poll::Ready(first.as_mut().poll(cx).is_pending())).await);
+        let second = central.discover("peer-shared", "native", OpControl::unbounded());
+        tokio::pin!(second);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(second.as_mut().poll(cx).is_pending())).await,
+            "a concurrent live lease joins discovery instead of failing discovery.state"
+        );
+        central.boundary().unblock_op(FaultOp::Discover);
+        let (a, b) = tokio::join!(first, second);
+        assert_eq!(a.unwrap().paths_registered, b.unwrap().paths_registered);
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "discover")
+                .count(),
+            1
+        );
+        let key = central.peer_key_for("peer-shared").await.unwrap();
+        let generation = central
+            .with_core(|core| core.database_generation(&key))
+            .await;
+        central
+            .connect("peer-shared", "third", OpControl::unbounded())
+            .await
+            .unwrap();
+        central
+            .discover("peer-shared", "third", OpControl::unbounded())
+            .await
+            .unwrap();
+        assert_eq!(
+            central
+                .with_core(|core| core.database_generation(&key))
+                .await,
+            generation,
+            "a new lease attaches to the immutable current physical snapshot"
+        );
+        assert!(
+            !central
+                .release_connection_lease("peer-shared", "public", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        central
+            .with_core(|core| {
+                let path = core.resolve_path(&key, &hrm_selector(0)).unwrap();
+                assert!(
+                    core.holds_lease(&key, core.stored_path(path).unwrap().owner_lease()),
+                    "physical path operation ownership must remain attached to a live lease"
+                );
+            })
+            .await;
+        assert_eq!(
+            central
+                .read("peer-shared", &hrm_selector(0), OpControl::unbounded())
+                .await
+                .unwrap()
+                .value,
+            vec![0x42]
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shared_discovery_cancellation_and_deadline_are_per_caller() {
+        use std::{future::Future, task::Poll};
+        for interrupt_leader in [false, true] {
+            for deadline in [false, true] {
+                let central = open().await;
+                for lease in ["a", "b"] {
+                    central
+                        .connect("peer", lease, OpControl::unbounded())
+                        .await
+                        .unwrap();
+                }
+                central.boundary().set_services("peer", vec![hrm_service()]);
+                central.boundary().block_op(FaultOp::Discover);
+                let a = OpControl::budget_ms(if interrupt_leader { 100 } else { 1000 });
+                let b = OpControl::budget_ms(if interrupt_leader { 1000 } else { 100 });
+                let ticket = if interrupt_leader {
+                    a.ticket.clone()
+                } else {
+                    b.ticket.clone()
+                };
+                let first = central.discover("peer", "a", a);
+                let second = central.discover("peer", "b", b);
+                tokio::pin!(first, second);
+                assert!(
+                    std::future::poll_fn(|cx| Poll::Ready(first.as_mut().poll(cx).is_pending()))
+                        .await
+                );
+                assert!(
+                    std::future::poll_fn(|cx| Poll::Ready(second.as_mut().poll(cx).is_pending()))
+                        .await
+                );
+                if deadline {
+                    tokio::time::advance(Duration::from_millis(101)).await;
+                } else {
+                    central.cancel(&ticket).await.unwrap();
+                }
+                let error = if interrupt_leader {
+                    first.as_mut().await.unwrap_err()
+                } else {
+                    second.as_mut().await.unwrap_err()
+                };
+                assert_eq!(
+                    error.code_str(),
+                    if deadline {
+                        "operation.timed-out"
+                    } else {
+                        "operation.aborted"
+                    }
+                );
+                assert_eq!(error.retryability(), crate::Retryability::CallerDecides);
+                if !interrupt_leader {
+                    assert_eq!(
+                        error.commit(),
+                        Some(ubm_core::contracts::CommitState::NotDispatched)
+                    );
+                }
+                central.boundary().unblock_op(FaultOp::Discover);
+                if interrupt_leader {
+                    second.await.unwrap();
+                } else {
+                    first.await.unwrap();
+                }
+                assert_eq!(
+                    central
+                        .read("peer", &hrm_selector(0), OpControl::unbounded())
+                        .await
+                        .unwrap()
+                        .value,
+                    vec![0x42]
+                );
+                central.shutdown().await;
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shared_discovery_released_leader_cannot_publish_over_surviving_owner() {
+        use std::{future::Future, task::Poll};
+        for queued in [false, true] {
+            let central = open().await;
+            for lease in ["a", "b"] {
+                central
+                    .connect("peer", lease, OpControl::unbounded())
+                    .await
+                    .unwrap();
+            }
+            central.boundary().set_services("peer", vec![hrm_service()]);
+            central.boundary().block_op(FaultOp::Discover);
+            let leader = central.discover("peer", "a", OpControl::unbounded());
+            tokio::pin!(leader);
+            assert!(
+                std::future::poll_fn(|cx| Poll::Ready(leader.as_mut().poll(cx).is_pending())).await
+            );
+            let follower = central.discover("peer", "b", OpControl::unbounded());
+            tokio::pin!(follower);
+            if queued {
+                assert!(
+                    std::future::poll_fn(|cx| Poll::Ready(follower.as_mut().poll(cx).is_pending()))
+                        .await
+                );
+            }
+            assert!(
+                !central
+                    .release_connection_lease("peer", "a", OpControl::unbounded())
+                    .await
+                    .unwrap()
+            );
+            central.boundary().unblock_op(FaultOp::Discover);
+            assert_eq!(leader.await.unwrap_err().code_str(), "ownership.denied");
+            follower.await.unwrap();
+            assert_eq!(
+                central
+                    .read(
+                        "peer",
+                        &hrm_selector(0),
+                        OpControl::unbounded().with_connection_lease("b".to_owned())
+                    )
+                    .await
+                    .unwrap()
+                    .value,
+                vec![0x42]
+            );
+            central.shutdown().await;
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shared_lease_release_retires_exact_old_generation_consumer_without_disabling_replacement()
+     {
+        use std::{future::Future, task::Poll};
+        for drain_first in [false, true] {
+            let central = open().await;
+            for lease in ["a", "b"] {
+                central
+                    .connect("peer", lease, OpControl::unbounded())
+                    .await
+                    .unwrap();
+            }
+            central.boundary().set_services("peer", vec![hrm_service()]);
+            central
+                .discover("peer", "a", OpControl::unbounded())
+                .await
+                .unwrap();
+            central
+                .subscribe(
+                    "peer",
+                    &hrm_selector(0),
+                    "old-a",
+                    None,
+                    OpControl::unbounded().with_connection_lease("a".to_owned()),
+                )
+                .await
+                .unwrap();
+            let peer_key = central.peer_key_for("peer").await.unwrap();
+            {
+                let mut core = central.inner.core.lock().await;
+                let path = core.resolve_path(&peer_key, &hrm_selector(0)).unwrap();
+                core.deliver_notification_value(path, &[0x73]).unwrap();
+            }
+            central.boundary().block_op(FaultOp::Read);
+            let held_selector = hrm_selector(0);
+            let held_read = central.read(
+                "peer",
+                &held_selector,
+                OpControl::unbounded().with_connection_lease("a".to_owned()),
+            );
+            tokio::pin!(held_read);
+            assert!(
+                std::future::poll_fn(|cx| Poll::Ready(held_read.as_mut().poll(cx).is_pending()))
+                    .await
+            );
+            let mut lifecycle = central.lifecycle_events();
+            central
+                .boundary()
+                .push_event(RadioEvent::ServicesChanged("peer".into()));
+            lifecycle.recv().await.unwrap();
+            central
+                .discover("peer", "b", OpControl::unbounded())
+                .await
+                .unwrap();
+            central
+                .subscribe(
+                    "peer",
+                    &hrm_selector(0),
+                    "new-b",
+                    None,
+                    OpControl::unbounded().with_connection_lease("b".to_owned()),
+                )
+                .await
+                .unwrap();
+            let before = central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count();
+            if drain_first {
+                let observed = std::sync::Mutex::new(Vec::new());
+                let drain = |item| {
+                    if let super::NotificationPoll::Value(bytes) = item {
+                        super::lock_std(&observed).push(bytes);
+                    }
+                };
+                central
+                    .unsubscribe_draining(
+                        "peer",
+                        &hrm_selector(0),
+                        "old-a",
+                        OpControl::unbounded(),
+                        Some(&drain),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    *super::lock_std(&observed),
+                    vec![vec![0x73]],
+                    "old accepted FIFO belongs to its handoff owner"
+                );
+            }
+            assert!(
+                !central
+                    .release_connection_lease("peer", "a", OpControl::unbounded())
+                    .await
+                    .unwrap()
+            );
+            let key = central.peer_key_for("peer").await.unwrap();
+            assert!(
+                central
+                    .with_core(|core| core.consumers_for_lease(&key, "a"))
+                    .await
+                    .is_empty(),
+                "old consumer cannot disappear behind current-path resolution"
+            );
+            assert_eq!(
+                central
+                    .boundary()
+                    .calls()
+                    .iter()
+                    .filter(|call| *call == "set_notifications")
+                    .count(),
+                before,
+                "a new generation's enablement belongs to B"
+            );
+            central.boundary().unblock_op(FaultOp::Read);
+            assert!(held_read.await.is_err());
+            central.shutdown().await;
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shared_lease_release_keeps_overflowed_child_cleanup_after_consumer_record_retirement()
+    {
+        let central = open().await;
+        for lease in ["a", "b"] {
+            central
+                .connect("peer", lease, OpControl::unbounded())
+                .await
+                .unwrap();
+        }
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        central
+            .discover("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central
+            .subscribe_buffered(
+                "peer",
+                &hrm_selector(0),
+                "consumer-a",
+                None,
+                ubm_core::streams::OverflowPolicy::Error,
+                (64, 8192),
+                OpControl::unbounded().with_connection_lease("a".to_owned()),
+            )
+            .await
+            .unwrap();
+        let key = central.peer_key_for("peer").await.unwrap();
+        {
+            let mut core = central.inner.core.lock().await;
+            let path = core.resolve_path(&key, &hrm_selector(0)).unwrap();
+            for _ in 0..65 {
+                core.deliver_notification_value(path, &[1]).unwrap();
+            }
+        }
+        for _ in 0..65 {
+            central
+                .poll_notification("peer", &hrm_selector(0), "consumer-a")
+                .await
+                .unwrap();
+        }
+        central
+            .boundary()
+            .fail_next(FaultOp::Unsubscribe, "orphan disable refused");
+        assert!(
+            central
+                .release_connection_lease("peer", "a", OpControl::unbounded())
+                .await
+                .is_err()
+        );
+        assert_eq!(central.resource_counters().await.pending_disables, 1);
+        assert!(
+            !central
+                .release_connection_lease("peer", "a", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            central.resource_counters().await.pending_disables,
+            0,
+            "physical retry cannot depend on a retired terminal consumer record"
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shared_lease_release_deadline_retains_child_and_fences_only_its_owner() {
+        use std::{future::Future, task::Poll};
+        let central = open().await;
+        for lease in ["a", "b"] {
+            central
+                .connect("peer", lease, OpControl::unbounded())
+                .await
+                .unwrap();
+        }
+        central
+            .boundary()
+            .set_services("peer", vec![hrm_service(), hrm_service()]);
+        central
+            .discover("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central
+            .subscribe(
+                "peer",
+                &hrm_selector(0),
+                "consumer-a",
+                None,
+                OpControl::unbounded().with_connection_lease("a".to_owned()),
+            )
+            .await
+            .unwrap();
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        let release = central.release_connection_lease("peer", "a", OpControl::budget_ms(100));
+        tokio::pin!(release);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(release.as_mut().poll(cx).is_pending())).await
+        );
+        assert_eq!(
+            central
+                .read(
+                    "peer",
+                    &hrm_selector(1),
+                    OpControl::unbounded().with_connection_lease("a".to_owned())
+                )
+                .await
+                .unwrap_err()
+                .code_str(),
+            "ownership.denied"
+        );
+        assert_eq!(
+            central
+                .read(
+                    "peer",
+                    &hrm_selector(1),
+                    OpControl::unbounded().with_connection_lease("b".to_owned())
+                )
+                .await
+                .unwrap()
+                .value,
+            vec![0x42]
+        );
+        tokio::time::advance(Duration::from_millis(101)).await;
+        assert_eq!(release.await.unwrap_err().code_str(), "operation.timed-out");
+        assert_eq!(central.resource_counters().await.pending_disables, 1);
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+        assert!(
+            !central
+                .release_connection_lease("peer", "a", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        assert_eq!(central.resource_counters().await.pending_disables, 0);
+        central.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shared_lease_release_retains_failed_child_and_preserves_other_owners_subscription() {
+        let central = open().await;
+        for lease in ["a", "b"] {
+            central
+                .connect("peer", lease, OpControl::unbounded())
+                .await
+                .unwrap();
+        }
+        central
+            .boundary()
+            .set_services("peer", vec![hrm_service(), hrm_service()]);
+        central
+            .discover("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central
+            .discover("peer", "b", OpControl::unbounded())
+            .await
+            .unwrap();
+        central
+            .subscribe(
+                "peer",
+                &hrm_selector(0),
+                "consumer-a",
+                None,
+                OpControl::unbounded().with_connection_lease("a".to_owned()),
+            )
+            .await
+            .unwrap();
+        central
+            .subscribe(
+                "peer",
+                &hrm_selector(1),
+                "consumer-b",
+                None,
+                OpControl::unbounded().with_connection_lease("b".to_owned()),
+            )
+            .await
+            .unwrap();
+        central
+            .boundary()
+            .fail_next(FaultOp::Unsubscribe, "retained child refusal");
+        assert!(
+            central
+                .release_connection_lease("peer", "a", OpControl::unbounded())
+                .await
+                .is_err()
+        );
+        let key = central.peer_key_for("peer").await.unwrap();
+        assert!(central.with_core(|core| core.holds_lease(&key, "a")).await);
+        assert_eq!(
+            central
+                .read(
+                    "peer",
+                    &hrm_selector(1),
+                    OpControl::unbounded().with_connection_lease("b".to_owned())
+                )
+                .await
+                .unwrap()
+                .value,
+            vec![0x42]
+        );
+        assert!(
+            !central
+                .release_connection_lease("peer", "a", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        assert_eq!(central.resource_counters().await.core.live_consumers, 1);
+        assert!(
+            central
+                .release_connection_lease("peer", "b", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shared_discovery_original_path_owner_release_preserves_other_lease_inflight_read() {
+        use std::{future::Future, task::Poll};
+        let central = open().await;
+        for lease in ["a", "b"] {
+            central
+                .connect("peer", lease, OpControl::unbounded())
+                .await
+                .unwrap();
+        }
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        central
+            .discover("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central
+            .discover("peer", "b", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().block_op(FaultOp::Read);
+        let selector = hrm_selector(0);
+        let pending = central.read(
+            "peer",
+            &selector,
+            OpControl::unbounded().with_connection_lease("b".to_owned()),
+        );
+        tokio::pin!(pending);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(pending.as_mut().poll(cx).is_pending())).await
+        );
+        assert!(
+            !central
+                .release_connection_lease("peer", "a", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        central.boundary().unblock_op(FaultOp::Read);
+        assert_eq!(pending.await.unwrap().value, vec![0x42]);
+        assert_eq!(
+            central
+                .read(
+                    "peer",
+                    &selector,
+                    OpControl::unbounded().with_connection_lease("a".to_owned())
+                )
+                .await
+                .unwrap_err()
+                .code_str(),
+            "ownership.denied"
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shared_discovery_ready_cache_cannot_renew_an_expired_waiter_budget() {
+        use std::{future::Future, task::Poll};
+        let central = open().await;
+        for lease in ["a", "b"] {
+            central
+                .connect("peer", lease, OpControl::unbounded())
+                .await
+                .unwrap();
+        }
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        central.boundary().block_op(FaultOp::Discover);
+        let first = central.discover("peer", "a", OpControl::unbounded());
+        let second = central.discover("peer", "b", OpControl::budget_ms(100));
+        tokio::pin!(first, second);
+        assert!(std::future::poll_fn(|cx| Poll::Ready(first.as_mut().poll(cx).is_pending())).await);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(second.as_mut().poll(cx).is_pending())).await
+        );
+        tokio::time::advance(Duration::from_millis(101)).await;
+        central.boundary().unblock_op(FaultOp::Discover);
+        first.await.unwrap();
+        assert_eq!(second.await.unwrap_err().code_str(), "operation.timed-out");
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "discover")
+                .count(),
+            1
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shared_discovery_same_lease_coalesces_but_sequential_refresh_is_explicit() {
+        use std::{future::Future, task::Poll};
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        central.boundary().block_op(FaultOp::Discover);
+        let first = central.discover("peer", "a", OpControl::unbounded());
+        let second = central.discover("peer", "a", OpControl::unbounded());
+        tokio::pin!(first, second);
+        assert!(std::future::poll_fn(|cx| Poll::Ready(first.as_mut().poll(cx).is_pending())).await);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(second.as_mut().poll(cx).is_pending())).await
+        );
+        central.boundary().unblock_op(FaultOp::Discover);
+        let (a, b) = tokio::join!(first, second);
+        a.unwrap();
+        b.unwrap();
+        let key = central.peer_key_for("peer").await.unwrap();
+        let before = central
+            .with_core(|core| core.database_generation(&key))
+            .await;
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "discover")
+                .count(),
+            1
+        );
+        central
+            .discover("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        assert_ne!(
+            central
+                .with_core(|core| core.database_generation(&key))
+                .await,
+            before
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn shared_discovery_service_change_during_traversal_refuses_stale_publication() {
+        use std::{future::Future, task::Poll};
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        central.boundary().block_op(FaultOp::Discover);
+        let pending = central.discover("peer", "a", OpControl::unbounded());
+        tokio::pin!(pending);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(pending.as_mut().poll(cx).is_pending())).await
+        );
+        let mut lifecycle = central.lifecycle_events();
+        central
+            .boundary()
+            .push_event(RadioEvent::ServicesChanged("peer".into()));
+        tokio::time::timeout(Duration::from_secs(2), lifecycle.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        central.boundary().unblock_op(FaultOp::Discover);
+        assert_eq!(pending.await.unwrap_err().code_str(), "gatt.stale-handle");
+        central
+            .discover("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn shared_discovery_failed_attempt_and_service_change_never_reuse_stale_cache() {
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        central
+            .boundary()
+            .fail_next(FaultOp::Discover, "injected discovery refusal");
+        assert!(
+            central
+                .discover("peer", "a", OpControl::unbounded())
+                .await
+                .is_err()
+        );
+        central
+            .discover("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        let key = central.peer_key_for("peer").await.unwrap();
+        let original = central
+            .with_core(|core| core.database_generation(&key))
+            .await
+            .unwrap();
+        let mut lifecycle = central.lifecycle_events();
+        central
+            .boundary()
+            .push_event(RadioEvent::ServicesChanged("peer".into()));
+        let changed = tokio::time::timeout(Duration::from_secs(2), lifecycle.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(changed.kind, crate::LifecycleKind::ServicesChanged);
+        central
+            .connect("peer", "b", OpControl::unbounded())
+            .await
+            .unwrap();
+        central
+            .discover("peer", "b", OpControl::unbounded())
+            .await
+            .unwrap();
+        assert_ne!(
+            central
+                .with_core(|core| core.database_generation(&key))
+                .await
+                .unwrap(),
+            original
+        );
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "discover")
+                .count(),
+            3
+        );
+        central.shutdown().await;
     }
 
     #[tokio::test]
@@ -6783,6 +9342,108 @@ mod adapter_tests {
                 .count(),
             2,
             "enable once, disable once"
+        );
+    }
+
+    #[tokio::test]
+    async fn confirmed_loss_retirement_does_not_authorize_a_reused_lease() {
+        let central = open().await;
+        ready_peer(&central, "loss-owner", vec![hrm_service()]).await;
+        let peer_key = central.peer_key_for("loss-owner").await.unwrap();
+        central.remote_peer_loss("loss-owner").await.unwrap();
+        assert!(
+            super::lock_std(&central.inner.retired_leases)
+                .contains(&(peer_key.clone(), "lease-a".into()))
+        );
+        central
+            .connect("loss-owner", "lease-a", OpControl::unbounded())
+            .await
+            .unwrap();
+        assert!(
+            !super::lock_std(&central.inner.retired_leases)
+                .contains(&(peer_key.clone(), "lease-a".into()))
+        );
+        central
+            .boundary()
+            .fail_next(FaultOp::Disconnect, "new generation remains owned");
+        assert!(!central.shutdown().await.is_released());
+        assert!(
+            central
+                .release_connection_lease("loss-owner", "lease-a", OpControl::unbounded())
+                .await
+                .is_err()
+        );
+        assert!(central.boundary().link_connected("loss-owner"));
+        assert!(central.shutdown().await.is_released());
+        assert!(
+            central
+                .release_connection_lease("loss-owner", "foreign", OpControl::unbounded())
+                .await
+                .is_err()
+        );
+        assert!(
+            central
+                .release_connection_lease("loss-owner", "lease-a", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        assert!(
+            central
+                .release_connection_lease("loss-owner", "lease-a", OpControl::unbounded())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn retained_notification_fifo_remains_readable_during_and_after_shutdown() {
+        let central = open().await;
+        ready_peer(&central, "retained-fifo", vec![hrm_service()]).await;
+        let selector = hrm_selector(0);
+        central
+            .subscribe(
+                "retained-fifo",
+                &selector,
+                "retained-consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let key = central.peer_key_for("retained-fifo").await.unwrap();
+        central
+            .with_core_mut(|core| {
+                let index = core
+                    .consumer_path(&key, &selector, "retained-consumer")
+                    .unwrap();
+                core.deliver_notification_value(index, &[0, 74]).unwrap();
+                core.deliver_notification_value(index, &[0, 75]).unwrap();
+            })
+            .await;
+        central.boundary().block_op(FaultOp::Disconnect);
+        let owner = central.clone();
+        let closing = tokio::spawn(async move { owner.shutdown().await });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            central.boundary().wait_for_calls("disconnect", 1),
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(central.poll_notification("retained-fifo", &selector, "retained-consumer").await.unwrap(), super::NotificationPoll::Value(value) if value == [0, 74])
+        );
+        central.boundary().unblock_op(FaultOp::Disconnect);
+        assert!(closing.await.unwrap().is_released());
+        assert!(
+            matches!(central.poll_notification("retained-fifo", &selector, "retained-consumer").await.unwrap(), super::NotificationPoll::Value(value) if value == [0, 75])
+        );
+        assert_eq!(
+            central
+                .poll_notification("retained-fifo", &selector, "foreign-consumer")
+                .await
+                .unwrap_err()
+                .code_str(),
+            "ownership.denied"
         );
     }
 
@@ -7207,11 +9868,22 @@ mod adapter_tests {
             "resolve-reference projects as provided-with-limitation"
         );
         // ...while open adapter work stays closed on every OS...
-        let error = central
+        let connected_directory = central
             .with_core(|core| core.check_capability("peer:system-connected", "desktop.probe"))
-            .await
-            .expect_err("adapter work gates closed");
-        assert_eq!(error.code(), BleErrorCode::CapabilityUnsupported);
+            .await;
+        if cfg!(target_os = "macos") {
+            assert!(matches!(
+                connected_directory,
+                Ok(CapabilityAdmission::ProceedWithLimitation)
+            ));
+        } else {
+            assert_eq!(
+                connected_directory
+                    .expect_err("no OS directory adapter here")
+                    .code(),
+                BleErrorCode::CapabilityUnsupported
+            );
+        }
         // ...and a row a narrow OS adapter fills opens only on that OS
         // (BlueZ address targeting, `os::linux`).
         let targeting = central
@@ -8978,6 +11650,183 @@ mod adapter_tests {
     }
 
     #[tokio::test]
+    async fn reused_consumer_does_not_inherit_prior_link_retirement() {
+        let central = open().await;
+        let selector = hrm_selector(0);
+        ready_peer(&central, "reuse-peer", vec![hrm_service()]).await;
+        central
+            .subscribe(
+                "reuse-peer",
+                &selector,
+                "reused",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        super::reconcile_disconnected(&central.inner, "reuse-peer", true).await;
+        ready_peer(&central, "reuse-peer", vec![hrm_service()]).await;
+        central
+            .subscribe(
+                "reuse-peer",
+                &selector,
+                "reused",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        super::services_changed_invalidated(&central.inner, "reuse-peer").await;
+        assert!(
+            central
+                .unsubscribe("reuse-peer", &selector, "reused", OpControl::unbounded())
+                .await
+                .unwrap(),
+            "current-generation retained native enablement must actually be disabled"
+        );
+        assert!(super::lock_std(&central.inner.retained_enablements).is_empty());
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn host_reported_loss_retires_exact_owned_consumer() {
+        let central = open().await;
+        let selector = hrm_selector(0);
+        ready_peer(&central, "host-lost-peer", vec![hrm_service()]).await;
+        central
+            .subscribe(
+                "host-lost-peer",
+                &selector,
+                "owned",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        central.remote_peer_loss("host-lost-peer").await.unwrap();
+        central
+            .boundary()
+            .fail_next(FaultOp::Connect, "reconnect refused");
+        assert!(
+            central
+                .connect("host-lost-peer", "retry", OpControl::unbounded())
+                .await
+                .is_err()
+        );
+        assert!(
+            !central
+                .unsubscribe("host-lost-peer", &selector, "owned", OpControl::unbounded())
+                .await
+                .unwrap()
+        );
+        assert!(
+            central
+                .unsubscribe(
+                    "host-lost-peer",
+                    &selector,
+                    "foreign",
+                    OpControl::unbounded()
+                )
+                .await
+                .is_err()
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn confirmed_link_loss_retires_only_the_old_subscription_consumer() {
+        for reconnect in [false, true] {
+            let central = open().await;
+            ready_peer(&central, "retired-peer", vec![hrm_service()]).await;
+            ready_peer(&central, "unrelated-peer", vec![hrm_service()]).await;
+            let selector = hrm_selector(0);
+            for (peer, consumer) in [
+                ("retired-peer", "old-consumer"),
+                ("unrelated-peer", "other-consumer"),
+            ] {
+                central
+                    .subscribe(peer, &selector, consumer, None, OpControl::unbounded())
+                    .await
+                    .unwrap();
+            }
+            super::reconcile_disconnected(&central.inner, "retired-peer", true).await;
+            if reconnect {
+                ready_peer(&central, "retired-peer", vec![hrm_service()]).await;
+                central
+                    .subscribe(
+                        "retired-peer",
+                        &selector,
+                        "new-consumer",
+                        None,
+                        OpControl::unbounded(),
+                    )
+                    .await
+                    .unwrap();
+            } else {
+                central
+                    .boundary()
+                    .fail_next(FaultOp::Connect, "reconnect refused");
+                assert!(
+                    central
+                        .connect("retired-peer", "retry-lease", OpControl::unbounded())
+                        .await
+                        .is_err()
+                );
+            }
+            assert!(
+                !central
+                    .unsubscribe(
+                        "retired-peer",
+                        &selector,
+                        "old-consumer",
+                        OpControl::unbounded()
+                    )
+                    .await
+                    .unwrap()
+            );
+            if !reconnect {
+                assert!(
+                    central
+                        .unsubscribe(
+                            "retired-peer",
+                            &selector,
+                            "foreign-consumer",
+                            OpControl::unbounded()
+                        )
+                        .await
+                        .is_err()
+                );
+            }
+            if reconnect {
+                assert!(
+                    central
+                        .unsubscribe(
+                            "retired-peer",
+                            &selector,
+                            "new-consumer",
+                            OpControl::unbounded()
+                        )
+                        .await
+                        .unwrap()
+                );
+            }
+            assert!(
+                central
+                    .unsubscribe(
+                        "unrelated-peer",
+                        &selector,
+                        "other-consumer",
+                        OpControl::unbounded()
+                    )
+                    .await
+                    .unwrap()
+            );
+            assert!(super::lock_std(&central.inner.retired_consumers).is_empty());
+            central.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
     async fn f07_flood_bounds_ingress_and_preserves_control() {
         use ubm_core::central::{ConnectionState, ConsumerState};
 
@@ -9199,6 +12048,10 @@ mod adapter_tests {
             central.with_core(|core| core.live_operation_count()).await,
             0,
             "no live leak after shutdown race"
+        );
+        assert!(
+            !central.boundary().link_connected("peer-f03x"),
+            "late native success must be physically compensated after shutdown"
         );
     }
 
@@ -9656,6 +12509,54 @@ mod adapter_tests {
                 .await,
             Some(ConnectionState::Disconnecting),
             "failed release leaves the link Disconnecting, never silently Connected"
+        );
+    }
+
+    #[tokio::test]
+    async fn held_transport_close_is_bounded_and_retryable() {
+        tokio::time::pause();
+        let central = open().await;
+        central.boundary().block_op(FaultOp::FinishClose);
+        let first = central.shutdown().await;
+        assert_eq!(
+            first
+                .transport_close_failures
+                .first()
+                .expect("bounded cleanup")
+                .code(),
+            ubm_core::contracts::BleErrorCode::OperationTimedOut
+        );
+        central.boundary().unblock_op(FaultOp::FinishClose);
+        assert!(central.shutdown().await.transport_close_failures.is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_retains_transport_failure_and_retries_after_loop_join() {
+        let central = open().await;
+        central
+            .boundary()
+            .fail_next(FaultOp::FinishClose, "match removal refused");
+        let first = central.shutdown().await;
+        assert_eq!(
+            first
+                .transport_close_failures
+                .first()
+                .expect("owned transport refusal")
+                .detail(),
+            Some("match removal refused")
+        );
+        assert!(first.radio_close_failures.is_empty());
+        assert!(central.inner.loop_done.lock().await.is_none());
+        let second = central.shutdown().await;
+        assert!(second.transport_close_failures.is_empty());
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "finish_close")
+                .count(),
+            2
         );
     }
 

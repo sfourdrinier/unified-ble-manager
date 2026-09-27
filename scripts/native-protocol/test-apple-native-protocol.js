@@ -286,6 +286,13 @@ try {
   for (let iteration = 0; iteration < 3; iteration += 1) {
     run(executionExecutable, [])
   }
+  // The ordinary reference-driver lane runs on Linux, where this Swift test
+  // is intentionally skipped. Keep its compiled app transport and actual
+  // emitted-envelope validation in the existing Apple executable gate.
+  run(process.execPath, [
+    '--test',
+    path.join(root, 'example-expo/src/driver/__tests__/native-continuation-apple.test.mjs')
+  ])
   console.log(
     '[test-apple-native-protocol] C++ protocol tests, the Apple CoreBluetooth parser, the CoreBluetooth read/notify provenance harness, the Rust mobile host ↔ Swift radio adapter harness, the Apple continuation declare/status harness, and the Apple execution CallInvoker/JSI terminal harness passed. No physical BLE radio or peripheral behavior was exercised.'
   )

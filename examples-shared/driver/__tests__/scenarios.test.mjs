@@ -11,6 +11,18 @@ function eventsOf(scenario) {
   return scenario.recentEvents().map(event => event.kind)
 }
 
+test('restoration instructions retain active ownership before process termination', () => {
+  const { manager } = createFakeManager()
+  const registry = createScenarioRegistry(createFakeHost({ manager, adapterHostManager }))
+  const scenario = registry.get('restoration').describe()
+  const start = scenario.commands.find(command => command.name === 'start')
+  assert.match(start.description, /Keep the subscription active/)
+  assert.match(start.description, /do not run Stop/)
+  assert.doesNotMatch(start.description, /Stop, kill/)
+  assert.match(scenario.description, /record-only/)
+  assert.match(scenario.description, /native continuation/)
+})
+
 test('every host gets the same scenarios in the same order', () => {
   const { manager } = createFakeManager()
   const registry = createScenarioRegistry(createFakeHost({ manager, adapterHostManager }))
@@ -128,6 +140,12 @@ test('background tracks the host app state and reports the library answer for th
   await registry.dispatch('background', 'stop', {})
   assert.equal(listeners.size, 0)
   assert.deepEqual(scenario.snapshot().periods.map(period => period.appState), ['visible', 'hidden'])
+  const priorLeaseEvents = scenario.recentEvents().filter(event => event.kind === 'background-lease')
+  await registry.dispatch('background', 'start', { autoReconnect: false, backgroundLease: false })
+  assert.equal(scenario.snapshot().leaseRequested, false)
+  assert.equal(scenario.snapshot().leaseState, null)
+  assert.deepEqual(scenario.recentEvents().filter(event => event.kind === 'background-lease'), priorLeaseEvents)
+  await registry.dispatch('background', 'stop', {})
 })
 
 test('restoration start records the known peer and reports the platform capability answers verbatim', async () => {
@@ -155,19 +173,15 @@ test('restoration reports unregistered capabilities as unregistered instead of i
   await registry.dispatch('restoration', 'stop', {})
 })
 
-test('restoration reconnect dials the recorded peer id directly with no new scan', async () => {
+test('restoration reconnect refuses a previous manager opaque id before creating work', async () => {
   const { manager, calls } = createFakeManager()
   const registry = createScenarioRegistry(createFakeHost({ manager, adapterHostManager }))
   await registry.dispatch('restoration', 'start', { autoReconnect: false })
   await registry.dispatch('restoration', 'stop', {})
   const finds = calls.filter(call => call.startsWith('find ')).length
-  await registry.dispatch('restoration', 'reconnect', { peerId: 'peer-h10', intent: 'when-available' })
+  await assert.rejects(registry.dispatch('restoration', 'reconnect', { peerId: 'peer-h10', intent: 'when-available' }), { code: 'scenario.invalid-argument' })
   assert.equal(calls.filter(call => call.startsWith('find ')).length, finds)
-  assert.ok(calls.includes('connect when-available'))
-  const scenario = registry.get('restoration')
-  assert.ok(eventsOf(scenario).includes('restoration-reconnected'))
-  assert.equal(scenario.snapshot().reconnects, 1)
-  assert.equal(scenario.snapshot().knownPeerId, 'peer-h10')
+  assert.ok(!calls.includes('connect when-available'))
   await registry.dispatch('restoration', 'stop', {})
 })
 
@@ -196,6 +210,56 @@ test('restoration reconnect without a known peer is refused, never silently skip
   const registry = createScenarioRegistry(createFakeHost({ manager, adapterHostManager }))
   await assert.rejects(registry.dispatch('restoration', 'reconnect', {}), { code: 'scenario.no-known-peer' })
 })
+
+test('presence commands are one-shot and observe can immediately be followed by unobserve', async () => {
+  const { manager, calls } = createFakeManager()
+  const registry = createScenarioRegistry(createFakeHost({ manager, adapterHostManager }))
+  await registry.dispatch('restoration', 'observe-presence', { peerId: 'peer-h10' })
+  assert.equal(registry.get('restoration').snapshot().phase, 'stopped')
+  assert.equal(calls.filter(call => call === 'manager.destroy').length, 1)
+  assert.deepEqual(await registry.dispatch('restoration', 'unobserve-presence', {}), { peerId: 'peer-h10', state: 'idle' })
+  assert.equal(calls.filter(call => call === 'manager.destroy').length, 2)
+  await registry.stopAll()
+  assert.equal(calls.filter(call => call === 'manager.destroy').length, 2)
+})
+
+test('held one-shot cleanup fences a new presence command until its exact owner releases', async () => {
+  const { manager } = createFakeManager()
+  let release, entered
+  let attempts = 0
+  const started = new Promise(resolve => { entered = resolve })
+  manager.destroy = () => { attempts++; entered(); return new Promise(resolve => { release = resolve }) }
+  const registry = createScenarioRegistry(createFakeHost({ manager, adapterHostManager }))
+  const observing = registry.dispatch('restoration', 'observe-presence', { peerId: 'peer-h10' })
+  await started
+  await assert.rejects(registry.dispatch('restoration', 'unobserve-presence', {}), { code: 'scenario.busy' })
+  const stopping = registry.stopAll()
+  release({ state: 'released', failures: [] })
+  assert.deepEqual(await observing, { peerId: 'peer-h10', state: 'observing' })
+  assert.equal((await stopping).failures.length, 0)
+  assert.equal(attempts, 1)
+})
+
+for (const rejection of [false, true]) {
+  test(`presence one-shot cleanup ${rejection ? 'rejection' : 'refusal'} retains ownership for retry`, async () => {
+    const { manager } = createFakeManager()
+    let failing = true
+    let attempts = 0
+    manager.destroy = async () => {
+      attempts++
+      if (failing && rejection) throw new Error('cleanup refused')
+      return { state: failing ? 'release-failed' : 'released', failures: failing ? [{ code: 'platform.failure' }] : [] }
+    }
+    const registry = createScenarioRegistry(createFakeHost({ manager, adapterHostManager }))
+    await assert.rejects(registry.dispatch('restoration', 'observe-presence', { peerId: 'peer-h10' }), { code: 'scenario.cleanup-failed' })
+    assert.equal(attempts, 1)
+    failing = false
+    assert.equal((await registry.stopAll()).failures.length, 0)
+    assert.equal(attempts, 2)
+    await registry.stopAll()
+    assert.equal(attempts, 2)
+  })
+}
 
 test('restoration observe-presence arms the recorded peer by default and reports the owner answer verbatim', async () => {
   const { manager, calls } = createFakeManager()
@@ -650,7 +714,8 @@ test('finding 185: a stuck scan fails one scenario loudly and the next scenario 
 
   const result = await registry.dispatch('h10-stream', 'start', {})
   assert.equal(result.device, 'Polar H10 1234')
-  assert.ok(created[1].calls.includes('heal stuck scan'), 'the next run heals the retained membership')
+  assert.equal(created[0].calls.filter(call => call === 'manager.destroy').length, 2, 'the next run retries the retained owner before acquiring another manager')
+  assert.equal(sharedScans.has('stuck'), false, 'confirmed disposal retired the stuck membership')
   assert.ok(!created[1].calls.some(call => call.includes('already-active')))
 
   const stop = await registry.dispatch('h10-stream', 'stop', {})

@@ -6,6 +6,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.sfourdrinier.unifiedblemanager.rustcore.RustCoreJson
+import com.sfourdrinier.unifiedblemanager.rustcore.RustCoreRejection
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -48,6 +50,32 @@ class PresenceWakeContinuationTest {
     headlessTaskName = null,
     foregroundService = null
   )
+
+  @Test
+  fun coldWakePersistsTypedRecordingStorageFailure() {
+    val persisted = InMemoryBackgroundContinuationStore()
+    val platform = mapOf("domain" to "android", "code" to "java.io.IOException",
+      "message" to "Private recording storage could not be configured", "metadata" to emptyMap<String, Any?>())
+    val wake = PresenceWakeCoordinator(
+      associatedAddresses = { setOf(peer) }, store = store, nowMs = { 12345L },
+      ensureOwner = { true }, ingest = { true }, log = {},
+      continuation = { nativeDeclaration(peer).copy(recording = ContinuationRecording("cold-wake", 1048576, 100)) },
+      executeContinuation = { _, order ->
+        executePresenceContinuation(order.strategy) {
+          throw RustCoreRejection("platform.failure", "lifecycle", "continuation.recording.configure",
+            "Private recording storage could not be configured", platform)
+        }
+      },
+      recordWakeOutcome = persisted::recordWakeOutcome
+    )
+    assertTrue(wake.appeared(peer, null))
+    val outcome = requireNotNull(persisted.lastWakeOutcome())
+    assertEquals("continuation.failed", outcome.event)
+    assertEquals("platform.failure", outcome.code)
+    assertEquals("Private recording storage could not be configured", outcome.reason)
+    assertEquals(RustCoreJson.write(platform), outcome.platform)
+    assertEquals(peer, outcome.peerAddress)
+  }
 
   @Test
   fun recordOnlyNeverExecutes() {
@@ -150,7 +178,7 @@ class PresenceWakeContinuationTest {
       ContinuationStrategy.NATIVE,
       code = "connection.failed",
       reason = "GATT 133",
-      platform = "android:connectionFailed"
+      platform = "{\"domain\":\"android\",\"code\":\"connectionFailed\",\"message\":\"GATT 133\",\"metadata\":{}}"
     )
     coordinator().appeared(peer, null)
     assertEquals(
@@ -161,7 +189,8 @@ class PresenceWakeContinuationTest {
           strategy = ContinuationStrategy.NATIVE,
           peerAddress = peer,
           code = "connection.failed",
-          reason = "GATT 133"
+          reason = "GATT 133",
+          platform = "{\"domain\":\"android\",\"code\":\"connectionFailed\",\"message\":\"GATT 133\",\"metadata\":{}}"
         )
       ),
       outcomes
@@ -194,7 +223,7 @@ class PresenceWakeContinuationTest {
   }
 
   @Test
-  fun deferredStrategiesAnswerUnsupportedNeverFallBack() {
+  fun declaredPlatformStrategiesDispatchOnlyTheirExecutorAndRetainAcceptanceStage() {
     for (strategy in listOf(ContinuationStrategy.HEADLESS_TASK, ContinuationStrategy.FOREGROUND_SERVICE)) {
       executed.clear()
       outcomes.clear()
@@ -205,12 +234,13 @@ class PresenceWakeContinuationTest {
         headlessTaskName = if (strategy == ContinuationStrategy.HEADLESS_TASK) "BleWakeTask" else null,
         foregroundService = null
       )
+      val stage = if (strategy == ContinuationStrategy.HEADLESS_TASK) "task-dispatched" else "foreground-service-started"
+      executorAnswer = ContinuationOutcome.Completed(strategy, peer, 0, stage)
       coordinator().appeared(peer, null)
-      assertTrue("no executor for $strategy", executed.isEmpty())
+      assertEquals(listOf(peer to declaration), executed)
       assertEquals(1, outcomes.size)
-      assertEquals("continuation.failed", outcomes[0].event)
-      assertEquals("capability.unsupported", outcomes[0].code)
-      assertTrue(outcomes[0].reason!!.contains("not implemented in this release"))
+      assertEquals("continuation.completed", outcomes[0].event)
+      assertEquals(stage, outcomes[0].stage)
     }
   }
 }

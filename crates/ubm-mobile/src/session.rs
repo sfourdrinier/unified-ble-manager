@@ -29,8 +29,7 @@ use ubm_core::central::{ConnectionState, PathSelector, canonical_uuid};
 use ubm_core::contracts::{BleErrorCode, BleErrorDomain, CommitState, MAX_TIMEOUT_MS};
 use ubm_desktop::{
     Budget, CancelAck, DeliveryMode, DesktopCentral, DesktopError, DiscoveredPath, InstanceKey,
-    LIVENESS_BACKSTOP_DETAIL, LIVENESS_OP, LinkRelease, ObservedDelivery, OpControl, OpTicket,
-    PeerRecord,
+    LIVENESS_BACKSTOP_DETAIL, LIVENESS_OP, ObservedDelivery, OpControl, OpTicket, PeerRecord,
 };
 
 use crate::drain::Outbox;
@@ -549,6 +548,58 @@ fn commit_of(error: &DesktopError, dispatched: bool) -> &'static str {
 }
 
 impl MobileSession {
+    pub(crate) fn seal_continuation_collection(&self) {
+        self.state.outbox.seal();
+    }
+    pub(crate) fn continuation_collection_sealed(&self) -> bool {
+        self.state.outbox.is_sealed()
+    }
+    pub(crate) fn attach_continuation_journal(
+        &self,
+        journal: Arc<ubm_desktop::continuation_journal::ContinuationJournal>,
+        mut context: Value,
+    ) -> ubm_desktop::continuation::Result<()> {
+        context["sessionId"] = Value::from(self.id().to_string());
+        context["backendInstanceId"] = Value::from(
+            self.host
+                .central
+                .attachment()
+                .backend_instance_id()
+                .as_str(),
+        );
+        context["sessionStartedAtUnixNs"]=Value::from(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_|serde_json::json!({"code":"platform.failure","domain":"restoration","operation":"continuation.recording","detail":"recording session clock unavailable"}))?.as_nanos().to_string());
+        context["sessionEpoch"] = Value::from(format!(
+            "{}:{}:{}",
+            context["backendInstanceId"]
+                .as_str()
+                .expect("backend instance"),
+            self.id(),
+            context["sessionStartedAtUnixNs"]
+                .as_str()
+                .expect("session clock")
+        ));
+        self.state
+            .outbox
+            .attach_journal(journal, context)
+            .map_err(ubm_desktop::continuation::recording_failure)
+    }
+    pub(crate) fn register_continuation_consumer(
+        &self,
+        consumer: &str,
+        metadata: Value,
+    ) -> ubm_desktop::continuation::Result<()> {
+        self.state
+            .outbox
+            .register_journal_consumer(consumer, metadata)
+            .map_err(ubm_desktop::continuation::recording_failure)
+    }
+    pub(crate) fn observe_continuation(
+        &self,
+        consumer: &str,
+        matcher: ubm_desktop::continuation_outbox::RecordMatcher,
+    ) -> Result<ubm_desktop::continuation_outbox::Observation, &'static str> {
+        self.state.outbox.observe(consumer, matcher)
+    }
     pub(crate) fn new(host: Arc<HostInner>, state: Arc<SessionState>) -> Self {
         Self { host, state }
     }
@@ -579,6 +630,7 @@ impl MobileSession {
     /// Run one op; `completion` receives the envelope text exactly once.
     pub fn invoke(&self, op: &str, args_json: &str, completion: Completion) {
         let received = Instant::now();
+        let lifetime_received = tokio::time::Instant::now();
         let is_write = WRITE_OPS.contains(&op);
         let reject = |error: DesktopError, completion: Completion| {
             completion(wire::error_envelope(
@@ -592,7 +644,7 @@ impl MobileSession {
         // A disposed session still answers `counters.describe` (a read): it
         // reports what the session still holds — nothing after a clean
         // dispose — so a manager can confirm its own return to baseline.
-        if lock(&self.state.admission).closing
+        if (self.host.is_shut_down() || lock(&self.state.admission).closing)
             && op != "session.dispose"
             && op != "counters.describe"
             && op != "session.quiesce"
@@ -639,7 +691,7 @@ impl MobileSession {
                 );
             }
         }
-        let command = match self.parse(op, &args, admission, received) {
+        let command = match self.parse(op, &args, admission, received, lifetime_received) {
             Ok(command) => command,
             Err(error) => return reject(error, completion),
         };
@@ -651,7 +703,7 @@ impl MobileSession {
         // This is the definitive admission boundary. Teardown closes it under
         // the same lock, so an operation cannot appear after the drain check.
         let mut gate = lock(&self.state.admission);
-        if gate.closing
+        if (self.host.is_shut_down() || gate.closing)
             && op != "session.dispose"
             && op != "session.continuation-dispose"
             && op != "counters.describe"
@@ -687,15 +739,36 @@ impl MobileSession {
         let ctl = OpControl::new(command.budget, ticket);
         self.host.runtime.spawn(async move {
             let operation_id = command.operation_id.clone();
-            let (outcome, dispatched) = OP_RADIO
-                .scope(
-                    progress,
-                    DISPATCHED.scope(Cell::new(false), async {
-                        let outcome = session.execute(command.body, ctl, release_version).await;
-                        (outcome, DISPATCHED.with(Cell::get))
-                    }),
-                )
-                .await;
+            let executing = session.clone();
+            let operation = async move {
+                OP_RADIO
+                    .scope(
+                        progress,
+                        DISPATCHED.scope(Cell::new(false), async {
+                            let outcome =
+                                executing.execute(command.body, ctl, release_version).await;
+                            (outcome, DISPATCHED.with(Cell::get))
+                        }),
+                    )
+                    .await
+            };
+            let (outcome, dispatched) = if session.state.outbox.has_journal() {
+                let runtime = session.host.runtime.clone();
+                match tokio::task::spawn_blocking(move || runtime.block_on(operation)).await {
+                    Ok(result) => result,
+                    Err(_) => (
+                        Err(
+                            error(BleErrorCode::PlatformFailure, BleErrorDomain::Platform, op)
+                                .with_detail(
+                                    "native continuation operation worker did not complete",
+                                ),
+                        ),
+                        true,
+                    ),
+                }
+            } else {
+                operation.await
+            };
             if let Some(key) = tracked {
                 lock(&session.state.op_radio).remove(&key);
             }
@@ -741,6 +814,7 @@ impl MobileSession {
         args: &Args,
         admission: Option<u64>,
         received: Instant,
+        lifetime_received: tokio::time::Instant,
     ) -> Result<Command, DesktopError> {
         let platform = self.host.platform;
         let apple = platform == MobilePlatform::Apple;
@@ -800,8 +874,24 @@ impl MobileSession {
             "scan.start" => {
                 args.exact(
                     &["serviceUuids", "duplicatePolicy", "operationId"],
-                    &["deviceAddresses", "platform", "budgetMs"],
+                    &["deviceAddresses", "platform", "budgetMs", "lifetimeMs"],
                 )?;
+                let lifetime_ms = args.opt_integer("lifetimeMs", MAX_TIMEOUT_MS)?;
+                if lifetime_ms == Some(0) {
+                    return Err(wire::invalid("args.lifetimeMs"));
+                }
+                let requested_budget = budget(args, received)?;
+                // Membership lifetime includes admission: a held start must
+                // not acquire a resource after its entire lifetime expired.
+                let admission_budget = lifetime_ms.map_or(requested_budget, |ms| {
+                    let lifetime_budget = Budget::from_ms_at(received, ms);
+                    match requested_budget.deadline() {
+                        Some(deadline) if Some(deadline) <= lifetime_budget.deadline() => {
+                            requested_budget
+                        }
+                        _ => lifetime_budget,
+                    }
+                });
                 args.one_of("duplicatePolicy", &["all"]).map_err(|_| {
                     unsupported(
                         "scan.start.duplicate-policy",
@@ -883,12 +973,15 @@ impl MobileSession {
                 }
                 (
                     Body::ScanStart {
+                        start_operation_id: args.string("operationId")?,
                         service_uuids,
                         device_addresses,
                         android,
+                        deadline: lifetime_ms
+                            .map(|ms| lifetime_received + std::time::Duration::from_millis(ms)),
                     },
                     id_required(args)?,
-                    budget(args, received)?,
+                    admission_budget,
                 )
             }
             "scan.stop" => {
@@ -1359,6 +1452,25 @@ impl MobileSession {
     ) -> Result<Value, DesktopError> {
         let host = &*self.host;
         let central = &host.central;
+        let ctl = match &body {
+            Body::Read { peer_id, .. }
+            | Body::Write { peer_id, .. }
+            | Body::Subscribe { peer_id, .. } => {
+                let lease = lock(&self.state.leases)
+                    .get(peer_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        error(
+                            BleErrorCode::OwnershipDenied,
+                            BleErrorDomain::Connection,
+                            "gatt.admission",
+                        )
+                        .with_detail("this session holds no connection lease for GATT work")
+                    })?;
+                ctl.with_connection_lease(lease)
+            }
+            _ => ctl,
+        };
         match body {
             Body::AdapterState => {
                 let snapshot =
@@ -1369,9 +1481,11 @@ impl MobileSession {
             }
             Body::Counters => self.counters().await,
             Body::ScanStart {
+                start_operation_id,
                 service_uuids,
                 device_addresses,
                 android,
+                deadline,
             } => {
                 // Reserve the slot before the first await (X-R2): a second
                 // concurrent start sees `Starting` and is refused, instead
@@ -1394,8 +1508,11 @@ impl MobileSession {
                 };
                 let member = ScanMember {
                     membership: membership.clone(),
+                    start_operation_id,
                     service_uuids,
                     device_addresses,
+                    deadline,
+                    expiry_cancel: OpTicket::new(),
                 };
                 // Reconciliation can be waiting on a different ticket's
                 // cleanup-only scan stop. Cancellation of this admission
@@ -1454,7 +1571,7 @@ impl MobileSession {
                                         };
                                     }
                                 }
-                                if host.leave_scan(session_id, OpControl::unbounded()).await.is_ok() {
+                                if host.leave_scan(session_id, &abandoned_membership, OpControl::unbounded()).await.is_ok() {
                                     state.clear_scan(&abandoned_membership);
                                 }
                             } else {
@@ -1488,16 +1605,24 @@ impl MobileSession {
                 {
                     // Bind the comparison first: the borrow of the slot must
                     // not live across the `leave_scan` await below.
-                    let ours = lock(&self.state.scan).membership() == Some(membership.as_str());
-                    if ours {
-                        *lock(&self.state.scan) = ScanSlot::Active {
-                            membership: membership.clone(),
-                        };
-                    } else {
+                    let ours = {
+                        let mut slot = lock(&self.state.scan);
+                        if slot.membership() == Some(membership.as_str()) {
+                            *slot = ScanSlot::Active {
+                                membership: membership.clone(),
+                            };
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if !ours {
                         // The host ended our membership while we were
                         // joining (adapter loss, shutdown): release what the
                         // join admitted instead of reporting a live scan.
-                        let _ = host.leave_scan(self.state.id, OpControl::unbounded()).await;
+                        let _ = host
+                            .leave_scan(self.state.id, &membership, OpControl::unbounded())
+                            .await;
                         return Err(error(
                             BleErrorCode::ScanStartFailed,
                             BleErrorDomain::Scan,
@@ -1506,6 +1631,7 @@ impl MobileSession {
                         .with_detail("the host ended the scan while it was starting"));
                     }
                 }
+                self.host.arm_scan_deadline(self.state.id, &membership);
                 Ok(object(vec![("operationId", Value::from(membership))]))
             }
             Body::ScanStop(membership) => {
@@ -1524,7 +1650,7 @@ impl MobileSession {
                     )
                     .with_detail("scan-not-active: no such scan in this session"));
                 }
-                host.leave_scan(self.state.id, ctl).await?;
+                host.leave_scan(self.state.id, &membership, ctl).await?;
                 self.state.clear_scan(&membership);
                 Ok(cleanup_record(Vec::new()))
             }
@@ -1686,8 +1812,11 @@ impl MobileSession {
                         return Ok(cleanup_record(Vec::new()));
                     }
                 }
-                match central.disconnect(&peer_id, &core_lease, ctl).await {
-                    Ok(LinkRelease::Released | LinkRelease::AlreadyReleased) => {
+                match central
+                    .release_connection_lease(&peer_id, &core_lease, ctl)
+                    .await
+                {
+                    Ok(_) => {
                         lock(&self.state.leases).remove(&peer_id);
                         Ok(cleanup_record(Vec::new()))
                     }
@@ -2667,7 +2796,10 @@ impl MobileSession {
         let mut failures = Vec::new();
         let membership = lock(&self.state.scan).membership().map(str::to_owned);
         if let Some(membership) = membership {
-            match host.leave_scan(self.state.id, OpControl::unbounded()).await {
+            match host
+                .leave_scan(self.state.id, &membership, OpControl::unbounded())
+                .await
+            {
                 Ok(()) => self.state.clear_scan(&membership),
                 Err(error) => failures.push(cleanup_failure("scan", &error)),
             }
@@ -2701,7 +2833,7 @@ impl MobileSession {
         for (peer_id, lease) in leases {
             match host
                 .central
-                .disconnect(&peer_id, &lease, OpControl::unbounded())
+                .release_connection_lease(&peer_id, &lease, OpControl::unbounded())
                 .await
             {
                 Ok(_) => {
@@ -2798,9 +2930,11 @@ enum Body {
     Quiesce,
     ContinuationDispose,
     ScanStart {
+        start_operation_id: String,
         service_uuids: Vec<String>,
         device_addresses: Vec<String>,
         android: Option<AndroidScanOptions>,
+        deadline: Option<tokio::time::Instant>,
     },
     ScanStop(String),
     PeersResolve(String),
@@ -2892,4 +3026,152 @@ struct Command {
     body: Body,
     operation_id: Option<String>,
     budget: Budget,
+}
+
+#[cfg(test)]
+mod scan_stop_race_tests {
+    use super::*;
+    use crate::{
+        HostOptions, MobileHost, MobilePlatform, PlatformRadio, RadioCompletion, RadioRequest,
+        WakeSink,
+    };
+    use std::sync::{OnceLock, Weak};
+
+    #[derive(Default)]
+    struct Radio {
+        host: OnceLock<Weak<MobileHost>>,
+        stops: AtomicU64,
+    }
+    impl PlatformRadio for Radio {
+        fn submit(&self, request: RadioRequest) {
+            let completion = match request {
+                RadioRequest::AdapterState { .. } => {
+                    RadioCompletion::Adapter(crate::AdapterSnapshot {
+                        availability: crate::AdapterAvailability::Available,
+                        authorization: crate::AdapterAuthorization::Granted,
+                        power: crate::AdapterPower::On,
+                        safe_reason: None,
+                    })
+                }
+                RadioRequest::StopScan { .. } => {
+                    self.stops.fetch_add(1, Ordering::SeqCst);
+                    RadioCompletion::Unit
+                }
+                RadioRequest::StartScan { .. } => RadioCompletion::Unit,
+                RadioRequest::Close { .. } => RadioCompletion::Closed(Vec::new()),
+                _ => panic!("unexpected radio work in scan-stop race"),
+            };
+            self.host
+                .get()
+                .unwrap()
+                .upgrade()
+                .unwrap()
+                .complete(request.id(), completion);
+        }
+        fn cancel(&self, _: crate::RequestId) {}
+    }
+    #[derive(Default)]
+    struct Wake(tokio::sync::Notify);
+    impl WakeSink for Wake {
+        fn wake(&self, _: u64) {
+            self.0.notify_one();
+        }
+    }
+    async fn invoke(session: &MobileSession, op: &str, args: Value) -> Value {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        session.invoke(
+            op,
+            &args.to_string(),
+            Box::new(move |reply| {
+                tx.send(reply).unwrap();
+            }),
+        );
+        serde_json::from_str(&rx.await.unwrap()).unwrap()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn accepted_stop_reports_retired_membership_when_expiry_wins_its_lock_wait() {
+        let radio = Arc::new(Radio::default());
+        let wake = Arc::new(Wake::default());
+        let host = Arc::new(
+            MobileHost::open(
+                radio.clone(),
+                wake.clone(),
+                HostOptions {
+                    platform: MobilePlatform::Android,
+                    owner: "stop-race".into(),
+                    adapter_label: "test".into(),
+                },
+                tokio::runtime::Handle::current(),
+            )
+            .await
+            .unwrap(),
+        );
+        radio.host.set(Arc::downgrade(&host)).unwrap();
+        let session = host.open_session("race").unwrap();
+        let started = invoke(&session, "scan.start", serde_json::json!({
+            "operationId":"start", "admission":1, "serviceUuids":[], "duplicatePolicy":"all", "lifetimeMs":1000
+        })).await;
+        assert_eq!(started["ok"], true, "{started}");
+        let membership = started["value"]["operationId"].as_str().unwrap().to_owned();
+        let scan_lock = host.inner.scan.lock().await;
+        let mut stop = Box::pin(session.execute(
+            Body::ScanStop(membership.clone()),
+            OpControl::unbounded(),
+            0,
+        ));
+        std::future::poll_fn(|cx| {
+            assert!(
+                stop.as_mut().poll(cx).is_pending(),
+                "stop must reach the held scan lock"
+            );
+            std::task::Poll::Ready(())
+        })
+        .await;
+        tokio::time::advance(std::time::Duration::from_millis(1001)).await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                let notified = wake.0.notified();
+                let drained: Value = serde_json::from_str(&session.drain(256, 65536)).unwrap();
+                if drained["records"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|record| record["t"] == "scan-end" && record["operationId"] == membership)
+                {
+                    break;
+                }
+                notified.await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(*lock(&session.state.scan), ScanSlot::Idle);
+        drop(scan_lock);
+        assert_eq!(stop.await.unwrap()["state"], "released");
+        let stale = invoke(
+            &session,
+            "scan.stop",
+            serde_json::json!({"operationId":membership}),
+        )
+        .await;
+        assert_eq!(stale["error"]["code"], "lifecycle.invalid-state");
+        let replacement = invoke(
+            &session,
+            "scan.start",
+            serde_json::json!({
+                "operationId":"next", "admission":2, "serviceUuids":[], "duplicatePolicy":"all"
+            }),
+        )
+        .await;
+        assert_eq!(replacement["ok"], true, "{replacement}");
+        assert_ne!(
+            replacement["value"]["operationId"],
+            started["value"]["operationId"]
+        );
+        assert_eq!(radio.stops.load(Ordering::SeqCst), 1);
+        let ended: Value = serde_json::from_str(&host.shutdown().await).unwrap();
+        assert_eq!(ended["state"], "released", "{ended}");
+        assert_eq!(radio.stops.load(Ordering::SeqCst), 2);
+    }
 }

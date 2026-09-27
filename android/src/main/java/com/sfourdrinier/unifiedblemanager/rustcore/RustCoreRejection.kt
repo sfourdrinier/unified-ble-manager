@@ -21,6 +21,16 @@ class RustCoreRejection(
     return RustCoreJson.write(failure)
   }
 
+  /** Host-side refusal has no write commit and no platform retry advice.
+   * Native envelopes are forwarded unchanged instead of reconstructed here. */
+  fun toContinuationEnvelope(): String = RustCoreJson.write(linkedMapOf(
+    "ok" to false,
+    "error" to linkedMapOf("code" to code, "domain" to domain, "operation" to operation,
+      "detail" to detail, "platform" to platform),
+    "commit" to null,
+    "retryability" to "never"
+  ))
+
   companion object {
     /** Parses the JNI `MobileCoreException` wire text `code|domain|operation|detail`. */
     @JvmStatic

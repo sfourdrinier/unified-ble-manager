@@ -24,6 +24,11 @@ describe('the Android library manifest declares what its features need', () => {
     expect(manifest).toContain(PRESENCE_PERMISSION)
   })
 
+  test('headless continuation has a private service and bounded wake-lock permission', () => {
+    expect(manifest).toContain('android.permission.WAKE_LOCK')
+    expect(manifest).toMatch(/<service\s+android:name="com\.sfourdrinier\.unifiedblemanager\.presence\.UbmHeadlessContinuationService"\s+android:exported="false"\s*\/>/)
+  })
+
   test('the Bluetooth runtime permissions are still declared', () => {
     for (const permission of ['BLUETOOTH_SCAN', 'BLUETOOTH_CONNECT']) {
       expect(manifest).toContain(`android.permission.${permission}`)

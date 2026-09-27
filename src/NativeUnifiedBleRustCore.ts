@@ -63,6 +63,12 @@ export interface Spec extends TurboModule {
    * and the last wake outcome. Resolves the status JSON verbatim.
    */
   continuationStatus(): Promise<string>
+  /** Durable recording controls, independent of a BLE session. Paths are native-owned. */
+  continuationRecordingStatus(id: string): Promise<string>
+  continuationRecordingPrepare(id: string, maxItems: number, maxBytes: number): Promise<string>
+  continuationRecordingAcknowledge(id: string, token: string): Promise<string>
+  continuationRecordingStop(id: string): Promise<string>
+  continuationRecordingClear(id: string): Promise<string>
   /** Prepares a sealed continuation handoff. JS must acknowledge claimToken only after decoding batches. */
   prepareContinuationClaim(maxItems: number, maxBytes: number): Promise<string>
   /** Acknowledges a decoded prepared handoff and performs retryable native cleanup. */

@@ -11,7 +11,7 @@
     "lockfile": "pnpm-lock.yaml",
     "lockfileSha256": "fea8b9fea3dca31d966c33e5942c5fb0f179c492a8462f90482d0c5dc1bd86d2",
     "cargoLockfile": "Cargo.lock",
-    "cargoLockfileSha256": "3708483fc2b1922308085716f2b14c17cb42414791b906ffd7c45b4e008abb87"
+    "cargoLockfileSha256": "d0c13e1b2911974e94a7615ee8f30be76bdc9f0e4381b6e1ccc647cb7491ba72"
   },
   "reviewedOverrides": [
     {
@@ -363,6 +363,14 @@
       "purl": "pkg:cargo/cargo-platform@0.3.3"
     },
     {
+      "name": "cc",
+      "version": "1.5.1",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/cc@1.5.1"
+    },
+    {
       "name": "cesu8",
       "version": "1.1.0",
       "license": "(Apache-2.0 OR MIT)",
@@ -499,12 +507,44 @@
       "purl": "pkg:cargo/event-listener@5.4.2"
     },
     {
+      "name": "fallible-iterator",
+      "version": "0.3.0",
+      "license": "(MIT OR Apache-2.0)",
+      "licenseSource": "cargo-manifest-license-normalized",
+      "declared": "MIT/Apache-2.0",
+      "purl": "pkg:cargo/fallible-iterator@0.3.0"
+    },
+    {
+      "name": "fallible-streaming-iterator",
+      "version": "0.1.9",
+      "license": "(MIT OR Apache-2.0)",
+      "licenseSource": "cargo-manifest-license-normalized",
+      "declared": "MIT/Apache-2.0",
+      "purl": "pkg:cargo/fallible-streaming-iterator@0.1.9"
+    },
+    {
       "name": "fastrand",
       "version": "2.5.0",
       "license": "Apache-2.0 OR MIT",
       "licenseSource": "cargo-manifest-license",
       "declared": "Apache-2.0 OR MIT",
       "purl": "pkg:cargo/fastrand@2.5.0"
+    },
+    {
+      "name": "find-msvc-tools",
+      "version": "0.1.14",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/find-msvc-tools@0.1.14"
+    },
+    {
+      "name": "foldhash",
+      "version": "0.2.0",
+      "license": "Zlib",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "Zlib",
+      "purl": "pkg:cargo/foldhash@0.2.0"
     },
     {
       "name": "fs-err",
@@ -628,11 +668,27 @@
     },
     {
       "name": "hashbrown",
+      "version": "0.16.1",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/hashbrown@0.16.1"
+    },
+    {
+      "name": "hashbrown",
       "version": "0.17.1",
       "license": "MIT OR Apache-2.0",
       "licenseSource": "cargo-manifest-license",
       "declared": "MIT OR Apache-2.0",
       "purl": "pkg:cargo/hashbrown@0.17.1"
+    },
+    {
+      "name": "hashlink",
+      "version": "0.12.2",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/hashlink@0.12.2"
     },
     {
       "name": "heck",
@@ -753,6 +809,14 @@
       "licenseSource": "cargo-manifest-license",
       "declared": "ISC",
       "purl": "pkg:cargo/libloading@0.8.9"
+    },
+    {
+      "name": "libsqlite3-sys",
+      "version": "0.38.2",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/libsqlite3-sys@0.38.2"
     },
     {
       "name": "linux-raw-sys",
@@ -1027,6 +1091,22 @@
       "purl": "pkg:cargo/regex@1.13.1"
     },
     {
+      "name": "rsqlite-vfs",
+      "version": "0.1.1",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/rsqlite-vfs@0.1.1"
+    },
+    {
+      "name": "rusqlite",
+      "version": "0.40.2",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/rusqlite@0.40.2"
+    },
+    {
       "name": "rustc_version",
       "version": "0.4.1",
       "license": "MIT OR Apache-2.0",
@@ -1155,6 +1235,14 @@
       "purl": "pkg:cargo/serde@1.0.229"
     },
     {
+      "name": "shlex",
+      "version": "2.0.1",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/shlex@2.0.1"
+    },
+    {
       "name": "signal-hook-registry",
       "version": "1.4.8",
       "license": "MIT OR Apache-2.0",
@@ -1217,6 +1305,14 @@
       "licenseSource": "cargo-manifest-license",
       "declared": "MIT OR Apache-2.0",
       "purl": "pkg:cargo/socket2@0.6.5"
+    },
+    {
+      "name": "sqlite-wasm-rs",
+      "version": "0.5.5",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/sqlite-wasm-rs@0.5.5"
     },
     {
       "name": "static_assertions",
@@ -1577,6 +1673,14 @@
       "licenseSource": "cargo-manifest-license",
       "declared": "Apache-2.0 OR MIT",
       "purl": "pkg:cargo/uuid@1.26.1"
+    },
+    {
+      "name": "vcpkg",
+      "version": "0.2.15",
+      "license": "(MIT OR Apache-2.0)",
+      "licenseSource": "cargo-manifest-license-normalized",
+      "declared": "MIT/Apache-2.0",
+      "purl": "pkg:cargo/vcpkg@0.2.15"
     },
     {
       "name": "walkdir",

@@ -297,6 +297,9 @@ export function createReactNativeRustCoreBinding(
   }
 
   return Object.freeze({
+    verifyNativeIdentity: async (): Promise<void> => {
+      await verifyBinary()
+    },
     openSession: async (owner: string): Promise<ReactNativeRustCoreSession> => {
       if (owner.length === 0) throw contractError('argument.invalid', 'core', `${OPERATION}.owner`)
       wakes.retain()
@@ -355,6 +358,46 @@ export function createReactNativeRustCoreBinding(
               throw contractError('argument.invalid', 'restoration', `${OPERATION}.continuation.empty`)
             }
             await call('declare-background-continuation', () => native.declareBackgroundContinuation(declarationJson))
+          }
+        }
+      : {}),
+    ...(typeof native.continuationRecordingStatus === 'function'
+      ? {
+          continuationRecordingStatus: async (id: string): Promise<string> => {
+            await verifyBinary()
+            return call('recording-status', () => native.continuationRecordingStatus(id))
+          }
+        }
+      : {}),
+    ...(typeof native.continuationRecordingPrepare === 'function'
+      ? {
+          continuationRecordingPrepare: async (id: string, maxItems: number, maxBytes: number): Promise<string> => {
+            await verifyBinary()
+            return call('recording-prepare', () => native.continuationRecordingPrepare(id, maxItems, maxBytes))
+          }
+        }
+      : {}),
+    ...(typeof native.continuationRecordingAcknowledge === 'function'
+      ? {
+          continuationRecordingAcknowledge: async (id: string, token: string): Promise<string> => {
+            await verifyBinary()
+            return call('recording-acknowledge', () => native.continuationRecordingAcknowledge(id, token))
+          }
+        }
+      : {}),
+    ...(typeof native.continuationRecordingStop === 'function'
+      ? {
+          continuationRecordingStop: async (id: string): Promise<string> => {
+            await verifyBinary()
+            return call('recording-stop', () => native.continuationRecordingStop(id))
+          }
+        }
+      : {}),
+    ...(typeof native.continuationRecordingClear === 'function'
+      ? {
+          continuationRecordingClear: async (id: string): Promise<string> => {
+            await verifyBinary()
+            return call('recording-clear', () => native.continuationRecordingClear(id))
           }
         }
       : {}),

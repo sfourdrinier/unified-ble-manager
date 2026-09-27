@@ -25,7 +25,10 @@ export interface ScenarioRuntime {
 }
 
 /** The runtime every host uses: monotonic `performance.now()`, timers, console lines. */
-export function createConsoleRuntime(host: string): ScenarioRuntime {
+export function createConsoleRuntime(
+  host: string,
+  writeLine: (line: string) => void = line => console.info(line)
+): ScenarioRuntime {
   return {
     host,
     now: () => performance.now(),
@@ -35,8 +38,7 @@ export function createConsoleRuntime(host: string): ScenarioRuntime {
     },
     log(scope, message, detail) {
       const stamp = `[driver:${scope}] +${Math.round(performance.now()).toString()}ms ${host} ${message}`
-      if (detail === undefined) console.log(stamp)
-      else console.log(stamp, JSON.stringify(detail))
+      writeLine(detail === undefined ? stamp : `${stamp} ${JSON.stringify(detail)}`)
     }
   }
 }
