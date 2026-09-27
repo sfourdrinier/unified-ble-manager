@@ -1,3 +1,5 @@
+mod acc;
+mod acc_stream;
 mod advertisement;
 mod compare;
 mod control;
@@ -19,15 +21,15 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use radio::{
-    PeripheralRadio, PlatformRadio, RadioEvent, SendOutcome, adv_service_uuids, h10_services,
-    short_of,
+    adv_service_uuids, h10_services, short_of, PeripheralRadio, PlatformRadio, RadioEvent,
+    SendOutcome,
 };
 use serde_json::json;
 use sim::{PmdAction, SimConfig, SimState};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use control::{ControlCommand, ControlReply, ControlRequest, apply_rates};
+use control::{apply_rates, ControlCommand, ControlReply, ControlRequest};
 use events::EventLog;
 use linux_advertising::LinuxAdvertising;
 
@@ -596,7 +598,7 @@ impl Fatal {
 async fn shutdown_signal() -> Result<&'static str, String> {
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{SignalKind, signal};
+        use tokio::signal::unix::{signal, SignalKind};
         let mut terminate = signal(SignalKind::terminate())
             .map_err(|error| format!("cannot watch SIGTERM: {error}"))?;
         tokio::select! {
@@ -696,6 +698,7 @@ async fn serve(
         json!({"seed": timing.profile.seed, "confirmed": timing.profile.fully_confirmed(), "unconfirmed": timing.profile.unconfirmed_fields()}),
     );
     let boot_epoch_ns: u64 = Utc::now().timestamp_nanos_opt().unwrap_or(0).max(0) as u64;
+    let sample_clock_boot = Instant::now();
 
     let (radio_tx, mut radio_rx) = mpsc::channel::<RadioEvent>(256);
     let mut radio = PlatformRadio::open(radio_tx)
@@ -761,10 +764,13 @@ async fn serve(
 
     let mut next_hr = Instant::now();
     let mut next_ecg = Instant::now();
+    let mut acc_runtime = None;
     let mut next_battery = Instant::now() + Duration::from_secs(60);
     let mut last_tick = Instant::now();
     let boot = Instant::now();
-    let tick = tokio::time::interval(Duration::from_millis(50));
+    // The minimum ATT capacity fits one ACC sample; 200 Hz then needs a
+    // five-millisecond opportunity, while actual batching follows capacity.
+    let tick = tokio::time::interval(Duration::from_millis(5));
     tokio::pin!(tick);
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
@@ -808,6 +814,7 @@ async fn serve(
                     next_ecg = now + Duration::from_secs_f64(timing.ecg_interval_s(sim.config.ecg_frames_per_sec));
                     send_ecg(&mut radio, &mut sim, &mut log, boot_epoch_ns).await;
                 }
+                send_acc(&mut radio, &mut sim, &mut log, &mut acc_runtime, sample_clock_boot, boot_epoch_ns).await;
                 if now >= next_battery {
                     next_battery = now + Duration::from_secs(60);
                     send_battery(&mut radio, &sim, &mut log).await;
@@ -928,14 +935,40 @@ fn report_stream_notify(
     outcome: Result<SendOutcome, crate::radio::RadioError>,
     detail: serde_json::Value,
 ) {
-    match outcome {
-        Ok(SendOutcome::OsAccepted | SendOutcome::Queued) => log.log(op, detail),
-        Ok(SendOutcome::NotSubscribed) => {}
-        Ok(SendOutcome::Failed(reason)) => {
-            log.log("radio-error", json!({"op": op, "error": reason}))
-        }
-        Err(error) => log.log("radio-error", json!({"op": op, "error": error.to_string()})),
+    if let Some((kind, detail)) = stream_notify_log(op, outcome, detail) {
+        log.log(kind, detail);
     }
+}
+
+/// Keep the frame identity beside its outcome, including rejected sends.
+fn stream_notify_log(
+    op: &str,
+    outcome: Result<SendOutcome, crate::radio::RadioError>,
+    detail: serde_json::Value,
+) -> Option<(&str, serde_json::Value)> {
+    let mut detail = match detail {
+        serde_json::Value::Object(fields) => fields,
+        other => serde_json::Map::from_iter([("detail".to_owned(), other)]),
+    };
+    let outcome = outcome.unwrap_or_else(|error| SendOutcome::Failed(error.to_string()));
+    let kind = match outcome {
+        SendOutcome::NotSubscribed => return None,
+        SendOutcome::OsAccepted => {
+            detail.insert("outcome".into(), json!("os-accepted"));
+            op
+        }
+        SendOutcome::Queued { id } => {
+            detail.insert("id".into(), json!(id));
+            detail.insert("outcome".into(), json!("queued"));
+            op
+        }
+        SendOutcome::Failed(reason) => {
+            detail.insert("op".into(), json!(op));
+            detail.insert("error".into(), json!(reason));
+            "radio-error"
+        }
+    };
+    Some((kind, serde_json::Value::Object(detail)))
 }
 
 async fn send_battery(radio: &mut PlatformRadio, sim: &SimState, log: &mut EventLog) {
@@ -1000,12 +1033,99 @@ async fn send_ecg(
     );
 }
 
+/// ACC generation is reset only by a new successful START, not by timer jitter
+/// or notification capacity changes. Its clock remains tied to acquisition.
+async fn send_acc(
+    radio: &mut PlatformRadio,
+    sim: &mut SimState,
+    log: &mut EventLog,
+    runtime: &mut Option<(Instant, acc_stream::Stream)>,
+    clock_boot: Instant,
+    boot_epoch_ns: u64,
+) {
+    let (Some(settings), Some(started)) = (sim.acc_settings, sim.acc_started_at) else {
+        *runtime = None;
+        return;
+    };
+    if runtime
+        .as_ref()
+        .is_none_or(|(generation, _)| *generation != started)
+    {
+        *runtime = Some((started, acc_stream::Stream::new(settings)));
+    }
+    let characteristic = Uuid::parse_str(gatt_spec::pmd::DATA).expect("constant PMD UUID");
+    let capacity = match radio.notification_payload_capacity(characteristic).await {
+        Ok(Some(capacity)) => capacity,
+        Ok(None) => return,
+        Err(error) => {
+            log.log(
+                "radio-error",
+                json!({"op": "acc-notification-capacity", "error": error.to_string()}),
+            );
+            return;
+        }
+    };
+    let Some((_, stream)) = runtime.as_mut() else {
+        return;
+    };
+    // A paused host may catch up, but cannot monopolize the event loop. The
+    // source separately bounds backlog and reports every discarded sample.
+    for _ in 0..32 {
+        let batch = match stream.next(started.elapsed(), capacity) {
+            Ok(Some(batch)) => batch,
+            Ok(None) => break,
+            Err(error) => {
+                log.log("acc-stream-failed", json!({"error": error}));
+                sim.apply_pmd_action(PmdAction::StopAcc);
+                break;
+            }
+        };
+        if batch.dropped_samples > 0 {
+            log.log(
+                "acc-samples-shed",
+                json!({"reason": "host-loop-backlog", "samples": batch.dropped_samples}),
+            );
+        }
+        if sim.silent {
+            continue;
+        }
+        let elapsed = started.saturating_duration_since(clock_boot).as_nanos()
+            + u128::from(batch.last_sample_ns);
+        let timestamp = u64::try_from(elapsed)
+            .map_err(|_| "ACC elapsed clock exhausted".to_owned())
+            .and_then(|elapsed| {
+                sim::device_timestamp_from_elapsed_ns(sim.config.clock, boot_epoch_ns, elapsed)
+            });
+        let frame = timestamp.and_then(|timestamp| {
+            acc::frame(timestamp, &batch.samples).map(|frame| (timestamp, frame))
+        });
+        match frame {
+            Ok((timestamp, frame)) => {
+                let bytes = frame.len();
+                let outcome = radio.notify(characteristic, frame).await;
+                report_stream_notify(
+                    log,
+                    "acc-notify",
+                    outcome,
+                    json!({"samples": batch.samples.len(), "bytes": bytes, "timestampNs": timestamp.to_string(), "sampleRateHz": settings.sample_rate_hz, "rangeG": settings.range_g}),
+                );
+            }
+            Err(error) => {
+                log.log("acc-stream-failed", json!({"error": error}));
+                sim.apply_pmd_action(PmdAction::StopAcc);
+                break;
+            }
+        }
+    }
+}
+
 /// Log line for one settled send. Every settle outcome is logged: a queued
 /// frame's `ecg-notify` line is a request, and its `notify-settled` line is
 /// the answer — counting queued lines as deliveries overcounts whenever a
 /// frame settles late or fails. Failures stay loud as `radio-error`.
 /// Pure so the every-settle-is-visible invariant is unit-pinned.
 fn notify_settled_log(
+    id: u64,
     service: &str,
     characteristic: &str,
     outcome: &SendOutcome,
@@ -1013,19 +1133,19 @@ fn notify_settled_log(
     match outcome {
         SendOutcome::OsAccepted => (
             "notify-settled",
-            json!({"service": service, "characteristic": characteristic, "outcome": "os-accepted"}),
+            json!({"id": id, "service": service, "characteristic": characteristic, "outcome": "os-accepted"}),
         ),
-        SendOutcome::Queued => (
+        SendOutcome::Queued { .. } => (
             "notify-settled",
-            json!({"service": service, "characteristic": characteristic, "outcome": "queued"}),
+            json!({"service": service, "characteristic": characteristic, "outcome": "queued", "id": id}),
         ),
         SendOutcome::NotSubscribed => (
             "radio-error",
-            json!({"op": "notify-settled", "service": service, "characteristic": characteristic, "error": "session ended before delivery"}),
+            json!({"id": id, "op": "notify-settled", "service": service, "characteristic": characteristic, "error": "session ended before delivery"}),
         ),
         SendOutcome::Failed(reason) => (
             "radio-error",
-            json!({"op": "notify-settled", "service": service, "characteristic": characteristic, "error": reason}),
+            json!({"id": id, "op": "notify-settled", "service": service, "characteristic": characteristic, "error": reason}),
         ),
     }
 }
@@ -1054,6 +1174,10 @@ async fn handle_radio(
 ) {
     match event {
         RadioEvent::Powered(powered) => {
+            if !powered {
+                sim.reset_pmd_session();
+                log.log_simple("pmd-session-ended");
+            }
             log.log("powered", json!({"on": powered}));
         }
         RadioEvent::Subscription {
@@ -1062,6 +1186,13 @@ async fn handle_radio(
             subscribed,
         } => {
             sim.observe_subscription(&characteristic, subscribed);
+            if !subscribed
+                && (characteristic.eq_ignore_ascii_case(gatt_spec::pmd::DATA)
+                    || characteristic.eq_ignore_ascii_case(gatt_spec::pmd::CONTROL_POINT))
+            {
+                sim.reset_pmd_session();
+                log.log("pmd-session-ended", json!({"reason": "final-pmd-subscription-ended", "characteristic": characteristic}));
+            }
             log.log(
                 if subscribed {
                     "subscribed"
@@ -1121,12 +1252,20 @@ async fn handle_radio(
             let _ = reply.send(answer);
         }
         RadioEvent::NotifySettled {
+            id,
             service,
             characteristic,
             outcome,
         } => {
+            if characteristic.eq_ignore_ascii_case(gatt_spec::pmd::CONTROL_POINT) {
+                if let Some(action) =
+                    sim.settle_pmd_action(id, matches!(outcome, SendOutcome::OsAccepted))
+                {
+                    commit_pmd_action(sim, log, action);
+                }
+            }
             sim.observe_notify_settled(&characteristic, &outcome);
-            let (kind, detail) = notify_settled_log(&service, &characteristic, &outcome);
+            let (kind, detail) = notify_settled_log(id, &service, &characteristic, &outcome);
             log.log(kind, detail);
         }
         RadioEvent::Write {
@@ -1192,6 +1331,13 @@ async fn write_request(
         );
         return false;
     }
+    if !sim.can_admit_pmd_command() {
+        log.log(
+            "pmd-command-rejected",
+            json!({"reason": "pending-command-capacity", "capacity": radio::SEND_QUEUE_CAPACITY}),
+        );
+        return false;
+    }
     let outcome = sim.handle_pmd_write(value);
     match outcome.indicate {
         Some(response) => {
@@ -1213,7 +1359,7 @@ async fn write_request(
             // START/STOP response.
             let measured_ms = timing.sample_pmd_response_ms();
             let injected_ms = sim.response_delay_ms;
-            if measured_ms.is_some() || injected_ms > 0 {
+            if measured_ms.is_some() || injected_ms > 0 || !sim.pending_indications.is_empty() {
                 let total_ms = measured_ms.unwrap_or(0.0) + injected_ms as f64;
                 sim.pending_indications.push(sim::PendingIndication {
                     due: Instant::now() + Duration::from_secs_f64(total_ms / 1000.0),
@@ -1229,8 +1375,12 @@ async fn write_request(
             // Inline: a lost indication surfaces here instead of timing out
             // the central 5 s later.
             match radio.notify(control_point, response.clone()).await {
-                Ok(SendOutcome::OsAccepted | SendOutcome::Queued) => {
+                Ok(SendOutcome::OsAccepted) => {
                     commit_pmd_action(sim, log, outcome.action);
+                    true
+                }
+                Ok(SendOutcome::Queued { id }) => {
+                    sim.queue_pmd_action(id, outcome.action);
                     true
                 }
                 Ok(SendOutcome::NotSubscribed) => {
@@ -1273,6 +1423,8 @@ fn commit_pmd_action(sim: &mut SimState, log: &mut EventLog, action: PmdAction) 
     match action {
         PmdAction::StartEcg => log.log_simple("ecg-started"),
         PmdAction::StopEcg => log.log_simple("ecg-stopped"),
+        PmdAction::StartAcc(settings) => log.log("acc-started", json!({"sampleRateHz": settings.sample_rate_hz, "resolutionBits": acc::RESOLUTION_BITS, "rangeG": settings.range_g})),
+        PmdAction::StopAcc => log.log_simple("acc-stopped"),
         PmdAction::None => {}
     }
 }
@@ -1282,19 +1434,18 @@ fn commit_pmd_action(sim: &mut SimState, log: &mut EventLog, action: PmdAction) 
 /// mid-latency drops the indication loudly and leaves no stuck stream.
 async fn drain_indications(radio: &mut PlatformRadio, sim: &mut SimState, log: &mut EventLog) {
     let now = Instant::now();
-    let mut index = 0;
-    while index < sim.pending_indications.len() {
-        if sim.pending_indications[index].due > now {
-            index += 1;
-            continue;
-        }
-        let indication = sim.pending_indications.remove(index);
+    // Responses and their state changes stay in command order even when
+    // injected/measured latencies differ between consecutive commands.
+    while let Some(indication) = sim.take_due_indication(now) {
         let control_point =
             Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap_or_else(|_| Uuid::nil());
         let outcome = radio.notify(control_point, indication.response).await;
         match &outcome {
-            Ok(SendOutcome::OsAccepted | SendOutcome::Queued) => {
+            Ok(SendOutcome::OsAccepted) => {
                 commit_pmd_action(sim, log, indication.action);
+            }
+            Ok(SendOutcome::Queued { id }) => {
+                sim.queue_pmd_action(*id, indication.action);
             }
             Ok(SendOutcome::NotSubscribed) => {
                 log.log(
@@ -1596,7 +1747,7 @@ async fn drop_link(
     // and the GATT database stay exactly as they were, so centrals see a
     // lifecycle loss (peer-link-loss) with no Service Changed, and can
     // reconnect immediately — like walking back into range of a real H10.
-    sim.ecg_streaming = false;
+    sim.reset_pmd_session();
     // Only the sim's own clients go: centrals whose addresses touched this
     // peripheral's GATT application, plus the explicit `--drop-link-allow`
     // extras. The adapter's other devices are never disturbed; the other
@@ -1684,7 +1835,7 @@ async fn stale_callback(
     let outcome = radio.notify(control_point, response.clone()).await;
     let accepted = matches!(
         &outcome,
-        Ok(SendOutcome::OsAccepted) | Ok(SendOutcome::Queued)
+        Ok(SendOutcome::OsAccepted) | Ok(SendOutcome::Queued { .. })
     );
     sim.record_fault(
         "stale-callback",
@@ -1764,6 +1915,51 @@ mod tests {
     }
 
     #[test]
+    fn queued_stream_logs_correlate_frames_and_preserve_failure_detail() {
+        for (op, id, samples) in [("ecg-notify", 41, 73), ("acc-notify", 42, 20)] {
+            let frame = json!({"samples": samples, "bytes": 130, "timestampNs": "1234"});
+            let (kind, request) =
+                stream_notify_log(op, Ok(SendOutcome::Queued { id }), frame.clone()).unwrap();
+            assert_eq!(kind, op);
+            assert_eq!(request["id"], id);
+            assert_eq!(request["outcome"], "queued");
+            assert_eq!(request["samples"], samples);
+            assert_eq!(request["timestampNs"], "1234");
+            for outcome in [
+                SendOutcome::OsAccepted,
+                SendOutcome::NotSubscribed,
+                SendOutcome::Failed("gone".into()),
+            ] {
+                let (_, settled) = notify_settled_log(id, "svc", gatt_spec::pmd::DATA, &outcome);
+                assert_eq!(settled["id"], request["id"]);
+            }
+            for failure in [
+                Ok(SendOutcome::Failed("backpressured".into())),
+                Err(radio::RadioError("backend refused".into())),
+            ] {
+                let (kind, failed) = stream_notify_log(op, failure, frame.clone()).unwrap();
+                assert_eq!(kind, "radio-error");
+                assert_eq!(failed["op"], op);
+                assert_eq!(failed["samples"], samples);
+                assert_eq!(failed["timestampNs"], "1234");
+                assert!(failed["error"].is_string());
+                assert!(failed.get("id").is_none());
+            }
+        }
+        assert!(
+            stream_notify_log("acc-notify", Ok(SendOutcome::NotSubscribed), json!({})).is_none()
+        );
+        let (_, inline) = stream_notify_log(
+            "acc-notify",
+            Ok(SendOutcome::OsAccepted),
+            json!({"samples": 1}),
+        )
+        .unwrap();
+        assert_eq!(inline["outcome"], "os-accepted");
+        assert!(inline.get("id").is_none());
+    }
+
+    #[test]
     fn every_notify_settle_logs_a_line() {
         // A queued-but-unsettled frame must read as missing its answer, not
         // as delivered: every SendOutcome maps to exactly one log line, and
@@ -1771,21 +1967,22 @@ mod tests {
         // failures stay loud as `radio-error`.
         for outcome in [
             SendOutcome::OsAccepted,
-            SendOutcome::Queued,
+            SendOutcome::Queued { id: 1 },
             SendOutcome::NotSubscribed,
             SendOutcome::Failed("gone".to_string()),
         ] {
-            let (kind, detail) = notify_settled_log("svc", "chr", &outcome);
+            let (kind, detail) = notify_settled_log(7, "svc", "chr", &outcome);
             assert!(
                 kind == "notify-settled" || kind == "radio-error",
                 "every settle outcome must log, got {kind} for {outcome:?}"
             );
             assert_eq!(detail["service"], serde_json::json!("svc"));
             assert_eq!(detail["characteristic"], serde_json::json!("chr"));
+            assert_eq!(detail["id"], 7);
         }
-        let (kind, _) = notify_settled_log("svc", "chr", &SendOutcome::OsAccepted);
+        let (kind, _) = notify_settled_log(7, "svc", "chr", &SendOutcome::OsAccepted);
         assert_eq!(kind, "notify-settled");
-        let (kind, _) = notify_settled_log("svc", "chr", &SendOutcome::Queued);
+        let (kind, _) = notify_settled_log(7, "svc", "chr", &SendOutcome::Queued { id: 1 });
         assert_eq!(kind, "notify-settled");
     }
 

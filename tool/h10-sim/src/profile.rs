@@ -219,11 +219,9 @@ mod tests {
 
     #[test]
     fn bad_profile_fails_loudly_with_path() {
-        assert!(
-            load_profile("profiles/does-not-exist.json")
-                .unwrap_err()
-                .contains("profiles/does-not-exist.json")
-        );
+        assert!(load_profile("profiles/does-not-exist.json")
+            .unwrap_err()
+            .contains("profiles/does-not-exist.json"));
     }
 
     #[test]

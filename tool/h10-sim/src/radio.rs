@@ -33,7 +33,6 @@ use uuid::Uuid;
 
 #[cfg(not(target_os = "linux"))]
 use ble_peripheral_rust::{
-    Peripheral, PeripheralImpl,
     gatt::{
         characteristic::Characteristic,
         peripheral_event::{
@@ -42,6 +41,7 @@ use ble_peripheral_rust::{
         properties::{AttributePermission, CharacteristicProperty},
         service::Service,
     },
+    Peripheral, PeripheralImpl,
 };
 
 #[cfg(target_os = "linux")]
@@ -50,12 +50,12 @@ mod bluer_radio;
 #[cfg(target_os = "linux")]
 #[path = "mgmt_socket.rs"]
 mod mgmt_socket;
-#[cfg(not(target_os = "linux"))]
-pub use self::CrateRadio as PlatformRadio;
 #[cfg(target_os = "linux")]
 pub use self::bluer_radio::BluerRadio as PlatformRadio;
 #[cfg(target_os = "linux")]
 pub use self::mgmt_socket::require_net_admin;
+#[cfg(not(target_os = "linux"))]
+pub use self::CrateRadio as PlatformRadio;
 
 use crate::{advertisement, gatt_spec, sim::SimConfig};
 
@@ -112,6 +112,7 @@ pub enum RadioEvent {
     /// asynchronous send pump (Linux); direct backends answer inline.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     NotifySettled {
+        id: u64,
         service: String,
         characteristic: String,
         outcome: SendOutcome,
@@ -129,7 +130,7 @@ pub enum SendOutcome {
     /// Accepted into the bounded ordered pump; a `NotifySettled` event
     /// follows with the delivery answer.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    Queued,
+    Queued { id: u64 },
     /// The OS took the value (direct backends answer inline).
     OsAccepted,
     /// The value was dropped, with the reason. Never silent.
@@ -141,6 +142,8 @@ pub enum SendOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub struct QueuedSend {
+    /// Assigned by SendQueue on admission, never reused during its lifetime.
+    pub id: u64,
     pub service: String,
     pub characteristic: Uuid,
     pub generation: u64,
@@ -161,6 +164,7 @@ pub const SEND_QUEUE_CAPACITY: usize = 128;
 pub struct SendQueue {
     queue: std::collections::VecDeque<QueuedSend>,
     capacity: usize,
+    next_id: u64,
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -169,16 +173,20 @@ impl SendQueue {
         Self {
             queue: std::collections::VecDeque::new(),
             capacity,
+            next_id: 1,
         }
     }
 
     /// Enqueues a send, or hands it back when the queue is full.
-    pub fn push(&mut self, send: QueuedSend) -> Result<(), QueuedSend> {
-        if self.queue.len() >= self.capacity {
+    pub fn push(&mut self, mut send: QueuedSend) -> Result<u64, QueuedSend> {
+        if self.queue.len() >= self.capacity || self.next_id == 0 {
             return Err(send);
         }
+        let id = self.next_id;
+        self.next_id = id.checked_add(1).unwrap_or(0);
+        send.id = id;
         self.queue.push_back(send);
-        Ok(())
+        Ok(id)
     }
 
     /// Dequeues the oldest send, in arrival order.
@@ -451,6 +459,12 @@ pub trait PeripheralRadio: Send {
     async fn start_advertising(&mut self, name: &str, uuids: &[Uuid]) -> Result<(), RadioError>;
     async fn stop_advertising(&mut self) -> Result<(), RadioError>;
     async fn add_service(&mut self, service: &ServiceSpec) -> Result<(), RadioError>;
+    /// Minimum actual notification-value capacity of current subscribers.
+    /// `None` means no subscriber; unknown characteristics/query failures error.
+    async fn notification_payload_capacity(
+        &self,
+        characteristic: Uuid,
+    ) -> Result<Option<usize>, RadioError>;
     /// Sends a notification/indication to subscribed centrals, reporting
     /// exactly what happened: `NotSubscribed` is the normal stream-tick case
     /// (never an error, never reported as a delivery), `Queued` means the
@@ -732,6 +746,32 @@ pub struct CrateRadio {
     inner: Peripheral,
 }
 
+/// Native callbacks are per central; the simulator's subscription flag is
+/// effective across all centrals, never the latest callback alone.
+#[derive(Default)]
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+struct EffectiveSubscriptions {
+    clients: std::collections::HashMap<Uuid, std::collections::HashSet<String>>,
+}
+
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+impl EffectiveSubscriptions {
+    fn update(&mut self, characteristic: Uuid, client: String, subscribed: bool) -> bool {
+        if subscribed {
+            self.clients
+                .entry(characteristic)
+                .or_default()
+                .insert(client);
+        } else if let Some(clients) = self.clients.get_mut(&characteristic) {
+            clients.remove(&client);
+            if clients.is_empty() {
+                self.clients.remove(&characteristic);
+            }
+        }
+        self.clients.contains_key(&characteristic)
+    }
+}
+
 #[cfg(not(target_os = "linux"))]
 #[async_trait]
 impl PeripheralRadio for CrateRadio {
@@ -741,8 +781,9 @@ impl PeripheralRadio for CrateRadio {
             .await
             .map_err(|error| RadioError(error.to_string()))?;
         tokio::spawn(async move {
+            let mut subscriptions = EffectiveSubscriptions::default();
             while let Some(event) = backend_rx.recv().await {
-                if translate(event, &events).await.is_err() {
+                if translate(event, &events, &mut subscriptions).await.is_err() {
                     break;
                 }
             }
@@ -809,20 +850,47 @@ impl PeripheralRadio for CrateRadio {
         characteristic: Uuid,
         value: Vec<u8>,
     ) -> Result<SendOutcome, RadioError> {
-        // CoreBluetooth stages the value in the backend even with no live
-        // subscriber, so delivery is always "accepted" here.
         self.inner
             .update_characteristic(characteristic, value)
             .await
-            .map(|()| SendOutcome::OsAccepted)
+            .map(|outcome| match outcome {
+                ble_peripheral_rust::notification::NotificationOutcome::Accepted => {
+                    SendOutcome::OsAccepted
+                }
+                ble_peripheral_rust::notification::NotificationOutcome::NotSubscribed => {
+                    SendOutcome::NotSubscribed
+                }
+                ble_peripheral_rust::notification::NotificationOutcome::Backpressured => {
+                    SendOutcome::Failed(
+                        "CoreBluetooth notification queue is full (updateValue refused)".into(),
+                    )
+                }
+            })
+            .map_err(|error| RadioError(error.to_string()))
+    }
+
+    async fn notification_payload_capacity(
+        &self,
+        characteristic: Uuid,
+    ) -> Result<Option<usize>, RadioError> {
+        self.inner
+            .notification_payload_capacity(characteristic)
+            .await
             .map_err(|error| RadioError(error.to_string()))
     }
 }
 
 #[cfg(not(target_os = "linux"))]
-async fn translate(event: PeripheralEvent, events: &mpsc::Sender<RadioEvent>) -> Result<(), ()> {
+async fn translate(
+    event: PeripheralEvent,
+    events: &mpsc::Sender<RadioEvent>,
+    subscriptions: &mut EffectiveSubscriptions,
+) -> Result<(), ()> {
     match event {
         PeripheralEvent::StateUpdate { is_powered } => {
+            if !is_powered {
+                subscriptions.clients.clear();
+            }
             events
                 .send(RadioEvent::Powered(is_powered))
                 .await
@@ -832,6 +900,8 @@ async fn translate(event: PeripheralEvent, events: &mpsc::Sender<RadioEvent>) ->
             request,
             subscribed,
         } => {
+            let subscribed =
+                subscriptions.update(request.characteristic, request.client, subscribed);
             events
                 .send(RadioEvent::Subscription {
                     service: request.service.to_string(),
@@ -902,10 +972,52 @@ async fn translate(event: PeripheralEvent, events: &mpsc::Sender<RadioEvent>) ->
 mod tests {
     use super::*;
 
+    #[test]
+    fn subscription_loss_is_final_only_after_last_client_leaves() {
+        let mut subscriptions = EffectiveSubscriptions::default();
+        let characteristic = Uuid::nil();
+        assert!(subscriptions.update(characteristic, "one".into(), true));
+        assert!(subscriptions.update(characteristic, "two".into(), true));
+        assert!(subscriptions.update(characteristic, "one".into(), false));
+        assert!(subscriptions.update(characteristic, "one".into(), false));
+        assert!(!subscriptions.update(characteristic, "two".into(), false));
+        assert!(subscriptions.clients.is_empty());
+    }
+
+    #[test]
+    fn settlement_ids_are_unique_across_drains_and_never_wrap() {
+        let mut queue = SendQueue::new(1);
+        let send = || QueuedSend {
+            id: 0,
+            service: "test".into(),
+            characteristic: Uuid::nil(),
+            generation: 1,
+            value: vec![1],
+        };
+        assert_eq!(queue.push(send()).unwrap(), 1);
+        assert!(queue.push(send()).is_err());
+        assert_eq!(queue.pop().unwrap().id, 1);
+        assert_eq!(queue.push(send()).unwrap(), 2);
+        assert_eq!(queue.pop().unwrap().id, 2);
+        queue.next_id = u64::MAX;
+        assert_eq!(queue.push(send()).unwrap(), u64::MAX);
+        queue.pop();
+        assert!(
+            queue.push(send()).is_err(),
+            "exhausted correlation identity must fail closed"
+        );
+    }
+
     struct NoopRadio;
 
     #[async_trait]
     impl PeripheralRadio for NoopRadio {
+        async fn notification_payload_capacity(
+            &self,
+            _characteristic: Uuid,
+        ) -> Result<Option<usize>, RadioError> {
+            Ok(None)
+        }
         async fn open(_events: mpsc::Sender<RadioEvent>) -> Result<Self, RadioError> {
             Ok(Self)
         }
@@ -1001,16 +1113,12 @@ mod tests {
                 feee::CHAR_53.to_lowercase(),
             ]
         );
-        assert!(
-            services[5].characteristics[0]
-                .properties
-                .contains(&CharProperty::WriteWithoutResponse)
-        );
-        assert!(
-            services[5].characteristics[0]
-                .properties
-                .contains(&CharProperty::Notify)
-        );
+        assert!(services[5].characteristics[0]
+            .properties
+            .contains(&CharProperty::WriteWithoutResponse));
+        assert!(services[5].characteristics[0]
+            .properties
+            .contains(&CharProperty::Notify));
         assert_eq!(
             services[5].characteristics[1].properties,
             vec![CharProperty::Notify]
@@ -1030,12 +1138,10 @@ mod tests {
     #[tokio::test]
     async fn defaulted_backend_methods_are_counted_noops() {
         let mut radio = NoopRadio;
-        assert!(
-            radio
-                .set_adv_manufacturer_data(0x006B, vec![1])
-                .await
-                .is_ok()
-        );
+        assert!(radio
+            .set_adv_manufacturer_data(0x006B, vec![1])
+            .await
+            .is_ok());
         assert!(
             !radio.supports_manufacturer_data(),
             "a backend without the OS API must say so"
@@ -1192,6 +1298,7 @@ mod tests {
     fn send_queue_is_a_bounded_fifo() {
         use super::{QueuedSend, SendQueue};
         let send = |n: u8| QueuedSend {
+            id: 0,
             service: "svc".to_string(),
             characteristic: Uuid::nil(),
             generation: u64::from(n),

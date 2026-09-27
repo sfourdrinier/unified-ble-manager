@@ -57,6 +57,17 @@ application` vs `register advertisement`). Read/write/notify plumbing mirrors
 that crate's BlueZ backend against the same `bluer` version, so over-the-air
 behaviour is unchanged.
 
+The macOS/Windows dependency is a narrowly patched local copy, with its MIT
+license and patch provenance retained in
+[`vendor/ble-peripheral-rust/UBM_PATCHES.md`](vendor/ble-peripheral-rust/UBM_PATCHES.md).
+It exposes actual subscriber payload capacities, preserves CoreBluetooth's
+backpressure answer and inspects every WinRT notification recipient result.
+The simulator never equates queue admission with OS acceptance. Queued control
+responses start/stop streams only after their correlated successful settlement;
+old session completions cannot change a replacement session. Pending commands
+are bounded, and overload is an explicit rejected write rather than unbounded
+memory growth. These are simulator transport fixes, not another UBM backend.
+
 Deliberately not used:
 
 - `objc2-core-bluetooth` 0.3.2 (actively maintained Apple bindings) — raw
@@ -115,7 +126,7 @@ variance.
 | Polar vendor `6217FF4B-…` | `6217FF4C-…` readable (value UNCONFIRMED, served empty) | read |
 | | `6217FF4D-…`: write-command, indications (no behaviour model: writes are refused loudly, nothing is ever indicated) | write-without-response, indicate |
 | Polar PMD `FB005C80-…` | `FB005C81` control point: read returns features (ECG + ACC, the strap's exact 17 bytes); write `0x01` get-settings / `0x02` start / `0x03` stop, each answered with an indicate `[0xF0, op, type, status, more, params…]` | read, write, indicate |
-| | `FB005C82` data: ECG frames, 73 samples at 130 Hz (~561.6 ms cadence, `[0x00, timestampNs u64 LE, 0x00, samples…]`, signed 24-bit LE µV, the real strap recording by default) | notify |
+| | `FB005C82` data: ECG frames, 73 samples at 130 Hz (~561.6 ms cadence, signed 24-bit LE µV, recorded strap data by default); independently started ACC frames (signed 16-bit XYZ milli-g) on the same characteristic | notify |
 | Polar `FEEE` | `FB005C51-…` (write, write-command, notify), `FB005C52-…` (notify), `FB005C53-…` (write, write-command): no behaviour model, writes refused loudly, nothing ever notified | mixed |
 
 Services, their order and the characteristic counts/properties match the
@@ -126,13 +137,47 @@ confirmation on the notify file descriptor, and only a closed descriptor ends
 the session (logged as `indication-confirmed` vs `unsubscribed`).
 
 No PnP ID (`2A50`), like the real H10 — `device-info read` reports that read
-as its own failed outcome. Start commands must request 130 Hz / 14 bit;
+as its own failed outcome. ECG start commands request 130 Hz / 14 bit;
 anything else is refused with the SDK status codes (`ERROR_INVALID_SAMPLE_RATE`
 0x08, `ERROR_INVALID_RESOLUTION` 0x07). A repeated start and a stop while
 idle answer `ERROR_ALREADY_IN_STATE` (0x06) without changing the stream, like
-the strap. Valid Polar types the H10 cannot stream here (PPG/PPI, and ACC —
-the features bitmap advertises it but its frame format is UNCONFIRMED) answer
-`ERROR_NOT_SUPPORTED` (0x03).
+the strap. PPG/PPI and offline/SDK-mode command flags are not implemented and
+answer `ERROR_NOT_SUPPORTED` (0x03), never a success for another mode.
+
+### H10 accelerometer
+
+ACC get-settings (`01 02`) advertises every H10-supported combination:
+25/50/100/200 Hz, 16-bit resolution, and ±2/4/8 G. Three axes are fixed;
+there is no configurable channel-count setting. START (`02 02`) requires one
+selected value for each sample-rate, resolution and range TLV. STOP (`03 02`)
+affects ACC only; ECG and ACC may run together and are multiplexed on PMD data.
+Repeated START and idle STOP return `ALREADY_IN_STATE` independently per stream.
+
+The wire frame is `[02, lastSampleTimestampNs u64 LE, 01, XYZ i16 LE…]`,
+with values already in milli-g (no consumer-side range scaling). Sensor time
+uses the selected Polar-epoch or explicitly unsynchronized clock. Samples use
+a deterministic synthetic movement source, **not a recorded H10 ACC trace**.
+The sample clock preserves the chosen rate independently of host-loop jitter.
+Packets contain up to 100 ms of samples, limited by the current transport's
+notification-value capacity. This batching is simulator policy, not measured
+H10 firmware behavior. A stalled loop retains at most one second of backlog
+and logs the exact skipped sample count as `acc-samples-shed`.
+
+Sources: [Polar's H10 specification](https://github.com/polarofficial/polar-ble-sdk/blob/a693e9e944c9bc925addbdd8cf07fb9b28748bf7/documentation/products/PolarH10.md),
+the same pinned SDK's `technical_documentation/online_measurement.pdf` and
+`AccDataTest.kt`, and the [maintainer's H10 settings recipe](https://github.com/polarofficial/polar-ble-sdk/issues/124#issuecomment-772310984).
+Generic SDK support for decoding 8/24-bit ACC does not make those H10-selectable
+resolutions. Compression, exact firmware error precedence, real-device packet
+batching and concurrent ECG/ACC timing still require H10 capture comparison.
+
+`cargo test --manifest-path tool/h10-sim/Cargo.toml` covers settings, encoding,
+sample-clock and lifecycle behavior. `node tool/h10-sim/tests/xcheck/run-xcheck.cjs`
+cross-checks Rust bytes using the shared TypeScript parser. The opt-in
+`node scripts/native-protocol/test-h10-acc-radio.js` probe requires
+`UBM_NAPI_ADDON` and `UBM_RADIO_PLATFORM` (`corebluetooth`, `bluez` or `winrt`),
+with `UBM_RADIO_ADAPTER` when needed; it connects only to `SIM Polar H10 0001`,
+checks all 12 combinations and exercises concurrent ECG/ACC with both stop
+orders. A passing simulator radio probe is not real-H10 qualification.
 
 Byte layouts follow the Polar BLE SDK source
 ([`polarofficial/polar-ble-sdk`](https://github.com/polarofficial/polar-ble-sdk):
@@ -653,14 +698,15 @@ owner with sudo, never by the script:
 - No encryption-gated characteristics: like the real H10, PMD streams without
   a bond; `--pair-policy disabled` is policy state, not a BlueZ pairing
   refusal (a GATT app cannot enforce that — see Pairing and bonding).
-- ECG only: no ACC/PPI streams (their PMD types answer `NOT_SUPPORTED`;
-  the features bitmap advertises ACC like the strap, but its PMD frame format
-  needs a documented source before implementing). The vendor `6217ff4c` value
+- No PPG/PPI or offline-recording streams. ACC has SDK-backed settings and
+  encoding but synthetic data; its batching, timing, compression and precise
+  malformed-command status precedence are not qualified against a real H10.
+  The vendor `6217ff4c` value
   and the FEEE characteristics' payloads are likewise UNCONFIRMED (empty /
   refused loudly, never guessed).
 - Recorded ECG and HR replay cycle one strap session (~25 s ECG, 120 HR
   packets); the synthetic serial stays (`SIM000001`), and 130 Hz is the only
-  rate (no other sample rates).
+  ECG rate (ACC has its own negotiated sample rate).
 - ATT MTU, connection parameters and the advertising interval are the
   platform's answer, not the sim's. The Android capture additionally shows
   platform-injected GAP/GATT services (`1800`/`1801`) that CoreBluetooth and
@@ -780,12 +826,13 @@ central's own answers and are never synthesized.
 | HR flags `0x10` (RR present, contact not supported), RR in 1/1024 s, chest location `1` | SIG HRS 1.0 §3.3–§3.4 + the 120 raw packets in `fixtures/h10-raw/` (`src/gatt_spec.rs`) |
 | Battery uint8 percent; DIS strings UTF-8 with trailing NUL; System ID 8 bytes | SIG BAS 1.1 §3.2; SIG DIS 1.1 + `fixtures/h10-fingerprints/` (`src/gatt_spec.rs`) |
 | PMD response `[0xF0, op, type, status, more, params…]`, ECG frames `[0x00, tsNs u64 LE, 0x00, s24 LE µV]`, 130 Hz / 14 bit, 73-sample frames, settings TLV, status codes | Polar BLE SDK `BlePMDClient` / `PmdControlPointResponse` / `PmdDataFrame` / `PmdSetting` / `PmdMeasurementType` (`src/gatt_spec.rs`, `examples-shared/driver/polar-pmd.ts`) + `fixtures/h10-fingerprints/` |
+| H10 ACC 25/50/100/200 Hz × ±2/4/8 G, 16-bit XYZ milli-g, raw type-1 frame and last-sample timestamp | Pinned Polar SDK product specification, online measurement protocol, `AccDataTest.kt` and maintainer settings recipe linked above; no retained real-H10 ACC capture |
 | GATT database (services, counts, properties, DIS hardware-before-firmware order, seven CCCDs), PMD feature bytes (`0f0500…`, 17 bytes, ECG + ACC), `ALREADY_IN_STATE` on repeated start / idle stop, indication confirmations keeping the session | h10-capture fingerprints `fixtures/h10-fingerprints/` (all three capture hosts agree) |
 | Advertisement: Flags + 16-bit UUID list in AD, name in scan response, Polar company `0x006B` | BlueZ 5.72 `src/advertising.c` layout (`src/advertisement.rs`) + `fixtures/h10-fingerprints/` |
 | HR interval (p50 993 ms), PMD response (p50 994 ms), ECG frame jitter (spread 0.009 ms around the 73/130 s cadence), advertising interval (p50 1042 ms) | Tauri capture `timings.*` / `advertisement.*` — **all four CONFIRMED** in `profiles/timing-h10-measured.json` |
 
 Still UNCONFIRMED (placeholders in `profiles/timing-default-unconfirmed.json`
-for explicit opt-in; live defaults are the measured profile above): nothing
-timing-related remains — the open gaps are the vendor `6217ff4c` value, the
-FEEE payloads and ACC streaming (see fidelity gaps), which need a documented
-source before implementing.
+for explicit opt-in; live defaults use the measured profile above): the
+existing HR/ECG timing sources do not establish ACC timing. ACC packet batching,
+concurrent-stream timing and firmware error precedence still need real-H10
+captures. The vendor `6217ff4c` value and FEEE payloads remain unmodeled.

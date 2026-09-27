@@ -14,10 +14,10 @@
 //! the central's own answers and are omitted, which the comparator reports
 //! as skips — never as passes.
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::gatt_spec;
-use crate::radio::{CharProperty, h10_services};
+use crate::radio::{h10_services, CharProperty};
 use crate::sim::{SimConfig, SimState};
 use crate::timing::TimingProfile;
 
@@ -256,7 +256,7 @@ pub fn sim_fingerprint(config: &SimConfig, timing: &TimingProfile) -> Result<Val
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compare::{Tolerances, compare_fingerprints};
+    use crate::compare::{compare_fingerprints, Tolerances};
 
     fn stock_sim_fingerprint() -> Value {
         let profile = crate::profile::parse_profile(

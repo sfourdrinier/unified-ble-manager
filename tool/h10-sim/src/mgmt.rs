@@ -742,12 +742,10 @@ mod tests {
     #[test]
     fn instance_zero_is_refused() {
         let request = h10_add_advertising(0, NAME, &UUIDS, None).unwrap();
-        assert!(
-            request
-                .params()
-                .unwrap_err()
-                .contains("instances start at 1")
-        );
+        assert!(request
+            .params()
+            .unwrap_err()
+            .contains("instances start at 1"));
     }
 
     #[test]
@@ -921,12 +919,10 @@ mod tests {
     fn ext_adv_params_refuse_bad_instances_and_intervals() {
         let mut request = h10_ext_adv_params(1).unwrap();
         request.instance = 0;
-        assert!(
-            request
-                .params()
-                .unwrap_err()
-                .contains("instances start at 1")
-        );
+        assert!(request
+            .params()
+            .unwrap_err()
+            .contains("instances start at 1"));
         let mut request = h10_ext_adv_params(1).unwrap();
         request.min_interval = 2000;
         request.max_interval = 1600;

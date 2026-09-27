@@ -1,9 +1,11 @@
 // example-expo/src/driver/polar-pmd.ts
 //
-// Polar Measurement Data (PMD) framing for the H10 ECG stream. Every byte
+// Polar Measurement Data (PMD) framing for H10 ECG and accelerometer streams. Every byte
 // layout here follows Polar's official BLE SDK source (polarofficial/
 // polar-ble-sdk, Android `BlePMDClient`, `PmdSetting`, `PmdControlPointCommand`,
 // `PmdControlPointResponse`, `PmdDataFrame`, `EcgData`), not guesswork.
+// ACC reference: SDK a693e9e944c9bc925addbdd8cf07fb9b28748bf7 AccData.kt,
+// documentation/products/PolarH10.md and issue #124 comment 772310984.
 
 export const PMD_SERVICE = 'FB005C80-02E7-F387-1CAD-8ACD2D8DF0C8'
 export const PMD_CONTROL_POINT = 'FB005C81-02E7-F387-1CAD-8ACD2D8DF0C8'
@@ -13,11 +15,23 @@ export const PMD_DATA = 'FB005C82-02E7-F387-1CAD-8ACD2D8DF0C8'
 export const POLAR_PREFERRED_MTU = 512
 export const H10_ECG_SAMPLE_RATE_HZ = 130
 export const H10_ECG_RESOLUTION_BITS = 14
+export type H10AccSampleRateHz = 25 | 50 | 100 | 200
+export type H10AccRangeG = 2 | 4 | 8
+export const H10_ACC_SAMPLE_RATES_HZ: readonly H10AccSampleRateHz[] = [25, 50, 100, 200]
+export const H10_ACC_RANGES_G: readonly H10AccRangeG[] = [2, 4, 8]
+export const H10_ACC_RESOLUTION_BITS = 16
+
+export interface H10AccSettings {
+  readonly sampleRateHz: H10AccSampleRateHz
+  readonly resolutionBits: typeof H10_ACC_RESOLUTION_BITS
+  readonly rangeG: H10AccRangeG
+}
 
 const OP_GET_MEASUREMENT_SETTINGS = 0x01
 const OP_REQUEST_MEASUREMENT_START = 0x02
 const OP_STOP_MEASUREMENT = 0x03
 const MEASUREMENT_ECG = 0x00
+const MEASUREMENT_ACC = 0x02
 const RECORDING_ONLINE_BIT = 0x00
 const CONTROL_POINT_RESPONSE_CODE = 0xf0
 const ONLINE_MEASUREMENT_STOPPED = 0x01
@@ -29,6 +43,7 @@ const ECG_TYPE_0_SAMPLE_BYTES = 3
 
 const SETTING_SAMPLE_RATE = 0x00
 const SETTING_RESOLUTION = 0x01
+const SETTING_RANGE = 0x02
 
 /** Setting id → [name, field size in bytes] (PmdSetting.typeToFieldSize). */
 const SETTING_FIELDS: ReadonlyMap<number, readonly [string, number]> = new Map([
@@ -93,6 +108,38 @@ export function buildGetEcgSettingsCommand(): Uint8Array {
   return new Uint8Array([OP_GET_MEASUREMENT_SETTINGS, RECORDING_ONLINE_BIT | MEASUREMENT_ECG])
 }
 
+/** H10 supported settings, per PolarH10.md and Polar SDK issue #124. XYZ is fixed, not a CHANNELS selection. */
+export function buildStartAccCommand(settings: H10AccSettings): Uint8Array {
+  if (
+    !H10_ACC_SAMPLE_RATES_HZ.includes(settings.sampleRateHz) ||
+    !H10_ACC_RANGES_G.includes(settings.rangeG) ||
+    settings.resolutionBits !== H10_ACC_RESOLUTION_BITS
+  ) {
+    throw new RangeError('H10 ACC requires 25/50/100/200 Hz, 16-bit resolution and ±2/4/8 g range')
+  }
+  return new Uint8Array([
+    OP_REQUEST_MEASUREMENT_START,
+    RECORDING_ONLINE_BIT | MEASUREMENT_ACC,
+    SETTING_SAMPLE_RATE,
+    1,
+    ...uint16le(settings.sampleRateHz),
+    SETTING_RESOLUTION,
+    1,
+    ...uint16le(settings.resolutionBits),
+    SETTING_RANGE,
+    1,
+    ...uint16le(settings.rangeG)
+  ])
+}
+
+export function buildStopAccCommand(): Uint8Array {
+  return new Uint8Array([OP_STOP_MEASUREMENT, MEASUREMENT_ACC])
+}
+
+export function buildGetAccSettingsCommand(): Uint8Array {
+  return new Uint8Array([OP_GET_MEASUREMENT_SETTINGS, RECORDING_ONLINE_BIT | MEASUREMENT_ACC])
+}
+
 export type ControlPointMessage =
   | {
       readonly kind: 'response'
@@ -109,12 +156,16 @@ export function parseControlPointMessage(bytes: Readonly<Uint8Array>): ControlPo
   if (bytes.length === 0) throw new PmdParseError('empty PMD control point message')
   const first = byteAt(bytes, 0)
   if (first === ONLINE_MEASUREMENT_STOPPED) {
-    return { kind: 'online-measurement-stopped', measurementTypes: [...bytes.slice(1)].map(type => type & MEASUREMENT_TYPE_MASK) }
+    return {
+      kind: 'online-measurement-stopped',
+      measurementTypes: [...bytes.slice(1)].map(type => type & MEASUREMENT_TYPE_MASK)
+    }
   }
   if (first !== CONTROL_POINT_RESPONSE_CODE) {
     throw new PmdParseError(`unknown PMD control point message 0x${hexByte(first)}`)
   }
-  if (bytes.length < 4) throw new PmdParseError(`PMD control point response too short (${bytes.length.toString()} bytes)`)
+  if (bytes.length < 4)
+    throw new PmdParseError(`PMD control point response too short (${bytes.length.toString()} bytes)`)
   const status = byteAt(bytes, 3)
   const success = status === 0
   return {
@@ -135,13 +186,16 @@ export function parsePmdSettings(bytes: Readonly<Uint8Array>): Readonly<Record<s
   while (offset < bytes.length) {
     const type = byteAt(bytes, offset)
     const field = SETTING_FIELDS.get(type)
-    if (field === undefined) throw new PmdParseError(`unknown PMD setting type ${type.toString()} at offset ${offset.toString()}`)
+    if (field === undefined)
+      throw new PmdParseError(`unknown PMD setting type ${type.toString()} at offset ${offset.toString()}`)
     if (offset + 1 >= bytes.length) throw new PmdParseError(`PMD setting ${field[0]} has no count byte`)
     const [name, size] = field
     const count = byteAt(bytes, offset + 1)
     const end = offset + 2 + count * size
     if (end > bytes.length) {
-      throw new PmdParseError(`PMD setting ${name} declares ${count.toString()} values but only ${(bytes.length - offset - 2).toString()} bytes remain`)
+      throw new PmdParseError(
+        `PMD setting ${name} declares ${count.toString()} values but only ${(bytes.length - offset - 2).toString()} bytes remain`
+      )
     }
     const values: number[] = []
     for (let index = 0; index < count; index += 1) {
@@ -154,10 +208,20 @@ export function parsePmdSettings(bytes: Readonly<Uint8Array>): Readonly<Record<s
 }
 
 /** Feature read of the control point (PmdMeasurementType.fromByteArray, byte 1 bitmap). */
-export function parsePmdFeatures(bytes: Readonly<Uint8Array>): { ecg: boolean; ppg: boolean; acc: boolean; ppi: boolean } {
+export function parsePmdFeatures(bytes: Readonly<Uint8Array>): {
+  ecg: boolean
+  ppg: boolean
+  acc: boolean
+  ppi: boolean
+} {
   if (bytes.length < 2) throw new PmdParseError(`PMD feature read too short (${bytes.length.toString()} bytes)`)
   const bitmap = byteAt(bytes, 1)
-  return { ecg: (bitmap & 0x01) !== 0, ppg: (bitmap & 0x02) !== 0, acc: (bitmap & 0x04) !== 0, ppi: (bitmap & 0x08) !== 0 }
+  return {
+    ecg: (bitmap & 0x01) !== 0,
+    ppg: (bitmap & 0x02) !== 0,
+    acc: (bitmap & 0x04) !== 0,
+    ppi: (bitmap & 0x08) !== 0
+  }
 }
 
 export interface EcgFrame {
@@ -168,36 +232,98 @@ export interface EcgFrame {
   readonly samplesMicroVolts: readonly number[]
 }
 
-/** Parses one PMD data notification carrying H10 ECG (raw frame type 0: signed 24-bit LE µV). */
-export function parseEcgFrame(bytes: Readonly<Uint8Array>): EcgFrame {
+function parseFrameHeader(bytes: Readonly<Uint8Array>, expectedType: number, label: string) {
   if (bytes.length < FRAME_HEADER_BYTES) {
-    throw new PmdParseError(`PMD data frame too short: ${bytes.length.toString()} < ${FRAME_HEADER_BYTES.toString()} bytes`)
+    throw new PmdParseError(
+      `PMD data frame too short: ${bytes.length.toString()} < ${FRAME_HEADER_BYTES.toString()} bytes`
+    )
   }
   const measurementType = byteAt(bytes, 0) & MEASUREMENT_TYPE_MASK
-  if (measurementType !== MEASUREMENT_ECG) {
-    throw new PmdParseError(`PMD data frame has measurement type ${measurementType.toString()}, expected ECG (0)`)
+  if (measurementType !== expectedType) {
+    throw new PmdParseError(
+      `PMD data frame has measurement type ${measurementType.toString()}, expected ${label} (${expectedType.toString()})`
+    )
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   const timestampNs = view.getBigUint64(1, true)
   const frameTypeByte = byteAt(bytes, 9)
   const compressed = (frameTypeByte & COMPRESSED_FRAME_BIT) !== 0
   const frameType = frameTypeByte & FRAME_TYPE_MASK
+  return { timestampNs, frameType, compressed }
+}
+
+/** Parses one PMD data notification carrying H10 ECG (raw frame type 0: signed 24-bit LE µV). */
+export function parseEcgFrame(bytes: Readonly<Uint8Array>): EcgFrame {
+  const { timestampNs, frameType, compressed } = parseFrameHeader(bytes, MEASUREMENT_ECG, 'ECG')
   if (compressed) throw new PmdParseError(`ECG compressed frame type ${frameType.toString()} is not supported`)
-  if (frameType !== 0) throw new PmdParseError(`ECG raw frame type ${frameType.toString()} is not supported (H10 sends type 0)`)
+  if (frameType !== 0)
+    throw new PmdParseError(`ECG raw frame type ${frameType.toString()} is not supported (H10 sends type 0)`)
   const content = bytes.length - FRAME_HEADER_BYTES
   if (content === 0 || content % ECG_TYPE_0_SAMPLE_BYTES !== 0) {
     throw new PmdParseError(`ECG type 0 payload of ${content.toString()} bytes is not a non-zero multiple of 3`)
   }
   const samplesMicroVolts: number[] = []
   for (let offset = FRAME_HEADER_BYTES; offset < bytes.length; offset += ECG_TYPE_0_SAMPLE_BYTES) {
-    const unsigned = readUnsignedLe(bytes, offset, ECG_TYPE_0_SAMPLE_BYTES)
-    samplesMicroVolts.push(unsigned >= 0x800000 ? unsigned - 0x1000000 : unsigned)
+    samplesMicroVolts.push(readSignedLe(bytes, offset, ECG_TYPE_0_SAMPLE_BYTES))
   }
   return { timestampNs, frameType, compressed, samplesMicroVolts }
 }
 
+export interface AccSample {
+  readonly x: number
+  readonly y: number
+  readonly z: number
+}
+
+export interface AccFrame {
+  /** Timestamp of the last sample, nanoseconds since the Polar epoch; never rounded to Number. */
+  readonly timestampNs: bigint
+  readonly frameType: number
+  readonly compressed: false
+  /** Signed x/y/z acceleration in milli-g, not raw ADC counts or m/s². */
+  readonly samplesMilliG: readonly AccSample[]
+}
+
+/**
+ * Polar SDK AccData raw formats 0/1/2: signed 8/16/24-bit little-endian XYZ.
+ * Format support here does not assert that an H10 advertises every resolution.
+ * Compressed data requires separate factor/delta decoding and is refused.
+ */
+export function parseAccFrame(bytes: Readonly<Uint8Array>): AccFrame {
+  const { timestampNs, frameType, compressed } = parseFrameHeader(bytes, MEASUREMENT_ACC, 'ACC')
+  if (compressed) throw new PmdParseError(`ACC compressed frame type ${frameType.toString()} is not supported`)
+  if (frameType > 2) throw new PmdParseError(`ACC raw frame type ${frameType.toString()} is not supported`)
+  const axisBytes = frameType + 1
+  const sampleBytes = axisBytes * 3
+  const content = bytes.length - FRAME_HEADER_BYTES
+  if (content === 0 || content % sampleBytes !== 0) {
+    throw new PmdParseError(
+      `ACC type ${frameType.toString()} payload of ${content.toString()} bytes is not a non-zero multiple of ${sampleBytes.toString()}`
+    )
+  }
+  const samplesMilliG: AccSample[] = []
+  for (let offset = FRAME_HEADER_BYTES; offset < bytes.length; offset += sampleBytes) {
+    samplesMilliG.push({
+      x: readSignedLe(bytes, offset, axisBytes),
+      y: readSignedLe(bytes, offset + axisBytes, axisBytes),
+      z: readSignedLe(bytes, offset + axisBytes * 2, axisBytes)
+    })
+  }
+  return { timestampNs, frameType, compressed: false, samplesMilliG }
+}
+
+function readSignedLe(bytes: Readonly<Uint8Array>, offset: number, size: number): number {
+  const unsigned = readUnsignedLe(bytes, offset, size)
+  const modulus = 2 ** (size * 8)
+  return unsigned >= modulus / 2 ? unsigned - modulus : unsigned
+}
+
 export interface EcgFrameFindings {
-  readonly timestampGap: { readonly deltaNs: number; readonly expectedNs: number; readonly estimatedMissingSamples: number } | null
+  readonly timestampGap: {
+    readonly deltaNs: number
+    readonly expectedNs: number
+    readonly estimatedMissingSamples: number
+  } | null
   readonly sequenceGap: { readonly from: number; readonly to: number; readonly missingNotifications: number } | null
 }
 
@@ -261,13 +387,18 @@ export class EcgStreamStats {
     this.frames += 1
     this.samples += count
     this.lastSample = frame.samplesMicroVolts[count - 1] ?? this.lastSample
-    this.receipts = [...this.receipts.filter(receipt => receipt.atMs > receivedAtMs - RATE_WINDOW_MS), { atMs: receivedAtMs, samples: count }]
+    this.receipts = [
+      ...this.receipts.filter(receipt => receipt.atMs > receivedAtMs - RATE_WINDOW_MS),
+      { atMs: receivedAtMs, samples: count }
+    ]
     return { timestampGap, sequenceGap }
   }
 
   summary(nowMs: number): EcgStreamSummary {
     const spanNs =
-      this.firstTimestampNs === null || this.lastTimestampNs === null ? 0 : Number(this.lastTimestampNs - this.firstTimestampNs)
+      this.firstTimestampNs === null || this.lastTimestampNs === null
+        ? 0
+        : Number(this.lastTimestampNs - this.firstTimestampNs)
     return {
       frames: this.frames,
       samples: this.samples,
@@ -296,7 +427,10 @@ function readUnsignedLe(bytes: Readonly<Uint8Array>, offset: number, size: numbe
 /** A bounds-checked byte read: a short buffer is a parse failure, never `undefined` arithmetic. */
 export function byteAt(bytes: Readonly<Uint8Array>, offset: number): number {
   const value = bytes[offset]
-  if (value === undefined) throw new PmdParseError(`PMD message of ${bytes.length.toString()} bytes has no byte at offset ${offset.toString()}`)
+  if (value === undefined)
+    throw new PmdParseError(
+      `PMD message of ${bytes.length.toString()} bytes has no byte at offset ${offset.toString()}`
+    )
   return value
 }
 

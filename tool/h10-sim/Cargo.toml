@@ -1,4 +1,8 @@
 [workspace]
+exclude = ["vendor/ble-peripheral-rust"]
+
+[workspace.dependencies]
+ble-peripheral-rust = { version = "=0.2.0", path = "vendor/ble-peripheral-rust" }
 
 [package]
 name = "h10-sim"
@@ -34,6 +38,9 @@ bluer = { version = "=0.17.4", features = ["bluetoothd"] }
 libc = "0.2"
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
-ble-peripheral-rust = "=0.2.0"
+ble-peripheral-rust.workspace = true
 
 [dev-dependencies]
+# Activate the patched transport's pure contract tests on Linux too; production
+# Linux radio still uses the direct bluer adapter above.
+ble-peripheral-rust.workspace = true

@@ -502,7 +502,7 @@ jobs:
         run: pnpm test:parity
 
   # h10-sim: the Polar H10 simulator is a first-class tool — build and
-  # unit-test it on Linux and macOS. No radio needed: unit tests, the
+  # unit-test it on Linux, macOS and Windows. No radio needed: unit tests, the
   # encoder cross-check, the driver-hello fixture check and the socket-free
   # driver suites. Kept small so the main gates stay fast.
   h10-sim:
@@ -511,8 +511,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.0
@@ -545,6 +548,9 @@ jobs:
       - name: Test sim
         run: cargo test --manifest-path tool/h10-sim/Cargo.toml --locked
 
+      - name: Test patched peripheral transport policy
+        run: cargo test --manifest-path tool/h10-sim/Cargo.toml --locked -p ble-peripheral-rust --lib
+
       - name: Cross-check encoders against TS parsers
         run: node tool/h10-sim/tests/xcheck/run-xcheck.cjs
 
@@ -554,8 +560,7 @@ jobs:
         # everything else must match the binary byte for byte. The fixture is
         # never regenerated on one OS to satisfy the other.
         run: |
-          cargo run --locked --quiet --manifest-path tool/h10-sim/Cargo.toml -- --emit-driver-hello > /tmp/h10-driver-hello.json
-          node -e "const fs = require('fs'); const norm = p => { const o = JSON.parse(fs.readFileSync(p, 'utf8')); delete o.platform; delete o.osVersion; return JSON.stringify(o); }; if (norm('/tmp/h10-driver-hello.json') !== norm('tool/h10-sim/tests/driver-hello.json')) { console.error('tool/h10-sim/tests/driver-hello.json is stale: regenerate with h10-sim --emit-driver-hello'); process.exit(1); }"
+          node -e "const fs = require('fs'); const cp = require('child_process'); const norm = text => { const o = JSON.parse(text); delete o.platform; delete o.osVersion; return JSON.stringify(o); }; const actual = cp.execFileSync('cargo', ['run', '--locked', '--quiet', '--manifest-path', 'tool/h10-sim/Cargo.toml', '--', '--emit-driver-hello'], {encoding: 'utf8'}); if (norm(actual) !== norm(fs.readFileSync('tool/h10-sim/tests/driver-hello.json', 'utf8'))) { console.error('tool/h10-sim/tests/driver-hello.json is stale: regenerate with h10-sim --emit-driver-hello'); process.exit(1); }"
 
       - name: Driver protocol and sequence tests
         run: node --test examples-shared/driver/__tests__/protocol.test.mjs examples-shared/driver/__tests__/peripheral-sim.test.mjs examples-shared/driver/__tests__/polar-pmd.test.mjs examples-shared/driver/server/__tests__/sequence-devices.test.mjs

@@ -820,13 +820,11 @@ mod tests {
             let sim = fingerprint(name, "SIM000001", 1000.0);
             let report = compare_fingerprints(&real, &sim, Tolerances::default());
             assert!(!report.passed, "unmarked simulator was accepted: {name}");
-            assert!(
-                report
-                    .fields
-                    .iter()
-                    .any(|field| field.field == "advertisement.localName"
-                        && matches!(field.status, CheckStatus::Fail))
-            );
+            assert!(report
+                .fields
+                .iter()
+                .any(|field| field.field == "advertisement.localName"
+                    && matches!(field.status, CheckStatus::Fail)));
         }
     }
 

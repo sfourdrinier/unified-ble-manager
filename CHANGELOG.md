@@ -4,6 +4,21 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Unreleased
 
+### H10 simulator
+
+- Implement all H10 accelerometer settings (25/50/100/200 Hz, 16-bit XYZ,
+  ±2/4/8 G), raw milli-g frames, sample-clock batching and independent ECG/ACC
+  start/stop. Cross-check Rust encoding with the shared TypeScript decoder.
+- Preserve PMD response order through delayed commands and retire pending
+  stream actions on session loss. Refuse malformed and unsupported mode
+  commands explicitly. Synthetic ACC data and unmeasured firmware timing remain
+  documented fidelity gaps, not real-device qualification.
+- Report actual peripheral send acceptance and negotiated payload capacity;
+  correlate queued control-response settlement before committing stream state.
+  Correct BlueZ indication-confirmation readiness handling and generation-scoped
+  session loss. Extend the existing simulator CI lane to Windows and test the
+  patched peripheral policy on all three hosts.
+
 ### Native background continuation
 
 - Share native connect/discover/resubscribe, bounded collection, recovery, and

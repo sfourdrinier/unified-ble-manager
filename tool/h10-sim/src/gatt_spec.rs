@@ -86,6 +86,7 @@ pub const PMD_OP_GET_SETTINGS: u8 = 0x01;
 pub const PMD_OP_START: u8 = 0x02;
 pub const PMD_OP_STOP: u8 = 0x03;
 pub const PMD_MEASUREMENT_ECG: u8 = 0x00;
+pub const PMD_MEASUREMENT_ACC: u8 = 0x02;
 pub const PMD_RESPONSE_CODE: u8 = 0xF0;
 
 /// PMD status codes (Polar SDK `PmdControlPointResponseCode`, same order as
@@ -95,9 +96,11 @@ pub const PMD_STATUS_INVALID_OP: u8 = 0x01;
 pub const PMD_STATUS_INVALID_MEASUREMENT_TYPE: u8 = 0x02;
 pub const PMD_STATUS_NOT_SUPPORTED: u8 = 0x03;
 pub const PMD_STATUS_INVALID_LENGTH: u8 = 0x04;
+pub const PMD_STATUS_INVALID_PARAMETER: u8 = 0x05;
 pub const PMD_STATUS_ALREADY_IN_STATE: u8 = 0x06;
 pub const PMD_STATUS_INVALID_RESOLUTION: u8 = 0x07;
 pub const PMD_STATUS_INVALID_SAMPLE_RATE: u8 = 0x08;
+pub const PMD_STATUS_INVALID_RANGE: u8 = 0x09;
 
 /// Heart Rate Measurement flags (SIG HRS §3.3).
 /// Bit 2: sensor contact supported; bit 1: contact detected.
@@ -186,8 +189,8 @@ pub fn encode_battery_level(percent: u8) -> Vec<u8> {
 /// answers, pinned by the h10-capture fingerprints in
 /// `fixtures/h10-fingerprints/` (`0f050000…`, stable across all three capture
 /// hosts). Byte 1 is the SDK feature bitmap (`PmdMeasurementType.fromByteArray`):
-/// ECG = 0x01, ACC = 0x04 — the strap streams ECG; ACC streaming stays an
-/// UNCONFIRMED gap (see README).
+/// ECG = 0x01, ACC = 0x04. Both are implemented; ACC settings/encoding follow
+/// the SDK while its synthetic waveform/timing remain explicit fidelity gaps.
 pub fn encode_pmd_features() -> Vec<u8> {
     vec![
         0x0F, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
