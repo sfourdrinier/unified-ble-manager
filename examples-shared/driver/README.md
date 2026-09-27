@@ -562,6 +562,23 @@ the terminal needs Bluetooth permission.
 
 ## What each host can run
 
+`scan-details` and the `h10-capture` advertisement stage pass their requested
+duration to `scan({ timeoutMs })` as well as scheduling the reference timer.
+Fractional milliseconds are rounded down for the library deadline. The native
+mobile owner can end the scan while JavaScript timers are suspended; the command
+result and explicit cleanup still wait for JavaScript to resume. Finite expiry
+is reported as the scan's terminal reason, not invented observation evidence.
+A completed command (including an advertisement stage's `ok: true`) with zero
+observations does not establish that advertisements were received or qualify a
+radio; inspect the counts, terminal/error events, and cleanup receipts.
+H10 advertisement capture emits overflow and terminal notices with their loss
+counters. Source-failure terminals mark that stage failed with the original
+structured cause; finite expiry and owner release remain normal endings. A
+refused scan cleanup blocks the next peer-find scan and remains retryable through
+Stop. If iteration itself throws and cleanup also fails, both original source
+and cleanup details remain in the failure. Timer-stop refusals remain diagnostic
+events even if a later retry releases the scan.
+
 The library answers each call itself. The rows below are what the source says
 to expect. They are not hardware evidence.
 
@@ -620,7 +637,7 @@ check.
 ## Tests and type checks
 
 ```sh
-pnpm --dir example-expo test:driver # shared + server + Node + Tauri + Electron + Expo tests
+pnpm test:driver                 # frozen Expo consumer install + shared/server/host tests
 
 pnpm typecheck:references        # after prepack: shared, Node, web, Tauri, Electron
 pnpm typecheck:references:expo   # after the separate Expo dependency install
@@ -632,7 +649,12 @@ its canonical command runs in the existing Expo CI/Android-preflight lane after
 install and SDK alignment. `preflight.sh --fast` (or missing Android SDK/JDK)
 skips that Expo typecheck with the Android lane; it is not all-host typecheck proof.
 Both gates also run the canonical `test:driver` suite, including Tauri and
-Electron behavior regressions; the command owns the test globs in one place.
+Electron behavior regressions. After `pnpm prepack`, the root command refreshes
+Expo's actual `file:..` consumer with a forced, frozen-lockfile install before
+running the example's unchanged test globs. This prerequisite also supplies
+Expo's runtime resolver for the package-resolution regressions; it does not
+prebuild an app or run SDK alignment. The example-local `test:driver` command
+alone assumes that consumer install is already current.
 
 The shared tests cover the protocol, the registry and scenario core, the remote
 channel, Polar PMD parsing, the scenarios against a recording manager double,

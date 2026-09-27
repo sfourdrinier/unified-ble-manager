@@ -110,7 +110,7 @@ export class ScanDetailsScenario extends BleScenario<ScanDetailsState> {
       this.patchScan({ filter: options.filter, duplicates: options.duplicates, durationMs: options.durationMs })
       const { manager } = await this.createManager(signal)
       this.patchBase({ phase: 'scanning' })
-      const session = await manager.scan({ query: QUERIES[options.filter], duplicates: options.duplicates, delivery: 'balanced', signal })
+      const session = await manager.scan({ query: QUERIES[options.filter], duplicates: options.duplicates, delivery: 'balanced', signal, timeoutMs: Math.floor(options.durationMs) })
       this.own('scan.stop', () => session.stop())
       this.patchScan({ planDigest: session.plan?.queryDigest ?? null })
       this.emit('scan-started', { plan: toJsonValue(session.plan), options: { ...options } })

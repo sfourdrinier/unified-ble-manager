@@ -4,6 +4,14 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Unreleased
 
+- Bound reference `scan-details` and H10 advertisement capture through the
+  library's finite scan timeout as well as the JavaScript timer, so mobile radio
+  ownership can expire while JavaScript is suspended. Preserve native terminal
+  reasons, observation counts, and explicit cleanup; zero observations are not
+  radio qualification. H10 capture preserves source-failure causes and loss
+  notices, blocks a replacement scan while cleanup is refused, and retains timer
+  stop failures as diagnostic history after a successful retry. A simultaneous
+  iterator exception and cleanup failure retain both original causes.
 - Add explicit warm native continuation controls to the Android/iOS reference
   app, using the existing process owner and shared envelope decoder. Require a
   matching persisted declaration, verify binary identity, and bound outstanding

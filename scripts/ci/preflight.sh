@@ -127,7 +127,7 @@ run_package() {
   pnpm lint
   pnpm prepack
   pnpm typecheck:references
-  pnpm --dir example-expo test:driver
+  pnpm test:driver
   pnpm run docs:check
   pnpm build:example:web
   pnpm performance:check

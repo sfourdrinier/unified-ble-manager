@@ -4,9 +4,16 @@ const YAML = require('yaml')
 
 const root = path.resolve(__dirname, '..')
 const read = file => fs.readFileSync(path.join(root, file), 'utf8')
-const driverCommand = 'pnpm --dir example-expo test:driver'
+const driverCommand = 'pnpm test:driver'
 const referenceCommand = 'pnpm typecheck:references'
 const expoReferenceCommand = 'pnpm typecheck:references:expo'
+
+test('canonical driver gate installs a fresh frozen Expo consumer snapshot before its unchanged test suite', () => {
+  const scripts = JSON.parse(read('package.json')).scripts
+  expect(scripts['test:driver']).toBe(
+    'pnpm --dir example-expo install --force --frozen-lockfile && pnpm --dir example-expo test:driver'
+  )
+})
 
 test('one canonical reference typecheck covers every root-installed host after prepack in CI and clean preflight', () => {
   const scripts = JSON.parse(read('package.json')).scripts

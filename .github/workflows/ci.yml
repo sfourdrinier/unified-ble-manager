@@ -206,11 +206,11 @@ jobs:
         if: runner.os == 'Linux' && matrix.node == '22'
         run: pnpm typecheck:references
 
-      # Shared/app driver tests import the built public package. Reuse the
-      # example's canonical glob-based suite so new scenarios join this gate.
+      # Install the frozen Expo consumer snapshot before its package-resolution
+      # and shared/app tests; the canonical script owns the unchanged globs.
       - name: Run cross-host test-driver regressions
         if: runner.os == 'Linux' && matrix.node == '22'
-        run: pnpm --dir example-expo test:driver
+        run: pnpm test:driver
 
       # Compile a fresh external Cargo root after the build/driver gates. Keep
       # this before generated-artifact, desktop and packed-consumer gates so a
