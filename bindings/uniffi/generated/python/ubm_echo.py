@@ -599,6 +599,24 @@ def _uniffi_check_api_checksums(lib):
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_complete() != 1326:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_claim() != 49070:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_cancel_declaration() != 47548:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_commit_declaration() != 7090:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_declaration_replacement_failure() != 61722:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_describe_backlog() != 38878:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_execute() != 53239:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_claim() != 27863:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_reserve_declaration() != 64088:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_seed_declaration() != 3468:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_ingest() != 56427:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_open_session() != 1864:
@@ -708,6 +726,33 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new.restype 
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_complete.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_complete.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_claim.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_claim.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_cancel_declaration.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_cancel_declaration.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_commit_declaration.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_commit_declaration.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_declaration_replacement_failure.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_declaration_replacement_failure.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_describe_backlog.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_describe_backlog.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_execute.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_execute.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_claim.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_claim.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_reserve_declaration.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_reserve_declaration.restype = ctypes.c_uint16
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_seed_declaration.argtypes = (
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_seed_declaration.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_ingest.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_ingest.restype = ctypes.c_uint16
@@ -853,6 +898,65 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_complete.argtypes = 
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_complete.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_claim.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_claim.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_cancel_declaration.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_cancel_declaration.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_commit_declaration.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_commit_declaration.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_declaration_replacement_failure.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_declaration_replacement_failure.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_describe_backlog.argtypes = (
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_describe_backlog.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_execute.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_execute.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_claim.argtypes = (
+    ctypes.c_uint64,
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_claim.restype = None
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_reserve_declaration.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_reserve_declaration.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_seed_declaration.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_seed_declaration.restype = _UniffiRustBuffer
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_ingest.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
@@ -1727,6 +1831,61 @@ class _UniffiFfiConverterTypeMobileCloseFailure(_UniffiConverterRustBuffer):
         _UniffiFfiConverterTypeMobileInstance.write(value.instance, buf)
         _UniffiFfiConverterString.write(value.detail, buf)
 
+class _UniffiFfiConverterInt64(_UniffiConverterPrimitiveInt):
+    CLASS_NAME = "i64"
+    VALUE_MIN = -2**63
+    VALUE_MAX = 2**63
+
+    @staticmethod
+    def read(buf):
+        return buf.read_i64()
+
+    @staticmethod
+    def write(value, buf):
+        buf.write_i64(value)
+
+@dataclass
+class MobileCompanionRecord:
+    def __init__(self, *, association_id:int, peer_id:typing.Optional[str], display_name:typing.Optional[str]):
+        self.association_id = association_id
+        self.peer_id = peer_id
+        self.display_name = display_name
+        
+        
+
+    
+    def __str__(self):
+        return "MobileCompanionRecord(association_id={}, peer_id={}, display_name={})".format(self.association_id, self.peer_id, self.display_name)
+    def __eq__(self, other):
+        if self.association_id != other.association_id:
+            return False
+        if self.peer_id != other.peer_id:
+            return False
+        if self.display_name != other.display_name:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeMobileCompanionRecord(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return MobileCompanionRecord(
+            association_id=_UniffiFfiConverterInt64.read(buf),
+            peer_id=_UniffiFfiConverterOptionalString.read(buf),
+            display_name=_UniffiFfiConverterOptionalString.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterInt64.check_lower(value.association_id)
+        _UniffiFfiConverterOptionalString.check_lower(value.peer_id)
+        _UniffiFfiConverterOptionalString.check_lower(value.display_name)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterInt64.write(value.association_id, buf)
+        _UniffiFfiConverterOptionalString.write(value.peer_id, buf)
+        _UniffiFfiConverterOptionalString.write(value.display_name, buf)
+
 @dataclass
 class MobileGattProperties:
     def __init__(self, *, read:bool, write:bool, write_without_response:bool, notify:bool, indicate:bool):
@@ -2224,18 +2383,28 @@ class _UniffiFfiConverterSequenceTypeMobilePeerName(_UniffiConverterRustBuffer):
             _UniffiFfiConverterTypeMobilePeerName.read(buf) for i in range(count)
         ]
 
-class _UniffiFfiConverterInt64(_UniffiConverterPrimitiveInt):
-    CLASS_NAME = "i64"
-    VALUE_MIN = -2**63
-    VALUE_MAX = 2**63
+class _UniffiFfiConverterSequenceTypeMobileCompanionRecord(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        for item in value:
+            _UniffiFfiConverterTypeMobileCompanionRecord.check_lower(item)
 
-    @staticmethod
-    def read(buf):
-        return buf.read_i64()
+    @classmethod
+    def write(cls, value, buf):
+        items = len(value)
+        buf.write_i32(items)
+        for item in value:
+            _UniffiFfiConverterTypeMobileCompanionRecord.write(item, buf)
 
-    @staticmethod
-    def write(value, buf):
-        buf.write_i64(value)
+    @classmethod
+    def read(cls, buf):
+        count = buf.read_i32()
+        if count < 0:
+            raise InternalError("Unexpected negative sequence length")
+
+        return [
+            _UniffiFfiConverterTypeMobileCompanionRecord.read(buf) for i in range(count)
+        ]
 
 class _UniffiFfiConverterSequenceTypeMobileCloseFailure(_UniffiConverterRustBuffer):
     @classmethod
@@ -2716,7 +2885,7 @@ class MobileRadioCompletion:
     @dataclass
     class COMPANION:
         
-        def __init__(self, association_id:int, peer_id:typing.Optional[str], display_name:typing.Optional[str]):
+        def __init__(self, association_id:int, peer_id:typing.Optional[str], display_name:typing.Optional[str], already_associated:bool):
             self.association_id = association_id
             
             
@@ -2726,6 +2895,9 @@ class MobileRadioCompletion:
             self.display_name = display_name
             
             
+            self.already_associated = already_associated
+            
+            
             pass
 
     
@@ -2733,7 +2905,7 @@ class MobileRadioCompletion:
             
     
         def __str__(self):
-            return "MobileRadioCompletion.COMPANION(association_id={}, peer_id={}, display_name={})".format(self.association_id, self.peer_id, self.display_name)
+            return "MobileRadioCompletion.COMPANION(association_id={}, peer_id={}, display_name={}, already_associated={})".format(self.association_id, self.peer_id, self.display_name, self.already_associated)
         def __eq__(self, other):
             if not isinstance(other, MobileRadioCompletion):
                 return NotImplemented
@@ -2744,6 +2916,32 @@ class MobileRadioCompletion:
             if self.peer_id != other.peer_id:
                 return False
             if self.display_name != other.display_name:
+                return False
+            if self.already_associated != other.already_associated:
+                return False
+            return True
+
+    @dataclass
+    class COMPANION_LIST:
+        
+        def __init__(self, records:typing.List[MobileCompanionRecord]):
+            self.records = records
+            
+            
+            pass
+
+    
+            
+            
+    
+        def __str__(self):
+            return "MobileRadioCompletion.COMPANION_LIST(records={})".format(self.records)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioCompletion):
+                return NotImplemented
+            if not other.is_COMPANION_LIST():
+                return False
+            if self.records != other.records:
                 return False
             return True
 
@@ -2888,6 +3086,10 @@ class MobileRadioCompletion:
         return isinstance(self, MobileRadioCompletion.COMPANION)
     def is_companion(self) -> bool:
         return isinstance(self, MobileRadioCompletion.COMPANION)
+    def is_COMPANION_LIST(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.COMPANION_LIST)
+    def is_companion_list(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.COMPANION_LIST)
     def is_CLOSED(self) -> bool:
         return isinstance(self, MobileRadioCompletion.CLOSED)
     def is_closed(self) -> bool:
@@ -2917,6 +3119,7 @@ MobileRadioCompletion.SECURITY = type("MobileRadioCompletion.SECURITY", (MobileR
 MobileRadioCompletion.BONDED_PEERS = type("MobileRadioCompletion.BONDED_PEERS", (MobileRadioCompletion.BONDED_PEERS, MobileRadioCompletion,), {})  # type: ignore
 MobileRadioCompletion.LEASE = type("MobileRadioCompletion.LEASE", (MobileRadioCompletion.LEASE, MobileRadioCompletion,), {})  # type: ignore
 MobileRadioCompletion.COMPANION = type("MobileRadioCompletion.COMPANION", (MobileRadioCompletion.COMPANION, MobileRadioCompletion,), {})  # type: ignore
+MobileRadioCompletion.COMPANION_LIST = type("MobileRadioCompletion.COMPANION_LIST", (MobileRadioCompletion.COMPANION_LIST, MobileRadioCompletion,), {})  # type: ignore
 MobileRadioCompletion.CLOSED = type("MobileRadioCompletion.CLOSED", (MobileRadioCompletion.CLOSED, MobileRadioCompletion,), {})  # type: ignore
 MobileRadioCompletion.FAILED = type("MobileRadioCompletion.FAILED", (MobileRadioCompletion.FAILED, MobileRadioCompletion,), {})  # type: ignore
 
@@ -2996,12 +3199,17 @@ class _UniffiFfiConverterTypeMobileRadioCompletion(_UniffiConverterRustBuffer):
                 _UniffiFfiConverterInt64.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
+                _UniffiFfiConverterBoolean.read(buf),
             )
         if variant == 17:
+            return MobileRadioCompletion.COMPANION_LIST(
+                _UniffiFfiConverterSequenceTypeMobileCompanionRecord.read(buf),
+            )
+        if variant == 18:
             return MobileRadioCompletion.CLOSED(
                 _UniffiFfiConverterSequenceTypeMobileCloseFailure.read(buf),
             )
-        if variant == 18:
+        if variant == 19:
             return MobileRadioCompletion.FAILED(
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterOptionalInt32.read(buf),
@@ -3067,6 +3275,10 @@ class _UniffiFfiConverterTypeMobileRadioCompletion(_UniffiConverterRustBuffer):
             _UniffiFfiConverterInt64.check_lower(value.association_id)
             _UniffiFfiConverterOptionalString.check_lower(value.peer_id)
             _UniffiFfiConverterOptionalString.check_lower(value.display_name)
+            _UniffiFfiConverterBoolean.check_lower(value.already_associated)
+            return
+        if value.is_COMPANION_LIST():
+            _UniffiFfiConverterSequenceTypeMobileCompanionRecord.check_lower(value.records)
             return
         if value.is_CLOSED():
             _UniffiFfiConverterSequenceTypeMobileCloseFailure.check_lower(value.failures)
@@ -3137,11 +3349,15 @@ class _UniffiFfiConverterTypeMobileRadioCompletion(_UniffiConverterRustBuffer):
             _UniffiFfiConverterInt64.write(value.association_id, buf)
             _UniffiFfiConverterOptionalString.write(value.peer_id, buf)
             _UniffiFfiConverterOptionalString.write(value.display_name, buf)
-        if value.is_CLOSED():
+            _UniffiFfiConverterBoolean.write(value.already_associated, buf)
+        if value.is_COMPANION_LIST():
             buf.write_i32(17)
+            _UniffiFfiConverterSequenceTypeMobileCompanionRecord.write(value.records, buf)
+        if value.is_CLOSED():
+            buf.write_i32(18)
             _UniffiFfiConverterSequenceTypeMobileCloseFailure.write(value.failures, buf)
         if value.is_FAILED():
-            buf.write_i32(18)
+            buf.write_i32(19)
             _UniffiFfiConverterString.write(value.kind, buf)
             _UniffiFfiConverterOptionalInt32.write(value.gatt_status, buf)
             _UniffiFfiConverterOptionalString.write(value.native_domain, buf)
@@ -4515,6 +4731,59 @@ class MobileRadioRequest:
             return True
 
     @dataclass
+    class LIST_COMPANION:
+        
+        def __init__(self, id:int):
+            self.id = id
+            
+            
+            pass
+
+    
+            
+            
+    
+        def __str__(self):
+            return "MobileRadioRequest.LIST_COMPANION(id={})".format(self.id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_LIST_COMPANION():
+                return False
+            if self.id != other.id:
+                return False
+            return True
+
+    @dataclass
+    class DISASSOCIATE_COMPANION:
+        
+        def __init__(self, id:int, association_id:int):
+            self.id = id
+            
+            
+            self.association_id = association_id
+            
+            
+            pass
+
+    
+            
+            
+    
+        def __str__(self):
+            return "MobileRadioRequest.DISASSOCIATE_COMPANION(id={}, association_id={})".format(self.id, self.association_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_DISASSOCIATE_COMPANION():
+                return False
+            if self.id != other.id:
+                return False
+            if self.association_id != other.association_id:
+                return False
+            return True
+
+    @dataclass
     class OBSERVE_PRESENCE:
         
         def __init__(self, id:int, peer_id:str):
@@ -4708,6 +4977,14 @@ class MobileRadioRequest:
         return isinstance(self, MobileRadioRequest.ASSOCIATE_COMPANION)
     def is_associate_companion(self) -> bool:
         return isinstance(self, MobileRadioRequest.ASSOCIATE_COMPANION)
+    def is_LIST_COMPANION(self) -> bool:
+        return isinstance(self, MobileRadioRequest.LIST_COMPANION)
+    def is_list_companion(self) -> bool:
+        return isinstance(self, MobileRadioRequest.LIST_COMPANION)
+    def is_DISASSOCIATE_COMPANION(self) -> bool:
+        return isinstance(self, MobileRadioRequest.DISASSOCIATE_COMPANION)
+    def is_disassociate_companion(self) -> bool:
+        return isinstance(self, MobileRadioRequest.DISASSOCIATE_COMPANION)
     def is_OBSERVE_PRESENCE(self) -> bool:
         return isinstance(self, MobileRadioRequest.OBSERVE_PRESENCE)
     def is_observe_presence(self) -> bool:
@@ -4752,6 +5029,8 @@ MobileRadioRequest.ACQUIRE_BACKGROUND = type("MobileRadioRequest.ACQUIRE_BACKGRO
 MobileRadioRequest.RELEASE_BACKGROUND = type("MobileRadioRequest.RELEASE_BACKGROUND", (MobileRadioRequest.RELEASE_BACKGROUND, MobileRadioRequest,), {})  # type: ignore
 MobileRadioRequest.UPDATE_BACKGROUND_NOTIFICATION = type("MobileRadioRequest.UPDATE_BACKGROUND_NOTIFICATION", (MobileRadioRequest.UPDATE_BACKGROUND_NOTIFICATION, MobileRadioRequest,), {})  # type: ignore
 MobileRadioRequest.ASSOCIATE_COMPANION = type("MobileRadioRequest.ASSOCIATE_COMPANION", (MobileRadioRequest.ASSOCIATE_COMPANION, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.LIST_COMPANION = type("MobileRadioRequest.LIST_COMPANION", (MobileRadioRequest.LIST_COMPANION, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.DISASSOCIATE_COMPANION = type("MobileRadioRequest.DISASSOCIATE_COMPANION", (MobileRadioRequest.DISASSOCIATE_COMPANION, MobileRadioRequest,), {})  # type: ignore
 MobileRadioRequest.OBSERVE_PRESENCE = type("MobileRadioRequest.OBSERVE_PRESENCE", (MobileRadioRequest.OBSERVE_PRESENCE, MobileRadioRequest,), {})  # type: ignore
 MobileRadioRequest.STOP_PRESENCE = type("MobileRadioRequest.STOP_PRESENCE", (MobileRadioRequest.STOP_PRESENCE, MobileRadioRequest,), {})  # type: ignore
 MobileRadioRequest.CLOSE = type("MobileRadioRequest.CLOSE", (MobileRadioRequest.CLOSE, MobileRadioRequest,), {})  # type: ignore
@@ -4921,16 +5200,25 @@ class _UniffiFfiConverterTypeMobileRadioRequest(_UniffiConverterRustBuffer):
                 _UniffiFfiConverterOptionalString.read(buf),
             )
         if variant == 28:
+            return MobileRadioRequest.LIST_COMPANION(
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 29:
+            return MobileRadioRequest.DISASSOCIATE_COMPANION(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterInt64.read(buf),
+            )
+        if variant == 30:
             return MobileRadioRequest.OBSERVE_PRESENCE(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 29:
+        if variant == 31:
             return MobileRadioRequest.STOP_PRESENCE(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 30:
+        if variant == 32:
             return MobileRadioRequest.CLOSE(
                 _UniffiFfiConverterUInt64.read(buf),
             )
@@ -5067,6 +5355,13 @@ class _UniffiFfiConverterTypeMobileRadioRequest(_UniffiConverterRustBuffer):
             _UniffiFfiConverterUInt64.check_lower(value.id)
             _UniffiFfiConverterOptionalString.check_lower(value.name)
             _UniffiFfiConverterOptionalString.check_lower(value.service_uuid)
+            return
+        if value.is_LIST_COMPANION():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            return
+        if value.is_DISASSOCIATE_COMPANION():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterInt64.check_lower(value.association_id)
             return
         if value.is_OBSERVE_PRESENCE():
             _UniffiFfiConverterUInt64.check_lower(value.id)
@@ -5213,16 +5508,23 @@ class _UniffiFfiConverterTypeMobileRadioRequest(_UniffiConverterRustBuffer):
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterOptionalString.write(value.name, buf)
             _UniffiFfiConverterOptionalString.write(value.service_uuid, buf)
-        if value.is_OBSERVE_PRESENCE():
+        if value.is_LIST_COMPANION():
             buf.write_i32(28)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+        if value.is_DISASSOCIATE_COMPANION():
+            buf.write_i32(29)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterInt64.write(value.association_id, buf)
+        if value.is_OBSERVE_PRESENCE():
+            buf.write_i32(30)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
         if value.is_STOP_PRESENCE():
-            buf.write_i32(29)
+            buf.write_i32(31)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
         if value.is_CLOSE():
-            buf.write_i32(30)
+            buf.write_i32(32)
             _UniffiFfiConverterUInt64.write(value.id, buf)
 
 
@@ -5740,6 +6042,24 @@ class MobileCoreHostProtocol(typing.Protocol):
     
     def complete(self, request_id: int,completion: MobileRadioCompletion) -> str:
         raise NotImplementedError
+    def continuation_acknowledge_claim(self, claim_token: str,completion: MobileInvokeCompletion) -> None:
+        raise NotImplementedError
+    def continuation_cancel_declaration(self, reservation_token: str) -> str:
+        raise NotImplementedError
+    def continuation_commit_declaration(self, reservation_token: str) -> str:
+        raise NotImplementedError
+    def continuation_declaration_replacement_failure(self, declaration_json: str) -> typing.Optional[str]:
+        raise NotImplementedError
+    def continuation_describe_backlog(self, completion: MobileInvokeCompletion) -> None:
+        raise NotImplementedError
+    def continuation_execute(self, peer_id: str,declaration_json: str,completion: MobileInvokeCompletion) -> None:
+        raise NotImplementedError
+    def continuation_prepare_claim(self, max_items: int,max_bytes: int,completion: MobileInvokeCompletion) -> None:
+        raise NotImplementedError
+    def continuation_reserve_declaration(self, declaration_json: str) -> str:
+        raise NotImplementedError
+    def continuation_seed_declaration(self, declaration_json: str) -> str:
+        raise NotImplementedError
     def ingest(self, ingress: MobileRadioIngress) -> str:
         raise NotImplementedError
     def open_session(self, owner: str,expected_wire_revision: str) -> MobileCoreSession:
@@ -5786,6 +6106,156 @@ class MobileCoreHost(MobileCoreHostProtocol):
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
             _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_complete,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def continuation_acknowledge_claim(self, claim_token: str,completion: MobileInvokeCompletion) -> None:
+        
+        _UniffiFfiConverterString.check_lower(claim_token)
+
+        _UniffiFfiConverterTypeMobileInvokeCompletion.check_lower(completion)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(claim_token),
+            _UniffiFfiConverterTypeMobileInvokeCompletion.lower(completion),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_claim,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def continuation_cancel_declaration(self, reservation_token: str) -> str:
+        
+        _UniffiFfiConverterString.check_lower(reservation_token)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(reservation_token),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_cancel_declaration,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def continuation_commit_declaration(self, reservation_token: str) -> str:
+        
+        _UniffiFfiConverterString.check_lower(reservation_token)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(reservation_token),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_commit_declaration,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def continuation_declaration_replacement_failure(self, declaration_json: str) -> typing.Optional[str]:
+        
+        _UniffiFfiConverterString.check_lower(declaration_json)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(declaration_json),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterOptionalString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_declaration_replacement_failure,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def continuation_describe_backlog(self, completion: MobileInvokeCompletion) -> None:
+        
+        _UniffiFfiConverterTypeMobileInvokeCompletion.check_lower(completion)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterTypeMobileInvokeCompletion.lower(completion),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_describe_backlog,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def continuation_execute(self, peer_id: str,declaration_json: str,completion: MobileInvokeCompletion) -> None:
+        
+        _UniffiFfiConverterString.check_lower(peer_id)
+
+        _UniffiFfiConverterString.check_lower(declaration_json)
+
+        _UniffiFfiConverterTypeMobileInvokeCompletion.check_lower(completion)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(peer_id),
+            _UniffiFfiConverterString.lower(declaration_json),
+            _UniffiFfiConverterTypeMobileInvokeCompletion.lower(completion),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_execute,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def continuation_prepare_claim(self, max_items: int,max_bytes: int,completion: MobileInvokeCompletion) -> None:
+        
+        _UniffiFfiConverterUInt32.check_lower(max_items)
+
+        _UniffiFfiConverterUInt32.check_lower(max_bytes)
+
+        _UniffiFfiConverterTypeMobileInvokeCompletion.check_lower(completion)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterUInt32.lower(max_items),
+            _UniffiFfiConverterUInt32.lower(max_bytes),
+            _UniffiFfiConverterTypeMobileInvokeCompletion.lower(completion),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_claim,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def continuation_reserve_declaration(self, declaration_json: str) -> str:
+        
+        _UniffiFfiConverterString.check_lower(declaration_json)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(declaration_json),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_reserve_declaration,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def continuation_seed_declaration(self, declaration_json: str) -> str:
+        
+        _UniffiFfiConverterString.check_lower(declaration_json)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(declaration_json),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_seed_declaration,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -6098,6 +6568,7 @@ __all__ = [
     "MobileAdvertisement",
     "MobileInstance",
     "MobileCloseFailure",
+    "MobileCompanionRecord",
     "MobileGattProperties",
     "MobileGattDescriptor",
     "MobileGattCharacteristic",

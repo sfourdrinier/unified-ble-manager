@@ -11,7 +11,7 @@ import com.sfourdrinier.unifiedblemanager.presence.CompanionPresenceObserver
 import com.sfourdrinier.unifiedblemanager.presence.InMemoryBackgroundContinuationStore
 import com.sfourdrinier.unifiedblemanager.presence.PresenceRestoredPeer
 import com.sfourdrinier.unifiedblemanager.presence.PresenceRestoredStore
-import com.sfourdrinier.unifiedblemanager.presence.RustCoreContinuationExecutor
+import com.sfourdrinier.unifiedblemanager.presence.NativeContinuationBinding
 import com.sfourdrinier.unifiedblemanager.presence.SharedPreferencesBackgroundContinuationStore
 import com.sfourdrinier.unifiedblemanager.presence.SharedPreferencesPresenceStore
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio
@@ -67,7 +67,7 @@ class RustCoreProcessHost(
   private var continuationStore: BackgroundContinuationStore? = null
 
   @Volatile
-  private var continuationExecutor: RustCoreContinuationExecutor? = null
+  private var continuationExecutor: NativeContinuationBinding? = null
 
   /** Rust's single wake sink for the process. */
   val wake = MobileCoreBridge.WakeListener { sessionId ->
@@ -109,11 +109,11 @@ class RustCoreProcessHost(
    * process). Built on first use against the installed core.
    */
   @Synchronized
-  fun continuationExecutor(): RustCoreContinuationExecutor {
+  fun continuationExecutor(): NativeContinuationBinding {
+    ensureInstalled()
     continuationExecutor?.let { return it }
-    val built = RustCoreContinuationExecutor(
+    val built = NativeContinuationBinding(
       core = core,
-      wireRevision = core.wireRevision(),
       log = log
     )
     continuationExecutor = built

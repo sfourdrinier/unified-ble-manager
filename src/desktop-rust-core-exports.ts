@@ -4,6 +4,22 @@
 // (node/bluez, node/corebluetooth, node/winrt, electron/main): one provider,
 // one binding contract, one parity table.
 
+export { loadDesktopCoreBinding } from './desktop-core-addon'
+export type { DesktopCoreHost } from './desktop-core-addon'
+export { createNativeContinuationController } from './backends/desktop/native-continuation-controller'
+export type {
+  NativeContinuationController,
+  NativeContinuationCompleted,
+  NativeContinuationFailed,
+  NativeContinuationStatus
+} from './backends/desktop/native-continuation-controller'
+export type { NativeContinuationClaimOptions } from './core/native-continuation-claim'
+export type {
+  ContinuationBacklog,
+  ContinuationBacklogValue,
+  ContinuationBacklogStreamEnd
+} from './backends/reactnative/react-native-continuation-claim'
+
 export {
   ADAPTER_INITIALIZATION_TIMEOUT_MS,
   DESKTOP_RUST_CORE_IMPLEMENTATION_VERSION,

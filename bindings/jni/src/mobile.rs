@@ -1103,6 +1103,161 @@ pub extern "system" fn Java_com_ubm_core_MobileCoreBridge_nativeDrain<'caller>(
 
 // -- natives: completions -----------------------------------------------
 
+fn continuation_callback(
+    env: &mut Env,
+    callback: &JObject,
+    operation: &'static str,
+) -> MobileResult<ubm_mobile::Completion> {
+    if callback.as_raw().is_null() {
+        return Err(invalid(operation, "callback is required"));
+    }
+    let callback = JniCallback {
+        vm: env.get_java_vm()?,
+        callback: env.new_global_ref(callback)?,
+    };
+    Ok(Box::new(move |envelope| callback.deliver(envelope)))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_core_MobileCoreBridge_nativeContinuationDescribeBacklog<
+    'caller,
+>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    callback: JObject<'caller>,
+) {
+    unowned_env
+        .with_env(|env| -> MobileResult<()> {
+            const OP: &str = "mobile.continuation.backlog";
+            let callback = continuation_callback(env, &callback, OP)?;
+            require_host(OP)?.continuation_describe_backlog(callback);
+            Ok(())
+        })
+        .resolve_with::<ThrowMobile, _>(|| "mobile.continuation.backlog")
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_core_MobileCoreBridge_nativeContinuationDeclarationReplacementFailure<
+    'caller,
+>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    declaration: JString<'caller>,
+) -> jstring {
+    unowned_env
+        .with_env(|env| -> MobileResult<jstring> {
+            const OP: &str = "mobile.continuation.declaration";
+            let declaration = read_text(env, &declaration, OP)?;
+            match require_host(OP)?.continuation_declaration_replacement_failure(&declaration) {
+                Some(reason) => Ok(env.new_string(reason)?.into_raw()),
+                None => Ok(std::ptr::null_mut()),
+            }
+        })
+        .resolve_with::<ThrowMobile, _>(|| "mobile.continuation.declaration")
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_core_MobileCoreBridge_nativeContinuationExecute<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    peer_id: JString<'caller>,
+    declaration: JString<'caller>,
+    callback: JObject<'caller>,
+) {
+    unowned_env
+        .with_env(|env| -> MobileResult<()> {
+            const OP: &str = "mobile.continuation.execute";
+            let peer = read_text(env, &peer_id, OP)?;
+            let declaration = read_text(env, &declaration, OP)?;
+            let callback = continuation_callback(env, &callback, OP)?;
+            require_host(OP)?.continuation_execute(&peer, &declaration, callback);
+            Ok(())
+        })
+        .resolve_with::<ThrowMobile, _>(|| "mobile.continuation.execute")
+}
+
+macro_rules! continuation_declaration_entry {
+    ($entry:ident, $method:ident) => {
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $entry<'caller>(
+            mut unowned_env: EnvUnowned<'caller>,
+            _class: JClass<'caller>,
+            argument: JString<'caller>,
+        ) -> jstring {
+            unowned_env
+                .with_env(|env| -> MobileResult<jstring> {
+                    const OP: &str = "mobile.continuation.declaration";
+                    let argument = read_text(env, &argument, OP)?;
+                    let answer = require_host(OP)?.$method(&argument);
+                    Ok(env.new_string(answer)?.into_raw())
+                })
+                .resolve_with::<ThrowMobile, _>(|| "mobile.continuation.declaration")
+        }
+    };
+}
+
+continuation_declaration_entry!(
+    Java_com_ubm_core_MobileCoreBridge_nativeContinuationReserveDeclaration,
+    continuation_reserve_declaration
+);
+continuation_declaration_entry!(
+    Java_com_ubm_core_MobileCoreBridge_nativeContinuationCommitDeclaration,
+    continuation_commit_declaration
+);
+continuation_declaration_entry!(
+    Java_com_ubm_core_MobileCoreBridge_nativeContinuationCancelDeclaration,
+    continuation_cancel_declaration
+);
+continuation_declaration_entry!(
+    Java_com_ubm_core_MobileCoreBridge_nativeContinuationSeedDeclaration,
+    continuation_seed_declaration
+);
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_core_MobileCoreBridge_nativeContinuationPrepareClaim<
+    'caller,
+>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    max_items: jint,
+    max_bytes: jint,
+    callback: JObject<'caller>,
+) {
+    unowned_env
+        .with_env(|env| -> MobileResult<()> {
+            const OP: &str = "mobile.continuation.prepare";
+            let items = u32::try_from(max_items).map_err(|_| invalid(OP, "maxItems"))?;
+            let bytes = u32::try_from(max_bytes).map_err(|_| invalid(OP, "maxBytes"))?;
+            if items == 0 || bytes == 0 {
+                return Err(invalid(OP, "claim bounds must be positive"));
+            }
+            let callback = continuation_callback(env, &callback, OP)?;
+            require_host(OP)?.continuation_prepare_claim(items, bytes, callback);
+            Ok(())
+        })
+        .resolve_with::<ThrowMobile, _>(|| "mobile.continuation.prepare")
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_core_MobileCoreBridge_nativeContinuationAcknowledgeClaim<
+    'caller,
+>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    token: JString<'caller>,
+    callback: JObject<'caller>,
+) {
+    unowned_env
+        .with_env(|env| -> MobileResult<()> {
+            const OP: &str = "mobile.continuation.acknowledge";
+            let token = read_text(env, &token, OP)?;
+            let callback = continuation_callback(env, &callback, OP)?;
+            require_host(OP)?.continuation_acknowledge_claim(&token, callback);
+            Ok(())
+        })
+        .resolve_with::<ThrowMobile, _>(|| "mobile.continuation.acknowledge")
+}
+
 macro_rules! completion_native {
     ($name:ident, $op:literal, ($($param:ident : $ty:ty),*), |$env:ident| $body:expr) => {
         // The immediately-called closure scopes `?` to the value being

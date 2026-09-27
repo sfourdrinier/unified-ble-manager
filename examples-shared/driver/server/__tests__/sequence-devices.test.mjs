@@ -100,7 +100,7 @@ test('without devices every host keeps the default device and nothing is injecte
 test('h10-sim-drop-link.json pairs the android DUT with the peripheral-sim fault host', () => {
   const spec = validateSequence(JSON.parse(readFileSync(new URL('../sequences/h10-sim-drop-link.json', import.meta.url), 'utf8')))
   assert.deepEqual(spec.target, ['android', 'peripheral-sim'])
-  assert.deepEqual(spec.devices, { android: 'Polar H10 SIM0001' })
+  assert.deepEqual(spec.devices, { android: 'SIM Polar H10 0001' })
   const drop = spec.steps.find(step => step.run === 'sim-control')
   assert.equal(drop.command, 'drop-link')
   assert.deepEqual(drop.hosts, ['peripheral-sim'])
@@ -113,6 +113,7 @@ test('h10-sim-drop-link.json pairs the android DUT with the peripheral-sim fault
 
 test('h10-sim-ecg-fault.json injects reject-next-pmd then expects the rejected start', () => {
   const spec = validateSequence(JSON.parse(readFileSync(new URL('../sequences/h10-sim-ecg-fault.json', import.meta.url), 'utf8')))
+  for (const name of Object.values(spec.devices)) assert.ok(name.startsWith('SIM'), 'simulator targets must be visibly marked')
   const fault = spec.steps.find(step => step.run === 'sim-control')
   assert.equal(fault.command, 'reject-next-pmd')
   assert.deepEqual(fault.args, { status: 3 })

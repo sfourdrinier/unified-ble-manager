@@ -54,7 +54,8 @@ pub struct AdapterInfo {
     /// The Bluetooth friendly name. This defaults to the system hostname.
     pub alias: String,
     /// Information about the Bluetooth adapter, mostly useful for debug purposes.
-    pub modalias: Modalias,
+    /// BlueZ declares Modalias optional; absence is not an absent adapter.
+    pub modalias: Option<Modalias>,
     /// Whether the adapter is currently turned on.
     pub powered: bool,
     /// Whether the adapter is currently discovering devices.
@@ -76,8 +77,8 @@ impl AdapterInfo {
             .parse()?;
         let modalias = adapter_properties
             .modalias()
-            .ok_or(BluetoothError::RequiredPropertyMissing("Modalias"))?
-            .parse()?;
+            .map(|value| value.parse())
+            .transpose()?;
 
         Ok(AdapterInfo {
             id,
@@ -109,9 +110,7 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn adapter_info_minimal() {
-        let id = AdapterId::new("/org/bluez/hci0");
+    fn properties() -> PropMap {
         let mut adapter_properties: PropMap = HashMap::new();
         adapter_properties.insert(
             "Address".to_string(),
@@ -129,6 +128,42 @@ mod tests {
         );
         adapter_properties.insert("Powered".to_string(), Variant(Box::new(false)));
         adapter_properties.insert("Discovering".to_string(), Variant(Box::new(false)));
+        adapter_properties
+    }
+
+    #[test]
+    fn adapter_without_optional_modalias_is_not_lost() {
+        let mut properties = properties();
+        properties.remove("Modalias");
+        let adapter = AdapterInfo::from_properties(
+            AdapterId::new("/org/bluez/hci1"),
+            OrgBluezAdapter1Properties(&properties),
+        )
+        .expect("BlueZ explicitly permits an adapter without Modalias");
+        assert_eq!(adapter.id.to_string(), "hci1");
+        assert_eq!(adapter.modalias, None);
+    }
+
+    #[test]
+    fn malformed_present_modalias_is_reported() {
+        let mut properties = properties();
+        properties.insert(
+            "Modalias".to_owned(),
+            Variant(Box::new("invalid".to_owned())),
+        );
+        assert!(
+            AdapterInfo::from_properties(
+                AdapterId::new("/org/bluez/hci1"),
+                OrgBluezAdapter1Properties(&properties),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn adapter_info_minimal() {
+        let id = AdapterId::new("/org/bluez/hci0");
+        let adapter_properties = properties();
 
         let adapter = AdapterInfo::from_properties(
             id.clone(),
@@ -143,11 +178,11 @@ mod tests {
                 address_type: AddressType::Public,
                 name: "name".to_string(),
                 alias: "alias".to_string(),
-                modalias: Modalias {
+                modalias: Some(Modalias {
                     vendor_id: 0x1234,
                     product_id: 0x5678,
                     device_id: 0x90ab
-                },
+                }),
                 powered: false,
                 discovering: false
             }

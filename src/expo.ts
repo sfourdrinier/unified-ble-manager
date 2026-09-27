@@ -4,6 +4,7 @@ import { BackendContractError, contractError } from './backend-contract/errors'
 import type { BleErrorCode } from './backend-contract/errors'
 import type { RestorationAdoptionResult } from './backend-contract/restoration'
 import type { BackgroundContinuationResubscribeSelector } from './backend-contract/background-continuation'
+import type { ContinuationRecoveryStatus } from './backends/reactnative/react-native-continuation-claim'
 import { Platform, TurboModuleRegistry } from 'react-native'
 import { rehydratePublicError } from './public/error-bridge'
 import { BleError } from './public/errors'
@@ -119,6 +120,8 @@ export interface ExpoContinuationStatus {
   readonly resubscribe: number
   readonly malformedDeclarations: number
   readonly lastWake: ExpoContinuationWakeReport | null
+  /** Latest native recovery outcome, not a replacement for the original OS wake. */
+  readonly lastRecovery: ContinuationRecoveryStatus | null
   /**
    * The host's own qualification of the declaration, when it has one — for
    * example that a declared strategy is validated but not implemented in this
@@ -905,6 +908,7 @@ async function readExpoContinuationStatus(host: ReactNativeManagerHost): Promise
       resubscribe: status.resubscribe,
       malformedDeclarations: status.malformedDeclarations,
       lastWake: status.lastWake === null ? null : Object.freeze({ ...status.lastWake }),
+      lastRecovery: status.lastRecovery,
       detail: status.detail
     })
   } catch (error) {

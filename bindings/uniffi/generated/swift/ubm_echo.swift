@@ -951,6 +951,24 @@ public protocol MobileCoreHostProtocol: AnyObject, Sendable {
     
     func complete(requestId: UInt64, completion: MobileRadioCompletion)  -> String
     
+    func continuationAcknowledgeClaim(claimToken: String, completion: MobileInvokeCompletion) 
+    
+    func continuationCancelDeclaration(reservationToken: String)  -> String
+    
+    func continuationCommitDeclaration(reservationToken: String)  -> String
+    
+    func continuationDeclarationReplacementFailure(declarationJson: String)  -> String?
+    
+    func continuationDescribeBacklog(completion: MobileInvokeCompletion) 
+    
+    func continuationExecute(peerId: String, declarationJson: String, completion: MobileInvokeCompletion) 
+    
+    func continuationPrepareClaim(maxItems: UInt32, maxBytes: UInt32, completion: MobileInvokeCompletion) 
+    
+    func continuationReserveDeclaration(declarationJson: String)  -> String
+    
+    func continuationSeedDeclaration(declarationJson: String)  -> String
+    
     func ingest(ingress: MobileRadioIngress)  -> String
     
     func openSession(owner: String, expectedWireRevision: String) throws  -> MobileCoreSession
@@ -1018,6 +1036,97 @@ open func complete(requestId: UInt64, completion: MobileRadioCompletion) -> Stri
             self.uniffiCloneHandle(),
         FfiConverterUInt64.lower(requestId),
         FfiConverterTypeMobileRadioCompletion_lower(completion),uniffiCallStatus
+    )
+})
+}
+    
+open func continuationAcknowledgeClaim(claimToken: String, completion: MobileInvokeCompletion)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_claim(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(claimToken),
+        FfiConverterCallbackInterfaceMobileInvokeCompletion_lower(completion),uniffiCallStatus
+    )
+}
+}
+    
+open func continuationCancelDeclaration(reservationToken: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_cancel_declaration(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(reservationToken),uniffiCallStatus
+    )
+})
+}
+    
+open func continuationCommitDeclaration(reservationToken: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_commit_declaration(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(reservationToken),uniffiCallStatus
+    )
+})
+}
+    
+open func continuationDeclarationReplacementFailure(declarationJson: String) -> String?  {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_declaration_replacement_failure(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(declarationJson),uniffiCallStatus
+    )
+})
+}
+    
+open func continuationDescribeBacklog(completion: MobileInvokeCompletion)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_describe_backlog(
+            self.uniffiCloneHandle(),
+        FfiConverterCallbackInterfaceMobileInvokeCompletion_lower(completion),uniffiCallStatus
+    )
+}
+}
+    
+open func continuationExecute(peerId: String, declarationJson: String, completion: MobileInvokeCompletion)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_execute(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(peerId),
+        FfiConverterString.lower(declarationJson),
+        FfiConverterCallbackInterfaceMobileInvokeCompletion_lower(completion),uniffiCallStatus
+    )
+}
+}
+    
+open func continuationPrepareClaim(maxItems: UInt32, maxBytes: UInt32, completion: MobileInvokeCompletion)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_claim(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(maxItems),
+        FfiConverterUInt32.lower(maxBytes),
+        FfiConverterCallbackInterfaceMobileInvokeCompletion_lower(completion),uniffiCallStatus
+    )
+}
+}
+    
+open func continuationReserveDeclaration(declarationJson: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_reserve_declaration(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(declarationJson),uniffiCallStatus
+    )
+})
+}
+    
+open func continuationSeedDeclaration(declarationJson: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_seed_declaration(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(declarationJson),uniffiCallStatus
     )
 })
 }
@@ -4197,6 +4306,33 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_complete() != 1326) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_claim() != 49070) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_cancel_declaration() != 47548) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_commit_declaration() != 7090) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_declaration_replacement_failure() != 61722) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_describe_backlog() != 38878) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_execute() != 53239) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_claim() != 27863) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_reserve_declaration() != 64088) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_seed_declaration() != 3468) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_ingest() != 56427) {

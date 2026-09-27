@@ -1085,8 +1085,9 @@ impl BtleplugRadio {
     /// values the OS already buffered for it, so they reach the central
     /// before the event that ends the subscription; what did not fit the
     /// ingress is queued here as that subscription's loss, ahead of the
-    /// event. No OS unsubscribe runs here: a lost link released its CCCDs,
-    /// and a changed database parks them as cleanup debt
+    /// event. No OS unsubscribe runs here: released link-scoped CCCDs are
+    /// forgotten; a changed database or a BlueZ client notification session
+    /// retained across link loss is parked as cleanup debt
     /// ([`PeerRetirement`], finding 40).
     async fn drain_peer_forwarders(&self, peer_id: &str, retire: PeerRetirement) {
         let retired = retire_peer_forwarders(
@@ -1327,6 +1328,10 @@ pub enum PeerRetirement {
     /// The link ended: the OS released every CCCD with it, so no
     /// unsubscribe is owed and the peer's cleanup debt settles.
     LinkEnded,
+    /// BlueZ keeps this D-Bus client's StartNotify session across link loss.
+    /// It must be explicitly stopped before a new enable; another StartNotify
+    /// alone can succeed without reacquiring the server's notification source.
+    LinkEndedRetainingNotifySession,
     /// The GATT database changed under a live link (finding 40): the
     /// forwarders stop (their routing identity is stale), but the OS-side
     /// CCCDs may still be live — CoreBluetooth reports every modification
@@ -1362,7 +1367,9 @@ pub fn retire_peer_forwarders(
     }
     match retire {
         PeerRetirement::LinkEnded => debt.retain(|scope| scope.0 != peer_id),
-        PeerRetirement::DatabaseChanged => debt.extend(scopes),
+        PeerRetirement::DatabaseChanged | PeerRetirement::LinkEndedRetainingNotifySession => {
+            debt.extend(scopes)
+        }
     }
     retired
 }
@@ -1666,6 +1673,27 @@ where
     );
     // Finding 124: a refused disable keeps the platform's answer.
     outcome.map_err(|error| DesktopError::subscribe_failed(error.to_string()).with_os(&error))
+}
+
+/// Resolve only this radio owner's parked notification scope before reuse.
+/// Failed or cancelled native stops leave the obligation retryable; unrelated
+/// scopes and other D-Bus clients' subscriptions are not touched.
+pub async fn retire_parked_subscription<T>(
+    transport: &T,
+    characteristic: &Characteristic,
+    forwarders: &StdMutex<HashMap<String, ForwarderEntry>>,
+    debt: &StdMutex<HashSet<InstanceKey>>,
+    key: &str,
+    scope: &InstanceKey,
+) -> Result<(), DesktopError>
+where
+    T: NotificationTransport,
+{
+    let retained = debt.lock().expect("cleanup debt").contains(scope);
+    if retained {
+        unsubscribe_and_fold(transport, characteristic, forwarders, debt, key, scope).await?;
+    }
+    Ok(())
 }
 
 /// Address one notification forwarder stamps on every value it emits (F10):
@@ -2147,6 +2175,12 @@ fn platform_peripheral_id(peer_id: &str) -> Option<PeripheralId> {
     }
 }
 
+fn canonical_platform_peer_id(peer_id: &str) -> String {
+    platform_peripheral_id(peer_id)
+        .map(|identity| identity.to_string())
+        .unwrap_or_else(|| peer_id.to_owned())
+}
+
 /// The peripheral's address, when the OS reports one (CoreBluetooth hides
 /// it).
 fn peripheral_address(peripheral: &Peripheral) -> Option<String> {
@@ -2183,6 +2217,10 @@ fn sorted_service_data(sections: &HashMap<uuid::Uuid, Vec<u8>>) -> Vec<ServiceDa
 }
 
 impl RadioBoundary for BtleplugRadio {
+    fn canonical_peer_id(&self, peer_id: &str) -> String {
+        canonical_platform_peer_id(peer_id)
+    }
+
     async fn adapter_name(&self) -> Result<String, DesktopError> {
         Ok(self.adapter_label.clone())
     }
@@ -2264,6 +2302,7 @@ impl RadioBoundary for BtleplugRadio {
     }
 
     async fn connect(&self, peer_id: &str) -> Result<(), DesktopError> {
+        self.validate_peer_identity(peer_id, "connection.connect")?;
         // A new connection gets a fresh GATT state.
         self.gatt.evict(peer_id);
         #[cfg(target_os = "linux")]
@@ -2537,6 +2576,15 @@ impl RadioBoundary for BtleplugRadio {
                 platform_rule(),
                 os_answers_unflagged_subscribe(),
             )?;
+            retire_parked_subscription(
+                &peripheral,
+                &characteristic,
+                &self.forwarders,
+                &self.cleanup_debt,
+                &key,
+                &scope,
+            )
+            .await?;
             // F09: every value routes by the exact attribute instance
             // (UBM_PATCHES.md #6), so same-UUID siblings subscribe side by
             // side and never share bytes.
@@ -3157,8 +3205,12 @@ impl RadioBoundary for BtleplugRadio {
                     self.gatt.evict(&peer_id);
                     // Finding 129: values that arrived before the loss are
                     // delivered (or counted) before it.
-                    self.drain_peer_forwarders(&peer_id, PeerRetirement::LinkEnded)
-                        .await;
+                    let retirement = if cfg!(target_os = "linux") {
+                        PeerRetirement::LinkEndedRetainingNotifySession
+                    } else {
+                        PeerRetirement::LinkEnded
+                    };
+                    self.drain_peer_forwarders(&peer_id, retirement).await;
                     if let Err(error) = self.release_link_state(&peer_id) {
                         OS_RELEASE_FAILURES.fetch_add(1, Ordering::Relaxed);
                         eprintln!(
@@ -3506,6 +3558,27 @@ mod tests {
     /// Finding 127: the OS identity a peer id names round-trips — the
     /// string the adapter lists a peripheral under is what the resolve
     /// path (`add_peripheral`) re-resolves it by, with no scan first.
+    #[test]
+    fn platform_peer_identity_uses_the_native_event_spelling_without_folding_opaque_ids() {
+        assert_eq!(super::canonical_platform_peer_id("opaque-A"), "opaque-A");
+        #[cfg(target_vendor = "apple")]
+        {
+            assert_eq!(
+                super::canonical_platform_peer_id("00E2CE71-3BA4-6569-E3DE-3081CE0C95FB"),
+                "00e2ce71-3ba4-6569-e3de-3081ce0c95fb"
+            );
+            assert_eq!(
+                super::canonical_platform_peer_id("00e2ce71-3ba4-6569-e3de-3081ce0c95fb"),
+                "00e2ce71-3ba4-6569-e3de-3081ce0c95fb"
+            );
+        }
+        #[cfg(target_os = "windows")]
+        assert_eq!(
+            super::canonical_platform_peer_id("aa:bb:cc:dd:ee:ff"),
+            "AA:BB:CC:DD:EE:FF"
+        );
+    }
+
     #[test]
     fn f127_a_listed_identity_resolves_without_a_scan() {
         #[cfg(target_vendor = "apple")]
@@ -4340,6 +4413,7 @@ mod tests {
                     "bluez-device-changes",
                     "disconnect-lifecycle",
                     "winrt-att-error",
+                    "bluez-optional-modalias",
                 ],
             "DEP_BTLEPLUG_UBM_PATCHES missing: the vendored btleplug is not linked"
         );
@@ -4585,5 +4659,25 @@ mod tests {
         );
         apply_unsubscribe_outcome(&mut forwarders, &mut debt, &key, &scope, true);
         assert!(debt.is_empty(), "retry success clears the debt");
+    }
+
+    #[tokio::test]
+    async fn bluez_link_loss_keeps_notify_session_owned_until_explicit_retirement() {
+        let owned = scope("peer-1", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let other = scope("peer-2", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let mut forwarders = std::collections::HashMap::from([
+            (scope_key(&owned), forwarder(tokio::spawn(async {}), &owned)),
+            (scope_key(&other), forwarder(tokio::spawn(async {}), &other)),
+        ]);
+        let mut debt = std::collections::HashSet::new();
+        super::retire_peer_forwarders(
+            &mut forwarders,
+            &mut debt,
+            "peer-1",
+            super::PeerRetirement::LinkEndedRetainingNotifySession,
+        );
+        assert_eq!(debt, std::collections::HashSet::from([owned]));
+        assert_eq!(forwarders.len(), 1);
+        assert!(forwarders.contains_key(&scope_key(&other)));
     }
 }

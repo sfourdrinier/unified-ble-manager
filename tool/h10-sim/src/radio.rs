@@ -33,6 +33,7 @@ use uuid::Uuid;
 
 #[cfg(not(target_os = "linux"))]
 use ble_peripheral_rust::{
+    Peripheral, PeripheralImpl,
     gatt::{
         characteristic::Characteristic,
         peripheral_event::{
@@ -41,7 +42,6 @@ use ble_peripheral_rust::{
         properties::{AttributePermission, CharacteristicProperty},
         service::Service,
     },
-    Peripheral, PeripheralImpl,
 };
 
 #[cfg(target_os = "linux")]
@@ -50,12 +50,12 @@ mod bluer_radio;
 #[cfg(target_os = "linux")]
 #[path = "mgmt_socket.rs"]
 mod mgmt_socket;
+#[cfg(not(target_os = "linux"))]
+pub use self::CrateRadio as PlatformRadio;
 #[cfg(target_os = "linux")]
 pub use self::bluer_radio::BluerRadio as PlatformRadio;
 #[cfg(target_os = "linux")]
 pub use self::mgmt_socket::require_net_admin;
-#[cfg(not(target_os = "linux"))]
-pub use self::CrateRadio as PlatformRadio;
 
 use crate::{advertisement, gatt_spec, sim::SimConfig};
 
@@ -1001,12 +1001,16 @@ mod tests {
                 feee::CHAR_53.to_lowercase(),
             ]
         );
-        assert!(services[5].characteristics[0]
-            .properties
-            .contains(&CharProperty::WriteWithoutResponse));
-        assert!(services[5].characteristics[0]
-            .properties
-            .contains(&CharProperty::Notify));
+        assert!(
+            services[5].characteristics[0]
+                .properties
+                .contains(&CharProperty::WriteWithoutResponse)
+        );
+        assert!(
+            services[5].characteristics[0]
+                .properties
+                .contains(&CharProperty::Notify)
+        );
         assert_eq!(
             services[5].characteristics[1].properties,
             vec![CharProperty::Notify]
@@ -1026,10 +1030,12 @@ mod tests {
     #[tokio::test]
     async fn defaulted_backend_methods_are_counted_noops() {
         let mut radio = NoopRadio;
-        assert!(radio
-            .set_adv_manufacturer_data(0x006B, vec![1])
-            .await
-            .is_ok());
+        assert!(
+            radio
+                .set_adv_manufacturer_data(0x006B, vec![1])
+                .await
+                .is_ok()
+        );
         assert!(
             !radio.supports_manufacturer_data(),
             "a backend without the OS API must say so"

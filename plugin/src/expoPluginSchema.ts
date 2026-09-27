@@ -372,8 +372,8 @@ function continuationStrategy(value: unknown): BackgroundContinuationStrategy {
 
 function continuationPeerId(value: unknown): string {
   const text = nonEmptyString(value, 'background.continuation.peerId')
-  if (!MAC_PATTERN.test(text)) {
-    throw new Error('background.continuation.peerId must be a MAC address (AA:BB:CC:DD:EE:FF)')
+  if (!MAC_PATTERN.test(text) && !UUID_PATTERN.test(text)) {
+    throw new Error('background.continuation.peerId must be an Android MAC address or canonical Apple peripheral UUID')
   }
   return text.toUpperCase()
 }
@@ -383,6 +383,9 @@ function continuationResubscribeList(
 ): readonly NonNullable<UnifiedBleExpoBackgroundContinuation['resubscribe']>[number][] {
   if (!Array.isArray(value)) {
     throw new Error('background.continuation.resubscribe must be an array when configured')
+  }
+  if (value.length > 64) {
+    throw new Error('background.continuation.resubscribe must contain at most 64 selectors')
   }
   return Object.freeze(value.map(validateContinuationResubscribe))
 }

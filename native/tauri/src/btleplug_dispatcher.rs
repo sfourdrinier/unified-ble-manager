@@ -77,6 +77,7 @@ pub struct BtleplugDispatcher {
     revoked_callers: Arc<SyncMutex<HashMap<String, u64>>>,
     authority: Arc<Mutex<AuthoritySlot>>,
     lifecycle_pump: Arc<SyncMutex<Option<TauriJoinHandle<()>>>>,
+    continuation: Arc<Mutex<Option<ubm_desktop::continuation_adapter::DesktopContinuation>>>,
 }
 
 type AuthorityOpenFuture =
@@ -835,6 +836,7 @@ impl BtleplugDispatcher {
             revoked_callers: Arc::new(SyncMutex::new(HashMap::new())),
             authority: Arc::new(Mutex::new(slot)),
             lifecycle_pump: Arc::new(SyncMutex::new(None)),
+            continuation: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -891,11 +893,66 @@ impl BtleplugDispatcher {
         }
     }
 
+    async fn continuation_engine(
+        &self,
+    ) -> Result<ubm_desktop::continuation::NativeContinuation, serde_json::Value> {
+        let authority = self
+            .ensure_authority()
+            .await
+            .map_err(|error| error.normalized_error().into_wire())?;
+        let mut continuation = self.continuation.lock().await;
+        Ok(continuation
+            .get_or_insert_with(|| authority.native_continuation(btleplug_runtime()))
+            .engine
+            .clone())
+    }
+
+    /// Trusted Rust-host entrypoint, usable from startup / OS wake integration.
+    /// The process-owned order survives webview destruction and reload.
+    pub async fn continuation_execute(
+        &self,
+        peer: &str,
+        declaration: &str,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        self.continuation_engine()
+            .await?
+            .execute(peer, declaration)
+            .await
+    }
+
+    pub async fn continuation_prepare_claim(
+        &self,
+        max_items: u32,
+        max_bytes: u32,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        self.continuation_engine()
+            .await?
+            .prepare_claim(max_items, max_bytes)
+            .await
+    }
+
+    pub async fn continuation_acknowledge_claim(
+        &self,
+        token: &str,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        self.continuation_engine()
+            .await?
+            .acknowledge_claim(token)
+            .await
+    }
+
+    pub async fn continuation_describe_backlog(
+        &self,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        self.continuation_engine().await?.describe_backlog().await
+    }
+
     /// Shut the admitted authority down and refuse further BLE work loudly.
     /// Orphaned core resources get a final release first; failures are
     /// reported, never dropped. Production never calls it (the
     /// process-lifetime central outlives every caller).
     pub async fn authority_shutdown(&self) -> AuthorityShutdown {
+        self.continuation.lock().await.take();
         let previous =
             std::mem::replace(&mut *self.authority.lock().await, AuthoritySlot::ShutDown);
         let (core, orphan_failures) = match previous {

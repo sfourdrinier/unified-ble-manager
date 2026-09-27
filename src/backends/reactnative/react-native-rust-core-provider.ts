@@ -54,13 +54,11 @@ import {
   type BackgroundContinuationDeclaration
 } from '../../backend-contract/background-continuation'
 import {
-  aggregateContinuationClaim,
-  optionalContinuationClaimToken,
-  parseContinuationClaimAcknowledgement,
   parseContinuationStatus,
   type ContinuationBacklog,
   type ContinuationStatus
 } from './react-native-continuation-claim'
+import { claimNativeContinuationBacklog } from '../../core/native-continuation-claim'
 import type {
   FeatureRegistry,
   MaximumWriteLengthFeatureInput,
@@ -481,12 +479,6 @@ export interface ReactNativeContinuationAccess {
   readonly prepareClaim: (maxItems: number, maxBytes: number) => Promise<unknown>
   readonly acknowledgeClaim: (claimToken: string) => Promise<unknown>
   readonly readStatus: () => Promise<unknown>
-}
-
-function acknowledgementFailureDetail(error: unknown): string {
-  if (error instanceof BackendContractError) return error.normalized.code
-  if (error instanceof Error && error.message.length > 0) return error.message.slice(0, 256)
-  return 'native acknowledgement did not return a valid receipt'
 }
 
 function continuationAccessFor(binding: ReactNativeRustCoreBinding): ReactNativeContinuationAccess {
@@ -1014,47 +1006,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     if (access === null) {
       throw contractError('capability.unsupported', 'restoration', `${SCOPE}.continuation.claim`)
     }
-    const maxItems = request?.maxItems ?? 256
-    const maxBytes = request?.maxBytes ?? 65536
-    if (!Number.isSafeInteger(maxItems) || maxItems < 1 || !Number.isSafeInteger(maxBytes) || maxBytes < 1) {
-      throw contractError('argument.invalid', 'restoration', `${SCOPE}.continuation.claim-bounds`)
-    }
-    const payload = await access.prepareClaim(maxItems, maxBytes)
-    // The native claim carries the consumer count captured from this exact
-    // session. A standing declaration can change before an older wake is
-    // claimed, so mutable status cannot authorize these consumer names.
-    const prepared = this.parseClaimPayload(payload)
-    const backlog = aggregateContinuationClaim(prepared)
-    const claimToken = optionalContinuationClaimToken(prepared)
-    if (
-      claimToken === null &&
-      backlog.selectors.length === 0 &&
-      backlog.values.length === 0 &&
-      backlog.streamEnds.length === 0 &&
-      backlog.control.length === 0
-    ) {
-      return backlog
-    }
-    if (claimToken === null) {
-      throw contractError('protocol.malformed', 'restoration', `${SCOPE}.continuation.claim-token`)
-    }
-    try {
-      const acknowledgement = parseContinuationClaimAcknowledgement(
-        this.parseClaimPayload(await access.acknowledgeClaim(claimToken))
-      )
-      return Object.freeze({ ...backlog, ...acknowledgement })
-    } catch (error) {
-      // The batches have already passed the strict drain codec. An uncertain
-      // acknowledgement must not turn that completed handoff into an
-      // unobservable rejection: native retains the prepared receipt for a
-      // later acknowledgement retry, while this call reports that cleanup is
-      // not yet known to have completed.
-      return Object.freeze({
-        ...backlog,
-        disposed: false,
-        disposeFailure: `continuation acknowledgement uncertain: ${acknowledgementFailureDetail(error)}`
-      })
-    }
+    return claimNativeContinuationBacklog(access, request, SCOPE)
   }
 
   /** Reports the continuation posture (declared strategy, last wake). */
@@ -1065,17 +1017,6 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       throw contractError('capability.unsupported', 'restoration', `${SCOPE}.continuation.status`)
     }
     return parseContinuationStatus(await access.readStatus())
-  }
-
-  private parseClaimPayload(payload: unknown): unknown {
-    // The shape is validated by `aggregateContinuationClaim`; unparseable text
-    // is malformed here, never passed on.
-    if (typeof payload !== 'string') return payload
-    try {
-      return JSON.parse(payload)
-    } catch {
-      throw contractError('protocol.malformed', 'restoration', `${SCOPE}.continuation.claim-json`)
-    }
   }
 
   /** Starts delivery (one drain collects anything queued before) and loads the counters. */

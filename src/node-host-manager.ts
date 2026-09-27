@@ -1,6 +1,7 @@
 // src/node-host-manager.ts
 
 import { contractError } from './backend-contract/errors'
+import { normalizeBackgroundContinuation } from './backend-contract/background-continuation'
 import type { AdapterDescriptor, BackendProvider, HostNeutralBackendIdentity } from './backend-contract/identity'
 import { byteLimit, opaqueId, type BackendCompatibilityOffer } from './backend-contract/primitives'
 import { createEphemeralHostIdentity, normalizeBleManagerCreateOptions } from './public/host-identity'
@@ -26,9 +27,17 @@ async function createNodeBleManagerFromProviderInternal(
   options: NodeBleManagerAppOptions
 ): Promise<BleManager<string, HostNeutralBackendIdentity<string>>> {
   const { now = () => performance.now(), ...createOptions } = options
-  normalizeBleManagerCreateOptions(createOptions)
+  const normalized = normalizeBleManagerCreateOptions(createOptions)
   if (createOptions.restoration !== undefined) {
     throw contractError('capability.unsupported', 'restoration', 'node-manager.restoration')
+  }
+  if (
+    normalized.background !== undefined &&
+    normalizeBackgroundContinuation(normalized.background.continuation).onAppearance !== 'record-only'
+  ) {
+    // This factory has no continuation provider yet. That is an implementation
+    // boundary, not a claim that desktop operating systems cannot host one.
+    throw contractError('capability.unsupported', 'restoration', 'node-manager.background.continuation')
   }
   const adapters = await provider.listAdapters()
   const selected = selectNodeAdapter(adapters, options.adapterId)

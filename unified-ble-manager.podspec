@@ -27,6 +27,7 @@ Pod::Spec.new do |s|
     "ios/UnifiedBleProtocolControl.mm",
     "ios/UnifiedBleExpoRuntime.mm",
     "ios/UnifiedBleRustCore.mm",
+    "ios/UnifiedBleContinuationBootstrap.mm",
     "ios/UnifiedBleRustCoreSessions.swift",
     "ios/UnifiedBleRustCoreAdapterState.swift",
     "ios/UnifiedBleRustRadioAdapter.swift",

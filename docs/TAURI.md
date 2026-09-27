@@ -193,6 +193,51 @@ pairing implementation and matching TCK/evidence are added.
 
 See [`example-tauri/`](../example-tauri/) for a small public-API proof.
 
+## Native continuation owned by the Rust host
+
+Keep a clone of the **same** `BtleplugDispatcher` passed to `PluginBuilder`.
+Its trusted Rust methods run continuation on the dispatcher's existing central;
+they do not construct another radio or grant a webview new IPC authority.
+
+```rust
+use tauri_plugin_unified_ble_manager::{BtleplugDispatcher, PluginBuilder};
+
+let dispatcher = BtleplugDispatcher::default();
+let continuation_host = dispatcher.clone();
+let builder = tauri::Builder::default()
+    .plugin(PluginBuilder::new(dispatcher).build());
+// Retain continuation_host in your trusted application state. From an async
+// startup or explicit OS-wake integration, call its methods below.
+```
+
+`continuation_host.continuation_execute(peer_id, declaration_json).await` accepts
+the exact peer identity reported by the central; do not rewrite its casing. Use
+the same `onAppearance: "native"`, known `peerId`, and canonical UUID/occurrence
+`resubscribe` declaration as [Node continuation](NODE.md#native-continuation-in-a-trusted-process-host).
+`continuation_describe_backlog().await` reports the queued-data count and the
+shared native supervisor's last outcome. Native collection and permitted
+recovery continue when the webview is absent, as long as the Rust host lives.
+
+For handoff, call `continuation_prepare_claim(max_items, max_bytes).await`.
+Validate and retain all returned batches and their loss accounting **before**
+calling `continuation_acknowledge_claim(claim_token).await`. Repeated prepare
+before acknowledgement returns the same prepared batch. An incomplete prefix
+is acknowledged before preparing its retained tail; a refused disposal remains
+owned and retryable. Never acknowledge data you could not decode, and never
+equate a requested release with a successful receipt.
+
+These methods return structured `Result<serde_json::Value, serde_json::Value>`
+answers; preserve failures rather than replacing them with an empty backlog.
+No renderer route is added: expose host-approved operations only through your
+own authenticated application policy. On final application shutdown,
+`authority_shutdown().await` stops native recovery and reports central cleanup.
+
+This is live-process continuation, not automatic OS relaunch or durable disk
+recording. The application supplies any OS startup/wake registration and
+persists its standing declaration; UBM does not install or escalate a service.
+The bounded native queue reports overflow and cutoff loss. Physical-radio
+qualification remains separate from deterministic and compile evidence.
+
 ## Maintainers
 
 [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md), [`PLATFORMS.md`](PLATFORMS.md).

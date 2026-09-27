@@ -243,6 +243,24 @@ impl DispatchRadio {
 // `async fn` satisfies the trait's `-> impl Future` seams; each arm's
 // future is `Send`, so the combined future is too.
 impl RadioBoundary for DispatchRadio {
+    fn canonical_peer_id(&self, peer_id: &str) -> String {
+        match self {
+            Self::Radio(radio) => radio.canonical_peer_id(peer_id),
+            Self::Synthetic(radio) => radio.canonical_peer_id(peer_id),
+        }
+    }
+
+    fn validate_peer_identity(
+        &self,
+        peer_id: &str,
+        operation: &str,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.validate_peer_identity(peer_id, operation),
+            Self::Synthetic(radio) => radio.validate_peer_identity(peer_id, operation),
+        }
+    }
+
     // Each radio's own per-OS admission and loss policy (findings 57/58):
     // the trait defaults (no gate, no teardown) would silently disable both
     // on the production radio.
@@ -2365,6 +2383,7 @@ fn fault_op(name: &str) -> std::result::Result<FaultOp, DispatchError> {
 #[napi]
 pub struct UbmCentral {
     central: DesktopCentral<DispatchRadio>,
+    continuation: ubm_desktop::continuation_adapter::DesktopContinuation,
     lifecycle: AsyncMutex<broadcast::Receiver<LifecycleEvent>>,
     adapter: AsyncMutex<broadcast::Receiver<AdapterEvent>>,
     security: AsyncMutex<broadcast::Receiver<SecurityEvent>>,
@@ -2445,6 +2464,10 @@ impl UbmCentral {
         let scan_terminals = AsyncMutex::new(central.scan_terminal_events());
         let adapter_resets = AsyncMutex::new(central.adapter_reset_events());
         Self {
+            continuation: ubm_desktop::continuation_adapter::DesktopContinuation::new(
+                central.clone(),
+                desktop_runtime(),
+            ),
             central,
             lifecycle,
             adapter,
@@ -3411,6 +3434,48 @@ impl UbmCentral {
         .map_err(to_napi)
     }
 
+    /// Explicit host wake/start hook. Runs native continuation on the existing
+    /// central; no renderer callback is needed for collection or recovery.
+    #[napi(catch_unwind)]
+    pub async fn continuation_execute(
+        &self,
+        peer_id: String,
+        declaration: String,
+    ) -> Result<String> {
+        let result = self
+            .continuation
+            .engine
+            .execute(&peer_id, &declaration)
+            .await;
+        Ok(ubm_desktop::continuation::envelope(result))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn continuation_prepare_claim(
+        &self,
+        max_items: u32,
+        max_bytes: u32,
+    ) -> Result<String> {
+        let result = self
+            .continuation
+            .engine
+            .prepare_claim(max_items, max_bytes)
+            .await;
+        Ok(ubm_desktop::continuation::envelope(result))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn continuation_acknowledge_claim(&self, token: String) -> Result<String> {
+        let result = self.continuation.engine.acknowledge_claim(&token).await;
+        Ok(ubm_desktop::continuation::envelope(result))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn continuation_describe_backlog(&self) -> Result<String> {
+        let result = self.continuation.engine.describe_backlog().await;
+        Ok(ubm_desktop::continuation::envelope(result))
+    }
+
     /// Connect to a known peer.
     #[napi(catch_unwind)]
     pub async fn connect(&self, options: ConnectOptions) -> Result<ConnectionInfo> {
@@ -3809,6 +3874,7 @@ impl UbmCentral {
     /// scan stop — never a clean answer over a failed release.
     #[napi(catch_unwind)]
     pub async fn close(&self) -> Result<CloseReportInfo> {
+        self.continuation.engine.stop_recovery();
         let report = self.central.shutdown().await;
         if let Ok(mut function) = self.waker.function.lock() {
             function.take();
@@ -4151,7 +4217,7 @@ impl UbmCentral {
                     BleErrorDomain::Core.as_str(),
                     "dispatch.stage-observed-delivery",
                     format!("unknown delivery {other:?}"),
-                )))
+                )));
             }
         };
         radio.script_observed_delivery(observed);
@@ -4197,7 +4263,7 @@ impl UbmCentral {
                     BleErrorDomain::Core.as_str(),
                     "dispatch.stage-adapter-authorization",
                     format!("unknown authorization {other:?}"),
-                )))
+                )));
             }
         };
         radio.set_adapter_authorization(parsed);
@@ -4319,7 +4385,7 @@ impl UbmCentral {
                     BleErrorDomain::Core.as_str(),
                     "dispatch.stage-pair-outcome",
                     format!("unknown pair outcome {other:?}"),
-                )))
+                )));
             }
         };
         radio.script_pair_outcome(&peer_id, parsed);

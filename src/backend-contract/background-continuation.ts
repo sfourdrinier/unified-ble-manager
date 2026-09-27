@@ -11,8 +11,7 @@
 // characteristics through the Rust core, no JavaScript), `headless-task` (run
 // the registered headless JS task, Android), `foreground-service` (start the
 // configured connected-device foreground service from the wake). The deferred
-// strategies keep their validated option shape here so rc.1 adds executors
-// with no breaking change; until then they answer `capability.unsupported`
+// strategies keep their validated option shape but answer `capability.unsupported`
 // with "not implemented in this release" — never "the platform cannot".
 
 import { contractError } from './errors'
@@ -42,8 +41,7 @@ export type BackgroundContinuationFeatureId =
  * Wake outcome vocabulary. ONE vocabulary on both hosts: the wake reports
  * `continuation.completed` or `continuation.failed` with the platform's own
  * detail underneath — the same event names and words on Android and iOS.
- * iOS parity arrives in rc.1; these names are designed so the Apple path
- * reports the same events.
+ * Both native mobile adapters report the shared executor's outcome.
  */
 export const CONTINUATION_OUTCOME_EVENTS = Object.freeze(['continuation.completed', 'continuation.failed'] as const)
 
@@ -71,7 +69,9 @@ export interface BackgroundContinuationForegroundService {
 /** The declared standing order: what one OS wake may do, and to what. */
 export interface BackgroundContinuationDeclaration {
   readonly onAppearance: BackgroundContinuationStrategy
-  /** Uppercase MAC subject; absent scopes the order to whichever armed peer appears. */
+  /** Mobile: Android MAC or Apple peripheral UUID. Trusted desktop hosts use
+   * the exact radio identity, including adapter-scoped BlueZ IDs. Absent
+   * scopes a mobile order to the armed peer that appears. */
   readonly peerId?: string
   readonly resubscribe: readonly BackgroundContinuationResubscribeSelector[]
   readonly headlessTaskName?: string
@@ -198,17 +198,37 @@ function notification(value: unknown): BackgroundContinuationForegroundService['
  * and unknown keys are refused — never replaced with a quieter path.
  */
 export function normalizeBackgroundContinuation(input: unknown): BackgroundContinuationDeclaration {
+  return normalizeContinuation(input, 'mobile')
+}
+
+/** Trusted process-host declaration: radio IDs are opaque and preserved.
+ * Platform-specific admission remains the selected radio's authority. */
+export function normalizeHostBackgroundContinuation(input: unknown): BackgroundContinuationDeclaration {
+  return normalizeContinuation(input, 'host')
+}
+
+function normalizeContinuation(input: unknown, peerPolicy: 'mobile' | 'host'): BackgroundContinuationDeclaration {
   if (input === undefined) return DEFAULT_BACKGROUND_CONTINUATION
   if (!isPlainRecord(input)) {
     throw contractError('argument.invalid', 'restoration', 'background.continuation')
   }
   rejectUnknownKeys(input, DECLARATION_KEYS, 'background.continuation')
   const onAppearance = input.onAppearance === undefined ? 'record-only' : input.onAppearance
-  if (typeof onAppearance !== 'string' || !(CONTINUATION_STRATEGIES as readonly string[]).includes(onAppearance)) {
+  if (
+    onAppearance !== 'record-only' &&
+    onAppearance !== 'native' &&
+    onAppearance !== 'headless-task' &&
+    onAppearance !== 'foreground-service'
+  ) {
     throw contractError('argument.invalid', 'restoration', 'background.continuation.onAppearance')
   }
-  const strategy = onAppearance as BackgroundContinuationStrategy
-  const peerId = input.peerId === undefined ? undefined : normalizePeerAddress(input.peerId)
+  const strategy = onAppearance
+  const peerId =
+    input.peerId === undefined
+      ? undefined
+      : peerPolicy === 'mobile'
+        ? normalizePeerAddress(input.peerId)
+        : normalizeHostPeerIdentity(input.peerId)
   const resubscribe =
     input.resubscribe === undefined ? Object.freeze([]) : Object.freeze(normalizeResubscribe(input.resubscribe))
   const headlessTaskName =
@@ -240,10 +260,22 @@ export function normalizeBackgroundContinuation(input: unknown): BackgroundConti
 
 function normalizePeerAddress(value: unknown): string {
   const text = nonEmptyString(value, 'background.continuation.peerId')
-  if (!MAC_PATTERN.test(text)) {
+  if (!MAC_PATTERN.test(text) && !UUID_PATTERN.test(text)) {
     throw contractError('argument.invalid', 'restoration', 'background.continuation.peerId')
   }
   return text.toUpperCase()
+}
+
+function normalizeHostPeerIdentity(value: unknown): string {
+  const text = nonEmptyString(value, 'background.continuation.peerId')
+  if (
+    text.length > 1024 ||
+    text.trim() !== text ||
+    [...text].some(character => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
+  ) {
+    throw contractError('argument.invalid', 'restoration', 'background.continuation.peerId')
+  }
+  return text
 }
 
 function normalizeResubscribe(value: unknown): BackgroundContinuationResubscribeSelector[] {

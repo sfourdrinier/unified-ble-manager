@@ -62,7 +62,7 @@ host/test seam; its internal options remain separate from the application API.
 - `ReactNativeRustCoreBindingPlatform :: "android" | "apple"`
 - `ReactNativeRustCorePlatform :: "android" | "apple"`
 - `ReactNativeRustCoreProviderOptions :: { readonly platform: ReactNativeRustCorePlatform; readonly binding: ReactNativeRustCoreBinding; readonly owner: string; readonly now: () => number; readonly runtime: ReactNativeRustCoreRuntimeFacts; readonly restorationAuthority?: (() => ReactNativeRestorationAuthority | null) | undefined; readonly createOwnerId?: (() => string) | undefined; readonly trace?: CoreTraceSink | undefined; readonly backgroundContinuation?: unknown }`
-- `ReactNativeRustCoreRuntimeFacts :: { readonly androidApiLevel: number | null }`
+- `ReactNativeRustCoreRuntimeFacts :: { readonly androidApiLevel: number | null; readonly appleRestorationConfigured?: boolean | undefined }`
 - `ReactNativeRustCoreSession :: { readonly sessionId: string; readonly buildIdentity: NativeBuildIdentityRecord; invoke<Op extends WireOp>(op: Op, args: WireJsonObject): Promise<WireOpResults[Op]>; drain(maxItems: number, maxBytes: number): Promise<WireDrainBatch>; onWake(listener: () => void): () => void; close(): Promise<void> }`
 - `RustCoreRestorationIdentityRequest :: { readonly restorationId: string; readonly generation: string }`
 - `RustCoreSessionWake :: { sessionId: string }`

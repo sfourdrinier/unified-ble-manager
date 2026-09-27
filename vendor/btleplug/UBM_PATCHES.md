@@ -1,5 +1,24 @@
 # UBM patches to btleplug 0.12.0
 
+## 23. BlueZ optional adapter Modalias and enumeration failures
+
+`bluez-optional-modalias` is mandatory. BlueZ explicitly marks Adapter1
+`Modalias` optional ([upstream API](https://github.com/bluez/bluez/blob/master/doc/org.bluez.Adapter.rst)).
+The original bluez-async parser required it and its enumeration discarded parse
+errors, so two powered adapters on the Linux test host appeared as zero adapters.
+
+- `bluez-async/src/adapter.rs` represents it as `Option<Modalias>`, retaining
+  the error when a present value is malformed.
+- `bluez-async/src/lib.rs` still ignores non-adapter objects, but propagates
+  adapter parsing failures instead of silently discarding those adapters.
+- `btleplug/src/bluez/adapter.rs` retains the exact adapter identifier when no
+  modalias exists; it does not invent hardware metadata.
+- Regression tests in `bluez-async/src/adapter.rs` cover omitted, valid, and
+  malformed values. Run the vendored crate's tests from an isolated copy
+  (`cargo test --manifest-path <copy>/Cargo.toml`): Cargo does not run the
+  dev-dependencies of a patched non-workspace member through `cargo test -p`.
+  UBM's Linux radio probe additionally verifies real OS enumeration.
+
 This directory is btleplug 0.12.0 from crates.io (checksum
 `52c3264dbe2c8e29381e4e95aa2d2783ad0b9192b511240f3755b7e5e3cee87e`).
 It is used through `[patch.crates-io]` in the root `Cargo.toml`,

@@ -87,6 +87,11 @@ pub type CoreFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, DesktopError>
 /// method is a direct delegation to the shared [`DesktopCentral`]; none of
 /// them takes a lock across the radio call.
 pub trait CoreAuthority: Send + Sync {
+    /// Trusted-host native continuation, over this exact central/lease authority.
+    fn native_continuation(
+        &self,
+        runtime: tokio::runtime::Handle,
+    ) -> ubm_desktop::continuation_adapter::DesktopContinuation;
     /// Start a scan; returns the core scan operation id.
     fn start_scan<'a>(
         &'a self,
@@ -233,6 +238,12 @@ pub trait CoreAuthority: Send + Sync {
 }
 
 impl<B: RadioBoundary> CoreAuthority for DesktopCentral<B> {
+    fn native_continuation(
+        &self,
+        runtime: tokio::runtime::Handle,
+    ) -> ubm_desktop::continuation_adapter::DesktopContinuation {
+        ubm_desktop::continuation_adapter::DesktopContinuation::new(self.clone(), runtime)
+    }
     fn start_scan<'a>(
         &'a self,
         owner: &'a str,

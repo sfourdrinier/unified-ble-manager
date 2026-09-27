@@ -11,12 +11,15 @@ class RustCoreRejection(
   val code: String,
   val domain: String,
   val operation: String,
-  val detail: String?
+  val detail: String?,
+  val platform: Map<*, *>? = null
 ) : RuntimeException("$code|$domain|$operation|${detail ?: ""}") {
 
-  fun toJson(): String = RustCoreJson.write(
-    linkedMapOf("code" to code, "domain" to domain, "operation" to operation, "detail" to detail)
-  )
+  fun toJson(): String {
+    val failure = linkedMapOf<String, Any?>("code" to code, "domain" to domain, "operation" to operation, "detail" to detail)
+    platform?.let { failure["platform"] = it }
+    return RustCoreJson.write(failure)
+  }
 
   companion object {
     /** Parses the JNI `MobileCoreException` wire text `code|domain|operation|detail`. */

@@ -24,6 +24,8 @@ pub mod boundary;
 pub mod btleplug_backend;
 pub mod capabilities;
 pub mod central;
+pub mod continuation_adapter;
+pub mod continuation_outbox;
 pub mod delivery;
 pub mod errors;
 pub mod executor;
@@ -43,6 +45,7 @@ pub use boundary::{
 };
 #[cfg(feature = "btleplug")]
 pub use btleplug_backend::BtleplugRadio;
+pub mod continuation;
 pub use capabilities::{
     CapabilityVerdict, DESKTOP_CAPABILITIES, DesktopCapability, DesktopOs, OsOverride,
     desktop_capability_states, register_desktop_capabilities, register_desktop_capabilities_for,

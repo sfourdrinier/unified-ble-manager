@@ -71,7 +71,32 @@ class RustCoreContinuationSessionsTest {
   }
 
   @Test
+  fun reservationRefusalCannotPersistAReplacement() {
+    sessions.declareContinuation(nativeJson, Captured())
+    core.continuationReserveAnswer = { "{\"ok\":false,\"error\":{\"code\":\"lifecycle.invalid-state\",\"detail\":\"execution owns declaration\"}}" }
+    val reply = Captured()
+    sessions.declareContinuation("{}", reply)
+    assertEquals("lifecycle.invalid-state", reply.rejected.single().code)
+    assertEquals(ContinuationStrategy.NATIVE, host.continuationStore().loadDeclaration().strategy)
+  }
+
+  @Test
+  fun statusKeepsRecoverySeparateFromOriginalWake() {
+    core.continuationBacklog = "{\"ok\":true,\"value\":{\"continuationOutcome\":{\"event\":\"continuation.failed\",\"strategy\":\"native\",\"attempt\":2,\"error\":{\"code\":\"permission.denied\"}}}}"
+    val reply = Captured()
+    sessions.continuationStatus(reply)
+    val status = RustCoreJson.parse(reply.resolved.single()!!) as? Map<*, *> ?: error("status")
+    assertEquals(null, status["lastWake"])
+    assertEquals(2L, (status["lastRecovery"] as? Map<*, *>)?.get("attempt"))
+  }
+
+  @Test
   fun claimWithNoWakeIsTheValidEmptyAnswer() {
+    core.continuationPrepareAnswer = { items, bytes, callback ->
+      assertEquals(256, items)
+      assertEquals(65536, bytes)
+      callback.onResult("{\"ok\":true,\"value\":{\"consumerCount\":0,\"selectors\":[],\"batches\":[],\"disposed\":false,\"disposeFailure\":null,\"afterCutoffLoss\":{\"items\":0,\"bytes\":0}}}")
+    }
     val reply = Captured()
     sessions.prepareContinuationClaim(256.0, 65536.0, reply)
     val claim = reply.resolved.single() ?: error("no claim")
@@ -80,5 +105,21 @@ class RustCoreContinuationSessionsTest {
     assertTrue(claim.contains("\"selectors\":[]"))
     assertTrue(claim.contains("\"batches\":[]"))
     assertTrue(claim.contains("\"disposed\":false"))
+  }
+
+  @Test
+  fun claimRejectionPreservesNativeIdentityAndPlatformDetail() {
+    core.continuationPrepareAnswer = { _, _, callback ->
+      callback.onResult("{\"ok\":false,\"error\":{\"code\":\"lifecycle.invalid-state\",\"domain\":\"restoration\",\"operation\":\"continuation.claim\",\"detail\":\"native handoff busy\",\"platform\":{\"domain\":\"test-radio\",\"code\":\"busy\",\"safeMessage\":\"native busy\",\"metadata\":{}}}}")
+    }
+    val reply = Captured()
+    sessions.prepareContinuationClaim(256.0, 65536.0, reply)
+    assertTrue(reply.resolved.isEmpty())
+    val failure = reply.rejected.single()
+    assertEquals("lifecycle.invalid-state", failure.code)
+    assertEquals("restoration", failure.domain)
+    assertEquals("native handoff busy", failure.detail)
+    val decoded = RustCoreJson.parse(failure.toJson()) as? Map<*, *> ?: error("rejection JSON missing")
+    assertEquals("test-radio", (decoded["platform"] as? Map<*, *>)?.get("domain"))
   }
 }

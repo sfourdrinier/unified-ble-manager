@@ -129,6 +129,37 @@ proof, not an Electron host, adapter, or peripheral support claim. Native
 prebuild compilation and runtime loading are L2/L3 evidence only; they do not
 by themselves establish a physical-radio support claim.
 
+## Native continuation owned by main
+
+`unified-ble-manager/electron/main` exports `loadDesktopCoreBinding` and
+`createNativeContinuationController`, with the same trusted-host recipe as
+[Node native continuation](NODE.md#native-continuation-in-a-trusted-process-host).
+Pass the **existing main-process Rust central** to the controller. Main retains
+the native owner while windows close or reload; renderer destruction is not a
+request to stop a process-owned recorder.
+
+```ts
+import { createNativeContinuationController } from 'unified-ble-manager/electron/main'
+import type { DesktopRustCoreCentral } from 'unified-ble-manager/electron/main'
+
+function recorderForMain(central: DesktopRustCoreCentral) {
+  return createNativeContinuationController(central)
+}
+```
+
+Only trusted main code may call `execute`, `status` and `claim`. This adds no
+renderer IPC privilege: expose any application-specific commands through your
+existing authenticated, scoped IPC policy. `execute` needs a known peer ID and
+explicit native resubscription declaration. `claim` validates values before
+acknowledging native handoff, reports loss and cleanup uncertainty, and ends the
+recording generation. Persist returned values according to your application.
+
+This survives loss of a renderer, **not loss of the main process**. A bounded
+in-memory backlog is not disk persistence, and Electron relaunch/start-at-login
+configuration is the application's responsibility. On main shutdown, await the
+central's cleanup receipt; a failed receipt remains a retry obligation. Do not
+start a second central to add continuation to an existing host.
+
 ## Main-process backend selection (maintainer/host-authoring reference)
 
 > **Maintainer/host-authoring reference — not ordinary application construction.**

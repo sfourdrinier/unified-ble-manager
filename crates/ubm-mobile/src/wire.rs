@@ -29,8 +29,6 @@ pub const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
 /// Union of `ubm_core::central::GATT_PROP_*` bits.
 pub const GATT_PROPERTY_MASK: u8 = 0x1f;
 
-const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
 fn wire_error(code: BleErrorCode, domain: BleErrorDomain, path: &str) -> DesktopError {
     DesktopError::new(code, domain, format!("ubm-mobile.wire.{path}"))
 }
@@ -45,23 +43,7 @@ fn too_large(path: &str) -> DesktopError {
     wire_error(BleErrorCode::BytesTooLarge, BleErrorDomain::Core, path)
 }
 
-/// Encode bytes as padded base64.
-#[must_use]
-pub fn encode_base64(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b0 = u32::from(chunk[0]);
-        let b1 = chunk.get(1).map_or(0, |b| u32::from(*b));
-        let b2 = chunk.get(2).map_or(0, |b| u32::from(*b));
-        let triple = (b0 << 16) | (b1 << 8) | b2;
-        let sextet = |shift: u32| char::from(ALPHABET[((triple >> shift) & 0x3f) as usize]);
-        out.push(sextet(18));
-        out.push(sextet(12));
-        out.push(if chunk.len() > 1 { sextet(6) } else { '=' });
-        out.push(if chunk.len() > 2 { sextet(0) } else { '=' });
-    }
-    out
-}
+pub use ubm_desktop::continuation_outbox::encode_base64;
 
 fn sextet(byte: u8) -> Option<u32> {
     match byte {

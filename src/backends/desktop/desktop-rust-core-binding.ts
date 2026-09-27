@@ -303,6 +303,11 @@ export interface DesktopRustCoreAdapterListing {
  * never stages.
  */
 export interface DesktopRustCoreCentral {
+  /** Optional on injected backends; the trusted-host controller fails closed when absent. */
+  continuationExecute?(peerId: string, declarationJson: string): Promise<string>
+  continuationPrepareClaim?(maxItems: number, maxBytes: number): Promise<string>
+  continuationAcknowledgeClaim?(claimToken: string): Promise<string>
+  continuationDescribeBacklog?(): Promise<string>
   createTicket(): string
   cancelTicket(ticket: string): Promise<DesktopRustCoreTicketCancel>
   releaseTicket(ticket: string): boolean

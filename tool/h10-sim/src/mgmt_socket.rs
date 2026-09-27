@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, Once};
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::linux_advertising::{self, InstanceRecord, StaleAction};
 use crate::mgmt::{self, Event};
@@ -457,7 +457,7 @@ impl MgmtAdvertiser {
                 return Err(format!(
                     "read instance record {}: {error}",
                     self.record.display()
-                ))
+                ));
             }
         };
         let record = match InstanceRecord::parse(&text) {

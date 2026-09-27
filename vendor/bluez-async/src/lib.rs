@@ -465,13 +465,13 @@ impl BluetoothSession {
         // TODO: See whether there is a way to do this with introspection instead, rather than
         // getting lots of objects we don't care about.
         let tree = bluez_root.get_managed_objects().await?;
-        Ok(tree
+        tree
             .into_iter()
             .filter_map(|(object_path, interfaces)| {
                 let adapter_properties = OrgBluezAdapter1Properties::from_interfaces(&interfaces)?;
-                AdapterInfo::from_properties(AdapterId { object_path }, adapter_properties).ok()
+                Some(AdapterInfo::from_properties(AdapterId { object_path }, adapter_properties))
             })
-            .collect())
+            .collect()
     }
 
     /// Get a list of all Bluetooth devices which have been discovered so far.

@@ -11,10 +11,10 @@ jest.mock('react-native', () => ({
 }))
 
 const { normalizeBleManagerCreateOptions } = require('../../../src/public/host-identity')
+const { normalizeBackgroundContinuation } = require('../../../src/backend-contract/background-continuation')
+const { validateUnifiedBleExpoPluginOptions } = require('../../../plugin/src/expoPluginSchema')
 const { createReactNativeManagerHost } = require('../../../src/react-native-manager')
-const {
-  createReactNativeRustCoreBinding
-} = require('../../../src/backends/reactnative/react-native-rust-core-binding')
+const { createReactNativeRustCoreBinding } = require('../../../src/backends/reactnative/react-native-rust-core-binding')
 const { DeterministicRustCoreNative } = require('../../../test-support/react-native/deterministic-rust-core-native')
 
 const HR_SERVICE = '0000180d-0000-1000-8000-00805f9b34fb'
@@ -41,6 +41,47 @@ function managerHost(native, background) {
 }
 
 describe('background.continuation manager options', () => {
+  it('keeps build-time and runtime validation aligned across peer identity and selector boundaries', () => {
+    const selector = { serviceUuid: HR_SERVICE.toUpperCase(), characteristicUuid: HR_MEASUREMENT }
+    const valid = [
+      {},
+      { onAppearance: 'native', peerId: 'aa:bb:cc:dd:ee:ff', resubscribe: [selector] },
+      { onAppearance: 'native', peerId: '9828347e-45df-2eeb-e928-6e443f4065e3', resubscribe: Array(64).fill(selector) },
+      { onAppearance: 'headless-task', headlessTaskName: 'Wake' }
+    ]
+    for (const declaration of valid) {
+      const buildTime = validateUnifiedBleExpoPluginOptions({ background: { continuation: declaration } }).background
+        .continuation
+      expect(normalizeBackgroundContinuation(buildTime)).toEqual(normalizeBackgroundContinuation(declaration))
+    }
+    const invalid = [
+      { peerId: '180d' },
+      { peerId: 'not-a-peer' },
+      { peerId: 'hci1/dev_AA_BB_CC_DD_EE_FF' },
+      { resubscribe: Array(65).fill(selector) },
+      { resubscribe: [{ ...selector, serviceOccurrence: 0 }] },
+      { resubscribe: [{ ...selector, characteristicOccurrence: 1.5 }] },
+      { resubscribe: [{ ...selector, serviceUuid: '180d' }] },
+      { onAppearance: 'native', headlessTaskName: 'Wake' },
+      { onAppearance: 'headless-task' },
+      { onAppearance: 'foreground-service' },
+      { undeclared: true }
+    ]
+    for (const declaration of invalid) {
+      expect(() => normalizeBackgroundContinuation(declaration)).toThrow()
+      expect(() => validateUnifiedBleExpoPluginOptions({ background: { continuation: declaration } })).toThrow()
+    }
+  })
+  it('accepts canonical Apple peer UUIDs and preserves the native identifier casing', () => {
+    const peerId = '9828347e-45df-2eeb-e928-6e443f4065e3'
+    const options = normalizeBleManagerCreateOptions({
+      background: { continuation: { ...NATIVE_DECLARATION, peerId } }
+    })
+    expect(options.background.continuation.peerId).toBe(peerId.toUpperCase())
+    for (const invalid of ['180d', 'peer-1', `${peerId} `, 'AA:BB:CC:DD:EE']) {
+      expect(() => normalizeBleManagerCreateOptions({ background: { continuation: { peerId: invalid } } })).toThrow()
+    }
+  })
   it('defaults to record-only and freezes the declaration', () => {
     const normalized = normalizeBleManagerCreateOptions({})
     expect(normalized.background).toBeUndefined()

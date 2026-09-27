@@ -761,16 +761,20 @@ bunx eas build --profile development --platform android
                   continuation declares the background standing order a wake may execute before any JavaScript runs
                   (<code>background.continuation</code>). <code>onAppearance</code> is one of
                   <code>record-only</code> (the default, and today's behaviour), <code>native</code>,
-                  <code>headless-task</code> or <code>foreground-service</code>; <code>peerId</code> is an optional MAC
-                  subject and <code>resubscribe</code> an optional list of service/characteristic selectors with
-                  optional occurrences. <code>headlessTaskName</code> is required for <code>headless-task</code> and
-                  rejected for anything else; <code>foregroundService</code> is required for
-                  <code>foreground-service</code> and rejected for anything else — a declaration that could not execute
-                  is refused at prebuild rather than at 3 a.m. on a user's phone. The plugin writes the validated
-                  declaration as the Android manifest meta-data
-                  <code>com.sfourdrinier.unifiedblemanager.BACKGROUND_CONTINUATION</code>, and removes it again when the
-                  option is dropped. The strategies, what the wake does, and how an app reads the outcome and drains the
-                  backlog are in <a href="BACKGROUND.md"><code>BACKGROUND.md</code></a
+                  <code>headless-task</code> or <code>foreground-service</code>; <code>peerId</code> is an optional
+                  Android MAC or Apple peripheral UUID and <code>resubscribe</code> an optional list of
+                  service/characteristic selectors with optional occurrences. <code>headlessTaskName</code> is required
+                  for <code>headless-task</code> and rejected for anything else; <code>foregroundService</code> is
+                  required for <code>foreground-service</code> and rejected for anything else — a declaration that could
+                  not execute is refused at prebuild rather than at 3 a.m. on a user's phone. The plugin writes the
+                  validated declaration as the Android manifest meta-data
+                  <code>com.sfourdrinier.unifiedblemanager.BACKGROUND_CONTINUATION</code>, and the iOS Info.plist
+                  <code>UnifiedBleBackgroundContinuation</code> key (not tvOS), and removes them again when the option
+                  is dropped. A native iOS order also needs configured restoration authority and the Bluetooth
+                  background mode. Schema validation does not imply that a deferred strategy has an executor: runtime
+                  capabilities and refusal outcomes remain authoritative. The strategies, what the wake does, and how an
+                  app reads the outcome and drains the backlog are in
+                  <a href="BACKGROUND.md"><code>BACKGROUND.md</code></a
                   >.
                 </p>
               </li>
@@ -988,6 +992,28 @@ await manager.background.updateNotification({
               The release workflow's packed Electron smoke is deterministic L1 package/IPC proof, not an Electron host,
               adapter, or peripheral support claim. Native prebuild compilation and runtime loading are L2/L3 evidence
               only; they do not by themselves establish a physical-radio support claim.
+            </p>
+            <h2>Native continuation owned by main</h2>
+            <p>
+              <code>unified-ble-manager/electron/main</code> exports <code>loadDesktopCoreBinding</code> and
+              <code>createNativeContinuationController</code>, with the same trusted-host recipe as
+              <a href="NODE.md#native-continuation-in-a-trusted-process-host">Node native continuation</a>. Pass the
+              <strong>existing main-process Rust central</strong> to the controller. Main retains the native owner while
+              windows close or reload; renderer destruction is not a request to stop a process-owned recorder.
+            </p>
+            <p>
+              Only trusted main code may call <code>execute</code>, <code>status</code> and <code>claim</code>. This
+              adds no renderer IPC privilege: expose any application-specific commands through your existing
+              authenticated, scoped IPC policy. <code>execute</code> needs a known peer ID and explicit native
+              resubscription declaration. <code>claim</code> validates values before acknowledging native handoff,
+              reports loss and cleanup uncertainty, and ends the recording generation. Persist returned values according
+              to your application.
+            </p>
+            <p>
+              This survives loss of a renderer, <strong>not loss of the main process</strong>. A bounded in-memory
+              backlog is not disk persistence, and Electron relaunch/start-at-login configuration is the application's
+              responsibility. On main shutdown, await the central's cleanup receipt; a failed receipt remains a retry
+              obligation. Do not start a second central to add continuation to an existing host.
             </p>
             <h2>Main-process backend selection (maintainer/host-authoring reference)</h2>
             <blockquote>

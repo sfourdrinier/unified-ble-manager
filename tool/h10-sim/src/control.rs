@@ -208,7 +208,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "drop-link",
         "halt ECG and disconnect simulator clients (plus --drop-link-allow extras); advertising and GATT stay up [adversarial]",
     ),
-    ("set-silent", "stop notifying while keeping the link up [adversarial]"),
+    (
+        "set-silent",
+        "stop notifying while keeping the link up [adversarial]",
+    ),
     (
         "reject-next-pmd",
         "fail the next PMD command with a status code [adversarial]",
@@ -238,7 +241,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "deliver every keepEvery-th ECG frame only, 1 disables [adversarial]",
     ),
     ("set-rates", "change HR/ECG stream rates"),
-    ("run-record", "report seed/profile, mode and injected fault sequence"),
+    (
+        "run-record",
+        "report seed/profile, mode and injected fault sequence",
+    ),
     ("get-state", "report the current simulator state"),
     ("help", "list the commands"),
 ];

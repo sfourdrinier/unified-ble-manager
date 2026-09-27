@@ -159,6 +159,44 @@ public final class TestMobile {
         check(backgroundReleases.get() == 0, "manager destroy keeps the module's foreground service");
         String scope = MobileCoreBridge.nativeReleaseBackgroundScope("jvm-module");
         check(scope.contains("\"state\":\"released\"") && backgroundReleases.get() == 1, "module invalidation releases the lease: " + scope);
+        // A process-owned standing order must collect with no application session.
+        // Exercise the real JNI/core boundary, not a Kotlin copy of its policy.
+        BlockingQueue<String> continuationResults = new ArrayBlockingQueue<>(1);
+        String continuationSelector = "{\"serviceUuid\":\"0000180d-0000-1000-8000-00805f9b34fb\",\"serviceOccurrence\":1,\"characteristicUuid\":\"00002a37-0000-1000-8000-00805f9b34fb\",\"characteristicOccurrence\":1}";
+        String declaration = "{\"onAppearance\":\"native\",\"peerId\":\"AA:BB:CC:DD:EE:FF\",\"resubscribe\":[" + continuationSelector + "]}";
+        check(MobileCoreBridge.nativeContinuationSeedDeclaration("{}").contains("seeded"), "seed persisted declaration");
+        String reservation = MobileCoreBridge.nativeContinuationReserveDeclaration(declaration);
+        String reservationToken = reservation.split("\"reservationToken\":\"")[1].split("\"")[0];
+        MobileCoreBridge.nativeContinuationExecute("AA:BB:CC:DD:EE:FF", declaration, continuationResults::add);
+        String reserved = continuationResults.poll(5, TimeUnit.SECONDS);
+        check(reserved != null && reserved.contains("lifecycle.invalid-state"), "pending persistence fences native admission");
+        check(MobileCoreBridge.nativeContinuationCancelDeclaration(reservationToken).contains("cancelled"), "failed persistence cancels reservation");
+        reservation = MobileCoreBridge.nativeContinuationReserveDeclaration(declaration);
+        reservationToken = reservation.split("\"reservationToken\":\"")[1].split("\"")[0];
+        check(MobileCoreBridge.nativeContinuationCommitDeclaration(reservationToken).contains("committed"), "persisted declaration commits");
+        check(MobileCoreBridge.nativeContinuationSeedDeclaration("{}").contains("lifecycle.invalid-state"), "stale captured declaration cannot roll authority back");
+        MobileCoreBridge.nativeContinuationExecute("AA:BB:CC:DD:EE:FF", declaration, continuationResults::add);
+        String continued = continuationResults.poll(5, TimeUnit.SECONDS);
+        check(continued != null && continued.contains("continuation.completed"), "native standing order reconnects and subscribes: " + continued);
+        wakes.clear();
+        check(MobileCoreBridge.nativeIngestNotification("AA:BB:CC:DD:EE:FF", "180D", 0, "2A37", 0, lastNotificationEpoch, new byte[] {4, 5}) == MobileCoreBridge.STATUS_ACCEPTED, "standing order receives without a JS session");
+        String backlog = "";
+        long backlogDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!backlog.contains("\"retainedByteBuffers\":1") && System.nanoTime() < backlogDeadline) {
+            MobileCoreBridge.nativeContinuationDescribeBacklog(continuationResults::add);
+            backlog = continuationResults.poll(5, TimeUnit.SECONDS);
+            check(backlog != null, "standing order backlog inspection answers");
+            if (!backlog.contains("\"retainedByteBuffers\":1")) Thread.sleep(5);
+        }
+        check(backlog.contains("\"retainedByteBuffers\":1"), "standing order notification reaches its bounded outbox: " + backlog);
+        check(wakes.isEmpty(), "native continuation never publishes an unknown session wake to JavaScript");
+        MobileCoreBridge.nativeContinuationPrepareClaim(256, 65536, continuationResults::add);
+        String prepared = continuationResults.poll(5, TimeUnit.SECONDS);
+        check(prepared != null && prepared.contains("claimToken") && prepared.contains("BAU="), "standing order prepares its queued bytes: " + prepared);
+        String claimToken = prepared.replaceAll(".*\"claimToken\":\"([^\"]+)\".*", "$1");
+        MobileCoreBridge.nativeContinuationAcknowledgeClaim(claimToken, continuationResults::add);
+        String acknowledged = continuationResults.poll(5, TimeUnit.SECONDS);
+        check(acknowledged != null && acknowledged.contains("\"disposed\":true"), "acknowledged standing order releases: " + acknowledged);
         String shutdown = MobileCoreBridge.nativeShutdownHost();
         check(shutdown.contains("\"state\":\"released\""), "host shutdown releases: " + shutdown);
         check(!MobileCoreBridge.nativeHostInstalled(), "host removed");

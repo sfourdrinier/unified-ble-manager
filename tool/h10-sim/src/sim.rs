@@ -339,6 +339,63 @@ pub struct SimState {
     /// Last PMD response bytes sent (adversarial `stale-callback` replays
     /// them out of sequence).
     pub last_pmd_response: Option<Vec<u8>>,
+    /// Run-wide observed HR activity. Never inferred from a link-drop request.
+    hr_recovery: HrRecovery,
+}
+
+/// Cumulative evidence, not a delivery guarantee: peripheral APIs do not
+/// expose a portable central identity or confirmation of a notification read.
+#[derive(Debug, Default)]
+struct HrRecovery {
+    subscription_enable_events: u64,
+    subscription_disable_events: u64,
+    notification_attempts: u64,
+    notifications_queued: u64,
+    notifications_os_accepted: u64,
+    notifications_not_subscribed: u64,
+    notifications_failed: u64,
+    counters_saturated: bool,
+}
+
+impl HrRecovery {
+    fn increment(counter: &mut u64, saturated: &mut bool) {
+        match counter.checked_add(1) {
+            Some(next) => *counter = next,
+            None => *saturated = true,
+        }
+    }
+
+    fn observe_outcome(&mut self, outcome: &crate::radio::SendOutcome) {
+        use crate::radio::SendOutcome;
+        let counter = match outcome {
+            SendOutcome::Queued => &mut self.notifications_queued,
+            SendOutcome::OsAccepted => &mut self.notifications_os_accepted,
+            SendOutcome::NotSubscribed => &mut self.notifications_not_subscribed,
+            SendOutcome::Failed(_) => &mut self.notifications_failed,
+        };
+        Self::increment(counter, &mut self.counters_saturated);
+    }
+
+    fn snapshot(&self) -> serde_json::Value {
+        serde_json::json!({
+            "scope":"characteristic",
+            "clientAttribution":"unavailable",
+            "subscriptionEnableEvents":self.subscription_enable_events,
+            "subscriptionDisableEvents":self.subscription_disable_events,
+            "notificationAttempts":self.notification_attempts,
+            "notificationsQueued":self.notifications_queued,
+            "notificationsOsAccepted":self.notifications_os_accepted,
+            "notificationsNotSubscribed":self.notifications_not_subscribed,
+            "notificationsFailed":self.notifications_failed,
+            "countersSaturated":self.counters_saturated,
+        })
+    }
+}
+
+fn is_hr_characteristic(characteristic: &str) -> bool {
+    uuid::Uuid::parse_str(characteristic).is_ok_and(|uuid| {
+        uuid == crate::advertisement::short_uuid(gatt_spec::uuid16::HEART_RATE_MEASUREMENT)
+    })
 }
 
 /// One injected fault with its timestamp: the labelled sequence
@@ -381,6 +438,7 @@ impl SimState {
             delivery_keep_every: 1,
             delivery_seq: 0,
             last_pmd_response: None,
+            hr_recovery: HrRecovery::default(),
         }
     }
 
@@ -395,6 +453,45 @@ impl SimState {
         });
     }
 
+    pub fn observe_subscription(&mut self, characteristic: &str, enabled: bool) {
+        if !is_hr_characteristic(characteristic) {
+            return;
+        }
+        let counter = if enabled {
+            &mut self.hr_recovery.subscription_enable_events
+        } else {
+            &mut self.hr_recovery.subscription_disable_events
+        };
+        HrRecovery::increment(counter, &mut self.hr_recovery.counters_saturated);
+    }
+
+    pub fn observe_hr_notify(
+        &mut self,
+        outcome: &Result<crate::radio::SendOutcome, crate::radio::RadioError>,
+    ) {
+        HrRecovery::increment(
+            &mut self.hr_recovery.notification_attempts,
+            &mut self.hr_recovery.counters_saturated,
+        );
+        match outcome {
+            Ok(outcome) => self.hr_recovery.observe_outcome(outcome),
+            Err(_) => HrRecovery::increment(
+                &mut self.hr_recovery.notifications_failed,
+                &mut self.hr_recovery.counters_saturated,
+            ),
+        }
+    }
+
+    pub fn observe_notify_settled(
+        &mut self,
+        characteristic: &str,
+        outcome: &crate::radio::SendOutcome,
+    ) {
+        if is_hr_characteristic(characteristic) {
+            self.hr_recovery.observe_outcome(outcome);
+        }
+    }
+
     /// This run's seed/profile, mode and injected fault sequence with
     /// timestamps — the `run-record` answer.
     pub fn run_record(&self) -> serde_json::Value {
@@ -404,6 +501,7 @@ impl SimState {
             "profile": self.config.profile_path.clone().unwrap_or_else(|| "<builtin stock-h10>".to_string()),
             "name": self.config.name,
             "startedAt": self.run_started_at,
+            "hrRecovery": self.hr_recovery.snapshot(),
             "faults": self.faults.iter().map(|entry| {
                 serde_json::json!({"ts": entry.ts, "fault": entry.fault, "detail": entry.detail})
             }).collect::<Vec<_>>(),
@@ -580,6 +678,7 @@ impl SimState {
             "responseDelayMs": self.response_delay_ms,
             "deliveryKeepEvery": self.delivery_keep_every,
             "faults": self.faults.len(),
+            "hrRecovery": self.hr_recovery.snapshot(),
         })
     }
 
@@ -730,6 +829,68 @@ mod tests {
     }
 
     #[test]
+    fn hr_recovery_records_actual_acceptance_without_counting_queued_as_delivered() {
+        use crate::radio::{RadioError, SendOutcome};
+        let mut sim = state();
+        let hr = "00002a37-0000-1000-8000-00805f9b34fb";
+        sim.observe_subscription(hr, true);
+        sim.observe_hr_notify(&Ok(SendOutcome::Queued));
+        assert_eq!(sim.snapshot()["hrRecovery"]["notificationsOsAccepted"], 0);
+        sim.observe_notify_settled(hr, &SendOutcome::OsAccepted);
+        sim.observe_subscription(hr, false);
+        sim.record_fault("drop-link", serde_json::json!({"dropped":["peer"]}));
+        sim.observe_hr_notify(&Ok(SendOutcome::NotSubscribed));
+        sim.observe_subscription(hr, true);
+        sim.observe_hr_notify(&Ok(SendOutcome::OsAccepted));
+        sim.observe_hr_notify(&Ok(SendOutcome::Failed("queue-full".to_owned())));
+        sim.observe_hr_notify(&Err(RadioError("native refusal".to_owned())));
+        sim.observe_hr_notify(&Ok(SendOutcome::Queued));
+        sim.observe_notify_settled(hr, &SendOutcome::Failed("old generation".to_owned()));
+        let telemetry = sim.snapshot()["hrRecovery"].clone();
+        assert_eq!(telemetry["subscriptionEnableEvents"], 2);
+        assert_eq!(telemetry["subscriptionDisableEvents"], 1);
+        assert_eq!(telemetry["notificationAttempts"], 6);
+        assert_eq!(telemetry["notificationsQueued"], 2);
+        assert_eq!(telemetry["notificationsOsAccepted"], 2);
+        assert_eq!(telemetry["notificationsNotSubscribed"], 1);
+        assert_eq!(telemetry["notificationsFailed"], 3);
+        assert_eq!(telemetry["clientAttribution"], "unavailable");
+        assert_eq!(telemetry, sim.run_record()["hrRecovery"]);
+        sim.config.bpm = 90;
+        assert_eq!(
+            telemetry,
+            sim.snapshot()["hrRecovery"],
+            "configuration changes cannot erase run evidence"
+        );
+    }
+
+    #[test]
+    fn other_characteristics_do_not_pollute_hr_recovery_evidence() {
+        let mut sim = state();
+        let before = sim.snapshot()["hrRecovery"].clone();
+        sim.observe_subscription(gatt_spec::pmd::DATA, true);
+        sim.observe_notify_settled(gatt_spec::pmd::DATA, &crate::radio::SendOutcome::OsAccepted);
+        assert_eq!(before, sim.snapshot()["hrRecovery"]);
+        sim.record_fault("drop-link", serde_json::json!({"dropped":["peer"]}));
+        assert_eq!(
+            before,
+            sim.snapshot()["hrRecovery"],
+            "a requested link drop cannot manufacture unsubscribe or delivery evidence"
+        );
+    }
+
+    #[test]
+    fn hr_recovery_counter_saturation_is_explicit() {
+        let mut sim = state();
+        sim.hr_recovery.notification_attempts = u64::MAX;
+        sim.observe_hr_notify(&Ok(crate::radio::SendOutcome::NotSubscribed));
+        let telemetry = sim.snapshot()["hrRecovery"].clone();
+        assert_eq!(telemetry["notificationAttempts"], u64::MAX);
+        assert_eq!(telemetry["notificationsNotSubscribed"], 1);
+        assert_eq!(telemetry["countersSaturated"], true);
+    }
+
+    #[test]
     fn run_record_reports_mode_seed_profile_and_faults() {
         let mut sim = state();
         assert_eq!(sim.run_mode, crate::control::RunMode::Faithful);
@@ -794,7 +955,9 @@ mod tests {
         let frame = gatt_spec::encode_ecg_frame(timestamp_ns, &[0]);
         assert_eq!(
             frame,
-            vec![0x00, 0x00, 0xCA, 0x9A, 0x3B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+            vec![
+                0x00, 0x00, 0xCA, 0x9A, 0x3B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+            ]
         );
     }
 
@@ -932,9 +1095,11 @@ mod tests {
     #[test]
     fn hr_replay_loader_fails_loudly() {
         assert!(load_hr_replay("fixtures/does-not-exist.json").is_err());
-        assert!(load_hr_replay("profiles/stock-h10.json")
-            .unwrap_err()
-            .contains("hrMeasurements"));
+        assert!(
+            load_hr_replay("profiles/stock-h10.json")
+                .unwrap_err()
+                .contains("hrMeasurements")
+        );
     }
 
     #[test]
@@ -954,15 +1119,18 @@ mod tests {
         );
         assert_eq!(text(gatt_spec::uuid16::MODEL_NUMBER), "H10\0");
         assert!(sim.static_read(gatt_spec::uuid16::SERIAL_NUMBER).is_some());
-        assert!(sim
-            .static_read(gatt_spec::uuid16::FIRMWARE_REVISION)
-            .is_some());
-        assert!(sim
-            .static_read(gatt_spec::uuid16::HARDWARE_REVISION)
-            .is_some());
-        assert!(sim
-            .static_read(gatt_spec::uuid16::SOFTWARE_REVISION)
-            .is_some());
+        assert!(
+            sim.static_read(gatt_spec::uuid16::FIRMWARE_REVISION)
+                .is_some()
+        );
+        assert!(
+            sim.static_read(gatt_spec::uuid16::HARDWARE_REVISION)
+                .is_some()
+        );
+        assert!(
+            sim.static_read(gatt_spec::uuid16::SOFTWARE_REVISION)
+                .is_some()
+        );
         assert_eq!(
             sim.static_read(gatt_spec::uuid16::SYSTEM_ID).unwrap().len(),
             8

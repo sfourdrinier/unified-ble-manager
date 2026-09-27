@@ -106,7 +106,7 @@ returns `{peer, reads}`, `mtu probe` `{peer, probes}` and `ecg start`
 that impersonates a Polar H10 (HR + Battery + Device Information + PMD ECG),
 with a JSON-lines TCP control port for faults (`set-bpm`, `set-silent`,
 `drop-link`, `reject-next-pmd`). Point any scenario at it with the `device`
-argument, e.g. `h10-stream start '{"device":"Polar H10 SIM0001"}'`.
+argument, e.g. `h10-stream start '{"device":"SIM Polar H10 0001"}'`.
 
 The sim can also join the driver itself as host kind `peripheral-sim`
 (`h10-sim --driver ws://host:8795/host`), exposing its controls as the

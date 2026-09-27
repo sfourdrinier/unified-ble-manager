@@ -19,15 +19,15 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use radio::{
-    adv_service_uuids, h10_services, short_of, PeripheralRadio, PlatformRadio, RadioEvent,
-    SendOutcome,
+    PeripheralRadio, PlatformRadio, RadioEvent, SendOutcome, adv_service_uuids, h10_services,
+    short_of,
 };
 use serde_json::json;
 use sim::{PmdAction, SimConfig, SimState};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use control::{apply_rates, ControlCommand, ControlReply, ControlRequest};
+use control::{ControlCommand, ControlReply, ControlRequest, apply_rates};
 use events::EventLog;
 use linux_advertising::LinuxAdvertising;
 
@@ -38,7 +38,7 @@ fn usage() -> String {
          \n\
          Options:\n\
          \x20 --profile <path>       JSON device profile (default: built-in stock-h10)\n\
-         \x20 --name <name>          Advertised name (overrides the profile)\n\
+         \x20 --name <name>          Advertised name, must start SIM (overrides profile)\n\
          \x20 --control-bind <addr>  Control port bind address (default 127.0.0.1)\n\
          \x20 --control-port <port>  JSON-lines TCP control port (default 17935)\n\
          \x20 --control-token <tok>  Control port token (or H10SIM_TOKEN / --control-token-file)\n\
@@ -267,7 +267,11 @@ fn main() -> ExitCode {
                     let path = value(&mut args, "--profile")?;
                     load_startup_profile(&mut config, &path)?;
                 }
-                "--name" => config.name = value(&mut args, "--name")?,
+                "--name" => {
+                    let name = value(&mut args, "--name")?;
+                    advertisement::validate_simulator_name(&name)?;
+                    config.name = name;
+                }
                 "--control-bind" => control_bind = value(&mut args, "--control-bind")?,
                 "--control-port" => {
                     control_port = value(&mut args, "--control-port")?
@@ -592,7 +596,7 @@ impl Fatal {
 async fn shutdown_signal() -> Result<&'static str, String> {
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let mut terminate = signal(SignalKind::terminate())
             .map_err(|error| format!("cannot watch SIGTERM: {error}"))?;
         tokio::select! {
@@ -848,6 +852,7 @@ async fn start_advertising(
     sim: &SimState,
     log: &mut EventLog,
 ) -> Result<(), String> {
+    advertisement::validate_simulator_name(&sim.config.name)?;
     match radio.is_advertising().await {
         Ok(true) => {
             radio
@@ -908,6 +913,7 @@ async fn send_hr(radio: &mut PlatformRadio, sim: &mut SimState, log: &mut EventL
     let payload = sim.hr_payload();
     let uuid = advertisement::short_uuid(gatt_spec::uuid16::HEART_RATE_MEASUREMENT);
     let outcome = radio.notify(uuid, payload.clone()).await;
+    sim.observe_hr_notify(&outcome);
     report_stream_notify(log, "hr-notify", outcome, json!({"bpm": sim.config.bpm}));
 }
 
@@ -1055,6 +1061,7 @@ async fn handle_radio(
             characteristic,
             subscribed,
         } => {
+            sim.observe_subscription(&characteristic, subscribed);
             log.log(
                 if subscribed {
                     "subscribed"
@@ -1118,6 +1125,7 @@ async fn handle_radio(
             characteristic,
             outcome,
         } => {
+            sim.observe_notify_settled(&characteristic, &outcome);
             let (kind, detail) = notify_settled_log(&service, &characteristic, &outcome);
             log.log(kind, detail);
         }

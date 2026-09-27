@@ -309,17 +309,17 @@ fn compare_advertisement(real: &Value, sim: &Value, fields: &mut Vec<FieldResult
                     format!("real={a:?} sim={b:?}"),
                 )),
             }
-            // Local names carry per-unit ids: both must be H10 names, the
-            // exact id is configured identity, not behaviour.
+            // Local names carry per-unit ids. The mandatory SIM prefix is
+            // the explicit identity exception, not a protocol equivalence.
             let names = (
                 left.get("localName").and_then(Value::as_str),
                 right.get("localName").and_then(Value::as_str),
             );
             match names {
-                (Some(a), Some(b)) if a.starts_with("Polar H10") && b.starts_with("Polar H10") => {
+                (Some(a), Some(b)) if a.starts_with("Polar H10") && b.starts_with("SIM") => {
                     fields.push(pass(
                         "advertisement.localName",
-                        format!("real={a:?} sim={b:?} (identity modulo prefix)"),
+                        format!("real={a:?} sim={b:?} (explicit SIM naming exception)"),
                     ));
                 }
                 _ => fields.push(fail("advertisement.localName", format!("real={names:?}"))),
@@ -804,7 +804,7 @@ mod tests {
     #[test]
     fn identical_fingerprints_modulo_identity_pass() {
         let real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
-        let sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1010.0);
+        let sim = fingerprint("SIM Polar H10 0001", "SIM000001", 1010.0);
         let report = compare_fingerprints(&real, &sim, Tolerances::default());
         assert!(
             report.passed,
@@ -814,9 +814,26 @@ mod tests {
     }
 
     #[test]
+    fn naming_exception_requires_a_sim_marked_capture() {
+        let real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
+        for name in ["Polar H10 E9B93D29", "Polar H10 SIM0001", "sim Polar H10"] {
+            let sim = fingerprint(name, "SIM000001", 1000.0);
+            let report = compare_fingerprints(&real, &sim, Tolerances::default());
+            assert!(!report.passed, "unmarked simulator was accepted: {name}");
+            assert!(
+                report
+                    .fields
+                    .iter()
+                    .any(|field| field.field == "advertisement.localName"
+                        && matches!(field.status, CheckStatus::Fail))
+            );
+        }
+    }
+
+    #[test]
     fn gatt_set_difference_fails_that_field_only() {
         let real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
-        let mut sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1000.0);
+        let mut sim = fingerprint("SIM Polar H10 0001", "SIM000001", 1000.0);
         sim["gatt"]["characteristics"] =
             json!([{"uuid": "2a38", "occurrence": 0, "properties": {}}]);
         let report = compare_fingerprints(&real, &sim, Tolerances::default());
@@ -842,7 +859,7 @@ mod tests {
         // ATT handle order depends on the backend's registration order
         // (BlueZ numbers handles in hash order), so only the set is judged.
         let real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
-        let mut sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1000.0);
+        let mut sim = fingerprint("SIM Polar H10 0001", "SIM000001", 1000.0);
         let first = json!({"uuid": "180d", "occurrence": 0, "primary": true});
         let second = json!({"uuid": "180a", "occurrence": 0, "primary": true});
         sim["gatt"]["services"] = json!([second.clone(), first.clone()]);
@@ -860,7 +877,7 @@ mod tests {
     #[test]
     fn timing_outside_tolerance_fails_with_reported_bound() {
         let real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
-        let sim = fingerprint("Polar H10 SIM0001", "SIM000001", 2000.0);
+        let sim = fingerprint("SIM Polar H10 0001", "SIM000001", 2000.0);
         let report = compare_fingerprints(&real, &sim, Tolerances::default());
         assert!(!report.passed);
         let field = report
@@ -879,7 +896,7 @@ mod tests {
     #[test]
     fn behaviour_status_mismatch_fails() {
         let real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
-        let mut sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1000.0);
+        let mut sim = fingerprint("SIM Polar H10 0001", "SIM000001", 1000.0);
         sim["behaviour"]["invalidPmdCommand"] = json!({"op": "invalid-op", "errorCode": 0});
         let report = compare_fingerprints(&real, &sim, Tolerances::default());
         assert!(!report.passed);
@@ -894,7 +911,7 @@ mod tests {
     #[test]
     fn version_mismatch_fails_loudly() {
         let real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
-        let mut sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1000.0);
+        let mut sim = fingerprint("SIM Polar H10 0001", "SIM000001", 1000.0);
         sim["version"] = json!(2);
         let report = compare_fingerprints(&real, &sim, Tolerances::default());
         assert!(!report.passed);
@@ -905,7 +922,7 @@ mod tests {
         // Only supported schema versions are accepted: an unknown version
         // on both sides is a failure, never a "missing == missing" pass.
         let mut real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
-        let mut sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1000.0);
+        let mut sim = fingerprint("SIM Polar H10 0001", "SIM000001", 1000.0);
         real["version"] = json!(999);
         sim["version"] = json!(999);
         let report = compare_fingerprints(&real, &sim, Tolerances::default());
@@ -924,7 +941,7 @@ mod tests {
         // timing is Incomplete, keeps `passed` (nothing contradicted) but
         // clears `complete`.
         let real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
-        let mut sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1000.0);
+        let mut sim = fingerprint("SIM Polar H10 0001", "SIM000001", 1000.0);
         sim["timings"].as_object_mut().unwrap().remove("pmdStartMs");
         let report = compare_fingerprints(&real, &sim, Tolerances::default());
         assert!(report.passed, "nothing contradicted");
@@ -942,7 +959,7 @@ mod tests {
         // Full parent paths: the same characteristic under different
         // services is a mismatch, not a set coincidence.
         let real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
-        let mut sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1000.0);
+        let mut sim = fingerprint("SIM Polar H10 0001", "SIM000001", 1000.0);
         let with_parent = |service: &str| {
             json!([
                 {"uuid": "2a37", "occurrence": 0, "service": service, "properties": {"notify": true}},
@@ -960,7 +977,7 @@ mod tests {
         // Rows without a parent path compare as a set (as before) but the
         // parent coverage is Incomplete — never a silent full pass.
         let real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
-        let sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1000.0);
+        let sim = fingerprint("SIM Polar H10 0001", "SIM000001", 1000.0);
         let report = compare_fingerprints(&real, &sim, Tolerances::default());
         assert!(report.passed);
         assert!(!report.complete);
@@ -977,7 +994,7 @@ mod tests {
         // Payload lengths are structural: a length mismatch fails. Bytes are
         // compared exactly when lengths agree.
         let real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
-        let mut sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1000.0);
+        let mut sim = fingerprint("SIM Polar H10 0001", "SIM000001", 1000.0);
         sim["advertisement"]["manufacturerData"] = json!([{"companyId": 107, "data": "00"}]);
         let report = compare_fingerprints(&real, &sim, Tolerances::default());
         let field = report
@@ -992,7 +1009,7 @@ mod tests {
     #[test]
     fn manufacturer_payload_bytes_are_checked_when_lengths_agree() {
         let mut real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
-        let mut sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1000.0);
+        let mut sim = fingerprint("SIM Polar H10 0001", "SIM000001", 1000.0);
         real["advertisement"]["manufacturerData"] = json!([{"companyId": 107, "data": "aabb"}]);
         sim["advertisement"]["manufacturerData"] = json!([{"companyId": 107, "data": "aabb"}]);
         let report = compare_fingerprints(&real, &sim, Tolerances::default());
@@ -1011,7 +1028,7 @@ mod tests {
         // difference across two captures proves nothing about the sim. It is
         // reported (blocking `complete`) but never judged a failure.
         let mut real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
-        let mut sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1000.0);
+        let mut sim = fingerprint("SIM Polar H10 0001", "SIM000001", 1000.0);
         real["advertisement"]["manufacturerData"] = json!([{"companyId": 107, "data": "aabb"}]);
         sim["advertisement"]["manufacturerData"] = json!([{"companyId": 107, "data": "ccdd"}]);
         let report = compare_fingerprints(&real, &sim, Tolerances::default());
@@ -1034,7 +1051,7 @@ mod tests {
     fn timing_tails_are_compared_beyond_p50() {
         // Same p50 but a far-out max: the tail check fails the field.
         let real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
-        let mut sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1000.0);
+        let mut sim = fingerprint("SIM Polar H10 0001", "SIM000001", 1000.0);
         sim["timings"]["hrNotificationIntervalMs"]["max"] = json!(99999.0);
         sim["timings"]["hrNotificationIntervalMs"]["n"] = json!(60);
         let report = compare_fingerprints(&real, &sim, Tolerances::default());
@@ -1101,7 +1118,7 @@ mod tests {
         // Thin samples cannot confirm a distribution: differing counts are
         // Incomplete (reported, never judged), never a silent pass.
         let real = fingerprint("Polar H10 E997042F", "E997042F", 1000.0);
-        let mut sim = fingerprint("Polar H10 SIM0001", "SIM000001", 1000.0);
+        let mut sim = fingerprint("SIM Polar H10 0001", "SIM000001", 1000.0);
         sim["timings"]["hrNotificationIntervalMs"]["n"] = json!(1);
         let report = compare_fingerprints(&real, &sim, Tolerances::default());
         assert!(report.passed, "counts alone never fail");

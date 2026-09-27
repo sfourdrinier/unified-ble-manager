@@ -30,29 +30,29 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use bluer::{
+    Adapter, AdapterEvent, AdapterProperty,
     adv::{Advertisement, AdvertisementHandle, Type as AdvertisementType},
     gatt::{
-        local::{
-            characteristic_control, service_control, Application, ApplicationHandle,
-            Characteristic, CharacteristicControl, CharacteristicControlEvent,
-            CharacteristicControlHandle, CharacteristicNotify, CharacteristicNotifyMethod,
-            CharacteristicRead, CharacteristicReadRequest, CharacteristicWrite,
-            CharacteristicWriteMethod, CharacteristicWriteRequest, ReqError, Service,
-        },
         CharacteristicWriter,
+        local::{
+            Application, ApplicationHandle, Characteristic, CharacteristicControl,
+            CharacteristicControlEvent, CharacteristicControlHandle, CharacteristicNotify,
+            CharacteristicNotifyMethod, CharacteristicRead, CharacteristicReadRequest,
+            CharacteristicWrite, CharacteristicWriteMethod, CharacteristicWriteRequest, ReqError,
+            Service, characteristic_control, service_control,
+        },
     },
-    Adapter, AdapterEvent, AdapterProperty,
 };
 use futures::{FutureExt, StreamExt};
-use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::sync::{Notify, mpsc, oneshot};
 use uuid::Uuid;
 
 use super::mgmt_socket::MgmtAdvertiser;
 use crate::linux_advertising::{self, AliasRecord, BluezRegistrationFailure};
 use crate::radio::{
-    short_of, CharPermission, CharProperty, CharSpec, DisconnectReport, GattClientSet,
-    PeripheralRadio, QueuedSend, RadioError, RadioEvent, RadioReadAnswer, SendOutcome, SendQueue,
-    ServiceSpec, SubscriptionLedger, SEND_QUEUE_CAPACITY, SKIP_NOT_CONNECTED,
+    CharPermission, CharProperty, CharSpec, DisconnectReport, GattClientSet, PeripheralRadio,
+    QueuedSend, RadioError, RadioEvent, RadioReadAnswer, SEND_QUEUE_CAPACITY, SKIP_NOT_CONNECTED,
+    SendOutcome, SendQueue, ServiceSpec, SubscriptionLedger, short_of,
 };
 
 fn backend_error(stage: &str, error: bluer::Error) -> RadioError {
@@ -295,7 +295,9 @@ impl PeripheralRadio for BluerRadio {
                 // back down rather than impersonate half the strap.
                 if let Some(mgmt) = self.mgmt.as_mut() {
                     if let Err(remove) = tokio::task::block_in_place(|| mgmt.stop()) {
-                        eprintln!("h10-sim: alias claim failed ({error}); removing the advertisement failed too: {remove}");
+                        eprintln!(
+                            "h10-sim: alias claim failed ({error}); removing the advertisement failed too: {remove}"
+                        );
                     }
                 }
                 return Err(error);
@@ -1391,7 +1393,7 @@ mod tests {
             crate::advertisement::short_uuid(0x180D),
             crate::advertisement::short_uuid(0xFEEE),
         ];
-        let adv = h10_advertisement("Polar H10 SIM0001", &uuids, None);
+        let adv = h10_advertisement("SIM Polar H10 0001", &uuids, None);
         assert_eq!(adv.advertisement_type, AdvertisementType::Peripheral);
         assert_eq!(adv.service_uuids, uuids.into_iter().collect());
         assert!(adv.manufacturer_data.is_empty(), "no payload staged");
@@ -1404,7 +1406,7 @@ mod tests {
             adv.system_includes.is_empty(),
             "LocalName is set, so Includes must not repeat local-name"
         );
-        assert_eq!(adv.local_name.as_deref(), Some("Polar H10 SIM0001"));
+        assert_eq!(adv.local_name.as_deref(), Some("SIM Polar H10 0001"));
         assert_eq!(adv.appearance, None);
         assert_eq!(adv.duration, None);
         assert_eq!(adv.timeout, None);
@@ -1417,7 +1419,7 @@ mod tests {
     #[test]
     fn staged_manufacturer_data_is_advertised() {
         let staged = (0x006B, vec![0x33, 0x1C]);
-        let adv = h10_advertisement("Polar H10 SIM0001", &[], Some(&staged));
+        let adv = h10_advertisement("SIM Polar H10 0001", &[], Some(&staged));
         assert_eq!(
             adv.manufacturer_data,
             BTreeMap::from([(0x006B, vec![0x33, 0x1C])])

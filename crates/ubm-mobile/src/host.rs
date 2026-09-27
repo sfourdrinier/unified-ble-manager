@@ -478,6 +478,9 @@ pub(crate) struct HostInner {
     shut_down: AtomicBool,
     pump: Mutex<Option<tokio::task::JoinHandle<()>>>,
     clock: Instant,
+    pub(crate) continuation: std::sync::OnceLock<ubm_desktop::continuation::NativeContinuation>,
+    pub(crate) continuation_closed: AtomicBool,
+    pub(crate) continuation_admission: Mutex<()>,
 }
 
 /// The process-owned mobile owner. Cloning shares it.
@@ -1571,7 +1574,20 @@ async fn pump(host: Weak<HostInner>, signals: Arc<Signals>) {
             let Some(host) = host.upgrade() else {
                 return;
             };
+            let continuation_changed = match &signal {
+                HostSignal::Lifecycle(event) => {
+                    !matches!(event.kind, LifecycleKind::Released { .. })
+                }
+                HostSignal::AdapterReset(..) | HostSignal::Adapter(..) => true,
+                _ => false,
+            };
             host.handle(signal).await;
+            if continuation_changed
+                && !host.shut_down.load(Ordering::SeqCst)
+                && let Some(executor) = host.continuation.get()
+            {
+                executor.request_recovery(&host.runtime);
+            }
         }
         // Overflow is never silently discarded (X-R6): a lost lifecycle or
         // current-state fact becomes one control ingress-drop per session,
@@ -1687,6 +1703,9 @@ impl MobileHost {
             shut_down: AtomicBool::new(false),
             pump: Mutex::new(None),
             clock: Instant::now(),
+            continuation: std::sync::OnceLock::new(),
+            continuation_closed: AtomicBool::new(false),
+            continuation_admission: Mutex::new(()),
         });
         let worker = runtime.spawn(pump(Arc::downgrade(&inner), signals));
         *lock(&inner.pump) = Some(worker);
@@ -1831,7 +1850,17 @@ impl MobileHost {
     /// Open one session lease (one RN manager) that is its own background
     /// scope: `session.dispose` releases its background leases.
     pub fn open_session(&self, owner: &str) -> Result<MobileSession, DesktopError> {
-        self.open_session_in(owner, None)
+        self.open_session_in(owner, None, Arc::clone(&self.inner.wake))
+    }
+
+    /// Native intake is consumed through an explicit claim, not a JavaScript
+    /// wake route. Sharing the public wake sink would create orphan early wakes.
+    pub(crate) fn open_native_session(&self, owner: &str) -> Result<MobileSession, DesktopError> {
+        struct ClaimWake;
+        impl WakeSink for ClaimWake {
+            fn wake(&self, _: u64) {}
+        }
+        self.open_session_in(owner, None, Arc::new(ClaimWake))
     }
 
     /// Open one session lease whose background leases belong to the shared
@@ -1846,13 +1875,14 @@ impl MobileHost {
         if scope.is_empty() {
             return Err(wire::invalid("session.scope"));
         }
-        self.open_session_in(owner, Some(scope))
+        self.open_session_in(owner, Some(scope), Arc::clone(&self.inner.wake))
     }
 
     fn open_session_in(
         &self,
         owner: &str,
         scope: Option<&str>,
+        wake: Arc<dyn WakeSink>,
     ) -> Result<MobileSession, DesktopError> {
         if owner.is_empty() {
             return Err(wire::invalid("session.owner"));
@@ -1870,7 +1900,7 @@ impl MobileHost {
         });
         let state = Arc::new(SessionState::new(
             id,
-            Outbox::new(id, Arc::clone(&self.inner.wake)),
+            Outbox::new(id, wake),
             background_scope,
         ));
         lock(&self.inner.sessions).insert(id, Arc::clone(&state));
@@ -1936,7 +1966,7 @@ impl MobileHost {
                 "ubm-mobile.session.build-identity",
             )
         })?;
-        let session = self.open_session_in(owner, scope)?;
+        let session = self.open_session_in(owner, scope, Arc::clone(&self.inner.wake))?;
         let record = object(vec![
             ("sessionId", Value::from(session.id())),
             (
@@ -1962,6 +1992,13 @@ impl MobileHost {
     /// record JSON (`released` / `release-failed` with every failure).
     pub async fn shutdown(&self) -> String {
         let inner = &*self.inner;
+        {
+            let _admission = lock(&inner.continuation_admission);
+            inner.continuation_closed.store(true, Ordering::SeqCst);
+        }
+        if let Some(executor) = inner.continuation.get() {
+            executor.stop_recovery();
+        }
         let mut failures = Vec::new();
         for state in inner.session_list() {
             let session = MobileSession::new(Arc::clone(&self.inner), state);

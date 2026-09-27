@@ -9,9 +9,9 @@
 //   relaunch into `willRestoreState` on BLE events).
 // - `background:native-resubscribe`: the wake reconnects the declared known
 //   peer and resubscribes the declared characteristics through the Rust core
-//   with no JavaScript (Android this slice; Apple parity deferred to rc.1).
-// - `background:headless-task` / `background:wake-notification`: DEFERRED to
-//   rc.1. They answer `capability.unsupported` with "not implemented in this
+//   with no JavaScript, through the shared native continuation owner.
+// - `background:headless-task` / `background:wake-notification` answer
+//   `capability.unsupported` with "not implemented in this
 //   release" — the difference between "the platform refuses" and "we have
 //   not built it yet" stays truthful and visible.
 
@@ -34,6 +34,8 @@ export type ReactNativeContinuationPlatform = 'android' | 'apple'
 export interface ReactNativeContinuationRuntimeFacts {
   /** Android API level (`Platform.Version`); CDM presence needs API 31+. */
   readonly androidApiLevel: number | null
+  /** The running Apple host supplied a configured native restoration authority. */
+  readonly appleRestorationConfigured?: boolean
 }
 
 /** The first Android API level with CDM device-presence observation. */
@@ -41,10 +43,11 @@ export const ANDROID_PRESENCE_API_LEVEL = 31
 
 /** The deferred-slice reason, kept distinct from any platform refusal. */
 export const NOT_IMPLEMENTED_IN_THIS_RELEASE =
-  'not implemented in this release: deferred to rc.1; the platform capability is undecided by this reason'
+  'not implemented in this release; the platform capability is undecided by this reason'
 
 // Marker registrations bind the catalog scenario like every other
-// deterministic registration; a dedicated continuation TCK scenario is rc.1.
+// deterministic registration. Native execution is separately exercised by the
+// Rust, JNI and Swift continuation suites; this marker is not hardware evidence.
 const scenarioIds = Object.freeze(['capability.truth-limits-evidence-and-binding'])
 const schemaRange = versionRange(version('capability-schema', 1), version('capability-schema', 1))
 
@@ -197,11 +200,18 @@ export function createReactNativeContinuationFeatureRegistry(
           'The system relaunches the app into the background on BLE events; restored peripherals arrive through willRestoreState for the configured restoration identifier.',
         affectedGuarantee: 'relaunch of a terminated app on BLE events'
       }),
-      unsupportedRegistration(ids.nativeResubscribe, platform, implementationVersion, {
-        code: 'not-implemented-in-this-release',
-        explanation: `Native reconnect plus resubscribe from willRestoreState is ${NOT_IMPLEMENTED_IN_THIS_RELEASE}.`,
-        affectedGuarantee: 'wake streaming without JavaScript'
-      }),
+      facts.appleRestorationConfigured === true
+        ? limitedRegistration(ids.nativeResubscribe, platform, implementationVersion, {
+            code: 'live-radio-qualification-pending',
+            explanation:
+              'The configured restoration owner reconnects and resubscribes natively without JavaScript, retaining a bounded backlog with accounted loss. Physical-radio qualification remains separate.',
+            affectedGuarantee: 'reliability-qualified wake streaming'
+          })
+        : unsupportedRegistration(ids.nativeResubscribe, platform, implementationVersion, {
+            code: 'configured-native-restoration-authority-required',
+            explanation: 'Native wake streaming requires a configured restoration authority in this application.',
+            affectedGuarantee: 'wake streaming without JavaScript'
+          }),
       unsupportedRegistration(ids.headlessTask, platform, implementationVersion, {
         code: 'not-implemented-in-this-release',
         explanation: `Headless JS in the wake is ${NOT_IMPLEMENTED_IN_THIS_RELEASE}.`,

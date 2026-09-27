@@ -1,9 +1,64 @@
 import { validateUnifiedBleExpoPluginOptions } from '../expoPluginSchema'
+import { reconcileExpoInfoPlist } from '../withBLE'
 
 const HR_SERVICE = '0000180d-0000-1000-8000-00805f9b34fb'
 const HR_MEASUREMENT = '00002a37-0000-1000-8000-00805f9b34fb'
 
 describe('Expo plugin background.continuation schema (BGS4)', () => {
+  it('normalizes Apple peer UUIDs without accepting partial UUIDs or arbitrary identifiers', () => {
+    const peerId = '9828347e-45df-2eeb-e928-6e443f4065e3'
+    const options = validateUnifiedBleExpoPluginOptions({
+      background: { continuation: { onAppearance: 'native', peerId } }
+    })
+    expect(options.background?.continuation?.peerId).toBe(peerId.toUpperCase())
+    for (const invalid of ['180d', 'peer-1', `${peerId} `, 'AA:BB:CC:DD:EE']) {
+      expect(() => validateUnifiedBleExpoPluginOptions({ background: { continuation: { peerId: invalid } } })).toThrow()
+    }
+  })
+
+  it('enforces the runtime selector bound at build time', () => {
+    const selector = { serviceUuid: HR_SERVICE, characteristicUuid: HR_MEASUREMENT }
+    expect(
+      validateUnifiedBleExpoPluginOptions({ background: { continuation: { resubscribe: Array(64).fill(selector) } } })
+        .background?.continuation?.resubscribe
+    ).toHaveLength(64)
+    expect(() =>
+      validateUnifiedBleExpoPluginOptions({ background: { continuation: { resubscribe: Array(65).fill(selector) } } })
+    ).toThrow()
+  })
+
+  it('writes normalized Apple startup JSON and removes stale declarations on reconfiguration or tvOS', () => {
+    const options = validateUnifiedBleExpoPluginOptions({
+      background: {
+        ios: { mode: 'central', restoration: { id: 'primary' } },
+        continuation: {
+          onAppearance: 'native',
+          peerId: '9828347e-45df-2eeb-e928-6e443f4065e3',
+          resubscribe: [{ serviceUuid: HR_SERVICE.toUpperCase(), characteristicUuid: HR_MEASUREMENT }]
+        }
+      }
+    })
+    const plist: Record<string, unknown> = {}
+    reconcileExpoInfoPlist(plist, options)
+    expect(plist.UnifiedBleBackgroundContinuation).toBe(JSON.stringify(options.background?.continuation))
+    reconcileExpoInfoPlist(plist, {})
+    expect(plist.UnifiedBleBackgroundContinuation).toBeUndefined()
+    reconcileExpoInfoPlist(plist, options)
+    reconcileExpoInfoPlist(plist, options, undefined, 'tvos')
+    expect(plist.UnifiedBleBackgroundContinuation).toBeUndefined()
+    expect(plist.UnifiedBleProtocolRestorationId).toBeUndefined()
+  })
+
+  it('preserves explicit record-only and unsupported Apple strategies for a truthful native result', () => {
+    for (const continuation of [
+      { onAppearance: 'record-only' },
+      { onAppearance: 'headless-task', headlessTaskName: 'Wake' }
+    ]) {
+      const options = validateUnifiedBleExpoPluginOptions({ background: { continuation } })
+      const plist = reconcileExpoInfoPlist({}, options)
+      expect(plist.UnifiedBleBackgroundContinuation).toBe(JSON.stringify(options.background?.continuation))
+    }
+  })
   it('defaults to absent (record-only at runtime) when not configured', () => {
     expect(validateUnifiedBleExpoPluginOptions({}).background).toBeUndefined()
     expect(validateUnifiedBleExpoPluginOptions({ background: { android: { mode: 'none' } } }).background).toEqual({

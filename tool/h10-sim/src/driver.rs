@@ -13,7 +13,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::protocol::Message;
 
@@ -544,10 +544,12 @@ mod tests {
                 host_id: "h1".to_string()
             }
         );
-        assert!(decode_server_text(
-            r#"{"type":"welcome","protocol":"ubm-test-driver/2","hostId":"h1"}"#
-        )
-        .is_err());
+        assert!(
+            decode_server_text(
+                r#"{"type":"welcome","protocol":"ubm-test-driver/2","hostId":"h1"}"#
+            )
+            .is_err()
+        );
         let command = decode_server_text(
             r#"{"type":"command","id":"c1","scenario":"sim-control","command":"set-bpm","args":{"bpm":90}}"#,
         )

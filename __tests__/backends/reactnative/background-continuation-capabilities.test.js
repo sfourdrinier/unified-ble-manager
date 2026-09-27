@@ -60,8 +60,17 @@ describe('android runtime capabilities', () => {
   })
 })
 
-describe('apple runtime capabilities (parity deferred to rc.1)', () => {
-  it('reports the wake via restoration, native as not-yet-built (not platform-cannot)', () => {
+describe('apple runtime continuation capabilities', () => {
+  it('reports native continuation only with configured restoration authority', () => {
+    const registry = createReactNativeContinuationFeatureRegistry('apple', VERSION, {
+      androidApiLevel: null,
+      appleRestorationConfigured: true
+    })
+    expect(states(registry)['background:native-resubscribe']).toBe('limited')
+    expect(limitationFor(registry, 'background:native-resubscribe').code).toBe('live-radio-qualification-pending')
+  })
+
+  it('does not advertise native wake streaming without restoration configuration', () => {
     const registry = createReactNativeContinuationFeatureRegistry('apple', VERSION, { androidApiLevel: null })
     expect(states(registry)).toMatchObject({
       'background:wake-on-appearance': 'limited',
@@ -70,7 +79,7 @@ describe('apple runtime capabilities (parity deferred to rc.1)', () => {
       'background:wake-notification': 'unsupported'
     })
     expect(limitationFor(registry, 'background:native-resubscribe').explanation).toMatch(
-      /not implemented in this release/
+      /configured restoration/
     )
   })
 })

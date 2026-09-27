@@ -290,6 +290,12 @@ final class Harness {
   var wakes = [String]()
   var sessionId = ""
   var records = [[String: Any]]()
+  private let continuationLock = NSLock()
+  private var continuationCallback: ((String?, String?) -> Void)?
+  var continuationDone: ((String?, String?) -> Void)? {
+    get { continuationLock.lock(); defer { continuationLock.unlock() }; return continuationCallback }
+    set { continuationLock.lock(); defer { continuationLock.unlock() }; continuationCallback = newValue }
+  }
 
   var admissions = [String: Int]()
   var nextAdmission = 0
@@ -359,7 +365,11 @@ final class Harness {
 
     driver.restored = [["peerIdentifier": "R", "name": "Polar H10 R", "connected": true]]
     sessions = UnifiedBleRustCoreSessions(installer: { wake in
-      self.adapter = UnifiedBleRustRadioAdapter(driver: self.driver)
+      self.adapter = UnifiedBleRustRadioAdapter(driver: self.driver, onRestoredPeer: { peer in
+        self.sessions.continueRestoredPeer(peer) { value, failure in
+          self.continuationDone?(value, failure)
+        }
+      })
       self.host = try mobileHostInstall(
         radio: self.adapter, wake: wake, platform: "apple", owner: "apple-harness", adapterLabel: "corebluetooth"
       )
@@ -652,6 +662,7 @@ final class Harness {
     check(json(badDrain.1 ?? "{}")["code"] as? String == "argument.invalid", "fractional drain: \(badDrain)")
 
     lifecycleCleanupChecks()
+    nativeContinuationChecks()
 
     // Process shutdown disables every CCCD the radio still holds.
     let cleanup = json(host.shutdown())
@@ -659,6 +670,138 @@ final class Harness {
     let counters: UnifiedBleRustRadioAdapterCounters = waitFor("adapter counters") { self.adapter.adapterCounters(completion: $0) }
     check(counters.mismatchedCompletions == 0, "Rust refused an adapter answer shape: \(counters)")
     check(counters.cancelledRequests >= 1, "cancel was not counted: \(counters)")
+  }
+
+  func nativeContinuationChecks() {
+    // No JS manager/session owns this order. The process host must receive
+    // restored peers, reconnect, discover and subscribe on its own.
+    let peer = "9828347E-45DF-2EEB-E928-6E443F4065E3"
+    let declaration = jsonText([
+      "onAppearance": "native", "peerId": peer,
+      "resubscribe": [["serviceUuid": hrService, "serviceOccurrence": 1,
+                       "characteristicUuid": hrMeasurement, "characteristicOccurrence": 1]],
+    ])
+    let declared: (String?, String?) = waitFor("native declaration") { done in
+      self.sessions.declareBackgroundContinuation(declaration) { done(($0, $1)) }
+    }
+    check(declared.1 == nil, "Apple UUID declaration refused: \(String(describing: declared.1))")
+    // A pending declaration transaction refuses seeding before native work.
+    // Its failure is still the outcome of this OS wake, not a missing wake.
+    let reserved = json(host.continuationReserveDeclaration(declarationJson: declaration))
+    let reservation = (reserved["value"] as? [String: Any])?["reservationToken"] as? String
+    check(reserved["ok"] as? Bool == true && reservation != nil, "reservation failed: \(reserved)")
+    let expectedSeedError = json(host.continuationSeedDeclaration(declarationJson: declaration))["error"] as? [String: Any] ?? [:]
+    var seedCompletions = 0
+    sessions.continueRestoredPeer(peer) { value, failure in
+      seedCompletions += 1
+      check(value == nil && failure != nil, "reserved seed must fail before executing")
+      check(NSDictionary(dictionary: json(failure ?? "{}")) == NSDictionary(dictionary: expectedSeedError), "seed failure changed: \(failure ?? "")")
+      let wake = json(UserDefaults.standard.string(forKey: "com.sfourdrinier.unifiedblemanager.background-continuation.last-wake") ?? "{}")
+      check(wake["event"] as? String == "continuation.failed" && wake["code"] as? String == expectedSeedError["code"] as? String
+            && wake["reason"] as? String == expectedSeedError["detail"] as? String, "seed failure was not persisted before completion: \(wake)")
+      check(wake["peerAddress"] as? String == peer && wake["strategy"] as? String == "native", "seed failure identity changed: \(wake)")
+    }
+    check(seedCompletions == 1, "seed refusal must complete exactly once")
+    check(json(host.continuationCancelDeclaration(reservationToken: reservation!))["ok"] as? Bool == true, "could not cancel seed-test reservation")
+    let staleDeclaration = declaration.replacingOccurrences(of: peer, with: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")
+    let stale: String = waitFor("stale captured wake") { done in
+      self.host.continuationExecute(peerId: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA", declarationJson: staleDeclaration,
+                                   completion: HarnessInvokeCompletion(done))
+    }
+    check(errorCode(json(stale)) == "lifecycle.invalid-state", "persisted replacement must fence stale captured wake: \(stale)")
+    check(!driver.onQueue { self.driver.calls.contains("connect AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA") },
+          "stale declaration must not reach radio admission")
+    onRadioQueue {
+      self.driver.snapshot = ["availability": "available", "authorization": "granted", "power": "on", "safeReason": NSNull()]
+      self.adapter.protocolRadioDidUpdateAdapterState(self.driver.snapshot)
+    }
+    let completed: (String?, String?) = waitFor("native restoration continuation") { done in
+      self.continuationDone = { done(($0, $1)) }
+      self.onRadioQueue {
+        self.adapter.protocolRadioDidRestorePeers([["peerIdentifier": peer, "name": "H10", "connected": true]])
+      }
+    }
+    continuationDone = nil
+    check(completed.1 == nil, "native continuation failed: \(String(describing: completed))")
+    check(json(completed.0 ?? "{}")["event"] as? String == "continuation.completed", "native outcome: \(completed)")
+    let status: (String?, String?) = waitFor("native wake status") { done in
+      self.sessions.continuationStatus { done(($0, $1)) }
+    }
+    let lastWake = json(status.0 ?? "{}")["lastWake"] as? [String: Any] ?? [:]
+    check(Set(lastWake.keys) == ["observedAtMs", "event", "strategy", "peerAddress", "code", "reason"],
+          "native wake must match the strict public status codec: \(lastWake)")
+    check(lastWake["observedAtMs"] as? Int64 != nil, "wake timestamp must be integer milliseconds")
+    check(lastWake["code"] is NSNull && lastWake["reason"] is NSNull, "success must not invent failure fields")
+    check(driver.onQueue { self.driver.calls.contains("connect \(peer)") }, "wake never connected")
+    check(driver.onQueue { self.driver.calls.contains("discover \(peer)") }, "wake never discovered")
+    let replacement: (String?, String?) = waitFor("active declaration replacement") { done in
+      self.sessions.declareBackgroundContinuation("{\"onAppearance\":\"record-only\"}") { done(($0, $1)) }
+    }
+    check(replacement.0 == nil && json(replacement.1 ?? "{}")["code"] as? String == "lifecycle.invalid-state",
+          "a live native session must retain its declaration until its backlog is acknowledged")
+    onRadioQueue { self.adapter.protocolRadioDidModifyServices(peer) }
+    let recoveryDeadline = Date().addingTimeInterval(10)
+    var recovered = false
+    var lastRecoveryObservation: (String?, String?) = (nil, nil)
+    while Date() < recoveryDeadline && !recovered {
+      let observation: (String?, String?) = waitFor("native recovery status") { done in
+        self.sessions.continuationStatus { done(($0, $1)) }
+      }
+      lastRecoveryObservation = observation
+      if let failure = observation.1 {
+        check(json(failure)["code"] as? String == "lifecycle.invalid-state",
+              "only explicit in-flight ownership contention may postpone status: \(failure)")
+        Thread.sleep(forTimeInterval: 0.01)
+        continue
+      }
+      let observed = json(observation.0 ?? "{}")
+      let recovery = observed["lastRecovery"] as? [String: Any]
+      recovered = recovery?["event"] as? String == "continuation.completed"
+      check((observed["lastWake"] as? [String: Any])?["observedAtMs"] as? Int64 == lastWake["observedAtMs"] as? Int64,
+            "recovery must not overwrite the original OS wake: before=\(lastWake), after=\(String(describing: observed["lastWake"]))")
+      if !recovered { Thread.sleep(forTimeInterval: 0.01) }
+    }
+    check(recovered, "autonomous service-change recovery must be visible in public Apple status: \(lastRecoveryObservation); calls=\(driver.onQueue { self.driver.calls })")
+    let subscription = driver.onQueue { self.driver.subscriptionIdentifiers.last! }
+    onRadioQueue {
+      self.adapter.protocolRadioDidReceiveNotification(subscription, value: Data([0, 72]) as NSData)
+    }
+    // Observe actual intake, without draining or assuming a sleep is a barrier.
+    // No renderer/application manager pumps this native session.
+    let intakeDeadline = Date().addingTimeInterval(10)
+    while true {
+      let envelope: String = waitFor("native intake counters") { done in
+        self.host.continuationDescribeBacklog(completion: HarnessInvokeCompletion(done))
+      }
+      let snapshot = json(envelope)["value"] as? [String: Any]
+      let counters = snapshot?["counters"] as? [String: Any]
+      if (counters?["retainedByteBuffers"] as? NSNumber)?.intValue == 1 { break }
+      check(Date() < intakeDeadline, "native notification never reached the owned backlog: \(envelope)")
+      Thread.sleep(forTimeInterval: 0.005)
+    }
+    let prepared: (String?, String?) = waitFor("native prepare") { done in
+      self.sessions.prepareContinuationClaim(maxItems: 256, maxBytes: 65536) { done(($0, $1)) }
+    }
+    check(prepared.1 == nil, "native prepare failed: \(String(describing: prepared))")
+    let claim = json(prepared.0 ?? "{}")
+    check(claim["consumerCount"] as? Int == 2, "handoff preserves both pre-recovery and replacement selector identities")
+    let batches = claim["batches"] as? [String] ?? []
+    let values = batches.flatMap { json($0)["records"] as? [[String: Any]] ?? [] }
+    check(values.contains { $0["t"] as? String == "value" && $0["valueB64"] as? String == "AEg=" }, "no native HR value in claim: \(claim)")
+    guard let token = claim["claimToken"] as? String, !token.isEmpty else {
+      return check(false, "native prepare missing acknowledgement token")
+    }
+    let replay: (String?, String?) = waitFor("native prepare replay") { done in
+      self.sessions.prepareContinuationClaim(maxItems: 256, maxBytes: 65536) { done(($0, $1)) }
+    }
+    check(replay.0 == prepared.0, "unacknowledged native backlog is not replayable")
+    let acknowledged: (String?, String?) = waitFor("native acknowledgement") { done in
+      self.sessions.acknowledgeContinuationClaim(token) { done(($0, $1)) }
+    }
+    check(acknowledged.1 == nil && json(acknowledged.0 ?? "{}")["disposed"] as? Bool == true,
+          "native handoff did not release: \(acknowledged)")
+    UserDefaults.standard.removeObject(forKey: "com.sfourdrinier.unifiedblemanager.background-continuation")
+    UserDefaults.standard.removeObject(forKey: "com.sfourdrinier.unifiedblemanager.background-continuation.last-wake")
   }
 
   func lifecycleCleanupChecks() {

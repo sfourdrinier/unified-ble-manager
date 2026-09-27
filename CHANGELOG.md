@@ -2,6 +2,44 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## Unreleased
+
+### Native background continuation
+
+- Share native connect/discover/resubscribe, bounded collection, recovery, and
+  prepared-claim acknowledgement across mobile and trusted desktop hosts.
+  Android delegates to this owner instead of maintaining a second executor.
+- Bootstrap configured iOS continuation from native application launch and
+  CoreBluetooth restoration without waiting for JavaScript. Expo persists the
+  declaration for both mobile hosts and accepts Apple peripheral UUIDs.
+- Preserve scoped connection leases, retained cleanup failures, selector
+  identities, and explicit loss accounting through recovery and handoff.
+  Native-only sessions do not generate orphan JavaScript wake notifications.
+- Expose recovery diagnostics separately from the original wake. Ordinary Node
+  manager options refuse unsupported automatic wake configuration rather than
+  silently discarding it. Web background relaunch is not emulated.
+- Keep BlueZ adapters whose optional `Modalias` property is absent. Invalid
+  required adapter properties now report their error instead of silently
+  turning a real adapter into an empty enumeration.
+- Reject noncanonical desktop platform peer-ID aliases before creating peer
+  ownership or dispatching a connection. The radio's native parser supplies
+  the canonical spelling in `argument.invalid` detail; opaque IDs remain
+  case-sensitive. Native lifecycle events and GATT routes retain one identity.
+- Preserve adapter-scoped BlueZ peer IDs through trusted-host continuation
+  validation and exact outcome matching; mobile declarations retain their
+  separate UUID/MAC validation.
+- Retain BlueZ notification-session ownership across link loss and explicitly
+  retire that client's prior session before resubscribing. A refused or held
+  stop remains retryable cleanup debt; unrelated subscription scopes are
+  untouched.
+- Keep desktop notification collection running while another subscription is
+  pending, and record continuation connection ownership only after acquisition
+  succeeds. Preserve structured Android bridge errors and persist Apple
+  continuation setup failures before reporting completion.
+
+These changes do not promote backend support labels. Phone-only background and
+OS-relaunch qualification remains distinct from deterministic native tests.
+
 ## [5.0.0-rc.12] - 2026-09-25 (prerelease)
 
 This candidate addresses the two P2 IPC recovery findings and the P3 replay

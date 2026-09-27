@@ -147,11 +147,7 @@ impl TimingRuntime {
             return None;
         }
         let ms = self.profile.pmd_response.sample_ms(&mut self.rng).max(0.0);
-        if ms > 0.0 {
-            Some(ms)
-        } else {
-            None
-        }
+        if ms > 0.0 { Some(ms) } else { None }
     }
 }
 
@@ -482,20 +478,26 @@ mod tests {
     #[test]
     fn fingerprint_loader_fails_loudly_on_wrong_version_or_bad_shape() {
         let no_version = serde_json::json!({"timings": {}});
-        assert!(TimingProfile::from_fingerprint(&no_version, 0)
-            .unwrap_err()
-            .contains("version"));
+        assert!(
+            TimingProfile::from_fingerprint(&no_version, 0)
+                .unwrap_err()
+                .contains("version")
+        );
         let bad_version = serde_json::json!({"version": 2, "timings": {}});
-        assert!(TimingProfile::from_fingerprint(&bad_version, 0)
-            .unwrap_err()
-            .contains("version 2"));
+        assert!(
+            TimingProfile::from_fingerprint(&bad_version, 0)
+                .unwrap_err()
+                .contains("version 2")
+        );
         let bad_dist = serde_json::json!({
             "version": 1,
             "timings": {"hrNotificationIntervalMs": {"n": "sixty"}}
         });
-        assert!(TimingProfile::from_fingerprint(&bad_dist, 0)
-            .unwrap_err()
-            .contains("timings.hrNotificationIntervalMs"));
+        assert!(
+            TimingProfile::from_fingerprint(&bad_dist, 0)
+                .unwrap_err()
+                .contains("timings.hrNotificationIntervalMs")
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 {
   "name": "android streams from the sim while peripheral-sim drops the link, then values resume",
   "target": ["android", "peripheral-sim"],
-  "devices": { "android": "Polar H10 SIM0001" },
+  "devices": { "android": "SIM Polar H10 0001" },
   "defaultTimeoutMs": 120000,
   "steps": [
     { "run": "link-loss", "command": "start", "hosts": ["android"] },

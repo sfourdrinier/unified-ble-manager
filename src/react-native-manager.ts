@@ -141,7 +141,8 @@ export async function createReactNativeManagerHost(
     owner: `${options.clientId}/${options.managerId}`,
     now: options.now,
     runtime: {
-      androidApiLevel: options.platform === 'android' ? (options.androidApiLevel ?? hostAndroidApiLevel()) : null
+      androidApiLevel: options.platform === 'android' ? (options.androidApiLevel ?? hostAndroidApiLevel()) : null,
+      appleRestorationConfigured: options.platform === 'apple' && authority !== null
     },
     restorationAuthority: () => authority,
     trace,

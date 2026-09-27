@@ -83,6 +83,8 @@ pub fn load_profile(path: &str) -> Result<DeviceProfile, String> {
 pub fn parse_profile(text: &str, origin: &str) -> Result<DeviceProfile, String> {
     let profile: DeviceProfile = serde_json::from_str(text)
         .map_err(|error| format!("cannot parse profile {origin}: {error}"))?;
+    crate::advertisement::validate_simulator_name(&profile.advertising.name)
+        .map_err(|error| format!("profile {origin}: {error}"))?;
     if profile.battery.level > 100 {
         return Err(format!(
             "profile {origin}: battery.level {} is out of range 0..=100",
@@ -119,6 +121,7 @@ impl SimConfig {
     /// profile fully determines the simulated device. Bad hex is an Err —
     /// never a silent empty payload.
     pub fn from_profile(profile: &DeviceProfile) -> Result<Self, String> {
+        crate::advertisement::validate_simulator_name(&profile.advertising.name)?;
         let info = &profile.device_information;
         let mfr_payload = decode_hex(&profile.advertising.manufacturer_payload_hex)?;
         Ok(Self {
@@ -163,6 +166,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_and_bundled_profiles_start_with_sim() {
+        for source in [
+            include_str!("../profiles/stock-h10.json"),
+            include_str!("../profiles/low-battery-legacy.json"),
+        ] {
+            let profile = parse_profile(source, "<bundled>").unwrap();
+            assert!(profile.advertising.name.starts_with("SIM"));
+        }
+        assert!(crate::gatt_spec::DEFAULT_ADV_NAME.starts_with("SIM"));
+    }
+
+    #[test]
+    fn non_sim_profile_names_are_rejected_before_mutation() {
+        for name in [
+            "Polar H10 E997042F",
+            "Polar H10 SIM0001",
+            "sim H10",
+            "",
+            " SIM H10",
+        ] {
+            let mut profile: serde_json::Value =
+                serde_json::from_str(include_str!("../profiles/stock-h10.json")).unwrap();
+            profile["advertising"]["name"] = serde_json::json!(name);
+            let error = parse_profile(&profile.to_string(), "bad-name.json")
+                .expect_err("unsafe simulator name accepted");
+            assert!(error.contains("bad-name.json") && error.contains("SIM"));
+        }
+    }
+
+    #[test]
     fn stock_profile_loads_and_builds_config() {
         let profile = load_profile("profiles/stock-h10.json").unwrap();
         assert_eq!(profile.device_information.model, "H10");
@@ -170,7 +203,7 @@ mod tests {
         assert_eq!(profile.device_information.hardware, "00760690.03");
         assert_eq!(profile.device_information.software, "4.2.0");
         let config = SimConfig::from_profile(&profile).unwrap();
-        assert_eq!(config.name, "Polar H10 SIM0001");
+        assert_eq!(config.name, "SIM Polar H10 0001");
         assert_eq!(config.battery_percent, 90);
         assert!(!config.contact_supported);
     }
@@ -186,9 +219,11 @@ mod tests {
 
     #[test]
     fn bad_profile_fails_loudly_with_path() {
-        assert!(load_profile("profiles/does-not-exist.json")
-            .unwrap_err()
-            .contains("profiles/does-not-exist.json"));
+        assert!(
+            load_profile("profiles/does-not-exist.json")
+                .unwrap_err()
+                .contains("profiles/does-not-exist.json")
+        );
     }
 
     #[test]

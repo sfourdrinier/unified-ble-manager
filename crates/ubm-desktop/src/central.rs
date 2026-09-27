@@ -133,6 +133,22 @@ fn recycle_observations(core: &mut Central) {
     let _ = core.drain_typed_effects();
 }
 
+fn drain_consumer_before_retirement(
+    core: &mut Central,
+    index: usize,
+    consumer: &str,
+    drain: Option<&(dyn Fn(NotificationPoll) + Send + Sync)>,
+) {
+    if let Some(drain) = drain {
+        while let Some(value) = core.take_notification_value(index, consumer) {
+            drain(NotificationPoll::Value(value));
+        }
+        if let Some(terminal) = core.take_terminal(index, consumer) {
+            drain(NotificationPoll::Terminal(terminal));
+        }
+    }
+}
+
 /// Report the actual host release for a terminal op (F02). Live ops stay live
 /// (a release would fail with `live`); already-reaped ops are ignored so the
 /// canceller and the op driver may both attempt the report idempotently.
@@ -1507,6 +1523,7 @@ struct Inner<B> {
     refresh_changed: tokio::sync::Notify,
     compensation_failures: AtomicU64,
     observer: Option<CentralObserver>,
+    native_wake: broadcast::Sender<()>,
     shut_down: AtomicBool,
     /// Stop signal for the central-lifetime event loop.
     loop_stop: watch::Sender<bool>,
@@ -1550,6 +1567,7 @@ impl<B> Inner<B> {
 
     /// Deliver one signal to the observer. Call with no central lock held.
     fn signal(&self, signal: CentralSignal) {
+        let _ = self.native_wake.send(());
         if let Some(observer) = &self.observer {
             observer(signal);
         }
@@ -1748,6 +1766,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             refresh_changed: tokio::sync::Notify::new(),
             compensation_failures: AtomicU64::new(0),
             observer: profile.observer,
+            native_wake: broadcast::channel(1).0,
             shut_down: AtomicBool::new(false),
             loop_stop,
             loop_done: Mutex::new(None),
@@ -1839,6 +1858,13 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     #[must_use]
     pub fn lifecycle_events(&self) -> broadcast::Receiver<LifecycleEvent> {
         self.inner.lifecycle.subscribe()
+    }
+
+    /// Coalesced native-consumer wake. Payloads remain in their bounded core
+    /// queues; lag is a wake, never a discarded data record. Subscribe before
+    /// collecting to close the collect/wait race.
+    pub fn native_wakes(&self) -> broadcast::Receiver<()> {
+        self.inner.native_wake.subscribe()
     }
 
     /// Subscribe to adapter power-state changes the OS reports. Same lag
@@ -2820,6 +2846,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     ) -> Result<ConnectionHandle, DesktopError> {
         let _settle = SettleOnDrop(&ctl.ticket);
         self.precheck(&ctl, "connection.connect")?;
+        self.inner
+            .boundary
+            .validate_peer_identity(peer_id, "connection.connect")?;
         // Finding 112: without a caller budget a connect waits as long as
         // the OS does (legacy pending CoreBluetooth connect, Android
         // `autoConnect`); no liveness backstop ends it, a cancel does.
@@ -2992,6 +3021,40 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 .classify_connect_failure()
                 .classify_establishment()
         })
+    }
+
+    /// Release only this lease. `false` means another lease retains the link;
+    /// `true` means the final release was confirmed. Failed final cleanup keeps
+    /// the lease so the same owner can retry. Admission and the last-lease test
+    /// share the core lock, so a joining client cannot race the decision.
+    pub async fn release_connection_lease(
+        &self,
+        peer_id: &str,
+        lease: &str,
+        ctl: OpControl,
+    ) -> Result<bool, DesktopError> {
+        self.precheck(&ctl, "connection.release")?;
+        let peer_key = self.known_peer_key(peer_id).await?;
+        {
+            let mut core = self.inner.core.lock().await;
+            let another = core
+                .held_leases()
+                .iter()
+                .any(|(peer, held)| peer == &peer_key && held != lease);
+            if another {
+                core.release_lease(&peer_key, lease, now_ms(), &mut batch())
+                    .map_err(DesktopError::from)?;
+                return Ok(false);
+            }
+            if matches!(
+                core.connection_state(&peer_key),
+                Some(ConnectionState::Connected | ConnectionState::Connecting)
+            ) {
+                core.disconnect(&peer_key, lease, now_ms(), &mut batch())
+                    .map_err(DesktopError::from)?;
+            }
+        }
+        self.disconnect(peer_id, lease, ctl).await.map(|_| true)
     }
 
     /// Explicit disconnect (PR210-09/24): request the release in the core,
@@ -4311,6 +4374,21 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         consumer: &str,
         ctl: OpControl,
     ) -> Result<bool, DesktopError> {
+        self.unsubscribe_draining(peer_id, selector, consumer, ctl, None)
+            .await
+    }
+
+    /// Internal native handoff: drain accepted values under the same core
+    /// lock that retires the consumer, so a final value cannot disappear
+    /// between the collector's last poll and physical disable completion.
+    pub(crate) async fn unsubscribe_draining(
+        &self,
+        peer_id: &str,
+        selector: &PathSelector,
+        consumer: &str,
+        ctl: OpControl,
+        drain: Option<&(dyn Fn(NotificationPoll) + Send + Sync)>,
+    ) -> Result<bool, DesktopError> {
         let _settle = SettleOnDrop(&ctl.ticket);
         self.precheck(&ctl, "gatt.unsubscribe")?;
         let window = ctl.budget.window(LIVENESS_CLEANUP);
@@ -4349,6 +4427,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let disable = core
                 .unsubscribe(index, consumer, now_ms(), &mut out)
                 .map_err(DesktopError::from)?;
+            drain_consumer_before_retirement(&mut core, index, consumer, drain);
             (disable, index, key)
         };
         if !disable_physical && !self.inner.failed_disables.lock().await.contains(&key) {
@@ -4359,8 +4438,16 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             recycle_observations(&mut core);
             return Ok(false);
         }
-        self.drive_disable(peer_id, &key, path_index, &ctl.ticket, window)
-            .await
+        self.drive_disable(
+            peer_id,
+            &key,
+            path_index,
+            &ctl.ticket,
+            window,
+            consumer,
+            drain,
+        )
+        .await
     }
 
     /// Drive one physical disable (first attempt or a retry of a failed
@@ -4423,6 +4510,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn drive_disable(
         &self,
         peer_id: &str,
@@ -4430,6 +4518,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         path_index: usize,
         ticket: &OpTicket,
         window: Window,
+        consumer: &str,
+        drain: Option<&(dyn Fn(NotificationPoll) + Send + Sync)>,
     ) -> Result<bool, DesktopError> {
         let epoch = self.routing_epoch(peer_id).await;
         let outcome = drive(
@@ -4447,6 +4537,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 lock_std(&self.inner.deliveries).remove(key);
                 let mut core = self.inner.core.lock().await;
                 let mut out = batch();
+                drain_consumer_before_retirement(&mut core, path_index, consumer, drain);
                 let _ = core.settle_subscribe_disable(path_index, now_ms(), &mut out);
                 let _ = out.drain();
                 sweep_terminal_successes(&mut core);
@@ -5773,8 +5864,11 @@ async fn deliver<B: RadioBoundary>(
         let mut core = inner.core.lock().await;
         core.deliver_notification_value(path_index, &value).is_ok()
     };
-    if delivered && inner.observer.is_some() {
-        inner.signal(CentralSignal::Value { scope, value });
+    if delivered {
+        let _ = inner.native_wake.send(());
+        if inner.observer.is_some() {
+            inner.signal(CentralSignal::Value { scope, value });
+        }
     }
 }
 
@@ -7392,6 +7486,72 @@ mod adapter_tests {
             Some(ConsumerState::Ready),
             "consumer ready after enable settles"
         );
+    }
+
+    #[tokio::test]
+    async fn native_unsubscribe_drains_the_final_tail_before_retirement() {
+        let central = open().await;
+        ready_peer(&central, "peer-tail", vec![hrm_service()]).await;
+        central
+            .subscribe(
+                "peer-tail",
+                &hrm_selector(0),
+                "native-tail",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let pending = tokio::spawn({
+            let central = central.clone();
+            let captured = captured.clone();
+            async move {
+                let drain = |value| {
+                    if let crate::NotificationPoll::Value(bytes) = value {
+                        captured.lock().unwrap().push(bytes);
+                    }
+                };
+                central
+                    .unsubscribe_draining(
+                        "peer-tail",
+                        &hrm_selector(0),
+                        "native-tail",
+                        OpControl::unbounded(),
+                        Some(&drain),
+                    )
+                    .await
+            }
+        });
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "set_notifications")
+            .count()
+            < 2
+        {
+            assert!(tokio::time::Instant::now() < deadline);
+            tokio::task::yield_now().await;
+        }
+        let mut wake = central.native_wakes();
+        central
+            .boundary()
+            .push_event(notification("peer-tail", 0, vec![0, 74]));
+        tokio::time::timeout(Duration::from_secs(2), wake.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            captured.lock().unwrap().is_empty(),
+            "no collector or pre-disable drain observes this tail"
+        );
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+        assert!(pending.await.unwrap().unwrap());
+        assert_eq!(*captured.lock().unwrap(), vec![vec![0, 74]]);
+        central.shutdown().await;
     }
 
     #[tokio::test]

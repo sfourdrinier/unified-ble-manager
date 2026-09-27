@@ -49,6 +49,7 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
   private let disposeInvoker: DisposeInvoker
   private let retryDelay: DispatchTimeInterval
   private let lock = NSLock()
+  private let continuationDeclarationGate = NSRecursiveLock()
   private var host: MobileCoreHost?
   private var sessions = [UInt64: Entry]()
   private var ownerStates = [ObjectIdentifier: OwnerState]()
@@ -142,7 +143,12 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
     ) {
       _ = radio.ensureCentral()
     }
-    let adapter = UnifiedBleRustRadioAdapter(driver: radio)
+    let adapter = UnifiedBleRustRadioAdapter(driver: radio, onRestoredPeer: { peer in
+      guard let sessions = wake as? UnifiedBleRustCoreSessions else { return }
+      sessions.continueRestoredPeer(peer) { _, failure in
+        if let failure { NSLog("[UnifiedBleRustCore] native continuation refused: %@", failure) }
+      }
+    })
     guard radio.attachDelegateIfAvailable(adapter) else {
       throw MobileCoreError.Failed(
         code: "lifecycle.invalid-state",
@@ -420,14 +426,126 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
     }
   }
 
-  // MARK: - Background continuation (BGS4; iOS wake execution deferred to rc.1)
+  // MARK: - Process-owned background continuation
 
-  /// Persists the declared standing order so a future wake can execute it.
-  /// The declaration is validated with the same rules the Android wake
-  /// enforces: a malformed order is refused with no effect, never stored
-  /// verbatim. iOS wake execution is deferred, so the status reports the
-  /// validated order with the same "not implemented in this release" words
-  /// the Android path uses, and the claim answers `capability.unsupported`.
+  /// Called by the native launch observer independently of TurboModule/JS
+  /// creation. Merely installing UBM must not allocate a central or prompt:
+  /// only an explicitly declared native order opts into this bootstrap.
+  public func bootstrapNativeContinuation() -> String? {
+    guard let declaration = Self.continuationDeclaration() else { return nil }
+    switch Self.validatedContinuation(declaration) {
+    case .failure(let error):
+      Self.countMalformedDeclaration(declaration)
+      return Self.failureJson(code: "argument.invalid", domain: "restoration",
+                              operation: "continuation.bootstrap", detail: error.detail)
+    case .success(let valid):
+      guard valid.strategy == "native" else { return nil }
+      #if os(tvOS)
+      return Self.failureJson(code: "capability.unsupported", domain: "restoration",
+                              operation: "continuation.bootstrap", detail: "tvOS does not provide Bluetooth state restoration")
+      #else
+      guard Self.productionRadioConfiguration(bundle: .main).restoreIdentifierKey != nil else {
+        return Self.failureJson(code: "capability.unsupported", domain: "restoration",
+                                operation: "continuation.bootstrap", detail: "native continuation requires a configured restoration identifier")
+      }
+      return ensureHost()
+      #endif
+    }
+  }
+
+  /// The restored peer is supplied by the process radio, never a JS callback.
+  /// Execution, subscription ownership, bounded buffering and handoff all
+  /// remain in the shared Rust executor used by both native platforms.
+  public func continueRestoredPeer(_ peer: String, completion: @escaping (String?, String?) -> Void) {
+    continuationDeclarationGate.lock()
+    defer { continuationDeclarationGate.unlock() }
+    guard let declaration = Self.continuationDeclaration() else {
+      return completion("{\"state\":\"record-only\"}", nil)
+    }
+    switch Self.validatedContinuation(declaration) {
+    case .failure(let error):
+      Self.countMalformedDeclaration(declaration)
+      return completion(nil, Self.failureJson(code: "argument.invalid", domain: "restoration",
+                                               operation: "continuation.execute", detail: error.detail))
+    case .success(let valid):
+      guard valid.strategy != "record-only" else { return completion("{\"state\":\"record-only\"}", nil) }
+      guard valid.peerId == nil || valid.peerId == peer.uppercased() else {
+        let failure = Self.failureJson(code: "operation.aborted", domain: "restoration",
+          operation: "continuation.execute", detail: "native continuation skips \(peer): standing order scopes to \(valid.peerId ?? "")")
+        return Self.finishContinuation(strategy: valid.strategy, peer: peer, value: nil, failure: failure, completion: completion)
+      }
+      guard valid.strategy == "native" else {
+        let failure = Self.failureJson(code: "capability.unsupported", domain: "restoration",
+          operation: "continuation.execute", detail: "\(valid.strategy) continuation is unavailable on Apple hosts")
+        Self.finishContinuation(strategy: valid.strategy, peer: peer, value: nil, failure: failure, completion: completion)
+        return
+      }
+      do {
+        let owner = try installedHost()
+        var seedFailure: String?
+        Self.unwrapContinuation(owner.continuationSeedDeclaration(declarationJson: declaration), operation: "continuation.execute") {
+          _, failure in seedFailure = failure
+        }
+        if let seedFailure {
+          return Self.finishContinuation(strategy: valid.strategy, peer: peer, value: nil, failure: seedFailure, completion: completion)
+        }
+        owner.continuationExecute(peerId: peer, declarationJson: declaration,
+          completion: InvokeCompletion { envelope in
+            Self.unwrapContinuation(envelope, operation: "continuation.execute") { value, failure in
+              Self.finishContinuation(strategy: valid.strategy, peer: peer, value: value, failure: failure, completion: completion)
+            }
+          })
+      } catch {
+        Self.finishContinuation(strategy: valid.strategy, peer: peer, value: nil,
+          failure: Self.failureJson(error, operation: "continuation.execute"), completion: completion)
+      }
+    }
+  }
+
+  private static func finishContinuation(strategy: String, peer: String, value: String?, failure: String?,
+                                         completion: (String?, String?) -> Void) {
+    do {
+      let raw = failure ?? value ?? "{}"
+      guard let record = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any] else {
+        return completion(nil, failureJson(code: "protocol.malformed", domain: "restoration",
+          operation: "continuation.execute", detail: "unreadable native outcome"))
+      }
+      let outcome: [String: Any] = [
+        "observedAtMs": Int64(Date().timeIntervalSince1970 * 1000),
+        "event": failure == nil ? "continuation.completed" : "continuation.failed",
+        "strategy": strategy, "peerAddress": peer,
+        "code": failure == nil ? NSNull() : record["code"] ?? NSNull(),
+        "reason": failure == nil ? NSNull() : record["detail"] ?? raw
+      ]
+      let encoded = try JSONSerialization.data(withJSONObject: outcome, options: [.sortedKeys])
+      UserDefaults.standard.set(String(decoding: encoded, as: UTF8.self), forKey: continuationLastWakeKey)
+      completion(value, failure)
+    } catch { completion(nil, failureJson(error, operation: "continuation.outcome.persist")) }
+  }
+
+  private static func continuationDeclaration() -> String? {
+    UserDefaults.standard.string(forKey: continuationDefaultsKey)
+      ?? Bundle.main.object(forInfoDictionaryKey: "UnifiedBleBackgroundContinuation") as? String
+  }
+
+  private static func unwrapContinuation(
+    _ envelope: String, operation: String, completion: (String?, String?) -> Void
+  ) {
+    do {
+      guard let data = envelope.data(using: .utf8),
+            let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let ok = root["ok"] as? Bool,
+            let payload = root[ok ? "value" : "error"] as? [String: Any] else {
+        return completion(nil, failureJson(code: "protocol.malformed", domain: "core",
+                                           operation: operation, detail: "unreadable continuation envelope"))
+      }
+      let encoded = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+      let text = String(decoding: encoded, as: UTF8.self)
+      completion(ok ? text : nil, ok ? nil : text)
+    } catch { completion(nil, failureJson(error, operation: operation)) }
+  }
+
+  /// Persists the validated standing order for the native launch path.
   public func declareBackgroundContinuation(_ declarationJson: String, completion: (String?, String?) -> Void) {
     guard !declarationJson.isEmpty, declarationJson.utf8.count <= Self.maxContinuationJson else {
       completion(nil, Self.failureJson(
@@ -438,7 +556,36 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
     }
     switch Self.validatedContinuation(declarationJson) {
     case .success:
+      continuationDeclarationGate.lock()
+      defer { continuationDeclarationGate.unlock() }
+      lock.lock()
+      let installed = host
+      lock.unlock()
+      var token: String?
+      if let installed {
+        var reserveFailure: String?
+        Self.unwrapContinuation(installed.continuationReserveDeclaration(declarationJson: declarationJson), operation: "continuation.declare") { value, failure in
+          reserveFailure = failure
+          if let value, let record = try? JSONSerialization.jsonObject(with: Data(value.utf8)) as? [String: Any] {
+            token = record["reservationToken"] as? String
+          }
+        }
+        if let reserveFailure { return completion(nil, reserveFailure) }
+        guard token != nil else {
+          return completion(nil, Self.failureJson(code: "protocol.malformed", domain: "core",
+            operation: "continuation.declare", detail: "missing declaration reservation"))
+        }
+      }
+      // UserDefaults.set has no failure return. The owner reservation blocks
+      // stale execution until this process-visible persisted order is committed.
       UserDefaults.standard.set(declarationJson, forKey: Self.continuationDefaultsKey)
+      if let installed, let token {
+        var commitFailure: String?
+        Self.unwrapContinuation(installed.continuationCommitDeclaration(reservationToken: token), operation: "continuation.declare") {
+          _, failure in commitFailure = failure
+        }
+        if let commitFailure { return completion(nil, commitFailure) }
+      }
       completion("{\"state\":\"declared\"}", nil)
     case .failure(let error):
       completion(nil, Self.failureJson(
@@ -453,14 +600,14 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
   /// be parsed, and the last wake outcome. A malformed persisted record
   /// (written before validation existed) falls back to `record-only` and is
   /// counted once per distinct payload — reported, never silently kept. A
-  /// non-`record-only` strategy carries the deferred-execution disclaimer in
-  /// `detail` with the same words the Android path uses; `lastWake` is null
+  /// unimplemented strategy carries an explicit limitation in `detail`;
+  /// `lastWake` is null
   /// until a wake executes one, never invented.
-  public func continuationStatus(_ completion: (String?, String?) -> Void) {
+  public func continuationStatus(_ completion: @escaping (String?, String?) -> Void) {
     var strategy = "record-only"
     var peerId: String?
     var resubscribe = 0
-    if let stored = UserDefaults.standard.string(forKey: Self.continuationDefaultsKey) {
+    if let stored = Self.continuationDeclaration() {
       switch Self.validatedContinuation(stored) {
       case let .success(valid):
         strategy = valid.strategy
@@ -475,35 +622,61 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
       "peerId": peerId as Any? ?? NSNull(),
       "resubscribe": resubscribe,
       "malformedDeclarations": UserDefaults.standard.integer(forKey: Self.continuationMalformedCountKey),
-      "lastWake": Self.readLastWake() as Any? ?? NSNull()
+      "lastWake": Self.readLastWake() as Any? ?? NSNull(),
+      "lastRecovery": NSNull()
     ]
-    if strategy != "record-only" {
+    if strategy != "record-only" && strategy != "native" {
       status["detail"] = "\(strategy) continuation is not implemented in this release"
     }
-    guard let data = try? JSONSerialization.data(withJSONObject: status, options: [.sortedKeys]),
-          let text = String(data: data, encoding: .utf8)
-    else {
-      completion(nil, Self.failureJson(
-        code: "platform.failure", domain: "platform", operation: "continuation.status",
-        detail: "status encoding failed"
-      ))
-      return
+    let finish: ([String: Any]) -> Void = { value in
+      do {
+        let data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
+        completion(String(decoding: data, as: UTF8.self), nil)
+      } catch { completion(nil, Self.failureJson(error, operation: "continuation.status")) }
     }
-    completion(text, nil)
+    lock.lock()
+    let installed = host
+    lock.unlock()
+    guard let installed else { return finish(status) }
+    let snapshot = status
+    installed.continuationDescribeBacklog(completion: InvokeCompletion { envelope in
+      do {
+        guard let root = try JSONSerialization.jsonObject(with: Data(envelope.utf8)) as? [String: Any],
+              let ok = root["ok"] as? Bool else {
+          return completion(nil, Self.failureJson(code: "protocol.malformed", domain: "core",
+            operation: "continuation.status", detail: "unreadable continuation status"))
+        }
+        guard ok else { return Self.unwrapContinuation(envelope, operation: "continuation.status", completion: completion) }
+        var updated = snapshot
+        if let value = root["value"] as? [String: Any] {
+          updated["lastRecovery"] = value["continuationOutcome"] ?? NSNull()
+        } else if !(root["value"] is NSNull) {
+          return completion(nil, Self.failureJson(code: "protocol.malformed", domain: "core",
+            operation: "continuation.status", detail: "unreadable continuation counters"))
+        }
+        finish(updated)
+      } catch { completion(nil, Self.failureJson(error, operation: "continuation.status")) }
+    })
   }
 
-  public func prepareContinuationClaim(maxItems _: Double, maxBytes _: Double, completion: (String?, String?) -> Void) {
-    completion(nil, Self.failureJson(
-      code: "capability.unsupported", domain: "restoration", operation: "continuation.claim",
-      detail: "native reconnect plus resubscribe from willRestoreState is not implemented in this release"
-    ))
+  public func prepareContinuationClaim(maxItems: Double, maxBytes: Double, completion: @escaping (String?, String?) -> Void) {
+    guard let items = Self.positiveUInt32(maxItems), let bytes = Self.positiveUInt32(maxBytes) else {
+      return completion(nil, Self.failureJson(code: "argument.invalid", domain: "restoration",
+                                               operation: "continuation.claim", detail: "claim bounds must be positive UInt32 integers"))
+    }
+    do {
+      try installedHost().continuationPrepareClaim(maxItems: items, maxBytes: bytes, completion: InvokeCompletion { envelope in
+        Self.unwrapContinuation(envelope, operation: "continuation.claim", completion: completion)
+      })
+    } catch { completion(nil, Self.failureJson(error, operation: "continuation.claim")) }
   }
 
-  public func acknowledgeContinuationClaim(_ claimToken: String, completion: (String?, String?) -> Void) {
-    completion(nil, Self.failureJson(
-      code: "capability.unsupported", domain: "restoration", operation: "continuation.claim",
-      detail: "native reconnect plus resubscribe from willRestoreState is not implemented in this release"
-    ))
+  public func acknowledgeContinuationClaim(_ claimToken: String, completion: @escaping (String?, String?) -> Void) {
+    do {
+      try installedHost().continuationAcknowledgeClaim(claimToken: claimToken, completion: InvokeCompletion { envelope in
+        Self.unwrapContinuation(envelope, operation: "continuation.claim", completion: completion)
+      })
+    } catch { completion(nil, Self.failureJson(error, operation: "continuation.claim")) }
   }
 
   private static let continuationDefaultsKey = "com.sfourdrinier.unifiedblemanager.background-continuation"
@@ -527,7 +700,7 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
   }
 
   /// Validates a declaration with the same rules the Android wake enforces:
-  /// the exact key set the binding persists, a known strategy, a MAC peer,
+  /// the exact key set the binding persists, a known strategy, a native peer,
   /// at most 64 well-formed selectors, and the headless-task /
   /// foreground-service payloads only on their own strategies.
   static func validatedContinuation(_ json: String) -> Result<ValidatedContinuation, ContinuationValidationError> {
@@ -553,10 +726,10 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
     let peerId: String?
     if root["peerId"] == nil {
       peerId = nil
-    } else if let text = root["peerId"] as? String, isMacAddress(text) {
+    } else if let text = root["peerId"] as? String, isMacAddress(text) || isUuid(text) {
       peerId = text.uppercased()
     } else {
-      return fail("background.continuation: peerId must be a MAC address")
+      return fail("background.continuation: peerId must be a MAC address or canonical UUID")
     }
     let resubscribe: Int
     if root["resubscribe"] == nil {
@@ -611,7 +784,7 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
     }
   }
 
-  /// The last wake outcome a future wake persists (rc.1 writes it); null
+  /// The last outcome written by the native executor; null
   /// until one exists, never invented. A record that is not the expected
   /// shape reads as no wake rather than a fabricated one.
   static func readLastWake() -> [String: Any]? {
@@ -621,9 +794,9 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
           wake["observedAtMs"] is NSNumber,
           wake["event"] as? String == "continuation.completed" || wake["event"] as? String == "continuation.failed",
           wake["strategy"] is String,
-          wake["peerAddress"] == nil || wake["peerAddress"] is String,
-          wake["code"] == nil || wake["code"] is String,
-          wake["reason"] == nil || wake["reason"] is String else {
+          wake["peerAddress"] == nil || wake["peerAddress"] is NSNull || wake["peerAddress"] is String,
+          wake["code"] == nil || wake["code"] is NSNull || wake["code"] is String,
+          wake["reason"] == nil || wake["reason"] is NSNull || wake["reason"] is String else {
       return nil
     }
     return wake

@@ -106,7 +106,7 @@ pub const HR_FLAG_CONTACT_SUPPORTED: u8 = 0x04;
 pub const HR_FLAG_RR_PRESENT: u8 = 0x10;
 
 /// Default advertised name; `<4 hex>` keeps the `device` exact-match argument working.
-pub const DEFAULT_ADV_NAME: &str = "Polar H10 SIM0001";
+pub const DEFAULT_ADV_NAME: &str = "SIM Polar H10 0001";
 
 /// Encodes a Heart Rate Measurement (SIG 0x2A37).
 ///

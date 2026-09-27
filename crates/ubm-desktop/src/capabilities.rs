@@ -860,9 +860,10 @@ mod tests {
             42,
             "frozen matrix changed size: update this test and the desktop rows together"
         );
-        // Mobile-only rows: the desktop matrix does not carry them. The four
-        // continuation capabilities describe what an OS wake may do to a
-        // process it restarted, which no desktop host offers.
+        // These rows are not integrated into the desktop provider yet. Native
+        // continuation needs a process-owned executor and host-specific wake /
+        // restart configuration; absence here is an implementation boundary,
+        // not evidence that desktop operating systems cannot offer a wake.
         let scoped_out = [
             "background:apple-restoration",
             "background:android-connected-device-service",

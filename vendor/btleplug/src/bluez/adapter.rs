@@ -118,7 +118,10 @@ impl Central for Adapter {
 
     async fn adapter_info(&self) -> Result<String> {
         let adapter_info = self.session.get_adapter_info(&self.adapter).await?;
-        Ok(format!("{} ({})", adapter_info.id, adapter_info.modalias))
+        Ok(match adapter_info.modalias {
+            Some(modalias) => format!("{} ({})", adapter_info.id, modalias),
+            None => adapter_info.id.to_string(),
+        })
     }
 
     async fn adapter_state(&self) -> Result<CentralState> {

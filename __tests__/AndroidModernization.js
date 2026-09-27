@@ -107,15 +107,17 @@ describe('Android RN 0.86 unified protocol boundary', () => {
       // `CompanionPresenceObserverTest` and `PresenceWakeCoordinatorTest`.
       // Current protocol graph member by design, not legacy residue.
       // Background continuation (contract update, justified): the declared
-      // standing order, its store across process death, and the executor that
-      // reconnects and resubscribes from the wake through the Rust core.
+      // standing order, its store across process death, and transport-only
+      // handoff mapping to the shared Rust continuation executor. Native policy
+      // is no longer duplicated in Kotlin (shared continuation parity tests).
       // Current protocol graph members by design, not legacy residue.
       'presence/BackgroundContinuation.kt',
       'presence/BackgroundContinuationStore.kt',
       'presence/CompanionPresenceObserver.kt',
+      'presence/ContinuationHandoff.kt',
+      'presence/NativeContinuationBinding.kt',
       'presence/PresenceRestoredStore.kt',
       'presence/PresenceWakeCoordinator.kt',
-      'presence/RustCoreContinuationExecutor.kt',
       'presence/UbmCompanionPresenceService.kt',
       // R02 contract update (justified): `CoreCommandAuthority` is the
       // admission table the dispatcher consults before radio execution

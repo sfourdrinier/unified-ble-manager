@@ -1050,7 +1050,7 @@ pub fn mobile_host_install(
                 "argument.invalid",
                 OP,
                 "platform must be android or apple",
-            ))
+            ));
         }
     };
     let mut slot = host_slot()
@@ -1092,6 +1092,71 @@ pub struct MobileCoreHost {
 }
 
 impl MobileCoreHost {
+    pub fn continuation_reserve_declaration(&self, declaration_json: String) -> String {
+        self.host
+            .continuation_reserve_declaration(&declaration_json)
+    }
+    pub fn continuation_commit_declaration(&self, reservation_token: String) -> String {
+        self.host
+            .continuation_commit_declaration(&reservation_token)
+    }
+    pub fn continuation_cancel_declaration(&self, reservation_token: String) -> String {
+        self.host
+            .continuation_cancel_declaration(&reservation_token)
+    }
+    pub fn continuation_seed_declaration(&self, declaration_json: String) -> String {
+        self.host.continuation_seed_declaration(&declaration_json)
+    }
+    pub fn continuation_declaration_replacement_failure(
+        &self,
+        declaration_json: String,
+    ) -> Option<String> {
+        self.host
+            .continuation_declaration_replacement_failure(&declaration_json)
+    }
+
+    pub fn continuation_describe_backlog(&self, completion: Box<dyn MobileInvokeCompletion>) {
+        self.host
+            .continuation_describe_backlog(Box::new(move |value| completion.complete(value)));
+    }
+
+    pub fn continuation_execute(
+        &self,
+        peer_id: String,
+        declaration_json: String,
+        completion: Box<dyn MobileInvokeCompletion>,
+    ) {
+        self.host.continuation_execute(
+            &peer_id,
+            &declaration_json,
+            Box::new(move |value| completion.complete(value)),
+        );
+    }
+
+    pub fn continuation_prepare_claim(
+        &self,
+        max_items: u32,
+        max_bytes: u32,
+        completion: Box<dyn MobileInvokeCompletion>,
+    ) {
+        self.host.continuation_prepare_claim(
+            max_items,
+            max_bytes,
+            Box::new(move |value| completion.complete(value)),
+        );
+    }
+
+    pub fn continuation_acknowledge_claim(
+        &self,
+        claim_token: String,
+        completion: Box<dyn MobileInvokeCompletion>,
+    ) {
+        self.host.continuation_acknowledge_claim(
+            &claim_token,
+            Box::new(move |value| completion.complete(value)),
+        );
+    }
+
     pub fn complete(&self, request_id: u64, completion_value: MobileRadioCompletion) -> String {
         let typed = completion(completion_value).unwrap_or_else(|detail| {
             RadioCompletion::Failed(PlatformFailure::new(

@@ -13,8 +13,14 @@ import {
   CONTINUATION_CONSUMER_PREFIX,
   type BackgroundContinuationResubscribeSelector
 } from '../../backend-contract/background-continuation'
-import { contractError } from '../../backend-contract/errors'
-import { parseDrainText, type WireDrainRecord, type WireDelivery } from './rust-core-wire'
+import { BLE_RETRYABILITIES, contractError, type BleRetryability } from '../../backend-contract/errors'
+import {
+  parseDrainText,
+  parseRemoteFailureText,
+  type WireRemoteFailure,
+  type WireDrainRecord,
+  type WireDelivery
+} from './rust-core-wire'
 
 /** The native prepared-claim shape (`sessions.prepareContinuationClaim`): verbatim batches. */
 export interface ContinuationClaimPayload {
@@ -222,6 +228,23 @@ export interface ContinuationWakeStatus {
   readonly reason: string | null
 }
 
+/** Latest autonomous recovery attempt, distinct from the OS wake that started collection. */
+export type ContinuationRecoveryStatus =
+  | {
+      readonly event: 'continuation.completed'
+      readonly strategy: 'native'
+      readonly attempt: number
+      readonly peerAddress: string
+      readonly resubscribed: number
+    }
+  | {
+      readonly event: 'continuation.failed'
+      readonly strategy: 'native'
+      readonly attempt: number
+      readonly error: WireRemoteFailure
+      readonly retryability: BleRetryability
+    }
+
 /** The continuation posture (`sessions.continuationStatus`). */
 export interface ContinuationStatus {
   readonly strategy: string
@@ -229,6 +252,7 @@ export interface ContinuationStatus {
   readonly resubscribe: number
   readonly malformedDeclarations: number
   readonly lastWake: ContinuationWakeStatus | null
+  readonly lastRecovery: ContinuationRecoveryStatus | null
   /**
    * Deferred-execution disclaimer on hosts where the strategy is not
    * implemented (Apple: "<strategy> continuation is not implemented in this
@@ -263,7 +287,7 @@ export function parseContinuationStatus(value: unknown): ContinuationStatus {
   }
   unexpectedKeys(
     parsed,
-    ['strategy', 'peerId', 'resubscribe', 'malformedDeclarations', 'lastWake', 'detail'],
+    ['strategy', 'peerId', 'resubscribe', 'malformedDeclarations', 'lastWake', 'lastRecovery', 'detail'],
     'continuation-status.keys'
   )
   if (typeof parsed.strategy !== 'string' || parsed.strategy.length === 0) {
@@ -292,8 +316,57 @@ export function parseContinuationStatus(value: unknown): ContinuationStatus {
     resubscribe: parsed.resubscribe,
     malformedDeclarations: parsed.malformedDeclarations,
     lastWake: parseWakeStatus(parsed.lastWake),
+    lastRecovery: parseContinuationRecoveryStatus(parsed.lastRecovery),
     detail
   })
+}
+
+/** Shared native mobile/desktop recovery diagnostic decoder. */
+export function parseContinuationRecoveryStatus(value: unknown): ContinuationRecoveryStatus | null {
+  if (value === null || value === undefined) return null
+  const operation = 'continuation-status.last-recovery'
+  if (
+    !isRecord(value) ||
+    value.strategy !== 'native' ||
+    typeof value.attempt !== 'number' ||
+    !Number.isSafeInteger(value.attempt) ||
+    value.attempt < 1
+  ) {
+    throw contractError('protocol.malformed', 'restoration', operation)
+  }
+  if (value.event === 'continuation.completed') {
+    unexpectedKeys(value, ['event', 'strategy', 'attempt', 'peerAddress', 'resubscribed'], operation)
+    if (
+      typeof value.peerAddress !== 'string' ||
+      value.peerAddress.length === 0 ||
+      typeof value.resubscribed !== 'number' ||
+      !Number.isSafeInteger(value.resubscribed) ||
+      value.resubscribed < 0
+    ) {
+      throw contractError('protocol.malformed', 'restoration', operation)
+    }
+    return Object.freeze({
+      event: value.event,
+      strategy: value.strategy,
+      attempt: value.attempt,
+      peerAddress: value.peerAddress,
+      resubscribed: value.resubscribed
+    })
+  }
+  if (value.event === 'continuation.failed') {
+    unexpectedKeys(value, ['event', 'strategy', 'attempt', 'error', 'retryability'], operation)
+    const retryability = BLE_RETRYABILITIES.find(candidate => candidate === value.retryability)
+    const error = parseRemoteFailureText(JSON.stringify(value.error), operation)
+    if (retryability === undefined || !error.ok) throw contractError('protocol.malformed', 'restoration', operation)
+    return Object.freeze({
+      event: value.event,
+      strategy: value.strategy,
+      attempt: value.attempt,
+      error: error.value,
+      retryability
+    })
+  }
+  throw contractError('protocol.malformed', 'restoration', operation)
 }
 
 function parseWakeStatus(value: unknown): ContinuationWakeStatus | null {

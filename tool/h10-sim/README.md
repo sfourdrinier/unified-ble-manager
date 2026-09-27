@@ -18,6 +18,22 @@ Identity and state come from one JSON device profile
 `--profile` picks one, CLI flags override single fields, and the control
 port / driver commands change everything live. See Device profiles below.
 
+## Fidelity acceptance contract
+
+For implemented features, the target is the same observable protocol behavior
+as a measured real Polar H10. The deliberate identification exception is the
+advertised name: it **must start with uppercase `SIM`**, by default
+`SIM Polar H10 0001`. CLI overrides and startup/live profiles with another
+prefix are rejected; names are never silently prefixed. Existing installed
+profiles must be updated explicitly. UTF-8-safe 29-byte truncation preserves
+the leading `SIM` and is still reported in the log.
+
+This is an acceptance objective, not a claim of whole-device equivalence.
+Missing features and platform/timing mismatches remain explicit gaps below;
+they are not waived by the name exception. Matching structural unit tests or
+one stream does not qualify every implemented feature. Retained real-versus-
+simulator over-the-air captures must establish each behavior being claimed.
+
 ## Peripheral backend: crate choice
 
 One `PeripheralRadio` trait (`src/radio.rs`), one backend per platform:
@@ -74,16 +90,16 @@ name, a 29-character maximum and an over-long name.
 
 `--linux-advertising mgmt-legacy` (Linux, below) writes the same bytes itself
 (`src/mgmt.rs`, golden-byte tests): advertisement data `02 01 06 05 03 0D 18
-EE FE` (+ manufacturer data when staged), scan response `12 09 "Polar H10
-SIM0001"`. The Flags AD is written by the sim with the real H10's `0x06`
+EE FE` (+ manufacturer data when staged), scan response `13 09 "SIM Polar H10 0001"`.
+The Flags AD is written by the sim with the real H10's `0x06`
 (LE General Discoverable, BR/EDR not supported), so the instance is added
 connectable with no kernel-managed flag bits; the kernel would otherwise
 write its own Flags byte, which follows the adapter's BR/EDR setting.
 
 ## Simulated GATT surface
 
-Advertised name `Polar H10 SIM<4 hex>` (default `Polar H10 SIM0001`,
-`--name` overrides), advertising Heart Rate (`180D`) and Polar (`FEEE`),
+Advertised name `SIM Polar H10 <4 hex>` (default `SIM Polar H10 0001`,
+`--name` overrides must start with `SIM`), advertising Heart Rate (`180D`) and Polar (`FEEE`),
 plus Polar manufacturer data (company `0x006B`) with the profile's payload
 on Linux — Apple exposes no manufacturer-data peripheral API (an OS
 limitation), so the bytes stay off the air there; the `advertising-started`
@@ -130,7 +146,7 @@ specifications ([spec index](https://www.bluetooth.com/specifications/specs/)).
 ```sh
 cd tool/h10-sim
 cargo build        # binary: target/debug/h10-sim (set CARGO_TARGET_DIR to redirect)
-cargo test         # 122 unit tests on macOS/Windows, 134 on Linux (see Tests below)
+cargo test         # platform-specific unit suite (see Tests below)
 node tests/xcheck/run-xcheck.cjs   # run from the repo root; see Tests below
 cargo clippy --all-targets -- -D warnings   # must stay warning-free
 cargo fmt --check
@@ -147,7 +163,7 @@ module (`src/bluer_radio.rs`) is not compiled on macOS at all, so a Linux
 ## Run
 
 ```sh
-./target/debug/h10-sim [--profile profiles/low-battery-legacy.json] [--name "Polar H10 SIM0001"]
+./target/debug/h10-sim [--profile profiles/low-battery-legacy.json] [--name "SIM Polar H10 0001"]
   [--bpm 72] [--battery 90] [--pair-policy just-works] [--ecg-file ecg.txt]
   [--hr-replay fixtures/h10-raw/tauri-E9B93D29-2026-09-19-raw.json]
   [--timing-profile fixtures/h10-fingerprints/<real>.json] [--timing-seed 7]
@@ -167,15 +183,15 @@ Later flags win: `--profile` applies first, then `--name`/`--bpm`/`--battery`.
 - `bluetoothd` running (BlueZ 5.72 and 5.85 verified; advertising on current
   kernels needs `--linux-advertising mgmt-legacy`, see below), adapter powered; build needs
   `libdbus-1-dev` (`sudo apt install libdbus-1-dev`).
-- Known identity: the default profile advertises `Polar H10 SIM0001` with
+- Known identity: the default profile advertises `SIM Polar H10 0001` with
   serial `SIM000001`, firmware `5.0.0` / hardware `00760690.03` / software
   `4.2.0` (the strap's revisions), battery 90% and the strap's System ID
   (`3db9e9feff1a9ea0`). The radio address is the controller's own public address, not
   the sim's to choose — read it with `bluetoothctl show` (controller
   `90:DE:80:3B:69:78` on the reference host, `DC:56:7B:D9:E8:A4` on
   lx5090wifi) and document it beside the
-  profile. Driver scenarios target the sim by name (`device: "Polar H10
-  SIM0001"`), so the address never enters a command; use the address only to
+  profile. Driver scenarios target the sim by name (`device: "SIM Polar H10 0001"`),
+  so the address never enters a command; use the address only to
   confirm over the air (e.g. in `btmon` or `bluetoothctl devices`) that the
   peer you found is this host.
 - D-Bus access to `org.bluez`: run as root or as a user in the `bluetooth`
@@ -191,7 +207,7 @@ Later flags win: `--profile` applies first, then `--name`/`--bpm`/`--battery`.
   `DeviceID = false` under `[General]` in `/etc/bluetooth/main.conf`, then
   `sudo systemctl restart bluetooth` and restarts the sim (its GATT
   registration is lost with the daemon). Two central-view deltas versus a
-  real strap remain, neither breaking any scenario: host services whose
+  real strap remain and can affect client behavior: host services whose
   UUIDs match BlueZ's MIDI profile (`03B80E5A-…`, `7772E5DB-…`, see
   `profiles/midi/libmidi.h`) plus unattributed host services
   (`d0611e78-…`, `9fa480e0-…`), and ATT attribute order, which varies per sim
@@ -199,6 +215,14 @@ Later flags win: `--profile` applies first, then `--name`/`--bpm`/`--battery`.
   `HashMap` (`dbus-crossroads` 0.5.3 `stdimpl.rs` `PathPropMap`) — the
   declared order is the strap's, but BlueZ numbers handles in enumeration
   order.
+- In same-daemon, two-adapter testing, a BlueZ client can automatically probe
+  the host's MIDI service and trigger an encrypted read. The observed unpaired
+  fixture refused pairing and disconnected during discovery; a pairing agent
+  restricted to the two test peer paths allowed collection. Record whether a
+  run is paired: that result does not establish unpaired compatibility. Never
+  blanket-trust other peers, and remove only test-created bonds after the run.
+  Successful reconnect or CCCD configuration alone is insufficient recovery
+  evidence: require new central-received values and confirmed owner cleanup.
 - Stop any other advertiser first (`bluetoothctl advertise clear`, companion
   apps, a previous sim still running) — instances are per-registration and a
   stale owner confuses the diagnosis.
@@ -307,7 +331,7 @@ the stored alias shadows.
 
 - **What changes.** Exactly one D-Bus property on the advertising adapter,
   from the previous alias to the advertised name (e.g. `lx5090` →
-  `Polar H10 SIM0001`), plus a record file
+  `SIM Polar H10 0001`), plus a record file
   (`$XDG_RUNTIME_DIR/h10-sim-alias-hci0.instance`, else the temp dir) holding
   the boot id and the previous alias. The claim and every restore are printed
   on stderr and the claim rides in the `advertising-started` detail as
@@ -395,6 +419,31 @@ name>","detail":{…}},…]}}` — one entry per fired adversarial command, in
 order, each with its own detail (e.g. `drop-link` records `dropped` and
 `targets`).
 
+Both `get-state` and `run-record` also include the same cumulative `hrRecovery`
+object. It reports observed `subscriptionEnableEvents`,
+`subscriptionDisableEvents`, `notificationAttempts`, `notificationsQueued`,
+`notificationsOsAccepted`, `notificationsNotSubscribed`, and
+`notificationsFailed`. Counters survive link drops and live configuration
+changes; restarting the simulator starts a new run. `countersSaturated: true`
+means at least one counter reached its integer limit and is now a lower bound.
+
+For a recovery check, retain a `get-state` baseline, inject `drop-link`, then
+retain another snapshot after the central reports recovery. A new enable event
+and increasing OS-accepted notifications establish peripheral-side activity;
+compare these with the central's own received-value evidence. Merely injecting
+a fault does not increment subscription counters. A queued Linux send counts
+as queued immediately and as OS-accepted or failed only when its asynchronous
+send actually settles, so it is never counted twice as accepted.
+
+This telemetry has `scope: "characteristic"` and
+`clientAttribution: "unavailable"`: the portable peripheral event interface
+does not identify an individual central. Enable/disable counts are observed
+events, not an inferred connected-client count. OS acceptance is **not** proof
+that a central received or persisted a value; the macOS/Windows peripheral API
+can stage a characteristic update even without a subscriber. Battery and PMD
+traffic do not contribute to these HR-only counters. Existing timestamped
+event logs remain the source for detailed ordering across a link drop.
+
 ### Authentication
 
 `--control-bind` defaults to `127.0.0.1`. The token comes from `--control-token`,
@@ -452,16 +501,18 @@ uses the caller's own D-Bus session.
 ## Pointing driver scenarios at the sim
 
 Every peer-acquiring command takes the `device` argument (exact advertised
-name, or a prefix ending in `*`; default `Polar H10*`):
+name, or a prefix ending in `*`; default `Polar H10*` selects physical straps,
+so simulator scenarios must explicitly supply `SIM Polar H10 0001` or a
+deliberate `SIM*` target):
 
-- `h10-stream start '{"device":"Polar H10 SIM0001"}'` — HR stream; drive with `set-bpm`.
-- `device-info read '{"device":"Polar H10 SIM0001"}'` — DIS + battery reads.
-- `mtu probe '{"mtu":517,"device":"Polar H10 SIM0001"}'` — MTU is the
+- `h10-stream start '{"device":"SIM Polar H10 0001"}'` — HR stream; drive with `set-bpm`.
+- `device-info read '{"device":"SIM Polar H10 0001"}'` — DIS + battery reads.
+- `mtu probe '{"mtu":517,"device":"SIM Polar H10 0001"}'` — MTU is the
   platform's own answer; the sim cannot raise it.
-- `ecg start '{"mtu":517,"device":"Polar H10 SIM0001"}'` — PMD ECG at 130 Hz.
-- `link-loss start '{"device":"Polar H10 SIM0001"}'` — combine with
+- `ecg start '{"mtu":517,"device":"SIM Polar H10 0001"}'` — PMD ECG at 130 Hz.
+- `link-loss start '{"device":"SIM Polar H10 0001"}'` — combine with
   `set-silent` (no data, link up) and `drop-link` (BlueZ tears the link down).
-- `background start '{"device":"Polar H10 SIM0001"}'` — the background lease
+- `background start '{"device":"SIM Polar H10 0001"}'` — the background lease
   itself is the host platform's answer, as always.
 - `scan-details` — sees the sim's name, `180D`/`FEEE` service UUIDs, Polar
   manufacturer data (company `0x006B`, Linux only) and RSSI.
@@ -491,7 +542,7 @@ drift (a node conformance test decodes the checked-in
 regenerates it from the binary). Sim log lines stream back as scenario
 events. Combined sequences live in
 `examples-shared/driver/server/sequences/`: `h10-sim-drop-link.json`
-(android streams from `Polar H10 SIM0001` while peripheral-sim drops the
+(android streams from `SIM Polar H10 0001` while peripheral-sim drops the
 link: lifecycle loss + reconnect + resumed values) and
 `h10-sim-ecg-fault.json` (`reject-next-pmd`, then the DUT's `ecg start`
 reports `pmd.request-rejected`).
@@ -532,7 +583,7 @@ owner with sudo, never by the script:
 
 ## Tests
 
-- `cargo test` — 112 unit tests on macOS/Windows (124 on Linux, which adds the `bluer`
+- `cargo test` — deterministic unit tests (Linux adds the `bluer`
   backend tests): encoders (HR measurement with the strap's `0x10` default
   plus explicit contact states, DIS NUL termination, PMD ECG frames,
   control-point responses, settings TLV, features incl. the strap's 17
@@ -648,7 +699,7 @@ host (short windows are fine here):
 
 ```sh
 ./target/debug/h10-sim --driver ws://127.0.0.1:8795/host &
-node examples-shared/driver/server/cli.mjs capture <host-id> --device "Polar H10 SIM0001" --hr-ms 10000 --ecg-frames 10 --out /tmp/h10sim
+node examples-shared/driver/server/cli.mjs capture <host-id> --device "SIM Polar H10 0001" --hr-ms 10000 --ecg-frames 10 --out /tmp/h10sim
 ```
 
 The fingerprint (`FINGERPRINT_VERSION = 1`) records the advertisement and

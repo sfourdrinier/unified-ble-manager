@@ -148,6 +148,86 @@ Every capability the TypeScript CoreBluetooth, WinRT and dbus-next BlueZ backend
 
 **Open release blockers:** none on the TypeScript/N-API path. `__tests__/backends/desktop/desktop-parity-blockers.test.js` fails if a row is ever marked `blocked` without a probe. The deterministic synthetic radio does not prove physical-radio behaviour. The physical checks listed under [Verification](#verification) are still outstanding.
 
+## Native continuation in a trusted process host
+
+For a recorder that must keep collecting while its UI is absent, the trusted
+host can attach a native continuation controller to its **already-open** Rust
+central. Node/BlueZ, Node/CoreBluetooth, Node/WinRT and Electron main export the
+same controller. It never opens another radio. `loadDesktopCoreBinding` verifies
+the packaged addon's build identity before the host opens its central.
+
+Pass the exact peer ID reported by the selected radio. Native identity parsers
+enforce their canonical spelling before connection admission (for example,
+lowercase CoreBluetooth UUIDs). A noncanonical alias fails with
+`argument.invalid` and the canonical identity in its detail, before a lease or
+physical connection is created. Opaque radio IDs are not globally case-folded.
+
+```ts
+import { loadDesktopCoreBinding, createNativeContinuationController } from 'unified-ble-manager/node/corebluetooth'
+
+const binding = await loadDesktopCoreBinding({
+  platform: 'corebluetooth',
+  operationPrefix: 'direct-gatt'
+})
+const central = await binding.openProduction({
+  owner: 'application-native-recorder',
+  platform: 'corebluetooth',
+  adapterId: null
+})
+const continuation = createNativeContinuationController(central)
+await continuation.execute({
+  onAppearance: 'native',
+  // Use the observed peer ID unchanged: Apple UUID, WinRT MAC, or BlueZ
+  // adapter-scoped ID such as hci1/dev_AA_BB_CC_DD_EE_FF.
+  peerId: '11111111-2222-3333-4444-555555555555',
+  resubscribe: [
+    {
+      serviceUuid: '0000180d-0000-1000-8000-00805f9b34fb',
+      serviceOccurrence: 1,
+      characteristicUuid: '00002a37-0000-1000-8000-00805f9b34fb',
+      characteristicOccurrence: 1
+    }
+  ]
+})
+
+// Call later, when the application is ready to take over these buffered values.
+async function finishRecording() {
+  const backlog = await continuation.claim({ maxItems: 256, maxBytes: 65536 })
+  console.info(backlog.values, backlog.streamEnds, backlog.afterCutoffLoss)
+  if (!backlog.disposed) throw new Error(backlog.disposeFailure ?? 'Native cleanup is still owned')
+  return backlog
+}
+
+// At application shutdown, after every other user of this central has finished:
+async function shutdownRecorderHost() {
+  const cleanup = await central.close()
+  if (cleanup.state !== 'released') throw new Error('Central cleanup needs a retry')
+}
+```
+
+For BlueZ or WinRT, import their explicit Node entrypoint and pass the matching
+`platform` (`bluez` or `winrt`) and operation prefix. Reuse the central your
+custom host already owns; do not open this recorder beside a second manager
+for the same radio.
+
+`status()` exposes the bounded queued-data count, the last collection error and
+the native recovery outcome. Recovery runs in Rust without a JavaScript pump,
+using the same declared selectors and authoritative retryability as mobile.
+`claim()` seals intake, strictly decodes the prepared backlog, then acknowledges
+the handoff; it ends this recording generation. An uncertain acknowledgement
+returns the decoded values with `disposed: false`, never hides them in a rejected
+promise. Preserve those values and retry cleanup. Report control loss, overflow
+terminals and after-cutoff loss; a buffer is not a promise of lossless recording.
+
+The backlog is bounded process memory, **not durable storage**. Keep the owning
+process and central alive while recording. OS service registration, process
+relaunch and persistence of the standing declaration remain explicit host
+integration; this API does not install a daemon, elevate privileges or promise
+collection after process death. Ordinary one-call manager factories therefore
+still refuse non-default `background.continuation` options: they have no
+configured native process-lifetime owner. Package SemVer does not qualify
+untested radios; see [background execution](BACKGROUND.md).
+
 ## Advanced provider construction
 
 > **Maintainer/host-authoring reference — not ordinary application construction.**

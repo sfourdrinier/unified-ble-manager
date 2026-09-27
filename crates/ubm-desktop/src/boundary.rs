@@ -854,6 +854,28 @@ pub enum RadioEvent {
 /// answer `capability.unsupported`, so existing implementations keep
 /// compiling and never claim a capability they do not have.
 pub trait RadioBoundary: Send + Sync + 'static {
+    /// Exact identity emitted by this radio's lifecycle and GATT events.
+    /// Opaque identities are unchanged; only the platform parser may supply
+    /// another spelling. Admission never creates ownership under an alias.
+    fn canonical_peer_id(&self, peer_id: &str) -> String {
+        peer_id.to_owned()
+    }
+
+    fn validate_peer_identity(&self, peer_id: &str, operation: &str) -> Result<(), DesktopError> {
+        let canonical = self.canonical_peer_id(peer_id);
+        if canonical == peer_id {
+            return Ok(());
+        }
+        Err(DesktopError::new(
+            ubm_core::contracts::BleErrorCode::ArgumentInvalid,
+            ubm_core::contracts::BleErrorDomain::Connection,
+            operation,
+        )
+        .with_detail(format!(
+            "peer identity must use the radio's canonical spelling: {canonical}"
+        )))
+    }
+
     fn adapter_name(&self) -> impl Future<Output = Result<String, DesktopError>> + Send + '_;
     fn start_scan(
         &self,
@@ -1188,6 +1210,7 @@ const FAKE_CONTROL_CAP: usize = 64;
 pub struct FakeRadio {
     state: StdMutex<FakeInner>,
     notify: Arc<Notify>,
+    calls_changed: tokio::sync::watch::Sender<()>,
 }
 
 /// One characteristic instance address: (peer, service uuid, service
@@ -1219,6 +1242,7 @@ impl RadioCloseFailure {
 }
 
 struct FakeInner {
+    canonical_peer_ids: HashMap<String, String>,
     faults: HashMap<FaultOp, VecDeque<(String, Option<crate::errors::PlatformDetail>)>>,
     /// Scan filters the central passed to `start_scan`, in call order.
     scan_filters: Vec<ScanFilterSpec>,
@@ -1318,9 +1342,20 @@ impl Default for FakeRadio {
 }
 
 impl FakeRadio {
+    /// Script the platform parser's canonical spelling without applying
+    /// any case-folding policy to other opaque identities.
+    pub fn set_canonical_peer_id(&self, alias: &str, canonical: &str) {
+        self.state
+            .lock()
+            .unwrap()
+            .canonical_peer_ids
+            .insert(alias.to_owned(), canonical.to_owned());
+    }
+
     pub fn new() -> Self {
         Self {
             state: StdMutex::new(FakeInner {
+                canonical_peer_ids: HashMap::new(),
                 faults: HashMap::new(),
                 scan_filters: Vec::new(),
                 known_peers: Vec::new(),
@@ -1365,6 +1400,7 @@ impl FakeRadio {
                 write_readiness: HashMap::new(),
             }),
             notify: Arc::new(Notify::new()),
+            calls_changed: tokio::sync::watch::channel(()).0,
         }
     }
 
@@ -1794,6 +1830,31 @@ impl FakeRadio {
             .expect("fake radio state")
             .calls
             .push(call.to_owned());
+        self.calls_changed.send_replace(());
+    }
+
+    /// Deterministic fixture barrier: resolve when an operation has entered
+    /// this boundary the specified number of times. A caller may wrap this
+    /// event wait in a watchdog; elapsed time is never a completion signal.
+    pub async fn wait_for_calls(&self, call: &str, count: usize) {
+        let mut changed = self.calls_changed.subscribe();
+        loop {
+            changed.borrow_and_update();
+            if self
+                .calls()
+                .iter()
+                .filter(|name| name.as_str() == call)
+                .count()
+                >= count
+            {
+                return;
+            }
+            // The sender is owned by self, which remains borrowed throughout.
+            changed
+                .changed()
+                .await
+                .expect("fake radio call sender is alive");
+        }
     }
 }
 
@@ -1837,6 +1898,15 @@ fn descriptor_key(
 }
 
 impl RadioBoundary for FakeRadio {
+    fn canonical_peer_id(&self, peer_id: &str) -> String {
+        self.state
+            .lock()
+            .unwrap()
+            .canonical_peer_ids
+            .get(peer_id)
+            .cloned()
+            .unwrap_or_else(|| peer_id.to_owned())
+    }
     async fn adapter_name(&self) -> Result<String, DesktopError> {
         self.record("adapter_name");
         if let Some(ScriptedFault { detail, platform }) = self.take_fault(FaultOp::AdapterName) {

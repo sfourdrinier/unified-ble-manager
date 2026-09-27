@@ -16,8 +16,9 @@ Stable support labels require the stated live/background/reliability evidence. A
 
 Design authority: [ADR 2026-09-5.0-restoration-known-peer-reconnect](ADR/2026-09-5.0-restoration-known-peer-reconnect.md).
 Restoration reconnects directly to devices this app already connected to,
-and nothing else: no background scanning for unknown devices, no
-auto-reconnect, no subscription resume without an app call. The same public
+and nothing else: no background scanning for unknown devices. Restoration
+alone does not reconnect or resume subscriptions. The opt-in native standing
+order below explicitly authorizes those operations without an app callback. The same public
 events and vocabulary names run on iOS and Android; a platform that cannot
 do it reports `capability.unsupported` with a reason, never a fake.
 
@@ -72,8 +73,8 @@ app-owned. Skip one and there is nothing to wake the app:
 5. **Read, then reconnect.** `await ble.peers.restored()` lists the
    restored peer; the app reconnects with
    `await ble.connect(peerId, { intent: 'when-available', timeoutMs })`
-   and replays subscriptions through `subscribe`. The library never
-   auto-reconnects. `restoration.claim()` answers
+   and replays subscriptions through `subscribe`, unless it has explicitly
+   declared the native continuation below. `restoration.claim()` answers
    `capability.unsupported` on Android — there is no journal to adopt —
    so claim nothing; read the directory instead.
 
@@ -160,24 +161,23 @@ Event vocabulary: [`UNIFIED_SEMANTICS.md`](UNIFIED_SEMANTICS.md).
 
 ### The four strategies
 
-| `onAppearance`       | What one wake does                                                                                                                | Status in this release                        |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| `record-only`        | Install the process radio owner, record the restored peer, stop.                                                                  | **Default.** Implemented.                     |
-| `native`             | Reconnect the declared known peer and resubscribe the declared characteristics through the Rust core, with no JavaScript running. | Implemented on Android. Apple parity is rc.1. |
-| `headless-task`      | Run the registered headless JS task (Android).                                                                                    | **Deferred to rc.1.**                         |
-| `foreground-service` | Start the configured connected-device foreground service from the wake.                                                           | **Deferred to rc.1.**                         |
+| `onAppearance`       | What one wake does                                                                                                                       | Status in this release                                                                        |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `record-only`        | Install the process radio owner, record the restored peer, stop.                                                                         | **Default.** Implemented.                                                                     |
+| `native`             | Reconnect the declared known peer and resubscribe the declared characteristics through the shared Rust core, with no JavaScript running. | Android and configured iOS restoration; trusted desktop process owners use the same executor. |
+| `headless-task`      | Run the registered headless JS task (Android).                                                                                           | Not implemented; explicit refusal.                                                            |
+| `foreground-service` | Start the configured connected-device foreground service from the wake.                                                                  | Not implemented; explicit refusal.                                                            |
 
-The two deferred strategies keep their validated option shape now, so rc.1 adds
-the executors with no breaking change. Until then they answer
+The two deferred strategies retain their validated option shape but answer
 `capability.unsupported` with _"not implemented in this release"_ — deliberately
 distinct from _"the platform cannot"_. A reader must never have to guess which
 of the two they are looking at.
 
 ### Declaring it
 
-The declaration is part of host configuration, not a runtime call — a standing
-order the OS may execute when nothing of the app is running cannot be
-negotiated later.
+The declaration is persisted host configuration: the OS must be able to read
+it before JavaScript runs. A host may replace it only when doing so cannot
+change an already owned continuation; claim and release that owner first.
 
 **Expo apps** declare it in the config plugin, beside the other background
 options, and the plugin validates it at prebuild time
@@ -200,6 +200,18 @@ options, and the plugin validates it at prebuild time
 `peerId` is optional: omitted, the order is scoped to whichever armed peer
 appears. `serviceOccurrence` and `characteristicOccurrence` default to `1` and
 only matter for a peer that exposes the same UUID more than once.
+Android peers use MAC addresses; Apple peers use peripheral UUIDs. Declarations
+accept at most 64 selectors. One native continuation owns one peer at a time;
+a different peer is refused while that owner remains pinned.
+
+On iOS, configure `background.ios.restoration` and the Bluetooth background
+mode too. The plugin writes `UnifiedBleBackgroundContinuation` into Info.plist.
+The native launch hook installs the process radio before React Native is
+created; `willRestoreState` admits the restored peer to the shared executor.
+Removing the option removes the generated key. tvOS does not receive a false
+background/restoration declaration. A bare app must provide equivalent native
+configuration; an option supplied only after JavaScript starts cannot bootstrap
+a previously unconfigured cold wake.
 
 **Bare React Native** passes the same shape to the host factory:
 
@@ -230,7 +242,7 @@ Native hosts call the same two operations on `host.services`:
 
 ```ts
 const status = await manager.continuation.status()
-// strategy, peerId, resubscribe (count), malformedDeclarations, lastWake
+// strategy, peerId, resubscribe (count), malformedDeclarations, lastWake, lastRecovery
 ```
 
 `lastWake` is the wake's own answer — `observedAtMs`, `event`
@@ -238,6 +250,14 @@ const status = await manager.continuation.status()
 `peerAddress`, `code`, `reason` — not an inference from what was asked of it.
 `malformedDeclarations` counts declarations the native side could not parse;
 a non-zero value means a wake did **less** than the app believes it declared.
+
+`lastRecovery` is separate from `lastWake`. It reports the latest autonomous
+reconnect/resubscribe attempt, with its attempt number and either the recovered
+peer/subscription count or the structured error and authoritative retryability.
+An initial successful wake is not evidence that later recovery succeeded.
+Only failures reported as `caller-decides` are retried, with bounded backoff;
+claim handoff and host shutdown stop recovery. This is an opt-in declared
+policy, not an implicit reconnect policy for ordinary connections.
 
 `detail` is the host's own qualification of the declaration, when it has one.
 Apple uses it to say that a declared strategy was validated but is not
@@ -254,6 +274,16 @@ claimed afterwards:
 const backlog = await manager.continuation.claim({ maxItems, maxBytes })
 // selectors[], values[], streamEnds[], controlLost, afterCutoffLoss, disposed
 ```
+
+This is a **stop-and-handoff** operation, not a non-disruptive periodic read.
+The first prepared claim closes native collection admission. The foreground
+owner must explicitly establish its own connection/subscriptions afterwards.
+Queues are bounded in memory, not a durable recording database: process death
+can lose unclaimed values. The shared outbox retains at most 2,048 data records
+and 4 MiB of encoded data, plus 1,024 control records. These are capacity limits,
+not a guarantee of any recording duration; rates, payload sizes, and upstream
+queues affect coverage. Applications requiring durable, uninterrupted collection
+must qualify their persistence and background execution policy separately.
 
 Each value carries the consumer that produced it, named
 `ubm-continuation-{index}`. `selectors[index]` is the immutable selector that
@@ -299,11 +329,13 @@ After native cleanup succeeds it retains one empty acknowledgement receipt, so
 the next claim can confirm release without delivering those already decoded
 batches again.
 
-**Every wake is recorded, including the ones that do nothing.** A peer that
-appears without an association is recorded as `association.unknown`, and an
-appearance outside a `peerId`-scoped order is recorded as a scoped skip. Both
-reach `status.lastWake` with their outcome, so `lastWake: null` means "no wake
-has happened", and never "a wake happened and was quietly refused".
+**Execution and refusal outcomes are recorded.** Android also records an
+unassociated appearance as `association.unknown`; an appearance outside a
+`peerId`-scoped native order reports a scoped refusal. `record-only` does not
+execute continuation and does not update `lastWake`. Therefore `lastWake: null`
+means no continuation outcome has been recorded, not proof that the OS never
+delivered a restoration/presence event. Read the restored peer directory for
+those record-only events.
 
 `malformedDeclarations` is persisted and counts distinct bad declarations, not
 reads: asking twice does not inflate it, and a restart does not forget it.

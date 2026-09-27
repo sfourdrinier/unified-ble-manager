@@ -2,12 +2,12 @@
 //
 // Executable harness for the Apple background-continuation posture: strict
 // declare validation by Android's rules, the validated `continuationStatus`
-// (peerId, resubscribe, malformedDeclarations, a lastWake reader, and the
-// `detail` disclaimer saying the strategy is not implemented in this
-// release), and the persistent malformed counter.
+// (peerId, resubscribe, malformedDeclarations, lastWake and lastRecovery),
+// explicit platform-strategy refusals, installation failure outcomes, and
+// the persistent malformed counter.
 //
 // Evidence level: deterministic only. UserDefaults stands in for the
-// persisted declaration; no wake executes and nothing here is
+// persisted declaration; no native radio work executes and nothing here is
 // physical-radio proof.
 
 import Foundation
@@ -46,8 +46,8 @@ private let peer = "a0:9e:1a:e9:b9:3d"
 enum AppleContinuationStatusHarness {
   static func main() {
     clear()
-    // The continuation surface never installs the host, so the installer is
-    // unreachable; it only satisfies the type.
+    // Metadata reads never install a host. Operations requiring the native
+    // owner exercise this explicit installation failure instead of a radio.
     let sessions = UnifiedBleRustCoreSessions(installer: { _ in
       throw NSError(domain: "harness", code: 1, userInfo: nil)
     })
@@ -64,15 +64,40 @@ enum AppleContinuationStatusHarness {
 
     // The status reports what was actually declared: validated strategy and
     // peer, the resubscription count, zero malformed declarations, no wake
-    // yet, and the deferred-execution disclaimer with Android's words.
+    // yet, and no obsolete deferred-implementation disclaimer.
     var status = statusOf(sessions)
     check(status["strategy"] as? String == "native", "strategy: \(status)")
     check(status["peerId"] as? String == peer.uppercased(), "peerId: \(status)")
     check(status["resubscribe"] as? Int == 1, "resubscribe: \(status)")
     check(status["malformedDeclarations"] as? Int == 0, "malformed: \(status)")
     check(status["lastWake"] is NSNull, "lastWake before any wake: \(status)")
-    check(status["detail"] as? String == "native continuation is not implemented in this release",
-          "detail disclaimer: \(status)")
+    check(status["lastRecovery"] is NSNull, "lastRecovery before native admission: \(status)")
+    check(status["detail"] == nil, "implemented native strategy must not report a deferred disclaimer: \(status)")
+    var scopedFailure: String?
+    sessions.continueRestoredPeer("AA:BB:CC:DD:EE:FF") { _, failure in scopedFailure = failure }
+    check(json(scopedFailure ?? "{}")["code"] as? String == "operation.aborted", "outside-scope wake must match Android refusal")
+    check((statusOf(sessions)["lastWake"] as? [String: Any])?["code"] as? String == "operation.aborted", "scoped wake refusal must remain observable")
+
+    // Host installation is part of this OS wake attempt. Persist its exact
+    // failure before completion, rather than leaving the earlier wake visible.
+    let installationFailure = UnifiedBleRustCoreSessions(installer: { _ in
+      throw MobileCoreError.Failed(code: "lifecycle.invalid-state", domain: "core",
+        operation: "rust-core.host.install", detail: "test installer refuses radio ownership")
+    })
+    var installCompletions = 0
+    installationFailure.continueRestoredPeer(peer.uppercased()) { value, failure in
+      installCompletions += 1
+      check(value == nil, "failed host install returned a success value")
+      let error = json(failure ?? "{}")
+      check(error["code"] as? String == "lifecycle.invalid-state" && error["domain"] as? String == "core"
+            && error["operation"] as? String == "rust-core.host.install"
+            && error["detail"] as? String == "test installer refuses radio ownership", "installer error changed: \(error)")
+      let wake = json(UserDefaults.standard.string(forKey: lastWakeKey) ?? "{}")
+      check(wake["event"] as? String == "continuation.failed" && wake["code"] as? String == error["code"] as? String
+            && wake["reason"] as? String == error["detail"] as? String, "install failure was not persisted before completion: \(wake)")
+      check(wake["peerAddress"] as? String == peer.uppercased() && wake["strategy"] as? String == "native", "wrong failed wake identity: \(wake)")
+    }
+    check(installCompletions == 1, "installer failure must complete exactly once")
 
     // An empty declaration stays a valid record-only order with no disclaimer.
     let (emptyDeclared, emptyFailure) = declare(sessions, "{}")
@@ -81,6 +106,22 @@ enum AppleContinuationStatusHarness {
     check(status["strategy"] as? String == "record-only", "empty strategy: \(status)")
     check(status["peerId"] is NSNull && status["resubscribe"] as? Int == 0, "empty peer/resubscribe: \(status)")
     check(status["detail"] == nil, "record-only carries no disclaimer: \(status)")
+
+    // Valid platform-specific declarations are not malformed arguments.
+    // Apple must refuse their unavailable mechanism before installing a radio.
+    for deferred in [
+      "{\"onAppearance\":\"headless-task\",\"headlessTaskName\":\"collect\"}",
+      "{\"onAppearance\":\"foreground-service\",\"foregroundService\":{\"notification\":{\"title\":\"Collect\",\"channelName\":\"Collect\",\"channelId\":\"collect\"}}}"
+    ] {
+      let (_, declarationFailure) = declare(sessions, deferred)
+      check(declarationFailure == nil, "valid deferred declaration rejected: \(declarationFailure ?? "")")
+      var wakeFailure: String?
+      sessions.continueRestoredPeer(peer) { _, failure in wakeFailure = failure }
+      check(json(wakeFailure ?? "{}")["code"] as? String == "capability.unsupported",
+            "deferred strategy must be unsupported, not invalid or platform failure: \(wakeFailure ?? "")")
+      let refusedWake = statusOf(sessions)["lastWake"] as? [String: Any]
+      check(refusedWake?["code"] as? String == "capability.unsupported", "unsupported mechanism refusal must remain observable")
+    }
 
     // Restore the native order for the refusal checks below.
     let (_, restoreFailure) = declare(sessions, jsonText(native))
@@ -131,15 +172,16 @@ enum AppleContinuationStatusHarness {
     status = statusOf(sessions)
     check(status["lastWake"] is NSNull, "a malformed wake reads as no wake: \(status)")
 
-    // The claim stays an unsupported stub with nothing to abandon.
+    // A claim reaches the native owner, so an installation failure must be
+    // reported as such, not disguised as an unsupported implementation.
     var claimFailure: String?
     sessions.prepareContinuationClaim(maxItems: 256, maxBytes: 65536) { _, failure in claimFailure = failure }
     let claim = json(claimFailure ?? "{}")
-    check(claim["code"] as? String == "capability.unsupported", "claim code: \(claim)")
+    check(claim["code"] as? String == "platform.failure", "claim code: \(claim)")
     check(claim["operation"] as? String == "continuation.claim", "claim operation: \(claim)")
 
     clear()
-    print("[AppleContinuationStatusHarness] validated declare, status, disclaimer, malformed counter and lastWake passed (deterministic; no physical radio).")
+    print("[AppleContinuationStatusHarness] validated declare, status, strategy refusal, installation failure, malformed counter and lastWake passed (deterministic; no physical radio).")
   }
 
   static func declare(_ sessions: UnifiedBleRustCoreSessions, _ text: String) -> (String?, String?) {

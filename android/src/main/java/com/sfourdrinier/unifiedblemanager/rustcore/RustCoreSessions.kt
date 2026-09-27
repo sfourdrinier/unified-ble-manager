@@ -136,11 +136,9 @@ class RustCoreSessions(
     } catch (error: IllegalArgumentException) {
       throw RustCoreRejection.invalid("continuation.declare", error.message ?: "declaration malformed")
     }
-    val conflict = host.continuationExecutor().declarationReplacementFailure(declaration)
-    if (conflict != null) {
-      throw RustCoreRejection("lifecycle.invalid-state", "lifecycle", "continuation.declare", conflict)
+    host.continuationExecutor().persistDeclaration(declaration) {
+      host.continuationStore().saveDeclaration(declarationJson)
     }
-    host.continuationStore().saveDeclaration(declarationJson)
     reply.resolve("{\"state\":\"declared\"}")
   }
 
@@ -224,6 +222,7 @@ class RustCoreSessions(
           "peerId" to declaration.peerId,
           "resubscribe" to declaration.resubscribe.size,
           "malformedDeclarations" to store.malformedDeclarationCount(),
+          "lastRecovery" to host.continuationExecutor().lastRecovery(),
           "lastWake" to if (wake == null) null else linkedMapOf(
             "observedAtMs" to wake.observedAtMs,
             "event" to wake.event,

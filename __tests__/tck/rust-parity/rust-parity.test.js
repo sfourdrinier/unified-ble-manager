@@ -25,7 +25,7 @@
 // The real build must exist: a missing `.node` fails loudly with the exact
 // remediation (run bindings/napi/run_napi_roundtrip.sh first).
 
-const path = require('node:path')
+const { addonPath: ADDON_PATH } = require('../../helpers/desktop-rust-core-harness')
 const { baseTckScenarios } = require('../../../src/tck/scenarios')
 const {
   gapTransitionFor,
@@ -47,9 +47,6 @@ const {
   STAGED_PROGRAMS,
   STAY_OPEN_STAGED_PROBES
 } = require('../../../src/tck/rust-driver')
-
-const ADDON_PATH =
-  process.env.UBM_NAPI_ADDON || path.join(__dirname, '..', '..', '..', 'bindings', 'napi', 'ubm_echo.linux-x64.node')
 
 function loadRustAddon() {
   let addon

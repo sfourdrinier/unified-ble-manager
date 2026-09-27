@@ -12,6 +12,7 @@
 //! test in `tests/no_fake_radio.rs`).
 
 pub mod compat;
+pub mod continuation;
 pub mod drain;
 pub mod foreign;
 pub mod host;

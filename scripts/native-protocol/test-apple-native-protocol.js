@@ -38,9 +38,11 @@ function pinnedRustToolchain() {
 }
 
 const rustToolchain = pinnedRustToolchain()
-const rustc = childProcess.execFileSync('rustup', ['which', '--toolchain', rustToolchain, 'rustc'], {
-  encoding: 'utf8'
-}).trim()
+const rustc = childProcess
+  .execFileSync('rustup', ['which', '--toolchain', rustToolchain, 'rustc'], {
+    encoding: 'utf8'
+  })
+  .trim()
 const rustEnvironment = { ...process.env, RUSTC: rustc }
 
 function runCargo(args) {
@@ -60,12 +62,16 @@ const uniffiSwiftDirectory = path.join(root, 'bindings/uniffi/generated/swift')
 // The Apple Rust route harness links the REAL mobile host: the host-platform
 // build of the UniFFI crate, located through cargo (CARGO_TARGET_DIR aware).
 function cargoTargetDirectory() {
-  const result = childProcess.spawnSync('rustup', ['run', rustToolchain, 'cargo', 'metadata', '--format-version', '1', '--no-deps', '--locked'], {
-    cwd: root,
-    encoding: 'utf8',
-    maxBuffer: 64 * 1024 * 1024,
-    env: rustEnvironment
-  })
+  const result = childProcess.spawnSync(
+    'rustup',
+    ['run', rustToolchain, 'cargo', 'metadata', '--format-version', '1', '--no-deps', '--locked'],
+    {
+      cwd: root,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      env: rustEnvironment
+    }
+  )
   if (result.error) {
     throw result.error
   }
@@ -82,6 +88,68 @@ const ownedRadioSources = [
   path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioDescriptors.swift'),
   path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioOwner.swift')
 ]
+const continuationSources = [
+  path.join(uniffiSwiftDirectory, 'ubm_echo.swift'),
+  ...ownedRadioSources,
+  path.join(root, 'ios/UnifiedBleRustRadioAdapter.swift'),
+  path.join(root, 'ios/UnifiedBleRustCoreSessions.swift')
+]
+
+function compileIosContinuationBootstrap() {
+  const sdk = childProcess
+    .execFileSync('xcrun', ['--sdk', 'iphonesimulator', '--show-sdk-path'], { encoding: 'utf8' })
+    .trim()
+  const target = `${process.arch === 'arm64' ? 'arm64' : 'x86_64'}-apple-ios15.1-simulator`
+  const header = path.join(temporaryDirectory, 'BlePlx-Swift.h')
+  run('xcrun', [
+    '--sdk',
+    'iphonesimulator',
+    'swiftc',
+    '-parse-as-library',
+    '-target',
+    target,
+    '-sdk',
+    sdk,
+    '-module-name',
+    'BlePlx',
+    '-emit-module',
+    '-emit-module-path',
+    path.join(temporaryDirectory, 'BlePlx.swiftmodule'),
+    '-emit-objc-header-path',
+    header,
+    '-Xcc',
+    `-fmodule-map-file=${path.join(uniffiSwiftDirectory, 'ubm_echoFFI.modulemap')}`,
+    '-I',
+    uniffiSwiftDirectory,
+    ...continuationSources
+  ])
+  if (!fs.readFileSync(header, 'utf8').includes('bootstrapNativeContinuation'))
+    throw new Error('native launch selector is not exported to Objective-C')
+  const object = path.join(temporaryDirectory, 'UnifiedBleContinuationBootstrap.o')
+  run('xcrun', [
+    '--sdk',
+    'iphonesimulator',
+    'clang++',
+    '-target',
+    target,
+    '-isysroot',
+    sdk,
+    '-fobjc-arc',
+    '-fmodules',
+    '-I',
+    temporaryDirectory,
+    '-c',
+    path.join(root, 'ios/UnifiedBleContinuationBootstrap.mm'),
+    '-o',
+    object
+  ])
+  const symbols = childProcess.execFileSync('xcrun', ['nm', object], { encoding: 'utf8' })
+  if (!symbols.includes('OBJC_CLASS_$_UnifiedBleContinuationBootstrap'))
+    throw new Error('launch observer compiled out: Swift header was not imported')
+  console.log(
+    '[test-apple-native-protocol] iOS launch observer compiled against the real generated Swift interface; no OS relaunch claim.'
+  )
+}
 
 try {
   run(process.execPath, [path.join(root, 'scripts/native-protocol/test-native-protocol.js')])
@@ -136,10 +204,7 @@ try {
     `-fmodule-map-file=${path.join(uniffiSwiftDirectory, 'ubm_echoFFI.modulemap')}`,
     '-I',
     uniffiSwiftDirectory,
-    path.join(uniffiSwiftDirectory, 'ubm_echo.swift'),
-    ...ownedRadioSources,
-    path.join(root, 'ios/UnifiedBleRustRadioAdapter.swift'),
-    path.join(root, 'ios/UnifiedBleRustCoreSessions.swift'),
+    ...continuationSources,
     path.join(root, 'ios/__tests__/AppleRustRadioAdapterHarness.swift'),
     '-L',
     path.join(cargoTargetDirectory(), 'debug'),
@@ -154,6 +219,7 @@ try {
     rustRadioAdapterExecutable
   ])
   run(rustRadioAdapterExecutable, [])
+  compileIosContinuationBootstrap()
   run('xcrun', [
     '--sdk',
     'macosx',
@@ -163,10 +229,7 @@ try {
     `-fmodule-map-file=${path.join(uniffiSwiftDirectory, 'ubm_echoFFI.modulemap')}`,
     '-I',
     uniffiSwiftDirectory,
-    path.join(uniffiSwiftDirectory, 'ubm_echo.swift'),
-    ...ownedRadioSources,
-    path.join(root, 'ios/UnifiedBleRustRadioAdapter.swift'),
-    path.join(root, 'ios/UnifiedBleRustCoreSessions.swift'),
+    ...continuationSources,
     path.join(root, 'ios/__tests__/AppleContinuationStatusHarness.swift'),
     '-L',
     path.join(cargoTargetDirectory(), 'debug'),

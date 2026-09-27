@@ -604,7 +604,7 @@ pub fn pick_instance(features: &AdvFeatures) -> Result<u8, String> {
 mod tests {
     use super::*;
 
-    const NAME: &str = "Polar H10 SIM0001";
+    const NAME: &str = "SIM Polar H10 0001";
     const UUIDS: [u16; 2] = [0x180D, 0xFEEE];
 
     fn features(max_instances: u8, instances: &[u8]) -> AdvFeatures {
@@ -669,7 +669,7 @@ mod tests {
 
     #[test]
     fn scan_response_carries_the_complete_name() {
-        let mut expected = vec![0x12, 0x09];
+        let mut expected = vec![0x13, 0x09];
         expected.extend_from_slice(NAME.as_bytes());
         assert_eq!(h10_scan_rsp(NAME).unwrap(), expected);
         assert_eq!(
@@ -687,20 +687,20 @@ mod tests {
         let mut expected = vec![
             0x3E, 0x00, // opcode MGMT_OP_ADD_ADVERTISING
             0x00, 0x00, // controller index hci0
-            0x27, 0x00, // 39 parameter bytes = 11 + 9 + 19
+            0x28, 0x00, // 40 parameter bytes = 11 + 9 + 20
             0x02, // instance
             0x01, 0x00, 0x00, 0x00, // flags = MGMT_ADV_FLAG_CONNECTABLE
             0x00, 0x00, // duration
             0x00, 0x00, // timeout
             0x09, // adv_data_len
-            0x13, // scan_rsp_len
-            0x02, 0x01, 0x06, 0x05, 0x03, 0x0D, 0x18, 0xEE, 0xFE, 0x12, 0x09,
+            0x14, // scan_rsp_len
+            0x02, 0x01, 0x06, 0x05, 0x03, 0x0D, 0x18, 0xEE, 0xFE, 0x13, 0x09,
         ];
         expected.extend_from_slice(NAME.as_bytes());
         assert_eq!(packet, expected);
         assert_eq!(
             packet.len() - HEADER_LEN,
-            ADD_ADVERTISING_FIXED_LEN + 9 + 19,
+            ADD_ADVERTISING_FIXED_LEN + 9 + 20,
             "the kernel checks data_len == sizeof(*cp) + adv_data_len + scan_rsp_len exactly"
         );
     }
@@ -742,10 +742,12 @@ mod tests {
     #[test]
     fn instance_zero_is_refused() {
         let request = h10_add_advertising(0, NAME, &UUIDS, None).unwrap();
-        assert!(request
-            .params()
-            .unwrap_err()
-            .contains("instances start at 1"));
+        assert!(
+            request
+                .params()
+                .unwrap_err()
+                .contains("instances start at 1")
+        );
     }
 
     #[test]
@@ -919,10 +921,12 @@ mod tests {
     fn ext_adv_params_refuse_bad_instances_and_intervals() {
         let mut request = h10_ext_adv_params(1).unwrap();
         request.instance = 0;
-        assert!(request
-            .params()
-            .unwrap_err()
-            .contains("instances start at 1"));
+        assert!(
+            request
+                .params()
+                .unwrap_err()
+                .contains("instances start at 1")
+        );
         let mut request = h10_ext_adv_params(1).unwrap();
         request.min_interval = 2000;
         request.max_interval = 1600;
@@ -945,17 +949,17 @@ mod tests {
         let mut expected = vec![
             0x55, 0x00, // opcode MGMT_OP_ADD_EXT_ADV_DATA
             0x00, 0x00, // controller index hci0
-            0x1F, 0x00, // 31 parameter bytes = 3 + 9 + 19
+            0x20, 0x00, // 32 parameter bytes = 3 + 9 + 20
             0x02, // instance
             0x09, // adv_data_len
-            0x13, // scan_rsp_len
-            0x02, 0x01, 0x06, 0x05, 0x03, 0x0D, 0x18, 0xEE, 0xFE, 0x12, 0x09,
+            0x14, // scan_rsp_len
+            0x02, 0x01, 0x06, 0x05, 0x03, 0x0D, 0x18, 0xEE, 0xFE, 0x13, 0x09,
         ];
         expected.extend_from_slice(NAME.as_bytes());
         assert_eq!(packet, expected);
         assert_eq!(
             packet.len() - HEADER_LEN,
-            ADD_EXT_ADV_DATA_FIXED_LEN + 9 + 19,
+            ADD_EXT_ADV_DATA_FIXED_LEN + 9 + 20,
             "exactly sized: the kernel checks 3 + adv_data_len + scan_rsp_len"
         );
     }

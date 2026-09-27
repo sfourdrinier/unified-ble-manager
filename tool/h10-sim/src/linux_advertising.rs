@@ -539,23 +539,23 @@ mod tests {
     #[test]
     fn alias_plan_sets_the_sim_name_and_restores_the_previous() {
         // Normal start: alias differs, restore target is the live alias.
-        let plan = plan_adapter_alias("lx5090", "Polar H10 SIM0001", None);
-        assert_eq!(plan.set_to, "Polar H10 SIM0001");
+        let plan = plan_adapter_alias("lx5090", "SIM Polar H10 0001", None);
+        assert_eq!(plan.set_to, "SIM Polar H10 0001");
         assert_eq!(plan.restore_to.as_deref(), Some("lx5090"));
         assert!(!plan.adopted_stale);
         // Alias already the sim name, no record: nothing to restore.
-        let plan = plan_adapter_alias("Polar H10 SIM0001", "Polar H10 SIM0001", None);
-        assert_eq!(plan.set_to, "Polar H10 SIM0001");
+        let plan = plan_adapter_alias("SIM Polar H10 0001", "SIM Polar H10 0001", None);
+        assert_eq!(plan.set_to, "SIM Polar H10 0001");
         assert_eq!(plan.restore_to, None);
         assert!(!plan.adopted_stale);
         // Leftover alias with a same-boot record: adopt the recorded
         // original, not the leftover sim name.
-        let plan = plan_adapter_alias("Polar H10 SIM0001", "Polar H10 SIM0001", Some("lx5090"));
-        assert_eq!(plan.set_to, "Polar H10 SIM0001");
+        let plan = plan_adapter_alias("SIM Polar H10 0001", "SIM Polar H10 0001", Some("lx5090"));
+        assert_eq!(plan.set_to, "SIM Polar H10 0001");
         assert_eq!(plan.restore_to.as_deref(), Some("lx5090"));
         assert!(plan.adopted_stale);
         // Someone changed the alias after the crash: the live alias wins.
-        let plan = plan_adapter_alias("other-host", "Polar H10 SIM0001", Some("lx5090"));
+        let plan = plan_adapter_alias("other-host", "SIM Polar H10 0001", Some("lx5090"));
         assert_eq!(plan.restore_to.as_deref(), Some("other-host"));
         assert!(!plan.adopted_stale);
     }

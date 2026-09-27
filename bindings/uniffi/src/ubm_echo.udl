@@ -224,6 +224,15 @@ interface MobileRadioIngress {
 };
 
 interface MobileCoreHost {
+    string continuation_reserve_declaration(string declaration_json);
+    string continuation_commit_declaration(string reservation_token);
+    string continuation_cancel_declaration(string reservation_token);
+    string continuation_seed_declaration(string declaration_json);
+    string? continuation_declaration_replacement_failure(string declaration_json);
+    void continuation_describe_backlog(MobileInvokeCompletion completion);
+    void continuation_execute(string peer_id, string declaration_json, MobileInvokeCompletion completion);
+    void continuation_prepare_claim(u32 max_items, u32 max_bytes, MobileInvokeCompletion completion);
+    void continuation_acknowledge_claim(string claim_token, MobileInvokeCompletion completion);
     // "delivered" | "late" | "mismatched"
     string complete(u64 request_id, MobileRadioCompletion completion);
     // "accepted" | "dropped-advertisement" | "dropped-notification" | "dropped-control" | "closed"
