@@ -71,6 +71,7 @@ function harness({
   let acc = false,
     ecg = false,
     rate = 25,
+    accSample = 0n,
     clock = 0n
   function frames() {
     for (let i = 0; i < 3; i++) {
@@ -79,12 +80,11 @@ function harness({
         const bytes = new Uint8Array(16)
         bytes[0] = 2
         bytes[9] = 1
-        new DataView(bytes.buffer).setBigUint64(1, clock, true)
         new DataView(bytes.buffer).setInt16(10, 100, true)
         // Two frames with one sample must be spaced by exactly 1/rate.
         new DataView(bytes.buffer).setBigUint64(
           1,
-          BigInt(i + 1) * (1000000000n / BigInt(rate) + (wrongRate ? 1n : 0n)),
+          ++accSample * (1000000000n / BigInt(rate) + (wrongRate ? 1n : 0n)),
           true
         )
         dataStream.push(malformed ? bytes.slice(0, 15) : bytes)
@@ -115,6 +115,7 @@ function harness({
       if (op === 1) parameters = [0, 4, 25, 0, 50, 0, 100, 0, 200, 0, 1, 1, 16, 0, 2, 3, 2, 0, 4, 0, 8, 0]
       if (op === 2 && type === 2 && status === 0) {
         acc = true
+        accSample = 0n
         rate = bytes[4]
       }
       if (op === 2 && type === 0) ecg = true
@@ -156,6 +157,7 @@ function harness({
     manager,
     connection,
     cp,
+    dataStream,
     logs,
     stalled,
     options: {
@@ -175,6 +177,18 @@ test('ACC probe exercises all twelve settings plus both interleaved stop orders 
   expect(run.logs.at(-1).phase).toBe('passed')
   expect(run.manager.destroy).toHaveBeenCalledTimes(1)
   expect(run.connection.disconnect).toHaveBeenCalledTimes(1)
+})
+
+test('fixture ACC sample time remains monotonic across generated batches', async () => {
+  const run = harness()
+  await run.cp.write(pmd.buildStartAccCommand({ sampleRateHz: 25, resolutionBits: 16, rangeG: 2 }))
+  const timestamps = []
+  for (let index = 0; index < 6; index++) {
+    const next = await run.dataStream.next()
+    timestamps.push(pmd.parseAccFrame(next.value.value.value).timestampNs)
+  }
+  expect(timestamps).toEqual([40000000n, 80000000n, 120000000n, 160000000n, 200000000n, 240000000n])
+  await run.dataStream.return()
 })
 
 test.each([
