@@ -260,6 +260,11 @@ and in-memory overhead are additional). At capacity, retained records stop
 growing and every omitted record is counted; the capture is marked incomplete.
 No packets are silently overwritten. Stop before clearing a capacity-limited run.
 
+Metadata `optionsAtRecordingStart` and `peersAtRecordingStart` describe only the
+instant `record-start` was called. Before acquisition or after stop they are
+`null` and `{}`, respectively; subsequent setup, settings and device identities
+are retained in chronological records.
+
 The recorder is opt-in, in-memory and observes this JS host only. App/process
 termination loses unexported data. It is **not** native durable/background
 recording; the native continuation outbox is a separate mechanism. Exports

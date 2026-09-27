@@ -405,7 +405,10 @@ function driftReport(sealed, fresh) {
   return drifted
 }
 
-function checkBuildFingerprint(root) {
+// Read and validate input-seal integrity without regenerating checkout inputs.
+// Packed consumers intentionally omit some development files; only a full
+// source checkout may use checkBuildFingerprint to check input freshness.
+function readBuildFingerprint(root) {
   const absoluteRoot = path.resolve(root)
   const target = sealPath(root)
   if (!fs.existsSync(target)) {
@@ -417,11 +420,15 @@ function checkBuildFingerprint(root) {
   try {
     sealed = JSON.parse(fs.readFileSync(target, 'utf8'))
   } catch {
-    throw new Error(`Build seal is not valid JSON: ${target}. Rebuild the library:\n  pnpm --dir ${absoluteRoot} prepack`)
+    throw new Error(
+      `Build seal is not valid JSON: ${target}. Rebuild the library:\n  pnpm --dir ${absoluteRoot} prepack`
+    )
   }
   const { fingerprint, ...stored } = sealed
   if (typeof fingerprint !== 'string' || sealDigest(stored) !== fingerprint) {
-    throw new Error(`Build seal integrity failed (tampered or truncated): ${target}. Rebuild the library:\n  pnpm --dir ${absoluteRoot} prepack`)
+    throw new Error(
+      `Build seal integrity failed (tampered or truncated): ${target}. Rebuild the library:\n  pnpm --dir ${absoluteRoot} prepack`
+    )
   }
   const manifest = JSON.parse(fs.readFileSync(path.join(absoluteRoot, 'package.json'), 'utf8'))
   if (stored.package === undefined || stored.package.version !== manifest.version) {
@@ -429,6 +436,12 @@ function checkBuildFingerprint(root) {
       `Build seal targets ${stored.package === undefined ? 'unknown' : stored.package.version}, but the checkout is ${manifest.version}. Rebuild the library:\n  pnpm --dir ${absoluteRoot} prepack`
     )
   }
+  return sealed
+}
+
+function checkBuildFingerprint(root) {
+  const absoluteRoot = path.resolve(root)
+  const stored = readBuildFingerprint(absoluteRoot)
   const fresh = generateBuildFingerprint(absoluteRoot)
   const drifted = driftReport(stored.files === undefined ? {} : stored.files, fresh.files)
   if (stored.contractRevision !== fresh.contractRevision) {
@@ -498,4 +511,10 @@ if (require.main === module) {
   }
 }
 
-module.exports = { SEAL_RELATIVE, generateBuildFingerprint, writeBuildFingerprint, checkBuildFingerprint }
+module.exports = {
+  SEAL_RELATIVE,
+  generateBuildFingerprint,
+  writeBuildFingerprint,
+  readBuildFingerprint,
+  checkBuildFingerprint
+}

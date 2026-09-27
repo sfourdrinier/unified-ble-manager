@@ -4,6 +4,15 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Unreleased
 
+### Connection setup and test-build integrity
+
+- Observe connection lifecycle while the supervisor configures GATT, retaining
+  an observed link-loss cause instead of treating its downstream stale-handle
+  failure as an unrelated terminal setup error.
+- Verify the canonical build fingerprint when preparing the copied Expo
+  dependency, so JavaScript-only changes cannot pass on version/native identity
+  alone. Missing or stale build seals trigger refresh and revalidation.
+
 ### Test-app ECG and accelerometer comparison
 
 - Add independent H10 ACC selection beside ECG in the shared live dashboard,
@@ -17,6 +26,8 @@ All notable changes to `unified-ble-manager` are documented here.
   Keep bulk captures out of automatic snapshots and event history. Captures
   are host-observed data, not a promise of durable background recording or
   proof that synthetic ACC matches real H10 motion.
+- Keep ECG-only errors out of ACC diagnostics and scope recording-start metadata
+  to the current run rather than a stopped run's retained display state.
 
 ### H10 simulator
 

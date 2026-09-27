@@ -266,10 +266,14 @@ Later flags win: `--profile` applies first, then `--name`/`--bpm`/`--battery`.
   `HashMap` (`dbus-crossroads` 0.5.3 `stdimpl.rs` `PathPropMap`) — the
   declared order is the strap's, but BlueZ numbers handles in enumeration
   order.
-- In same-daemon, two-adapter testing, a BlueZ client can automatically probe
-  the host's MIDI service and trigger an encrypted read. The observed unpaired
-  fixture refused pairing and disconnected during discovery; a pairing agent
-  restricted to the two test peer paths allowed collection. Record whether a
+- BlueZ can automatically probe services on the connected central as well as
+  serve the simulator. Two-adapter testing observed encrypted MIDI reads; an
+  iPhone run observed BlueZ reading the phone's Battery Level, receiving
+  Insufficient Authentication, requesting security and then disconnecting after
+  pairing was refused. These host-profile probes are not H10 PMD requirements.
+  In the two-adapter test, a pairing agent restricted to the two test peer paths
+  allowed collection. Restrict any qualification agent to the exact test peers;
+  never register a blanket-accepting default agent. Record whether a
   run is paired: that result does not establish unpaired compatibility. Never
   blanket-trust other peers, and remove only test-created bonds after the run.
   Successful reconnect or CCCD configuration alone is insufficient recovery

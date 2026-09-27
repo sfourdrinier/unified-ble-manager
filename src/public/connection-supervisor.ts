@@ -136,6 +136,10 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
   private activeAbort: AbortController | null = null
   private activeConnection: BleConnection | null = null
   private activeIterator: AsyncIterator<BleConnectionEvent> | null = null
+  private activeLifecycle: Promise<
+    { kind: 'disconnect'; event: BleConnectionEvent } | { kind: 'failure'; error: BleError }
+  > | null = null
+  private setupDisconnect: BleConnectionEvent | null = null
   private retryTimer: unknown = null
   private runPromise: Promise<void> | null = null
   private stopPromise: Promise<PublicCleanupRecord> | null = null
@@ -464,14 +468,39 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
       return 'interrupted'
     }
     this.activeConnection = outcome.connection
+    this.setupDisconnect = null
+    try {
+      this.activeIterator = outcome.connection.lifecycleEvents[Symbol.asyncIterator]()
+    } catch (error) {
+      this.lastError = toBleError(error)
+      this.stopRequested = true
+      const cleanup = await this.cleanupCurrentConnection()
+      return cleanup.state === 'release-failed' ? 'cleanup-failed' : 'interrupted'
+    }
+    this.activeLifecycle = this.observeConnectionLifecycle(outcome.connection, this.activeIterator)
     this.lastCleanup = null
     this.connectionGeneration = extractGeneration(outcome.connection)
     this.transition('configuring', null, null, null)
     if (this.options.configure !== undefined) {
       try {
         const configurePromise = Promise.resolve(this.options.configure(outcome.connection))
-        const configured = await this.awaitControl(configurePromise)
-        if (configured.kind === 'control') {
+        const configured = await this.awaitControl(
+          Promise.race([
+            configurePromise.then(value => ({ kind: 'configured' as const, value })),
+            this.activeLifecycle.then(value => ({ kind: 'lifecycle' as const, value }))
+          ])
+        )
+        if (configured.kind === 'control' || configured.value.kind === 'lifecycle') {
+          if (configured.kind === 'value' && configured.value.kind === 'lifecycle') {
+            const lifecycle = configured.value.value
+            if (lifecycle.kind === 'failure') {
+              this.lastError = lifecycle.error
+              this.stopRequested = true
+            } else if (lifecycle.event.cause === 'adapter-loss') {
+              this.attempt -= 1
+              this.waitForAdapter = true
+            }
+          }
           const lateBarrier = configurePromise
             .then(
               session => this.disposeLateSession(session),
@@ -507,9 +536,13 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
           }
           return 'interrupted'
         }
-        this.session = configured.value
+        this.session = configured.value.value
       } catch (error) {
         this.lastError = toBleError(error)
+        // A stale GATT handle can be the downstream consequence of a link
+        // loss already observed during setup. Preserve that physical fact;
+        // a stale handle without a terminal lifecycle event remains terminal.
+        const disconnectedDuringSetup = this.observedSetupDisconnect()
         const cleanup = await this.cleanupCurrentConnection()
         if (cleanup.state === 'release-failed') {
           this.lastError = toBleError(cleanup.failures[0]?.error)
@@ -519,16 +552,20 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
         // link lost during setup backs off and reconnects like any other
         // link loss; an adapter lost during setup waits for the adapter,
         // then reconnects. Any other configure failure is the application's.
-        if (isAdapterLossDuringSetup(this.lastError)) {
+        if (isAdapterLossDuringSetup(this.lastError) || disconnectedDuringSetup?.cause === 'adapter-loss') {
           this.attempt -= 1
           this.waitForAdapter = true
-        } else if (this.lastError.code !== 'connection.lost') {
+        } else if (this.lastError.code !== 'connection.lost' && disconnectedDuringSetup === null) {
           this.stopRequested = true
         }
         return 'interrupted'
       }
     }
-    if (this.stopRequested || this.paused || this.pauseCleanupRequired) {
+    if (this.stopRequested || this.paused || this.pauseCleanupRequired || this.setupDisconnect !== null) {
+      if (this.observedSetupDisconnect()?.cause === 'adapter-loss') {
+        this.attempt -= 1
+        this.waitForAdapter = true
+      }
       const cleanup = await this.cleanupCurrentConnection()
       if (cleanup.state === 'release-failed') {
         this.lastError = toBleError(cleanup.failures[0]?.error)
@@ -547,38 +584,57 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
     if (connection === null) return 'terminal'
     if (this.stopRequested) return 'stopped'
     if (this.paused || this.pauseCleanupRequired) return 'retry'
-    const iterator = connection.lifecycleEvents[Symbol.asyncIterator]()
-    this.activeIterator = iterator
-    while (!this.stopRequested) {
-      const control = this.controlWaiter()
-      let next: Awaited<ReturnType<typeof this.connectionEventRace>>
-      try {
-        next = await this.connectionEventRace(iterator, control.promise)
-      } catch (error) {
-        control.cancel()
-        this.lastError = toBleError(error)
-        return 'terminal'
-      }
-      control.cancel()
-      if (next.kind === 'control') return this.stopRequested ? 'stopped' : 'retry'
-      if (next.result.done) {
-        this.lastError = toBleError(contractError('stream.closed', 'connection', 'connection-supervisor.events'))
-        return 'terminal'
-      }
-      const event = next.result.value
-      if (event.current === 'disconnecting') this.transition('disconnecting', null, null, null)
-      if (event.current === 'disconnected' || event.current === 'lost') {
-        this.lastDisconnect = event
-        this.transition('disconnecting', null, null, null)
-        const cleanup = await this.cleanupCurrentConnection()
-        if (cleanup.state === 'release-failed') {
-          this.lastError = toBleError(contractError('connection.failed', 'connection', 'connection-supervisor.cleanup'))
-          return 'terminal'
-        }
-        return 'retry'
-      }
+    const lifecycle = this.activeLifecycle
+    if (lifecycle === null) return 'terminal'
+    const control = this.controlWaiter()
+    const next = await Promise.race([lifecycle, control.promise.then(() => ({ kind: 'control' as const }))])
+    control.cancel()
+    if (next.kind === 'control') return this.stopRequested ? 'stopped' : 'retry'
+    if (next.kind === 'failure') {
+      this.lastError = next.error
+      return 'terminal'
     }
-    return 'stopped'
+    this.transition('disconnecting', null, null, null)
+    const cleanup = await this.cleanupCurrentConnection()
+    if (cleanup.state === 'release-failed') {
+      this.lastError = toBleError(contractError('connection.failed', 'connection', 'connection-supervisor.cleanup'))
+      return 'terminal'
+    }
+    return 'retry'
+  }
+
+  private observedSetupDisconnect() {
+    // Read through the asynchronous observer rather than narrowing this field
+    // to the null assignment at the start of connectAttempt.
+    return this.setupDisconnect
+  }
+
+  /** One owned iterator spans setup and connected operation; no observation gap. */
+  private async observeConnectionLifecycle(
+    connection: BleConnection,
+    iterator: AsyncIterator<BleConnectionEvent>
+  ): Promise<{ kind: 'disconnect'; event: BleConnectionEvent } | { kind: 'failure'; error: BleError }> {
+    try {
+      for (;;) {
+        const next = await iterator.next()
+        if (next.done)
+          return {
+            kind: 'failure',
+            error: toBleError(contractError('stream.closed', 'connection', 'connection-supervisor.events'))
+          }
+        const event = next.value
+        if (this.activeConnection !== connection) continue
+        if (event.current === 'disconnecting' && this.state !== 'configuring')
+          this.transition('disconnecting', null, null, null)
+        if (event.current === 'disconnected' || event.current === 'lost') {
+          this.setupDisconnect = event
+          this.lastDisconnect = event
+          return { kind: 'disconnect', event }
+        }
+      }
+    } catch (error) {
+      return { kind: 'failure', error: toBleError(error) }
+    }
   }
 
   private async cleanupCurrentConnection(): Promise<PublicCleanupRecord> {
@@ -595,6 +651,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
         try {
           await iterator.return()
           this.activeIterator = null
+          this.activeLifecycle = null
         } catch (error) {
           failures.push(...cleanupFailure('connection-events', error, 'connection-supervisor.events-return'))
         }
@@ -830,16 +887,6 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
       this.clearTimer(this.retryTimer)
       this.retryTimer = null
     }
-  }
-
-  private async connectionEventRace(
-    iterator: AsyncIterator<BleConnectionEvent>,
-    controlPromise: Promise<void>
-  ): Promise<{ kind: 'event'; result: IteratorResult<BleConnectionEvent> } | { kind: 'control' }> {
-    return Promise.race([
-      iterator.next().then(result => ({ kind: 'event' as const, result })),
-      controlPromise.then(() => ({ kind: 'control' as const }))
-    ])
   }
 
   private startStableResetTimer(): void {

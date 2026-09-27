@@ -347,9 +347,9 @@ export class LiveDashboardScenario extends BleScenario<LiveDashboardState> {
           {
             ...metadata,
             host: toJsonValue(this.host.identity),
-            options: toJsonValue(this.activeOptions),
+            optionsAtRecordingStart: toJsonValue(this.activeOptions),
             wallClockStartedAt: new Date().toISOString(),
-            peers: toJsonValue(this.snapshot().tiles)
+            peersAtRecordingStart: this.activeOptions === null ? {} : toJsonValue(this.snapshot().tiles)
           },
           this.runtime.now()
         )
@@ -413,6 +413,7 @@ export class LiveDashboardScenario extends BleScenario<LiveDashboardState> {
       for (const waiter of runtime.ecgWaiters) waiter.cancel()
     }
     const outcome = await super.stop()
+    this.activeOptions = null
     this.recorder.stop(this.runtime.now())
     this.patch({ recording: this.recorder.summary() })
     if (outcome.wasRunning) {
@@ -1098,14 +1099,23 @@ export class LiveDashboardScenario extends BleScenario<LiveDashboardState> {
             pmdReplacedItems: tile.pmdReplacedItems + item.replacedItems
           })
         if (error !== null)
-          this.patchTile(peerId, { error, ...(tile?.accSettings !== null ? { accError: error } : {}) })
+          this.patchTile(peerId, {
+            error,
+            ...(tile !== undefined && tile.accSettings !== null ? { accError: error } : {})
+          })
       }
       this.emit('stream-ended', { stream: name })
     } catch (thrown) {
       const error = describeError(thrown)
       this.emit('stream-threw', { stream: name, error })
       this.recordPmd('error', peerId, { stream: name, error, pmdGeneration: generation })
-      if (this.runtimes.get(peerId)?.pmdGeneration === generation) this.patchTile(peerId, { error, accError: error })
+      if (this.runtimes.get(peerId)?.pmdGeneration === generation) {
+        const tile = this.snapshot().tiles[peerId]
+        this.patchTile(peerId, {
+          error,
+          ...(tile !== undefined && tile.accSettings !== null ? { accError: error } : {})
+        })
+      }
     }
   }
 

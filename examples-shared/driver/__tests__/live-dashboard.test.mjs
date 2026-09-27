@@ -671,6 +671,60 @@ test('thrown failures from either PMD channel remain visible in tiles and record
   }
 })
 
+test('PMD stream errors are attributed to ACC only when that stream was enabled', async () => {
+  for (const acc of [false, true]) {
+    for (const uuid of [PMD_CONTROL_POINT, PMD_DATA]) {
+      for (const failureKind of ['terminal', 'throw']) {
+        const fixture = makeDashboardHost({ reads: { [PMD_CONTROL_POINT]: new Uint8Array([0, 5, 0]) } })
+        const scenario = new LiveDashboardScenario(fixture.host)
+        await scenario.dispatch('start', { acc })
+        fixture.scanStream.push(fixture.observationFor(fixture.peers[0]))
+        await microtaskUntil('streaming', () => tileOf(scenario, fixture.peers[0].id)?.status === 'streaming')
+        const error = Object.assign(new Error('PMD transport refused'), { code: 'platform.failure' })
+        const values = lastSubscription(fixture.subscriptions, uuid).values
+        if (failureKind === 'throw') values.fail(error)
+        else
+          values.notice({
+            kind: 'terminal',
+            reason: 'source-failed',
+            error,
+            droppedItems: 0,
+            droppedBytes: 0,
+            replacedItems: 0
+          })
+        await microtaskUntil(
+          'common error visible',
+          () => tileOf(scenario, fixture.peers[0].id)?.error?.code === 'platform.failure'
+        )
+        const tile = tileOf(scenario, fixture.peers[0].id)
+        if (acc) assert.equal(tile.accError?.code, 'platform.failure')
+        else assert.equal(tile.accError, null, `${uuid} ${failureKind} must not invent an ACC failure`)
+        await scenario.dispatch('stop', {})
+      }
+    }
+  }
+})
+
+test('recording-start metadata is immutable and cannot inherit a stopped run', async () => {
+  const fixture = makeDashboardHost()
+  const scenario = new LiveDashboardScenario(fixture.host)
+  await scenario.dispatch('start', { ecg: false })
+  fixture.scanStream.push(fixture.observationFor(fixture.peers[0]))
+  await microtaskUntil('streaming', () => tileOf(scenario, fixture.peers[0].id)?.status === 'streaming')
+  await scenario.dispatch('record-start', {})
+  await scenario.dispatch('stop', {})
+  const activeCapture = await scenario.dispatch('record-export', {})
+  assert.equal(activeCapture.metadata.optionsAtRecordingStart.ecg, false)
+  assert.equal(activeCapture.metadata.peersAtRecordingStart[fixture.peers[0].id].status, 'streaming')
+  assert.equal(tileOf(scenario, fixture.peers[0].id).status, 'off')
+  await scenario.dispatch('record-clear', {})
+  await scenario.dispatch('record-start', {})
+  await scenario.dispatch('record-stop', {})
+  const idleCapture = await scenario.dispatch('record-export', {})
+  assert.equal(idleCapture.metadata.optionsAtRecordingStart, null)
+  assert.deepEqual(idleCapture.metadata.peersAtRecordingStart, {})
+})
+
 test('stop cancels a held ACC START response and compensates both attempts without advancing time', async () => {
   let held = false
   const fixture = makeDashboardHost({

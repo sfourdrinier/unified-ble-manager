@@ -21,6 +21,7 @@
 
 const fs = require('fs')
 const path = require('path')
+const { checkBuildFingerprint, readBuildFingerprint } = require('../../scripts/release/generate-build-fingerprint')
 
 const REFRESH = [
   'Refresh it:',
@@ -54,6 +55,23 @@ function inspectExampleLibrary({ repo, copy }) {
   }
   if (copy.identity !== repo.identity) {
     return Object.freeze({ ok: false, state: 'stale-identity' })
+  }
+  if (typeof repo.buildFingerprint !== 'string' || repo.buildFingerprint.length === 0) {
+    return Object.freeze({
+      ok: false,
+      state: 'stale-root-build',
+      detail: repo.buildError ?? 'Repository build seal is missing'
+    })
+  }
+  if (typeof copy.buildFingerprint !== 'string' || copy.buildFingerprint.length === 0) {
+    return Object.freeze({
+      ok: false,
+      state: 'invalid-copy-build',
+      detail: copy.buildError ?? 'Copied build seal is missing'
+    })
+  }
+  if (copy.buildFingerprint !== repo.buildFingerprint) {
+    return Object.freeze({ ok: false, state: 'stale-build' })
   }
   return Object.freeze({ ok: true, state: 'current', version: repo.version })
 }
@@ -89,6 +107,12 @@ function describeLibraryOutcome(outcome) {
         '',
         REFRESH
       ].join('\n')
+    case 'stale-root-build':
+      return `verify-example-library: repository lib/ is not sealed for the current inputs.\n${outcome.detail}\n\n${REFRESH}`
+    case 'invalid-copy-build':
+      return `verify-example-library: the example's build seal cannot be verified.\n${outcome.detail}\n\n${REFRESH}`
+    case 'stale-build':
+      return `verify-example-library: the example's build fingerprint differs from the current repository build, even if package version and native identity match.\n\n${REFRESH}`
     default:
       throw new Error(`verify-example-library: unhandled outcome ${String(outcome.state)}`)
   }
@@ -109,8 +133,20 @@ function readIdentityDigests(identityPath) {
 
 function readRepoFacts(root) {
   return {
+    ...readBuildFacts(root, true),
     identity: readIdentityDigests(path.join(root, 'src', 'generated', 'native-build-identity.ts')),
     version: JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version
+  }
+}
+
+function readBuildFacts(root, checkout) {
+  try {
+    // Only the repository has the complete seal input set. The installed
+    // package carries that same seal but legitimately omits dev-only files.
+    if (checkout) checkBuildFingerprint(root)
+    return { buildFingerprint: readBuildFingerprint(root).fingerprint }
+  } catch (error) {
+    return { buildFingerprint: null, buildError: error instanceof Error ? error.message : String(error) }
   }
 }
 
@@ -122,6 +158,7 @@ function readCopyFacts(exampleDir) {
   const identityPath = path.join(copyRoot, 'src', 'generated', 'native-build-identity.ts')
   return {
     present: true,
+    ...readBuildFacts(copyRoot, false),
     identity: readIdentityDigests(identityPath),
     version: JSON.parse(fs.readFileSync(path.join(copyRoot, 'package.json'), 'utf8')).version,
     hasBuiltLib: fs.existsSync(path.join(copyRoot, 'lib', 'module', 'index.js'))
