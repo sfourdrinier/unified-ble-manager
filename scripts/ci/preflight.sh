@@ -125,6 +125,7 @@ run_package() {
   pnpm test:native-protocol
   pnpm lint
   pnpm prepack
+  pnpm --dir example-expo test:driver
   pnpm run docs:check
   pnpm build:example:web
   pnpm performance:check
