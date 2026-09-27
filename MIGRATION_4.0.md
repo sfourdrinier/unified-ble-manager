@@ -405,4 +405,4 @@ Restoration identity is now deterministic via `deriveRestorationIdentity({ appli
 
 [`README.md`](README.md) · [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) · [`docs/TUTORIALS.md`](docs/TUTORIALS.md) · [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md)
 
-Maintainers: [`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)
+Maintainers: [Current 5.0 authority](docs/README.md#current-50-authority)

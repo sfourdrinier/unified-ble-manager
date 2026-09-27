@@ -5,7 +5,7 @@
 > **Transitional source characterization:** inherited discovery helpers and
 > examples remain migration input, not a 4.0 contract. The clean baseline has
 > one public core and a versioned backend contract. See
-> [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md).
+> [Current 5.0 authority](README.md#current-50-authority).
 
 The supported 4.0 profile surface is the package subpath map below. These
 modules are optional, host-neutral profile codecs and advanced path helpers.

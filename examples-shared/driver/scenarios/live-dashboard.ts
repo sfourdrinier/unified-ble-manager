@@ -57,6 +57,7 @@ import {
   PMD_DATA,
   PMD_SERVICE,
   POLAR_PREFERRED_MTU,
+  PmdControlPointResponseAssembler,
   buildGetEcgSettingsCommand,
   buildStartEcgCommand,
   buildStopEcgCommand,
@@ -254,7 +255,9 @@ type PmdWaiter = {
   readonly opCode: number
   readonly measurementType: number
   readonly generation: number
+  readonly assembler: PmdControlPointResponseAssembler
   readonly resolve: (response: ControlPointResponse) => void
+  readonly fail: (error: Error) => void
   readonly cancel: () => void
 }
 
@@ -1131,16 +1134,18 @@ export class LiveDashboardScenario extends BleScenario<LiveDashboardState> {
     }
     const opCode = byteAt(bytes, 0)
     const measurementType = byteAt(bytes, 1)
-    let settle: ((response: ControlPointResponse | null) => void) | null = null
+    let settle: ((response: ControlPointResponse | Error | null) => void) | null = null
     let cancelled = false
-    const response = new Promise<ControlPointResponse | null>(resolve => {
+    const response = new Promise<ControlPointResponse | Error | null>(resolve => {
       settle = resolve
     })
     const waiter: PmdWaiter = {
       opCode,
       measurementType,
       generation: runtime.pmdGeneration,
+      assembler: new PmdControlPointResponseAssembler(opCode, measurementType, runtime.pmdGeneration),
       resolve: answer => settle?.(answer),
+      fail: error => settle?.(error),
       cancel: () => {
         cancelled = true
         settle?.(null)
@@ -1166,6 +1171,7 @@ export class LiveDashboardScenario extends BleScenario<LiveDashboardState> {
       void response.then(() => cancel())
     })
     const settled = await Promise.race([response, timeout])
+    if (settled instanceof Error) throw settled
     if (settled === null) {
       runtime.ecgWaiters = runtime.ecgWaiters.filter(entry => entry !== waiter)
       if (cancelled) throw new ScenarioError('operation.aborted', 'dashboard stopped while awaiting a PMD response')
@@ -1208,6 +1214,22 @@ export class LiveDashboardScenario extends BleScenario<LiveDashboardState> {
         bytesHex: bytesToHex(value.value),
         error: describeError(error)
       })
+      // A truncated response can still identify its command. Unidentifiable
+      // noise remains diagnostic and cannot complete any pending request.
+      const runtime = this.runtimes.get(peerId)
+      const waiter =
+        value.value[0] === 0xf0
+          ? runtime?.ecgWaiters.find(
+              entry =>
+                entry.opCode === value.value[1] &&
+                entry.measurementType === value.value[2] &&
+                entry.generation === generation
+            )
+          : undefined
+      if (waiter !== undefined && runtime !== undefined) {
+        runtime.ecgWaiters = runtime.ecgWaiters.filter(entry => entry !== waiter)
+        waiter.fail(error instanceof Error ? error : new Error(String(error)))
+      }
       return
     }
     const line =
@@ -1227,8 +1249,17 @@ export class LiveDashboardScenario extends BleScenario<LiveDashboardState> {
       this.emit('tile-pmd-control-point-unsolicited', { tile: peerId, message: line })
       return
     }
-    if (runtime !== undefined) runtime.ecgWaiters = runtime.ecgWaiters.filter(entry => entry !== waiter)
-    waiter.resolve(message)
+    try {
+      const response = waiter.assembler.push(message, generation)
+      if (response === null) return
+      if (runtime !== undefined) runtime.ecgWaiters = runtime.ecgWaiters.filter(entry => entry !== waiter)
+      waiter.resolve(response)
+    } catch (error) {
+      if (runtime !== undefined) runtime.ecgWaiters = runtime.ecgWaiters.filter(entry => entry !== waiter)
+      const failure = error instanceof Error ? error : new Error(String(error))
+      this.recordPmd('error', peerId, { stage: 'control-assembly', error: describeError(failure) })
+      waiter.fail(failure)
+    }
   }
 
   private onPmdFrame(peerId: string, value: GattValueEvent, generation: number): void {

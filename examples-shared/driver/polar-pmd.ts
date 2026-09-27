@@ -179,6 +179,61 @@ export function parseControlPointMessage(bytes: Readonly<Uint8Array>): ControlPo
   }
 }
 
+/** One command's bounded multipart reply. Fragments repeat the response header
+ * (Polar BlePMDClient.sendPmdCommand); concatenate parameters before TLV parsing.
+ * Limits are defensive host bounds, not a claim about peripheral capabilities. */
+export class PmdControlPointResponseAssembler {
+  private readonly opCode: number
+  private readonly measurementType: number
+  private readonly generation: number
+  private chunks: Uint8Array[] = []
+  private bytes = 0
+  private fragments = 0
+  private complete = false
+
+  constructor(opCode: number, measurementType: number, generation: number) {
+    this.opCode = opCode
+    this.measurementType = measurementType
+    this.generation = generation
+  }
+
+  push(message: ControlPointMessage, generation: number): Extract<ControlPointMessage, { kind: 'response' }> | null {
+    if (this.complete) throw new PmdParseError('PMD response assembler is already complete')
+    if (
+      message.kind !== 'response' ||
+      message.opCode !== this.opCode ||
+      message.measurementType !== this.measurementType ||
+      generation !== this.generation
+    )
+      return null
+    this.fragments += 1
+    this.bytes += message.parameters.length
+    if (this.fragments > 64 || this.bytes > 32768) {
+      this.complete = true
+      this.chunks = []
+      throw new PmdParseError(
+        this.fragments > 64 ? 'PMD response fragment limit exceeded' : 'PMD response byte limit exceeded'
+      )
+    }
+    if (message.status !== 0) {
+      this.complete = true
+      this.chunks = []
+      return { ...message, more: false, parameters: new Uint8Array(0) }
+    }
+    this.chunks.push(Uint8Array.from(message.parameters))
+    if (message.more) return null
+    this.complete = true
+    const parameters = new Uint8Array(this.bytes)
+    let offset = 0
+    for (const chunk of this.chunks) {
+      parameters.set(chunk, offset)
+      offset += chunk.length
+    }
+    this.chunks = []
+    return { ...message, more: false, parameters }
+  }
+}
+
 /** Parses a settings TLV list: `[type][count][count × little-endian field]…`. */
 export function parsePmdSettings(bytes: Readonly<Uint8Array>): Readonly<Record<string, readonly number[]>> {
   const settings: Record<string, number[]> = {}

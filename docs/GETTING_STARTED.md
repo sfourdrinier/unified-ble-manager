@@ -227,4 +227,4 @@ This is a rewrite. There is no `new BleManager()` and no Base64 characteristic v
 
 ## Maintainers
 
-Normative contract and evidence rules: [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md), [`PLATFORMS.md`](PLATFORMS.md).
+Normative contract and evidence rules: [Current 5.0 authority](README.md#current-50-authority), [`PLATFORMS.md`](PLATFORMS.md).

@@ -336,4 +336,4 @@ an advertisement, or establish live-radio support. Published evidence
 records state the exact backend, package digest, OS/runtime/ABI, hardware,
 scenario, limitations, and proof level.
 See [`PLATFORMS.md`](PLATFORMS.md) and the controlling
-[`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md).
+[Current 5.0 authority](README.md#current-50-authority).

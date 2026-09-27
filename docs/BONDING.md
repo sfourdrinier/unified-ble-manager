@@ -5,7 +5,7 @@
 The 4.0 API exposes security through `manager.security`, while capability truth
 comes from the typed feature registrations of the backend attached to a manager,
 never from a host name, static table, or simulated radio. The controlling
-contract is [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md).
+contract is [Current 5.0 authority](README.md#current-50-authority).
 
 The terms are deliberately separate:
 

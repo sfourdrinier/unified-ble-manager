@@ -2,7 +2,12 @@
 
 # Unified BLE 4.0.0 — Clean-Baseline Architecture and Implementation Plan
 
-**Status:** Verified implementation-ready plan of record
+**Status:** Historical architecture and migration record — not current 5.0 scope, sequencing, or release authority.
+
+The body below preserves the 4.0 design and its contemporary authority claims as
+historical evidence. Do not execute its old gates, backend topology, consumer
+migration requirements or scope deferrals as 5.0 instructions. Current precedence
+is documented in [Current 5.0 authority](README.md#current-50-authority).
 
 **Branch:** `4.0`
 

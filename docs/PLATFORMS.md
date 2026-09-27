@@ -2,7 +2,7 @@
 
 # Platform support and evidence
 
-**Architecture authority:** [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)
+**Architecture authority:** [Current 5.0 authority](README.md#current-50-authority)
 
 This page is an evidence index, not a static compatibility matrix. An application learns optional behavior from the typed capabilities of its instantiated backend; a platform name, successful build, or compile-time helper never substitutes for an implemented capability and the evidence required for a support claim.
 
@@ -162,6 +162,6 @@ The host guides describe the packed 4.0 contract and its proof boundaries; they 
 ## Related records
 
 - [`../ROADMAP.4.0.md`](../ROADMAP.4.0.md)
-- [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)
+- [Current 5.0 authority](README.md#current-50-authority)
 - [`GAPS.4.0.md`](GAPS.4.0.md)
 - [`../RELEASE.md`](../RELEASE.md)

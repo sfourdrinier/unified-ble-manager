@@ -256,4 +256,4 @@ the migration boundary remains auditable. Use the v2 one-token schema above.
 - MIGRATION_4.0.md
 - BACKGROUND.md
 - PLATFORMS.md
-- UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md
+- [Current 5.0 authority](README.md#current-50-authority)

@@ -4,7 +4,7 @@
 
 **Status:** current-source characterization; not a 4.0 support claim
 
-**Architecture and sequencing authority:** [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)
+**Architecture and sequencing authority:** [Current 5.0 authority](README.md#current-50-authority)
 
 Current tvOS build and CoreBluetooth material is evidence input for the Apple backend audit. It does not establish a 4.0 API, support level, package recipe, or lifecycle guarantee. The final Apple backend shares the clean contract/core while publishing platform-specific capability limitations and evidence. Any tvOS claim requires its declared compile, TCK/scenario, and live evidence level.
 

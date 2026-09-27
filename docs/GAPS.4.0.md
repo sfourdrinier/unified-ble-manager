@@ -4,9 +4,9 @@
 
 **Status:** Current implementation and evidence inventory; not architecture authority
 
-**Architecture authority:** [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)
+**Architecture authority:** [Current 5.0 authority](README.md#current-50-authority)
 
-**Product scope:** [`../ROADMAP.4.0.md`](../ROADMAP.4.0.md)
+**Historical 4.0 scope reference:** [`../ROADMAP.4.0.md`](../ROADMAP.4.0.md); not a current 5.0 release prerequisite. Current release procedure: [`../RELEASE.md`](../RELEASE.md).
 
 ## How to read this inventory
 
@@ -78,7 +78,7 @@ Existing `GAP-*` labels in historical trackers/documents may continue to identif
 
 ## Related records
 
-- [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)
+- [Current 5.0 authority](README.md#current-50-authority)
 - [`../ROADMAP.4.0.md`](../ROADMAP.4.0.md)
 - [`../MIGRATION_4.0.md`](../MIGRATION_4.0.md)
 - [`PLATFORMS.md`](PLATFORMS.md)

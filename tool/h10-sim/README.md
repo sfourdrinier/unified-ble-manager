@@ -271,7 +271,7 @@ Later flags win: `--profile` applies first, then `--name`/`--bpm`/`--battery`.
   iPhone run observed BlueZ reading the phone's Battery Level, receiving
   Insufficient Authentication, requesting security and then disconnecting after
   pairing was refused. These host-profile probes are not H10 PMD requirements.
-  In the two-adapter test, a pairing agent restricted to the two test peer paths
+  In the same-daemon, two-adapter test, a pairing agent restricted to the two test peer paths
   allowed collection. Restrict any qualification agent to the exact test peers;
   never register a blanket-accepting default agent. Record whether a
   run is paired: that result does not establish unpaired compatibility. Never

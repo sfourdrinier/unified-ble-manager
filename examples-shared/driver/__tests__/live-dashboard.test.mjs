@@ -429,6 +429,61 @@ test('ECG and ACC share one PMD channel, route early frames independently, and s
   )
 })
 
+for (const ending of ['final', 'rejection', 'truncated', 'timeout']) {
+  test(`GET_SETTINGS waits for bounded multipart completion: ${ending}`, async () => {
+    let send
+    const fixture = makeDashboardHost({
+      onPmdWrite(bytes, { cpStreams, runtime }) {
+        if (bytes[0] !== 1) return
+        send = value =>
+          cpStreams
+            .at(-1)
+            .push({
+              value: new Uint8Array(value),
+              delivery: 'indication',
+              sequence: 1,
+              observedAtMonotonicMs: runtime.now()
+            })
+        send([0xf0, 1, 0, 0, 1, 0, 1, 130])
+        return false
+      }
+    })
+    const scenario = new LiveDashboardScenario(fixture.host)
+    await scenario.dispatch('start', {})
+    fixture.scanStream.push(fixture.observationFor(fixture.peers[0]))
+    await microtaskUntil('first settings fragment', () =>
+      scenario.recentEvents().some(event => event.kind === 'tile-pmd-control-point')
+    )
+    for (let index = 0; index < 50; index++) await Promise.resolve()
+    assert.deepEqual(fixture.writes, [[1, 0]], 'partial reply cannot advance to STOP/START')
+    if (ending === 'timeout') fixture.runtime.advance(5000)
+    else
+      send(
+        ending === 'final'
+          ? [0xf0, 1, 0, 0, 0, 0, 1, 1, 14, 0]
+          : ending === 'rejection'
+            ? [0xf0, 1, 0, 6]
+            : [0xf0, 1, 0]
+      )
+    await microtaskUntil('settings completion', () =>
+      scenario.recentEvents().some(event => event.kind === 'tile-pmd-settings')
+    )
+    const settings = scenario.recentEvents().find(event => event.kind === 'tile-pmd-settings')
+    assert.equal(settings.data.ok, ending === 'final')
+    if (ending === 'final') assert.deepEqual(settings.data.settings, { SAMPLE_RATE: [130], RESOLUTION: [14] })
+    else
+      assert.equal(
+        settings.data.error.code,
+        ending === 'timeout'
+          ? 'pmd.control-point-timeout'
+          : ending === 'rejection'
+            ? 'pmd.request-rejected'
+            : 'pmd.parse-failed'
+      )
+    await scenario.dispatch('stop', {})
+  })
+}
+
 test('same-opcode ECG response cannot complete an ACC request; refused ACC start compensates both streams', async () => {
   let answerAcc = null
   const fixture = makeDashboardHost({

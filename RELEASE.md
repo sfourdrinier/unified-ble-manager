@@ -761,9 +761,8 @@ The release process must never synthesize, backdate, or relabel hardware evidenc
 
 ## Architecture authority
 
-The 4.0 baseline architecture is recorded in
-[`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md);
-the 5.0 distribution contract is in
-[`docs/5.0.0-DISTRIBUTION_CONTRACT.md`](docs/5.0.0-DISTRIBUTION_CONTRACT.md).
-This release procedure controls publication mechanics; it does not override
-those contracts.
+Follow [Current 5.0 authority](docs/README.md#current-50-authority) for the
+current behavior contracts, distribution guidance and evidence rules. This
+release procedure controls publication mechanics; historical 4.0 migration
+gates and draft distribution proposals do not override it or the current
+native artifact lifecycle.

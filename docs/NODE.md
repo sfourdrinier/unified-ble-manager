@@ -299,4 +299,4 @@ Do not load a Node radio factory from a renderer. See [`ELECTRON.md`](ELECTRON.m
 
 ## Maintainers
 
-[`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md), [`PLATFORMS.md`](PLATFORMS.md).
+[Current 5.0 authority](README.md#current-50-authority), [`PLATFORMS.md`](PLATFORMS.md).

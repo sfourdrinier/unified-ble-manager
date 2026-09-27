@@ -4,9 +4,9 @@
 
 **Status:** the 4.0 record below is transitional behavior characterization, not normative runtime semantics; the 5.0 known-peer restoration section is current
 
-**Architecture and sequencing authority:** [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)
+**Current authority:** [5.0 contracts, semantics and host guidance](README.md#current-50-authority).
 
-4.0 must specify restoration and background operation as typed backend features with evidence-bound limitations. The shared core owns portable lifecycle semantics; host integrations own OS permission, foreground service, and native restoration mechanics. A backend may not silently reconnect, and a product's reconnect policy remains outside the package.
+Restoration and background operation use typed backend features with evidence-bound limitations. The shared core owns portable lifecycle semantics; host integrations own OS permission, foreground service, and native restoration mechanics. A backend may not silently reconnect; the opt-in standing declaration below is explicit application policy.
 
 Current Android foreground-service and Apple CoreBluetooth restoration material is useful audit evidence. It must be checked for native-before-JS ownership, serialization, adoption, lifecycle, cancellation, and cleanup behavior under `UB4-ADR-RN-BOOTSTRAP`. It does not prove 4.0 restoration, background reliability, or a published option shape.
 
@@ -377,4 +377,4 @@ status will show it.
 - [`ADR/2026-09-5.0-restoration-known-peer-reconnect.md`](ADR/2026-09-5.0-restoration-known-peer-reconnect.md)
 - [`EXPO_PLUGIN.md`](EXPO_PLUGIN.md)
 - [`GAPS.4.0.md`](GAPS.4.0.md)
-- [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)
+- [Historical 4.0 architecture record](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)

@@ -4,7 +4,7 @@
 
 **Status:** production Phase 7 harness implemented; host and live-platform receipts remain evidence-bound
 
-**Architecture authority:** [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)
+**Architecture authority:** [Current 5.0 authority](README.md#current-50-authority)
 
 Unified BLE 4.0 carries BLE values as bytes end to end. Base64 exists only in the explicit codec entrypoint and is not a public or backend BLE operation family. A performance report never authorizes a platform support label by itself.
 
@@ -59,4 +59,4 @@ Stable 4.0 additionally requires artifact-bound measurements for Android and App
 
 - [`GAPS.4.0.md`](GAPS.4.0.md)
 - [`generated/PLATFORM_SUPPORT.md`](generated/PLATFORM_SUPPORT.md)
-- [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)
+- [Current 5.0 authority](README.md#current-50-authority)

@@ -140,7 +140,7 @@ describe('consumer documentation matches the published package', () => {
     expect(plan).not.toContain('and Quest build/runtime proof where claimed.')
   })
 
-  test('plan and canonical ADRs retain normative capability, ownership, event, and transport contracts', () => {
+  test('historical plan and ADRs retain their recorded capability, ownership, event, and transport decisions', () => {
     const plan = read('docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md')
     const publicApi = read('docs/ADR/2026-07-4.0-public-api.md')
     const backendContract = read('docs/ADR/2026-07-4.0-backend-contract.md')
@@ -175,11 +175,11 @@ describe('consumer documentation matches the published package', () => {
     expect(backendContract).toContain('owner lease')
   })
 
-  test.each(architectureAuthorityDocuments)('%s identifies the controlling architecture authority', relativePath => {
+  test.each(architectureAuthorityDocuments)('%s identifies the current 5.0 authority map', relativePath => {
     const document = read(relativePath)
 
     expect(document.split('\n')[0]).toBe(`<!-- ${relativePath} -->`)
-    expect(document).toContain('UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md')
+    expect(document).toContain('#current-50-authority')
   })
 
   test.each(transitionalCharacterizationDocuments)(
@@ -189,7 +189,7 @@ describe('consumer documentation matches the published package', () => {
 
       expect(document.split('\n')[0]).toBe(`<!-- ${relativePath} -->`)
       expect(document).toMatch(/transitional source characterization|transitional source behavior|legacy manager/i)
-      expect(document).toContain('UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md')
+      expect(document).toContain('#current-50-authority')
     }
   )
 

@@ -268,4 +268,4 @@ Open <http://localhost:5173>. A successful local run is useful evidence, but it 
 
 ## Maintainers
 
-See [`PLATFORMS.md`](PLATFORMS.md), [`PEERS.md`](PEERS.md), and [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md).
+See [`PLATFORMS.md`](PLATFORMS.md), [`PEERS.md`](PEERS.md), and [Current 5.0 authority](README.md#current-50-authority).

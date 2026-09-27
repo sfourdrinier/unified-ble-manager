@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   EcgStreamStats,
   PmdParseError,
+  PmdControlPointResponseAssembler,
   buildGetEcgSettingsCommand,
   buildGetAccSettingsCommand,
   buildStartAccCommand,
@@ -15,6 +16,33 @@ import {
   parsePmdFeatures,
   parsePmdSettings
 } from '../polar-pmd.ts'
+
+test('multipart responses assemble correlated copied parameters only at the final fragment', () => {
+  const response = new PmdControlPointResponseAssembler(1, 2, 7)
+  const first = parseControlPointMessage(new Uint8Array([0xf0, 1, 2, 0, 1, 0, 1, 200]))
+  assert.equal(response.push(first, 7), null)
+  first.parameters.fill(99)
+  assert.equal(response.push(parseControlPointMessage(new Uint8Array([0xf0, 1, 0, 0, 0, 9])), 7), null)
+  assert.equal(response.push(parseControlPointMessage(new Uint8Array([0xf0, 1, 2, 0, 0, 9])), 6), null)
+  const final = response.push(parseControlPointMessage(new Uint8Array([0xf0, 1, 2, 0, 0, 0, 1, 1, 16, 0])), 7)
+  assert.equal(final.more, false)
+  assert.deepEqual(parsePmdSettings(final.parameters), { SAMPLE_RATE: [200], RESOLUTION: [16] })
+  assert.throws(() => response.push(first, 7), PmdParseError)
+})
+
+test('multipart rejection discards successful prefix and response assembly is bounded', () => {
+  const packet = more => parseControlPointMessage(new Uint8Array([0xf0, 1, 0, 0, more, 1]))
+  const rejected = new PmdControlPointResponseAssembler(1, 0, 1)
+  rejected.push(packet(1), 1)
+  const failure = rejected.push(parseControlPointMessage(new Uint8Array([0xf0, 1, 0, 6])), 1)
+  assert.equal(failure.status, 6)
+  assert.equal(failure.parameters.length, 0)
+  const flood = new PmdControlPointResponseAssembler(1, 0, 1)
+  for (let index = 0; index < 64; index++) assert.equal(flood.push(packet(1), 1), null)
+  assert.throws(() => flood.push(packet(0), 1), /fragment limit/)
+  const bytes = new PmdControlPointResponseAssembler(1, 0, 1)
+  assert.throws(() => bytes.push({ ...packet(0), parameters: new Uint8Array(32769) }, 1), /byte limit/)
+})
 
 test('H10 ACC commands encode all twelve supported rate/range settings with 16-bit resolution', () => {
   for (const sampleRateHz of [25, 50, 100, 200]) {

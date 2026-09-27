@@ -57,6 +57,6 @@ Repository fixtures may use `file:..` to test source changes. Independent and re
 
 ## Documentation authority
 
-The root README and active Markdown pages under `docs/` describe the current public surface. Historical plans/audits remain useful records but do not override the current 4.x contract.
+The root README and active Markdown pages under `docs/` describe the current 5.x public surface. Historical plans/audits remain useful records but do not override current contracts.
 
-The architecture authority is [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md). Release scope is [`../ROADMAP.4.0.md`](../ROADMAP.4.0.md), support interpretation is [`PLATFORMS.md`](PLATFORMS.md), and remaining evidence work is [`GAPS.4.0.md`](GAPS.4.0.md).
+Follow [Current 5.0 authority](README.md#current-50-authority) for contracts and architecture, [`../RELEASE.md`](../RELEASE.md) for release procedure, and [`PLATFORMS.md`](PLATFORMS.md) for support interpretation. The 4.0 roadmap and implementation plan preserve historical scope, not new 5.0 release requirements.

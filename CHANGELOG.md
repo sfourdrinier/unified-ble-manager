@@ -4,6 +4,17 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Unreleased
 
+### Reference guidance and PMD responses
+
+- Route contributors to current 5.0 contracts, semantics, distribution and
+  release guidance; retain the 4.0 implementation plan as historical context,
+  not current scope or release authority.
+- Assemble bounded multipart Polar control-point responses before parsing
+  settings or advancing setup. Preserve command/generation correlation and
+  report rejected, malformed, oversized or timed-out responses explicitly.
+- Restore the simulator guide's same-daemon two-adapter qualifier, which
+  explains why host profiles can interfere with otherwise isolated test radios.
+
 ### Connection setup and test-build integrity
 
 - Observe connection lifecycle while the supervisor configures GATT, retaining
