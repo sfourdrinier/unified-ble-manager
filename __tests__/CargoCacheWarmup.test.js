@@ -4,19 +4,35 @@ const path = require('path')
 const root = path.resolve(__dirname, '..')
 const read = file => fs.readFileSync(path.join(root, file), 'utf8')
 
+function assertWarmupOrder(preflight) {
+  const warmup = preflight.indexOf('if ! cargo fetch --locked')
+  const install = preflight.indexOf('pnpm install --frozen-lockfile')
+  const toolchain = preflight.indexOf('export PATH="$PINNED_TOOLCHAIN_BIN:$PATH"')
+  expect(install).toBeGreaterThanOrEqual(0)
+  expect(toolchain).toBeGreaterThanOrEqual(0)
+  expect(warmup).toBeGreaterThan(install)
+  expect(warmup).toBeGreaterThan(toolchain)
+  expect(warmup).toBeLessThan(preflight.indexOf('run_package()'))
+  expect(warmup).toBeLessThan(preflight.indexOf('run_tauri()'))
+}
+
 describe('clean-runner Cargo prerequisites', () => {
   test('preflight matches the hosted root-workspace offline metadata prerequisite', () => {
     const preflight = read('scripts/ci/preflight.sh')
     expect(preflight).toContain('if ! cargo fetch --locked > "$CACHE/cargo-fetch.log" 2>&1; then')
-    const warmup = preflight.indexOf('if ! cargo fetch --locked')
-    expect(warmup).toBeGreaterThan(preflight.indexOf('pnpm install --frozen-lockfile'))
-    expect(warmup).toBeGreaterThan(preflight.indexOf('export PATH="$PINNED_TOOLCHAIN_BIN:$PATH"'))
-    expect(warmup).toBeLessThan(preflight.indexOf('run_package()'))
-    expect(warmup).toBeLessThan(preflight.indexOf('run_tauri()'))
+    assertWarmupOrder(preflight)
     for (const file of ['.github/workflows/ci.yml', '.github/workflows/publish.yml']) {
       expect(read(file)).toContain('run: cargo fetch --locked')
     }
   })
+
+  test.each(['pnpm install --frozen-lockfile', 'export PATH="$PINNED_TOOLCHAIN_BIN:$PATH"'])(
+    'the ordering guard rejects a missing prerequisite: %s',
+    prerequisite => {
+      const without = read('scripts/ci/preflight.sh').replace(prerequisite, 'removed prerequisite')
+      expect(() => assertWarmupOrder(without)).toThrow()
+    }
+  )
 
   test('a failed warmup stops before offline gates instead of depending on a racing build cache', () => {
     const preflight = read('scripts/ci/preflight.sh')
