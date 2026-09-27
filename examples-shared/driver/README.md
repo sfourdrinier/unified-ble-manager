@@ -18,7 +18,7 @@ retained, checksum-bound records described in [`evidence/v1/`](../../evidence/).
 | `protocol.ts`                                            | Wire contract `ubm-test-driver/1`, loaded by every host and by the server                                                            |
 | `scenario-core.ts`                                       | `ScenarioController`, `ScenarioRegistry` (including `stopAll`), typed command arguments, console runtime                             |
 | `scenarios/*.ts`                                         | `h10-stream`, `link-loss`, `device-info`, `mtu`, `scan-details`, `ecg`, `background`, `restoration`, `h10-capture`, `live-dashboard` |
-| `polar-pmd.ts`                                           | Polar PMD ECG/ACC framing and H10 settings, from Polar's BLE SDK                                                                      |
+| `polar-pmd.ts`                                           | Polar PMD ECG/ACC framing and H10 settings, from Polar's BLE SDK                                                                     |
 | `host.ts`                                                | The host-adapter seam (`DriverHost`), peer acquisition, adapter readiness, capability lease                                          |
 | `user-gesture.ts`                                        | The explicit pending-user-gesture gate (Web Bluetooth chooser)                                                                       |
 | `remote-channel.ts`, `create-driver.ts`, `driver-url.ts` | Host → server channel, registry factory, `disposeDriver` (hot-reload teardown), URL rules                                            |
