@@ -92,6 +92,15 @@ if ! pnpm install --frozen-lockfile > "$CACHE/install.log" 2>&1; then
 fi
 printf '  ✓ %ss\n' "$(( $(date +%s) - started ))"
 
+# Match CI/publish's root-workspace prerequisite before offline metadata gates.
+# Fetch all targets: metadata needs wasm's js-sys even on Linux. A concurrent
+# Tauri build only fetches its own dependency graph and cannot warm this one.
+# This downloads locked sources without compiling or changing Cargo.lock.
+printf '\033[1m▶ cargo cache (locked, all targets)\033[0m\n'
+if ! cargo fetch --locked > "$CACHE/cargo-fetch.log" 2>&1; then
+  tail -20 "$CACHE/cargo-fetch.log"; echo "cargo fetch failed"; exit 1
+fi
+
 # The `package` and `tauri-plugin` jobs share no state, exactly as in CI where
 # they are separate jobs, so running them concurrently is faithful rather than
 # a shortcut.
