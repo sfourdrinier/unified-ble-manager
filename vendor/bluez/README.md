@@ -75,6 +75,14 @@ executed: it frees the refused registration, not the caller's ATT object,
 so disconnect-handler rollback and later ATT use remain valid.
 Its ATT and application sockets are AF_UNIX pairs and its application D-Bus
 replies are controlled fixtures, not physical or system-bus evidence.
+The shared ATT fixture also sends an incoming Service Changed indication over
+an AF_UNIX socket to a real server-only ATT owner (the incoming-peer shape when
+reverse discovery is disabled). An indication with no registered client handler
+receives exactly one Handle Value Confirmation, not Request Not Supported;
+this acknowledges the ATT transaction without inventing application delivery or
+GATT client readiness. A registered indication handler remains solely responsible
+for its confirmation, with a no-double-response control. Reverse-discovery policy
+is unchanged. These are protocol tests, not an iOS timeout or link-survival proof.
 The clone fixture uses an AF_UNIX socket pair, not a Bluetooth socket. The
 device fixture exercises the production pre-allocation policy decision and
 registration-failure outcome helper; it does not inject a daemon allocator

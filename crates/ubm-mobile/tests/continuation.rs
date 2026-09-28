@@ -88,6 +88,42 @@ async fn dispose_native(engine: &ubm_desktop::continuation::NativeContinuation) 
     assert_eq!(receipt["disposeFailure"], serde_json::Value::Null);
 }
 
+async fn observe_recording<F>(operation: F) -> serde_json::Value
+where
+    F: FnOnce() -> ubm_desktop::continuation::Result<serde_json::Value> + Send + 'static,
+{
+    ubm_desktop::continuation_journal::run_blocking(operation)
+        .await
+        .unwrap()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn recording_observation_does_not_block_the_intake_runtime() {
+    let runtime_thread = std::thread::current().id();
+    let (entered, observed) = tokio::sync::oneshot::channel();
+    let (release, held) = std::sync::mpsc::sync_channel(1);
+    let intake = tokio::spawn(async move {
+        observed.await.unwrap();
+        release.send(()).unwrap();
+    });
+    let status = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        observe_recording(move || {
+            assert_ne!(std::thread::current().id(), runtime_thread);
+            entered.send(()).unwrap();
+            // Model a synchronous filesystem/SQLite observation held until the
+            // intake task runs. A worker-thread poll must never prevent that task.
+            held.recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap();
+            Ok(json!({"records":2}))
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(status["records"], 2);
+    intake.await.unwrap();
+}
+
 #[tokio::test]
 async fn cross_claim_late_stop_cannot_advance_setup_on_an_independently_held_generation() {
     let mut outcomes = Vec::new();
@@ -567,29 +603,31 @@ async fn durable_mobile_collection_retains_context_and_survives_native_claim() {
             epoch,
             value: vec![0, 72],
         });
-        let prepared = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        // Observe committed intake without preparing/ACKing partial prefixes.
+        // Those synchronous cursor writes contend with the append under test
+        // and their fsyncs can monopolize a runtime worker on Windows.
+        let status = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
-                let prepared = engine
-                    .recording_prepare("native-mobile", 100, 65536)
-                    .unwrap();
-                if prepared["records"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|entry| entry["record"]["valueB64"] == "AEg=")
-                {
-                    break prepared;
-                }
-                if let Some(token) = prepared["token"].as_str() {
-                    engine
-                        .recording_acknowledge("native-mobile", token)
-                        .unwrap();
+                let reader = engine.clone();
+                let status =
+                    observe_recording(move || reader.recording_status("native-mobile")).await;
+                if status["records"] == 2 {
+                    break status;
                 }
                 tokio::task::yield_now().await;
             }
         })
         .await
         .unwrap();
+        assert_eq!(status["lostRecords"], 0);
+        assert_eq!(status["collectionFailure"], serde_json::Value::Null);
+        let reader = engine.clone();
+        let prepared =
+            observe_recording(move || reader.recording_prepare("native-mobile", 100, 65536)).await;
+        assert_eq!(
+            prepared["token"], "native-mobile:1",
+            "observation must not mutate the journal cursor"
+        );
         let entry = prepared["records"]
             .as_array()
             .unwrap()

@@ -2,7 +2,17 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
-## Unreleased
+## [5.0.0-rc.13] - 2026-09-28
+
+- Confirm unsolicited ATT indications on server-only BlueZ connections when
+  reverse service discovery is disabled. Keep registered client handlers solely
+  responsible for their confirmations; do not invent client readiness or
+  application delivery. Exercise both paths through the production ATT socket
+  dispatcher, including no-double-confirmation controls.
+- Observe durable mobile intake on the existing blocking pool without repeatedly
+  preparing and acknowledging partial journal prefixes. Keep the regression's
+  original deadline and exact value/context/replay assertions, and verify that
+  observation does not mutate the durable cursor or block the intake runtime.
 
 - Serialize Apple restoration startup central allocation on the process radio's
   queue, alongside permission checks and initial CoreBluetooth callbacks, so

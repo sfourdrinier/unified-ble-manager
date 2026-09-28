@@ -2606,7 +2606,17 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
 +}
 --- a/src/shared/att.c
 +++ b/src/shared/att.c
-@@ -1607,7 +1607,7 @@
+@@ -1071,2 +1071,7 @@
+-	if (!found && get_op_type(opcode) != ATT_OP_TYPE_CMD)
+-		respond_not_supported(att, opcode);
++	/* Indications require confirmation even without an application/client
++	 * handler. Registered handlers still own their own confirmation. */
++	if (!found && opcode == BT_ATT_OP_HANDLE_IND)
++		bt_att_chan_send(chan, BT_ATT_OP_HANDLE_CONF, NULL, 0,
++							NULL, NULL, NULL);
++	else if (!found && get_op_type(opcode) != ATT_OP_TYPE_CMD)
++		respond_not_supported(att, opcode);
+@@ -1607,7 +1612,7 @@
  	mtu->id = att->next_reg_id++;
  
  	if (!queue_push_tail(att->exchange_list, mtu)) {
@@ -2617,9 +2627,9 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  
 --- /dev/null
 +++ b/unit/test-ubm-att-exchange.c
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,119 @@
 +// SPDX-License-Identifier: LGPL-2.1-or-later
-+/* Actual exchange registration refusal; no Bluetooth or system D-Bus. */
++/* Actual ATT registration and indication paths; no Bluetooth/system bus. */
 +#define queue_push_tail test_queue_push_tail
 +#define free test_free
 +#include "src/shared/att.c"
@@ -2627,6 +2637,10 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
 +#undef free
 +#include <assert.h>
 +#include <stdio.h>
++#include <fcntl.h>
++#include <glib.h>
++#include "src/shared/gatt-db.h"
++#include "src/shared/gatt-server.h"
 +
 +static struct queue *refused_queue;
 +static struct bt_att *watched_att;
@@ -2643,7 +2657,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
 +{
 +	/* Track the actual helper's erroneous free without letting allocator
 +	 * reuse hide the ownership violation in a later caller assertion. */
-+	if (data == watched_att) {
++	if (watched_att && data == watched_att) {
 +		premature_att_frees++;
 +		return;
 +	}
@@ -2653,8 +2667,62 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
 +static void disconnected(int err, void *data) { }
 +static void exchanged(uint16_t mtu, void *data) { }
 +
++static void confirmed_indication(struct bt_att_chan *chan, uint16_t mtu,
++		uint8_t opcode, const void *pdu, uint16_t length, void *user_data)
++{
++	unsigned int *delivered = user_data;
++	assert(opcode == BT_ATT_OP_HANDLE_IND);
++	(*delivered)++;
++	bt_att_chan_send(chan, BT_ATT_OP_HANDLE_CONF, NULL, 0,
++						NULL, NULL, NULL);
++}
++
++static void incoming_server_indication(void)
++{
++	int sockets[2];
++	uint8_t pdu[] = { BT_ATT_OP_HANDLE_IND, 0x08, 0x00,
++						0x0a, 0x00, 0xff, 0xff };
++	uint8_t response[16];
++	unsigned int delivered = 0;
++	assert(!socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sockets));
++	struct bt_att *att = bt_att_new(sockets[0], false);
++	struct gatt_db *db = gatt_db_new();
++	assert(att && db);
++	/* Same server-only ATT shape as an incoming peer with reverse discovery
++	 * disabled: requests have server handlers, indications have no client. */
++	struct bt_gatt_server *server = bt_gatt_server_new(db, att, 23, 0);
++	assert(server);
++	assert(fcntl(sockets[1], F_SETFL, O_NONBLOCK) == 0);
++	assert(send(sockets[1], pdu, sizeof(pdu), 0) == sizeof(pdu));
++	while (g_main_context_iteration(NULL, false)) { }
++	ssize_t received = recv(sockets[1], response, sizeof(response), 0);
++	assert(received == 1 && response[0] == BT_ATT_OP_HANDLE_CONF);
++	assert(delivered == 0); /* A confirmation invents no app delivery. */
++	assert(recv(sockets[1], response, sizeof(response), 0) == -1 &&
++					(errno == EAGAIN || errno == EWOULDBLOCK));
++	/* A registered handler still owns confirmation; fallback must not
++	 * send a second response, even when a server shares this ATT. */
++	unsigned int id = bt_att_register(att, BT_ATT_OP_HANDLE_IND,
++				confirmed_indication, &delivered, NULL);
++	assert(id);
++	assert(send(sockets[1], pdu, sizeof(pdu), 0) == sizeof(pdu));
++	while (g_main_context_iteration(NULL, false)) { }
++	received = recv(sockets[1], response, sizeof(response), 0);
++	assert(received == 1 && response[0] == BT_ATT_OP_HANDLE_CONF);
++	assert(delivered == 1);
++	assert(recv(sockets[1], response, sizeof(response), 0) == -1 &&
++					(errno == EAGAIN || errno == EWOULDBLOCK));
++	assert(bt_att_unregister(att, id));
++	bt_gatt_server_unref(server);
++	gatt_db_unref(db);
++	bt_att_unref(att);
++	close(sockets[1]);
++	puts("Incoming server-only indication confirms exactly once: OK");
++}
++
 +int main(void)
 +{
++	incoming_server_indication();
 +	int sockets[2];
 +	unsigned int disconnect_id;
 +	assert(!socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sockets));
