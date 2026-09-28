@@ -1,7 +1,6 @@
 const fs = require('fs')
 const path = require('path')
-const { spawnSync } = require('child_process')
-const { gitBashExecutableTemp } = require('./helpers/git-bash-temp')
+const { gitBashExecutableTemp, spawnFixtureShellSync } = require('./helpers/git-bash-temp')
 
 const builder = fs.readFileSync(path.join(__dirname, '../android/build-rust-cdylib.sh'), 'utf8')
 
@@ -82,7 +81,7 @@ switch (process.argv[2]) {
     // Verify admission to the actual shell boundary, not merely the native
     // Node PATH string. A bypassed shim must report its resolved path and host
     // here instead of masquerading as a compiler/archiver regression below.
-    const preflight = spawnSync('sh', ['-c', 'command -v uname; uname -s'], options)
+    const preflight = spawnFixtureShellSync(path.join(fixture, 'bin'), ['-c', 'command -v uname; uname -s'], options)
     expect({ error: preflight.error, status: preflight.status, stderr: preflight.stderr }).toEqual({
       error: undefined,
       status: 0,
@@ -91,8 +90,8 @@ switch (process.argv[2]) {
     const [resolvedUname, actualHost] = preflight.stdout.trim().split(/\r?\n/)
     expect(shellPath(resolvedUname)).toContain(`${path.basename(fixture)}/bin/uname`)
     expect(actualHost).toBe(host)
-    const result = spawnSync(
-      'sh',
+    const result = spawnFixtureShellSync(
+      path.join(fixture, 'bin'),
       [
         shellPath(path.join(fixture, 'android/build-rust-cdylib.sh')),
         '--abi',
@@ -122,6 +121,32 @@ switch (process.argv[2]) {
     expect(fixturePathEnvironment('/tmp/fixture/bin', { PATH: '/usr/bin:/bin' }, ':').PATH).toBe(
       '/tmp/fixture/bin:/usr/bin:/bin'
     )
+  })
+
+  test('shell admission restores fixture priority after launcher-owned tools take precedence', () => {
+    write('bin/uname', '#!/bin/sh\nprintf "fixture-host\\n"\n', true)
+    // Model Git's wrapper prepending its own tools before the fixture entry.
+    // A correct native PATH alone cannot assert the final POSIX search order.
+    const inheritedPath = Object.entries(process.env).find(([key]) => key.toLowerCase() === 'path')[1]
+    const bin = path.join(fixture, 'bin')
+    const env = fixturePathEnvironment('', process.env)
+    env.PATH = `${inheritedPath}${path.delimiter}${bin}`
+    const opaqueArgument = 'space " quote $ dollar'
+    const result = spawnFixtureShellSync(
+      bin,
+      ['-c', 'command -v uname; uname -s; command -v node; printf "%s\\n" "$1"', 'fixture-probe', opaqueArgument],
+      { encoding: 'utf8', env }
+    )
+    expect({ error: result.error, status: result.status, stderr: result.stderr }).toEqual({
+      error: undefined,
+      status: 0,
+      stderr: ''
+    })
+    const [resolved, host, inheritedNode, observedArgument] = result.stdout.trim().split(/\r?\n/)
+    expect(shellPath(resolved)).toContain(`${path.basename(fixture)}/bin/uname`)
+    expect(host).toBe('fixture-host')
+    expect(inheritedNode).not.toBe('')
+    expect(observedArgument).toBe(opaqueArgument)
   })
 
   test.each([

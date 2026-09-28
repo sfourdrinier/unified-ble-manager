@@ -1,6 +1,6 @@
 'use strict'
 
-const { execFileSync } = require('node:child_process')
+const { execFileSync, spawnSync } = require('node:child_process')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
@@ -81,4 +81,21 @@ function shimPythonIntoDir(shim, source) {
   return target
 }
 
-module.exports = { findExecutableOnPath, gitBashExecutableTemp, shimExecutableIntoDir, shimPythonIntoDir }
+function spawnFixtureShellSync(bin, args, options) {
+  // Git/bin/sh.exe is a launcher, not the POSIX shell: it prepends Git's own
+  // tool directories even when Node supplied the fixture first in native PATH.
+  // Establish priority after that boundary, converting only this one directory
+  // with the running shell's cygpath. Execute /bin/sh directly so the launcher's
+  // PATH rewrite cannot run again. Positional arguments preserve spaces/quotes.
+  const prepareBin = process.platform === 'win32' ? 'fixture_bin=$(cygpath -u -- "$1") || exit $?' : 'fixture_bin=$1'
+  const bootstrap = `${prepareBin}\nshift\nPATH="$fixture_bin:$PATH"\nexport PATH\nexec /bin/sh "$@"`
+  return spawnSync('sh', ['-c', bootstrap, 'ubm-fixture-shell', bin, ...args], options)
+}
+
+module.exports = {
+  findExecutableOnPath,
+  gitBashExecutableTemp,
+  shimExecutableIntoDir,
+  shimPythonIntoDir,
+  spawnFixtureShellSync
+}

@@ -5,7 +5,10 @@ All notable changes to `unified-ble-manager` are documented here.
 ## Unreleased
 
 - Keep Android toolchain test shims on Git Bash's executable temporary volume
-  on Windows, reusing the shared shell-fixture helper. Verify the actual shell
+  on Windows, reusing the shared shell-fixture helper. Establish fixture PATH
+  priority inside the launched shell, after Git's launcher prepends its own
+  tools, and execute the POSIX shell directly for both admission and builder
+  checks. Verify the actual shell
   resolves and executes the mocked host probe before testing compiler and
   archiver forwarding; this does not add Windows Android build support.
 - Expose the staged UniFFI C modulemap to Swift application targets importing
