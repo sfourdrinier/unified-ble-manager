@@ -8,6 +8,18 @@ const driverCommand = 'pnpm test:driver'
 const referenceCommand = 'pnpm typecheck:references'
 const expoReferenceCommand = 'pnpm typecheck:references:expo'
 
+test('clean package preflight runs the pinned workspace formatting gate before package pretests', () => {
+  const workflow = YAML.parse(read('.github/workflows/ci.yml'))
+  expect(workflow.jobs['rust-5-0'].steps).toContainEqual(
+    expect.objectContaining({ run: 'cargo fmt --all -- --check', if: "runner.os == 'Linux'" })
+  )
+  const preflight = read('scripts/ci/preflight.sh')
+  const body = preflight.slice(preflight.indexOf('run_package()'), preflight.indexOf('run_tauri()'))
+  const command = 'rustup run "$PINNED_TOOLCHAIN" cargo fmt --all -- --check'
+  expect(body.split(command)).toHaveLength(2)
+  expect(body.indexOf(command)).toBeLessThan(body.indexOf('pnpm test:package'))
+})
+
 test('canonical driver gate installs a fresh frozen Expo consumer snapshot before its unchanged test suite', () => {
   const scripts = JSON.parse(read('package.json')).scripts
   expect(scripts['test:driver']).toBe(

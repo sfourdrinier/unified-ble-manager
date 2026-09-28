@@ -792,13 +792,16 @@ impl BtleplugRadio {
         bus: crate::boundary::BluezBus,
         connection_policy: Option<crate::boundary::BluezConnectionPolicy>,
     ) -> Result<Self, DesktopError> {
-        if let Some(policy) = &connection_policy { policy.validate()?; }
+        if let Some(policy) = &connection_policy {
+            policy.validate()?;
+        }
         if !cfg!(target_os = "linux") && connection_policy.is_some() {
             return Err(DesktopError::new(
                 BleErrorCode::CapabilityUnsupported,
                 BleErrorDomain::Capability,
                 "connection.policy",
-            ).with_detail("a BlueZ connection policy applies to Linux only"));
+            )
+            .with_detail("a BlueZ connection policy applies to Linux only"));
         }
         crate::boundary::bluez_bus_supported(bus)?;
         let manager = open_manager(bus).await.map_err(|error| {
@@ -820,10 +823,16 @@ impl BtleplugRadio {
         let (notifications, notification_rx) = mpsc::channel(NOTIFICATION_CAP);
         let (os_events_tx, os_events) = mpsc::channel(OS_EVENT_CAP);
         #[cfg(target_os = "linux")]
-        let bluez = crate::os::linux::Bluez::open_with_le_owner(&adapter_label, bus,
+        let bluez = crate::os::linux::Bluez::open_with_le_owner(
+            &adapter_label,
+            bus,
             connection_policy.as_ref().map(|policy| match policy {
-                crate::boundary::BluezConnectionPolicy::LeBearer { daemon_unique_owner } => daemon_unique_owner.clone(),
-            })).await;
+                crate::boundary::BluezConnectionPolicy::LeBearer {
+                    daemon_unique_owner,
+                } => daemon_unique_owner.clone(),
+            }),
+        )
+        .await;
         #[cfg(target_os = "linux")]
         let bluez_watch = bluez
             .as_ref()
@@ -946,14 +955,21 @@ impl BtleplugRadio {
         self.gatt.evict(&peer_id);
         let retirement = if cfg!(target_os = "linux") {
             PeerRetirement::LinkEndedRetainingNotifySession
-        } else { PeerRetirement::LinkEnded };
+        } else {
+            PeerRetirement::LinkEnded
+        };
         self.drain_peer_forwarders(&peer_id, retirement).await;
         if let Err(error) = self.release_link_state(&peer_id) {
             OS_RELEASE_FAILURES.fetch_add(1, Ordering::Relaxed);
-            eprintln!("ubm-desktop: link state of {peer_id} not released after loss: {}",
-                error.detail().unwrap_or(error.code_str()));
+            eprintln!(
+                "ubm-desktop: link state of {peer_id} not released after loss: {}",
+                error.detail().unwrap_or(error.code_str())
+            );
         }
-        self.deferred.lock().await.push_back(RadioEvent::Disconnected(peer_id));
+        self.deferred
+            .lock()
+            .await
+            .push_back(RadioEvent::Disconnected(peer_id));
     }
 
     /// Bytes currently queued in the bounded notification ingress (F07).
@@ -990,7 +1006,9 @@ impl BtleplugRadio {
             other => other,
         }?;
         #[cfg(target_os = "linux")]
-        let peripheral = peripheral.with_le_owner(self.bluez_owner("connection.authority")?).await
+        let peripheral = peripheral
+            .with_le_owner(self.bluez_owner("connection.authority")?)
+            .await
             .map_err(|error| DesktopError::connection_failed(error.to_string()).with_os(&error))?;
         Ok(peripheral)
     }
@@ -2571,8 +2589,12 @@ impl RadioBoundary for BtleplugRadio {
         #[cfg(target_os = "linux")]
         let disconnected = match &self.bluez_connection_policy {
             None => Ok(()), // No acquisition can be admitted by this radio.
-            Some(crate::boundary::BluezConnectionPolicy::LeBearer { daemon_unique_owner }) => {
-                let id = platform_peripheral_id(peer_id).ok_or_else(|| DesktopError::connection_failed("invalid BlueZ peer identity"))?;
+            Some(crate::boundary::BluezConnectionPolicy::LeBearer {
+                daemon_unique_owner,
+            }) => {
+                let id = platform_peripheral_id(peer_id).ok_or_else(|| {
+                    DesktopError::connection_failed("invalid BlueZ peer identity")
+                })?;
                 self.adapter.disconnect_le(&id, daemon_unique_owner).await
             }
         };
@@ -2994,7 +3016,8 @@ impl RadioBoundary for BtleplugRadio {
         drop(self.events.lock().await.take());
         #[cfg(target_os = "linux")]
         if let Ok(bluez) = self.bluez()
-            && let Err(error) = bluez.finish_discovery().await {
+            && let Err(error) = bluez.finish_discovery().await
+        {
             failures.push(error);
         }
         #[cfg(target_os = "linux")]
@@ -3480,11 +3503,15 @@ impl RadioBoundary for BtleplugRadio {
                     return Some(RadioEvent::AdapterState(power_state(state)));
                 }
                 Step::Adapter(Some(CentralEvent::DeviceConnected(id))) => {
-                    if cfg!(target_os = "linux") { continue; }
+                    if cfg!(target_os = "linux") {
+                        continue;
+                    }
                     return Some(RadioEvent::Connected(id.to_string()));
                 }
                 Step::Adapter(Some(CentralEvent::DeviceDisconnected(id))) => {
-                    if cfg!(target_os = "linux") { continue; }
+                    if cfg!(target_os = "linux") {
+                        continue;
+                    }
                     self.observe_link_ended(id.to_string()).await;
                 }
                 Step::Adapter(Some(_)) => {}

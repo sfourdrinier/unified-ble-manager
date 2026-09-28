@@ -770,7 +770,7 @@ pub(crate) fn apply_connection_capability_limitation(
 mod tests {
     use std::collections::HashSet;
 
-    use super::{register_desktop_capabilities, DESKTOP_CAPABILITIES};
+    use super::{DESKTOP_CAPABILITIES, register_desktop_capabilities};
 
     #[test]
     fn instance_connection_refusal_overrides_only_dependent_mechanisms() {

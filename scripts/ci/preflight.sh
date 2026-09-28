@@ -114,6 +114,8 @@ fi
 run_package() {
   cd "$WORK" || return 1
   set -e
+  # Match the Linux workspace gate before package pretests build artifacts.
+  rustup run "$PINNED_TOOLCHAIN" cargo fmt --all -- --check
   pnpm test:package
   pnpm validate:evidence
   # F9: the committed Android jniLibs travel with the push — fail here when a

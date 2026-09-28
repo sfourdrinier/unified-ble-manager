@@ -1814,8 +1814,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         // runtime gates match the parity report row for row.
         (profile.register_capabilities)(&mut core).map_err(DesktopError::from)?;
         crate::capabilities::apply_connection_capability_limitation(
-            &mut core, boundary.connection_capability_limitation(),
-        ).map_err(DesktopError::from)?;
+            &mut core,
+            boundary.connection_capability_limitation(),
+        )
+        .map_err(DesktopError::from)?;
         let (loop_stop, loop_stop_rx) = watch::channel(false);
         let (lifecycle, _) = broadcast::channel(LIFECYCLE_EVENT_CAPACITY);
         let (adapter, _) = broadcast::channel(LIFECYCLE_EVENT_CAPACITY);
@@ -1993,7 +1995,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
 
     /// Registered instance descriptors, including the radio's actual refusal reasons.
     pub async fn capability_descriptors(&self) -> Vec<ubm_core::central::CapabilityDescriptor> {
-        self.inner.core.lock().await.registered_capability_descriptors()
+        self.inner
+            .core
+            .lock()
+            .await
+            .registered_capability_descriptors()
     }
 
     /// Read-only system directory facts; never acquires connection ownership.

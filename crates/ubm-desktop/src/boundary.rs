@@ -233,21 +233,28 @@ impl BluezConnectionPolicy {
     /// The Linux boundary also uses libdbus validation and verifies the live
     /// well-known-name owner before any LE operation.
     pub fn validate(&self) -> Result<(), DesktopError> {
-        let Self::LeBearer { daemon_unique_owner } = self;
+        let Self::LeBearer {
+            daemon_unique_owner,
+        } = self;
         let valid = daemon_unique_owner.len() <= 255
             && daemon_unique_owner.strip_prefix(':').is_some_and(|body| {
-                body.contains('.') && body.split('.').all(|part| {
-                    !part.is_empty() && part.bytes().all(|byte| {
-                        byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
+                body.contains('.')
+                    && body.split('.').all(|part| {
+                        !part.is_empty()
+                            && part.bytes().all(|byte| {
+                                byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
+                            })
                     })
-                })
             });
-        if valid { Ok(()) } else {
+        if valid {
+            Ok(())
+        } else {
             Err(DesktopError::new(
                 ubm_core::contracts::BleErrorCode::ArgumentInvalid,
                 ubm_core::contracts::BleErrorDomain::Core,
                 "connection.policy",
-            ).with_detail("daemonUniqueOwner must be a D-Bus unique name, not a well-known service"))
+            )
+            .with_detail("daemonUniqueOwner must be a D-Bus unique name, not a well-known service"))
         }
     }
 }

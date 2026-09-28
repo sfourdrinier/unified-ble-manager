@@ -74,6 +74,9 @@ npm pack --dry-run
 ```
 
 CI additionally owns the platform-specific native compilation and ABI lanes.
+The clean Linux preflight checks pinned workspace Rust formatting before
+package pretests; its separate Tauri formatting check does not replace that
+workspace gate.
 
 On Linux, the existing Rust CI lane and clean preflight share the same BlueZ
 lifecycle regression gate:

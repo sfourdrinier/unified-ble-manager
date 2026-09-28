@@ -4,6 +4,10 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Unreleased
 
+- Expose the staged UniFFI C modulemap to Swift application targets importing
+  `BlePlx`, preserving inherited flags without source-root or slice-specific
+  consumer paths. The reference iOS continuation bridge now compiles against
+  the production pod rather than only a deterministic stub module.
 - Bound reference `scan-details` and H10 advertisement capture through the
   library's finite scan timeout as well as the JavaScript timer, so mobile radio
   ownership can expire while JavaScript is suspended. Preserve native terminal
