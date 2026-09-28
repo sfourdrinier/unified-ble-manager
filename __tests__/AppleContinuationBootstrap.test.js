@@ -15,6 +15,28 @@ describe('Apple native continuation launch wiring', () => {
     expect(source).not.toMatch(/RCT_EXPORT_MODULE|RCTBridge|startReactNative/)
   })
 
+  it('serializes startup central allocation with permission and radio work, without an on-queue sync deadlock', () => {
+    const source = read('ios/UnifiedBleRustCoreSessions.swift')
+    const install = source.slice(
+      source.indexOf('static func installProductionHost('),
+      source.indexOf('// MARK: - Sessions')
+    )
+    expect(install).toMatch(
+      /dispatchPrecondition\(condition: \.notOnQueue\(radio\.queue\)\)[\s\S]*radio\.queue\.sync\s*\{\s*_ = radio\.ensureCentral\(\)\s*\}/
+    )
+    expect(install.match(/radio\.ensureCentral\(\)/g)).toHaveLength(1)
+    // Restored callbacks may run on the radio queue only after bind; the
+    // installed host is returned before the installer can be entered again.
+    const host = source.slice(
+      source.indexOf('private func installedHost()'),
+      source.indexOf('private func existingHost()')
+    )
+    expect(host.indexOf('if let host { return host }')).toBeLessThan(host.indexOf('try installer(self)'))
+    expect(install.indexOf('adapter.bind(sink: host)')).toBeGreaterThan(
+      install.indexOf('radio.attachDelegateIfAvailable(adapter)')
+    )
+  })
+
   it('compiles the real launch observer against the generated Swift interface in the Apple lane', () => {
     const lane = read('scripts/native-protocol/test-apple-native-protocol.js')
     expect(lane).toContain('iphonesimulator')

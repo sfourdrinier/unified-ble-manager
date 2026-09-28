@@ -697,6 +697,193 @@ async fn durable_refused_subscription_then_new_database_never_reuses_committed_i
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pristine_apple_restored_native_setup_collects_before_att_completion_without_js() {
+    const PEER: &str = "232859A3-172E-CD86-20F1-0D2331118FEC";
+    const PMD: &str = "fb005c80-02e7-f387-1cad-8acd2d8df0c8";
+    const CP: &str = "fb005c81-02e7-f387-1cad-8acd2d8df0c8";
+    const DATA: &str = "fb005c82-02e7-f387-1cad-8acd2d8df0c8";
+    let directory = std::env::temp_dir().join(format!(
+        "ubm-apple-pristine-intake-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let (writes, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let radio = Scripted::new(Box::new(move |request| match request {
+        RadioRequest::Discover { .. } => {
+            let mut services = polar_services();
+            let mut cp = services[0].characteristics[0].clone();
+            cp.uuid = CP.into();
+            cp.properties.write = true;
+            let mut data = cp.clone();
+            data.uuid = DATA.into();
+            data.properties.write = false;
+            services.push(ubm_desktop::ServiceSnapshot {
+                uuid: PMD.into(),
+                occurrence: 0,
+                characteristics: vec![cp, data],
+            });
+            Reply::Now(RadioCompletion::Discovered(services))
+        }
+        RadioRequest::Write { id, value, .. } => {
+            writes.send((*id, value.clone())).unwrap();
+            if value == &[3, 0] {
+                Reply::Hold
+            } else {
+                Reply::Now(RadioCompletion::Unit)
+            }
+        }
+        _ => polar_responder(request),
+    }));
+    let (host, wakes) = open(&radio, MobilePlatform::Apple).await;
+    assert_eq!(
+        host.ingest(RadioIngress::Restored {
+            peers: vec![ubm_mobile::RestoredPeer {
+                peer_id: PEER.into(),
+                name: Some("SIM pristine native".into()),
+                connected: true,
+            }],
+        }),
+        ubm_mobile::IngressStatus::Accepted
+    );
+    // No public session, JS listener, or JS wake route exists. This is the
+    // shared Rust execution boundary used after the native restoration callback.
+    let engine = host.continuation();
+    engine.configure_recording_directory(&directory).unwrap();
+    let selector = |service, characteristic| {
+        json!({"serviceUuid":service,"serviceOccurrence":1,
+            "characteristicUuid":characteristic,"characteristicOccurrence":1})
+    };
+    let cp = selector(PMD, CP);
+    let order = json!({"onAppearance":"native",
+    "resubscribe":[selector(HR_SERVICE,HR_MEASUREMENT),cp,selector(PMD,DATA)],
+    "recording":{"id":"pristine-apple","maxBytes":1048576,"maxRecords":1000},
+    "setup":[
+        {"selector":cp,"value":[3,0],"timeoutMs":2000,
+         "response":{"subscriptionIndex":1,"prefix":[240,3,0],
+            "minLength":4,"maxLength":4,"status":{"offset":3,"accepted":[6]}}},
+        {"selector":cp,"value":[2,0],"timeoutMs":2000}
+    ]})
+    .to_string();
+    engine.seed_declaration(&order).unwrap();
+    let executor = engine.clone();
+    let execute = tokio::spawn(async move { executor.execute(PEER, &order).await });
+    let (stop_id, stop) = tokio::time::timeout(std::time::Duration::from_secs(3), received.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stop, vec![3, 0]);
+    let enabled: Vec<_> = radio
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|request| {
+            if let RadioRequest::EnableNotifications {
+                instance, epoch, ..
+            } = request
+            {
+                Some((instance.clone(), *epoch))
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(enabled.len(), 3);
+    for (instance, epoch) in &enabled {
+        assert_eq!(instance.peer_id, PEER);
+        assert_eq!(instance.service_occurrence, 0);
+        assert_eq!(instance.characteristic_occurrence, 0);
+        let value = match instance.characteristic_uuid.as_str() {
+            HR_MEASUREMENT => vec![0, 72],
+            CP => vec![240, 3, 0, 6],
+            DATA => vec![0, 1, 2],
+            other => panic!("unexpected enabled characteristic {other}"),
+        };
+        assert_eq!(
+            host.ingest(RadioIngress::Notification {
+                instance: instance.clone(),
+                epoch: *epoch,
+                value,
+            }),
+            ubm_mobile::IngressStatus::Accepted
+        );
+    }
+    // Observe durable intake, not a clock delay or an immutable prepare taken
+    // too early. All three values must be journaled while ATT is still held.
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if engine.recording_status("pristine-apple").unwrap()["records"] == 6 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("three native values must reach the journal before ATT completion");
+    assert_eq!(radio.count(RequestKind::Write), 1);
+    let prepared = engine
+        .recording_prepare("pristine-apple", 100, 65536)
+        .unwrap();
+    let records = prepared["records"].as_array().unwrap();
+    for (characteristic, bytes) in [(HR_MEASUREMENT, "AEg="), (CP, "8AMABg=="), (DATA, "AAEC")] {
+        assert!(
+            records.iter().any(|entry| {
+                entry["record"]["t"] == "value"
+                    && entry["record"]["valueB64"] == bytes
+                    && entry["metadata"]["consumer"]["selector"]["characteristicUuid"]
+                        == characteristic
+            }),
+            "missing durable value for {characteristic}: {prepared}"
+        );
+    }
+    assert_eq!(
+        radio.answer(stop_id, RadioCompletion::Unit),
+        ubm_mobile::CompletionStatus::Delivered
+    );
+    let (_, start) = tokio::time::timeout(std::time::Duration::from_secs(2), received.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(start, vec![2, 0], "timely STOP reply must advance setup");
+    tokio::time::timeout(std::time::Duration::from_secs(2), execute)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(wakes.count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(host.ingress_failure().is_none());
+    let claim = engine.prepare_claim(256, 65536).await.unwrap();
+    assert_eq!(claim["consumerCount"], 3);
+    assert_eq!(
+        claim["disposed"], false,
+        "prepare must not release radio ownership before ACK"
+    );
+    let disposal = engine
+        .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(disposal["disposed"], true, "{disposal}");
+    assert_eq!(disposal["disposeFailure"], serde_json::Value::Null);
+    assert_eq!(
+        engine
+            .recording_prepare("pristine-apple", 100, 65536)
+            .unwrap(),
+        prepared
+    );
+    engine.recording_stop("pristine-apple").unwrap();
+    host.shutdown().await;
+    assert_eq!(radio.count(RequestKind::DisableNotifications), 3);
+    assert_eq!(radio.count(RequestKind::Disconnect), 1);
+    drop(engine);
+    drop(host);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn setup_ack_before_att_completion_is_retained_and_replayed_after_native_link_recovery() {
     for platform in [MobilePlatform::Android, MobilePlatform::Apple] {
         let radio = Scripted::new(Box::new(|request| match request {

@@ -4,6 +4,11 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Unreleased
 
+- Serialize Apple restoration startup central allocation on the process radio's
+  queue, alongside permission checks and initial CoreBluetooth callbacks, so
+  concurrent nil/create checks cannot allocate competing centrals. This fixes a
+  startup race; it does not establish physical restoration qualification.
+
 - Allow Release reference phone builds to opt into remote test commands through
   an explicit `EXPO_PUBLIC_UBM_DRIVER_URL`. Keep default Release automation off,
   development Metro discovery enabled, and explicit `off` or malformed endpoints

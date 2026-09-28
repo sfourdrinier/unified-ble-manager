@@ -120,6 +120,12 @@ app-owned. Skip one and there is nothing to wake the app:
 
 ### iOS counterpart
 
+The process-owned restoration central is allocated on its serial radio queue,
+including at native launch startup. Permission work and initial CoreBluetooth
+callbacks therefore cannot race its nil/create/assignment sequence. This
+queue-confinement invariant is not physical OS-relaunch qualification; that
+requires the separately retained device procedure below.
+
 Configure `background.ios.restoration` (`{ id, generation }` in the Expo
 plugin, or the `restoration` manager option) and rebuild: the system
 relaunches the terminated app on a BLE event, delivers the peripherals

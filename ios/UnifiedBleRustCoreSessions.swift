@@ -204,7 +204,12 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
     if OwnedCoreBluetoothProtocolRadioSupport.restorationConfigured(
       restoreIdentifierKey: configuration.restoreIdentifierKey
     ) {
-      _ = radio.ensureCentral()
+      // Installation already synchronously attaches the delegate below and
+      // must not enter from the radio queue. Allocate on that same queue so
+      // permission/snapshot work and initial callbacks cannot race the
+      // central's nil/create/assignment sequence.
+      dispatchPrecondition(condition: .notOnQueue(radio.queue))
+      radio.queue.sync { _ = radio.ensureCentral() }
     }
     let adapter = UnifiedBleRustRadioAdapter(driver: radio, onRestoredPeer: { peer in
       guard let sessions = wake as? UnifiedBleRustCoreSessions else { return }
