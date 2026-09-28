@@ -267,7 +267,7 @@ diff -ruN a/src/device.c b/src/device.c
  
  	device_svc_resolved(device, BROWSE_GATT, device->bdaddr_type, 0);
  
-@@ -6298,22 +6474,42 @@
+@@ -6298,22 +6474,47 @@
  	DBG_IDX(0xffff, "%s", str);
  }
  
@@ -296,6 +296,11 @@ diff -ruN a/src/device.c b/src/device.c
 +	ubm_emit(device);
 +}
 +
++static bool ubm_fresh_initial_gatt(struct btd_device *device)
++{
++	return device->ubm_gatt.bearer == UBM_GATT_LE;
++}
++
  static void gatt_client_init(struct btd_device *device)
  {
  	uint8_t features;
@@ -317,9 +322,16 @@ diff -ruN a/src/device.c b/src/device.c
  	features =  BT_GATT_CHRC_CLI_FEAT_ROBUST_CACHING
  				| BT_GATT_CHRC_CLI_FEAT_NFY_MULTI;
  	if (btd_opts.gatt_channels > 1)
-@@ -6327,12 +6523,20 @@
- 	device->client = bt_gatt_client_new(device->db, device->att,
- 						device->att_mtu, features);
+@@ -6327,12 +6523,25 @@
+-	device->client = bt_gatt_client_new(device->db, device->att,
+-						device->att_mtu, features);
++	/* Private LE readiness requires a fresh complete peer database. */
++	if (ubm_fresh_initial_gatt(device))
++		device->client = bt_gatt_client_new_fresh(device->db,
++				device->att, device->att_mtu, features);
++	else
++		device->client = bt_gatt_client_new(device->db, device->att,
++						device->att_mtu, features);
  	if (!device->client) {
 +		ubm_gatt_complete(&device->ubm_gatt, false, 0);
 +		ubm_emit(device);
@@ -714,10 +726,21 @@ diff -ruN a/src/shared/gatt-client.c b/src/shared/gatt-client.c
  	}
  }
  
+@@ -2563,0 +2633,10 @@
++struct bt_gatt_client *bt_gatt_client_new_fresh(struct gatt_db *db,
++				struct bt_att *att, uint16_t mtu, uint8_t features)
++{
++	if (!db || !att)
++		return NULL;
++	/* In-memory, exact peer only. Never delete bonds or cache files. */
++	gatt_db_clear(db);
++	return bt_gatt_client_new(db, att, mtu, features);
++}
++
 diff -ruN a/src/shared/gatt-client.h b/src/shared/gatt-client.h
 --- a/src/shared/gatt-client.h	2024-03-07 07:15:07
 +++ b/src/shared/gatt-client.h	2026-09-27 21:44:50
-@@ -46,6 +46,13 @@
+@@ -46,6 +46,19 @@
  							void *user_data);
  
  bool bt_gatt_client_is_ready(struct bt_gatt_client *client);
@@ -726,6 +749,12 @@ diff -ruN a/src/shared/gatt-client.h b/src/shared/gatt-client.h
 + * precedes mutation; pending=false reports the complete cycle's own outcome. */
 +typedef void (*bt_gatt_client_ubm_discovery_t)(bool pending, bool success,
 +					int error, uint8_t att_error, void *user_data);
++/* Retire the peer-local in-memory DB, then start normal initialization.
++ * Caller must have no current client for that peer. No cache files or bonds
++ * are deleted; normal peer cache persistence remains active. */
++struct bt_gatt_client *bt_gatt_client_new_fresh(struct gatt_db *db,
++				struct bt_att *att, uint16_t mtu, uint8_t features);
++
 +void bt_gatt_client_set_ubm_discovery_observer(struct bt_gatt_client *client,
 +			bt_gatt_client_ubm_discovery_t observer, void *user_data);
  unsigned int bt_gatt_client_ready_register(struct bt_gatt_client *client,
@@ -878,7 +907,7 @@ diff -ruN a/src/ubm-gatt-state.h b/src/ubm-gatt-state.h
 diff -ruN a/unit/test-ubm-device.c b/unit/test-ubm-device.c
 --- a/unit/test-ubm-device.c	1969-12-31 16:00:00
 +++ b/unit/test-ubm-device.c	2026-09-27 22:00:40
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,159 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +/* Actual private method table/handler on a private D-Bus session only. */
 +#include "src/device.c"
@@ -952,6 +981,12 @@ diff -ruN a/unit/test-ubm-device.c b/unit/test-ubm-device.c
 +	device.path = "/org/bluez/test";
 +	/* Exercise the exact production policy decision, before allocation. */
 +	ubm_attach_primary(&device, BDADDR_LE_PUBLIC);
++	assert(ubm_fresh_initial_gatt(&device));
++	device.ubm_gatt.bearer = UBM_GATT_LE;
++	assert(ubm_fresh_initial_gatt(&device));
++	device.ubm_gatt.bearer = UBM_GATT_MIXED;
++	assert(!ubm_fresh_initial_gatt(&device));
++	device.ubm_gatt.bearer = UBM_GATT_LE;
 +	btd_opts.reverse_discovery = false;
 +	btd_opts.gatt_client = true;
 +	assert(!ubm_gatt_init_allowed(&device));
@@ -968,6 +1003,7 @@ diff -ruN a/unit/test-ubm-device.c b/unit/test-ubm-device.c
 +	assert(!strcmp(device.ubm_gatt.failure_stage, "registration"));
 +	ubm_gatt_detach(&device.ubm_gatt);
 +	ubm_attach_primary(&replacement, 255);
++	assert(!ubm_fresh_initial_gatt(&replacement));
 +	ubm_gatt_complete(&replacement.ubm_gatt, true, 0);
 +	assert(replacement.ubm_gatt.status == UBM_GATT_UNSUPPORTED);
 +	/* This independent device must not alter the first receipt's identity. */
@@ -999,6 +1035,7 @@ diff -ruN a/unit/test-ubm-device.c b/unit/test-ubm-device.c
 +	snapshot(client, "disconnected", "transport", ENOTCONN);
 +	device.le_state.connected = true;
 +	ubm_gatt_attach(&device.ubm_gatt, UBM_GATT_BREDR);
++	assert(!ubm_fresh_initial_gatt(&device));
 +	snapshot(client, "unsupported", "bearer", EOPNOTSUPP);
 +	/* The actual wrapper rejects an old completion after a new ATT epoch,
 +	 * even if that old watch is still presented as the device's watch. */
@@ -1243,13 +1280,171 @@ diff -ruN a/unit/test-ubm-gatt-state.c b/unit/test-ubm-gatt-state.c
 diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
 --- a/unit/test-ubm-refresh.c	1969-12-31 16:00:00
 +++ b/unit/test-ubm-refresh.c	2026-09-27 21:58:48
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,253 @@
 +// SPDX-License-Identifier: LGPL-2.1-or-later
 +/* Production invalidation/completion paths with no ATT socket or radio. */
 +#include "src/shared/gatt-client.c"
 +#include <stdio.h>
 +#include <sys/socket.h>
 +#include <unistd.h>
++#include <glib.h>
++
++struct cache_answer {
++	bool done, success, refuse;
++	unsigned int primary;
++	uint8_t *hash;
++};
++static void cache_ready(bool success, uint8_t error, void *data)
++{
++	struct cache_answer *answer = data;
++	(void) error;
++	answer->done = true;
++	answer->success = success;
++}
++static gboolean cache_respond(GIOChannel *io, GIOCondition condition, void *data)
++{
++	struct cache_answer *answer = data;
++	uint8_t request[64], response[32];
++	int fd = g_io_channel_unix_get_fd(io);
++	ssize_t length = read(fd, request, sizeof(request));
++	uint16_t start, type;
++	size_t size = 5;
++	(void) condition;
++	assert(length >= 5);
++	start = get_le16(request + 1);
++	type = length >= 7 ? get_le16(request + 5) : 0;
++	response[0] = BT_ATT_OP_ERROR_RSP;
++	response[1] = request[0];
++	put_le16(start, response + 2);
++	response[4] = BT_ATT_ERROR_ATTRIBUTE_NOT_FOUND;
++	if (request[0] == BT_ATT_OP_READ_BY_GRP_TYPE_REQ && type == 0x2800) {
++		answer->primary++;
++		if (answer->refuse) {
++			/* A malformed accepted response settles with no ATT error. */
++			response[0] = BT_ATT_OP_READ_BY_GRP_TYPE_RSP;
++			response[1] = 6;
++			size = 2;
++		} else if (start == 1) {
++			uint8_t service[] = { 0x11, 6, 1, 0, 8, 0, 1, 0x18 };
++			memcpy(response, service, sizeof(service));
++			size = sizeof(service);
++		}
++	} else if (request[0] == BT_ATT_OP_READ_BY_TYPE_REQ && type == 0x2b2a) {
++		response[0] = BT_ATT_OP_READ_BY_TYPE_RSP;
++		response[1] = 18;
++		put_le16(3, response + 2);
++		memcpy(response + 4, answer->hash, 16);
++		size = 20;
++	} else if (request[0] == BT_ATT_OP_READ_BY_TYPE_REQ && type == 0x2803 && start <= 4) {
++		uint8_t characteristics[] = { 0x09, 7, 2, 0, 2, 3, 0, 0x2a, 0x2b,
++						4, 0, 2, 5, 0, 0x38, 0x2a };
++		memcpy(response, characteristics, sizeof(characteristics));
++		size = sizeof(characteristics);
++	}
++	assert(write(fd, response, size) == (ssize_t) size);
++	return G_SOURCE_CONTINUE;
++}
++static void cache_written(struct gatt_db_attribute *attr, int error, void *data)
++{
++	(void) attr;
++	(void) data;
++	assert(!error);
++}
++static struct gatt_db *cache_database(uint8_t *hash)
++{
++	struct gatt_db *db = gatt_db_new();
++	struct gatt_db_attribute *service, *value;
++	bt_uuid_t uuid;
++	bt_uuid16_create(&uuid, 0x1801);
++	service = gatt_db_add_service(db, &uuid, true, 8);
++	assert(service);
++	bt_uuid16_create(&uuid, GATT_CHARAC_DB_HASH);
++	value = gatt_db_service_add_characteristic(service, &uuid,
++		BT_ATT_PERM_READ, BT_GATT_CHRC_PROP_READ,
++		NULL, NULL, NULL);
++	assert(value);
++	assert(gatt_db_attribute_write(value, 0, hash, 16, 0, NULL,
++						cache_written, NULL));
++	bt_uuid16_create(&uuid, 0x2a37);
++	assert(gatt_db_service_add_characteristic(service, &uuid,
++		BT_ATT_PERM_READ, BT_GATT_CHRC_PROP_READ, NULL, NULL, NULL));
++	gatt_db_service_set_active(service, true);
++	return db;
++}
++static void cache_session(struct gatt_db *db, struct cache_answer *answer,
++							bool fresh)
++{
++	int sockets[2];
++	struct bt_att *client_att;
++	struct bt_gatt_client *client;
++	GIOChannel *io;
++	guint watch;
++	assert(!socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sockets));
++	client_att = bt_att_new(sockets[0], false);
++	assert(client_att);
++	io = g_io_channel_unix_new(sockets[1]);
++	watch = g_io_add_watch(io, G_IO_IN, cache_respond, answer);
++	assert(watch);
++	client = fresh ? bt_gatt_client_new_fresh(db, client_att, 23, 0) :
++				bt_gatt_client_new(db, client_att, 23, 0);
++	assert(client);
++	assert(bt_gatt_client_ready_register(client, cache_ready, answer, NULL));
++	/* The alarm is a failure-only watchdog, never a readiness verdict. */
++	alarm(10);
++	while (!answer->done)
++		g_main_context_iteration(NULL, true);
++	alarm(0);
++	bt_gatt_client_unref(client);
++	g_source_remove(watch);
++	g_io_channel_unref(io);
++	bt_att_unref(client_att);
++	close(sockets[0]);
++	close(sockets[1]);
++}
++static void initial_cache_test(bool interrupted, bool matching)
++{
++	uint8_t old_hash[16] = { 1 }, new_hash[16] = { 2 };
++	if (matching)
++		old_hash[0] = new_hash[0];
++	struct gatt_db *db = cache_database(old_hash);
++	struct cache_answer answer = { .refuse = interrupted, .hash = new_hash };
++	struct gatt_db_attribute *hash;
++	const uint8_t *stored = NULL;
++	bt_uuid_t expected;
++	cache_session(db, &answer, true);
++	if (interrupted) {
++		assert(!answer.success && answer.primary > 0);
++		hash = gatt_db_get_attribute(db, 3);
++		if (hash)
++			gatt_db_attribute_read(hash, 0, 0, NULL,
++						db_hash_read_value_cb, &stored);
++		assert(!stored || memcmp(stored, new_hash, 16));
++		answer = (struct cache_answer) { .hash = new_hash };
++		cache_session(db, &answer, true);
++		assert(answer.primary > 0);
++	}
++	assert(answer.success);
++	bt_uuid16_create(&expected, 0x2a38);
++	assert(gatt_db_get_attribute(db, 5));
++	assert(!bt_uuid_cmp(gatt_db_attribute_get_type(
++				gatt_db_get_attribute(db, 5)), &expected));
++	gatt_db_unref(db);
++}
++static void stock_cache_control(void)
++{
++	uint8_t hash[16] = { 2 };
++	struct gatt_db *db = cache_database(hash);
++	struct cache_answer answer = { .hash = hash };
++	bt_uuid_t expected;
++	/* Invalid arguments never mutate the peer's database. */
++	assert(!bt_gatt_client_new_fresh(db, NULL, 23, 0));
++	cache_session(db, &answer, false);
++	assert(answer.success);
++	bt_uuid16_create(&expected, 0x2a37);
++	assert(!bt_uuid_cmp(gatt_db_attribute_get_type(
++				gatt_db_get_attribute(db, 5)), &expected));
++	gatt_db_unref(db);
++}
 +
 +struct observed { unsigned int calls; bool pending, success; uint8_t error; };
 +static void observe(bool pending, bool success, int cause, uint8_t error, void *data)
@@ -1273,6 +1468,10 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
 +	client.clones = queue_new();
 +	client.svc_chngd_queue = queue_new();
 +	bt_gatt_client_set_ubm_discovery_observer(&client, observe, &observed);
++	initial_cache_test(false, false);
++	initial_cache_test(true, false);
++	initial_cache_test(false, true);
++	stock_cache_control();
 +	if (getenv("UBM_TEST_CLONE_ONLY"))
 +		goto clone_test;
 +	/* A real queued indication invalidates now, before its rediscovery. */

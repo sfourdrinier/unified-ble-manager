@@ -4,6 +4,10 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Unreleased
 
+- Refresh each new strict BlueZ LE client's peer-local native GATT graph instead
+  of trusting an inherited hash-matched cache. Exercise changed-characteristic
+  replacement, refused discovery and reconnect through actual native client/server
+  exchanges, without deleting cached files/bonds or changing Classic initialization.
 - Validate BlueZ exported characteristics against their current native value
   attributes, not declaration pointers. Regression fixtures now mirror the
   production export layout and refuse stale, missing or mismatched identities.

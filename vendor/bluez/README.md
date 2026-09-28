@@ -54,7 +54,9 @@ It compiles `bluetoothd`, runs the original GATT unit suite and four added
 tests. Only the method-table test starts a **private session bus**, never a
 daemon or a system-bus connection. The tests exercise the production snapshot
 handler/table, queued Service Changed and failed DB-out-of-sync dispatch paths
-(including real cloned clients),
+(including real cloned clients), initial cached-characteristic replacement and
+reconnect through actual native client/server exchanges over an AF_UNIX socket
+pair,
 full exported-graph checks, callback identity and exhausted counters. The
 projection test constructs graph objects in memory; it does not claim a
 physical allocation/export-failure injection. No Bluetooth socket, scan,
@@ -84,8 +86,13 @@ has no arguments and returns exactly `uttsssiy`:
 
 `ready` requires successful native GATT initialization/refresh on a live,
 exclusively LE ATT transport and a complete, matching exported graph. A
-cache is accepted only through the existing native client's successful
-validation/discovery outcome, not because objects exist. Existing BlueZ
+new strict LE primary client first retires only its peer's in-memory graph and
+performs full native discovery, even with a matching database hash. This heals
+inherited graphs that earlier cache-assisted discovery incorrectly accepted;
+it never deletes cached files or bonds. Normal peer-cache persistence remains
+active. The Classic constructor and subsequent
+native hash/Service Changed refresh semantics are retained. Initial strict LE
+discovery intentionally forgoes the native cache shortcut. Existing BlueZ
 `Device1.ServicesResolved`, MTU and positive characteristic reads are not
 substitutes. Classic or mixed ATT transport explicitly refuses this LE
 attestation; an independent Classic ACL without Classic ATT does not itself

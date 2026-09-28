@@ -67,6 +67,16 @@ remain separate from the isolated source gates.
 
 ## Readiness, invalidation and cleanup
 
+Each new strictly LE primary ATT client performs fresh native GATT discovery
+after retiring only that peer's in-memory graph. A matching database hash is
+not enough to attest an inherited graph: earlier cache-assisted discovery may
+have retained stale characteristics under matching service identities. This intentionally
+forgoes the initial cache shortcut for strict LE discovery. It does not delete
+cached files or bonds, change trust, reset controllers or modify the Classic
+client initialization path. Normal BlueZ persistence can still rewrite the
+affected peer's cache metadata. Subsequent native refreshes retain normal hash
+and Service Changed handling.
+
 The watcher registers before discovery may publish. Initial pending discovery
 has a bounded, cancellable five-second observation wait; it does not initiate a
 second native discovery. A graph is published only between identical successful

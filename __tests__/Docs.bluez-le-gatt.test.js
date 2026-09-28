@@ -34,3 +34,11 @@ test('BlueZ consumer guidance separates explicit daemon preparation, strict disc
     expect(guide).toContain(requirement)
   expect(guide).not.toContain('sudo make install')
 })
+
+test('BlueZ guidance distinguishes fresh LE discovery from inherited hash-matched cache', () => {
+  for (const file of ['docs/BLUEZ_LE_GATT.md', 'vendor/bluez/README.md']) {
+    const guide = read(file)
+    for (const requirement of ['in-memory', 'matching database hash', 'cached files or bonds', 'Classic'])
+      expect(guide).toContain(requirement)
+  }
+})
