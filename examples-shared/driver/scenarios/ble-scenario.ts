@@ -104,11 +104,11 @@ export function matchesDeviceName(name: string | null, device: DeviceSelector): 
   return device.match === 'exact' ? name === device.name : (name ?? '').startsWith(device.name)
 }
 
-/** The peer a run acquired and the selector that found it; reported in every snapshot and result. */
+/** The actual peer and discovery selector; null query means a supplied known ID, without discovery. */
 export type PeerReport = {
   readonly id: string
   readonly name: string | null
-  readonly query: DeviceSelector
+  readonly query: DeviceSelector | null
 }
 
 export type BleScenarioState = {
@@ -326,7 +326,7 @@ export abstract class BleScenario<State extends BleScenarioState> extends Scenar
    */
   protected async connect(
     manager: BleManager,
-    target: BlePeer,
+    target: BlePeer | string,
     signal: AbortSignal,
     intent: ConnectionIntent = 'direct'
   ): Promise<BleConnection> {
@@ -400,6 +400,17 @@ export abstract class BleScenario<State extends BleScenarioState> extends Scenar
     const { manager } = await this.createManager(signal)
     const peer = await this.findH10(manager, device, signal)
     const connection = await this.connect(manager, peer, signal)
+    const gatt = await this.discover(connection, signal)
+    return { manager, peer, connection, gatt }
+  }
+
+  /** A caller-known peer ID uses the same ownership/retry path, without discovering or inventing a peer. */
+  protected async connectKnownPeer(peerId: string, signal: AbortSignal): Promise<ConnectedH10> {
+    const { manager } = await this.createManager(signal)
+    this.emit('peer-acquisition', { via: 'known-peer-id', peerId })
+    const connection = await this.connect(manager, peerId, signal)
+    const peer = connection.peer
+    this.patchBase({ device: peer.name ?? peer.id, peer: { id: peer.id, name: peer.name, query: null } })
     const gatt = await this.discover(connection, signal)
     return { manager, peer, connection, gatt }
   }

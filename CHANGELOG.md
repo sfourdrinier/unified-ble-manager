@@ -4,6 +4,14 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Unreleased
 
+- Allow Release reference phone builds to opt into remote test commands through
+  an explicit `EXPO_PUBLIC_UBM_DRIVER_URL`. Keep default Release automation off,
+  development Metro discovery enabled, and explicit `off` or malformed endpoints
+  fail-closed. Document trusted local/USB testing and remote BLE control risk.
+- Allow reference `device-info read` to connect an explicit known `peerId`
+  without rescanning an already-connected, non-advertising device. Keep the
+  ordinary name-query route, typed refusals and owned cleanup unchanged.
+
 - Restore BlueZ server `AcquireNotify` sockets after bonded ATT reconnection
   and renew their immutable MTU after an actual ATT MTU increase,
   without clearing CCC configuration or duplicating descriptor counts. Fence

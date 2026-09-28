@@ -97,6 +97,12 @@ pnpm package copy can otherwise leave `createBundleReleaseJsAndAssets`
 `lib/` and `src/` trees to every application bundle variant's Gradle inputs;
 missing copied `lib/module` fails before bundling. No generated app edit,
 timestamp stamp or forced rebuild is required. Unchanged inputs stay cached.
+The Expo reference app additionally registers its explicit
+`EXPO_PUBLIC_UBM_DRIVER_URL` as a bundle input through its app-only config
+plugin: enabling, disabling or removing the endpoint cannot reuse a bundle
+with the previous remote-command policy. This is reference-app configuration,
+not a production library option. The same cache regression checks those
+environment transitions separately from installed-package changes.
 After preparing the example copy, a self-contained development-signed APK is
 built from `example-expo/android` with `NODE_ENV=production ./gradlew
 :app:assembleRelease -PreactNativeArchitectures=arm64-v8a --max-workers=2`.

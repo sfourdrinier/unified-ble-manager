@@ -5,10 +5,60 @@ import { createHub } from '../hub.mjs'
 import { connectControl } from '../client.mjs'
 import { formatComparison, resolveDevice, runSequence, validateSequence } from '../sequence.mjs'
 import { matchesTarget } from '../targets.mjs'
-import { startNodeHost, waitFor } from './node-host.mjs'
+import { nodeSocketFactory, startNodeHost, waitFor } from './node-host.mjs'
+import { createScenarioRegistry } from '../../create-driver.ts'
+import { RemoteDriverChannel } from '../../remote-channel.ts'
+import { adapterHostManager } from '../../host.ts'
+import { createFakeHost, createFakeManager } from '../../__tests__/fake-host.mjs'
 
 const STRAP_A = 'Polar H10 E997042F'
 const STRAP_B = 'Polar H10 E9B93D29'
+
+async function withDeviceInfo(run) {
+  const hub = createHub({ port: 0, host: '127.0.0.1', onRecord: () => {} })
+  const { port } = await hub.listen()
+  const client = await connectControl(`ws://127.0.0.1:${port}/control`)
+  const { manager, calls } = createFakeManager()
+  const targets = []
+  const connect = manager.connect
+  manager.connect = async (target, controls) => { targets.push(target); return connect(target, controls) }
+  const host = createFakeHost({ manager, adapterHostManager, host: 'expo', platform: 'android' })
+  const registry = createScenarioRegistry(host)
+  const channel = new RemoteDriverChannel({ url: `ws://127.0.0.1:${port}/host`, noHostReason: 'unused',
+    registry, runtime: host.runtime, identity: host.identity, createSocket: nodeSocketFactory })
+  channel.start()
+  try {
+    await waitFor(() => hub.hosts().length === 1)
+    await run(client, { calls, targets })
+  } finally {
+    channel.stop()
+    await registry.stopAll()
+    await client.close()
+    await hub.close()
+  }
+}
+
+test('real sequence bound device is not injected over an explicit known peer ID', async () => {
+  await withDeviceInfo(async (client, { calls, targets }) => {
+    const summary = await runSequence(client, { name: 'known peer', devices: { android: STRAP_A },
+      steps: [{ run: 'device-info', command: 'read', args: { peerId: 'known-peer' } }] })
+    assert.equal(summary.hosts[0].passed, true)
+    assert.deepEqual(targets, ['known-peer'])
+    assert.ok(!calls.some(call => /^(find|scan|choose)\b/.test(call)))
+    assert.deepEqual(calls.slice(-2), ['connection.release', 'manager.destroy'])
+  })
+})
+
+test('real sequence preserves explicitly conflicting device and peerId for scenario refusal', async () => {
+  await withDeviceInfo(async (client, { calls, targets }) => {
+    const summary = await runSequence(client, { name: 'conflicting peer', devices: { android: STRAP_A },
+      steps: [{ run: 'device-info', command: 'read', args: { peerId: 'known-peer', device: STRAP_B } }] })
+    assert.equal(summary.hosts[0].passed, false)
+    assert.equal(summary.hosts[0].steps[0].detail.error.code, 'scenario.invalid-argument')
+    assert.deepEqual(calls, [])
+    assert.deepEqual(targets, [])
+  })
+})
 
 async function withHosts(specs, run) {
   const hub = createHub({ port: 0, host: '127.0.0.1', onRecord: () => {} })

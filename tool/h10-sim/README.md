@@ -363,6 +363,23 @@ Later flags win: `--profile` applies first, then `--name`/`--bpm`/`--battery`.
   iPhone run observed BlueZ reading the phone's Battery Level, receiving
   Insufficient Authentication, requesting security and then disconnecting after
   pairing was refused. These host-profile probes are not H10 PMD requirements.
+  An Android run also observed a protected reverse MCP/Content Control ID read
+  triggering security negotiation on the shared ATT connection, delaying the
+  phone's discovery until its deadline. For a dedicated simulator host,
+  `ReverseServiceDiscovery = false` under `[General]` in
+  `/etc/bluetooth/main.conf` disables automatic discovery of an incoming
+  central's services; the simulator still serves its GATT database and explicit
+  outgoing central discovery still works. A controlled Android retest completed
+  discovery and Device Information reads without pairing at the original
+  deadline after changing only that setting. This is source-checkout simulator
+  evidence, not real-H10 or published-artifact qualification.
+  The setting affects the whole daemon, not just the simulator. An operator
+  must authorize it, back up the original configuration, restart Bluetooth and
+  restart the simulator (its registrations are lost), then restore the original
+  configuration and restart both after temporary testing. Other incoming
+  peers lose automatic reverse discovery during that window. The package
+  never makes this privileged host change automatically; it neither disables
+  an attribute's security requirement nor enables blanket pairing/trust.
   In the same-daemon, two-adapter test, a pairing agent restricted to the two test peer paths
   allowed collection. Restrict any qualification agent to the exact test peers;
   never register a blanket-accepting default agent. Record whether a

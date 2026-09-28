@@ -105,6 +105,17 @@ checked after the pick. The acquired peer is reported everywhere as
 returns `{peer, reads}`, `mtu probe` `{peer, probes}` and `ecg start`
 `{peer, mtu, features, settings}`. `stop` takes no arguments.
 
+`device-info read` also accepts `{ "peerId": "<exact known peer ID>" }`, mutually
+exclusive with `device`. This forwards the ID to public `manager.connect()`
+without scanning, choosing or falling back to a name query—useful when an
+already-connected peer is no longer advertising. The host must support that
+known-ID connection; a refusal remains its typed error. Result peer metadata
+comes from the actual connection and has `query: null`, not a fabricated
+discovery. The same readiness, bounded connect/read operations, explicit retry
+policy and connection/manager cleanup apply.
+A sequence's bound `devices` name is not injected into a step that explicitly
+supplies `peerId`; explicitly supplying both arguments still fails validation.
+
 ### No strap? Use the H10 simulator
 
 [`tool/h10-sim`](../../tool/h10-sim/README.md) is a Rust BLE peripheral
@@ -476,6 +487,17 @@ on the **Test scenarios** screens shows the connection. Set
 `EXPO_PUBLIC_UBM_DRIVER_URL=ws://<mac>:8795/host` (or `off`) to override. Metro
 resolves the shared folder through `example-expo/metro.config.js`.
 
+Release reference phone builds default off and do not auto-discover Metro.
+For a local Android USB test, set
+`EXPO_PUBLIC_UBM_DRIVER_URL=ws://127.0.0.1:8795/host` when building the bundle,
+run the local control server and reverse USB port 8795 as above. An iOS phone
+requires an explicitly reachable trusted server address; localhost requires a
+separately configured forwarding route. Rebuild the embedded bundle to change
+the endpoint. Explicit `off` or an invalid URL never opens a connection or falls
+back to discovery. This opt-in belongs to reference apps only: remote commands
+control BLE, background leases and recording/handoff operations. Use trusted
+local endpoints, and do not distribute these opted-in builds as production apps.
+
 #### Apple TV (tvOS)
 
 The same app and scenarios run on Apple TV from a generated stage,
@@ -622,8 +644,11 @@ itself remains owned by the platform until `unobserve-presence`; no intervening
 `afterCutoffLoss`, durable recording reference and disposal failure separately.
 It summarizes sensor values without logging their bytes; zero journal loss does
 not imply zero volatile handoff loss or uninterrupted peripheral sampling.
-Remote-driver qualification uses a custom native Debug app; Release intentionally
-disables that development control surface. Label evidence accordingly.
+Earlier remote-driver qualification used a custom native Debug app; retain that
+build qualifier on its evidence. Release reference builds default to no remote
+channel, but can now explicitly opt in through `EXPO_PUBLIC_UBM_DRIVER_URL` as
+documented above. Label each new row with its actual Debug/Release build and
+endpoint opt-in; enabling the channel alone is not qualification evidence.
 
 After iOS relaunch, run `restoration restored`, then pass a returned peer's
 `reference` to `restoration reconnect` as `peerReference` with `intent: "direct"`.

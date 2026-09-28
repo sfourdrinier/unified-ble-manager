@@ -23,7 +23,7 @@ import {
 import type { DriverHost } from '../host.ts'
 import type { JsonObject, JsonValue } from '../protocol.ts'
 import { bytesToHex, toJsonValue } from '../protocol.ts'
-import { defineCommand, type ScenarioCommand } from '../scenario-core.ts'
+import { ScenarioError, defineCommand, type ScenarioCommand } from '../scenario-core.ts'
 import { BleScenario, DEVICE_ARGUMENT_HELP, IDLE_BLE_STATE, OPERATION_TIMEOUT_MS, outcomeOf, parseDevice, type BleScenarioState } from './ble-scenario.ts'
 
 type ReadSpec = {
@@ -56,12 +56,24 @@ export class DeviceInfoScenario extends BleScenario<DeviceInfoState> {
   protected readonly commands: Readonly<Record<string, ScenarioCommand>> = {
     read: defineCommand({
       label: 'Read all',
-      description: `One-shot connect, read, release. args: {${DEVICE_ARGUMENT_HELP}}. Result: {peer, reads}; each read reports {ok, value, raw} or {ok: false, error}.`,
+      description: `One-shot connect, read, release. args: {${DEVICE_ARGUMENT_HELP}, peerId?: string (known ID, mutually exclusive with device; no discovery)}. Result: {peer, reads}; each read reports {ok, value, raw} or {ok: false, error}.`,
       acceptsDevice: true,
-      parse: raw => ({ device: parseDevice(raw) }),
-      run: ({ device }) =>
+      parse: raw => {
+        if ('peerId' in raw) {
+          if ('device' in raw || typeof raw.peerId !== 'string' || raw.peerId.trim().length === 0) {
+            throw new ScenarioError(
+              'scenario.invalid-argument',
+              'peerId must be a nonempty known peer ID and cannot be combined with device'
+            )
+          }
+          return { peerId: raw.peerId, device: null }
+        }
+        return { peerId: null, device: parseDevice(raw) }
+      },
+      run: ({ device, peerId }) =>
         this.runJourney(async signal => {
-          const { gatt } = await this.connectH10(device, signal)
+          const { gatt } =
+            device === null ? await this.connectKnownPeer(peerId, signal) : await this.connectH10(device, signal)
           this.patchBase({ phase: 'reading' })
           const reads = await this.readAll(gatt, signal)
           await this.teardown('done')

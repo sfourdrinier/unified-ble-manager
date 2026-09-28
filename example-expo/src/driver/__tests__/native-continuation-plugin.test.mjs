@@ -6,7 +6,25 @@ import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
 const repositoryRoot = fileURLToPath(new URL('../../../../', import.meta.url))
-const { registerPackage, registerIosSources } = require('../../../plugins/with-native-continuation.cjs')
+const { registerPackage, registerIosSources, registerDriverBundleInputs } = require('../../../plugins/with-native-continuation.cjs')
+const withNativeContinuation = require('../../../plugins/with-native-continuation.cjs')
+
+test('reference endpoint bundle input registration is app-only, lazy and idempotent', () => {
+  const original = "apply plugin: 'com.android.application'\n// existing app configuration\n"
+  const result = registerDriverBundleInputs(original)
+  assert.match(result, /inputs\.property\("ubmReferenceDriverUrl", providers\.environmentVariable\("EXPO_PUBLIC_UBM_DRIVER_URL"\)\.orElse\(""\)\)/)
+  assert.match(result, /configureEach/)
+  assert.match(result, /\/\/ existing app configuration/)
+  assert.equal(registerDriverBundleInputs(result), result)
+})
+
+test('actual Expo app Gradle mod registers the input and refuses an unsupported template', async () => {
+  const config = withNativeContinuation({ name: 'Example', slug: 'example' })
+  const mod = config.mods.android.appBuildGradle
+  const result = await mod({ ...config, modRequest: {}, modResults: { language: 'groovy', contents: '// app' } })
+  assert.equal(result.modResults.contents, registerDriverBundleInputs('// app'))
+  await assert.rejects(mod({ ...config, modRequest: {}, modResults: { language: 'kotlin', contents: '// app' } }), /Groovy app build template/)
+})
 
 test('app-only native package registration is exact and idempotent', () => {
   const source = 'PackageList(this).packages.apply {\n // existing\n}'

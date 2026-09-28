@@ -58,13 +58,30 @@ The **Test scenarios** screens render the shared cross-host scenarios from
 runs on Web, Tauri, Electron and a Node CLI.
 `src/driver/app-driver.ts` is the Expo host adapter. It provides the Expo manager
 with its readiness and permission step and its background lease, plus
-`AppState`, the React Native WebSocket and the driver URL. In development builds
-the same registry is also reachable from the control server. The app therefore
+`AppState`, the React Native WebSocket and the driver URL. In development builds,
+and explicitly opted-in Release builds, the same registry is also reachable
+from the control server. The app therefore
 runs the same code whether a person taps a button or an agent sends the command.
 
 The app connects out to `ws://<Metro host>:8795/host` (protocol
 `ubm-test-driver/1`). It takes the host from the URL of the bundle it loaded;
-set `EXPO_PUBLIC_UBM_DRIVER_URL` (or `off`) to override it. `metro.config.js`
+set `EXPO_PUBLIC_UBM_DRIVER_URL` (or `off`) to override it. Release defaults off:
+it never auto-discovers Metro. To automate a Release reference build locally,
+set `EXPO_PUBLIC_UBM_DRIVER_URL=ws://127.0.0.1:8795/host` when building the bundle;
+on Android, reverse USB port 8795 to the local control server as below. On iOS,
+use an explicitly reachable trusted control-server address instead; phone
+localhost is not the Mac without a separately configured forwarding route.
+Changing the environment after installation does not change the embedded bundle.
+Keep that build environment available to Gradle: the app-only Expo plugin tracks
+the endpoint as the named `ubmReferenceDriverUrl` bundle-task input, so changing
+enabled/off/absent configuration invalidates cached Release bundles. Existing
+generated Android projects need regeneration through Expo prebuild to receive
+this plugin change; do not hand-edit generated Gradle files.
+Explicit `off` or an invalid URL opens no connection and never falls back.
+This is a reference-app automation opt-in, not a production library setting:
+remote commands control BLE, background leases and recording/handoff operations.
+Only opt in for trusted local testing; do not distribute a remotely controllable
+reference build as a production app. `metro.config.js`
 watches `../examples-shared` and resolves its `unified-ble-manager` imports to
 this app's installed copy, so the bundle holds one package instance. The
 TypeScript paths use that same installed copy for app and shared-driver types;
@@ -72,6 +89,23 @@ the resolver regression checks those paths against its package export targets.
 Every target ends in `.d.ts`, which Expo's runtime resolver excludes; a regression
 also executes the installed Expo resolver to check that runtime imports fall
 through to normal Metro resolution rather than these type-only aliases.
+
+After a canonical installed-package refresh, a long-running Metro process can
+still serve old transformed JavaScript/Hermes package identity. Once owned BLE
+runs have been stopped and released, stop only this app's owned Metro process
+and restart it with the supported cache reset:
+
+```sh
+pnpm --dir example-expo start --clear --port 8082
+```
+
+Perform a full app Reload, not just Fast Refresh/HMR: retained module state can
+leave a newly added export undefined. Verify the actually loaded bundle reports
+the expected current package/native identities before qualification; a copied
+file or a successful build alone is not loaded-runtime proof. Do not weaken
+identity or protocol guards to work around a stale bundle. The reset is an
+operator refresh step, not a claim that Metro automatically detects every
+replacement. Keep separately owned Metro servers and other apps untouched.
 
 ```sh
 pnpm driver serve                                        # control server: JSON lines on stdout + log file

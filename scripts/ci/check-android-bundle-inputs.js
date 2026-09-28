@@ -4,6 +4,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { spawnSync } = require('node:child_process')
+const { registerDriverBundleInputs } = require('../../example-expo/plugins/with-native-continuation.cjs')
 
 const root = path.resolve(__dirname, '../..')
 const java = path.join(process.env.JAVA_HOME || '', 'bin', process.platform === 'win32' ? 'java.exe' : 'java')
@@ -15,7 +16,10 @@ const application = path.join(temp, 'app')
 const helper = path.join(root, 'android/bundle-js-inputs.gradle')
 const groovyPath = value => value.replace(/\\/gu, '/').replace(/'/gu, "\\'")
 const wrapper = path.join(root, 'example/android/gradle/wrapper/gradle-wrapper.jar')
-function run() {
+function run(driverUrl) {
+  const env = { ...process.env }
+  if (driverUrl === undefined) delete env.EXPO_PUBLIC_UBM_DRIVER_URL
+  else env.EXPO_PUBLIC_UBM_DRIVER_URL = driverUrl
   const result = spawnSync(
     java,
     [
@@ -27,7 +31,7 @@ function run() {
       ':app:createBundleReleaseJsAndAssets',
       '--console=plain'
     ],
-    { encoding: 'utf8', timeout: 120000 }
+    { encoding: 'utf8', timeout: 120000, env }
   )
   if (result.error || result.status !== 0)
     throw new Error(`Gradle fixture failed: ${result.error || result.status}\n${result.stdout}\n${result.stderr}`)
@@ -52,16 +56,18 @@ project(':library').projectDir = file('copied package/android')
   // An absent helper exercises that exact stale-output ordering for test RED.
   fs.writeFileSync(
     path.join(application, 'build.gradle'),
-    `
+    registerDriverBundleInputs(`
 apply plugin: 'base'
 tasks.register('createBundleReleaseJsAndAssets') {
   inputs.file(file('app.js'))
   outputs.file(file('bundle.txt'))
+  outputs.file(file('driver-url.txt'))
   doLast {
     file('bundle.txt').text = fileTree('${groovyPath(moduleDir)}').matching { include '**/*.js' }.files.sort().collect { it.text }.join('|')
+    file('driver-url.txt').text = System.getenv('EXPO_PUBLIC_UBM_DRIVER_URL') ?: ''
   }
 }
-`
+`)
   )
   // Execute the production root capture and public plugin hook, with Gradle's
   // lightweight base plugin standing in for Android. The library evaluates
@@ -76,6 +82,18 @@ tasks.register('createBundleReleaseJsAndAssets') {
       : ''
   )
   run()
+  assert.match(run(), /:createBundleReleaseJsAndAssets UP-TO-DATE/u)
+  // An explicit reference endpoint is a bundle input, including disabling a
+  // previously enabled Release build without changing any source files.
+  for (const endpoint of ['ws://127.0.0.1:8795/host', 'off', undefined, 'ws://127.0.0.1:8795/host']) {
+    assert.doesNotMatch(run(endpoint), /:createBundleReleaseJsAndAssets UP-TO-DATE/u)
+    assert.equal(fs.readFileSync(path.join(application, 'driver-url.txt'), 'utf8'), endpoint ?? '')
+    assert.match(run(endpoint), /:createBundleReleaseJsAndAssets UP-TO-DATE/u)
+  }
+  // Restore an unchanged absent-env baseline before testing package-only
+  // mutations, so an endpoint change cannot hide a missing package input.
+  assert.doesNotMatch(run(), /:createBundleReleaseJsAndAssets UP-TO-DATE/u)
+  assert.equal(fs.readFileSync(path.join(application, 'driver-url.txt'), 'utf8'), '')
   assert.match(run(), /:createBundleReleaseJsAndAssets UP-TO-DATE/u)
   fs.writeFileSync(path.join(moduleDir, 'index.js'), 'second identity')
   const changed = run()
@@ -98,7 +116,7 @@ tasks.register('createBundleReleaseJsAndAssets') {
   fs.renameSync(moduleDir, path.join(copiedPackage, 'removed-module'))
   assert.throws(run, /UBM bundle inputs require the installed package.json and lib\/module/u)
   console.log(
-    'Android bundle inputs: copied JS modification/addition/removal and package metadata invalidate; unchanged inputs stay cached; paths with spaces work; missing copied modules fail closed'
+    'Android bundle inputs: copied JS modification/addition/removal and package metadata invalidate; reference endpoint enabled/off/absent transitions invalidate; unchanged inputs stay cached; paths with spaces work; missing copied modules fail closed'
   )
 } finally {
   fs.rmSync(temp, { recursive: true, force: true })
