@@ -37,6 +37,11 @@ swallowed failure: it reports something that is not so.
 Extreme DRY and test-first. Write the test before the behaviour, for logic,
 metadata, build configuration and contract guards alike.
 
+Keep required release gates, but make verification change-scoped: metadata,
+documentation and version-only edits do not require physical-device reruns.
+Repeat a hardware scenario only when the change affects its runtime behaviour
+or a concrete failure requires reproduction.
+
 Never silently swallow a failure. A dropped record, a swallowed exception or a
 filtered-out observation turns a specific fault into "nothing happened", which
 is the most expensive class of bug to diagnose — especially against real
