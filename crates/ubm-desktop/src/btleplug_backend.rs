@@ -3430,10 +3430,9 @@ impl RadioBoundary for BtleplugRadio {
             Some(crate::boundary::BluezConnectionPolicy::LeBearer {
                 daemon_unique_owner,
             }) => {
-                let id = platform_peripheral_id(peer_id).ok_or_else(|| {
-                    DesktopError::connection_failed("invalid BlueZ peer identity")
-                })?;
-                self.adapter.disconnect_le(&id, daemon_unique_owner).await
+                self.adapter
+                    .disconnect_le(peer_id, daemon_unique_owner)
+                    .await
             }
         };
         #[cfg(not(target_os = "linux"))]

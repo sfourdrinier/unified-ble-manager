@@ -71,16 +71,16 @@ Includes semantics, as well as missing and stale targets.
 At the existing device object path, `org.unifiedblemanager.LEGatt1.GetSnapshot`
 has no arguments and returns exactly `uttsssiy`:
 
-| Field | Meaning |
-| --- | --- |
-| `version: u` | Exactly `1`; unknown versions must be refused. |
-| `attachment: t` | Non-recycled, daemon-local primary ATT ownership identity. |
-| `revision: t` | Monotonic database invalidation revision for that attachment. |
-| `bearer: s` | `none`, `le`, `bredr`, `mixed` or `unknown`, from accepted ATT socket facts. Unknown destination types never attest LE. |
-| `status: s` | `disconnected`, `discovering`, `ready`, `failed` or `unsupported`. |
-| `errorStage: s` | `none`, `transport`, `discovery`, `projection`, `bearer`, `generation`, `policy` or `registration`. |
-| `errno: i` | Zero or a positive native errno; never a Boolean replacement for failure. |
-| `attError: y` | The discovery cycle's own first failing ATT error, if available. |
+| Field           | Meaning                                                                                                                 |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `version: u`    | Exactly `1`; unknown versions must be refused.                                                                          |
+| `attachment: t` | Non-recycled, daemon-local primary ATT ownership identity.                                                              |
+| `revision: t`   | Monotonic database invalidation revision for that attachment.                                                           |
+| `bearer: s`     | `none`, `le`, `bredr`, `mixed` or `unknown`, from accepted ATT socket facts. Unknown destination types never attest LE. |
+| `status: s`     | `disconnected`, `discovering`, `ready`, `failed` or `unsupported`.                                                      |
+| `errorStage: s` | `none`, `transport`, `discovery`, `projection`, `bearer`, `generation`, `policy` or `registration`.                     |
+| `errno: i`      | Zero or a positive native errno; never a Boolean replacement for failure.                                               |
+| `attError: y`   | The discovery cycle's own first failing ATT error, if available.                                                        |
 
 `ready` requires successful native GATT initialization/refresh on a live,
 exclusively LE ATT transport and a complete, matching exported graph. A
@@ -91,6 +91,9 @@ substitutes. Classic or mixed ATT transport explicitly refuses this LE
 attestation; an independent Classic ACL without Classic ATT does not itself
 invalidate LE evidence. Unsupported export policy or a truncated/stale graph
 reports a projection failure rather than returning a partial current database.
+Characteristic projection matches the declaration handle and current database's
+value-attribute identity, as BlueZ's production exporter does; a matching handle
+on a stale database is not accepted. Regression fixtures use that real layout.
 
 Valid Service Changed indications invalidate before dispatch, including queued
 ranges. DB-out-of-sync invalidates before asynchronous hash validation. A

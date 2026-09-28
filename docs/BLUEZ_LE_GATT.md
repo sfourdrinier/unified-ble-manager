@@ -40,6 +40,22 @@ hardening and Bluetooth state, and arrange a reversible service override rather
 than overwrite the distribution binary. UBM never runs privileged installers,
 enables daemon features, changes global Bluetooth policy or supplies that approval.
 
+BlueZ 5.87 gates its `org.bluez.Bearer.LE1` methods and properties behind
+experimental D-Bus API enablement. The operator must explicitly authorize that
+broader API surface and start the reviewed daemon with `--experimental`, then
+verify `Connect`, `Disconnect` and `Connected` on the actual device object.
+`KernelExperimental` features are not required by this extension and must not
+be enabled implicitly.
+
+Do not deploy the isolated-test binary: its compiled configuration and storage
+paths point into its temporary source tree. Prepare a separate deployment
+build with the distribution's actual paths (normally `/etc/bluetooth` and
+`/var/lib/bluetooth`, selected by `--sysconfdir=/etc --localstatedir=/var`),
+verify required plugins and shared libraries, and install the verified executable
+under a root-owned, non-user-writable versioned prefix. Retain its corresponding
+source, patch, build settings and upstream licenses. Preserve service hardening;
+do not add capabilities or relax sandboxing to make startup succeed.
+
 A daemon cutover disrupts every client/controller owned by that system service,
 including unrelated applications and simulator peripherals. Stop those owners in
 a coordinated window, retain the original daemon/service configuration and
@@ -69,6 +85,9 @@ original accepted cleanup reply rather than issuing another native request.
 An indeterminate transport result (`NoReply`, timeout, or an unknown transport
 failure) stays fenced: it is not treated as confirmed release or blindly
 reissued. Scoped authoritative retirement is needed to retire that uncertainty.
+Connection cleanup resolves the exact accepted LE acquisition identity, including
+its adapter and daemon owner, independently of discovery or current GATT objects.
+It never disconnects a same-address peer through another adapter.
 Loss of the registered watcher refuses further GATT admission and retires its
 unverifiable databases; it is not mislabeled as a physical Service Changed event.
 

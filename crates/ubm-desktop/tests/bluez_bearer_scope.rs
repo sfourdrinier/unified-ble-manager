@@ -79,6 +79,32 @@ async fn fixture(
     server.start_receive(
         MatchRule::new_method_call(),
         Box::new(move |message, connection| {
+            if message.interface().as_deref() == Some("org.freedesktop.DBus.ObjectManager")
+                && message.member().as_deref() == Some("GetManagedObjects")
+            {
+                let mut properties = PropMap::new();
+                for (key, value) in [
+                    ("Address", "00:11:22:33:44:55"),
+                    ("AddressType", "public"),
+                    ("Name", "fixture"),
+                    ("Alias", "fixture"),
+                ] {
+                    properties.insert(key.into(), Variant(Box::new(value.to_owned())));
+                }
+                properties.insert("Powered".into(), Variant(Box::new(true)));
+                properties.insert("Discovering".into(), Variant(Box::new(false)));
+                let managed = std::collections::HashMap::from([(
+                    dbus::Path::new("/org/bluez/hci0").unwrap(),
+                    std::collections::HashMap::from([(
+                        "org.bluez.Adapter1".to_owned(),
+                        properties,
+                    )]),
+                )]);
+                connection
+                    .send(message.method_return().append1(managed))
+                    .unwrap();
+                return true;
+            }
             assert_eq!(message.path().as_deref(), Some(PATH));
             let mut state = observed.lock().unwrap();
             state
@@ -249,6 +275,109 @@ async fn private_bus_le_release_preserves_other_apps_classic_bearer() {
         "no device-wide disconnect is a scoped LE release"
     );
     assert_eq!(state.le_disconnects, 1);
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_public_peer_identity_releases_accepted_le_without_a_directory_read() {
+    let (session, device, state, worker, _server) = fixture(true).await;
+    let owner = state.lock().unwrap().owner.clone();
+    session.connect_le(&device, &owner).await.unwrap();
+    for (peer, requested_owner) in [
+        ("hci1/dev_AA_BB_CC_DD_EE_FF", owner.as_str()),
+        ("hci0/dev_AA_BB_CC_DD_EE_FF", ":1.999999"),
+    ] {
+        session
+            .disconnect_le_by_peer(peer, requested_owner)
+            .await
+            .unwrap();
+    }
+    assert!(
+        state.lock().unwrap().le,
+        "foreign scopes released the owned link"
+    );
+    assert_eq!(state.lock().unwrap().le_disconnects, 0);
+    state.lock().unwrap().refuse_disconnect = true;
+    session
+        .disconnect_le_by_peer(&device.to_string(), &owner)
+        .await
+        .unwrap_err();
+    assert!(state.lock().unwrap().le, "a refusal was treated as release");
+    session
+        .disconnect_le_by_peer(&device.to_string(), &owner)
+        .await
+        .unwrap();
+    // The daemon fixture has no adapter directory or GATT projection at all.
+    // Release must use the acquisition's retained DeviceId, not re-discovery.
+    {
+        let observed = state.lock().unwrap();
+        assert!(
+            !observed.le,
+            "the public peer identity never reached LE Disconnect"
+        );
+        assert!(
+            observed.classic,
+            "another owner's Classic bearer was disturbed"
+        );
+        assert_eq!(observed.le_disconnects, 2, "native refusal must be retried");
+        assert_eq!(observed.disconnects, 0);
+        assert!(
+            observed
+                .destinations
+                .iter()
+                .all(|destination| destination == &owner)
+        );
+    }
+    // No accepted work remains. An idempotent cleanup does not touch a link
+    // that somebody else may subsequently have acquired.
+    state.lock().unwrap().le = true;
+    session
+        .disconnect_le_by_peer(&device.to_string(), &owner)
+        .await
+        .unwrap();
+    assert!(state.lock().unwrap().le);
+    assert_eq!(state.lock().unwrap().le_disconnects, 2);
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_adapter_cleanup_routes_the_public_peer_to_native_le_release() {
+    use btleplug::api::{Central as _, Manager as _};
+    let (_session, device, state, worker, _server) = fixture(true).await;
+    let owner = state.lock().unwrap().owner.clone();
+    let manager = btleplug::platform::Manager::new_session_bus()
+        .await
+        .unwrap();
+    let adapter = manager.adapters().await.unwrap().remove(0);
+    let peripheral = adapter
+        .peripheral(&btleplug::platform::PeripheralId::from(device.clone()))
+        .await
+        .unwrap();
+    peripheral.connect_le(&owner).await.unwrap();
+    adapter
+        .disconnect_le("hci1/dev_AA_BB_CC_DD_EE_FF", &owner)
+        .await
+        .unwrap_err();
+    assert!(state.lock().unwrap().le);
+    assert_eq!(state.lock().unwrap().le_disconnects, 0);
+    adapter
+        .disconnect_le(&device.to_string(), &owner)
+        .await
+        .unwrap();
+    let observed = state.lock().unwrap();
+    assert!(
+        !observed.le,
+        "Adapter cleanup did not call native LE Disconnect"
+    );
+    assert!(
+        observed.classic,
+        "Adapter cleanup released an unrelated Classic bearer"
+    );
+    assert_eq!(observed.le_disconnects, 1);
+    assert_eq!(observed.disconnects, 0);
+    drop(observed);
+    worker.abort();
 }
 
 #[tokio::test]

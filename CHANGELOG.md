@@ -4,6 +4,14 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Unreleased
 
+- Validate BlueZ exported characteristics against their current native value
+  attributes, not declaration pointers. Regression fixtures now mirror the
+  production export layout and refuse stale, missing or mismatched identities.
+- Release accepted BlueZ LE acquisitions through their exact retained adapter,
+  device and daemon identity, independently of discovery or directory reads.
+  Exercise the actual adapter wrapper, refused cleanup retry and idempotent
+  no-authority cleanup without affecting another owner's bearer.
+
 - Preserve shared subscription cleanup ownership after service-change
   invalidation. Retire usability immediately, but explicitly unsubscribe the
   original native identity and retain a refused cleanup for retry without

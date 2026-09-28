@@ -46,6 +46,29 @@ async fn fixture() -> (DesktopCentral<FakeRadio>, NativeContinuation) {
 }
 
 #[tokio::test]
+async fn failed_discovery_continuation_link_is_released_by_its_parent() {
+    let (central, engine) = fixture().await;
+    central
+        .boundary()
+        .fail_next(ubm_desktop::FaultOp::Discover, "projection failed");
+    engine.execute(PEER, &declaration()).await.unwrap_err();
+    assert!(
+        central.boundary().link_connected(PEER),
+        "setup failure must not invent physical release"
+    );
+    assert!(central.shutdown().await.is_released());
+    assert!(!central.boundary().link_connected(PEER));
+    let claim = engine.prepare_claim(256, 1 << 20).await.unwrap();
+    assert_eq!(
+        engine
+            .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+            .await
+            .unwrap()["disposed"],
+        true
+    );
+}
+
+#[tokio::test]
 async fn process_shutdown_retry_then_claim_recognizes_confirmed_parent_release() {
     let (central, engine) = fixture().await;
     engine.execute(PEER, &declaration()).await.unwrap();

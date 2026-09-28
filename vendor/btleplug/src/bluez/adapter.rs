@@ -19,8 +19,13 @@ pub struct Adapter {
 impl Adapter {
     /// Release only this session's accepted LE acquisition, without requiring
     /// a device-directory read that can fail after daemon/object loss.
-    pub async fn disconnect_le(&self, id: &PeripheralId, owner: &str) -> Result<()> {
-        self.session.disconnect_le(&id.0, owner).await?;
+    pub async fn disconnect_le(&self, peer_id: &str, owner: &str) -> Result<()> {
+        if peer_id.split_once('/').map(|(adapter, _)| adapter)
+            != Some(self.adapter.to_string().as_str())
+        {
+            return Err(Error::DeviceNotFound);
+        }
+        self.session.disconnect_le_by_peer(peer_id, owner).await?;
         Ok(())
     }
 

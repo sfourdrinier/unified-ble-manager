@@ -224,6 +224,29 @@ impl BluetoothSession {
         .unwrap_or(Err(BluetoothError::LeConnectionNotConfirmed))
     }
 
+    /// Resolve the public peer spelling only from acquisition ownership. The
+    /// directory and GATT projection may already be unavailable during close.
+    pub async fn disconnect_le_by_peer(
+        &self,
+        peer_id: &str,
+        owner: &str,
+    ) -> Result<(), BluetoothError> {
+        let accepted = self
+            .le
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|((accepted_owner, id), _)| accepted_owner == owner && id.to_string() == peer_id)
+            .map(|((_, id), entry)| (id.clone(), entry.clone()));
+        let Some((id, entry)) = accepted else {
+            // No accepted acquisition in this exact daemon/adapter/device
+            // scope: cleanup has no authority over another owner's link.
+            return Ok(());
+        };
+        self.disconnect_le_entry(&id, owner, entry).await
+    }
+
     /// Settle accepted acquisition before asking this exact LE bearer to end.
     /// Refused or indeterminate cleanup leaves the original entry retryable.
     pub async fn disconnect_le(&self, id: &DeviceId, owner: &str) -> Result<(), BluetoothError> {
@@ -240,6 +263,15 @@ impl BluetoothSession {
             // disconnect against somebody else's connection.
             return Ok(());
         };
+        self.disconnect_le_entry(id, owner, entry).await
+    }
+
+    async fn disconnect_le_entry(
+        &self,
+        id: &DeviceId,
+        owner: &str,
+        entry: Arc<Entry>,
+    ) -> Result<(), BluetoothError> {
         let entry = EntryLease {
             registry: self.le.clone(),
             key: (owner.to_owned(), id.clone()),

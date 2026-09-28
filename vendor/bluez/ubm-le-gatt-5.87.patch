@@ -395,11 +395,12 @@ diff -ruN a/src/device.c b/src/device.c
 diff -ruN a/src/gatt-client.c b/src/gatt-client.c
 --- a/src/gatt-client.c	2026-05-12 04:25:36
 +++ b/src/gatt-client.c	2026-09-27 22:01:27
-@@ -2232,6 +2232,120 @@
+@@ -2232,6 +2232,127 @@
  	queue_foreach(client->services, update_included_services, client);
  }
  
 +struct ubm_projection {
++	struct btd_gatt_client *client;
 +	struct queue *objects;
 +	struct queue *seen;
 +	unsigned int count;
@@ -413,7 +414,8 @@ diff -ruN a/src/gatt-client.c b/src/gatt-client.c
 +
 +static bool ubm_match_characteristic(const void *object, const void *attr)
 +{
-+	return ((const struct characteristic *) object)->attr == attr;
++	return ((const struct characteristic *) object)->handle ==
++		gatt_db_attribute_get_handle((struct gatt_db_attribute *) attr);
 +}
 +
 +static void ubm_check_descriptor(struct gatt_db_attribute *attr, void *data)
@@ -439,6 +441,8 @@ diff -ruN a/src/gatt-client.c b/src/gatt-client.c
 +	chrc = queue_find(projection->objects, ubm_match_characteristic, attr);
 +	if (!chrc || !gatt_db_attribute_get_char_data(attr, &handle, &value_handle,
 +						&props, &ext_props, &uuid) ||
++		chrc->service->client != projection->client || !chrc->attr ||
++		chrc->attr != gatt_db_get_attribute(projection->client->db, value_handle) ||
 +		chrc->handle != handle || chrc->value_handle != value_handle ||
 +		chrc->props != props || chrc->ext_props != ext_props ||
 +		bt_uuid_cmp(&chrc->uuid, &uuid)) {
@@ -485,12 +489,14 @@ diff -ruN a/src/gatt-client.c b/src/gatt-client.c
 +	gatt_db_attribute_get_service_data(attr, &start, &end, &primary, &uuid);
 +	service = queue_find(projection->objects, match_service_handle,
 +							UINT_TO_PTR(start));
-+	if (!service || service->end_handle != end || service->primary != primary ||
++	if (!service || service->client != projection->client ||
++		service->end_handle != end || service->primary != primary ||
 +						bt_uuid_cmp(&service->uuid, &uuid)) {
 +		projection->complete = false;
 +		return;
 +	}
 +	characteristics.objects = service->chrcs;
++	characteristics.client = projection->client;
 +	gatt_db_service_foreach_char(attr, ubm_check_characteristic, &characteristics);
 +	if (!characteristics.complete ||
 +			characteristics.count != queue_length(service->chrcs))
@@ -508,6 +514,7 @@ diff -ruN a/src/gatt-client.c b/src/gatt-client.c
 +	struct ubm_projection projection = { .complete = true };
 +	if (!client || !client->ready || !client->db)
 +		return false;
++	projection.client = client;
 +	projection.objects = client->services;
 +	gatt_db_foreach_service(client->db, NULL, ubm_check_service, &projection);
 +	return projection.complete && projection.count == queue_length(client->services);
@@ -1026,7 +1033,7 @@ diff -ruN a/unit/test-ubm-device.c b/unit/test-ubm-device.c
 diff -ruN a/unit/test-ubm-gatt-projection.c b/unit/test-ubm-gatt-projection.c
 --- a/unit/test-ubm-gatt-projection.c	1969-12-31 16:00:00
 +++ b/unit/test-ubm-gatt-projection.c	2026-09-27 22:01:09
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,112 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +/* Exercise the production graph predicate; no system bus or radio. */
 +#include "src/gatt-client.c"
@@ -1041,6 +1048,7 @@ diff -ruN a/unit/test-ubm-gatt-projection.c b/unit/test-ubm-gatt-projection.c
 +	struct descriptor descriptor = { .chrc = &chrc };
 +	struct service included = { .client = &client };
 +	struct gatt_db_attribute *attr, *value;
++	struct gatt_db *stale_db;
 +	bt_uuid_t uuid;
 +	client.db = gatt_db_new();
 +	client.services = queue_new();
@@ -1064,11 +1072,32 @@ diff -ruN a/unit/test-ubm-gatt-projection.c b/unit/test-ubm-gatt-projection.c
 +	assert(value);
 +	/* Surviving service object does not hide failed characteristic export. */
 +	assert(!btd_gatt_client_projection_complete(&client));
-+	chrc.attr = gatt_db_get_attribute(client.db,
-+			gatt_db_attribute_get_handle(value) - 1);
-+	gatt_db_attribute_get_char_data(chrc.attr, &chrc.handle,
++	chrc.attr = value;
++	gatt_db_attribute_get_char_data(gatt_db_get_attribute(client.db,
++		gatt_db_attribute_get_handle(value) - 1), &chrc.handle,
 +		&chrc.value_handle, &chrc.props, &chrc.ext_props, &chrc.uuid);
 +	queue_push_tail(service.chrcs, &chrc);
++	assert(btd_gatt_client_projection_complete(&client));
++	/* Exported characteristic owns the value attribute, not declaration. */
++	chrc.attr = gatt_db_get_attribute(client.db, chrc.handle);
++	assert(!btd_gatt_client_projection_complete(&client));
++	chrc.attr = value;
++	stale_db = gatt_db_clone(client.db);
++	assert(stale_db);
++	chrc.attr = gatt_db_get_attribute(stale_db, chrc.value_handle);
++	assert(chrc.attr && chrc.attr != value);
++	assert(!btd_gatt_client_projection_complete(&client));
++	chrc.attr = value;
++	gatt_db_unref(stale_db);
++	chrc.attr = NULL;
++	assert(!btd_gatt_client_projection_complete(&client));
++	chrc.attr = value;
++	chrc.handle++;
++	assert(!btd_gatt_client_projection_complete(&client));
++	chrc.handle--;
++	chrc.value_handle++;
++	assert(!btd_gatt_client_projection_complete(&client));
++	chrc.value_handle--;
 +	assert(btd_gatt_client_projection_complete(&client));
 +	bt_uuid16_create(&uuid, 0x2902);
 +	descriptor.attr = gatt_db_service_add_descriptor(attr, &uuid, 0,
