@@ -219,6 +219,13 @@ checks all 12 combinations and exercises concurrent ECG/ACC with both stop
 orders. A passing simulator radio probe is not real-H10 qualification.
 This probe uses public manager adapter IDs: for BlueZ, pass
 `UBM_RADIO_ADAPTER=/org/bluez/hci1`, not the native label `hci1`.
+Both radio probes require `UBM_BLUEZ_DAEMON_OWNER` on BlueZ. The trusted host
+must verify the deployed LE bearer and LE GATT extension, then supply the
+current unique D-Bus owner of `org.bluez` (for example `:1.812`, never
+`org.bluez`). This explicitly forwards the production `le-bearer` policy;
+neither probe chooses a daemon, installs one, enables experimental APIs, or
+falls back to device-wide connection control. A daemon restart requires a new
+verified owner. See [Node/BlueZ deployment requirements](../../docs/NODE.md).
 
 The separate `node scripts/native-protocol/test-continuation-radio.js` probe
 checks native HR collection and controlled-disconnect recovery without a JavaScript

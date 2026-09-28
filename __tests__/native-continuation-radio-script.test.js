@@ -52,6 +52,7 @@ function harness({
   }
   return {
     central,
+    binding,
     controller,
     api,
     logs,
@@ -78,6 +79,31 @@ test('radio probe uses identity-checked one-central API and requires positive na
   expect(run.central.close).toHaveBeenCalledTimes(1)
   expect(run.logs.at(-1).phase).toBe('passed')
 })
+
+test('BlueZ continuation probe forwards an explicit current daemon owner before opening the radio', async () => {
+  const run = harness()
+  run.options.env.UBM_RADIO_PLATFORM = 'bluez'
+  run.options.env.UBM_BLUEZ_DAEMON_OWNER = ':1.812'
+  await main(run.options)
+  expect(run.binding.openProduction).toHaveBeenCalledWith({
+    owner: 'native-continuation-radio-test',
+    platform: 'bluez',
+    adapterId: null,
+    connectionPolicy: { mode: 'le-bearer', daemonUniqueOwner: ':1.812' }
+  })
+})
+
+test.each([undefined, '', 'org.bluez', ':1.812\n'])(
+  'BlueZ probe rejects unattested owner %j before binding load',
+  async owner => {
+    const run = harness()
+    run.options.env.UBM_RADIO_PLATFORM = 'bluez'
+    if (owner !== undefined) run.options.env.UBM_BLUEZ_DAEMON_OWNER = owner
+    await expect(main(run.options)).rejects.toThrow()
+    expect(run.api.loadDesktopCoreBinding).not.toHaveBeenCalled()
+    expect(run.binding.openProduction).not.toHaveBeenCalled()
+  }
+)
 
 test.each([
   {

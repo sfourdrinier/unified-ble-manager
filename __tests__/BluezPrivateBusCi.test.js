@@ -3,30 +3,35 @@ const path = require('node:path')
 const os = require('node:os')
 const { spawnSync } = require('node:child_process')
 
-test('the Rust-only daemon gate loads without package dependencies', () => {
-  const script = path.resolve(__dirname, '../scripts/ci/test-bluez-daemon-extension.js')
-  const result = spawnSync(
-    process.execPath,
-    [
-      '-e',
-      `
+test.each([null, 'C:\\ubm-fixture\\scripts\\ci\\test-bluez-daemon-extension.js'])(
+  'the Rust-only daemon gate loads without package dependencies (%s)',
+  requestOverride => {
+    const script = path.resolve(__dirname, '../scripts/ci/test-bluez-daemon-extension.js')
+    const requested = requestOverride ?? script
+    const result = spawnSync(
+      process.execPath,
+      [
+        '-e',
+        `
     const Module = require('node:module')
+    const path = require('node:path')
     const load = Module._load
     Module._load = function (id, ...args) {
-      if (!id.startsWith('.') && !id.startsWith('/') && !Module.isBuiltin(id)) {
+      if (!id.startsWith('.') && !path.isAbsolute(id) && !path.win32.isAbsolute(id) && !Module.isBuiltin(id)) {
         throw new Error('Rust-only lane cannot load package dependency: ' + id)
       }
-      return load.call(this, id, ...args)
+      return load.call(this, id === ${JSON.stringify(requested)} ? ${JSON.stringify(script)} : id, ...args)
     }
-    require(${JSON.stringify(script)})
+    require(${JSON.stringify(requested)})
   `
-    ],
-    { encoding: 'utf8' }
-  )
-  expect(result.error).toBeUndefined()
-  expect(result.stderr).toBe('')
-  expect(result.status).toBe(0)
-})
+      ],
+      { encoding: 'utf8' }
+    )
+    expect(result.error).toBeUndefined()
+    expect(result.stderr).toBe('')
+    expect(result.status).toBe(0)
+  }
+)
 
 test('CI and clean preflight share the complete private-bus regression gate', () => {
   const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/ci.yml'), 'utf8')

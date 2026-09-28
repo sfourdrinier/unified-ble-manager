@@ -435,8 +435,13 @@ describe('admission errors (LEGACY-AUDIT-1 #58)', () => {
 
   test('BlueZ keeps its legacy lifecycle-only admission: a powered-off adapter is not pre-refused', async () => {
     await withStaged('bluez', poweredOn, async ({ backend, stage }) => {
+      const generation = backend.identity.attachment.backendGeneration
       await stage.stageAdapterState('powered-off', true)
       await coreSees(stage, status => status.power === 'powered-off')
+      // adapterStatus publishes power before asynchronous reset teardown ends.
+      // A scan racing that reset correctly answers operation.reset; this test
+      // checks off-state admission after the causal reset, not that race.
+      expect(await generationAdvanced(backend, generation)).toBe(true)
       const lease = await backend.scanner.start(scanOptions(), 'client-1')
       await lease.stop()
     })

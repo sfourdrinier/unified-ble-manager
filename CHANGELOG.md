@@ -4,6 +4,13 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Unreleased
 
+- Require explicit verified BlueZ daemon-owner policy in both simulator radio
+  probes, reusing production admission. Keep qualification fixtures portable
+  across Windows paths and synchronize powered-off scan admission with the
+  completed causal adapter reset rather than racing its teardown. Replace
+  private-bus daemon ownership through an independent connection and dispatch
+  late fixture replies on its sole processing worker, preserving exact
+  stale-owner refusal without concurrent blocking reply consumption.
 - BlueZ strict LE GATT discovery uses a versioned, owner-fenced daemon snapshot,
   same-revision graph publication and scoped invalidation. The source-only BlueZ
   5.87 extension has isolated build/protocol gates, original GPL/LGPL provenance

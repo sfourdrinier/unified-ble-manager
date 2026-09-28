@@ -3,11 +3,13 @@
 // Explicit physical-radio / simulated-peripheral qualification, never real-H10 proof.
 // UBM_NAPI_ADDON=/absolute/current.node UBM_RADIO_PLATFORM=corebluetooth|bluez|winrt
 // UBM_RADIO_ADAPTER=<optional> node scripts/native-protocol/test-h10-acc-radio.js
+// BlueZ also requires UBM_BLUEZ_DAEMON_OWNER=<verified current unique owner>.
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { execFileSync } = require('node:child_process')
+const { radioProbeOptions } = require('./radio-probe-options')
 
 function bounded(promise, timeoutMs, operation) {
   let timer
@@ -93,6 +95,7 @@ function inbox(stream, label, parse = value => value) {
 }
 
 async function defaultManager(env) {
+  const radioOptions = radioProbeOptions(env)
   const entry = require(`../../lib/commonjs/node-${env.UBM_RADIO_PLATFORM}`)
   const factories = {
     corebluetooth: 'createCoreBluetoothBleManager',
@@ -102,6 +105,7 @@ async function defaultManager(env) {
   // These public factories verify UBM_NAPI_ADDON identity before radio effects.
   return entry[factories[env.UBM_RADIO_PLATFORM]]({
     owner: 'h10-acc-radio-probe',
+    ...radioOptions,
     ...(env.UBM_RADIO_ADAPTER ? { adapterId: env.UBM_RADIO_ADAPTER } : {})
   })
 }

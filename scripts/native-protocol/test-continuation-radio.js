@@ -4,6 +4,7 @@
 // Explicit opt-in only; the caller supplies an identity-verified checkout addon.
 // UBM_NAPI_ADDON=/absolute/file.node UBM_RADIO_PLATFORM=corebluetooth|bluez|winrt
 // UBM_RADIO_ADAPTER=<optional exact adapter> UBM_SIM_CONTROL_PORT=<loopback port>
+// BlueZ also requires UBM_BLUEZ_DAEMON_OWNER=<verified current unique owner>.
 // UBM_CONTINUATION_SECONDS=600 node scripts/native-protocol/test-continuation-radio.js
 // The simulator must be in adversarial mode; this test drops only its BLE link.
 // Optional UBM_RECORDING_DIRECTORY must be an absolute test-only directory.
@@ -13,6 +14,7 @@ const { randomUUID } = require('node:crypto')
 const fs = require('node:fs')
 const net = require('node:net')
 const path = require('node:path')
+const { radioProbeOptions } = require('./radio-probe-options')
 const { setTimeout: delay } = require('node:timers/promises')
 const hrSelector = Object.freeze({
   serviceUuid: '0000180d-0000-1000-8000-00805f9b34fb',
@@ -145,13 +147,15 @@ async function main(options = {}) {
   const recordingDirectory = env.UBM_RECORDING_DIRECTORY
   if (recordingDirectory !== undefined)
     assert.ok(path.isAbsolute(recordingDirectory), 'absolute recording directory required')
+  const radioOptions = radioProbeOptions(env)
   const recordingId = recordingDirectory === undefined ? null : `radio-${randomUUID()}`
   const api = options.api || require('../../lib/commonjs/desktop-rust-core-exports')
   const binding = await api.loadDesktopCoreBinding({ platform, operationPrefix: 'continuation-radio' })
   const central = await binding.openProduction({
     owner: 'native-continuation-radio-test',
     platform,
-    adapterId: env.UBM_RADIO_ADAPTER || null
+    adapterId: env.UBM_RADIO_ADAPTER || null,
+    ...radioOptions
   })
   const continuation = api.createNativeContinuationController(central)
   const started = Date.now()

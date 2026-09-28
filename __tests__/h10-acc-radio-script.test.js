@@ -16,6 +16,48 @@ test('every probe scenario virtualizes watchdogs while retaining real event deli
   expect(setImmediate).toBe(realImmediate)
 })
 
+test('ACC probe forwards the shared BlueZ owner policy to the public factory', async () => {
+  const entry = require('../lib/commonjs/node-bluez')
+  const sentinel = new Error('factory boundary reached without allocating a radio')
+  const factory = jest.spyOn(entry, 'createBluezBleManager').mockRejectedValue(sentinel)
+  try {
+    await expect(
+      main({
+        pmd,
+        env: {
+          UBM_NAPI_ADDON: '/tmp/not-loaded.node',
+          UBM_RADIO_PLATFORM: 'bluez',
+          UBM_RADIO_ADAPTER: '/org/bluez/hci1',
+          UBM_BLUEZ_DAEMON_OWNER: ':1.812'
+        }
+      })
+    ).rejects.toBe(sentinel)
+    expect(factory).toHaveBeenCalledWith({
+      owner: 'h10-acc-radio-probe',
+      adapterId: '/org/bluez/hci1',
+      connectionPolicy: { mode: 'le-bearer', daemonUniqueOwner: ':1.812' }
+    })
+  } finally {
+    factory.mockRestore()
+  }
+})
+
+test('ACC probe refuses a missing BlueZ owner before calling the factory', async () => {
+  const entry = require('../lib/commonjs/node-bluez')
+  const factory = jest.spyOn(entry, 'createBluezBleManager')
+  try {
+    await expect(
+      main({
+        pmd,
+        env: { UBM_NAPI_ADDON: '/tmp/not-loaded.node', UBM_RADIO_PLATFORM: 'bluez' }
+      })
+    ).rejects.toThrow('BlueZ probes require UBM_BLUEZ_DAEMON_OWNER')
+    expect(factory).not.toHaveBeenCalled()
+  } finally {
+    factory.mockRestore()
+  }
+})
+
 function stream() {
   const pending = []
   const queued = []

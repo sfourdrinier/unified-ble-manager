@@ -41,6 +41,7 @@ struct State {
 
 struct Fixture {
     server: Arc<dbus::blocking::SyncConnection>,
+    replies: std::sync::mpsc::Sender<dbus::Message>,
     state: Arc<Mutex<State>>,
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
@@ -61,7 +62,7 @@ impl Fixture {
         );
         let server = Arc::new(dbus::blocking::SyncConnection::new_session().unwrap());
         server
-            .request_name("org.bluez", false, false, false)
+            .request_name("org.bluez", true, false, false)
             .unwrap();
         let state = Arc::new(Mutex::new(State {
             version: 1,
@@ -212,13 +213,18 @@ impl Fixture {
         let stop = Arc::new(AtomicBool::new(false));
         let running = stop.clone();
         let bus = server.clone();
+        let (replies, queued_replies) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
             while !running.load(Ordering::SeqCst) {
+                for reply in queued_replies.try_iter() {
+                    bus.send(reply).unwrap();
+                }
                 bus.process(Duration::from_millis(10)).unwrap();
             }
         });
         Self {
             server,
+            replies,
             state,
             stop,
             worker: Some(worker),
@@ -633,7 +639,7 @@ fn cancelled_initial_snapshot_never_publishes_after_late_reply() {
         };
         let mut reply = pending.method_return();
         reply.append_all((1u32, 7u64, 1u64, "le", "ready", "none", 0i32, 0u8));
-        fixture.server.send(reply).unwrap();
+        fixture.replies.send(reply).unwrap();
         peripheral.le_gatt_snapshot().await.unwrap();
         assert_eq!(fixture.state.lock().unwrap().graph_reads, 0);
         assert_eq!(peripheral.accepted_le_gatt_ready_token().unwrap(), None);
@@ -650,11 +656,27 @@ fn daemon_owner_replacement_during_held_snapshot_refuses_stale_ready() {
         let task = tokio::spawn(async move { peripheral.discover_services().await });
         let entered = fixture.state.lock().unwrap().snapshot_entered.clone();
         entered.notified().await;
-        fixture.server.release_name("org.bluez").unwrap();
+        // SyncConnection::process must not race a blocking call on the same
+        // connection: the processing worker can consume its method reply.
+        // Replace from an independent connection, retaining the old unique
+        // owner so its deliberately late response still reaches the caller.
         let replacement = dbus::blocking::SyncConnection::new_session().unwrap();
-        replacement
-            .request_name("org.bluez", false, false, false)
+        assert_eq!(
+            replacement
+                .request_name("org.bluez", false, true, true)
+                .unwrap(),
+            dbus::blocking::stdintf::org_freedesktop_dbus::RequestNameReply::PrimaryOwner
+        );
+        let (current_owner,): (String,) = replacement
+            .with_proxy(
+                "org.freedesktop.DBus",
+                "/org/freedesktop/DBus",
+                Duration::from_secs(1),
+            )
+            .method_call("org.freedesktop.DBus", "GetNameOwner", ("org.bluez",))
             .unwrap();
+        assert_eq!(current_owner, replacement.unique_name().to_string());
+        assert_ne!(current_owner, fixture.server.unique_name().to_string());
         let pending = fixture
             .state
             .lock()
@@ -664,8 +686,15 @@ fn daemon_owner_replacement_during_held_snapshot_refuses_stale_ready() {
             .unwrap();
         let mut reply = pending.method_return();
         reply.append_all((1u32, 7u64, 1u64, "le", "ready", "none", 0i32, 0u8));
-        fixture.server.send(reply).unwrap();
-        assert!(task.await.unwrap().is_err());
+        fixture.replies.send(reply).unwrap();
+        let error = task.await.unwrap().unwrap_err();
+        assert!(
+            matches!(error, Error::Platform(ref detail)
+                if detail.domain == "bluez-dbus"
+                    && detail.code == "org.bluez.Error.NotSupported"
+                    && detail.message.contains("daemon owner changed")),
+            "a stale owner must be refused explicitly, not pass through an unrelated timeout: {error:?}"
+        );
         assert_eq!(fixture.state.lock().unwrap().graph_reads, 0);
     });
 }
