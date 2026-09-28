@@ -50,6 +50,7 @@ async function openLaggingBackend(platform) {
     wakes: 0,
     lagWaiters: new Map(),
     lagTaken: new Set(),
+    eventReadHolds: new Map(),
     wakeWaiters: []
   }
   const original = harness.binding.openSynthetic
@@ -93,12 +94,24 @@ async function openLaggingBackend(platform) {
               reportLag(control, property)
               return { kind: 'lagged', missed: 1 }
             }
-            if (!control.armed.has(property)) return Reflect.apply(value, target, [])
+            const take = async () => {
+              const hold = control.eventReadHolds.get(property)
+              if (hold !== undefined) {
+                control.eventReadHolds.delete(property)
+                hold.entered()
+                await hold.released
+              }
+              return Reflect.apply(value, target, [])
+            }
+            // Classify the real completion, not the request's earlier state:
+            // native dispatch may already be queued when the test arms lag.
+            let event = await take()
+            if (!control.armed.has(property)) return event
             let missed = 0
             for (;;) {
-              const event = await Reflect.apply(value, target, [])
               if (event === null || event === undefined) break
               missed += 1
+              event = await take()
             }
             if (missed === 0) return null
             control.armed.delete(property)
@@ -177,6 +190,42 @@ function nextWake(control) {
 }
 
 describe('lifecycle lag reconciles from the core (N5)', () => {
+  test.each(PLATFORMS)(
+    '%s: arming lag during an accepted event read classifies its real completion',
+    async platform => {
+      await withLaggingBackend(platform, async ({ backend, stage, control }) => {
+        const events = backend.events()[Symbol.asyncIterator]()
+        const { lease } = await connectAndDiscover(backend, stage)
+        await backend.settleCoreEvents()
+        let enter
+        let release
+        const entered = new Promise(resolve => {
+          enter = resolve
+        })
+        const released = new Promise(resolve => {
+          release = resolve
+        })
+        control.eventReadHolds.set('takeLifecycleEvent', { entered: enter, released })
+        const draining = backend.settleCoreEvents()
+        try {
+          await entered
+          control.armed.add('takeLifecycleEvent')
+          const wake = nextWake(control)
+          await stage.stageLinkLoss('peer-1')
+          await wake
+          release()
+          await draining
+          const lost = await nextEvent(events, event => event.kind === 'connection-lost', 5000)
+          expect(lost.connection.connectionId).toEqual(lease.connection.connectionId)
+          expect(control.swallowed.takeLifecycleEvent).toBeGreaterThan(0)
+        } finally {
+          release()
+          await draining
+        }
+      })
+    }
+  )
+
   test.each(PLATFORMS)('%s: a link lost while lagged is announced connection-lost', async platform => {
     await withLaggingBackend(platform, async ({ backend, stage, control }) => {
       const events = backend.events()[Symbol.asyncIterator]()
