@@ -4,6 +4,10 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Unreleased
 
+- Keep Android toolchain test shims on Git Bash's executable temporary volume
+  on Windows, reusing the shared shell-fixture helper. Verify the actual shell
+  resolves and executes the mocked host probe before testing compiler and
+  archiver forwarding; this does not add Windows Android build support.
 - Expose the staged UniFFI C modulemap to Swift application targets importing
   `BlePlx`, preserving inherited flags without source-root or slice-specific
   consumer paths. The reference iOS continuation bridge now compiles against

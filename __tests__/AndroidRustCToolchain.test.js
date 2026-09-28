@@ -1,7 +1,7 @@
 const fs = require('fs')
-const os = require('os')
 const path = require('path')
 const { spawnSync } = require('child_process')
+const { gitBashExecutableTemp } = require('./helpers/git-bash-temp')
 
 const builder = fs.readFileSync(path.join(__dirname, '../android/build-rust-cdylib.sh'), 'utf8')
 
@@ -21,7 +21,9 @@ const shellPath = file => file.split(path.sep).join('/')
 describe('Android canonical C dependency toolchain', () => {
   let fixture
   beforeEach(() => {
-    fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm android c-'))
+    // Use the same executable volume as the Windows TV shell fixtures. The
+    // runner's native TEMP need not be Git Bash's executable /tmp volume.
+    fixture = fs.mkdtempSync(path.join(gitBashExecutableTemp(), 'ubm android c-'))
   })
   afterEach(() => fs.rmSync(fixture, { recursive: true, force: true }))
 
@@ -69,6 +71,26 @@ switch (process.argv[2]) {
         true
       )
     )
+    const options = {
+      encoding: 'utf8',
+      env: {
+        ...fixturePathEnvironment(path.join(fixture, 'bin'), process.env),
+        ANDROID_NDK_HOME: shellPath(path.join(fixture, 'ndk')),
+        NODE_BINARY: node
+      }
+    }
+    // Verify admission to the actual shell boundary, not merely the native
+    // Node PATH string. A bypassed shim must report its resolved path and host
+    // here instead of masquerading as a compiler/archiver regression below.
+    const preflight = spawnSync('sh', ['-c', 'command -v uname; uname -s'], options)
+    expect({ error: preflight.error, status: preflight.status, stderr: preflight.stderr }).toEqual({
+      error: undefined,
+      status: 0,
+      stderr: ''
+    })
+    const [resolvedUname, actualHost] = preflight.stdout.trim().split(/\r?\n/)
+    expect(shellPath(resolvedUname)).toContain(`${path.basename(fixture)}/bin/uname`)
+    expect(actualHost).toBe(host)
     const result = spawnSync(
       'sh',
       [
@@ -80,14 +102,7 @@ switch (process.argv[2]) {
         '--minsdk',
         '26'
       ],
-      {
-        encoding: 'utf8',
-        env: {
-          ...fixturePathEnvironment(path.join(fixture, 'bin'), process.env),
-          ANDROID_NDK_HOME: shellPath(path.join(fixture, 'ndk')),
-          NODE_BINARY: node
-        }
-      }
+      options
     )
     return { result, capture, compiler, ar }
   }
