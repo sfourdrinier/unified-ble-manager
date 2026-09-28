@@ -103,10 +103,12 @@ export type ConnectionIntent = 'direct' | 'when-available'
 
 /**
  * Out-of-band address entry form for `connect()` (NFC, QR codes, persisted state) minted
- * without a prior scan. Address targeting only works for peers using public/static
- * addresses; devices using resolvable private addresses need the durable `PeerReference`
- * form instead. Requires the `peer:address-targeting` capability and fails closed with
- * `capability.unsupported` on backends that do not implement it.
+ * without a prior scan. Targets a current public or random address, subject to the
+ * backend's address-targeting support and the platform's connection result. A private
+ * address may rotate and is not a durable identity; use the durable `PeerReference`
+ * form for retained identity across address rotation. Requires the
+ * `peer:address-targeting` capability and fails closed with `capability.unsupported`
+ * on backends that do not implement it.
  */
 export interface PeerAddress {
   readonly address: string

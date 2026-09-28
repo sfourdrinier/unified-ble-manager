@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { BleError } from 'unified-ble-manager'
 import { createDeterministicTestBleManager } from 'unified-ble-manager/testing'
 import { createScenarioRegistry } from '../create-driver.ts'
@@ -95,15 +96,15 @@ test('ordinary device-name selection still finds and passes the discovered peer'
   assert.equal(connections[0].target.id, 'peer-h10')
 })
 
-test('random address uses the existing explicit single retry without discovery or reinterpretation', async () => {
+test('static random address uses the existing explicit single retry without discovery or reinterpretation', async () => {
   const transient = new BleError('connection.failed', 'connection', 'connection.connect', {
     retryability: 'caller-decides'
   })
   const { registry, calls, connections } = fixture({ connectFailures: [transient] })
-  await registry.dispatch('device-info', 'read', { peerAddress: { address: 'AA:BB:CC:DD:EE:FF', addressType: 'random' } })
+  await registry.dispatch('device-info', 'read', { peerAddress: { address: 'DA:BB:CC:DD:EE:FF', addressType: 'random' } })
   assert.deepEqual(
     connections.map(row => row.target),
-    [{ address: 'AA:BB:CC:DD:EE:FF', addressType: 'random' }, { address: 'AA:BB:CC:DD:EE:FF', addressType: 'random' }]
+    [{ address: 'DA:BB:CC:DD:EE:FF', addressType: 'random' }, { address: 'DA:BB:CC:DD:EE:FF', addressType: 'random' }]
   )
   assert.ok(connections.every(row => row.controls.timeoutMs === 20000 && row.controls.intent === 'direct'))
   assert.ok(!calls.some(call => /^(find|scan|choose)\b/.test(call)))
@@ -113,6 +114,34 @@ test('random address uses the existing explicit single retry without discovery o
     .find(event => event.kind === 'connect-retry')
   assert.equal(retry.data.error.code, 'connection.failed')
   assert.deepEqual(calls.slice(-2), ['connection.release', 'manager.destroy'])
+})
+
+test('current random addresses are forwarded unchanged rather than restricted to durable static identity', async () => {
+  // High bits: 11 static, 01 resolvable private, 00 non-resolvable private.
+  // This boundary proves forwarding, not platform support or physical connectivity.
+  for (const address of ['DA:BB:CC:DD:EE:FF', '4A:BB:CC:DD:EE:FF', '0A:BB:CC:DD:EE:FF']) {
+    const { registry, calls, connections } = fixture()
+    await registry.dispatch('device-info', 'read', { peerAddress: { address, addressType: 'random' } })
+    assert.deepEqual(connections.map(row => row.target), [{ address, addressType: 'random' }])
+    assert.ok(!calls.some(call => /^(find|scan|choose)\b/.test(call)))
+    assert.deepEqual(calls.slice(-2), ['connection.release', 'manager.destroy'])
+  }
+})
+
+test('address recipe distinguishes a current random address from durable peer identity', () => {
+  const guide = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
+  assert.match(guide, /current random address/)
+  assert.match(guide, /not a durable identity/)
+  assert.doesNotMatch(guide, /must be chosen explicitly for a static random address/)
+})
+
+test('public address documentation distinguishes current targeting from retained identity', () => {
+  const source = readFileSync(new URL('../../../src/public/ble-manager.ts', import.meta.url), 'utf8')
+  const comment = source.slice(source.lastIndexOf('/**', source.indexOf('export interface PeerAddress')), source.indexOf('export interface PeerAddress'))
+  assert.match(comment, /current public or random address/)
+  assert.match(comment, /not a durable identity/)
+  assert.match(comment, /capability\.unsupported/)
+  assert.doesNotMatch(comment, /only works for peers using public\/static/)
 })
 
 test('semantic fixture refuses an unknown manager-local string rather than interpreting it as an address', async () => {
