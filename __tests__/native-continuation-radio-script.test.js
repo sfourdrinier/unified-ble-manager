@@ -1,4 +1,4 @@
-const { main, verifyRecording } = require('../scripts/native-protocol/test-continuation-radio')
+const { main, verifyRecording, verifyRecordingBaseline } = require('../scripts/native-protocol/test-continuation-radio')
 const fs = require('node:fs')
 const path = require('node:path')
 const os = require('node:os')
@@ -190,6 +190,71 @@ function recordingHarness(records = recordingRecords()) {
   return store
 }
 
+test('registration-only native journal refuses disruption without consuming its prefix', async () => {
+  const run = harness()
+  run.options.env.UBM_RECORDING_DIRECTORY = '/tmp/owned-radio-baseline'
+  const store = recordingHarness(recordingRecords([[1, 1]], 0))
+  run.controller.recordings = jest.fn(async () => store)
+  run.options.sendControl = jest.fn(async () => ({ ok: true, state: { dropped: ['central-address'] } }))
+  await expect(main(run.options)).rejects.toThrow('no positive recorded HR before disruption')
+  expect(run.options.sendControl).not.toHaveBeenCalled()
+  expect(store.acknowledge).not.toHaveBeenCalled()
+  expect(store.stop).not.toHaveBeenCalled()
+  expect(store.clear).not.toHaveBeenCalled()
+  expect(run.central.close).toHaveBeenCalledTimes(1)
+})
+
+test('positive HR baseline replays bounded native prefix without ACK, stop, or clear', async () => {
+  const store = recordingHarness(recordingRecords([[1, 1]], 3))
+  await expect(verifyRecordingBaseline(store, 'baseline')).resolves.toBe(3)
+  expect(store.prepare).toHaveBeenCalledTimes(2)
+  expect(store.prepare).toHaveBeenNthCalledWith(1, 'baseline', { maxItems: 256, maxBytes: 1048576 })
+  expect(store.acknowledge).not.toHaveBeenCalled()
+  expect(store.stop).not.toHaveBeenCalled()
+  expect(store.clear).not.toHaveBeenCalled()
+})
+
+test.each(['zero', 'wrong-selector', 'changed-replay'])(
+  'baseline refuses %s data without consuming journal',
+  async mutation => {
+    const records = recordingRecords([[1, 1]])
+    if (mutation === 'zero') records[1].record.value = Uint8Array.of(0, 0)
+    if (mutation === 'wrong-selector')
+      records[1].metadata.consumer.selector.characteristicUuid = '00002a19-0000-1000-8000-00805f9b34fb'
+    const store = recordingHarness(records)
+    if (mutation === 'changed-replay')
+      store.prepare.mockResolvedValueOnce({ token: 'different', records, bytes: 100, more: false })
+    await expect(verifyRecordingBaseline(store, 'baseline')).rejects.toThrow()
+    expect(store.acknowledge).not.toHaveBeenCalled()
+    expect(store.clear).not.toHaveBeenCalled()
+  }
+)
+
+test('held baseline preparation is bounded and late completion cannot authorize disruption', async () => {
+  jest.useFakeTimers()
+  try {
+    let finish
+    const store = recordingHarness()
+    store.prepare.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          finish = resolve
+        })
+    )
+    const pending = verifyRecordingBaseline(store, 'baseline')
+    const rejection = expect(pending).rejects.toThrow('native HR baseline observation timed out')
+    await jest.advanceTimersByTimeAsync(10000)
+    await rejection
+    finish({ token: 'prefix-1', records: recordingRecords(), bytes: 100, more: false })
+    await Promise.resolve()
+    expect(store.prepare).toHaveBeenCalledTimes(1)
+    expect(store.acknowledge).not.toHaveBeenCalled()
+    expect(store.clear).not.toHaveBeenCalled()
+  } finally {
+    jest.useRealTimers()
+  }
+})
+
 test('offline radio recording proof validates stable prefix before explicit acknowledgement', async () => {
   const store = recordingHarness()
   const options = verification()
@@ -374,7 +439,10 @@ test('durable radio mode reopens storage only after radio cleanup and preserves 
     records: acknowledged ? 0 : records.length
   }))
   let liveStatus = 0
-  run.controller.recordings = jest.fn(async () => ({ status: async () => ({ records: ++liveStatus * 10 }) }))
+  run.controller.recordings = jest.fn(async () => ({
+    status: async () => ({ records: ++liveStatus * 10 }),
+    prepare: store.prepare
+  }))
   run.controller.claim.mockImplementation(async () => ({
     disposed: true,
     disposeFailure: null,

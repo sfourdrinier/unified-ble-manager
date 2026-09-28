@@ -67,6 +67,18 @@ remain separate from the isolated source gates.
 
 ## Readiness, invalidation and cleanup
 
+The derivative daemon also restores acquired server notification sockets after
+bonded ATT reconnection while retaining the configured CCC value and descriptor
+count. It rearms only the per-ATT `AcquireNotify` path, not global callback-based
+`StartNotify`. Repeated connection callbacks and identical writes do not create
+duplicate acquisitions. A failed rearm is logged, remains configured, and can
+be retried by an identical CCC write; no callback-based fallback is substituted.
+CCC disable and disconnect/object teardown invalidate delayed acquisition
+replies, and cleanup remains scoped to the original device's ATT identity.
+This server lifecycle repair does not change trust, bonds, central routing,
+privilege or daemon deployment authority. Its isolated regression is not
+physical-radio evidence; qualify the exact deployed derivative separately.
+
 Each new strictly LE primary ATT client performs fresh native GATT discovery
 after retiring only that peer's in-memory graph. A matching database hash is
 not enough to attest an inherited graph: earlier cache-assisted discovery may

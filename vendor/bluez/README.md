@@ -50,7 +50,7 @@ sh vendor/bluez/build-test-isolated.sh /absolute/new-source/bluez-5.87
 ```
 
 The build uses one worker and disk-backed, source-local temporary storage.
-It compiles `bluetoothd`, runs the original GATT unit suite and four added
+It compiles `bluetoothd`, runs the original GATT unit suite and five added
 tests. Only the method-table test starts a **private session bus**, never a
 daemon or a system-bus connection. The tests exercise the production snapshot
 handler/table, queued Service Changed and failed DB-out-of-sync dispatch paths
@@ -61,6 +61,13 @@ full exported-graph checks, callback identity and exhausted counters. The
 projection test constructs graph objects in memory; it does not claim a
 physical allocation/export-failure injection. No Bluetooth socket, scan,
 connection or management command is opened by these tests.
+The server-notification fixture includes the actual `gatt-database.c` CCC,
+ATT-disconnect, acquired-socket and server-reconnection callbacks. It checks
+retained bonded CCC values, socket rearming without duplicate counts, delayed
+reply cancellation after CCC disable/disconnect/object removal, failed rearm
+retry, independent peers and unchanged callback-based notification behaviour.
+Its ATT and application sockets are AF_UNIX pairs and its application D-Bus
+replies are controlled fixtures, not physical or system-bus evidence.
 The clone fixture uses an AF_UNIX socket pair, not a Bluetooth socket. The
 device fixture exercises the production pre-allocation policy decision and
 registration-failure outcome helper; it does not inject a daemon allocator
@@ -130,7 +137,17 @@ and invalidation by owner/attachment/revision, not only the watcher send.
 ## Scope and deployment limits
 
 The patch observes and validates the existing shared GATT pipeline; it does
-not split that pipeline into separate Classic and LE clients or alter routing.
+not split that pipeline into separate Classic and LE clients or alter central routing.
+It also repairs server-side acquired-notification lifetime: retained bonded CCC
+configuration rearms the lost per-ATT `AcquireNotify` socket after reconnection.
+The configured descriptor count is retained, not incremented again. Repeated
+connection callbacks and identical CCC writes do not duplicate an active or
+pending acquisition. Failed rearming retains the CCC/count and may be retried
+by a subsequent identical CCC write; it logs the actual refusal and never
+substitutes the callback-based `StartNotify` path. Ordinary initial acquisition
+retains BlueZ's existing fallback. CCC disable and disconnect/object teardown
+fence delayed replies, and per-device cleanup cannot close another peer's IO.
+The callback-based notification path and bonded CCC persistence are preserved.
 It does not change Connect/Disconnect, privilege, policy, trust or global radio
 settings. Strict LE acquisition/release still uses the separately implemented
 stock LE1 lifecycle under explicit owner attestation. A supported, reviewed

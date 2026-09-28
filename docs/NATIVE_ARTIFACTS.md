@@ -89,6 +89,24 @@ The committed Android tree is refreshed the same way: the refresh leaves the
 A refresh failure aborts the consumer with the builder's error. Nothing —
 local script, CI job, or release — continues on a stale artifact.
 
+Android release JavaScript freshness is separate from native freshness. React
+Native's default bundle input tree excludes `node_modules`, so replacing a
+pnpm package copy can otherwise leave `createBundleReleaseJsAndAssets`
+`UP-TO-DATE` with an old Hermes bundle. The packed library's
+`android/bundle-js-inputs.gradle` adds its exact installed `package.json`,
+`lib/` and `src/` trees to every application bundle variant's Gradle inputs;
+missing copied `lib/module` fails before bundling. No generated app edit,
+timestamp stamp or forced rebuild is required. Unchanged inputs stay cached.
+After preparing the example copy, a self-contained development-signed APK is
+built from `example-expo/android` with `NODE_ENV=production ./gradlew
+:app:assembleRelease -PreactNativeArchitectures=arm64-v8a --max-workers=2`.
+The current fixture uses its debug signing key, not store signing. Verify the
+APK's embedded `assets/index.android.bundle` against the generated Hermes
+bundle and its source-map native identity against the installed package;
+build success alone is not freshness or physical background evidence.
+The focused executable cache regression is
+`JAVA_HOME=<jdk-17> node scripts/ci/check-android-bundle-inputs.js`.
+
 The iOS example's `file:..` dependency is a pnpm snapshot, so root RustCore
 freshness alone cannot prove what its pod links. The iOS command first refreshes
 the root if needed, then verifies the installed JavaScript identity and the

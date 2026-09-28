@@ -1534,3 +1534,891 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
 +	puts("Production refresh ingress/failure settlement: OK");
 +	return 0;
 +}
+--- a/src/gatt-database.c
++++ b/src/gatt-database.c
+@@ -131,6 +131,7 @@
+ 	struct queue *pending_reads;
+ 	struct queue *pending_writes;
+ 	unsigned int ntfy_cnt;
++	struct queue *pending_notifies;
+ 	bool prep_authorized;
+ 	bool req_prep_authorization;
+ };
+@@ -159,6 +160,9 @@
+ 	struct iovec data;
+ 	bool is_characteristic;
+ 	bool prep_authorize;
++	bool ccc_rearm;
++	bool ccc_existing;
++	bool ccc_scoped;
+ };
+ 
+ struct notify {
+@@ -174,6 +178,7 @@
+ 
+ struct device_state {
+ 	struct btd_gatt_database *db;
++	struct bt_att *att;
+ 	bdaddr_t bdaddr;
+ 	uint8_t bdaddr_type;
+ 	unsigned int disc_id;
+@@ -293,6 +298,10 @@
+ static void device_state_free(void *data)
+ {
+ 	struct device_state *state = data;
++	if (state->att) {
++		bt_att_unregister_disconnect(state->att, state->disc_id);
++		bt_att_unref(state->att);
++	}
+ 
+ 	queue_destroy(state->ccc_states, free);
+ 
+@@ -307,8 +316,10 @@
+ static void clear_ccc_state(void *data, void *user_data)
+ {
+ 	struct ccc_state *ccc = data;
+-	struct btd_gatt_database *db = user_data;
++	struct device_state *state = user_data;
++	struct btd_gatt_database *db = state->db;
+ 	struct ccc_cb_data *ccc_cb;
++	struct pending_op *op;
+ 
+ 	if (!ccc->value)
+ 		return;
+@@ -318,8 +329,13 @@
+ 	if (!ccc_cb)
+ 		return;
+ 
+-	if (ccc_cb->callback)
+-		ccc_cb->callback(NULL, ccc_cb->user_data);
++	if (ccc_cb->callback) {
++		/* CCC cleanup belongs to this device, never the first queued peer. */
++		op = new0(struct pending_op, 1);
++		op->att = bt_att_ref(state->att);
++		op->ccc_scoped = true;
++		ccc_cb->callback(op, ccc_cb->user_data);
++	}
+ }
+ 
+ static void att_disconnected(int err, void *user_data)
+@@ -347,6 +363,8 @@
+ 		if (ccc && ccc->value)
+ 			device_store_svc_chng_ccc(device, state->bdaddr_type,
+ 								ccc->value);
++		bt_att_unref(state->att);
++		state->att = NULL;
+ 
+ 		return;
+ 	}
+@@ -354,7 +372,7 @@
+ remove:
+ 	/* Remove device state if device no longer exists or is not paired */
+ 	if (queue_remove(state->db->device_states, state)) {
+-		queue_foreach(state->ccc_states, clear_ccc_state, state->db);
++		queue_foreach(state->ccc_states, clear_ccc_state, state);
+ 		device_state_free(state);
+ 	}
+ }
+@@ -422,10 +440,14 @@
+ 	queue_push_tail(database->device_states, dev_state);
+ 
+ done:
+-	if (!dev_state->disc_id)
++	if (!dev_state->disc_id) {
+ 		dev_state->disc_id = bt_att_register_disconnect(att,
+ 							att_disconnected,
+ 							dev_state, NULL);
++		if (!dev_state->disc_id)
++			return NULL;
++		dev_state->att = bt_att_ref(att);
++	}
+ 
+ 	return dev_state;
+ }
+@@ -467,6 +489,13 @@
+ 
+ 	gatt_db_attribute_write_result(op->attrib, op->id,
+ 					BT_ATT_ERROR_REQUEST_NOT_SUPPORTED);
++	op->owner_queue = NULL;
++}
++
++static void cancel_pending_notify(void *data)
++{
++	struct pending_op *op = data;
++
+ 	op->owner_queue = NULL;
+ }
+ 
+@@ -489,6 +518,7 @@
+ 
+ 	queue_destroy(chrc->pending_reads, cancel_pending_read);
+ 	queue_destroy(chrc->pending_writes, cancel_pending_write);
++	queue_destroy(chrc->pending_notifies, cancel_pending_notify);
+ 
+ 	g_free(chrc->path);
+ 
+@@ -999,9 +1029,14 @@
+ {
+ 	struct pending_op *op = user_data;
+ 
++	if (op->owner_queue)
++		queue_remove(op->owner_queue, op);
+ 	op->owner_queue = NULL;
+ }
+ 
++static uint8_t restore_ccc_notify(struct btd_gatt_database *database,
++				struct bt_att *att, struct ccc_state *ccc);
++
+ static struct pending_op *pending_ccc_new(struct bt_att *att,
+ 					struct gatt_db_attribute *attrib,
+ 					uint16_t value,
+@@ -1029,6 +1064,11 @@
+ 				   pending_disconnect_cb,
+ 				   op,
+ 				   NULL);
++	if (!op->disconn_id) {
++		bt_att_unref(op->att);
++		free(op);
++		return NULL;
++	}
+ 
+ 	return op;
+ }
+@@ -1071,8 +1111,11 @@
+ 		val = get_le16(value);
+ 
+ 	/* If value is identical, then just succeed */
+-	if (val == ccc->value)
++	if (val == ccc->value) {
++		if (val)
++			ecode = restore_ccc_notify(database, att, ccc);
+ 		goto done;
++	}
+ 
+ 	ccc_cb = queue_find(database->ccc_callbacks, ccc_cb_match_handle,
+ 			UINT_TO_PTR(gatt_db_attribute_get_handle(attrib)));
+@@ -1085,6 +1128,7 @@
+ 			ecode = BT_ATT_ERROR_UNLIKELY;
+ 			goto done;
+ 		}
++		op->ccc_existing = ccc->value && val;
+ 
+ 		ecode = ccc_cb->callback(op, ccc_cb->user_data);
+ 		if (ecode)
+@@ -1466,7 +1510,7 @@
+ 	/* Remove device state if device no longer exists or is not paired */
+ 	if (queue_remove(notify->database->device_states, device_state)) {
+ 		queue_foreach(device_state->ccc_states, clear_ccc_state,
+-						notify->database);
++						device_state);
+ 		device_state_free(device_state);
+ 	}
+ }
+@@ -1911,6 +1955,7 @@
+ 	chrc = new0(struct external_chrc, 1);
+ 	chrc->pending_reads = queue_new();
+ 	chrc->pending_writes = queue_new();
++	chrc->pending_notifies = queue_new();
+ 
+ 	chrc->path = g_strdup(path);
+ 	if (!chrc->path)
+@@ -2669,6 +2714,10 @@
+ 	struct io *io;
+ 
+ 	io = io_new(fd);
++	if (!io) {
++		close(fd);
++		return NULL;
++	}
+ 
+ 	io_set_close_on_destroy(io, true);
+ 
+@@ -2719,7 +2768,20 @@
+ 	client->chrc = chrc;
+ 	client->disconn_id = bt_att_register_disconnect(att, att_disconnect_cb,
+ 							client, NULL);
++	if (!client->disconn_id) {
++		error("Unable to register acquired IO ATT disconnect");
++		bt_att_unref(client->att);
++		close(fd);
++		free(client);
++		return NULL;
++	}
+ 	client->io = sock_io_new(fd, chrc);
++	if (!client->io) {
++		bt_att_unregister_disconnect(att, client->disconn_id);
++		bt_att_unref(client->att);
++		free(client);
++		return NULL;
++	}
+ 
+ 	return client;
+ }
+@@ -2748,6 +2810,8 @@
+ 		return client;
+ 
+ 	client = client_io_new(chrc, fd, att);
++	if (!client)
++		return NULL;
+ 
+ 	if (!chrc->write_ios)
+ 		chrc->write_ios = queue_new();
+@@ -2874,13 +2938,17 @@
+ 		return client;
+ 
+ 	client = client_io_new(chrc, fd, att);
+-
++	if (!client)
++		return NULL;
+ 	io_set_read_handler(client->io, sock_io_read, client, NULL);
+ 
+ 	if (!chrc->notify_ios)
+ 		chrc->notify_ios = queue_new();
+ 
+-	queue_push_tail(chrc->notify_ios, client);
++	if (!queue_push_tail(chrc->notify_ios, client)) {
++		client_io_free(client);
++		return NULL;
++	}
+ 
+ 	return client;
+ }
+@@ -2927,15 +2995,21 @@
+ 	if (!client)
+ 		goto retry;
+ 
+-	__sync_fetch_and_add(&chrc->ntfy_cnt, 1);
+-
+ 	return;
+ 
+ retry:
++	if (op->ccc_rearm)
++		return;
++
+ 	g_dbus_proxy_method_call(chrc->proxy, "StartNotify", NULL, NULL,
+ 							NULL, NULL);
++}
+ 
+-	__sync_fetch_and_add(&chrc->ntfy_cnt, 1);
++static bool match_pending_notify_att(const void *data, const void *user_data)
++{
++	const struct pending_op *op = data;
++
++	return op->att == user_data;
+ }
+ 
+ static void acquire_notify_setup(DBusMessageIter *iter, void *user_data)
+@@ -2968,10 +3042,16 @@
+ 
+ 	/* Notifications/indications disabled */
+ 	if (!value) {
++		/* A late AcquireNotify reply must not resurrect a disabled CCC. */
++		if (op && op->att)
++			queue_remove_all(chrc->pending_notifies,
++					match_pending_notify_att, op->att,
++					cancel_pending_notify);
+ 		if (!chrc->ntfy_cnt)
+ 			goto done;
+ 
+-		client = queue_remove_if(chrc->notify_ios, match_client_att,
++		client = op && op->ccc_scoped && !op->att ? NULL :
++			queue_remove_if(chrc->notify_ios, match_client_att,
+ 							op ? op->att : NULL);
+ 		if (client) {
+ 			client_io_free(client);
+@@ -2991,7 +3071,7 @@
+ 		goto done;
+ 	}
+ 
+-	if (chrc->ntfy_cnt == UINT_MAX)
++	if (!op->ccc_existing && chrc->ntfy_cnt == UINT_MAX)
+ 		/* Maximum number of per-device CCC descriptors configured */
+ 		return BT_ATT_ERROR_INSUFFICIENT_RESOURCES;
+ 
+@@ -3003,21 +3083,37 @@
+ 
+ 	client = queue_find(chrc->notify_ios, match_client_att, op->att);
+ 	if (client) {
+-		__sync_fetch_and_add(&chrc->ntfy_cnt, 1);
++		if (!op->ccc_existing)
++			__sync_fetch_and_add(&chrc->ntfy_cnt, 1);
+ 		goto done;
+ 	}
++	if (queue_find(chrc->pending_notifies, match_pending_notify_att, op->att))
++		goto done;
+ 
+ 	/* Make use of AcquireNotify if supported */
+ 	if (g_dbus_proxy_get_property(chrc->proxy, "NotifyAcquired", &iter)) {
++		bool existing = op->ccc_existing;
++
+ 		op->data.iov_base = (void *) chrc;
+ 		op->data.iov_len = sizeof(chrc);
+-		op->owner_queue = chrc->pending_writes;
++		op->owner_queue = chrc->pending_notifies;
++		if (!queue_push_tail(op->owner_queue, op)) {
++			op->owner_queue = NULL;
++			return BT_ATT_ERROR_INSUFFICIENT_RESOURCES;
++		}
+ 		if (g_dbus_proxy_method_call(chrc->proxy, "AcquireNotify",
+ 						acquire_notify_setup,
+ 						acquire_notify_reply,
+-						op, pending_op_free))
++						op, pending_op_free)) {
++			if (!existing)
++				__sync_fetch_and_add(&chrc->ntfy_cnt, 1);
+ 			return 0;
++		}
++		queue_remove(op->owner_queue, op);
++		op->owner_queue = NULL;
+ 	}
++	if (op->ccc_rearm)
++		return BT_ATT_ERROR_UNLIKELY;
+ 
+ 	/*
+ 	 * Always call StartNotify for an incoming enable and ignore the return
+@@ -3027,7 +3123,8 @@
+ 						NULL, NULL) == FALSE)
+ 		return BT_ATT_ERROR_UNLIKELY;
+ 
+-	__sync_fetch_and_add(&chrc->ntfy_cnt, 1);
++	if (!op->ccc_existing)
++		__sync_fetch_and_add(&chrc->ntfy_cnt, 1);
+ 
+ done:
+ 	if (op)
+@@ -3036,6 +3133,58 @@
+ 	return 0;
+ }
+ 
++/* Bonded CCC configuration survives ATT teardown; an acquired socket does
++ * not. Rearm only that per-ATT IO path, never the global StartNotify path. */
++static uint8_t restore_ccc_notify(struct btd_gatt_database *database,
++				struct bt_att *att, struct ccc_state *ccc)
++{
++	struct ccc_cb_data *cb;
++	struct external_chrc *chrc;
++	struct pending_op *op;
++	DBusMessageIter iter;
++	uint8_t ecode;
++
++	if (!ccc->value)
++		return 0;
++	cb = queue_find(database->ccc_callbacks, ccc_cb_match_handle,
++						UINT_TO_PTR(ccc->handle));
++	if (!cb || cb->callback != ccc_write_cb)
++		return 0;
++	chrc = cb->user_data;
++	if (!g_dbus_proxy_get_property(chrc->proxy, "NotifyAcquired", &iter))
++		return 0;
++	if (queue_find(chrc->notify_ios, match_client_att, att) ||
++		queue_find(chrc->pending_notifies, match_pending_notify_att, att))
++		return 0;
++	op = pending_ccc_new(att, chrc->ccc, ccc->value,
++						bt_att_get_link_type(att));
++	if (!op)
++		return BT_ATT_ERROR_UNLIKELY;
++	op->ccc_rearm = true;
++	op->ccc_existing = true;
++	ecode = ccc_write_cb(op, chrc);
++	if (ecode)
++		pending_op_free(op);
++	return ecode;
++}
++
++struct restore_notify_data {
++	struct btd_gatt_database *database;
++	struct bt_att *att;
++};
++
++static void restore_notify(void *data, void *user_data)
++{
++	struct restore_notify_data *restore = user_data;
++	struct ccc_state *ccc = data;
++	uint8_t ecode;
++
++	ecode = restore_ccc_notify(restore->database, restore->att, ccc);
++	if (ecode)
++		error("Failed to restore CCC 0x%04x notify IO: 0x%02x",
++						ccc->handle, ecode);
++}
++
+ static void property_changed_cb(GDBusProxy *proxy, const char *name,
+ 					DBusMessageIter *iter, void *user_data)
+ {
+@@ -4191,6 +4340,7 @@
+ {
+ 	struct bt_att *att = bt_gatt_server_get_att(server);
+ 	struct device_state *state;
++	struct restore_notify_data restore = { database, att };
+ 	bdaddr_t bdaddr;
+ 	uint8_t bdaddr_type;
+ 
+@@ -4199,9 +4349,12 @@
+ 
+ 	bt_gatt_server_set_authorize(server, server_authorize, database);
+ 
+-	state = find_device_state(database, &bdaddr, bdaddr_type);
+-	if (!state || !state->pending)
++	state = get_device_state(database, att);
++	if (!state)
+ 		return;
++	queue_foreach(state->ccc_states, restore_notify, &restore);
++	if (!state->pending)
++		return;
+ 
+ 	send_notification_to_device(state, state->pending);
+ 
+--- /dev/null
++++ b/unit/test-ubm-bonded-notify.c
+@@ -0,0 +1,451 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/* Production CCC/ATT/socket callbacks; no radio or system D-Bus. */
++#define g_dbus_proxy_get_property test_proxy_get_property
++#define g_dbus_proxy_method_call test_proxy_method_call
++#define g_dbus_proxy_set_property_watch test_proxy_set_property_watch
++#define g_dbus_proxy_unref test_proxy_unref
++#define bt_att_register_disconnect test_register_disconnect
++#define bt_att_ref test_att_ref
++#define bt_att_unref test_att_unref
++#define queue_push_tail test_queue_push_tail
++#define io_new test_io_new
++#include "src/gatt-database.c"
++#undef bt_att_register_disconnect
++#undef bt_att_ref
++#undef bt_att_unref
++#undef queue_push_tail
++#undef io_new
++#include <assert.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <sys/socket.h>
++
++static bdaddr_t peer;
++static bool bonded = true, acquired = true, delayed, refuse;
++static bool refuse_registration;
++static bool refuse_pending_registration, refuse_client_registration;
++static bool refuse_io;
++static struct queue *refused_queue;
++static unsigned int owned_refs, owned_unrefs;
++struct bt_att *bt_att_ref(struct bt_att *att);
++void bt_att_unref(struct bt_att *att);
++bool queue_push_tail(struct queue *queue, void *data);
++struct io *io_new(int fd);
++struct bt_att *test_att_ref(struct bt_att *att)
++{
++	if (att) owned_refs++;
++	return bt_att_ref(att);
++}
++void test_att_unref(struct bt_att *att)
++{
++	if (att) owned_unrefs++;
++	bt_att_unref(att);
++}
++bool test_queue_push_tail(struct queue *queue, void *data)
++{
++	return queue == refused_queue ? false : queue_push_tail(queue, data);
++}
++struct io *test_io_new(int fd)
++{
++	return refuse_io ? NULL : io_new(fd);
++}
++unsigned int bt_att_register_disconnect(struct bt_att *att,
++		bt_att_disconnect_func_t callback, void *data,
++		bt_att_destroy_func_t destroy);
++unsigned int test_register_disconnect(struct bt_att *att,
++		bt_att_disconnect_func_t callback, void *data,
++		bt_att_destroy_func_t destroy)
++{
++	return refuse_registration ||
++		(refuse_pending_registration && callback == pending_disconnect_cb) ||
++		(refuse_client_registration && callback == att_disconnect_cb) ? 0 :
++		bt_att_register_disconnect(att, callback, data, destroy);
++}
++static unsigned int enables, starts, stops;
++static struct {
++	GDBusReturnFunction callback;
++	GDBusDestroyFunction destroy;
++	void *data;
++} pending[32];
++static unsigned int pending_count;
++static int writer_fd = -1;
++static struct btd_device *device = (void *) 1;
++static struct btd_adapter *adapter = (void *) 2;
++struct btd_opts btd_opts;
++struct btd_adapter *adapter_find(const bdaddr_t *addr) { return adapter; }
++struct btd_device *btd_adapter_find_device(struct btd_adapter *a,
++				const bdaddr_t *addr, uint8_t type) { return device; }
++bool device_is_bonded(struct btd_device *d, uint8_t type) { return bonded; }
++void device_store_svc_chng_ccc(struct btd_device *d, uint8_t type,
++						uint16_t value) { }
++bool btd_device_is_trusted(struct btd_device *d) { return true; }
++struct bt_gatt_server *btd_device_get_gatt_server(struct btd_device *d)
++{ return NULL; }
++const char *device_get_path(const struct btd_device *d) { return "/test"; }
++gboolean bt_io_get(GIOChannel *io, GError **err, BtIOOption first, ...)
++{
++	va_list args;
++	BtIOOption option = first;
++	va_start(args, first);
++	while (option != BT_IO_OPT_INVALID) {
++		void *out = va_arg(args, void *);
++		if (option == BT_IO_OPT_DEST_BDADDR) bacpy(out, &peer);
++		else if (option == BT_IO_OPT_SOURCE_BDADDR) memset(out, 0, 6);
++		else if (option == BT_IO_OPT_DEST_TYPE) *(uint8_t *) out = BDADDR_LE_PUBLIC;
++		else assert(false);
++		option = va_arg(args, int);
++	}
++	va_end(args);
++	return true;
++}
++gboolean g_dbus_proxy_get_property(GDBusProxy *proxy, const char *name,
++						DBusMessageIter *iter)
++{ return acquired && !strcmp(name, "NotifyAcquired"); }
++gboolean g_dbus_proxy_set_property_watch(GDBusProxy *proxy,
++		GDBusPropertyFunction function, void *data) { return true; }
++void g_dbus_proxy_unref(GDBusProxy *proxy) { }
++static void notify_reply(GDBusReturnFunction callback, void *data,
++					GDBusDestroyFunction destroy, bool failure)
++{
++	DBusMessage *reply;
++	int sockets[2];
++	uint16_t mtu = 23;
++	if (failure) {
++		reply = dbus_message_new(DBUS_MESSAGE_TYPE_ERROR);
++		assert(dbus_message_set_error_name(reply, ERROR_FAILED));
++	} else {
++		reply = dbus_message_new(DBUS_MESSAGE_TYPE_METHOD_RETURN);
++		assert(!socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sockets));
++		/* Each fixture retains only its latest application-side writer. */
++		if (writer_fd >= 0) close(writer_fd);
++		writer_fd = sockets[1];
++		assert(dbus_message_append_args(reply, DBUS_TYPE_UNIX_FD, &sockets[0],
++			DBUS_TYPE_UINT16, &mtu, DBUS_TYPE_INVALID));
++		close(sockets[0]);
++	}
++	callback(reply, data);
++	dbus_message_unref(reply);
++	if (destroy) destroy(data);
++}
++static void finish_notify(unsigned int index, bool failure)
++{
++	assert(index < pending_count && pending[index].data);
++	notify_reply(pending[index].callback, pending[index].data,
++					pending[index].destroy, failure);
++	pending[index].data = NULL;
++}
++gboolean g_dbus_proxy_method_call(GDBusProxy *proxy, const char *method,
++		GDBusSetupFunction setup, GDBusReturnFunction callback,
++		void *data, GDBusDestroyFunction destroy)
++{
++	if (!strcmp(method, "AcquireNotify")) {
++		enables++;
++		if (refuse) return false;
++		if (delayed) {
++			assert(pending_count < 32);
++			pending[pending_count].callback = callback;
++			pending[pending_count].data = data;
++			pending[pending_count++].destroy = destroy;
++		} else notify_reply(callback, data, destroy, false);
++	} else if (!strcmp(method, "StartNotify")) starts++;
++	else if (!strcmp(method, "StopNotify")) stops++;
++	else assert(false);
++	return true;
++}
++void btd_error(uint16_t index, const char *format, ...) { }
++void btd_debug(uint16_t index, const char *format, ...) { }
++void dict_append_entry(DBusMessageIter *dict, const char *key, int type,
++						void *value) { }
++
++int main(int argc, char **argv)
++{
++	struct btd_gatt_database database = { .adapter = adapter };
++	struct gatt_app app = { .database = &database };
++	struct external_service service = { .app = &app };
++	struct external_chrc chrc = { .service = &service,
++		.props = BT_GATT_CHRC_PROP_NOTIFY | BT_GATT_CHRC_PROP_INDICATE };
++	struct bt_att *att;
++	struct bt_gatt_server *server;
++	struct gatt_db_attribute *primary;
++	struct device_state *state;
++	struct external_chrc *removed = NULL;
++	bt_uuid_t uuid;
++	int sockets[2];
++	uint8_t value[] = { 1, 0 };
++	database.db = gatt_db_new();
++	gatt_db_ccc_register(database.db, gatt_ccc_read_cb, gatt_ccc_write_cb,
++						gatt_notify_cb, &database);
++	database.ccc_callbacks = queue_new();
++	database.device_states = queue_new();
++	chrc.notify_ios = queue_new();
++	chrc.write_ios = queue_new();
++	chrc.pending_writes = queue_new();
++	chrc.pending_reads = queue_new();
++#ifdef UBM_NOTIFY_TRACKED
++	chrc.pending_notifies = queue_new();
++#endif
++	bt_uuid16_create(&uuid, 0x180d);
++	primary = gatt_db_add_service(database.db, &uuid, true, 8);
++	gatt_db_service_set_active(primary, true);
++	bt_uuid16_create(&uuid, 0x2a37);
++	chrc.attrib = gatt_db_service_add_characteristic(primary, &uuid, 0,
++		BT_GATT_CHRC_PROP_NOTIFY, NULL, NULL, NULL);
++	chrc.ccc = service_add_ccc(primary, &database, ccc_write_cb, &chrc,
++			BT_ATT_PERM_READ | BT_ATT_PERM_WRITE, NULL);
++	assert(chrc.ccc);
++	assert(!socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sockets));
++	att = bt_att_new(sockets[0], false);
++	assert(att);
++#ifdef UBM_NOTIFY_TRACKED
++	if (argc > 1 && !strcmp(argv[1], "registration-refused")) {
++		unsigned int before = owned_refs - owned_unrefs;
++		refuse_registration = true;
++		state = get_device_state(&database, att);
++		assert(state == NULL);
++		state = find_device_state(&database, &peer, BDADDR_LE_PUBLIC);
++		assert(state && state->disc_id == 0 && state->att == NULL);
++		assert(get_device_state(&database, att) == NULL && state->att == NULL);
++		gatt_ccc_write_cb(chrc.ccc, 1, 0, value, 2, 0, att, &database);
++		assert(enables == 0 && chrc.ntfy_cnt == 0);
++		assert(owned_refs - owned_unrefs == before);
++		refuse_registration = false;
++		assert(get_device_state(&database, att) == state && state->disc_id);
++		assert(owned_refs - owned_unrefs == before + 1);
++		att_disconnected(0, state);
++		assert(state->att == NULL && owned_refs - owned_unrefs == before);
++		return 0;
++	}
++	if (argc > 1 && !strcmp(argv[1], "pending-queue-refused")) {
++		refused_queue = chrc.pending_notifies;
++		gatt_ccc_write_cb(chrc.ccc, 1, 0, value, 2, 0, att, &database);
++		state = find_device_state(&database, &peer, BDADDR_LE_PUBLIC);
++		assert(state && find_ccc_state(state,
++			gatt_db_attribute_get_handle(chrc.ccc))->value == 0);
++		assert(enables == 0 && chrc.ntfy_cnt == 0);
++		return 0;
++	}
++	if (argc > 1 && (!strcmp(argv[1], "client-queue-refused") ||
++					!strcmp(argv[1], "io-refused"))) {
++		if (!strcmp(argv[1], "io-refused")) refuse_io = true;
++		else refused_queue = chrc.notify_ios;
++		gatt_ccc_write_cb(chrc.ccc, 1, 0, value, 2, 0, att, &database);
++		assert(queue_isempty(chrc.notify_ios));
++		assert(send(writer_fd, "a", 1, MSG_NOSIGNAL) == -1 && errno == EPIPE);
++		assert(chrc.ntfy_cnt == 1 && starts == 1);
++		return 0;
++	}
++	if (argc > 1 && !strcmp(argv[1], "pending-registration-refused")) {
++		refuse_pending_registration = true;
++		gatt_ccc_write_cb(chrc.ccc, 1, 0, value, 2, 0, att, &database);
++		state = find_device_state(&database, &peer, BDADDR_LE_PUBLIC);
++		assert(state && find_ccc_state(state,
++			gatt_db_attribute_get_handle(chrc.ccc))->value == 0);
++		assert(enables == 0 && chrc.ntfy_cnt == 0);
++		return 0;
++	}
++	if (argc > 1 && !strcmp(argv[1], "client-registration-refused")) {
++		refuse_client_registration = true;
++		gatt_ccc_write_cb(chrc.ccc, 1, 0, value, 2, 0, att, &database);
++		assert(queue_isempty(chrc.notify_ios));
++		assert(send(writer_fd, "a", 1, MSG_NOSIGNAL) == -1 && errno == EPIPE);
++		assert(chrc.ntfy_cnt == 1 && starts == 1);
++		gatt_ccc_write_cb(chrc.ccc, 2, 0, value, 2, 0, att, &database);
++		assert(queue_isempty(chrc.notify_ios) && chrc.ntfy_cnt == 1 && starts == 1);
++		return 0;
++	}
++#endif
++	gatt_ccc_write_cb(chrc.ccc, 1, 0, value, 2, 0, att, &database);
++	assert(enables == 1 && starts == 0 && chrc.ntfy_cnt == 1);
++	state = find_device_state(&database, &peer, BDADDR_LE_PUBLIC);
++	assert(state && find_ccc_state(state,
++		gatt_db_attribute_get_handle(chrc.ccc))->value == 1);
++	if (argc > 1 && (!strcmp(argv[1], "unbonded-peer") ||
++					!strcmp(argv[1], "dormant-peer"))) {
++		int second[2];
++		bool dormant = !strcmp(argv[1], "dormant-peer");
++		if (dormant) {
++			struct client_io *old = queue_peek_head(chrc.notify_ios);
++			att_disconnect_cb(0, old); sock_hup(old->io, &chrc);
++			att_disconnected(0, state);
++		}
++		peer.b[0] = 2;
++		assert(!socketpair(AF_UNIX, SOCK_SEQPACKET, 0, second));
++		struct bt_att *second_att = bt_att_new(second[0], false);
++		gatt_ccc_write_cb(chrc.ccc, 20, 0, value, 2, 0, second_att, &database);
++		struct device_state *second_state = find_device_state(&database,
++						&peer, BDADDR_LE_PUBLIC);
++		bonded = false;
++		if (dormant) {
++			struct notify notify = { .database = &database,
++				.ccc_handle = gatt_db_attribute_get_handle(chrc.ccc) };
++			send_notification_to_device(state, &notify);
++		} else att_disconnected(0, second_state);
++		assert(chrc.ntfy_cnt == 1 && queue_length(chrc.notify_ios) == 1);
++		assert(((struct client_io *) queue_peek_head(chrc.notify_ios))->att ==
++						(dormant ? second_att : att));
++		return 0;
++	}
++	if (argc > 1 && !strcmp(argv[1], "transition")) {
++		value[0] = 2;
++		gatt_ccc_write_cb(chrc.ccc, 20, 0, value, 2, 0, att, &database);
++		assert(chrc.ntfy_cnt == 1);
++		value[0] = 0;
++		gatt_ccc_write_cb(chrc.ccc, 21, 0, value, 2, 0, att, &database);
++		assert(chrc.ntfy_cnt == 0);
++		return 0;
++	}
++	if (argc > 1) goto disable_initial;
++	/* Actual production ATT and socket teardown, retained bonded CCC. */
++	att_disconnected(0, state);
++	att_disconnect_cb(0, queue_peek_head(chrc.notify_ios));
++	sock_hup(((struct client_io *) queue_peek_head(chrc.notify_ios))->io, &chrc);
++	close(writer_fd); writer_fd = -1;
++	bt_att_unref(att); close(sockets[1]);
++	assert(chrc.ntfy_cnt == 1 && queue_isempty(chrc.notify_ios));
++	assert(!socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sockets));
++	att = bt_att_new(sockets[0], false);
++	server = bt_gatt_server_new(database.db, att, 23, 0);
++	assert(server);
++	btd_gatt_database_server_connected(&database, server);
++	/* Bond persistence must reacquire the new ATT IO without another CCC write. */
++	assert(enables == 2);
++	assert(chrc.ntfy_cnt == 1 && starts == 0);
++	char received;
++	struct client_io *client = queue_peek_head(chrc.notify_ios);
++	assert(send(writer_fd, "a", 1, MSG_NOSIGNAL) == 1);
++	assert(recv(io_get_fd(client->io), &received, 1, 0) == 1 && received == 'a');
++	gatt_ccc_write_cb(chrc.ccc, 2, 0, value, 2, 0, att, &database);
++	assert(enables == 2 && chrc.ntfy_cnt == 1);
++	btd_gatt_database_server_connected(&database, server);
++	assert(enables == 2 && chrc.ntfy_cnt == 1);
++	value[0] = 2;
++	gatt_ccc_write_cb(chrc.ccc, 21, 0, value, 2, 0, att, &database);
++	assert(chrc.ntfy_cnt == 1 && enables == 2);
++	value[0] = 1;
++	gatt_ccc_write_cb(chrc.ccc, 22, 0, value, 2, 0, att, &database);
++	assert(chrc.ntfy_cnt == 1 && enables == 2);
++	/* Explicit disable retains no client and releases exactly one count. */
++disable_initial:
++	value[0] = 0;
++	gatt_ccc_write_cb(chrc.ccc, 3, 0, value, 2, 0, att, &database);
++	assert(chrc.ntfy_cnt == 0 && queue_isempty(chrc.notify_ios));
++	close(writer_fd); writer_fd = -1;
++	/* Delayed accepted initial acquisition is logically counted immediately. */
++	if (argc > 1 && !strcmp(argv[1], "removed")) {
++		removed = malloc(sizeof(*removed));
++		*removed = chrc;
++		((struct ccc_cb_data *) queue_peek_head(database.ccc_callbacks))->user_data = removed;
++	}
++	delayed = true; value[0] = 1;
++	gatt_ccc_write_cb(chrc.ccc, 4, 0, value, 2, 0, att, &database);
++	if (argc == 1 || !strcmp(argv[1], "pending-count"))
++		assert(chrc.ntfy_cnt == 1 && queue_isempty(chrc.notify_ios));
++	if (argc == 1) {
++		unsigned int attempts = enables;
++		value[0] = 2;
++		gatt_ccc_write_cb(chrc.ccc, 43, 0, value, 2, 0, att, &database);
++		assert(enables == attempts && chrc.ntfy_cnt == 1);
++		value[0] = 1;
++		gatt_ccc_write_cb(chrc.ccc, 44, 0, value, 2, 0, att, &database);
++		btd_gatt_database_server_connected(&database, server);
++		assert(enables == attempts && chrc.ntfy_cnt == 1);
++	}
++	if (argc > 1 && !strcmp(argv[1], "removed")) goto remove_pending;
++	value[0] = 0;
++	gatt_ccc_write_cb(chrc.ccc, 5, 0, value, 2, 0, att, &database);
++	assert(chrc.ntfy_cnt == 0);
++	finish_notify(0, false);
++	assert(queue_isempty(chrc.notify_ios) && chrc.ntfy_cnt == 0);
++	assert(send(writer_fd, "a", 1, MSG_NOSIGNAL) == -1 && errno == EPIPE);
++	if (argc > 1) return 0;
++	/* Disconnected accepted request cannot create an old-ATT socket later. */
++	value[0] = 1;
++	gatt_ccc_write_cb(chrc.ccc, 6, 0, value, 2, 0, att, &database);
++	assert(chrc.ntfy_cnt == 1);
++	pending_disconnect_cb(0, pending[1].data);
++	att_disconnected(0, state);
++	finish_notify(1, false);
++	assert(queue_isempty(chrc.notify_ios) && chrc.ntfy_cnt == 1);
++	assert(send(writer_fd, "a", 1, MSG_NOSIGNAL) == -1 && errno == EPIPE);
++	/* Rearm failure keeps the bonded CCC/count and never falls back to Fun. */
++	btd_gatt_database_server_connected(&database, server);
++	unsigned int count = enables;
++	btd_gatt_database_server_connected(&database, server);
++	assert(enables == count);
++	finish_notify(2, true);
++	assert(chrc.ntfy_cnt == 1 && starts == 0);
++	gatt_ccc_write_cb(chrc.ccc, 7, 0, value, 2, 0, att, &database);
++	assert(enables == count + 1);
++	finish_notify(3, false);
++	assert(chrc.ntfy_cnt == 1 && queue_length(chrc.notify_ios) == 1);
++	/* A second peer owns its own acquired IO, not another logical count for P1. */
++	struct bt_att *other_att;
++	int other_sockets[2];
++	peer.b[0] = 2;
++	assert(!socketpair(AF_UNIX, SOCK_SEQPACKET, 0, other_sockets));
++	other_att = bt_att_new(other_sockets[0], false);
++	delayed = false;
++	gatt_ccc_write_cb(chrc.ccc, 31, 0, value, 2, 0, other_att, &database);
++	assert(chrc.ntfy_cnt == 2 && queue_length(chrc.notify_ios) == 2);
++	peer.b[0] = 0;
++	client = queue_find(chrc.notify_ios, match_client_att, att);
++	att_disconnect_cb(0, client);
++	sock_hup(client->io, &chrc);
++	att_disconnected(0, state);
++	btd_gatt_database_server_connected(&database, server);
++	assert(chrc.ntfy_cnt == 2 && queue_length(chrc.notify_ios) == 2);
++	value[0] = 0;
++	gatt_ccc_write_cb(chrc.ccc, 32, 0, value, 2, 0, att, &database);
++	assert(chrc.ntfy_cnt == 1 && queue_length(chrc.notify_ios) == 1);
++	peer.b[0] = 2;
++	gatt_ccc_write_cb(chrc.ccc, 33, 0, value, 2, 0, other_att, &database);
++	assert(chrc.ntfy_cnt == 0 && queue_isempty(chrc.notify_ios));
++	bt_att_unref(other_att); close(other_sockets[1]);
++	peer.b[0] = 0;
++	/* Fun notification remains global: reconnect/identical CCC does not replay. */
++	value[0] = 0;
++	gatt_ccc_write_cb(chrc.ccc, 8, 0, value, 2, 0, att, &database);
++	acquired = false; delayed = false; value[0] = 1;
++	gatt_ccc_write_cb(chrc.ccc, 9, 0, value, 2, 0, att, &database);
++	assert(chrc.ntfy_cnt == 1 && starts == 1);
++	att_disconnected(0, state);
++	btd_gatt_database_server_connected(&database, server);
++	gatt_ccc_write_cb(chrc.ccc, 10, 0, value, 2, 0, att, &database);
++	assert(chrc.ntfy_cnt == 1 && starts == 1);
++	value[0] = 0;
++	gatt_ccc_write_cb(chrc.ccc, 11, 0, value, 2, 0, att, &database);
++	/* Synchronous Io rearm refusal keeps CCC/count; identical write can retry. */
++	acquired = true; value[0] = 1;
++	gatt_ccc_write_cb(chrc.ccc, 40, 0, value, 2, 0, att, &database);
++	client = queue_peek_head(chrc.notify_ios);
++	att_disconnect_cb(0, client); sock_hup(client->io, &chrc);
++	refuse = true;
++	unsigned int start_count = starts;
++	btd_gatt_database_server_connected(&database, server);
++	assert(chrc.ntfy_cnt == 1 && queue_isempty(chrc.notify_ios));
++	assert(find_ccc_state(state, gatt_db_attribute_get_handle(chrc.ccc))->value == 1);
++	assert(starts == start_count);
++	refuse = false;
++	gatt_ccc_write_cb(chrc.ccc, 41, 0, value, 2, 0, att, &database);
++	assert(chrc.ntfy_cnt == 1 && queue_length(chrc.notify_ios) == 1);
++	value[0] = 0;
++	gatt_ccc_write_cb(chrc.ccc, 42, 0, value, 2, 0, att, &database);
++	/* Actual object destruction fences a held callback before freeing chrc. */
++	acquired = true; delayed = true; value[0] = 1;
++remove_pending:
++	if (!removed) {
++		removed = malloc(sizeof(*removed));
++		*removed = chrc;
++	}
++	struct ccc_cb_data *cb = queue_peek_head(database.ccc_callbacks);
++	cb->user_data = removed;
++	if (argc == 1) {
++		gatt_ccc_write_cb(chrc.ccc, 12, 0, value, 2, 0, att, &database);
++		assert(removed->ntfy_cnt == 1);
++	}
++	chrc_free(removed);
++	finish_notify(argc == 1 ? 4 : 0, false);
++	assert(send(writer_fd, "a", 1, MSG_NOSIGNAL) == -1 && errno == EPIPE);
++	puts("Production bonded AcquireNotify reconnect: OK");
++	return 0;
++}

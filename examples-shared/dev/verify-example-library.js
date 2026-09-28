@@ -26,8 +26,7 @@ const { checkBuildFingerprint, readBuildFingerprint } = require('../../scripts/r
 const REFRESH = [
   'Refresh it:',
   '  pnpm run prepack                      # build lib/ first, or the copy has no build output',
-  '  rm -rf <example>/node_modules/unified-ble-manager',
-  '  NODE_OPTIONS=--max-old-space-size=8192 pnpm --dir <example> install --no-frozen-lockfile',
+  '  NODE_OPTIONS=--max-old-space-size=8192 pnpm --dir <example> install --force --frozen-lockfile',
   '',
   'The larger heap is not optional: the copy includes the Apple RustCore',
   'xcframework and pnpm runs out of memory at the default limit.'

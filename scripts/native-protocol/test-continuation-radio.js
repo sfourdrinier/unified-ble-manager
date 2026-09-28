@@ -131,6 +131,57 @@ async function verifyRecording(store, id, { minimumSamples, archive }) {
   throw new Error('recording drain exceeded bounded qualification budget')
 }
 
+async function verifyRecordingBaseline(store, id) {
+  let timer
+  let expired = false
+  const deadline = performance.now() + 10000
+  const checkDeadline = () =>
+    assert.ok(!expired && performance.now() < deadline, 'native HR baseline observation timed out')
+  try {
+    return await Promise.race([
+      (async () => {
+        const limits = { maxItems: 256, maxBytes: 1048576 }
+        const batch = await store.prepare(id, limits)
+        checkDeadline()
+        const replay = await store.prepare(id, limits)
+        checkDeadline()
+        assert.deepEqual(replay, batch, 'baseline recording replay changed before acknowledgement')
+        let samples = 0
+        for (const entry of batch.records) {
+          if (entry.record.t !== 'value') continue
+          assert.deepEqual(
+            entry.metadata.consumer?.selector,
+            hrSelector,
+            'baseline value differs from declared HR selector'
+          )
+          assert.equal(
+            entry.record.consumer,
+            entry.metadata.consumer.consumer,
+            'baseline value differs from registered consumer'
+          )
+          assert.ok(
+            entry.record.value.length >= 2 && entry.record.value[1] > 0,
+            'invalid recorded HR before disruption'
+          )
+          samples++
+        }
+        assert.ok(batch.token !== null && samples > 0, 'no positive recorded HR before disruption')
+        // Keep this immutable prefix unacknowledged. Final offline verification
+        // replays it and archives it durably before advancing the native cursor.
+        return samples
+      })(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          expired = true
+          reject(new Error('native HR baseline observation timed out'))
+        }, 10000)
+      })
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 async function main(options = {}) {
   const env = options.env || process.env
   const wait = options.wait || delay
@@ -194,6 +245,7 @@ async function main(options = {}) {
     const before = await continuation.status()
     const beforeRecords = recordings === null ? before?.queuedData : (await recordings.status(recordingId)).records
     assert.ok(beforeRecords > 0, 'no native data before disruption')
+    if (recordings !== null) await verifyRecordingBaseline(recordings, recordingId)
     const disruption = await sendControl(port, { cmd: 'drop-link' })
     assert.equal(disruption.ok, true, JSON.stringify(disruption))
     assert.ok(
@@ -299,7 +351,7 @@ async function main(options = {}) {
   log(JSON.stringify(passed))
 }
 
-module.exports = { main, verifyRecording }
+module.exports = { main, verifyRecording, verifyRecordingBaseline }
 if (require.main === module)
   main().catch(error => {
     console.error(error)

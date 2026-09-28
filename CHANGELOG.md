@@ -4,6 +4,20 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Unreleased
 
+- Restore BlueZ server `AcquireNotify` sockets after bonded ATT reconnection
+  without clearing CCC configuration or duplicating descriptor counts. Fence
+  delayed replies after disable/disconnect/object removal, retain failed rearm
+  for retry without callback-based fallback, and keep cleanup peer-scoped.
+  Exercise the production server callbacks with isolated ATT/application sockets,
+  including multiple peers, CCC mode changes and unchanged callback-based notifications.
+
+- Track the exact installed UBM JavaScript package as an Android application
+  bundle input. Replacing a pnpm package copy now invalidates stale Hermes
+  output while unchanged inputs remain cached; missing compiled modules fail
+  explicitly. Exercise copied-module and metadata changes through Gradle and
+  require the shared input helper in packed artifacts. Align copy-refresh
+  guidance with the existing forced, frozen-lockfile recopy rather than
+  deleting the package or relaxing the lockfile.
 - Wait within the existing BlueZ discovery budget for a new primary ATT
   attachment when accepted LE reconnection still reports a retired disconnected
   attachment. Preserve real link loss, current discovery failure, daemon-owner

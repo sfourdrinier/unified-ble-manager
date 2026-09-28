@@ -105,6 +105,14 @@ describe('example library staleness guard', () => {
     const outcome = inspectExampleLibrary({ repo: repoFacts(), copy: copyFacts({ identity: 'other' }) })
     expect(describeLibraryOutcome(outcome)).toContain('max-old-space-size')
   })
+
+  test('copy refresh guidance preserves the lockfile and uses supported force recopy', () => {
+    const outcome = inspectExampleLibrary({ repo: repoFacts(), copy: copyFacts({ identity: 'other' }) })
+    const advice = describeLibraryOutcome(outcome)
+    expect(advice).toContain('install --force --frozen-lockfile')
+    expect(advice).not.toContain('rm -rf')
+    expect(advice).not.toContain('--no-frozen-lockfile')
+  })
 })
 
 describe('canonical build seals for repository and packed example copies', () => {
