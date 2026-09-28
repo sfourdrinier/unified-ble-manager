@@ -11,9 +11,21 @@ struct NoWake;
 impl WakeSink for NoWake {
     fn wake(&self, _: u64) {}
 }
+#[derive(Default)]
+struct SessionClosed(Mutex<Option<tokio::sync::oneshot::Sender<()>>>);
+impl Drop for SessionClosed {
+    fn drop(&mut self) {
+        if let Some(closed) = self.0.get_mut().unwrap().take() {
+            closed
+                .send(())
+                .expect("fixture teardown must await the final owner");
+        }
+    }
+}
 struct Session {
     outbox: Outbox,
-    calls: Mutex<Vec<String>>,
+    journal: Mutex<Option<std::sync::Weak<ubm_desktop::continuation_journal::ContinuationJournal>>>,
+    calls: Arc<Mutex<Vec<String>>>,
     write_budgets: Mutex<Vec<u64>>,
     consumers: Mutex<Vec<String>>,
     generation: Mutex<u64>,
@@ -32,6 +44,9 @@ struct Session {
             std::sync::mpsc::Receiver<()>,
         )>,
     >,
+    // Rust drops fields in declaration order: this witness follows Outbox's
+    // journal handle and every other field, not merely Session's Drop body.
+    closed: SessionClosed,
 }
 struct Host(Arc<Session>);
 impl ContinuationHost for Host {
@@ -45,6 +60,7 @@ impl ContinuationSession for Session {
         journal: Arc<ubm_desktop::continuation_journal::ContinuationJournal>,
         context: Value,
     ) -> Result<()> {
+        *self.journal.lock().unwrap() = Some(Arc::downgrade(&journal));
         self.worker_threads
             .lock()
             .unwrap()
@@ -180,7 +196,8 @@ impl ContinuationSession for Session {
 fn fixture() -> (NativeContinuation, Arc<Session>, String) {
     let session = Arc::new(Session {
         outbox: Outbox::new(1, Arc::new(NoWake)),
-        calls: Mutex::default(),
+        journal: Mutex::default(),
+        calls: Arc::default(),
         write_budgets: Mutex::default(),
         consumers: Mutex::default(),
         generation: Mutex::new(1),
@@ -194,6 +211,7 @@ fn fixture() -> (NativeContinuation, Arc<Session>, String) {
         blocked_observe: Mutex::default(),
         observe_entered: Mutex::default(),
         hold_worker_after_observe: Mutex::default(),
+        closed: SessionClosed::default(),
     });
     let selector = json!({"serviceUuid":"0000180d-0000-1000-8000-00805f9b34fb","characteristicUuid":"00002a37-0000-1000-8000-00805f9b34fb"});
     let declaration=json!({"onAppearance":"native","peerId":"peer","resubscribe":[selector.clone()],"setup":[{"selector":selector,"value":[2,0],"timeoutMs":20,"response":{"subscriptionIndex":0,"prefix":[240,2,0],"minLength":4,"maxLength":4,"status":{"offset":3,"accepted":[0]}}}]}).to_string();
@@ -202,6 +220,36 @@ fn fixture() -> (NativeContinuation, Arc<Session>, String) {
         session,
         declaration,
     )
+}
+
+async fn close_fixture(
+    engine: NativeContinuation,
+    session: Arc<Session>,
+) -> std::sync::Weak<ubm_desktop::continuation_journal::ContinuationJournal> {
+    let journal = session.journal.lock().unwrap().clone().unwrap();
+    let (closed, completion) = tokio::sync::oneshot::channel();
+    *session.closed.0.lock().unwrap() = Some(closed);
+    engine.stop_recovery();
+    // This also drops the registry's handles. Timed-out blocking work may
+    // still own Session; its final retirement, not gate release, is the fence.
+    drop(engine);
+    drop(session);
+    tokio::time::timeout(std::time::Duration::from_secs(2), completion)
+        .await
+        .expect("all fixture workers must release their session")
+        .expect("final session field must publish completion");
+    journal
+}
+
+fn remove_closed_fixture(
+    directory: &std::path::Path,
+    journal: std::sync::Weak<ubm_desktop::continuation_journal::ContinuationJournal>,
+) {
+    assert!(
+        journal.upgrade().is_none(),
+        "fixture journal must be closed before directory removal"
+    );
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -248,7 +296,7 @@ async fn setup_deadline_includes_blocked_durable_observer_registration() {
         "a timed-out observer cannot dispatch a late setup write"
     );
     release.send(()).unwrap();
-    std::fs::remove_dir_all(directory).unwrap();
+    remove_closed_fixture(&directory, close_fixture(engine, session).await);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -280,14 +328,14 @@ async fn durable_setup_write_receives_only_the_budget_remaining_after_observer_a
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     release.send(()).unwrap();
     running.await.unwrap().unwrap();
-    let budgets = session.write_budgets.lock().unwrap();
+    let budgets = session.write_budgets.lock().unwrap().clone();
     assert_eq!(budgets.len(), 1);
     assert!(
         budgets[0] > 0 && budgets[0] < 950,
         "actual budget was {} ms",
         budgets[0]
     );
-    std::fs::remove_dir_all(directory).unwrap();
+    remove_closed_fixture(&directory, close_fixture(engine, session).await);
 }
 
 #[test]
@@ -328,11 +376,11 @@ fn queued_durable_setup_write_cannot_start_after_its_deadline() {
             .unwrap()
             .unwrap_err();
         assert_eq!(failure["code"], "operation.timed-out");
+        let calls = Arc::clone(&session.calls);
         release.send(()).unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let journal = close_fixture(engine, session).await;
         assert_eq!(
-            session
-                .calls
+            calls
                 .lock()
                 .unwrap()
                 .iter()
@@ -341,7 +389,7 @@ fn queued_durable_setup_write_cannot_start_after_its_deadline() {
             0,
             "a queued worker must recheck the deadline before native dispatch"
         );
-        std::fs::remove_dir_all(directory).unwrap();
+        remove_closed_fixture(&directory, journal);
     });
 }
 
@@ -429,9 +477,7 @@ async fn native_session_and_ack_observer_never_run_storage_on_runtime_thread() {
                 .iter()
                 .all(|thread| *thread != session.runtime_thread)
         );
-        drop(engine);
-        drop(session);
-        std::fs::remove_dir_all(&directory).unwrap();
+        remove_closed_fixture(&directory, close_fixture(engine, session).await);
     }
 }
 

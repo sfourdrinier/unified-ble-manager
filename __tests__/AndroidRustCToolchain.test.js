@@ -5,10 +5,23 @@ const { spawnSync } = require('child_process')
 
 const builder = fs.readFileSync(path.join(__dirname, '../android/build-rust-cdylib.sh'), 'utf8')
 
+function fixturePathEnvironment(bin, environment, delimiter = path.delimiter) {
+  const result = { ...environment }
+  const pathKeys = Object.keys(result).filter(key => key.toLowerCase() === 'path')
+  const inherited = pathKeys.map(key => result[key]).find(value => typeof value === 'string') ?? ''
+  for (const key of pathKeys) delete result[key]
+  result.PATH = [bin, inherited].filter(Boolean).join(delimiter)
+  return result
+}
+
+// Git Bash accepts drive-qualified forward-slash paths; JavaScript's native
+// Windows separators are not portable shell/shebang syntax.
+const shellPath = file => file.split(path.sep).join('/')
+
 describe('Android canonical C dependency toolchain', () => {
   let fixture
   beforeEach(() => {
-    fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-android-c-'))
+    fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm android c-'))
   })
   afterEach(() => fs.rmSync(fixture, { recursive: true, force: true }))
 
@@ -22,8 +35,8 @@ describe('Android canonical C dependency toolchain', () => {
   function run(host, abi, target, archiver = true) {
     const hostTag = host === 'Darwin' ? 'darwin-x86_64' : 'linux-x86_64'
     const tools = `ndk/toolchains/llvm/prebuilt/${hostTag}/bin`
-    const compiler = write(`${tools}/${target}26-clang`, '#!/bin/sh\nexit 0\n', true)
-    const ar = path.join(fixture, tools, 'llvm-ar')
+    const compiler = shellPath(write(`${tools}/${target}26-clang`, '#!/bin/sh\nexit 0\n', true))
+    const ar = shellPath(path.join(fixture, tools, 'llvm-ar'))
     if (archiver) write(`${tools}/llvm-ar`, '#!/bin/sh\nexit 0\n', true)
     write(`${tools}/llvm-nm`, '#!/bin/sh\nexit 0\n', true)
     write('android/build-rust-cdylib.sh', builder)
@@ -31,11 +44,11 @@ describe('Android canonical C dependency toolchain', () => {
     write('Cargo.toml', '[workspace]\n')
     write('scripts/release/native-build-identity.js', '')
     write('bin/uname', `#!/bin/sh\necho ${host}\n`, true)
-    const rustc = write('bin/rustc', '#!/bin/sh\nexit 0\n', true)
+    const rustc = shellPath(write('bin/rustc', '#!/bin/sh\nexit 0\n', true))
     const capture = path.join(fixture, 'cargo-env')
     write(
       'bin/rustup',
-      `#!${process.execPath}
+      `#!/usr/bin/env node
 // Real rustup is a binary. A /bin/sh fixture strips hyphenated environment
 // names on Linux before the test can observe what the builder supplied.
 const fs = require('fs')
@@ -49,34 +62,52 @@ switch (process.argv[2]) {
 `,
       true
     )
-    const node = write(
-      'bin/identity-node',
-      '#!/bin/sh\nprintf "UBM_BUILD_SOURCE_DIGEST=fixture\\nUBM_BUILD_BINDING_SCHEMA=fixture\\n"\n',
-      true
+    const node = shellPath(
+      write(
+        'bin/identity-node',
+        '#!/bin/sh\nprintf "UBM_BUILD_SOURCE_DIGEST=fixture\\nUBM_BUILD_BINDING_SCHEMA=fixture\\n"\n',
+        true
+      )
     )
     const result = spawnSync(
       'sh',
       [
-        path.join(fixture, 'android/build-rust-cdylib.sh'),
+        shellPath(path.join(fixture, 'android/build-rust-cdylib.sh')),
         '--abi',
         abi,
         '--libdir',
-        path.join(fixture, 'output'),
+        shellPath(path.join(fixture, 'output')),
         '--minsdk',
         '26'
       ],
       {
         encoding: 'utf8',
         env: {
-          ...process.env,
-          PATH: `${path.join(fixture, 'bin')}:${process.env.PATH}`,
-          ANDROID_NDK_HOME: path.join(fixture, 'ndk'),
+          ...fixturePathEnvironment(path.join(fixture, 'bin'), process.env),
+          ANDROID_NDK_HOME: shellPath(path.join(fixture, 'ndk')),
           NODE_BINARY: node
         }
       }
     )
     return { result, capture, compiler, ar }
   }
+
+  test('Windows fixture PATH prepends one executable directory without a drive-letter delimiter or duplicate Path key', () => {
+    const environment = fixturePathEnvironment(
+      'D:\\runner temp\\bin',
+      { Path: 'C:\\Program Files\\Git\\usr\\bin;C:\\node', KEEP: 'value' },
+      ';'
+    )
+    expect(environment.PATH).toBe('D:\\runner temp\\bin;C:\\Program Files\\Git\\usr\\bin;C:\\node')
+    expect(Object.keys(environment).filter(key => key.toLowerCase() === 'path')).toEqual(['PATH'])
+    expect(environment.KEEP).toBe('value')
+  })
+
+  test('POSIX fixture PATH preserves existing command search after the executable mocks', () => {
+    expect(fixturePathEnvironment('/tmp/fixture/bin', { PATH: '/usr/bin:/bin' }, ':').PATH).toBe(
+      '/tmp/fixture/bin:/usr/bin:/bin'
+    )
+  })
 
   test.each([
     ['Linux', 'arm64-v8a', 'aarch64-linux-android'],
