@@ -105,16 +105,21 @@ checked after the pick. The acquired peer is reported everywhere as
 returns `{peer, reads}`, `mtu probe` `{peer, probes}` and `ecg start`
 `{peer, mtu, features, settings}`. `stop` takes no arguments.
 
-`device-info read` also accepts `{ "peerId": "<exact known peer ID>" }`, mutually
-exclusive with `device`. This forwards the ID to public `manager.connect()`
-without scanning, choosing or falling back to a name query—useful when an
-already-connected peer is no longer advertising. The host must support that
-known-ID connection; a refusal remains its typed error. Result peer metadata
-comes from the actual connection and has `query: null`, not a fabricated
-discovery. The same readiness, bounded connect/read operations, explicit retry
-policy and connection/manager cleanup apply.
+`device-info read` also accepts
+`{ "peerAddress": { "address": "AA:BB:CC:DD:EE:FF", "addressType": "public" } }`,
+mutually exclusive with `device`. `addressType` defaults to `public`; `random`
+must be chosen explicitly for a static random address. This forwards the public
+address target to `manager.connect()` without scanning, choosing or falling back
+to a name query—useful when an already-connected peer is no longer advertising.
+It requires the host's `peer:address-targeting` capability; unsupported hosts
+preserve their typed refusal. A fresh manager's local `peerId` is not an address
+and is not accepted by this command. Resolvable private addresses need the
+library's durable-reference mechanisms, not this static address recipe.
+Result peer metadata comes from the actual connection and has `query: null`,
+not a fabricated discovery. The same readiness, bounded connect/read operations,
+explicit retry policy and connection/manager cleanup apply.
 A sequence's bound `devices` name is not injected into a step that explicitly
-supplies `peerId`; explicitly supplying both arguments still fails validation.
+supplies `peerAddress`; explicitly supplying both arguments still fails validation.
 
 ### No strap? Use the H10 simulator
 

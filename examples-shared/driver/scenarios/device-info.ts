@@ -5,6 +5,7 @@
 // outcome, so one missing characteristic never hides the others.
 
 import type { GattDatabase } from 'unified-ble-manager'
+import { normalizeScanQuery } from 'unified-ble-manager/advanced'
 import { BATTERY_LEVEL_CHARACTERISTIC, BATTERY_SERVICE, parseBatteryLevel } from 'unified-ble-manager/profiles/battery-service'
 import {
   DEVICE_INFORMATION_SERVICE,
@@ -22,9 +23,29 @@ import {
 } from 'unified-ble-manager/profiles/device-information'
 import type { DriverHost } from '../host.ts'
 import type { JsonObject, JsonValue } from '../protocol.ts'
-import { bytesToHex, toJsonValue } from '../protocol.ts'
+import { bytesToHex, isJsonObject, toJsonValue } from '../protocol.ts'
 import { ScenarioError, defineCommand, type ScenarioCommand } from '../scenario-core.ts'
-import { BleScenario, DEVICE_ARGUMENT_HELP, IDLE_BLE_STATE, OPERATION_TIMEOUT_MS, outcomeOf, parseDevice, type BleScenarioState } from './ble-scenario.ts'
+import { BleScenario, DEVICE_ARGUMENT_HELP, IDLE_BLE_STATE, OPERATION_TIMEOUT_MS, outcomeOf, parseDevice, type AddressTarget, type BleScenarioState } from './ble-scenario.ts'
+
+function parsePeerAddress(raw: JsonObject): AddressTarget {
+  const target = raw.peerAddress
+  if ('device' in raw || !isJsonObject(target) || Object.keys(target).some(key => key !== 'address' && key !== 'addressType')) {
+    throw new ScenarioError('scenario.invalid-argument', 'peerAddress must be an address object and cannot be combined with device')
+  }
+  const addressType = target.addressType === undefined ? 'public' : target.addressType
+  if (typeof target.address !== 'string' || (addressType !== 'public' && addressType !== 'random')) {
+    throw new ScenarioError('scenario.invalid-argument', 'peerAddress requires a BLE address and public or random addressType')
+  }
+  let address: string | undefined
+  try {
+    // Pure public normalization reuses the package's address authority; it performs no scan.
+    address = normalizeScanQuery({ anyOf: [{ addresses: [target.address] }] }).anyOf?.[0]?.addresses?.[0]
+  } catch {
+    throw new ScenarioError('scenario.invalid-argument', 'peerAddress.address must be a six-octet BLE address')
+  }
+  if (address === undefined) throw new ScenarioError('scenario.invalid-argument', 'peerAddress.address is missing')
+  return { address, addressType }
+}
 
 type ReadSpec = {
   readonly field: string
@@ -56,24 +77,17 @@ export class DeviceInfoScenario extends BleScenario<DeviceInfoState> {
   protected readonly commands: Readonly<Record<string, ScenarioCommand>> = {
     read: defineCommand({
       label: 'Read all',
-      description: `One-shot connect, read, release. args: {${DEVICE_ARGUMENT_HELP}, peerId?: string (known ID, mutually exclusive with device; no discovery)}. Result: {peer, reads}; each read reports {ok, value, raw} or {ok: false, error}.`,
+      description: `One-shot connect, read, release. args: {${DEVICE_ARGUMENT_HELP}, peerAddress?: {address: string, addressType?: "public" | "random"} (default public, mutually exclusive with device; no scan)}. Result: {peer, reads}; each read reports {ok, value, raw} or {ok: false, error}.`,
       acceptsDevice: true,
       parse: raw => {
-        if ('peerId' in raw) {
-          if ('device' in raw || typeof raw.peerId !== 'string' || raw.peerId.trim().length === 0) {
-            throw new ScenarioError(
-              'scenario.invalid-argument',
-              'peerId must be a nonempty known peer ID and cannot be combined with device'
-            )
-          }
-          return { peerId: raw.peerId, device: null }
-        }
-        return { peerId: null, device: parseDevice(raw) }
+        if ('peerId' in raw) throw new ScenarioError('scenario.invalid-argument', 'device-info read does not accept manager-local peerId; use device or explicit peerAddress')
+        if ('peerAddress' in raw) return { peerAddress: parsePeerAddress(raw), device: null }
+        return { peerAddress: null, device: parseDevice(raw) }
       },
-      run: ({ device, peerId }) =>
+      run: ({ device, peerAddress }) =>
         this.runJourney(async signal => {
           const { gatt } =
-            device === null ? await this.connectKnownPeer(peerId, signal) : await this.connectH10(device, signal)
+            device === null ? await this.connectAddress(peerAddress, signal) : await this.connectH10(device, signal)
           this.patchBase({ phase: 'reading' })
           const reads = await this.readAll(gatt, signal)
           await this.teardown('done')

@@ -68,10 +68,10 @@ function commandAcceptsDevice(host, scenario, command) {
   return description?.commands.find(entry => entry.name === command)?.acceptsDevice === true
 }
 
-/** Add a bound device only when the step supplies neither a device nor a known peer ID. */
+/** Add a bound device only when the step supplies neither a device nor an explicit address. */
 function stepArgs(step, host, device) {
   const args = step.args ?? {}
-  if (device === null || args.device !== undefined || Object.hasOwn(args, 'peerId') || !commandAcceptsDevice(host, step.run, step.command)) return args
+  if (device === null || args.device !== undefined || Object.hasOwn(args, 'peerAddress') || !commandAcceptsDevice(host, step.run, step.command)) return args
   return { ...args, device }
 }
 

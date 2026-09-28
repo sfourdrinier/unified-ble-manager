@@ -38,21 +38,21 @@ async function withDeviceInfo(run) {
   }
 }
 
-test('real sequence bound device is not injected over an explicit known peer ID', async () => {
+test('real sequence bound device is not injected over an explicit public address', async () => {
   await withDeviceInfo(async (client, { calls, targets }) => {
-    const summary = await runSequence(client, { name: 'known peer', devices: { android: STRAP_A },
-      steps: [{ run: 'device-info', command: 'read', args: { peerId: 'known-peer' } }] })
+    const summary = await runSequence(client, { name: 'address peer', devices: { android: STRAP_A },
+      steps: [{ run: 'device-info', command: 'read', args: { peerAddress: { address: 'AA:BB:CC:DD:EE:FF' } } }] })
     assert.equal(summary.hosts[0].passed, true)
-    assert.deepEqual(targets, ['known-peer'])
+    assert.deepEqual(targets, [{ address: 'AA:BB:CC:DD:EE:FF', addressType: 'public' }])
     assert.ok(!calls.some(call => /^(find|scan|choose)\b/.test(call)))
     assert.deepEqual(calls.slice(-2), ['connection.release', 'manager.destroy'])
   })
 })
 
-test('real sequence preserves explicitly conflicting device and peerId for scenario refusal', async () => {
+test('real sequence preserves explicitly conflicting device and peerAddress for scenario refusal', async () => {
   await withDeviceInfo(async (client, { calls, targets }) => {
     const summary = await runSequence(client, { name: 'conflicting peer', devices: { android: STRAP_A },
-      steps: [{ run: 'device-info', command: 'read', args: { peerId: 'known-peer', device: STRAP_B } }] })
+      steps: [{ run: 'device-info', command: 'read', args: { peerAddress: { address: 'AA:BB:CC:DD:EE:FF' }, device: STRAP_B } }] })
     assert.equal(summary.hosts[0].passed, false)
     assert.equal(summary.hosts[0].steps[0].detail.error.code, 'scenario.invalid-argument')
     assert.deepEqual(calls, [])

@@ -8,9 +8,10 @@ All notable changes to `unified-ble-manager` are documented here.
   an explicit `EXPO_PUBLIC_UBM_DRIVER_URL`. Keep default Release automation off,
   development Metro discovery enabled, and explicit `off` or malformed endpoints
   fail-closed. Document trusted local/USB testing and remote BLE control risk.
-- Allow reference `device-info read` to connect an explicit known `peerId`
+- Allow reference `device-info read` to connect an explicit public `peerAddress`
   without rescanning an already-connected, non-advertising device. Keep the
-  ordinary name-query route, typed refusals and owned cleanup unchanged.
+  ordinary name-query route, typed address-targeting refusals and owned cleanup
+  unchanged; do not reinterpret a fresh manager's local peer ID as an address.
 
 - Restore BlueZ server `AcquireNotify` sockets after bonded ATT reconnection
   and renew their immutable MTU after an actual ATT MTU increase,

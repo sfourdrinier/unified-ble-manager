@@ -43,6 +43,8 @@ import {
 
 export type { CleanupStep } from '../scenario-core.ts'
 
+export type AddressTarget = Extract<Parameters<BleManager['connect']>[0], { readonly address: string }>
+
 export const FIND_TIMEOUT_MS = 30_000
 export const OPERATION_TIMEOUT_MS = 20_000
 /** How long a run waits for a person to click before the chooser (Web Bluetooth). */
@@ -104,7 +106,7 @@ export function matchesDeviceName(name: string | null, device: DeviceSelector): 
   return device.match === 'exact' ? name === device.name : (name ?? '').startsWith(device.name)
 }
 
-/** The actual peer and discovery selector; null query means a supplied known ID, without discovery. */
+/** The actual peer and discovery selector; null query means an explicit address, without discovery. */
 export type PeerReport = {
   readonly id: string
   readonly name: string | null
@@ -326,7 +328,7 @@ export abstract class BleScenario<State extends BleScenarioState> extends Scenar
    */
   protected async connect(
     manager: BleManager,
-    target: BlePeer | string,
+    target: BlePeer | AddressTarget,
     signal: AbortSignal,
     intent: ConnectionIntent = 'direct'
   ): Promise<BleConnection> {
@@ -404,11 +406,11 @@ export abstract class BleScenario<State extends BleScenarioState> extends Scenar
     return { manager, peer, connection, gatt }
   }
 
-  /** A caller-known peer ID uses the same ownership/retry path, without discovering or inventing a peer. */
-  protected async connectKnownPeer(peerId: string, signal: AbortSignal): Promise<ConnectedH10> {
+  /** An explicit public address uses the same ownership/retry path, without finding or inventing a peer. */
+  protected async connectAddress(peerAddress: AddressTarget, signal: AbortSignal): Promise<ConnectedH10> {
     const { manager } = await this.createManager(signal)
-    this.emit('peer-acquisition', { via: 'known-peer-id', peerId })
-    const connection = await this.connect(manager, peerId, signal)
+    this.emit('peer-acquisition', { via: 'peer-address', peerAddress: toJsonValue(peerAddress) })
+    const connection = await this.connect(manager, peerAddress, signal)
     const peer = connection.peer
     this.patchBase({ device: peer.name ?? peer.id, peer: { id: peer.id, name: peer.name, query: null } })
     const gatt = await this.discover(connection, signal)
