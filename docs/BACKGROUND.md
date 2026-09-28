@@ -500,6 +500,15 @@ remains uncertain and is not retried in the same generation.
 Setup completion and uncertain failure are fenced by the authoritative
 connection/database generation. A fresh generation repeats the setup; a timeout
 does not authorize retrying a potentially committed write in the same generation.
+This uncertainty belongs to the physical peer, not its continuation session:
+claiming/releasing the native owner, replacing its declaration, or running an
+order for another peer does not clear the failure while that peer's verified
+connection/database generation is unchanged. A replacement session reports the
+original failure without dispatching another setup write. Successful setup is
+not inherited by a replacement declaration. The process retains at most 4,096
+peers' unresolved setup failures; reaching that bound refuses new setup before
+dispatch rather than evicting an uncertain generation. Observing a changed
+authoritative generation for the affected peer retires its previous failure.
 The executor never drops another owner's shared link to manufacture a fresh
 generation. The shared H10 recipe and command encoders live in
 [`examples-shared/driver/polar-continuation.ts`](../examples-shared/driver/polar-continuation.ts),

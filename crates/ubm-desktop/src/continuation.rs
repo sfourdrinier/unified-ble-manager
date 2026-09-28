@@ -82,6 +82,47 @@ fn busy() -> Value {
     )
 }
 
+const MAX_SETUP_FAILURE_PEERS: usize = 4096;
+
+#[derive(Default)]
+struct SetupFailures {
+    peers: std::collections::HashMap<String, SetupFailure>,
+}
+
+struct SetupFailure {
+    generation: Value,
+    error: Value,
+}
+
+impl SetupFailures {
+    fn check(&mut self, peer: &str, generation: &Value) -> Result<()> {
+        if let Some(previous) = self.peers.get(peer) {
+            if &previous.generation == generation {
+                return Err(previous.error.clone());
+            }
+            // Only this peer's authoritative generation change retires its
+            // uncertainty. A claim or another peer's execution cannot do so.
+            self.peers.remove(peer);
+        }
+        if self.peers.len() >= MAX_SETUP_FAILURE_PEERS {
+            let mut error = failure(
+                "lifecycle.invalid-state",
+                "setup failure history is full; an authoritative generation change is required",
+            );
+            error["retryability"] = json!("never");
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn record(&mut self, peer: &str, generation: Value, error: Value) {
+        // check and record share the executor's state lock. Reserve capacity
+        // before any write, never evict an unresolved physical generation.
+        self.peers
+            .insert(peer.to_owned(), SetupFailure { generation, error });
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct State {
     session: Option<Arc<dyn ContinuationSession>>,
@@ -96,7 +137,7 @@ pub(crate) struct State {
     execution_declaration: Option<Value>,
     setup_generation: Option<Value>,
     setup_complete: bool,
-    setup_failure: Option<Value>,
+    setup_failures: SetupFailures,
     link_generation: Option<String>,
     link_outcome: Option<Value>,
     link_failure: Option<Value>,
@@ -539,7 +580,6 @@ impl NativeContinuation {
             state.selectors = selectors.clone();
             state.execution_declaration = Some(identity.clone());
             state.setup_generation = None;
-            state.setup_failure = None;
             state.setup_complete = false;
             state.link_generation = None;
             state.link_outcome = None;
@@ -793,19 +833,16 @@ impl NativeContinuation {
             }
             let generation = json!([link["connectionGeneration"], link["databaseGeneration"]]);
             if state.setup_generation.as_ref() != Some(&generation) {
-                state.setup_generation = Some(generation);
+                state.setup_generation = Some(generation.clone());
                 state.setup_complete = false;
-                state.setup_failure = None;
             }
-            if let Some(error) = &state.setup_failure {
-                return Err(error.clone());
-            }
+            state.setup_failures.check(peer, &generation)?;
             if !state.setup_complete {
                 if let Err(mut error) = run_setup(self, state, peer, &setup).await {
                     // An old reply cannot be correlated safely with a repeated
                     // command. Only authoritative generation change clears this.
                     error["retryability"] = json!("never");
-                    state.setup_failure = Some(error.clone());
+                    state.setup_failures.record(peer, generation, error.clone());
                     return Err(error);
                 }
                 state.setup_complete = true;
@@ -1517,6 +1554,52 @@ async fn invoke_with_deadline(
 #[cfg(test)]
 mod idle_recovery_tests {
     use super::*;
+
+    #[test]
+    fn setup_uncertainty_survives_other_peers_and_only_its_generation_change_clears_it() {
+        let mut failures = SetupFailures::default();
+        let generation = json!(["connection-1", "database-1"]);
+        let original = failure("operation.timed-out", "original STOP deadline");
+        failures.check("peer-a", &generation).unwrap();
+        failures.record("peer-a", generation.clone(), original.clone());
+        failures.check("peer-b", &generation).unwrap();
+        failures.record(
+            "peer-b",
+            generation.clone(),
+            failure("platform.failure", "B"),
+        );
+        assert_eq!(failures.check("peer-a", &generation), Err(original.clone()));
+        failures
+            .check("peer-b", &json!(["connection-2", "database-2"]))
+            .unwrap();
+        assert_eq!(failures.check("peer-a", &generation), Err(original));
+        failures
+            .check("peer-a", &json!(["connection-2", "database-2"]))
+            .unwrap();
+        assert!(failures.peers.is_empty());
+    }
+
+    #[test]
+    fn setup_uncertainty_capacity_never_evicts_a_live_generation() {
+        let mut failures = SetupFailures::default();
+        let generation = json!(["connection-1", "database-1"]);
+        let original = failure("operation.timed-out", "original STOP deadline");
+        for index in 0..MAX_SETUP_FAILURE_PEERS {
+            let peer = format!("peer-{index}");
+            failures.check(&peer, &generation).unwrap();
+            failures.record(&peer, generation.clone(), original.clone());
+        }
+        assert_eq!(
+            failures.check("new-peer", &generation).unwrap_err()["code"],
+            "lifecycle.invalid-state"
+        );
+        assert_eq!(failures.check("peer-0", &generation), Err(original));
+        failures
+            .check("peer-0", &json!(["connection-2", "database-2"]))
+            .unwrap();
+        failures.check("new-peer", &generation).unwrap();
+        assert_eq!(failures.peers.len(), MAX_SETUP_FAILURE_PEERS - 1);
+    }
 
     #[derive(Default)]
     struct Host(Arc<Session>);

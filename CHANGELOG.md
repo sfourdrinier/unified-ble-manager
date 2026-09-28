@@ -4,6 +4,13 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Unreleased
 
+- Keep native setup uncertainty fenced to the physical peer and authoritative
+  connection/database generation across claim, session disposal and declaration
+  replacement. A late old command reply cannot advance a replacement setup on
+  an independently held link; retain the original failure without another write.
+  Bound retained peer failures without evicting unresolved generations, and
+  allow setup again after a verified generation change without dropping another
+  owner's lease. Android and Apple mobile-host regressions exercise both paths.
 - Reuse the durable recording batch's canonical row decoder for internal offline
   journal inspection, preserving metadata, owned values and original serialized
   byte accounting without fabricating a prepare token or acknowledging records.

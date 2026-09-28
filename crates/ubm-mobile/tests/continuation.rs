@@ -15,6 +15,273 @@ fn declaration() -> String {
     .to_string()
 }
 
+fn stop_start_declaration() -> String {
+    let mut order: serde_json::Value = serde_json::from_str(&declaration()).unwrap();
+    let step = |opcode, accepted| {
+        json!({"selector":order["resubscribe"][0],"value":[opcode,0],"timeoutMs":40,
+            "response":{"subscriptionIndex":0,"prefix":[240,opcode,0],"minLength":4,"maxLength":4,
+                "status":{"offset":3,"accepted":accepted}}})
+    };
+    order["setup"] = json!([step(3, vec![0, 6]), step(2, vec![0])]);
+    order.to_string()
+}
+
+fn setup_radio() -> (
+    std::sync::Arc<Scripted>,
+    tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+) {
+    let (writes, received) = tokio::sync::mpsc::unbounded_channel();
+    let radio = Scripted::new(Box::new(move |request| match request {
+        RadioRequest::Discover { .. } => {
+            let mut services = polar_services();
+            services[0].characteristics[0].properties.write = true;
+            Reply::Now(RadioCompletion::Discovered(services))
+        }
+        RadioRequest::Write { value, .. } => {
+            writes.send(value.clone()).unwrap();
+            // ATT completion is not application-response completion.
+            Reply::Now(RadioCompletion::Unit)
+        }
+        _ => polar_responder(request),
+    }));
+    (radio, received)
+}
+
+fn setup_response(host: &ubm_mobile::MobileHost, radio: &Scripted, opcode: u8, status: u8) {
+    let epoch = setup_notification_epoch(radio);
+    // A delayed peripheral PDU arrives on the currently installed native
+    // callback; it does not carry the old mobile session epoch on the wire.
+    host.ingest(RadioIngress::Notification {
+        instance: Instance {
+            peer_id: POLAR.into(),
+            service_uuid: HR_SERVICE.into(),
+            service_occurrence: 0,
+            characteristic_uuid: HR_MEASUREMENT.into(),
+            characteristic_occurrence: 0,
+        },
+        epoch,
+        value: vec![240, opcode, 0, status],
+    });
+}
+
+fn setup_notification_epoch(radio: &Scripted) -> u64 {
+    radio
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find_map(|request| match request {
+            RadioRequest::EnableNotifications { epoch, .. } => Some(*epoch),
+            _ => None,
+        })
+        .unwrap()
+}
+
+async fn dispose_native(engine: &ubm_desktop::continuation::NativeContinuation) {
+    let claim = engine.prepare_claim(256, 65536).await.unwrap();
+    let receipt = engine
+        .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(receipt["disposed"], true, "{receipt}");
+    assert_eq!(receipt["disposeFailure"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+async fn cross_claim_late_stop_cannot_advance_setup_on_an_independently_held_generation() {
+    let mut outcomes = Vec::new();
+    for platform in [MobilePlatform::Android, MobilePlatform::Apple] {
+        let (radio, mut writes) = setup_radio();
+        let (host, _) = open(&radio, platform).await;
+        let independent = host.open_session("independent-background").unwrap();
+        ok(&call(
+            &independent,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"background","operationId":"hold-link"}).to_string(),
+        )
+        .await);
+        ok(&call(
+            &independent,
+            "gatt.discover",
+            &json!({"peerId":POLAR,"lease":"background","operationId":"discover-link"}).to_string(),
+        )
+        .await);
+        let before = ok(&call(&independent, "session.reconcile", "{}").await);
+        let engine = host.continuation();
+        let order = stop_start_declaration();
+        let failure = engine.execute(POLAR, &order).await.unwrap_err();
+        assert_eq!(failure["code"], "operation.timed-out");
+        assert_eq!(failure["retryability"], "never");
+        assert_eq!(writes.recv().await.unwrap(), vec![3, 0]);
+        dispose_native(&engine).await;
+        assert_eq!(radio.count(RequestKind::Disconnect), 0);
+
+        let worker = engine.clone();
+        let mut fresh = tokio::spawn(async move { worker.execute(POLAR, &order).await });
+        let fresh_result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::select! {
+                result = &mut fresh => result.unwrap(),
+                value = writes.recv() => {
+                    assert_eq!(value.unwrap(), vec![3, 0], "fresh observation must precede STOP");
+                    assert_eq!(radio.count(RequestKind::EnableNotifications), 2, "fresh native session must install its own subscription");
+                    // FIFO source ordering: the timed-out old STOP/status6
+                    // precedes the fresh command's own rejection/status3.
+                    setup_response(&host, &radio, 3, 6);
+                    setup_response(&host, &radio, 3, 3);
+                    fresh.await.unwrap()
+                }
+            }
+        }).await.expect("fresh setup must settle under its original step budget");
+        let fresh_failure = fresh_result.unwrap_err();
+        let after = ok(&call(&independent, "session.reconcile", "{}").await);
+        assert!(before["links"][0]["connectionGeneration"].is_string());
+        assert!(before["links"][0]["databaseGeneration"].is_string());
+        assert_eq!(
+            before["links"][0]["connectionGeneration"],
+            after["links"][0]["connectionGeneration"]
+        );
+        assert_eq!(
+            before["links"][0]["databaseGeneration"],
+            after["links"][0]["databaseGeneration"]
+        );
+        dispose_native(&engine).await;
+        assert_eq!(radio.count(RequestKind::Disconnect), 0);
+        assert_eq!(
+            ok(&call(
+                &independent,
+                "gatt.read",
+                &json!({"peerId":POLAR,"selector":selector(),"operationId":"still-owned"})
+                    .to_string()
+            )
+            .await)["valueB64"],
+            "Qg=="
+        );
+        let start_count = radio
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(
+                |request| matches!(request, RadioRequest::Write { value, .. } if value == &[2,0]),
+            )
+            .count();
+        let stop_count = radio
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(
+                |request| matches!(request, RadioRequest::Write { value, .. } if value == &[3,0]),
+            )
+            .count();
+        ok(&call(&independent, "session.dispose", "{}").await);
+        host.shutdown().await;
+        outcomes.push((platform, start_count, stop_count, fresh_failure, failure));
+    }
+    assert!(
+        outcomes.iter().all(|(_, count, _, _, _)| *count == 0),
+        "old STOP/status6 must never advance fresh setup to START: {outcomes:?}"
+    );
+    for (platform, _, stop_count, fresh_failure, original_failure) in outcomes {
+        assert_eq!(
+            stop_count, 1,
+            "{platform:?}: no replacement STOP may be dispatched"
+        );
+        assert_eq!(
+            fresh_failure, original_failure,
+            "{platform:?}: retain the exact original uncertainty"
+        );
+    }
+}
+
+#[tokio::test]
+async fn authoritative_generation_change_allows_fresh_setup_after_claimed_timeout() {
+    for platform in [MobilePlatform::Android, MobilePlatform::Apple] {
+        let (radio, mut writes) = setup_radio();
+        let (host, _) = open(&radio, platform).await;
+        let independent = host.open_session("old-background").unwrap();
+        ok(&call(
+            &independent,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"old-background","operationId":"old-connect"})
+                .to_string(),
+        )
+        .await);
+        ok(&call(
+            &independent,
+            "gatt.discover",
+            &json!({"peerId":POLAR,"lease":"old-background","operationId":"old-discover"})
+                .to_string(),
+        )
+        .await);
+        let before = ok(&call(&independent, "session.reconcile", "{}").await);
+        let engine = host.continuation();
+        let order = stop_start_declaration();
+        assert_eq!(
+            engine.execute(POLAR, &order).await.unwrap_err()["code"],
+            "operation.timed-out"
+        );
+        assert_eq!(writes.recv().await.unwrap(), vec![3, 0]);
+        dispose_native(&engine).await;
+        assert_eq!(radio.count(RequestKind::Disconnect), 0);
+        ok(&call(&independent, "session.dispose", "{}").await);
+        assert_eq!(
+            radio.count(RequestKind::Disconnect),
+            1,
+            "last owner confirms physical release"
+        );
+        let replacement = host.open_session("new-background").unwrap();
+        ok(&call(
+            &replacement,
+            "connection.connect",
+            &json!({"peerId":POLAR,"lease":"new-background","operationId":"new-connect"})
+                .to_string(),
+        )
+        .await);
+        ok(&call(
+            &replacement,
+            "gatt.discover",
+            &json!({"peerId":POLAR,"lease":"new-background","operationId":"new-discover"})
+                .to_string(),
+        )
+        .await);
+        let after = ok(&call(&replacement, "session.reconcile", "{}").await);
+        assert!(before["links"][0]["connectionGeneration"].is_string());
+        assert!(before["links"][0]["databaseGeneration"].is_string());
+        assert_ne!(
+            before["links"][0]["connectionGeneration"],
+            after["links"][0]["connectionGeneration"]
+        );
+        assert_ne!(
+            before["links"][0]["databaseGeneration"],
+            after["links"][0]["databaseGeneration"]
+        );
+        let worker = engine.clone();
+        let running = tokio::spawn(async move { worker.execute(POLAR, &order).await });
+        for opcode in [3, 2] {
+            let value = tokio::time::timeout(std::time::Duration::from_secs(2), writes.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(value, vec![opcode, 0]);
+            setup_response(&host, &radio, opcode, 0);
+        }
+        assert_eq!(
+            running.await.unwrap().unwrap()["event"],
+            "continuation.completed"
+        );
+        assert_eq!(
+            radio.count(RequestKind::Connect),
+            4,
+            "both generations admit an independent and a native lease"
+        );
+        dispose_native(&engine).await;
+        ok(&call(&replacement, "session.dispose", "{}").await);
+        host.shutdown().await;
+    }
+}
+
 #[tokio::test]
 async fn public_session_disposal_preserves_native_continuation_lease() {
     for platform in [MobilePlatform::Android, MobilePlatform::Apple] {
