@@ -4,6 +4,9 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Unreleased
 
+- Reuse the durable recording batch's canonical row decoder for internal offline
+  journal inspection, preserving metadata, owned values and original serialized
+  byte accounting without fabricating a prepare token or acknowledging records.
 - Keep Android toolchain test shims on Git Bash's executable temporary volume
   on Windows, reusing the shared shell-fixture helper. Establish fixture PATH
   priority inside the launched shell, after Git's launcher prepends its own

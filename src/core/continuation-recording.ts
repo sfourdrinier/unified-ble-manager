@@ -342,9 +342,21 @@ export function parseContinuationRecordingBatch(
   if (token !== null && utf8ByteLength(token) > MAX_RECORDING_TOKEN_BYTES) return malformed()
   if ((value.records.length === 0) !== (token === null)) return malformed()
   if (token === null && (bytes !== 0 || value.more)) return malformed()
+  const decoded = parseContinuationRecordingRecords(value.records, limits)
+  if (decoded.bytes !== bytes) return malformed()
+  return Object.freeze({ token, records: decoded.records, bytes, more: value.more })
+}
+
+/** Internal canonical decoding for retained raw journal rows. No prepared-token,
+ * acknowledgement, storage or radio authority is created by this pure decoder. */
+export function parseContinuationRecordingRecords(
+  input: unknown,
+  limits: ContinuationRecordingPrepareOptions
+): Pick<ContinuationRecordingBatch, 'records' | 'bytes'> {
+  if (!Array.isArray(input) || input.length > limits.maxItems) return malformed()
   let previous: number | undefined
   let encodedBytes = 0
-  const records = value.records.map(inputRecord => {
+  const records = input.map(inputRecord => {
     const entry = object(inputRecord)
     exact(entry, ['ordinal', 'metadata', 'record'])
     encodedBytes += utf8ByteLength(JSON.stringify(entry))
@@ -374,6 +386,5 @@ export function parseContinuationRecordingBatch(
     if ('peerId' in record && record.peerId !== context.session.peerId) return malformed()
     return Object.freeze({ ordinal, metadata: context, record })
   })
-  if (encodedBytes !== bytes) return malformed()
-  return Object.freeze({ token, records: Object.freeze(records), bytes, more: value.more })
+  return Object.freeze({ records: Object.freeze(records), bytes: encodedBytes })
 }

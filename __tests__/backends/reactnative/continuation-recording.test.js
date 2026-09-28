@@ -1,5 +1,6 @@
 const {
   parseContinuationRecordingBatch,
+  parseContinuationRecordingRecords,
   createContinuationRecordingController,
   createNativeContinuationRecordingController
 } = require('../../../src/core/continuation-recording')
@@ -36,6 +37,19 @@ const batch = () => {
   const records = [entry(4), entry(5)]
   return { token: 'h10:1', bytes: size(records), more: false, records }
 }
+
+test('canonical offline row-array decoding needs no fabricated prepare token and preserves raw byte accounting', () => {
+  const input = batch()
+  const rows = parseContinuationRecordingRecords(input.records, { maxItems: 20, maxBytes: 2000 })
+  expect(rows.bytes).toBe(input.bytes)
+  expect(rows.records).toEqual(parseContinuationRecordingBatch(input, { maxItems: 20, maxBytes: 2000 }).records)
+  expect(rows).not.toHaveProperty('token')
+  expect(input.records[0].record.valueB64).toBe('AEg=')
+  expect(() => parseContinuationRecordingRecords(input.records, { maxItems: 1, maxBytes: 2000 })).toThrow()
+  expect(() => parseContinuationRecordingRecords(input.records, { maxItems: 20, maxBytes: input.bytes - 1 })).toThrow()
+  input.records[0].record.valueB64 = '?'
+  expect(() => parseContinuationRecordingRecords(input.records, { maxItems: 20, maxBytes: 2000 })).toThrow()
+})
 
 test('durable batches expose owned bytes and historical generation metadata without acknowledging', () => {
   const input = batch()
@@ -208,15 +222,40 @@ test('native recording prepare accepts a valid retained prefix larger than the o
 })
 
 test.each(['status', 'prepare'])('native recording %s retains its own bounded operation error', async operation => {
-  const controller = createNativeContinuationRecordingController({ [operation]: async () => ' '.repeat(5 * 1024 * 1024) }, 'android')
-  const pending = operation === 'prepare' ? controller.prepare('h10', { maxItems: 2048, maxBytes: 4194304 }) : controller.status('h10')
-  await expect(pending).rejects.toMatchObject({ code: 'bytes.too-large', operation: `react-native-rust-core.wire.continuation.recording.${operation}.envelope` })
+  const controller = createNativeContinuationRecordingController(
+    { [operation]: async () => ' '.repeat(5 * 1024 * 1024) },
+    'android'
+  )
+  const pending =
+    operation === 'prepare'
+      ? controller.prepare('h10', { maxItems: 2048, maxBytes: 4194304 })
+      : controller.status('h10')
+  await expect(pending).rejects.toMatchObject({
+    code: 'bytes.too-large',
+    operation: `react-native-rust-core.wire.continuation.recording.${operation}.envelope`
+  })
 })
 
 test('larger prepare allowance does not permit malformed envelope fields or non-null write commitment', async () => {
   const access = { prepare: jest.fn(async () => JSON.stringify({ ok: true, value: batch(), ignored: true })) }
   const controller = createNativeContinuationRecordingController(access, 'android')
-  await expect(controller.prepare('h10', { maxItems: 20, maxBytes: 2000 })).rejects.toMatchObject({ code: 'protocol.malformed' })
-  access.prepare.mockResolvedValue(JSON.stringify({ ok: false, error: { code: 'platform.failure', domain: 'platform', operation: 'continuation.recording.prepare', detail: null }, commit: 'confirmed', retryability: 'never' }))
-  await expect(controller.prepare('h10', { maxItems: 20, maxBytes: 2000 })).rejects.toMatchObject({ code: 'protocol.malformed' })
+  await expect(controller.prepare('h10', { maxItems: 20, maxBytes: 2000 })).rejects.toMatchObject({
+    code: 'protocol.malformed'
+  })
+  access.prepare.mockResolvedValue(
+    JSON.stringify({
+      ok: false,
+      error: {
+        code: 'platform.failure',
+        domain: 'platform',
+        operation: 'continuation.recording.prepare',
+        detail: null
+      },
+      commit: 'confirmed',
+      retryability: 'never'
+    })
+  )
+  await expect(controller.prepare('h10', { maxItems: 20, maxBytes: 2000 })).rejects.toMatchObject({
+    code: 'protocol.malformed'
+  })
 })
