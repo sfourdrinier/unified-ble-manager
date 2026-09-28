@@ -83,6 +83,15 @@ second native discovery. A graph is published only between identical successful
 LE snapshots, fenced by **owner/attachment/revision**. The native errno and ATT
 answer remain platform details; timeout does not fabricate a native failure.
 
+LE link acceptance can precede primary ATT attachment. During initial discovery
+or recovery, a retired disconnected attachment may therefore still be reported
+after the LE link is connected. Under the same pinned daemon owner, UBM waits
+for a new attachment only while that LE link is actually connected, within the
+original five-second observation budget and the caller's cancellation/deadline.
+It never publishes a graph under the retired attachment. Once current discovery
+has begun, link loss remains a refusal; a current discovery failure, unsupported
+mechanism or malformed answer is not converted into a retry or readiness.
+
 `Invalidated` and old object-removal signals trigger a current reread. They do
 not prove failure, and a delayed R1 signal must not invalidate an accepted R2
 database. Explicit rediscovery retires old consumers/routing before replacement.

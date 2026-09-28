@@ -26,6 +26,8 @@ struct State {
     discovering_left: usize,
     fail_at_snapshot: Option<usize>,
     hold_snapshot: bool,
+    hold_snapshot_at: Option<usize>,
+    held_snapshot_entered: Arc<tokio::sync::Notify>,
     pending_snapshot: Option<dbus::Message>,
     snapshot_entered: Arc<tokio::sync::Notify>,
     version: u32,
@@ -37,6 +39,12 @@ struct State {
     missing_field: bool,
     next_characteristic: bool,
     stopped_notify_paths: Vec<String>,
+    disconnected_left: usize,
+    snapshot_sequence: std::collections::VecDeque<(u64, bool)>,
+    disconnect_at_snapshot: Option<usize>,
+    next_attachment: Option<u64>,
+    le_connected: bool,
+    le_connects: usize,
 }
 
 struct Fixture {
@@ -101,7 +109,8 @@ impl Fixture {
                     (Some("org.unifiedblemanager.LEGatt1"), Some("GetSnapshot")) => {
                         state.snapshots += 1;
                         state.snapshot_entered.notify_one();
-                        if state.hold_snapshot {
+                        if state.hold_snapshot || state.hold_snapshot_at == Some(state.snapshots) {
+                            state.held_snapshot_entered.notify_one();
                             assert!(state.pending_snapshot.is_none());
                             state.pending_snapshot = Some(message);
                             return true;
@@ -120,7 +129,22 @@ impl Fixture {
                                     .fail_at_snapshot
                                     .is_some_and(|at| state.snapshots >= at);
                             let discovering = state.discovering_left > 0;
-                            state.discovering_left = state.discovering_left.saturating_sub(1);
+                            let mut disconnected = state.disconnected_left > 0
+                                || state
+                                    .disconnect_at_snapshot
+                                    .is_some_and(|at| state.snapshots >= at);
+                            state.disconnected_left = state.disconnected_left.saturating_sub(1);
+                            if !disconnected {
+                                state.discovering_left = state.discovering_left.saturating_sub(1);
+                                if let Some(attachment) = state.next_attachment.take() {
+                                    state.attachment = attachment;
+                                }
+                            }
+                            if let Some((attachment, retired)) = state.snapshot_sequence.pop_front()
+                            {
+                                state.attachment = attachment;
+                                disconnected = retired;
+                            }
                             let mut reply = message.method_return();
                             if state.wrong_type {
                                 reply = reply.append1(u64::from(state.version));
@@ -130,25 +154,40 @@ impl Fixture {
                             reply = reply.append3(
                                 state.attachment,
                                 state.revision,
-                                state.bearer.as_deref().unwrap_or("le"),
+                                state.bearer.as_deref().unwrap_or(if disconnected {
+                                    "none"
+                                } else {
+                                    "le"
+                                }),
                             );
                             reply = reply.append3(
-                                if failed {
+                                if disconnected {
+                                    "disconnected"
+                                } else if failed {
                                     "failed"
                                 } else if discovering {
                                     "discovering"
                                 } else {
                                     "ready"
                                 },
-                                state.stage.as_deref().unwrap_or(if failed {
+                                state.stage.as_deref().unwrap_or(if disconnected {
+                                    "transport"
+                                } else if failed {
                                     "discovery"
                                 } else {
                                     "none"
                                 }),
-                                if failed { 5i32 } else { 0i32 },
+                                if disconnected {
+                                    107i32
+                                } else if failed {
+                                    5i32
+                                } else {
+                                    0i32
+                                },
                             );
                             if !state.missing_field {
-                                reply = reply.append1(if failed { 10u8 } else { 0u8 });
+                                reply =
+                                    reply.append1(if failed && !disconnected { 10u8 } else { 0u8 });
                             }
                             if state.extra_field {
                                 reply = reply.append1(1u32);
@@ -170,8 +209,13 @@ impl Fixture {
                             .append1(format!("<node><node name=\"{child}\"/></node>"))
                     }
                     (Some("org.freedesktop.DBus.Properties"), Some("Get")) => {
+                        let (interface, property): (String, String) = message.read2().unwrap();
+                        if interface == "org.bluez.Bearer.LE1" && property == "Connected" {
+                            return connection
+                                .send(message.method_return().append1(Variant(state.le_connected)))
+                                .is_ok();
+                        }
                         state.graph_reads += 1;
-                        let (_, property): (String, String) = message.read2().unwrap();
                         if object == DESC && state.invalidate_at_descriptor {
                             state.revision += 1;
                         }
@@ -203,6 +247,11 @@ impl Fixture {
                     }
                     (Some("org.bluez.GattCharacteristic1"), Some("StopNotify")) => {
                         state.stopped_notify_paths.push(object);
+                        message.method_return()
+                    }
+                    (Some("org.bluez.Bearer.LE1"), Some("Connect")) => {
+                        state.le_connected = true;
+                        state.le_connects += 1;
                         message.method_return()
                     }
                     other => panic!("unexpected method {other:?} on {object}"),
@@ -575,6 +624,221 @@ fn discovering_polls_authoritative_snapshot_then_publishes_matching_token() {
                 .len(),
             1
         );
+    });
+}
+
+#[test]
+#[ignore = "private session bus only; no radio"]
+fn accepted_le_connect_waits_for_new_att_attachment_after_retired_snapshot() {
+    run(async {
+        let fixture = Fixture::new();
+        let peripheral = fixture.peripheral().await;
+        {
+            let mut state = fixture.state.lock().unwrap();
+            state.attachment = 13;
+            state.disconnected_left = 1;
+            state.next_attachment = Some(14);
+            state.discovering_left = 1;
+        }
+        peripheral
+            .connect_le(&fixture.server.unique_name())
+            .await
+            .unwrap();
+        peripheral
+            .discover_services()
+            .await
+            .expect("accepted LE link precedes new primary ATT initialization");
+        let token = peripheral.accepted_le_gatt_ready_token().unwrap().unwrap();
+        assert_eq!(token.attachment, 14);
+        let state = fixture.state.lock().unwrap();
+        assert_eq!(state.le_connects, 1);
+        assert_eq!(state.snapshots, 4);
+        assert!(state.graph_reads > 0);
+        assert_eq!(peripheral.characteristics().len(), 1);
+    });
+}
+
+#[test]
+#[ignore = "private session bus only; no radio"]
+fn retired_snapshot_without_live_le_link_remains_actual_transport_failure() {
+    run(async {
+        let fixture = Fixture::new();
+        let peripheral = fixture.peripheral().await;
+        fixture.state.lock().unwrap().disconnected_left = 1;
+        let error = peripheral.discover_services().await.unwrap_err();
+        assert!(
+            matches!(error, Error::Platform(ref detail) if detail.code == "disconnected" && detail.metadata.iter().any(|(key,value)| *key == "errno" && value == "107"))
+        );
+        assert_eq!(fixture.state.lock().unwrap().snapshots, 1);
+        assert_eq!(fixture.state.lock().unwrap().graph_reads, 0);
+    });
+}
+
+#[test]
+#[ignore = "private session bus only; no radio"]
+fn new_attachment_failure_is_not_retried_as_old_disconnect() {
+    run(async {
+        let fixture = Fixture::new();
+        let peripheral = fixture.peripheral().await;
+        {
+            let mut state = fixture.state.lock().unwrap();
+            state.disconnected_left = 1;
+            state.next_attachment = Some(8);
+            state.fail_at_snapshot = Some(2);
+        }
+        peripheral
+            .connect_le(&fixture.server.unique_name())
+            .await
+            .unwrap();
+        let error = peripheral.discover_services().await.unwrap_err();
+        assert!(
+            matches!(error, Error::Platform(ref detail) if detail.code == "failed" && detail.metadata.iter().any(|(key,value)| *key == "attError" && value == "10"))
+        );
+        assert_eq!(fixture.state.lock().unwrap().snapshots, 2);
+        assert_eq!(fixture.state.lock().unwrap().graph_reads, 0);
+    });
+}
+
+#[test]
+#[ignore = "private session bus only; no radio"]
+fn old_attachment_cannot_become_ready_after_disconnected_snapshot() {
+    run(async {
+        let fixture = Fixture::new();
+        let peripheral = fixture.peripheral().await;
+        fixture.state.lock().unwrap().disconnected_left = 1;
+        peripheral
+            .connect_le(&fixture.server.unique_name())
+            .await
+            .unwrap();
+        assert!(peripheral.discover_services().await.is_err());
+        assert_eq!(fixture.state.lock().unwrap().snapshots, 2);
+        assert_eq!(fixture.state.lock().unwrap().graph_reads, 0);
+        assert_eq!(peripheral.accepted_le_gatt_ready_token().unwrap(), None);
+    });
+}
+
+#[test]
+#[ignore = "private session bus only; no radio"]
+fn current_attachment_disconnect_is_terminal_even_while_le_bearer_connected() {
+    run(async {
+        let fixture = Fixture::new();
+        let peripheral = fixture.peripheral().await;
+        {
+            let mut state = fixture.state.lock().unwrap();
+            state.disconnected_left = 1;
+            state.next_attachment = Some(8);
+            state.discovering_left = 1;
+            state.disconnect_at_snapshot = Some(3);
+        }
+        peripheral
+            .connect_le(&fixture.server.unique_name())
+            .await
+            .unwrap();
+        let error = peripheral.discover_services().await.unwrap_err();
+        assert!(matches!(error, Error::Platform(ref detail) if detail.code == "disconnected"));
+        let state = fixture.state.lock().unwrap();
+        assert!(state.le_connected);
+        assert_eq!(state.snapshots, 3);
+        assert_eq!(state.graph_reads, 0);
+        assert_eq!(peripheral.accepted_le_gatt_ready_token().unwrap(), None);
+    });
+}
+
+#[test]
+#[ignore = "private session bus only; no radio"]
+fn regressing_retired_attachment_cannot_readmit_original_attachment() {
+    run(async {
+        let fixture = Fixture::new();
+        let peripheral = fixture.peripheral().await;
+        fixture.state.lock().unwrap().snapshot_sequence =
+            [(13, true), (12, true), (13, false)].into();
+        peripheral
+            .connect_le(&fixture.server.unique_name())
+            .await
+            .unwrap();
+        assert!(peripheral.discover_services().await.is_err());
+        assert_eq!(fixture.state.lock().unwrap().graph_reads, 0);
+        assert_eq!(peripheral.accepted_le_gatt_ready_token().unwrap(), None);
+    });
+}
+
+#[test]
+#[ignore = "private session bus only; no radio"]
+fn newer_disconnected_attachment_is_actual_current_transport_failure() {
+    run(async {
+        let fixture = Fixture::new();
+        let peripheral = fixture.peripheral().await;
+        fixture.state.lock().unwrap().snapshot_sequence =
+            [(13, true), (14, true), (15, false)].into();
+        peripheral
+            .connect_le(&fixture.server.unique_name())
+            .await
+            .unwrap();
+        let error = peripheral.discover_services().await.unwrap_err();
+        assert!(
+            matches!(error, Error::Platform(ref detail) if detail.code == "disconnected" && detail.metadata.iter().any(|(key,value)| *key == "attachment" && value == "14"))
+        );
+        assert_eq!(fixture.state.lock().unwrap().snapshots, 2);
+        assert_eq!(fixture.state.lock().unwrap().graph_reads, 0);
+        assert_eq!(peripheral.accepted_le_gatt_ready_token().unwrap(), None);
+    });
+}
+
+#[test]
+#[ignore = "private session bus only; no radio"]
+fn connected_le_without_new_att_attachment_keeps_total_admission_deadline() {
+    run(async {
+        let fixture = Fixture::new();
+        let peripheral = fixture.peripheral().await;
+        fixture.state.lock().unwrap().disconnected_left = usize::MAX;
+        peripheral
+            .connect_le(&fixture.server.unique_name())
+            .await
+            .unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(6), peripheral.discover_services())
+            .await
+            .expect("retired ATT wait stays inside original five-second budget")
+            .unwrap_err();
+        assert!(matches!(error, Error::TimedOut(bound) if bound == Duration::from_secs(5)));
+        let state = fixture.state.lock().unwrap();
+        assert!(state.snapshots > 1);
+        assert_eq!(state.graph_reads, 0);
+        assert_eq!(peripheral.accepted_le_gatt_ready_token().unwrap(), None);
+    });
+}
+
+#[test]
+#[ignore = "private session bus only; no radio"]
+fn cancelled_new_attachment_wait_never_publishes_late_ready_reply() {
+    run(async {
+        let fixture = Fixture::new();
+        let peripheral = fixture.peripheral().await;
+        {
+            let mut state = fixture.state.lock().unwrap();
+            state.disconnected_left = 1;
+            state.hold_snapshot_at = Some(2);
+        }
+        peripheral
+            .connect_le(&fixture.server.unique_name())
+            .await
+            .unwrap();
+        let owned = peripheral.clone();
+        let task = tokio::spawn(async move { owned.discover_services().await });
+        let entered = fixture.state.lock().unwrap().held_snapshot_entered.clone();
+        entered.notified().await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        let pending = {
+            let mut state = fixture.state.lock().unwrap();
+            state.hold_snapshot_at = None;
+            state.pending_snapshot.take().unwrap()
+        };
+        let mut reply = pending.method_return();
+        reply.append_all((1u32, 8u64, 1u64, "le", "ready", "none", 0i32, 0u8));
+        fixture.replies.send(reply).unwrap();
+        peripheral.le_gatt_snapshot().await.unwrap();
+        assert_eq!(fixture.state.lock().unwrap().graph_reads, 0);
+        assert_eq!(peripheral.accepted_le_gatt_ready_token().unwrap(), None);
     });
 }
 

@@ -42,3 +42,16 @@ test('BlueZ guidance distinguishes fresh LE discovery from inherited hash-matche
       expect(guide).toContain(requirement)
   }
 })
+
+test('BlueZ recovery guidance separates link acceptance from a new ATT attachment', () => {
+  const guide = read('docs/BLUEZ_LE_GATT.md')
+  for (const requirement of [
+    'LE link acceptance can precede primary ATT attachment',
+    'retired disconnected attachment',
+    'new attachment',
+    'original five-second',
+    'same pinned daemon owner',
+    'current discovery failure'
+  ])
+    expect(guide).toContain(requirement)
+})

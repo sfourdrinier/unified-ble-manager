@@ -191,7 +191,8 @@ impl BluetoothSession {
     }
 
     /// Initial admission only. The total five-second deadline includes every
-    /// D-Bus await, and only authoritative DISCOVERING is polled at 100 ms.
+    /// D-Bus await. A connected LE bearer may precede a new primary ATT
+    /// attachment; its retired snapshot is polled, never admitted as ready.
     pub async fn await_le_gatt_ready(
         &self,
         device: &DeviceId,
@@ -208,9 +209,47 @@ impl BluetoothSession {
         deadline: std::time::Duration,
     ) -> Result<LeGattReadyToken, BluetoothError> {
         tokio::time::timeout(deadline, async {
+            let mut retired_attachment = None;
+            let mut observed_current_attachment = false;
             loop {
                 let snapshot = self.le_gatt_snapshot(device, owner).await?;
-                if snapshot.status != LeGattStatus::Discovering {
+                if snapshot.status == LeGattStatus::Disconnected
+                    && snapshot.bearer == LeGattBearer::None
+                    && !observed_current_attachment
+                {
+                    if let Some(old) = retired_attachment {
+                        if snapshot.attachment < old {
+                            return Err(protocol(
+                                "LE GATT retired attachment counter regressed".into(),
+                            ));
+                        }
+                        if snapshot.attachment > old {
+                            // A replacement ATT attachment was created and
+                            // ended between polls. Its own loss is terminal.
+                            return snapshot.ready_token();
+                        }
+                    }
+                    // LE1.Connect settles physical LE ownership before primary
+                    // ATT initialization. Only an independently live scoped LE
+                    // bearer permits waiting beyond this retired ATT answer.
+                    if !self.le_connected(device, owner).await? {
+                        return snapshot.ready_token();
+                    }
+                    retired_attachment.get_or_insert(snapshot.attachment);
+                } else if matches!(
+                    snapshot.status,
+                    LeGattStatus::Discovering | LeGattStatus::Ready
+                ) {
+                    if retired_attachment.is_some_and(|old| snapshot.attachment <= old) {
+                        return Err(protocol(
+                            "LE GATT attachment did not advance beyond retired attachment".into(),
+                        ));
+                    }
+                    observed_current_attachment = true;
+                    if snapshot.status == LeGattStatus::Ready {
+                        return snapshot.ready_token();
+                    }
+                } else {
                     return snapshot.ready_token();
                 }
                 tokio::time::sleep(POLL_PERIOD).await;

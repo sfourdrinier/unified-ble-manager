@@ -4,6 +4,11 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Unreleased
 
+- Wait within the existing BlueZ discovery budget for a new primary ATT
+  attachment when accepted LE reconnection still reports a retired disconnected
+  attachment. Preserve real link loss, current discovery failure, daemon-owner
+  fences and exact graph-publication tokens; never accept the retired graph.
+  Exercise the boundary through the actual private D-Bus client.
 - Refresh each new strict BlueZ LE client's peer-local native GATT graph instead
   of trusting an inherited hash-matched cache. Exercise changed-characteristic
   replacement, refused discovery and reconnect through actual native client/server
