@@ -34,10 +34,7 @@
 async function awaitSignal(promise, description, budgetMs = 4_000) {
   let timer
   const failure = new Promise((_resolve, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`no ${description} within ${budgetMs}ms`)),
-      budgetMs
-    )
+    timer = setTimeout(() => reject(new Error(`no ${description} within ${budgetMs}ms`)), budgetMs)
   })
   try {
     return await Promise.race([promise, failure])
@@ -46,4 +43,32 @@ async function awaitSignal(promise, description, budgetMs = 4_000) {
   }
 }
 
-module.exports = { awaitSignal }
+/** Drive explicit virtual tasks until the operation itself settles. */
+async function driveVirtualClock(clock, promise, description = 'virtual-clock operation') {
+  let active = true
+  let settled = false
+  void promise.then(
+    () => {
+      settled = true
+    },
+    () => {
+      settled = true
+    }
+  )
+  const driven = (async () => {
+    while (active && !settled) {
+      clock.runUntilIdle()
+      // Let native/host promise and timer callbacks run as well; a fixed
+      // microtask-turn budget can return with virtual work still outstanding.
+      await new Promise(resolve => setImmediate(resolve))
+    }
+    return promise
+  })()
+  try {
+    return await awaitSignal(driven, description)
+  } finally {
+    active = false
+  }
+}
+
+module.exports = { awaitSignal, driveVirtualClock }

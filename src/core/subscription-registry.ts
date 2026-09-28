@@ -6,7 +6,7 @@ import { BackendContractError, contractError } from '../backend-contract/errors'
 import { ownBytes } from '../backend-contract/primitives'
 import type { BackendSubscription, BleCentralBackend } from '../backend-contract/backend'
 import type { CleanupFailure, CleanupRecord, NormalizedBleError } from '../backend-contract/errors'
-import type { CharacteristicPath, DatabasePath, NotificationValue } from '../backend-contract/gatt'
+import type { CharacteristicPath, ConnectionPath, DatabasePath, NotificationValue } from '../backend-contract/gatt'
 import type { BackendIdentity } from '../backend-contract/identity'
 import type { PublicOperationOptions, SubscriptionOptions } from '../backend-contract/operations'
 import type { AttachmentBoundIdFactory, AttachmentId, ByteLimit, SubscriptionId } from '../backend-contract/primitives'
@@ -17,7 +17,12 @@ import { assertSuccessfulOperationTerminal, awaitWithOperationAdmission } from '
 import { CoreOperationCoordinator, type CoreOperationDispatch, type CoreOperationResult } from './operation-coordinator'
 import { ResourceLedger } from './resource-ledger'
 import { CoreTraceRecorder } from './trace-recorder'
-import { characteristicPathKey, characteristicPathsEqual, databasePathsEqual } from './gatt-path-equality'
+import {
+  characteristicPathKey,
+  characteristicPathsEqual,
+  connectionPathsEqual,
+  databasePathsEqual
+} from './gatt-path-equality'
 
 type CurrentCharacteristicPath<Attachment extends string> = CharacteristicPath<
   Attachment,
@@ -250,6 +255,13 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     return failures.length === 0 ? { state: 'released', failures: [] } : { state: 'release-failed', failures }
   }
 
+  /** Authoritative end of this exact lease generation, before cancelling child work. */
+  confirmConnectionReleased(path: ConnectionPath<Attachment, string>): void {
+    for (const physical of this.physicalByPath.values()) {
+      if (connectionPathsEqual(physical.path, path)) physical.backendInvalidated = true
+    }
+  }
+
   async invalidateDatabase(
     database: DatabasePath<Attachment, string, string>,
     reason: 'connection-lost' | 'owner-released' | 'source-failed' | 'service-changed'
@@ -263,7 +275,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
         this.closeConsumer(subscription, reason)
         physical.consumers.delete(subscription)
       }
-      const result = await this.disable(physical, reason === 'connection-lost' || reason === 'service-changed')
+      const result = await this.disable(physical)
       failures.push(...result.failures)
     }
     return failures.length === 0 ? { state: 'released', failures: [] } : { state: 'release-failed', failures }
@@ -409,13 +421,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     }
   }
 
-  private async disable(
-    physical: PhysicalSubscription<Attachment, Identity>,
-    backendInvalidated = false
-  ): Promise<CleanupRecord> {
-    if (backendInvalidated) {
-      physical.backendInvalidated = true
-    }
+  private async disable(physical: PhysicalSubscription<Attachment, Identity>): Promise<CleanupRecord> {
     if (physical.released) {
       return { state: 'released', failures: [] }
     }
@@ -494,11 +500,10 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
       dispatch: correlation => this.unsubscribeDispatch(backendSubscription, options, correlation)
     })
     if (result.outcome !== 'succeeded') {
-      if (
-        physical.backendInvalidated ||
-        result.error.code === 'gatt.stale-handle' ||
-        result.error.code === 'operation.disconnected'
-      ) {
+      // A stale path or interrupted operation says nothing about whether the
+      // native CCCD was disabled. Only independently confirmed connection-end
+      // invalidation can discharge a refused unsubscribe.
+      if (physical.backendInvalidated) {
         this.runtime.trace.record({
           timestamp: this.runtime.now(),
           resource: 'subscription',
@@ -658,6 +663,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
                 ? 'owner-released'
                 : 'source-failed'
         if (reason === 'connection-lost' || reason === 'service-changed') {
+          if (reason === 'connection-lost') this.confirmConnectionReleased(physical.path)
           await this.invalidatePath(physical.path, reason)
         } else {
           await this.invalidatePhysical(physical, reason)
@@ -720,7 +726,10 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
       this.closeConsumer(subscription, reason)
       physical.consumers.delete(subscription)
     }
-    return this.disable(physical, reason === 'connection-lost' || reason === 'service-changed')
+    // Database invalidation ends usability, not the native enablement. Keep
+    // its exact backend identity until unsubscribe succeeds; only a confirmed
+    // connection end discharges that connection's physical obligations.
+    return this.disable(physical)
   }
 
   private failEnableConsumers(physical: PhysicalSubscription<Attachment, Identity>): void {

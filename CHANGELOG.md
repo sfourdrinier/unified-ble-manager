@@ -4,6 +4,17 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Unreleased
 
+- Preserve shared subscription cleanup ownership after service-change
+  invalidation. Retire usability immediately, but explicitly unsubscribe the
+  original native identity and retain a refused cleanup for retry without
+  releasing another connection owner. Exercise both terminal/release orderings
+  on all desktop profiles and preserve primary test failures alongside teardown
+  failures.
+- Do not infer native subscription release from stale/interrupted cleanup errors
+  or an event-source failure. Publish genuine connection-end evidence before
+  cancelling racing cleanup. Align the deterministic backend with original-
+  identity cleanup, and drive affected virtual-clock tests to actual completion
+  instead of abandoning scheduled work after a fixed microtask count.
 - Require explicit verified BlueZ daemon-owner policy in both simulator radio
   probes, reusing production admission. Keep qualification fixtures portable
   across Windows paths and synchronize powered-off scan admission with the

@@ -192,6 +192,14 @@ Generation increments happen-before publication of `lost`, `changed`,
 recovery creates a new connection, database epoch, or subscription. An
 implementation MUST reject a stale handle before dispatching it to a backend.
 
+A database or subscription `service-changed` terminal ends usability, not its
+native cleanup obligation. Cleanup addresses the original admitted subscription
+identity even after graph replacement. A refused unsubscribe remains owned and
+retryable; only confirmed unsubscribe or end of its physical connection
+generation discharges that obligation, not a merely logical lease-release
+receipt or stale-handle error. Releasing it must not release another owner's
+connection lease.
+
 <!-- SEM-COVERAGE: SEM-ADAPTER -->
 ## 5. Adapter state, permission, and reset
 

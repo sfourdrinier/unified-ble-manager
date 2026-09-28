@@ -19,31 +19,42 @@ export async function unsubscribeManagedDeterministicSubscription<Operation exte
     readonly subscriptionsById: Map<string, DeterministicSubscription>
     readonly managed: DeterministicSubscription
     readonly operation: OperationOptions<string, Operation>
-    readonly requireCurrent: () => void
   }
 ): Promise<OperationTerminalRecord<string, string>> {
-  const physical = resources.physicalSubscriptions.get(resources.managed.physicalKey)
-  if (physical === undefined || !physical.consumers.has(resources.managed)) {
+  const managed = resources.managed
+  const subscriptionId = String(managed.subscriptionId)
+  if (resources.subscriptionsById.get(subscriptionId) !== managed) {
     throw contractError('gatt.stale-handle', 'gatt', 'gatt.unsubscribe')
   }
+  const physical = resources.physicalSubscriptions.get(managed.physicalKey)
   const result = await resources.operations.run(
     'unsubscribe',
     resources.operation,
     resources.operation.correlation,
     false,
     () => {
-      resources.requireCurrent()
-      const ownsPhysicalDisable = physical.consumers.size === 1
-      if (ownsPhysicalDisable) {
-        takePeripheralFailure(resources.peripheral, 'unsubscribe', 'gatt.subscribe-failed')
+      // Cleanup uses the admitted identity, not the database's usability.
+      // Invalidation may have already confirmed this original physical scope's
+      // release while its managed handle still awaits local retirement. Never
+      // disable a replacement scope or another consumer in that case.
+      if (
+        physical !== undefined &&
+        resources.physicalSubscriptions.get(managed.physicalKey) === physical &&
+        physical.consumers.has(managed)
+      ) {
+        const ownsPhysicalDisable = physical.consumers.size === 1
+        if (ownsPhysicalDisable) {
+          takePeripheralFailure(resources.peripheral, 'unsubscribe', 'gatt.subscribe-failed')
+        }
+        physical.consumers.delete(managed)
+        if (ownsPhysicalDisable) {
+          physical.state = 'removing'
+          resources.physicalSubscriptions.delete(physical.key)
+        }
       }
-      resources.managed.closeForRemoval()
-      physical.consumers.delete(resources.managed)
-      resources.subscriptionsById.delete(String(resources.managed.subscriptionId))
-      if (ownsPhysicalDisable) {
-        physical.state = 'removing'
-        resources.physicalSubscriptions.delete(physical.key)
-      }
+      managed.closeForRemoval()
+      if (resources.subscriptionsById.get(subscriptionId) === managed)
+        resources.subscriptionsById.delete(subscriptionId)
       return undefined
     },
     null,
