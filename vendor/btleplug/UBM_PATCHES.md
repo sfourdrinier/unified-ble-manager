@@ -23,6 +23,68 @@ alongside discovery-session ownership and watcher tests. These tests do not
 establish physical-radio support or authoritative LE GATT readiness: aggregate
 `Device1.ServicesResolved` and cached objects are not such proof.
 
+## Authoritative private LE GATT snapshot publication
+
+Strict owner-pinned peripherals now read the explicitly deployed daemon's
+`org.unifiedblemanager.LEGatt1.GetSnapshot` version-1 `uttsssiy` answer. This is
+the private protocol described in `../bluez/README.md`, not an API provided by
+stock BlueZ. Missing or unknown API/version is explicitly unsupported; there is
+no fallback to `Device1.ServicesResolved`, exported cache, MTU or a successful
+read. The snapshot keeps the actual bearer, status, native errno, ATT result and
+failure stage (including policy/registration), pinned to the same unique daemon
+owner before and after the call. Strict types/field count/vocabulary and ready
+invariants fail closed. A non-ready unknown bearer preserves actual failure or
+retirement state; it never qualifies as ready. Publicly constructed snapshots are revalidated before
+they can mint a ready token.
+
+Initial DISCOVERING admission polls only that authoritative answer every 100 ms
+inside one total 5 s deadline, including held D-Bus calls. The shared
+`LE_GATT_OBSERVATION_TIMEOUT` bound reports a typed local timeout, not an
+invented native discovery failure. Failed/unsupported,
+malformed or replaced-owner answers stop immediately. Canceling this read-only
+wait admits no new connection/graph publication.
+
+`Peripheral::discover_services` brackets its entire candidate graph retrieval
+(services, characteristics and descriptors) with identical ready tokens. The
+second snapshot is immediate: it never waits/retries under a new revision.
+Only a complete successful bracket commits the graph and token together under
+one clone-shared mutex, without awaiting under the lock. All failures retain
+the previous publication; that cache is not represented as a new current graph.
+The locked commit also rejects an older attachment/revision, a different daemon
+owner, or an unattested replacement. Concurrent clones cannot overwrite a newer
+accepted graph with an older, independently successful bracket.
+The synchronous `accepted_le_gatt_ready_token()` and read-only
+`le_gatt_snapshot()` APIs are re-exported with snapshot/token types through
+`btleplug::platform`, letting the desktop event consumer fence invalidation
+against its actual accepted owner/attachment/revision. Watcher publication and
+event-consumption fencing are separate desktop responsibilities.
+
+`notification_cleanup_peripheral(characteristic)` captures an independent
+cleanup-only graph containing the exact original service/characteristic path
+on the same device/session/daemon owner, before the first native enable.
+Replacing the live graph cannot retarget retained notification STOP ownership
+to a new revision. This does not open a manager, discover, connect or subscribe;
+the desktop owner retains it only for cleanup, never new data admission.
+
+Snapshot failures remain structured `PlatformError` values: domain
+`bluez-le-gatt`, code the actual snapshot status, metadata native `errorStage`,
+`errno`, `attError`, bearer and token identity. Missing API retains the actual
+`bluez-dbus` error name plus `capability=unsupported`; unknown version retains
+its actual version. A bracket token change has the consumer's explicit
+`snapshot-changed`/`phase=graph-bracket` diagnostic, not a fabricated native
+errno, ATT result or error-stage answer.
+
+Private-bus regression tests live in `src/bluez/le_gatt_tests.rs` and require
+explicit `UBM_BLUEZ_PRIVATE_BUS_TEST=1` plus `dbus-run-session`. They exercise
+the actual snapshot and graph methods, native refusal identity, descriptor-time
+revision changes, held calls, cancellation, daemon replacement, wire errors and
+clone-shared cache/token preservation, without a system daemon or radio.
+Pure snapshot parser tests live in `bluez-async/src/le_gatt.rs`; as with upstream
+vendored unit tests, run that non-workspace crate in an isolated source copy
+using its unchanged upstream dev-dependencies. No production dependencies are
+added. These tests establish protocol/lifecycle behavior only, not a physical
+radio, deployed daemon capability or backend support promotion.
+
 ## CoreBluetooth read-only peer directory
 
 The existing CoreBluetooth manager queue implements service-filtered system-connected

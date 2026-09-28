@@ -796,6 +796,15 @@ pub struct ServiceSnapshot {
     pub characteristics: Vec<CharacteristicSnapshot>,
 }
 
+/// Authoritative identity of one accepted platform GATT graph. This is an
+/// internal boundary fence, not a replacement for public core generations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GattSnapshotIdentity {
+    pub owner: String,
+    pub attachment: u64,
+    pub revision: u64,
+}
+
 /// Radio-side events delivered to the central event loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RadioEvent {
@@ -842,6 +851,25 @@ pub enum RadioEvent {
     /// paths invalidate and rediscovery is required (never silently
     /// re-read through stale handles).
     ServicesChanged(String),
+    /// Raw platform trigger: the backend must reread authoritative state
+    /// before deciding whether an accepted database ended.
+    GattInvalidationHint(String),
+    /// Authoritative GATT control observation ended or became malformed.
+    /// No physical service-change or adapter-loss cause is implied.
+    GattWatchFailed(DesktopError),
+    /// One accepted peer graph lost authoritative observation. Unlike a
+    /// global watch failure, explicit rediscovery may repair this peer.
+    GattObservationFailed {
+        peer_id: String,
+        identity: GattSnapshotIdentity,
+        error: DesktopError,
+    },
+    /// A previously accepted database ended. Delayed delivery must not
+    /// invalidate a newer accepted database of the same peer.
+    ServicesChangedScoped {
+        peer_id: String,
+        identity: GattSnapshotIdentity,
+    },
     /// The OS notification broadcast outran one subscription's receiver
     /// (vendored btleplug patch 10): `lost` notifications of the peer were
     /// missed, any of which may have been this instance's. Accounted on the
@@ -909,6 +937,30 @@ pub struct DirectoryPeer {
 /// answer `capability.unsupported`, so existing implementations keep
 /// compiling and never claim a capability they do not have.
 pub trait RadioBoundary: Send + Sync + 'static {
+    /// Identity of the currently accepted graph, read without radio I/O.
+    /// `None` preserves platforms without an authoritative snapshot token.
+    fn gatt_snapshot_identity(
+        &self,
+        _peer_id: &str,
+    ) -> Result<Option<GattSnapshotIdentity>, DesktopError> {
+        Ok(None)
+    }
+
+    /// Discover a graph together with its accepted identity. Token-aware
+    /// radios override this to capture both under their admission gate;
+    /// the default preserves radios without authoritative snapshot tokens.
+    fn discover_scoped(
+        &self,
+        peer_id: &str,
+    ) -> impl Future<
+        Output = Result<(Vec<ServiceSnapshot>, Option<GattSnapshotIdentity>), DesktopError>,
+    > + Send {
+        async {
+            let services = self.discover(peer_id).await?;
+            Ok((services, self.gatt_snapshot_identity(peer_id)?))
+        }
+    }
+
     fn connected_peers(
         &self,
         _services: &[String],
@@ -1365,6 +1417,9 @@ struct FakeInner {
     notifications: Vec<(String, String, bool)>,
     scan_active: bool,
     services: HashMap<String, Vec<ServiceSnapshot>>,
+    gatt_identities: HashMap<String, GattSnapshotIdentity>,
+    gatt_identity_errors: HashMap<String, DesktopError>,
+    scripted_gatt_identities: HashMap<String, VecDeque<Option<GattSnapshotIdentity>>>,
     mtu: HashMap<String, u16>,
     /// Per-instance read payloads: values returned for one addressed
     /// characteristic instance (unset instances return the canned default).
@@ -1432,6 +1487,33 @@ impl Default for FakeRadio {
 }
 
 impl FakeRadio {
+    /// Set the identity subsequent successful discoveries report.
+    pub fn set_gatt_snapshot_identity(&self, peer_id: &str, identity: GattSnapshotIdentity) {
+        let mut state = self.state.lock().expect("fake radio state");
+        state.gatt_identity_errors.remove(peer_id);
+        state.gatt_identities.insert(peer_id.to_owned(), identity);
+    }
+
+    /// Script an actual snapshot read failure without affecting other peers.
+    pub fn fail_gatt_snapshot_identity(&self, peer_id: &str, error: DesktopError) {
+        let mut state = self.state.lock().expect("fake radio state");
+        state.gatt_identities.remove(peer_id);
+        state.gatt_identity_errors.insert(peer_id.to_owned(), error);
+    }
+
+    /// Script identity reads to reproduce replacement before publication.
+    pub fn script_gatt_snapshot_identities(
+        &self,
+        peer_id: &str,
+        identities: Vec<Option<GattSnapshotIdentity>>,
+    ) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .scripted_gatt_identities
+            .insert(peer_id.to_owned(), identities.into());
+    }
+
     /// Script the platform parser's canonical spelling without applying
     /// any case-folding policy to other opaque identities.
     pub fn set_canonical_peer_id(&self, alias: &str, canonical: &str) {
@@ -1466,6 +1548,9 @@ impl FakeRadio {
                 notifications: Vec::new(),
                 scan_active: false,
                 services: HashMap::new(),
+                gatt_identities: HashMap::new(),
+                gatt_identity_errors: HashMap::new(),
+                scripted_gatt_identities: HashMap::new(),
                 mtu: HashMap::new(),
                 values: HashMap::new(),
                 read_provenance: ReadProvenance::ReadResponse,
@@ -2018,6 +2103,24 @@ fn descriptor_key(
 }
 
 impl RadioBoundary for FakeRadio {
+    fn gatt_snapshot_identity(
+        &self,
+        peer_id: &str,
+    ) -> Result<Option<GattSnapshotIdentity>, DesktopError> {
+        let mut state = self.state.lock().expect("fake radio state");
+        if let Some(error) = state.gatt_identity_errors.get(peer_id) {
+            return Err(error.clone());
+        }
+        if let Some(identity) = state
+            .scripted_gatt_identities
+            .get_mut(peer_id)
+            .and_then(VecDeque::pop_front)
+        {
+            return Ok(identity);
+        }
+        Ok(state.gatt_identities.get(peer_id).cloned())
+    }
+
     async fn connected_peers(
         &self,
         _services: &[String],

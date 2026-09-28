@@ -15,6 +15,7 @@ mod device;
 mod events;
 mod introspect;
 mod le_bearer;
+mod le_gatt;
 mod macaddress;
 mod match_cleanup;
 mod messagestream;
@@ -29,6 +30,10 @@ pub use self::descriptor::{DescriptorId, DescriptorInfo};
 pub use self::device::{AddressType, DeviceId, DeviceInfo};
 pub use self::events::{AdapterEvent, BluetoothEvent, CharacteristicEvent, DeviceEvent};
 use self::introspect::IntrospectParse;
+pub use self::le_gatt::{
+    LE_GATT_OBSERVATION_TIMEOUT, LeGattBearer, LeGattErrorStage, LeGattReadyToken, LeGattSnapshot,
+    LeGattStatus,
+};
 pub use self::macaddress::{MacAddress, ParseMacAddressError};
 use self::match_cleanup::{MatchFailure, MatchRegistry};
 use self::messagestream::MessageStream;
@@ -118,10 +123,27 @@ pub enum BluetoothError {
     /// Service discovery didn't happen within the time limit.
     #[error("Service discovery timed out")]
     ServiceDiscoveryTimedOut,
+    /// The authoritative snapshot observation deadline expired locally.
+    #[error("Authoritative LE GATT observation timed out after {0:?}")]
+    LeGattObservationTimedOut(Duration),
     /// The LE method completed but its bearer did not confirm a link.
     /// This is distinct from GATT discovery and retains acquisition cleanup.
     #[error("LE connection was not confirmed within 5 s")]
     LeConnectionNotConfirmed,
+    /// A versioned private snapshot is absent; preserve its actual D-Bus cause.
+    #[error("Authoritative LE GATT snapshot API is unsupported: {0}")]
+    LeGattApiUnsupported(dbus::Error),
+    #[error("Unsupported authoritative LE GATT snapshot version {0}")]
+    LeGattUnsupportedVersion(u32),
+    #[error("Invalid authoritative LE GATT snapshot: {0}")]
+    LeGattProtocolError(String),
+    #[error("Authoritative LE GATT snapshot is not ready: {0:?}")]
+    LeGattNotReady(Box<LeGattSnapshot>),
+    #[error("Authoritative LE GATT token changed during graph retrieval: {before:?} -> {after:?}")]
+    LeGattTokenChanged {
+        before: LeGattReadyToken,
+        after: LeGattReadyToken,
+    },
     /// UBM patch (vendor/btleplug/UBM_PATCHES.md #19): the device
     /// disconnected before its services resolved. Upstream kept waiting for
     /// the discovery timeout and then reported a timeout.

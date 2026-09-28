@@ -873,7 +873,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             )
             .await?;
         let core = self.inner.core.lock().await;
-        Self::resolve_instance(
+        self.resolve_instance(
             &core,
             &peer_key,
             peer_id,

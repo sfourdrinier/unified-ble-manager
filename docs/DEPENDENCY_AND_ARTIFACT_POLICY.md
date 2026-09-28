@@ -24,4 +24,16 @@ receipts contain the validator's exact kind-specific source-file digests. A
 the workflow separately requires registry-reported SLSA provenance v1 before it
 can create the GitHub Release.
 
-Generated inventories describe JavaScript production and optional runtime dependencies. Platform-native system frameworks are identified by the package and support evidence rather than represented as vendored components. Any future vendored binary or source dependency must be added to this generator before release.
+Generated inventories describe JavaScript production/optional runtime dependencies,
+the resolved Cargo workspace, and reviewed bundled source assets. Platform-native
+system frameworks are identified by the package and support evidence rather than
+represented as vendored components. Any future vendored binary or source dependency
+must be added to this generator before release.
+
+The bundled [BlueZ LE GATT source extension](../vendor/bluez/README.md) is a
+separate `file` component, not code linked into UBM's native libraries or a
+packaged daemon binary. Its reviewed source manifest binds the patch, official
+upstream archive and original GPL/LGPL license texts by SHA-256. The generator
+rejects missing/changed evidence and distribution/license drift. These upstream
+terms are not replaced by the UBM package license. Installation and operation of
+a derivative system daemon remain explicit external host actions.

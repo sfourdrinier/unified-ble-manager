@@ -58,8 +58,9 @@ use ubm_core::ownership::{CleanupFailure, CleanupRecord, CleanupState, EffectBat
 
 use crate::boundary::{
     AdapterAuthorization, AdapterAvailability, AdapterLossCause, AdapterPowerState,
-    AdmissionPolicy, CharacteristicAccess, CharacteristicRead, DeliveryMode, InstanceKey,
-    ObservedDelivery, PeerSnapshot, RadioBoundary, RadioCloseFailure, RadioEvent, ScanFilterSpec,
+    AdmissionPolicy, CharacteristicAccess, CharacteristicRead, DeliveryMode, GattSnapshotIdentity,
+    InstanceKey, ObservedDelivery, PeerSnapshot, RadioBoundary, RadioCloseFailure, RadioEvent,
+    ScanFilterSpec,
 };
 use ubm_core::central::ScanDuplicatePolicy;
 
@@ -1469,6 +1470,7 @@ fn instance_key(peer_id: &str, stored: &StoredPath, characteristic: &str) -> Ins
 #[derive(Default)]
 struct DiscoverySnapshot {
     generations: Option<(String, String)>,
+    identity: Option<GattSnapshotIdentity>,
     report: Option<DiscoveryReport>,
     leases: HashSet<String>,
 }
@@ -1477,6 +1479,13 @@ struct DiscoverySnapshot {
 struct DiscoveryCoordinator {
     completed: AtomicU64,
     snapshot: Mutex<DiscoverySnapshot>,
+}
+
+fn discovery_coordinator<B>(inner: &Inner<B>, peer_id: &str) -> Arc<DiscoveryCoordinator> {
+    lock_std(&inner.discoveries)
+        .entry(peer_id.to_owned())
+        .or_default()
+        .clone()
 }
 
 struct HalfOpenCleanup {
@@ -1545,6 +1554,11 @@ struct Inner<B> {
     /// One physical snapshot per peer; lease attachments do not rediscover
     /// or invalidate another owner's current logical database.
     discoveries: StdMutex<HashMap<String, Arc<DiscoveryCoordinator>>>,
+    /// Actual observation failure: retained for this host lifetime. Read-only
+    /// FIFO drainage and teardown remain available after GATT admission stops.
+    gatt_watch_failure: StdMutex<Option<DesktopError>>,
+    /// Peer-scoped observation failures are repairable by explicit discovery.
+    gatt_observation_failures: StdMutex<HashMap<String, DesktopError>>,
     lease_releases: LeaseReleaseGates,
     pending_lease_children: PendingLeaseChildren,
     half_open_cleanup: StdMutex<HashMap<String, Arc<HalfOpenCleanup>>>,
@@ -1846,6 +1860,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             completed_scans: StdMutex::new(CompletedScanTickets::new(&ticket_scope)),
             peers: Mutex::new(HashMap::new()),
             discoveries: StdMutex::new(HashMap::new()),
+            gatt_watch_failure: StdMutex::new(None),
+            gatt_observation_failures: StdMutex::new(HashMap::new()),
             lease_releases: StdMutex::new(HashMap::new()),
             pending_lease_children: StdMutex::new(HashMap::new()),
             half_open_cleanup: StdMutex::new(HashMap::new()),
@@ -2244,7 +2260,55 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 false,
             ));
         }
+        self.gatt_watch_admission(operation)
+    }
+
+    fn gatt_watch_admission(&self, operation: &'static str) -> Result<(), DesktopError> {
+        if matches!(
+            operation,
+            "discovery.complete"
+                | "gatt.read"
+                | "gatt.write"
+                | "gatt.read-descriptor"
+                | "gatt.write-descriptor"
+                | "gatt.subscribe"
+        ) && let Some(cause) = lock_std(&self.inner.gatt_watch_failure).as_ref()
+        {
+            return Err(observation_refusal(cause, operation));
+        }
         Ok(())
+    }
+
+    fn gatt_peer_observation_admission(
+        &self,
+        peer_id: &str,
+        operation: &'static str,
+    ) -> Result<(), DesktopError> {
+        if operation != "gatt.unsubscribe"
+            && let Some(cause) = lock_std(&self.inner.gatt_observation_failures).get(peer_id)
+        {
+            return Err(observation_refusal(cause, operation));
+        }
+        Ok(())
+    }
+
+    fn annotate_observation_failure(&self, peer_id: &str, mut error: DesktopError) -> DesktopError {
+        if matches!(
+            error.code(),
+            BleErrorCode::GattStaleHandle | BleErrorCode::GattDiscoveryRequired
+        ) && error.platform().is_none()
+            && let Some(cause) = lock_std(&self.inner.gatt_observation_failures).get(peer_id)
+        {
+            if error.detail().is_none()
+                && let Some(detail) = cause.detail()
+            {
+                error = error.with_detail(detail);
+            }
+            if let Some(platform) = cause.platform() {
+                error = error.with_platform(platform.clone());
+            }
+        }
+        error
     }
 
     /// Settle a dispatched op that hit its end-to-end deadline (F03) and map
@@ -3802,10 +3866,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         self.precheck(&ctl, "discovery.complete")?;
         let window = ctl.budget.window(LIVENESS_OP);
         let peer_key = self.known_peer_key(peer_id).await?;
-        let coordinator = lock_std(&self.inner.discoveries)
-            .entry(peer_id.to_owned())
-            .or_default()
-            .clone();
+        let coordinator = discovery_coordinator(&self.inner, peer_id);
         let entered = coordinator.completed.load(Ordering::Acquire);
         let mut snapshot = match drive_link(
             &self.inner,
@@ -3863,18 +3924,23 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let result = self
             .discover_physical(peer_id, lease, peer_key.clone(), &ctl, window)
             .await;
-        snapshot.report = result.as_ref().ok().cloned();
+        snapshot.report = result.as_ref().ok().map(|(report, _)| report.clone());
         snapshot.leases.clear();
         snapshot.generations = None;
+        snapshot.identity = None;
         if result.is_ok() {
             let core = self.inner.core.lock().await;
             snapshot.generations = core
                 .connection_generation(&peer_key)
                 .zip(core.database_generation(&peer_key));
             snapshot.leases.insert(lease.to_owned());
+            snapshot.identity = result
+                .as_ref()
+                .ok()
+                .and_then(|(_, identity)| identity.clone());
         }
         coordinator.completed.fetch_add(1, Ordering::Release);
-        result
+        result.map(|(report, _)| report)
     }
 
     async fn discover_physical(
@@ -3884,19 +3950,24 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         peer_key: String,
         ctl: &OpControl,
         window: Window,
-    ) -> Result<DiscoveryReport, DesktopError> {
+    ) -> Result<(DiscoveryReport, Option<GattSnapshotIdentity>), DesktopError> {
         {
             let mut core = self.inner.core.lock().await;
             core.begin_discovery(&peer_key)
                 .map_err(DesktopError::from)?;
         }
-        let services = match drive_link(
+        let (services, identity) = match drive_link(
             &self.inner,
             peer_id,
             "discovery.complete",
             &ctl.ticket,
             window,
-            self.inner.boundary.discover(peer_id),
+            async {
+                // The original deadline includes local retirement. Even a
+                // retry after failed traversal must retire surviving routes.
+                retire_database_routing(&self.inner, peer_id).await;
+                self.inner.boundary.discover_scoped(peer_id).await
+            },
         )
         .await
         {
@@ -3968,6 +4039,26 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         }
         {
             let mut core = self.inner.core.lock().await;
+            if let Err(error) = self.gatt_watch_admission("discovery.complete") {
+                let _ = core.fail_discovery(&peer_key);
+                return Err(error);
+            }
+            let current_identity = match self.inner.boundary.gatt_snapshot_identity(peer_id) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    let _ = core.fail_discovery(&peer_key);
+                    return Err(classify(error, OpKind::Discover, true));
+                }
+            };
+            if current_identity != identity {
+                let _ = core.fail_discovery(&peer_key);
+                return Err(contract_error(
+                    BleErrorCode::GattStaleHandle,
+                    BleErrorDomain::Gatt,
+                    "discovery.complete",
+                )
+                .with_detail("the accepted radio snapshot changed before publication"));
+            }
             // Finding 95: the whole snapshot is checked before it becomes
             // current — its size against the per-database bound and every
             // UUID — so registration below cannot fail part-way and no
@@ -4064,8 +4155,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     }
                 }
             }
+            lock_std(&self.inner.gatt_observation_failures).remove(peer_id);
         }
-        Ok(report)
+        Ok((report, identity))
     }
 
     /// Read the peer's current discovery tree in registration order (F01).
@@ -4080,6 +4172,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     ) -> Result<Vec<DiscoveredPath>, DesktopError> {
         let peer_key = self.known_peer_key(peer_id).await?;
         let core = self.inner.core.lock().await;
+        self.gatt_peer_observation_admission(peer_id, "discovery.snapshot")?;
         let stored = core.snapshot_paths(&peer_key).map_err(DesktopError::from)?;
         let access = lock_std(&self.inner.access);
         Ok(stored
@@ -4184,6 +4277,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     /// Resolve a characteristic-level path (and its descriptor, when the
     /// verb addresses one) under the core lock.
     fn resolve_instance(
+        &self,
         core: &Central,
         peer_key: &str,
         peer_id: &str,
@@ -4191,6 +4285,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         op_name: &'static str,
         descriptor: bool,
     ) -> Result<ResolvedInstance, DesktopError> {
+        self.gatt_peer_observation_admission(peer_id, op_name)?;
         let index = core
             .resolve_path(peer_key, selector)
             .map_err(DesktopError::from)?;
@@ -4257,7 +4352,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let mut core = self.inner.core.lock().await;
             let mut out = batch();
             let (index, key, _) =
-                Self::resolve_instance(&core, &peer_key, peer_id, selector, "gatt.read", false)?;
+                self.resolve_instance(&core, &peer_key, peer_id, selector, "gatt.read", false)?;
             let id = core
                 .start_read(
                     ctl.gatt_path(index),
@@ -4338,7 +4433,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         };
         drop_guard.defuse();
         let result = result.map_err(|error| classify(error, OpKind::Read, true));
-        self.name_link_end(&peer_key, result).await
+        self.name_link_end(
+            &peer_key,
+            result.map_err(|error| self.annotate_observation_failure(peer_id, error)),
+        )
+        .await
     }
 
     /// Measure the OS single-write limit for one mode inside the operation
@@ -4371,7 +4470,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let peer_key = self.known_peer_key(peer_id).await?;
         let core = self.inner.core.lock().await;
         let (index, _, _) =
-            Self::resolve_instance(&core, &peer_key, peer_id, selector, operation, descriptor)?;
+            self.resolve_instance(&core, &peer_key, peer_id, selector, operation, descriptor)?;
         core.validate_gatt_admission(ctl.gatt_path(index), operation)
             .map_err(DesktopError::from)
     }
@@ -4413,7 +4512,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let mut core = self.inner.core.lock().await;
             let mut out = batch();
             let (index, key, _) =
-                Self::resolve_instance(&core, &peer_key, peer_id, selector, "gatt.write", false)?;
+                self.resolve_instance(&core, &peer_key, peer_id, selector, "gatt.write", false)?;
             let maximum = Self::write_maximum(&core, measured_limit, "gatt.write")?;
             let id = core
                 .start_write(
@@ -4469,7 +4568,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         };
         drop_guard.defuse();
         let result = result.map_err(classify_dispatched_write);
-        self.name_link_end(&peer_key, result).await
+        self.name_link_end(
+            &peer_key,
+            result.map_err(|error| self.annotate_observation_failure(peer_id, error)),
+        )
+        .await
     }
 
     /// Descriptor read through a validated descriptor path.
@@ -4486,7 +4589,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let (operation, key, descriptor, descriptor_occurrence) = {
             let mut core = self.inner.core.lock().await;
             let mut out = batch();
-            let (index, key, descriptor) = Self::resolve_instance(
+            let (index, key, descriptor) = self.resolve_instance(
                 &core,
                 &peer_key,
                 peer_id,
@@ -4553,7 +4656,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         };
         drop_guard.defuse();
         let result = result.map_err(|error| classify(error, OpKind::Read, true));
-        self.name_link_end(&peer_key, result).await
+        self.name_link_end(
+            &peer_key,
+            result.map_err(|error| self.annotate_observation_failure(peer_id, error)),
+        )
+        .await
     }
 
     /// Descriptor write through a validated descriptor path. Direct CCCD
@@ -4581,7 +4688,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let (operation, key, descriptor, descriptor_occurrence) = {
             let mut core = self.inner.core.lock().await;
             let mut out = batch();
-            let (index, key, descriptor) = Self::resolve_instance(
+            let (index, key, descriptor) = self.resolve_instance(
                 &core,
                 &peer_key,
                 peer_id,
@@ -4652,7 +4759,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         };
         drop_guard.defuse();
         let result = result.map_err(classify_dispatched_write);
-        self.name_link_end(&peer_key, result).await
+        self.name_link_end(
+            &peer_key,
+            result.map_err(|error| self.annotate_observation_failure(peer_id, error)),
+        )
+        .await
     }
 
     /// `capability.limited` for a delivery requirement this subscription
@@ -4775,11 +4886,40 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let window = ctl.budget.window(LIVENESS_OP);
         let peer_key = self.known_peer_key(peer_id).await?;
         // Resolve the instance first (pure read, no side effects) so the
-        // pending-disable check below never nests locks: no path here ever
-        // holds two mutexes at once.
+        // scoped retirement gate covers admission through routing insertion,
+        // but never a physical enable wait (the event loop must stay live).
+        let coordinator = discovery_coordinator(&self.inner, peer_id);
+        let admission = match drive_link(
+            &self.inner,
+            peer_id,
+            "gatt.subscribe",
+            &ctl.ticket,
+            window,
+            async { Ok(coordinator.snapshot.lock().await) },
+        )
+        .await
+        {
+            Wait::Done(Ok(guard)) => guard,
+            Wait::Done(Err(error)) => return Err(error),
+            Wait::Expired => {
+                return Err(classify(
+                    timed_out("gatt.subscribe", window),
+                    OpKind::Subscribe,
+                    false,
+                ));
+            }
+            Wait::Cancelled => {
+                return Err(classify(
+                    ctl.ticket.interruption("gatt.subscribe"),
+                    OpKind::Subscribe,
+                    false,
+                ));
+            }
+        };
+        self.refuse_before_admission(&ctl, "gatt.subscribe")?;
         let key = {
             let core = self.inner.core.lock().await;
-            let (index, key, _) = Self::resolve_instance(
+            let (index, key, _) = self.resolve_instance(
                 &core,
                 &peer_key,
                 peer_id,
@@ -4824,7 +4964,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let (operation, path_index, drive_enable) = {
             let mut core = self.inner.core.lock().await;
             let mut out = batch();
-            let (index, resolved, _) = Self::resolve_instance(
+            let (index, resolved, _) = self.resolve_instance(
                 &core,
                 &peer_key,
                 peer_id,
@@ -4918,6 +5058,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             .lock()
             .await
             .insert(key.clone(), (path_index, epoch));
+        drop(admission);
         if !drive_enable {
             // Joiners never touch the radio (F11): an immediate-success share
             // on an enabled hub is already terminal and releases now; a
@@ -4993,7 +5134,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         };
         drop_guard.defuse();
         let result = result.map_err(|error| classify(error, OpKind::Subscribe, true));
-        self.name_link_end(&peer_key, result).await
+        self.name_link_end(
+            &peer_key,
+            result.map_err(|error| self.annotate_observation_failure(peer_id, error)),
+        )
+        .await
     }
 
     /// The physical enable succeeded: settle the hub and our op. A late
@@ -5175,7 +5320,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                             "gatt.unsubscribe",
                         )
                     }),
-                None => Self::resolve_instance(
+                None => self.resolve_instance(
                     &core,
                     &peer_key,
                     peer_id,
@@ -6113,6 +6258,19 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                     Some(RadioEvent::ServicesChanged(peer_id)) => {
                         services_changed_invalidated(&inner, &peer_id).await;
                     }
+                    Some(RadioEvent::ServicesChangedScoped { peer_id, identity }) => {
+                        services_changed_scoped_invalidated(&inner, &peer_id, &identity).await;
+                    }
+                    Some(RadioEvent::GattInvalidationHint(peer_id)) => {
+                        inner.note_compensation_failure();
+                        eprintln!("{}: unresolved GATT invalidation hint for {peer_id}", inner.identity.log_tag());
+                    }
+                    Some(RadioEvent::GattWatchFailed(detail)) => {
+                        gatt_watch_failed(&inner, &detail).await;
+                    }
+                    Some(RadioEvent::GattObservationFailed { peer_id, identity, error }) => {
+                        gatt_observation_failed(&inner, &peer_id, &identity, &error).await;
+                    }
                     Some(RadioEvent::SecurityChanged { peer_id, state }) => {
                         parity::publish_security(&inner, &peer_id, state);
                     }
@@ -6806,25 +6964,158 @@ async fn account_lost_notifications<B: RadioBoundary>(
 /// serving re-reads through dead handles. Routing drops alongside the
 /// core hubs so late values cannot reach invalidated consumers. A live
 /// connection publishes `ServicesChanged` (PR210-11).
+fn observation_refusal(cause: &DesktopError, operation: &'static str) -> DesktopError {
+    let mut error = contract_error(
+        BleErrorCode::GattDiscoveryRequired,
+        BleErrorDomain::Gatt,
+        operation,
+    );
+    if let Some(detail) = cause.detail() {
+        error = error.with_detail(detail);
+    }
+    if let Some(platform) = cause.platform() {
+        error = error.with_platform(platform.clone());
+    }
+    error
+}
+
+async fn gatt_observation_failed<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    peer_id: &str,
+    identity: &GattSnapshotIdentity,
+    error: &DesktopError,
+) {
+    let coordinator = discovery_coordinator(inner, peer_id);
+    let mut snapshot = coordinator.snapshot.lock().await;
+    if snapshot.identity.as_ref() != Some(identity) {
+        return;
+    }
+    // The backend evicts the failed graph before sending this event. Any
+    // accepted graph now, even the same daemon token, is a newer successful
+    // re-verification and must survive the delayed observation failure.
+    if matches!(inner.boundary.gatt_snapshot_identity(peer_id), Ok(Some(_))) {
+        return;
+    }
+    let Some(peer_key) = inner.peers.lock().await.get(peer_id).cloned() else {
+        return;
+    };
+    {
+        let core = inner.core.lock().await;
+        if core
+            .connection_generation(&peer_key)
+            .zip(core.database_generation(&peer_key))
+            != snapshot.generations
+            || core.database_state(&peer_key) != Some(DatabaseState::Current)
+        {
+            return;
+        }
+    }
+    lock_std(&inner.gatt_observation_failures)
+        .entry(peer_id.to_owned())
+        .or_insert_with(|| error.clone());
+    inner.note_compensation_failure();
+    eprintln!(
+        "{}: peer GATT observation failed: {error}; {:?}",
+        inner.identity.log_tag(),
+        error.detail()
+    );
+    retire_database_routing(inner, peer_id).await;
+    let mut core = inner.core.lock().await;
+    if let Err(error) = core
+        .services_changed(&peer_key)
+        .and_then(|()| core.require_rediscovery(&peer_key))
+    {
+        inner.note_compensation_failure();
+        eprintln!(
+            "{}: peer GATT retirement failed: {error}",
+            inner.identity.log_tag()
+        );
+    }
+    *snapshot = DiscoverySnapshot::default();
+}
+
+async fn gatt_watch_failed<B: RadioBoundary>(inner: &Arc<Inner<B>>, detail: &DesktopError) {
+    {
+        let mut retained = lock_std(&inner.gatt_watch_failure);
+        if retained.is_none() {
+            *retained = Some(detail.clone());
+        }
+    }
+    inner.note_compensation_failure();
+    eprintln!(
+        "{}: GATT control observation failed: {detail}; {:?}",
+        inner.identity.log_tag(),
+        detail.detail()
+    );
+    let peers: Vec<(String, String)> = inner
+        .peers
+        .lock()
+        .await
+        .iter()
+        .map(|(id, key)| (id.clone(), key.clone()))
+        .collect();
+    for (peer_id, peer_key) in peers {
+        let coordinator = discovery_coordinator(inner, &peer_id);
+        let mut snapshot = coordinator.snapshot.lock().await;
+        retire_database_routing(inner, &peer_id).await;
+        let mut core = inner.core.lock().await;
+        if matches!(
+            core.database_state(&peer_key),
+            Some(DatabaseState::Current | DatabaseState::Discovering)
+        ) && let Err(error) = core
+            .services_changed(&peer_key)
+            .and_then(|()| core.require_rediscovery(&peer_key))
+        {
+            inner.note_compensation_failure();
+            eprintln!(
+                "{}: local GATT retirement failed: {error}",
+                inner.identity.log_tag()
+            );
+        }
+        *snapshot = DiscoverySnapshot::default();
+    }
+}
+
+async fn services_changed_scoped_invalidated<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    peer_id: &str,
+    identity: &GattSnapshotIdentity,
+) {
+    let coordinator = discovery_coordinator(inner, peer_id);
+    let mut snapshot = coordinator.snapshot.lock().await;
+    if snapshot.identity.as_ref() != Some(identity) {
+        return;
+    }
+    let peer_key = inner.peers.lock().await.get(peer_id).cloned();
+    let Some(peer_key) = peer_key else {
+        return;
+    };
+    {
+        let core = inner.core.lock().await;
+        if core
+            .connection_generation(&peer_key)
+            .zip(core.database_generation(&peer_key))
+            != snapshot.generations
+            || core.database_state(&peer_key) != Some(DatabaseState::Current)
+        {
+            return;
+        }
+    }
+    // Discovery publication and new routing admission hold this same gate.
+    // The existing cleanup performs only local bookkeeping, never radio I/O.
+    services_changed_invalidated(inner, peer_id).await;
+    snapshot.identity = None;
+    snapshot.generations = None;
+    snapshot.report = None;
+    snapshot.leases.clear();
+}
+
 async fn services_changed_invalidated<B: RadioBoundary>(inner: &Arc<Inner<B>>, peer_id: &str) {
     let peer_key = inner.peers.lock().await.get(peer_id).cloned();
     let Some(peer_key) = peer_key else {
         return;
     };
-    // Finding 40: the routing goes, but every enabled instance's OS CCCD
-    // may still be live — keep each one releasable by its instance.
-    let enabled: Vec<InstanceKey> = {
-        let subscriptions = inner.subscriptions.lock().await;
-        let failed = inner.failed_disables.lock().await;
-        subscriptions
-            .keys()
-            .chain(failed.iter())
-            .filter(|key| key.0 == peer_id)
-            .cloned()
-            .collect()
-    };
-    clear_peer_routing(inner, peer_id).await;
-    lock_std(&inner.retained_enablements).extend(enabled);
+    retire_database_routing(inner, peer_id).await;
     let event = {
         let mut core = inner.core.lock().await;
         let generation = Generations::of(&core, &peer_key);
@@ -6845,6 +7136,35 @@ async fn services_changed_invalidated<B: RadioBoundary>(inner: &Arc<Inner<B>>, p
     if let Some(event) = event {
         inner.signal(CentralSignal::Lifecycle(event));
     }
+}
+
+/// Retire local routing without asserting a physical cause. The caller owns
+/// the per-peer admission gate when retirement can race new publication.
+async fn retire_database_routing<B>(inner: &Arc<Inner<B>>, peer_id: &str) {
+    // Finding 40: the routing goes, but every enabled instance's OS CCCD
+    // may still be live — keep each one releasable by its instance.
+    let mut subscriptions = inner.subscriptions.lock().await;
+    let mut failed = inner.failed_disables.lock().await;
+    let mut epochs = inner.epochs.lock().await;
+    // Acquire every asynchronous guard before changing ownership: deadline
+    // or cancellation while waiting cannot discard a partially copied debt.
+    let mut retained = lock_std(&inner.retained_enablements);
+    let enabled: Vec<InstanceKey> = subscriptions
+        .keys()
+        .chain(failed.iter())
+        .chain(retained.iter())
+        .filter(|key| key.0 == peer_id)
+        .cloned()
+        .collect();
+    if enabled.is_empty() {
+        return;
+    }
+    retained.extend(enabled);
+    subscriptions.retain(|key, _| key.0 != peer_id);
+    failed.retain(|key| key.0 != peer_id);
+    lock_std(&inner.deliveries).retain(|key, _| key.0 != peer_id);
+    let epoch = epochs.entry(peer_id.to_owned()).or_insert(0);
+    *epoch = epoch.saturating_add(1);
 }
 
 /// Adapter behavior over the mocked boundary: scan ownership and cleanup,
@@ -8953,6 +9273,906 @@ mod adapter_tests {
                 .await,
             before
         );
+        central.shutdown().await;
+    }
+
+    fn snapshot_identity(revision: u64) -> crate::boundary::GattSnapshotIdentity {
+        crate::boundary::GattSnapshotIdentity {
+            owner: ":1.42".into(),
+            attachment: 1,
+            revision,
+        }
+    }
+
+    async fn stage_routed_value(central: &DesktopCentral<FakeRadio>, value: u8) {
+        super::deliver(
+            &central.inner,
+            (
+                "peer".into(),
+                HRM_SERVICE.into(),
+                0,
+                HRM_MEASUREMENT.into(),
+                0,
+            ),
+            central.routing_epoch("peer").await,
+            vec![value],
+        )
+        .await;
+    }
+
+    fn gatt_observation_cause() -> crate::errors::DesktopError {
+        crate::errors::DesktopError::new(
+            ubm_core::contracts::BleErrorCode::GattDiscoveryRequired,
+            ubm_core::contracts::BleErrorDomain::Gatt,
+            "gatt.snapshot",
+        )
+        .with_detail("peer snapshot reply timed out")
+        .with_platform(
+            crate::errors::PlatformDetail::new("bluez-dbus", "org.freedesktop.DBus.Error.NoReply")
+                .with_metadata(
+                    "method",
+                    crate::errors::PlatformValue::Text("GetSnapshot".into()),
+                ),
+        )
+    }
+
+    async fn await_positive_notification(
+        central: &DesktopCentral<FakeRadio>,
+        peer_id: &str,
+        selector: &ubm_core::central::PathSelector,
+        consumer: &str,
+    ) -> Vec<u8> {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match central
+                    .poll_notification(peer_id, selector, consumer)
+                    .await
+                    .unwrap()
+                {
+                    super::NotificationPoll::Value(value) => break value,
+                    super::NotificationPoll::Empty => tokio::task::yield_now().await,
+                    outcome => panic!("expected live positive delivery, got {outcome:?}"),
+                }
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn gatt_observation_failure_retires_only_matching_peer_and_can_reverify() {
+        let central = open().await;
+        let selector = DesktopCentral::<FakeRadio>::selector(
+            HRM_SERVICE,
+            Some(0),
+            Some(HRM_MEASUREMENT),
+            Some(0),
+            None,
+            None,
+        )
+        .unwrap();
+        for peer in ["peer", "other"] {
+            central
+                .connect(peer, "a", OpControl::unbounded())
+                .await
+                .unwrap();
+            central.boundary().set_services(peer, vec![hrm_service()]);
+            central
+                .boundary()
+                .set_gatt_snapshot_identity(peer, snapshot_identity(1));
+            central
+                .discover(peer, "a", OpControl::unbounded())
+                .await
+                .unwrap();
+            central
+                .subscribe(peer, &selector, peer, None, OpControl::unbounded())
+                .await
+                .unwrap();
+        }
+        stage_routed_value(&central, 1).await;
+        let mut lifecycle = central.lifecycle_events();
+        let cause = gatt_observation_cause();
+        central
+            .boundary()
+            .fail_gatt_snapshot_identity("peer", cause.clone());
+        central
+            .boundary()
+            .push_event(RadioEvent::GattObservationFailed {
+                peer_id: "peer".into(),
+                identity: snapshot_identity(1),
+                error: cause.clone(),
+            });
+        central
+            .boundary()
+            .push_event(notification("other", 0, vec![2]));
+        assert_eq!(
+            await_positive_notification(&central, "other", &selector, "other").await,
+            vec![2]
+        );
+        assert_eq!(
+            central
+                .poll_notification("peer", &selector, "peer")
+                .await
+                .unwrap(),
+            super::NotificationPoll::Value(vec![1])
+        );
+        assert_eq!(
+            central
+                .poll_notification("peer", &selector, "peer")
+                .await
+                .unwrap(),
+            super::NotificationPoll::Invalidated(super::InvalidationCause::ServicesChanged)
+        );
+        let error = central
+            .read("peer", &selector, OpControl::unbounded())
+            .await
+            .unwrap_err();
+        assert_eq!(error.detail(), cause.detail());
+        assert_eq!(error.platform(), cause.platform());
+        let subscribe_error = central
+            .subscribe("peer", &selector, "refused", None, OpControl::unbounded())
+            .await
+            .unwrap_err();
+        assert_eq!(subscribe_error.platform(), cause.platform());
+        assert_eq!(
+            central
+                .discovered_paths("peer")
+                .await
+                .unwrap_err()
+                .platform(),
+            cause.platform()
+        );
+        central
+            .read("other", &selector, OpControl::unbounded())
+            .await
+            .unwrap();
+        assert!(
+            lifecycle.try_recv().is_err(),
+            "observation failure cannot invent a physical service-change event"
+        );
+        central
+            .boundary()
+            .set_gatt_snapshot_identity("peer", snapshot_identity(1));
+        central
+            .discover("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central
+            .read("peer", &selector, OpControl::unbounded())
+            .await
+            .unwrap();
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn gatt_observation_delayed_failure_preserves_new_or_reverified_same_token_graph() {
+        for revision in [1, 2] {
+            let central = open().await;
+            central
+                .connect("peer", "a", OpControl::unbounded())
+                .await
+                .unwrap();
+            central.boundary().set_services("peer", vec![hrm_service()]);
+            discover_with_identity(&central, 1).await;
+            let cause = gatt_observation_cause();
+            central
+                .boundary()
+                .fail_gatt_snapshot_identity("peer", cause.clone());
+            // Failure event is held while the caller explicitly reverifies;
+            // its fresh graph may legitimately retain the same daemon token.
+            discover_with_identity(&central, revision).await;
+            let selector = DesktopCentral::<FakeRadio>::selector(
+                HRM_SERVICE,
+                Some(0),
+                Some(HRM_MEASUREMENT),
+                Some(0),
+                None,
+                None,
+            )
+            .unwrap();
+            central
+                .subscribe("peer", &selector, "new", None, OpControl::unbounded())
+                .await
+                .unwrap();
+            central
+                .boundary()
+                .push_event(RadioEvent::GattObservationFailed {
+                    peer_id: "peer".into(),
+                    identity: snapshot_identity(1),
+                    error: cause.clone(),
+                });
+            central
+                .boundary()
+                .push_event(notification("peer", 0, vec![3]));
+            assert_eq!(
+                await_positive_notification(&central, "peer", &selector, "new").await,
+                vec![3]
+            );
+            central
+                .read("peer", &selector, OpControl::unbounded())
+                .await
+                .unwrap();
+            central.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn gatt_observation_failure_preserves_cause_when_inflight_read_becomes_stale() {
+        use std::{future::Future, task::Poll};
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        discover_with_identity(&central, 1).await;
+        let selector = DesktopCentral::<FakeRadio>::selector(
+            HRM_SERVICE,
+            Some(0),
+            Some(HRM_MEASUREMENT),
+            Some(0),
+            None,
+            None,
+        )
+        .unwrap();
+        central.boundary().block_op(FaultOp::Read);
+        let read = central.read("peer", &selector, OpControl::unbounded());
+        tokio::pin!(read);
+        assert!(std::future::poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx).is_pending())).await);
+        let cause = gatt_observation_cause();
+        central
+            .boundary()
+            .fail_gatt_snapshot_identity("peer", cause.clone());
+        super::gatt_observation_failed(&central.inner, "peer", &snapshot_identity(1), &cause).await;
+        central.boundary().unblock_op(FaultOp::Read);
+        let error = read.await.unwrap_err();
+        assert_eq!(error.code_str(), "gatt.stale-handle");
+        assert_eq!(error.platform(), cause.platform());
+        let own_answer = crate::errors::DesktopError::new(
+            ubm_core::contracts::BleErrorCode::GattStaleHandle,
+            ubm_core::contracts::BleErrorDomain::Gatt,
+            "gatt.read",
+        )
+        .with_platform(
+            crate::errors::PlatformDetail::new("bluez-dbus", "org.bluez.Error.Failed")
+                .with_metadata(
+                    "method",
+                    crate::errors::PlatformValue::Text("ReadValue".into()),
+                ),
+        );
+        assert_eq!(
+            central.annotate_observation_failure("peer", own_answer.clone()),
+            own_answer,
+            "a read's own platform answer is never replaced by a second observation"
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn explicit_rediscovery_retires_old_fifo_and_routing_without_physical_event() {
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        discover_with_identity(&central, 1).await;
+        let selector = DesktopCentral::<FakeRadio>::selector(
+            HRM_SERVICE,
+            Some(0),
+            Some(HRM_MEASUREMENT),
+            Some(0),
+            None,
+            None,
+        )
+        .unwrap();
+        central
+            .subscribe("peer", &selector, "old", None, OpControl::unbounded())
+            .await
+            .unwrap();
+        stage_routed_value(&central, 1).await;
+        let mut lifecycle = central.lifecycle_events();
+        discover_with_identity(&central, 2).await;
+        assert!(
+            central.inner.subscriptions.lock().await.is_empty(),
+            "old physical routing cannot survive accepted replacement"
+        );
+        assert_eq!(
+            central
+                .poll_notification("peer", &selector, "old")
+                .await
+                .unwrap(),
+            super::NotificationPoll::Value(vec![1])
+        );
+        assert_eq!(
+            central
+                .poll_notification("peer", &selector, "old")
+                .await
+                .unwrap(),
+            super::NotificationPoll::Invalidated(super::InvalidationCause::ServicesChanged)
+        );
+        central
+            .subscribe("peer", &selector, "new", None, OpControl::unbounded())
+            .await
+            .unwrap();
+        super::services_changed_scoped_invalidated(&central.inner, "peer", &snapshot_identity(1))
+            .await;
+        stage_routed_value(&central, 2).await;
+        assert_eq!(
+            central
+                .poll_notification("peer", &selector, "new")
+                .await
+                .unwrap(),
+            super::NotificationPoll::Value(vec![2])
+        );
+        assert!(
+            lifecycle.try_recv().is_err(),
+            "requested replacement is not a physical ServicesChanged event"
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn gatt_watch_failure_retires_fifo_preserves_diagnostic_and_scan_admission() {
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        discover_with_identity(&central, 1).await;
+        let selector = DesktopCentral::<FakeRadio>::selector(
+            HRM_SERVICE,
+            Some(0),
+            Some(HRM_MEASUREMENT),
+            Some(0),
+            None,
+            None,
+        )
+        .unwrap();
+        central
+            .subscribe("peer", &selector, "old", None, OpControl::unbounded())
+            .await
+            .unwrap();
+        stage_routed_value(&central, 1).await;
+        let mut lifecycle = central.lifecycle_events();
+        let cause = crate::errors::DesktopError::new(
+            ubm_core::contracts::BleErrorCode::GattDiscoveryRequired,
+            ubm_core::contracts::BleErrorDomain::Gatt,
+            "gatt.watch",
+        )
+        .with_detail("trusted control stream malformed")
+        .with_platform(
+            crate::errors::PlatformDetail::new(
+                "bluez-dbus",
+                "org.freedesktop.DBus.Error.InvalidSignature",
+            )
+            .with_metadata("expectedVersion", crate::errors::PlatformValue::Int(1)),
+        );
+        super::gatt_watch_failed(&central.inner, &cause).await;
+        assert_eq!(
+            central
+                .poll_notification("peer", &selector, "old")
+                .await
+                .unwrap(),
+            super::NotificationPoll::Value(vec![1])
+        );
+        assert_eq!(
+            central
+                .poll_notification("peer", &selector, "old")
+                .await
+                .unwrap(),
+            super::NotificationPoll::Invalidated(super::InvalidationCause::ServicesChanged)
+        );
+        let error = central
+            .discover("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code_str(), "gatt.discovery-required");
+        assert_eq!(error.detail(), Some("trusted control stream malformed"));
+        assert_eq!(error.platform(), cause.platform());
+        let read_error = central
+            .read("peer", &selector, OpControl::unbounded())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            read_error.detail(),
+            Some("trusted control stream malformed")
+        );
+        assert_eq!(read_error.platform(), cause.platform());
+        assert!(
+            lifecycle.try_recv().is_err(),
+            "control failure cannot invent a physical event"
+        );
+        assert_eq!(
+            super::lock_std(&central.inner.retained_enablements).len(),
+            1
+        );
+        super::gatt_watch_failed(
+            &central.inner,
+            &crate::errors::DesktopError::adapter_unavailable("later-watch-failure"),
+        )
+        .await;
+        assert_eq!(
+            super::lock_std(&central.inner.retained_enablements).len(),
+            1,
+            "repeat retirement retains old CCCD obligation"
+        );
+        assert_eq!(
+            central
+                .discover("peer", "a", OpControl::unbounded())
+                .await
+                .unwrap_err()
+                .platform(),
+            cause.platform(),
+            "first actual failure remains authoritative"
+        );
+        central
+            .boundary()
+            .fail_next(FaultOp::Unsubscribe, "actual native disable refused");
+        assert!(
+            central
+                .unsubscribe("peer", &selector, "old", OpControl::unbounded())
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            super::lock_std(&central.inner.retained_enablements).len(),
+            1
+        );
+        central
+            .unsubscribe("peer", &selector, "old", OpControl::unbounded())
+            .await
+            .unwrap();
+        assert_eq!(
+            central.peer_records().await[0].connection_state,
+            Some(ConnectionState::Connected)
+        );
+        central
+            .start_scan("scanner", &[], OpControl::unbounded())
+            .await
+            .unwrap();
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn gatt_watch_failure_refuses_a_discovery_already_queued_before_failure() {
+        use std::{future::Future, task::Poll};
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        discover_with_identity(&central, 1).await;
+        let coordinator = super::discovery_coordinator(&central.inner, "peer");
+        let gate = coordinator.snapshot.lock().await;
+        let discovery = central.discover("peer", "a", OpControl::unbounded());
+        tokio::pin!(discovery);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(discovery.as_mut().poll(cx).is_pending())).await
+        );
+        let cause = crate::errors::DesktopError::adapter_unavailable("gatt.watch")
+            .with_detail("observation ended while queued");
+        let failure = super::gatt_watch_failed(&central.inner, &cause);
+        tokio::pin!(failure);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(failure.as_mut().poll(cx).is_pending())).await
+        );
+        drop(gate);
+        let (result, ()) = tokio::join!(discovery, failure);
+        assert_eq!(result.unwrap_err().detail(), cause.detail());
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "discover")
+                .count(),
+            1,
+            "queued discovery never reaches failed control source"
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn gatt_watch_failure_refuses_inflight_discovery_publication() {
+        use std::{future::Future, task::Poll};
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        central.boundary().block_op(FaultOp::Discover);
+        let discovery = central.discover("peer", "a", OpControl::unbounded());
+        tokio::pin!(discovery);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(discovery.as_mut().poll(cx).is_pending())).await
+        );
+        let cause = crate::errors::DesktopError::adapter_unavailable("gatt.watch")
+            .with_detail("observation ended during traversal");
+        let failure = super::gatt_watch_failed(&central.inner, &cause);
+        tokio::pin!(failure);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(failure.as_mut().poll(cx).is_pending())).await
+        );
+        central.boundary().unblock_op(FaultOp::Discover);
+        let (result, ()) = tokio::join!(discovery, failure);
+        assert_eq!(result.unwrap_err().detail(), cause.detail());
+        let key = central.peer_key_for("peer").await.unwrap();
+        assert_ne!(
+            central.with_core(|core| core.database_state(&key)).await,
+            Some(ubm_core::central::DatabaseState::Current)
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn explicit_rediscovery_retirement_counts_original_deadline_and_retry_keeps_debt() {
+        use std::{future::Future, task::Poll};
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        discover_with_identity(&central, 1).await;
+        let selector = DesktopCentral::<FakeRadio>::selector(
+            HRM_SERVICE,
+            Some(0),
+            Some(HRM_MEASUREMENT),
+            Some(0),
+            None,
+            None,
+        )
+        .unwrap();
+        central
+            .subscribe("peer", &selector, "old", None, OpControl::unbounded())
+            .await
+            .unwrap();
+        let routing = central.inner.subscriptions.lock().await;
+        let discovery = central.discover("peer", "a", OpControl::budget_ms(10));
+        tokio::pin!(discovery);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(discovery.as_mut().poll(cx).is_pending())).await
+        );
+        tokio::time::advance(Duration::from_millis(10)).await;
+        assert_eq!(
+            discovery.await.unwrap_err().code_str(),
+            "operation.timed-out"
+        );
+        drop(routing);
+        discover_with_identity(&central, 2).await;
+        assert!(central.inner.subscriptions.lock().await.is_empty());
+        assert_eq!(
+            super::lock_std(&central.inner.retained_enablements).len(),
+            1
+        );
+        assert_eq!(
+            central
+                .poll_notification("peer", &selector, "old")
+                .await
+                .unwrap(),
+            super::NotificationPoll::Invalidated(super::InvalidationCause::ServicesChanged)
+        );
+        central.shutdown().await;
+    }
+
+    async fn discover_with_identity(central: &DesktopCentral<FakeRadio>, revision: u64) {
+        central
+            .boundary()
+            .set_gatt_snapshot_identity("peer", snapshot_identity(revision));
+        central
+            .discover("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn scoped_gatt_invalidation_deferred_r1_preserves_published_r2() {
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        discover_with_identity(&central, 1).await;
+        discover_with_identity(&central, 2).await;
+        let key = central.peer_key_for("peer").await.unwrap();
+        let before = central
+            .with_core(|core| core.database_generation(&key))
+            .await;
+        super::services_changed_scoped_invalidated(&central.inner, "peer", &snapshot_identity(1))
+            .await;
+        assert_eq!(
+            central
+                .with_core(|core| core.database_generation(&key))
+                .await,
+            before
+        );
+        assert_eq!(
+            central.with_core(|core| core.database_state(&key)).await,
+            Some(ubm_core::central::DatabaseState::Current)
+        );
+        super::services_changed_scoped_invalidated(&central.inner, "peer", &snapshot_identity(2))
+            .await;
+        assert_ne!(
+            central
+                .with_core(|core| core.database_generation(&key))
+                .await,
+            before
+        );
+        assert_eq!(
+            central.with_core(|core| core.database_state(&key)).await,
+            Some(ubm_core::central::DatabaseState::Undiscovered)
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn scoped_gatt_invalidation_held_routing_fences_new_discovery() {
+        use std::{future::Future, task::Poll};
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        discover_with_identity(&central, 1).await;
+        let routing = central.inner.subscriptions.lock().await;
+        let identity = snapshot_identity(1);
+        let invalidation =
+            super::services_changed_scoped_invalidated(&central.inner, "peer", &identity);
+        tokio::pin!(invalidation);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(invalidation.as_mut().poll(cx).is_pending()))
+                .await
+        );
+        central
+            .boundary()
+            .set_gatt_snapshot_identity("peer", snapshot_identity(2));
+        let discovery = central.discover("peer", "a", OpControl::unbounded());
+        tokio::pin!(discovery);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(discovery.as_mut().poll(cx).is_pending())).await,
+            "R2 admission must wait until scoped R1 routing retirement completes"
+        );
+        drop(routing);
+        invalidation.await;
+        discovery.await.unwrap();
+        assert!(central.inner.subscriptions.lock().await.is_empty());
+        let key = central.peer_key_for("peer").await.unwrap();
+        assert_eq!(
+            central.with_core(|core| core.database_state(&key)).await,
+            Some(ubm_core::central::DatabaseState::Current)
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn scoped_gatt_invalidation_held_routing_fences_subscription_admission() {
+        use std::{future::Future, task::Poll};
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        discover_with_identity(&central, 1).await;
+        let routing = central.inner.subscriptions.lock().await;
+        let identity = snapshot_identity(1);
+        let invalidation =
+            super::services_changed_scoped_invalidated(&central.inner, "peer", &identity);
+        tokio::pin!(invalidation);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(invalidation.as_mut().poll(cx).is_pending()))
+                .await
+        );
+        let selector = DesktopCentral::<FakeRadio>::selector(
+            HRM_SERVICE,
+            Some(0),
+            Some(HRM_MEASUREMENT),
+            Some(0),
+            None,
+            None,
+        )
+        .unwrap();
+        let subscription =
+            central.subscribe("peer", &selector, "racing", None, OpControl::unbounded());
+        tokio::pin!(subscription);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(subscription.as_mut().poll(cx).is_pending()))
+                .await
+        );
+        assert!(
+            !central
+                .boundary()
+                .calls()
+                .iter()
+                .any(|call| call == "subscribe")
+        );
+        drop(routing);
+        invalidation.await;
+        assert!(subscription.await.is_err());
+        assert!(central.inner.subscriptions.lock().await.is_empty());
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn scoped_gatt_discovery_replacement_before_publication_is_refused() {
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        central.boundary().script_gatt_snapshot_identities(
+            "peer",
+            vec![Some(snapshot_identity(1)), Some(snapshot_identity(2))],
+        );
+        let error = central
+            .discover("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code_str(), "gatt.stale-handle");
+        let key = central.peer_key_for("peer").await.unwrap();
+        assert_ne!(
+            central.with_core(|core| core.database_state(&key)).await,
+            Some(ubm_core::central::DatabaseState::Current)
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn scoped_gatt_old_event_preserves_r2_notification_routing() {
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        discover_with_identity(&central, 1).await;
+        discover_with_identity(&central, 2).await;
+        let selector = DesktopCentral::<FakeRadio>::selector(
+            HRM_SERVICE,
+            Some(0),
+            Some(HRM_MEASUREMENT),
+            Some(0),
+            None,
+            None,
+        )
+        .unwrap();
+        central
+            .subscribe("peer", &selector, "r2", None, OpControl::unbounded())
+            .await
+            .unwrap();
+        central
+            .boundary()
+            .push_event(RadioEvent::ServicesChangedScoped {
+                peer_id: "peer".into(),
+                identity: snapshot_identity(1),
+            });
+        central
+            .boundary()
+            .push_event(notification("peer", 0, vec![0x42]));
+        // The fake's FIFO delivers the value only after the scoped event;
+        // a positive receipt proves the event did not retire R2 routing.
+        let value = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(value) = central
+                    .take_notification("peer", &selector, "r2")
+                    .await
+                    .unwrap()
+                {
+                    break value;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(value, vec![0x42]);
+        central.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn scoped_gatt_subscription_gate_preserves_deadline_and_cancellation() {
+        use std::{future::Future, task::Poll};
+        for cancel in [false, true] {
+            let central = open().await;
+            central
+                .connect("peer", "a", OpControl::unbounded())
+                .await
+                .unwrap();
+            central.boundary().set_services("peer", vec![hrm_service()]);
+            discover_with_identity(&central, 1).await;
+            let coordinator = super::discovery_coordinator(&central.inner, "peer");
+            let gate = coordinator.snapshot.lock().await;
+            let selector = DesktopCentral::<FakeRadio>::selector(
+                HRM_SERVICE,
+                Some(0),
+                Some(HRM_MEASUREMENT),
+                Some(0),
+                None,
+                None,
+            )
+            .unwrap();
+            let ctl = OpControl::budget_ms(10);
+            let ticket = ctl.ticket.clone();
+            let subscription = central.subscribe("peer", &selector, "bounded", None, ctl);
+            tokio::pin!(subscription);
+            assert!(
+                std::future::poll_fn(|cx| Poll::Ready(subscription.as_mut().poll(cx).is_pending()))
+                    .await
+            );
+            if cancel {
+                ticket.request_cancel();
+            } else {
+                tokio::time::advance(Duration::from_millis(10)).await;
+            }
+            let error = subscription.await.unwrap_err();
+            assert_eq!(
+                error.code_str(),
+                if cancel {
+                    "operation.aborted"
+                } else {
+                    "operation.timed-out"
+                }
+            );
+            assert!(ticket.operation_id().is_none());
+            assert!(
+                !central
+                    .boundary()
+                    .calls()
+                    .iter()
+                    .any(|call| call == "subscribe")
+            );
+            drop(gate);
+            central.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn scoped_gatt_invalidation_never_waits_for_physical_subscribe_completion() {
+        use std::{future::Future, task::Poll};
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        discover_with_identity(&central, 1).await;
+        central.boundary().block_op(FaultOp::Subscribe);
+        let selector = DesktopCentral::<FakeRadio>::selector(
+            HRM_SERVICE,
+            Some(0),
+            Some(HRM_MEASUREMENT),
+            Some(0),
+            None,
+            None,
+        )
+        .unwrap();
+        let subscription =
+            central.subscribe("peer", &selector, "held", None, OpControl::unbounded());
+        tokio::pin!(subscription);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(subscription.as_mut().poll(cx).is_pending()))
+                .await
+        );
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            super::services_changed_scoped_invalidated(
+                &central.inner,
+                "peer",
+                &snapshot_identity(1),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(central.inner.subscriptions.lock().await.is_empty());
+        central.boundary().unblock_op(FaultOp::Subscribe);
+        assert!(subscription.await.is_err());
         central.shutdown().await;
     }
 

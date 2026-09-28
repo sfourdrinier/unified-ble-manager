@@ -91,8 +91,8 @@ before connection effects and never substitutes a restarted daemon or generic
 device-wide `Device1.Connect`/`Disconnect`. It does not run privileged commands,
 modify daemon configuration, or add a compatibility fallback.
 
-Migration from earlier candidates: omission now leaves discovery available but
-connection acquisition unsupported. Use a daemon with the implemented LE bearer
+Migration from earlier candidates: omission leaves scanning available but
+connection acquisition and LE GATT discovery unsupported. Use a daemon with the implemented LE bearer
 API and explicitly attest its current owner; older unsupported implementations
 must be upgraded, not opted into device-wide lifecycle behavior. There is no
 legacy policy mode. The same policy applies to a process host's borrowed managers
@@ -110,7 +110,13 @@ All resulting peer identities remain fenced to the original daemon owner.
 LE lifecycle support does **not** establish authoritative GATT discovery
 readiness. Stock BlueZ's aggregate `ServicesResolved`, exported service objects,
 and MTU are insufficient to prove successful, current LE-specific discovery.
-That qualification remains open; daemon-owner attestation does not resolve it.
+The strict discovery route additionally requires the version-1
+`org.unifiedblemanager.LEGatt1.GetSnapshot` extension. It registers observation
+before admission and brackets the entire graph with the same accepted ready
+identity. Missing/unknown API is `capability.unsupported`, not readiness inferred
+from cached objects. The bundled extension and its explicit preparation/deployment
+requirements are described in [BlueZ LE GATT](BLUEZ_LE_GATT.md). Isolated build and
+private-bus evidence do not establish physical-radio qualification.
 
 Capabilities come from that instantiated central. Without LE authority,
 `connection:direct` and its dependent `background:desktop-maintain-connection`

@@ -154,10 +154,61 @@ impl From<BluetoothError> for Error {
     /// as the platform's answer; other failures stay local errors.
     fn from(error: BluetoothError) -> Self {
         match error {
+            BluetoothError::LeGattObservationTimedOut(bound) => Error::TimedOut(bound),
             BluetoothError::DbusError(dbus) => Error::Platform(crate::PlatformError::bluez_dbus(
                 dbus.name(),
                 dbus.message(),
             )),
+            BluetoothError::LeGattApiUnsupported(dbus) => Error::Platform(
+                crate::PlatformError::bluez_dbus(dbus.name(), dbus.message())
+                    .with("capability", "unsupported")
+                    .with("mechanism", "le-gatt-snapshot"),
+            ),
+            BluetoothError::LeGattUnsupportedVersion(version) => Error::Platform(
+                crate::PlatformError::new(
+                    "bluez-le-gatt",
+                    "unsupported-version",
+                    "Unsupported LE GATT snapshot version",
+                )
+                .with("capability", "unsupported")
+                .with("version", version.to_string()),
+            ),
+            BluetoothError::LeGattProtocolError(reason) => Error::Platform(
+                crate::PlatformError::new("bluez-le-gatt", "protocol-invalid", reason),
+            ),
+            BluetoothError::LeGattNotReady(snapshot) => {
+                let mut detail = crate::PlatformError::new(
+                    "bluez-le-gatt",
+                    snapshot.status.as_str(),
+                    "Authoritative LE GATT snapshot is not ready",
+                )
+                .with("daemonOwner", &snapshot.daemon_owner)
+                .with("version", snapshot.version.to_string())
+                .with("attachment", snapshot.attachment.to_string())
+                .with("revision", snapshot.revision.to_string())
+                .with("bearer", snapshot.bearer.as_str())
+                .with("status", snapshot.status.as_str())
+                .with("errorStage", snapshot.error_stage.as_str())
+                .with("errno", snapshot.errno.to_string())
+                .with("attError", snapshot.att_error.to_string());
+                if snapshot.status == bluez_async::LeGattStatus::Unsupported {
+                    detail = detail.with("capability", "unsupported");
+                }
+                Error::Platform(detail)
+            }
+            BluetoothError::LeGattTokenChanged { before, after } => Error::Platform(
+                crate::PlatformError::new(
+                    "bluez-le-gatt",
+                    "snapshot-changed",
+                    "Authoritative LE GATT ready token changed during graph retrieval",
+                )
+                .with("daemonOwner", after.daemon_owner)
+                .with("beforeAttachment", before.attachment.to_string())
+                .with("beforeRevision", before.revision.to_string())
+                .with("attachment", after.attachment.to_string())
+                .with("revision", after.revision.to_string())
+                .with("phase", "graph-bracket"),
+            ),
             other => Error::Other(Box::new(other)),
         }
     }

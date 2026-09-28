@@ -189,6 +189,7 @@ pub(crate) struct Bluez {
     /// Negotiated MTU per peer, read once per connection.
     mtus: StdMutex<HashMap<String, u16>>,
     le_owner: Option<String>,
+    gatt_watch: StdMutex<Result<(), DesktopError>>,
     address_discovery: Arc<discovery::DiscoveryOwner>,
 }
 
@@ -222,6 +223,12 @@ impl Bluez {
             pairing: StdMutex::new(HashSet::new()),
             mtus: StdMutex::new(HashMap::new()),
             le_owner,
+            gatt_watch: StdMutex::new(Err(DesktopError::new(
+                BleErrorCode::GattDiscoveryRequired,
+                BleErrorDomain::Gatt,
+                "gatt.watch",
+            )
+            .with_detail("LE GATT observation has not been registered"))),
             address_discovery: Arc::new(discovery::DiscoveryOwner::default()),
         }))
     }
@@ -643,37 +650,63 @@ impl Bluez {
     /// GATT database dropped under a live link (`ServicesResolved` false)
     /// becomes [`RadioEvent::ServicesChanged`] (btleplug 0.12's BlueZ
     /// backend never reports service changes).
-    pub(crate) fn watch_security(
+    pub(crate) fn gatt_watch_health(&self) -> Result<(), DesktopError> {
+        self.gatt_watch
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn fail_gatt_watch(&self, error: DesktopError) {
+        WATCH_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        eprintln!("ubm-desktop: BlueZ GATT observation failed: {error}");
+        *self
+            .gatt_watch
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Err(error);
+    }
+
+    pub(crate) async fn watch_security(
         self: &Arc<Self>,
         events: mpsc::Sender<RadioEvent>,
         spawn: &tokio::runtime::Handle,
-    ) -> tokio::task::JoinHandle<()> {
+    ) -> Result<tokio::task::JoinHandle<()>, DesktopError> {
+        let rule = zbus::MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .sender(BLUEZ)
+            .map(|builder| builder.build())
+            .map_err(|error| platform("gatt.watch", error))?;
+        // Install before returning readiness. The registered stream queues
+        // events even before the spawned consumer gets its first poll.
+        let mut stream = match zbus::MessageStream::for_match_rule(rule, &self.conn, None).await {
+            Ok(stream) => stream,
+            Err(error) => {
+                let error = platform("gatt.watch", error);
+                self.fail_gatt_watch(error.clone());
+                return Err(error);
+            }
+        };
+        *self
+            .gatt_watch
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Ok(());
         let bluez = Arc::clone(self);
-        spawn.spawn(async move {
-            let rule = zbus::MatchRule::builder()
-                .msg_type(zbus::message::Type::Signal)
-                .sender(BLUEZ)
-                .map(|builder| builder.build());
-            let stream = match rule {
-                Ok(rule) => zbus::MessageStream::for_match_rule(rule, &bluez.conn, None).await,
-                Err(error) => Err(error),
-            };
-            let mut stream = match stream {
-                Ok(stream) => stream,
-                Err(error) => {
-                    WATCH_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    eprintln!("ubm-desktop: BlueZ bond-change watch did not start: {error}");
-                    return;
-                }
-            };
+        Ok(spawn.spawn(async move {
             // Device1 may report Connected=false and ServicesResolved=false
             // in separate, ordered signals. Remember confirmed link loss so
             // its later database teardown cannot masquerade as a live change.
             let mut evidence = DeviceConnectionEvidence::default();
             while let Some(message) = stream.next().await {
-                let Ok(message) = message else {
-                    WATCH_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    continue;
+                let message = match message {
+                    Ok(message) => message,
+                    Err(error) => {
+                        let error = platform("gatt.watch", error);
+                        bluez.fail_gatt_watch(error.clone());
+                        if events.send(RadioEvent::GattWatchFailed(error)).await.is_err() {
+                            eprintln!("ubm-desktop: GATT observation failure receiver is closed");
+                        }
+                        return;
+                    }
                 };
                 let header = message.header();
                 // The bus authenticates the well-known sender in the match.
@@ -683,6 +716,39 @@ impl Bluez {
                     continue;
                 }
                 evidence.owner(sender);
+                if bluez.le_owner.is_some()
+                    && header.interface().map(|name| name.as_str())
+                        == Some("org.unifiedblemanager.LEGatt1")
+                    && header.member().map(|name| name.as_str()) == Some("Invalidated")
+                {
+                    let Some(path) = header.path().map(|path| path.as_str()) else {
+                        continue;
+                    };
+                    if !path.starts_with(&format!("{}/", bluez.adapter_path)) {
+                        continue;
+                    }
+                    let Some(peer) = bluez_model::peer_id_for_path(path) else {
+                        continue;
+                    };
+                    // This signal is also emitted at completion. Its counters
+                    // are not a result or an instruction to retire a newer
+                    // snapshot: only the authenticated current read can decide.
+                    match message.body().deserialize::<(u64, u64)>() {
+                        Ok(_) => {
+                            if events.send(RadioEvent::GattInvalidationHint(peer.to_owned()))
+                                .await.is_err() { return; }
+                        }
+                        Err(error) => {
+                            let error = platform("gatt.watch.protocol", error);
+                            bluez.fail_gatt_watch(error.clone());
+                            if events.send(RadioEvent::GattWatchFailed(error)).await.is_err() {
+                                eprintln!("ubm-desktop: GATT observation failure receiver is closed");
+                            }
+                            return;
+                        }
+                    }
+                    continue;
+                }
                 if header.interface().map(|name| name.as_str()) == Some(OBJECT_MANAGER) {
                     if bluez.le_owner.is_some() && header.member().map(|name| name.as_str()) == Some("InterfacesRemoved") {
                         match message.body().deserialize::<(OwnedObjectPath, Vec<String>)>() {
@@ -697,7 +763,7 @@ impl Bluez {
                                     && let Some((device, _)) = path.as_str().split_once("/service")
                                     && let Some(peer) = bluez_model::peer_id_for_path(device)
                                     && !evidence.disconnected.contains(peer)
-                                    && events.send(RadioEvent::ServicesChanged(peer.to_owned())).await.is_err() {
+                                    && events.send(RadioEvent::GattInvalidationHint(peer.to_owned())).await.is_err() {
                                     return;
                                 }
                             }
@@ -817,7 +883,13 @@ impl Bluez {
                     }
                 }
             }
-        })
+            let error = DesktopError::new(BleErrorCode::PlatformFailure, BleErrorDomain::Gatt, "gatt.watch")
+                .with_detail("the registered LE GATT observation stream ended");
+            bluez.fail_gatt_watch(error.clone());
+            if events.send(RadioEvent::GattWatchFailed(error)).await.is_err() {
+                eprintln!("ubm-desktop: GATT observation failure receiver is closed");
+            }
+        }))
     }
 }
 
@@ -969,6 +1041,190 @@ mod watch_tests {
 
     #[tokio::test]
     #[ignore = "requires a dedicated dbus-run-session"]
+    async fn private_bus_malformed_le_gatt_signal_refuses_future_admission() {
+        assert_eq!(
+            std::env::var("UBM_BLUEZ_PRIVATE_BUS_TEST").as_deref(),
+            Ok("1")
+        );
+        let publisher = zbus::Connection::session().await.unwrap();
+        publisher.request_name(BLUEZ).await.unwrap();
+        let bluez = Bluez::open_with_le_owner(
+            "hci0",
+            crate::boundary::BluezBus::Session,
+            Some(publisher.unique_name().unwrap().to_string()),
+        )
+        .await
+        .unwrap();
+        let (tx, mut rx) = mpsc::channel(16);
+        let task = bluez
+            .watch_security(tx, &tokio::runtime::Handle::current())
+            .await
+            .unwrap();
+        publisher
+            .emit_signal(
+                None::<&str>,
+                "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF",
+                "org.unifiedblemanager.LEGatt1",
+                "Invalidated",
+                &(7_u32, 9_u64),
+            )
+            .await
+            .unwrap();
+        let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("a malformed trusted invalidation cannot leave readiness healthy")
+            .unwrap();
+        assert!(matches!(event, RadioEvent::GattWatchFailed(_)));
+        assert!(bluez.gatt_watch_health().is_err());
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a dedicated dbus-run-session"]
+    async fn private_bus_gatt_watch_ready_precedes_return_and_loss_is_retained() {
+        assert_eq!(
+            std::env::var("UBM_BLUEZ_PRIVATE_BUS_TEST").as_deref(),
+            Ok("1")
+        );
+        let publisher = zbus::Connection::session().await.unwrap();
+        publisher.request_name(BLUEZ).await.unwrap();
+        let bluez = Bluez::open_with_le_owner(
+            "hci0",
+            crate::boundary::BluezBus::Session,
+            Some(publisher.unique_name().unwrap().to_string()),
+        )
+        .await
+        .unwrap();
+        assert!(bluez.gatt_watch_health().is_err());
+        let baseline = matches(&publisher).await;
+        let (tx, mut rx) = mpsc::channel(16);
+        let task = bluez
+            .watch_security(tx, &tokio::runtime::Handle::current())
+            .await
+            .unwrap();
+        assert!(bluez.gatt_watch_health().is_ok());
+        assert!(
+            matches(&publisher).await > baseline,
+            "AddMatch must be installed before readiness is reported"
+        );
+        bluez.conn.clone().close().await.unwrap();
+        let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event, RadioEvent::GattWatchFailed(_)));
+        assert!(bluez.gatt_watch_health().is_err());
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a dedicated dbus-run-session"]
+    async fn private_bus_gatt_watch_startup_refusal_never_reports_ready() {
+        assert_eq!(
+            std::env::var("UBM_BLUEZ_PRIVATE_BUS_TEST").as_deref(),
+            Ok("1")
+        );
+        let publisher = zbus::Connection::session().await.unwrap();
+        publisher.request_name(BLUEZ).await.unwrap();
+        let bluez = Bluez::open_with_le_owner(
+            "hci0",
+            crate::boundary::BluezBus::Session,
+            Some(publisher.unique_name().unwrap().to_string()),
+        )
+        .await
+        .unwrap();
+        bluez.conn.clone().close().await.unwrap();
+        let (tx, _rx) = mpsc::channel(16);
+        assert!(
+            bluez
+                .watch_security(tx, &tokio::runtime::Handle::current())
+                .await
+                .is_err()
+        );
+        assert!(bluez.gatt_watch_health().is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a dedicated dbus-run-session"]
+    async fn private_bus_le_gatt_invalidation_is_observable_and_authenticated() {
+        assert_eq!(
+            std::env::var("UBM_BLUEZ_PRIVATE_BUS_TEST").as_deref(),
+            Ok("1")
+        );
+        let publisher = zbus::Connection::session().await.unwrap();
+        publisher.request_name(BLUEZ).await.unwrap();
+        let owner = publisher.unique_name().unwrap().to_string();
+        let bluez =
+            Bluez::open_with_le_owner("hci0", crate::boundary::BluezBus::Session, Some(owner))
+                .await
+                .unwrap();
+        let baseline = matches(&publisher).await;
+        let (tx, mut rx) = mpsc::channel(16);
+        let task = bluez
+            .watch_security(tx, &tokio::runtime::Handle::current())
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while matches(&publisher).await <= baseline {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let outsider = zbus::Connection::session().await.unwrap();
+        for connection in [&outsider, &publisher] {
+            connection
+                .emit_signal(
+                    None::<&str>,
+                    "/org/bluez/hci1/dev_AA_BB_CC_DD_EE_FF",
+                    "org.unifiedblemanager.LEGatt1",
+                    "Invalidated",
+                    &(7_u64, 9_u64),
+                )
+                .await
+                .unwrap();
+        }
+        outsider
+            .emit_signal(
+                None::<&str>,
+                "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF",
+                "org.unifiedblemanager.LEGatt1",
+                "Invalidated",
+                &(7_u64, 9_u64),
+            )
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), rx.recv())
+                .await
+                .is_err()
+        );
+        publisher
+            .emit_signal(
+                None::<&str>,
+                "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF",
+                "org.unifiedblemanager.LEGatt1",
+                "Invalidated",
+                &(7_u64, 9_u64),
+            )
+            .await
+            .unwrap();
+        let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("a valid LE GATT re-read trigger must reach the consumer")
+            .unwrap();
+        assert_eq!(
+            format!("{event:?}")
+                .matches("hci0/dev_AA_BB_CC_DD_EE_FF")
+                .count(),
+            1
+        );
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a dedicated dbus-run-session"]
     async fn private_bus_strict_le_watch_ignores_aggregate_classic_state() {
         assert_eq!(
             std::env::var("UBM_BLUEZ_PRIVATE_BUS_TEST").as_deref(),
@@ -983,7 +1239,10 @@ mod watch_tests {
                 .unwrap();
         let baseline = matches(&publisher).await;
         let (tx, mut rx) = mpsc::channel(16);
-        let task = bluez.watch_security(tx, &tokio::runtime::Handle::current());
+        let task = bluez
+            .watch_security(tx, &tokio::runtime::Handle::current())
+            .await
+            .unwrap();
         tokio::time::timeout(Duration::from_secs(2), async {
             while matches(&publisher).await <= baseline {
                 tokio::task::yield_now().await;
@@ -1054,8 +1313,8 @@ mod watch_tests {
             .unwrap()
             .unwrap();
         assert!(
-            matches!(changed, RadioEvent::ServicesChanged(_)),
-            "actual live GATT removal remains observable: {changed:?}"
+            matches!(changed, RadioEvent::GattInvalidationHint(_)),
+            "actual live GATT removal remains a re-read trigger: {changed:?}"
         );
         let disconnected = tokio::time::timeout(Duration::from_secs(2), rx.recv())
             .await
@@ -1135,7 +1394,10 @@ mod watch_tests {
             .unwrap();
         let baseline = matches(&publisher).await;
         let (tx, mut rx) = mpsc::channel(16);
-        let task = bluez.watch_security(tx, &tokio::runtime::Handle::current());
+        let task = bluez
+            .watch_security(tx, &tokio::runtime::Handle::current())
+            .await
+            .unwrap();
         tokio::time::timeout(Duration::from_secs(2), async {
             while matches(&publisher).await <= baseline {
                 tokio::task::yield_now().await;

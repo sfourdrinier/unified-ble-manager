@@ -32,6 +32,10 @@
       {
         "name": "unified-ble-manager:rust-dependency-scope",
         "value": "cargo-workspace-resolved-graph"
+      },
+      {
+        "name": "unified-ble-manager:source-asset-scope",
+        "value": "bundled-source-only-external-daemon-extension"
       }
     ]
   },
@@ -4321,6 +4325,54 @@
           "value": "cargo-manifest-license"
         }
       ]
+    },
+    {
+      "type": "file",
+      "bom-ref": "pkg:generic/bluez-ubm-le-gatt-source@5.87",
+      "name": "bluez-ubm-le-gatt-source",
+      "version": "5.87",
+      "purl": "pkg:generic/bluez-ubm-le-gatt-source@5.87",
+      "licenses": [
+        {
+          "expression": "GPL-2.0-or-later AND LGPL-2.1-or-later"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "b944707d6d2851acafa8586b1d9ac1ef9798f20f2fd05de40fe7b0c9f7f4f984"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://www.kernel.org/pub/linux/bluetooth/bluez-5.87.tar.xz",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "26bdcf2cebd7310c6f598850606b037ef0c515fe6608ebc54d22c50c4c32b35f"
+            }
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "reviewed-source-asset-manifest"
+        },
+        {
+          "name": "unified-ble-manager:distribution",
+          "value": "source-only-daemon-extension"
+        },
+        {
+          "name": "unified-ble-manager:linked-native-code",
+          "value": "false"
+        },
+        {
+          "name": "unified-ble-manager:packaged-daemon-binary",
+          "value": "false"
+        }
+      ]
     }
   ],
   "dependencies": [
@@ -6009,6 +6061,10 @@
         "pkg:cargo/zvariant_derive@5.15.0",
         "pkg:cargo/zvariant_utils@4.2.0"
       ]
+    },
+    {
+      "ref": "pkg:generic/bluez-ubm-le-gatt-source@5.87",
+      "dependsOn": []
     }
   ]
 }

@@ -21,6 +21,10 @@ use crate::api::{
     Service, ValueNotification, WriteType,
 };
 use crate::{Error, Result};
+pub use bluez_async::{
+    LE_GATT_OBSERVATION_TIMEOUT, LeGattBearer, LeGattErrorStage, LeGattReadyToken, LeGattSnapshot,
+    LeGattStatus,
+};
 
 // UBM patch (UBM_PATCHES.md #6): every GATT attribute is kept as its own
 // instance, keyed by the ATT handle BlueZ encodes in its object path
@@ -46,6 +50,38 @@ struct ServiceInternal {
     handle: u64,
     info: ServiceInfo,
     characteristics: Vec<CharacteristicInternal>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct PublishedGatt {
+    services: Vec<ServiceInternal>,
+    accepted_token: Option<LeGattReadyToken>,
+}
+
+fn publish_gatt(publication: &Mutex<PublishedGatt>, candidate: PublishedGatt) -> Result<()> {
+    let mut current = publication.lock().map_err(Into::<Error>::into)?;
+    if let Some(accepted) = &current.accepted_token {
+        let Some(proposed) = &candidate.accepted_token else {
+            return Err(bluez_async::BluetoothError::LeGattProtocolError(
+                "an unattested graph cannot replace an owner-pinned publication".into(),
+            )
+            .into());
+        };
+        // A clone may have completed its bracket before another clone's
+        // newer publication. Compare under the same commit lock, not before
+        // waiting for it. Unique owner replacement is never inferred here.
+        if proposed.daemon_owner != accepted.daemon_owner
+            || (proposed.attachment, proposed.revision) < (accepted.attachment, accepted.revision)
+        {
+            return Err(bluez_async::BluetoothError::LeGattTokenChanged {
+                before: proposed.clone(),
+                after: accepted.clone(),
+            }
+            .into());
+        }
+    }
+    *current = candidate;
+    Ok(())
 }
 
 /// The ATT handle BlueZ encodes in the last segment of a GATT object path
@@ -86,7 +122,7 @@ pub struct Peripheral {
     session: BluetoothSession,
     device: DeviceId,
     mac_address: BDAddr,
-    services: Arc<Mutex<Vec<ServiceInternal>>>,
+    services: Arc<Mutex<PublishedGatt>>,
 }
 
 fn get_characteristic<'a>(
@@ -141,19 +177,68 @@ impl Peripheral {
         Ok(())
     }
 
+    /// Read the current daemon answer on this peripheral's strict owner.
+    pub async fn le_gatt_snapshot(&self) -> Result<LeGattSnapshot> {
+        let owner = self.session.attested_le_owner().ok_or_else(|| {
+            Error::NotSupported(
+                "LE GATT snapshot requires an explicitly attested daemon owner".into(),
+            )
+        })?;
+        Ok(self.session.le_gatt_snapshot(&self.device, owner).await?)
+    }
+
+    /// The token accepted with the last successfully published complete graph.
+    /// Shared by clones. No async work or new radio ownership is performed.
+    pub fn accepted_le_gatt_ready_token(&self) -> Result<Option<LeGattReadyToken>> {
+        Ok(self
+            .services
+            .lock()
+            .map_err(Into::<Error>::into)?
+            .accepted_token
+            .clone())
+    }
+
+    /// Capture the exact current characteristic path for retained notification
+    /// cleanup. The returned cleanup-only peripheral has an independent graph;
+    /// later publication on the original peripheral cannot retarget its STOP.
+    /// No discovery, connection or notification is created here.
+    pub fn notification_cleanup_peripheral(&self, characteristic: &Characteristic) -> Result<Self> {
+        let publication = self.services.lock().map_err(Into::<Error>::into)?;
+        let selected = get_characteristic(
+            &publication.services,
+            &characteristic.service_uuid,
+            characteristic.service_instance,
+            &characteristic.uuid,
+            characteristic.instance,
+        )?;
+        let service = publication
+            .services
+            .iter()
+            .find(|service| service.info.id == selected.info.id.service())
+            .ok_or_else(|| Error::Other("Selected characteristic service is absent".into()))?;
+        let mut retained_service = service.clone();
+        retained_service.characteristics = vec![selected.clone()];
+        let mut retained = self.clone();
+        retained.services = Arc::new(Mutex::new(PublishedGatt {
+            services: vec![retained_service],
+            accepted_token: publication.accepted_token.clone(),
+        }));
+        Ok(retained)
+    }
+
     pub(crate) fn new(session: BluetoothSession, device: DeviceInfo) -> Self {
         Peripheral {
             session,
             device: device.id,
             mac_address: device.mac_address.into(),
-            services: Arc::new(Mutex::new(Vec::new())),
+            services: Arc::new(Mutex::new(PublishedGatt::default())),
         }
     }
 
     fn characteristic_info(&self, characteristic: &Characteristic) -> Result<CharacteristicInfo> {
         let services = self.services.lock().map_err(Into::<Error>::into)?;
         get_characteristic(
-            &services,
+            &services.services,
             &characteristic.service_uuid,
             characteristic.service_instance,
             &characteristic.uuid,
@@ -166,7 +251,7 @@ impl Peripheral {
     fn descriptor_info(&self, descriptor: &Descriptor) -> Result<DescriptorInfo> {
         let services = self.services.lock().map_err(Into::<Error>::into)?;
         let characteristic = get_characteristic(
-            &services,
+            &services.services,
             &descriptor.service_uuid,
             descriptor.service_instance,
             &descriptor.characteristic_uuid,
@@ -209,6 +294,7 @@ impl api::Peripheral for Peripheral {
         // first characteristic that reports one answers.
         let services = self.services.lock().unwrap();
         services
+            .services
             .iter()
             .flat_map(|service| service.characteristics.iter())
             .find_map(|characteristic| characteristic.info.mtu)
@@ -235,6 +321,7 @@ impl api::Peripheral for Peripheral {
         self.services
             .lock()
             .unwrap()
+            .services
             .iter()
             .map(|service| service.into())
             .collect()
@@ -260,6 +347,15 @@ impl api::Peripheral for Peripheral {
         // instance is kept (upstream kept the first of each UUID), and a
         // descriptor listing that fails fails the discovery (upstream
         // replaced it with an empty list).
+        let before = if let Some(owner) = self.session.attested_le_owner() {
+            Some(
+                self.session
+                    .await_le_gatt_ready(&self.device, owner)
+                    .await?,
+            )
+        } else {
+            None
+        };
         let mut services_internal = Vec::new();
         let services = self.session.get_services(&self.device).await?;
         for service in services {
@@ -294,8 +390,27 @@ impl api::Peripheral for Peripheral {
                 characteristics,
             });
         }
-        *(self.services.lock().map_err(Into::<Error>::into)?) = services_internal;
-        Ok(())
+        if let Some(before) = &before {
+            // Never wait/retry the publication bracket: the candidate was read
+            // under THIS token, not a later successful rediscovery.
+            let after = self.le_gatt_snapshot().await?.ready_token()?;
+            if &after != before {
+                return Err(bluez_async::BluetoothError::LeGattTokenChanged {
+                    before: before.clone(),
+                    after,
+                }
+                .into());
+            }
+        }
+        // Graph and token are committed together; failed parsing/RPC/brackets
+        // leave the prior publication untouched. No await under this lock.
+        publish_gatt(
+            &self.services,
+            PublishedGatt {
+                services: services_internal,
+                accepted_token: before,
+            },
+        )
     }
 
     async fn write(
@@ -367,7 +482,7 @@ impl api::Peripheral for Peripheral {
 fn value_notification(
     event: BluetoothEvent,
     device_id: &DeviceId,
-    services: Arc<Mutex<Vec<ServiceInternal>>>,
+    services: Arc<Mutex<PublishedGatt>>,
 ) -> Option<ValueNotification> {
     match event {
         BluetoothEvent::Characteristic {
@@ -375,7 +490,7 @@ fn value_notification(
             event: CharacteristicEvent::Value { value },
         } if id.service().device() == *device_id => {
             let services = services.lock().unwrap();
-            let (charac, service) = find_characteristic_by_id(&services, id.clone())?;
+            let (charac, service) = find_characteristic_by_id(&services.services, id.clone())?;
             Some(ValueNotification {
                 uuid: charac.info.uuid,
                 instance: charac.handle,
@@ -535,3 +650,7 @@ mod ubm_instance_tests {
         assert_eq!(handle_from_object_path("/org/bluez/nohandle"), None);
     }
 }
+
+#[cfg(test)]
+#[path = "le_gatt_tests.rs"]
+mod le_gatt_tests;

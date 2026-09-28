@@ -70,6 +70,7 @@ that plan to 5.0 or treat its historical "authority" wording as live precedence.
 | --- | --- | --- |
 | [`WEB.md`](WEB.md) | Web Bluetooth host: chooser, HTTPS, user activation, lifecycle | Current |
 | [`NODE.md`](NODE.md) | Node hosts: CoreBluetooth, WinRT, and BlueZ entrypoints over the shared Rust core, prebuilds, runtime requirements | Current |
+| [`BLUEZ_LE_GATT.md`](BLUEZ_LE_GATT.md) | Strict BlueZ LE GATT observation, explicit source-only daemon extension, deployment boundary and cleanup | Current |
 | [`ELECTRON.md`](ELECTRON.md) | Electron main/renderer split, IPC router, composition sequence | Current |
 | [`ELECTRON_SECURITY_MODEL.md`](ELECTRON_SECURITY_MODEL.md) | Electron ownership and threat boundary; renderer permission snapshot rules | Current |
 | [`TAURI.md`](TAURI.md) | Tauri v2 host: `createTauriBleManager()` and the Rust plugin install recipe | Current |

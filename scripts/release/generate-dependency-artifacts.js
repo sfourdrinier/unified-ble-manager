@@ -5,6 +5,7 @@ const { execFileSync } = require('child_process')
 const fs = require('fs')
 const path = require('path')
 const { parse: parseYaml } = require('yaml')
+const { readBluezSourceAsset } = require('./bluez-source-asset')
 
 const repositoryRoot = path.resolve(__dirname, '..', '..')
 const artifactNames = ['SBOM.cdx.json', 'THIRD_PARTY_LICENSES.json']
@@ -32,20 +33,20 @@ const allowedLicenses = new Set([
   'CC-BY-4.0',
   'ISC',
   'MIT',
-  'Unlicense',
+  'Unlicense'
 ])
 
 const reviewedLicenseOverrides = Object.freeze({
   'jsbi@2.0.5': Object.freeze({
     fileName: 'LICENSE',
     license: 'Apache-2.0',
-    sha256: '9568a2b155e66ac3e0ba1fd80b52b827b9460e6cf6f233125e7cbca8e206ddc3',
+    sha256: '9568a2b155e66ac3e0ba1fd80b52b827b9460e6cf6f233125e7cbca8e206ddc3'
   }),
   'map-stream@0.1.0': Object.freeze({
     fileName: 'LICENCE',
     license: 'MIT',
-    sha256: '8937affb1fac84258c98aa2351eb161405999975b602140c43bcbac23b22f1e9',
-  }),
+    sha256: '8937affb1fac84258c98aa2351eb161405999975b602140c43bcbac23b22f1e9'
+  })
 })
 
 // Cargo manifests historically used `/` as a shorthand separator. Most of
@@ -56,8 +57,8 @@ const reviewedCargoLicenseOverrides = Object.freeze({
   'btleplug@0.12.0': Object.freeze({
     fileName: 'LICENSE.md',
     license: 'BSD-3-Clause AND (MIT OR Apache-2.0)',
-    sha256: '95f1ea7e261c12c46fe8f67d2ddb7a92ebb1a5fd10d127e4ab3003f0701d9f56',
-  }),
+    sha256: '95f1ea7e261c12c46fe8f67d2ddb7a92ebb1a5fd10d127e4ab3003f0701d9f56'
+  })
 })
 const allowedCargoLegacySlashLicenseTerms = new Set(['Apache-2.0', 'MIT', 'Unlicense'])
 
@@ -176,7 +177,8 @@ function resolveReviewedLicense(identity, reportedLicense) {
   const override = reviewedLicenseOverrides[key]
   if (!override) throw new Error(`Unresolved production license for ${key}`)
   const licensePath = path.join(identity.packageDirectory, override.fileName)
-  if (!fs.existsSync(licensePath)) throw new Error(`Reviewed license evidence is missing for ${key}: ${override.fileName}`)
+  if (!fs.existsSync(licensePath))
+    throw new Error(`Reviewed license evidence is missing for ${key}: ${override.fileName}`)
   const actualSha256 = sha256(fs.readFileSync(licensePath))
   if (actualSha256 !== override.sha256) {
     throw new Error(`Reviewed license evidence changed for ${key}; audit the new file before updating the override`)
@@ -184,7 +186,7 @@ function resolveReviewedLicense(identity, reportedLicense) {
   return {
     evidence: { fileName: override.fileName, sha256: override.sha256 },
     license: override.license,
-    source: 'reviewed-installed-license-file',
+    source: 'reviewed-installed-license-file'
   }
 }
 
@@ -205,7 +207,7 @@ function readCargoMetadata() {
       cwd: repositoryRoot,
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe']
     })
   } catch (error) {
     throw new Error(
@@ -234,7 +236,9 @@ function resolveReviewedCargoLicense(pkg, override) {
   }
   const actualSha256 = sha256(fs.readFileSync(licensePath))
   if (actualSha256 !== override.sha256) {
-    throw new Error(`Reviewed Cargo license evidence changed for ${pkg.name}@${pkg.version}; audit the new file before updating the override`)
+    throw new Error(
+      `Reviewed Cargo license evidence changed for ${pkg.name}@${pkg.version}; audit the new file before updating the override`
+    )
   }
   return {
     declared: pkg.license,
@@ -242,7 +246,7 @@ function resolveReviewedCargoLicense(pkg, override) {
     license: override.license,
     licenseFile: path.relative(repositoryRoot, licensePath).split(path.sep).join('/'),
     reviewRequired: false,
-    source: 'reviewed-cargo-license-file',
+    source: 'reviewed-cargo-license-file'
   }
 }
 
@@ -258,14 +262,14 @@ function resolveCargoLicense(pkg) {
         declared: pkg.license,
         license: normalizeCargoSlashLicense(pkg.license),
         reviewRequired: false,
-        source: 'cargo-manifest-license-normalized',
+        source: 'cargo-manifest-license-normalized'
       }
     }
     return {
       declared: pkg.license,
       license: pkg.license,
       reviewRequired: false,
-      source: 'cargo-manifest-license',
+      source: 'cargo-manifest-license'
     }
   }
   if (typeof pkg.license_file === 'string' && pkg.license_file.length > 0) {
@@ -276,21 +280,21 @@ function resolveCargoLicense(pkg) {
         license: salLicenseRef,
         licenseFile: portable,
         reviewRequired: false,
-        source: 'cargo-manifest-license-file',
+        source: 'cargo-manifest-license-file'
       }
     }
     return {
       license: 'NOASSERTION',
       licenseFile: portable,
       reviewRequired: true,
-      source: 'cargo-manifest-license-file-unrecognized',
+      source: 'cargo-manifest-license-file-unrecognized'
     }
   }
   return {
     declared: null,
     license: 'NOASSERTION',
     reviewRequired: true,
-    source: 'cargo-manifest-license-missing',
+    source: 'cargo-manifest-license-missing'
   }
 }
 
@@ -348,7 +352,7 @@ function cargoComponent(dependency) {
     version: dependency.version,
     licenses: resolved.license === 'NOASSERTION' ? [{ name: 'NOASSERTION' }] : [{ expression: resolved.license }],
     purl: dependency.bomRef,
-    properties,
+    properties
   }
 }
 
@@ -410,7 +414,7 @@ function collectProductionGraph(rootPackage, lockfile) {
 
   return {
     dependenciesByRef,
-    packages: [...packagesByRef.values()].sort((left, right) => left.bomRef.localeCompare(right.bomRef)),
+    packages: [...packagesByRef.values()].sort((left, right) => left.bomRef.localeCompare(right.bomRef))
   }
 }
 
@@ -447,7 +451,12 @@ function auditProductionLicenses(packages) {
       resolved = { evidence: existing.evidence, license, source: existing.licenseSource }
     }
 
-    audited.push({ ...dependency, evidence: resolved.evidence, license: resolved.license, licenseSource: resolved.source })
+    audited.push({
+      ...dependency,
+      evidence: resolved.evidence,
+      license: resolved.license,
+      licenseSource: resolved.source
+    })
     existingByRef.delete(dependency.bomRef)
   }
 
@@ -471,6 +480,8 @@ function dependencyArtifacts() {
 
   const cargoLockfileBytes = fs.readFileSync(path.join(repositoryRoot, 'Cargo.lock'))
   const cargoGraph = collectCargoGraph(readCargoMetadata())
+  const sourceAsset = readBluezSourceAsset(path.join(repositoryRoot, 'vendor', 'bluez'))
+  const sourceAssetPurl = 'pkg:generic/bluez-ubm-le-gatt-source@5.87'
 
   const components = [
     ...packages.map(dependency => {
@@ -481,13 +492,33 @@ function dependencyArtifacts() {
         version: dependency.version,
         licenses: [{ expression: dependency.license }],
         purl: dependency.bomRef,
-        properties: [
-          { name: 'unified-ble-manager:license-source', value: dependency.licenseSource },
-        ],
+        properties: [{ name: 'unified-ble-manager:license-source', value: dependency.licenseSource }]
       }
       return component
     }),
     ...cargoGraph.packages.map(cargoComponent),
+    {
+      type: 'file',
+      'bom-ref': sourceAssetPurl,
+      name: 'bluez-ubm-le-gatt-source',
+      version: sourceAsset.version,
+      purl: sourceAssetPurl,
+      licenses: [{ expression: sourceAsset.licenseExpression }],
+      hashes: [{ alg: 'SHA-256', content: sourceAsset.patch.sha256 }],
+      externalReferences: [
+        {
+          type: 'distribution',
+          url: sourceAsset.upstream.url,
+          hashes: [{ alg: 'SHA-256', content: sourceAsset.upstream.sha256 }]
+        }
+      ],
+      properties: [
+        { name: 'unified-ble-manager:license-source', value: 'reviewed-source-asset-manifest' },
+        { name: 'unified-ble-manager:distribution', value: sourceAsset.distribution.kind },
+        { name: 'unified-ble-manager:linked-native-code', value: 'false' },
+        { name: 'unified-ble-manager:packaged-daemon-binary', value: 'false' }
+      ]
+    }
   ]
 
   const npmDependencyEntries = [...dependenciesByRef.entries()]
@@ -509,17 +540,18 @@ function dependencyArtifacts() {
         name: rootPackage.name,
         version: rootPackage.version,
         licenses: [{ expression: rootLicenseExpression(rootPackage) }],
-        purl: rootPurl,
+        purl: rootPurl
       },
       properties: [
         { name: 'unified-ble-manager:pnpm-lock-sha256', value: sha256(lockfileBytes) },
         { name: 'unified-ble-manager:dependency-scope', value: 'production-and-optional-runtime' },
         { name: 'unified-ble-manager:cargo-lock-sha256', value: sha256(cargoLockfileBytes) },
         { name: 'unified-ble-manager:rust-dependency-scope', value: 'cargo-workspace-resolved-graph' },
-      ],
+        { name: 'unified-ble-manager:source-asset-scope', value: 'bundled-source-only-external-daemon-extension' }
+      ]
     },
     components,
-    dependencies: [...npmDependencyEntries, ...cargoDependencyEntries],
+    dependencies: [...npmDependencyEntries, ...cargoDependencyEntries, { ref: sourceAssetPurl, dependsOn: [] }]
   }
 
   const cargoPackages = cargoGraph.packages.map(dependency => {
@@ -528,7 +560,7 @@ function dependencyArtifacts() {
       name: dependency.name,
       version: dependency.version,
       license: resolved.license,
-      licenseSource: resolved.source,
+      licenseSource: resolved.source
     }
     if (resolved.reviewRequired) entry.reviewRequired = true
     if (typeof resolved.declared === 'string') entry.declared = resolved.declared
@@ -558,23 +590,24 @@ function dependencyArtifacts() {
     schemaVersion: '1.0.0',
     package: { name: rootPackage.name, version: rootPackage.version },
     source: {
-      method: 'pnpm-lock production graph with installed-manifest license audit + cargo-metadata workspace graph (declared metadata plus exact reviewed cargo license-file evidence)',
+      method:
+        'pnpm-lock production graph with installed-manifest license audit + cargo-metadata workspace graph (declared metadata plus exact reviewed cargo license-file evidence) + reviewed bundled source-asset manifests (not linked runtime dependencies)',
       lockfile: 'pnpm-lock.yaml',
       lockfileSha256: sha256(lockfileBytes),
       cargoLockfile: 'Cargo.lock',
-      cargoLockfileSha256: sha256(cargoLockfileBytes),
+      cargoLockfileSha256: sha256(cargoLockfileBytes)
     },
     reviewedOverrides: Object.entries(reviewedLicenseOverrides).map(([dependency, override]) => ({
       dependency,
       fileName: override.fileName,
       license: override.license,
-      sha256: override.sha256,
+      sha256: override.sha256
     })),
     reviewedCargoOverrides: Object.entries(reviewedCargoLicenseOverrides).map(([dependency, override]) => ({
       dependency,
       fileName: override.fileName,
       license: override.license,
-      sha256: override.sha256,
+      sha256: override.sha256
     })),
     unresolved,
     packages: [
@@ -584,15 +617,29 @@ function dependencyArtifacts() {
         license: dependency.license,
         licenseSource: dependency.licenseSource,
         ...(dependency.evidence ? { evidence: dependency.evidence } : {}),
-        purl: dependency.bomRef,
+        purl: dependency.bomRef
       })),
       ...cargoPackages,
-    ],
+      {
+        name: 'bluez-ubm-le-gatt-source',
+        version: sourceAsset.version,
+        license: sourceAsset.licenseExpression,
+        licenseSource: 'reviewed-source-asset-manifest',
+        purl: sourceAssetPurl,
+        evidence: {
+          manifest: 'vendor/bluez/source-asset-manifest.json',
+          upstream: sourceAsset.upstream,
+          patch: sourceAsset.patch,
+          licenseFiles: sourceAsset.licenseFiles
+        },
+        distribution: sourceAsset.distribution
+      }
+    ]
   }
 
   return new Map([
     ['SBOM.cdx.json', `${JSON.stringify(sbom, null, 2)}\n`],
-    ['THIRD_PARTY_LICENSES.json', `${JSON.stringify(inventory, null, 2)}\n`],
+    ['THIRD_PARTY_LICENSES.json', `${JSON.stringify(inventory, null, 2)}\n`]
   ])
 }
 
@@ -622,4 +669,4 @@ function run() {
 
 if (require.main === module) run()
 
-module.exports = { normalizeCargoSlashLicense }
+module.exports = { normalizeCargoSlashLicense, readBluezSourceAsset }

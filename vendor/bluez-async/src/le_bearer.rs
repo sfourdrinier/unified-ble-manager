@@ -101,7 +101,7 @@ impl BluetoothSession {
         Ok(present)
     }
 
-    async fn le_owner(&self, owner: &str) -> Result<(), BluetoothError> {
+    pub(crate) async fn le_owner(&self, owner: &str) -> Result<(), BluetoothError> {
         dbus::strings::BusName::new(owner)
             .map_err(|_| failure("LE bearer attestation requires a valid D-Bus unique owner"))?;
         if !owner.starts_with(':') {

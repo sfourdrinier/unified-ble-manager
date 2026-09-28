@@ -244,6 +244,33 @@ impl DispatchRadio {
 // `async fn` satisfies the trait's `-> impl Future` seams; each arm's
 // future is `Send`, so the combined future is too.
 impl RadioBoundary for DispatchRadio {
+    fn gatt_snapshot_identity(
+        &self,
+        peer_id: &str,
+    ) -> std::result::Result<Option<ubm_desktop::boundary::GattSnapshotIdentity>, DesktopError>
+    {
+        match self {
+            Self::Radio(radio) => radio.gatt_snapshot_identity(peer_id),
+            Self::Synthetic(radio) => radio.gatt_snapshot_identity(peer_id),
+        }
+    }
+
+    async fn discover_scoped(
+        &self,
+        peer_id: &str,
+    ) -> std::result::Result<
+        (
+            Vec<ServiceSnapshot>,
+            Option<ubm_desktop::boundary::GattSnapshotIdentity>,
+        ),
+        DesktopError,
+    > {
+        match self {
+            Self::Radio(radio) => radio.discover_scoped(peer_id).await,
+            Self::Synthetic(radio) => radio.discover_scoped(peer_id).await,
+        }
+    }
+
     async fn connected_peers(
         &self,
         services: &[String],

@@ -86,9 +86,14 @@ bash scripts/ci/test-bluez-private-bus.sh
 ```
 
 Each suite runs on a separate private D-Bus, covering owned match cleanup,
-split connection signals, and LE bearer ownership. A failing suite stops the
-gate. This tests protocol handling against controlled services; it does not
+split connection signals, LE bearer ownership, strict GATT snapshot consumers,
+and the source-only daemon-extension build against the pinned official archive.
+The Rust-only lane needs no pnpm installation for that source gate. A failing
+suite stops the gate. No daemon is installed or launched. This tests protocol
+handling against controlled services; it does not
 qualify physical-radio behavior or replace native binary matrix checks.
+Deployment and rollback require a separate approved host window; see
+[`docs/BLUEZ_LE_GATT.md`](docs/BLUEZ_LE_GATT.md).
 
 ## Historical 4.0.0-rc.\* release train
 

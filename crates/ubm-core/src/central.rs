@@ -3431,8 +3431,12 @@ impl Central {
                 ));
             }
         };
+        let replacing = self.connections[index].db_state == DatabaseState::Current;
         let next = step_database(self.connections[index].db_state, event)?;
         self.connections[index].db_state = next;
+        if replacing {
+            self.invalidate_peer_hubs(peer_key);
+        }
         Ok(())
     }
 
@@ -7936,6 +7940,30 @@ mod tests {
     /// invalidation, found by selector even though the path is stale; the
     /// hub holding them neither blocks a new subscription nor reclaims
     /// until they are taken.
+    #[test]
+    fn explicit_rediscovery_invalidates_old_hubs_before_replacement() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (peer, path) = live_characteristic(&mut central, &mut out)?;
+        central.subscribe(path, "error", 8, 128, "old", 5000, 2000, &mut out)?;
+        central.settle_subscribe_enable(path, true, 2001, &mut out)?;
+        central.deliver_notification_value(path, &[1])?;
+        central.begin_discovery(&peer)?;
+        check(
+            central.consumer_state(path, "old") == Some(ConsumerState::Invalid),
+            "accepted replacement invalidates old hub before native traversal",
+        );
+        check(
+            central.take_notification_value(path, "old") == Some(vec![1]),
+            "buffered value retained",
+        );
+        check(
+            central.deliver_notification(path, 1)?[0].1 == DeliveryOutcome::DroppedLate,
+            "late old-path notification refused",
+        );
+        Ok(())
+    }
+
     #[test]
     fn f111_values_held_at_invalidation_drain_before_it() -> Result<(), CoreError> {
         let mut central = fixture_central()?;

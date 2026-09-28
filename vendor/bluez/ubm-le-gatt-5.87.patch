@@ -1,0 +1,1308 @@
+diff -ruN a/src/device.c b/src/device.c
+--- a/src/device.c	2026-07-03 08:31:24
++++ b/src/device.c	2026-09-27 22:00:40
+@@ -41,6 +41,7 @@
+ #include "src/shared/queue.h"
+ #include "src/shared/gatt-db.h"
+ #include "src/shared/gatt-client.h"
++#include "src/ubm-gatt-state.h"
+ #include "src/shared/gatt-server.h"
+ #include "src/shared/ad.h"
+ #include "src/shared/timeout.h"
+@@ -273,6 +274,9 @@
+ 	struct bt_gatt_client *client;		/* GATT client instance */
+ 	struct bt_gatt_server *server;		/* GATT server instance */
+ 	unsigned int gatt_ready_id;
++	struct ubm_gatt_state ubm_gatt;
++	bool ubm_registered;
++	struct ubm_client_watch *ubm_watch;
+ 
+ 	struct btd_gatt_client *client_dbus;
+ 
+@@ -308,6 +312,142 @@
+ 	guint		auth_retry_id;
+ };
+ 
++#define UBM_LE_GATT_INTERFACE "org.unifiedblemanager.LEGatt1"
++static uint64_t ubm_attachment_serial;
++struct ubm_client_watch {
++	struct btd_device *device;
++	struct bt_gatt_client *client;
++	uint64_t attachment;
++	bool initial_ready;
++	bool pending;
++	bool refresh_failed;
++	uint8_t att_error;
++};
++
++static void ubm_emit(struct btd_device *device)
++{
++	if (device->ubm_registered)
++		g_dbus_emit_signal(dbus_conn, device->path,
++				UBM_LE_GATT_INTERFACE, "Invalidated",
++				DBUS_TYPE_UINT64, &device->ubm_gatt.attachment,
++				DBUS_TYPE_UINT64, &device->ubm_gatt.revision,
++				DBUS_TYPE_INVALID);
++}
++
++static enum ubm_gatt_bearer ubm_socket_bearer(uint8_t dst_type)
++{
++	switch (dst_type) {
++	case BDADDR_BREDR:
++		return UBM_GATT_BREDR;
++	case BDADDR_LE_PUBLIC:
++	case BDADDR_LE_RANDOM:
++		return UBM_GATT_LE;
++	default:
++		return UBM_GATT_UNKNOWN;
++	}
++}
++
++/* Called only after the primary ATT socket was accepted and classified. */
++static void ubm_attach_primary(struct btd_device *device, uint8_t dst_type)
++{
++	if (ubm_attachment_serial == UINT64_MAX)
++		device->ubm_gatt.exhausted = true;
++	else
++		device->ubm_gatt.attachment = ubm_attachment_serial++;
++	ubm_gatt_attach(&device->ubm_gatt, ubm_socket_bearer(dst_type));
++	ubm_emit(device);
++}
++
++static DBusMessage *ubm_get_snapshot(DBusConnection *conn, DBusMessage *msg,
++							void *data)
++{
++	struct btd_device *device = data;
++	struct ubm_gatt_state state = device->ubm_gatt;
++	uint32_t version = 1;
++	const char *bearers[] = { "none", "le", "bredr", "mixed", "unknown" };
++	const char *statuses[] = { "disconnected", "discovering", "ready",
++						"failed", "unsupported" };
++	const char *bearer, *status, *error_stage = state.failure_stage ?
++						state.failure_stage : "none";
++	int32_t error;
++	DBusMessage *reply;
++	(void) conn;
++	/* The method is read-only. Even a successful native refresh is not a
++	 * usable D-Bus database if export failed or the LE link has gone away. */
++	if (state.bearer == UBM_GATT_LE && !device->le_state.connected) {
++		state.status = UBM_GATT_DISCONNECTED;
++		state.error = ENOTCONN;
++		error_stage = "transport";
++	}
++	if (state.status == UBM_GATT_READY &&
++			!btd_gatt_client_projection_complete(device->client_dbus)) {
++		state.status = UBM_GATT_FAILED;
++		state.error = EIO;
++		error_stage = "projection";
++	}
++	if (!strcmp(error_stage, "none") && state.error)
++		error_stage = state.error == EOVERFLOW ? "generation" :
++			state.status == UBM_GATT_UNSUPPORTED ? "bearer" :
++			state.status == UBM_GATT_DISCONNECTED ? "transport" : "discovery";
++	bearer = bearers[state.bearer];
++	status = statuses[state.status];
++	error = state.error;
++	reply = dbus_message_new_method_return(msg);
++	if (!reply)
++		return NULL;
++	dbus_message_append_args(reply, DBUS_TYPE_UINT32, &version,
++			DBUS_TYPE_UINT64, &state.attachment,
++			DBUS_TYPE_UINT64, &state.revision,
++			DBUS_TYPE_STRING, &bearer, DBUS_TYPE_STRING, &status,
++			DBUS_TYPE_STRING, &error_stage,
++			DBUS_TYPE_INT32, &error, DBUS_TYPE_BYTE, &state.att_error,
++			DBUS_TYPE_INVALID);
++	return reply;
++}
++
++static const GDBusMethodTable ubm_gatt_methods[] = {
++	{ GDBUS_METHOD("GetSnapshot", NULL,
++		GDBUS_ARGS({ "version", "u" }, { "attachment", "t" },
++			{ "revision", "t" }, { "bearer", "s" },
++			{ "status", "s" }, { "error_stage", "s" }, { "errno", "i" },
++			{ "att_error", "y" }), ubm_get_snapshot) },
++	{ }
++};
++static const GDBusSignalTable ubm_gatt_signals[] = {
++	{ GDBUS_SIGNAL("Invalidated", GDBUS_ARGS({ "attachment", "t" },
++						{ "revision", "t" })) },
++	{ }
++};
++
++static bool ubm_watch_current(struct ubm_client_watch *watch)
++{
++	return watch && watch->device->ubm_watch == watch &&
++		watch->device->client == watch->client &&
++		!watch->device->ubm_gatt.retired &&
++		watch->device->ubm_gatt.attachment == watch->attachment;
++}
++
++static void ubm_discovery_observed(bool pending, bool success,
++					int error, uint8_t att_error, void *data)
++{
++	struct ubm_client_watch *watch = data;
++	struct btd_device *device = watch->device;
++	if (!ubm_watch_current(watch))
++		return;
++	watch->pending = pending;
++	if (error == EOVERFLOW)
++		device->ubm_gatt.exhausted = true;
++	if (pending) {
++		ubm_gatt_begin(&device->ubm_gatt);
++	} else {
++		watch->refresh_failed = !success;
++		watch->att_error = att_error;
++		if (watch->initial_ready)
++			ubm_gatt_complete(&device->ubm_gatt, success, att_error);
++	}
++	ubm_emit(device);
++}
++
+ static const uint16_t uuid_list[] = {
+ 	L2CAP_UUID,
+ 	PNP_INFO_SVCLASS_ID,
+@@ -815,6 +955,11 @@
+ 
+ static void gatt_client_cleanup(struct btd_device *device)
+ {
++	if (device->ubm_watch) {
++		bt_gatt_client_set_ubm_discovery_observer(device->client, NULL, NULL);
++	}
++	ubm_gatt_begin(&device->ubm_gatt);
++	ubm_emit(device);
+ 	if (!device->client)
+ 		return;
+ 
+@@ -826,6 +971,8 @@
+ 						device->gatt_ready_id);
+ 		device->gatt_ready_id = 0;
+ 	}
++	g_free(device->ubm_watch);
++	device->ubm_watch = NULL;
+ 
+ 	bt_gatt_client_unref(device->client);
+ 	device->client = NULL;
+@@ -845,6 +992,8 @@
+ 
+ static void attio_cleanup(struct btd_device *device)
+ {
++	ubm_gatt_detach(&device->ubm_gatt);
++	ubm_emit(device);
+ 	if (device->att_disconn_id)
+ 		bt_att_unregister_disconnect(device->att,
+ 							device->att_disconn_id);
+@@ -901,6 +1050,11 @@
+ static void device_free(gpointer user_data)
+ {
+ 	struct btd_device *device = user_data;
++	if (device->ubm_registered) {
++		device->ubm_registered = false;
++		g_dbus_unregister_interface(dbus_conn, device->path,
++						UBM_LE_GATT_INTERFACE);
++	}
+ 
+ 	btd_gatt_client_destroy(device->client_dbus);
+ 	device->client_dbus = NULL;
+@@ -3943,6 +4097,11 @@
+ {
+ 	struct bearer_state *state = get_state(device, bdaddr_type);
+ 	DBusMessage *reply;
++	if (bdaddr_type != BDADDR_BREDR &&
++			device->ubm_gatt.bearer != UBM_GATT_NONE) {
++		ubm_gatt_retire(&device->ubm_gatt);
++		ubm_emit(device);
++	}
+ 	bool remove_device = false;
+ 	bool paired_status_updated = false;
+ 
+@@ -5009,6 +5168,11 @@
+ 	}
+ 
+ 	device->adapter = adapter;
++	device->ubm_registered = g_dbus_register_interface(dbus_conn,
++		device->path, UBM_LE_GATT_INTERFACE, ubm_gatt_methods,
++		ubm_gatt_signals, NULL, device, NULL);
++	if (!device->ubm_registered)
++		error("Unable to register UBM-private LE GATT observation interface");
+ 	device->sirks = queue_new();
+ 	device->temporary = true;
+ 
+@@ -6202,6 +6366,8 @@
+ static void att_disconnected_cb(int err, void *user_data)
+ {
+ 	struct btd_device *device = user_data;
++	ubm_gatt_detach(&device->ubm_gatt);
++	ubm_emit(device);
+ 
+ 	DBG("");
+ 
+@@ -6263,11 +6429,17 @@
+ static void gatt_client_ready_cb(bool success, uint8_t att_ecode,
+ 								void *user_data)
+ {
+-	struct btd_device *device = user_data;
++	struct ubm_client_watch *watch = user_data;
++	struct btd_device *device = watch->device;
++	if (!ubm_watch_current(watch))
++		return;
++	watch->initial_ready = success;
+ 
+ 	DBG("status: %s, error: %u", success ? "success" : "failed", att_ecode);
+ 
+ 	if (!success) {
++		ubm_gatt_complete(&device->ubm_gatt, false, att_ecode);
++		ubm_emit(device);
+ 		device_svc_resolved(device, BROWSE_GATT, device->bdaddr_type,
+ 									-EIO);
+ 		return;
+@@ -6276,6 +6448,10 @@
+ 	register_gatt_services(device);
+ 
+ 	btd_gatt_client_ready(device->client_dbus);
++	if (!watch->pending)
++		ubm_gatt_complete(&device->ubm_gatt,
++				!watch->refresh_failed, watch->att_error);
++	ubm_emit(device);
+ 
+ 	device_svc_resolved(device, BROWSE_GATT, device->bdaddr_type, 0);
+ 
+@@ -6298,22 +6474,42 @@
+ 	DBG_IDX(0xffff, "%s", str);
+ }
+ 
++/* The policy decision is separate from client allocation, and exercised
++ * without constructing a daemon adapter or opening an ATT connection. */
++static bool ubm_gatt_init_allowed(struct btd_device *device)
++{
++	if (!btd_device_is_initiator(device) &&
++			(!btd_opts.reverse_discovery || !btd_opts.gatt_client)) {
++		if (!device->ubm_gatt.exhausted) {
++			device->ubm_gatt.status = UBM_GATT_UNSUPPORTED;
++			device->ubm_gatt.error = EOPNOTSUPP;
++			device->ubm_gatt.failure_stage = "policy";
++		}
++		ubm_emit(device);
++		return false;
++	}
++	return true;
++}
++
++static void ubm_gatt_registration_failed(struct btd_device *device)
++{
++	ubm_gatt_complete(&device->ubm_gatt, false, 0);
++	if (!device->ubm_gatt.exhausted)
++		device->ubm_gatt.failure_stage = "registration";
++	ubm_emit(device);
++}
++
+ static void gatt_client_init(struct btd_device *device)
+ {
+ 	uint8_t features;
+ 
+ 	gatt_client_cleanup(device);
+ 
+-	if (!btd_device_is_initiator(device) && !btd_opts.reverse_discovery) {
+-		DBG("Reverse service discovery disabled: skipping GATT client");
++	if (!ubm_gatt_init_allowed(device)) {
++		DBG("GATT client discovery disabled by policy");
+ 		return;
+ 	}
+ 
+-	if (!btd_device_is_initiator(device) && !btd_opts.gatt_client) {
+-		DBG("GATT client disabled: skipping GATT client");
+-		return;
+-	}
+-
+ 	features =  BT_GATT_CHRC_CLI_FEAT_ROBUST_CACHING
+ 				| BT_GATT_CHRC_CLI_FEAT_NFY_MULTI;
+ 	if (btd_opts.gatt_channels > 1)
+@@ -6327,12 +6523,20 @@
+ 	device->client = bt_gatt_client_new(device->db, device->att,
+ 						device->att_mtu, features);
+ 	if (!device->client) {
++		ubm_gatt_complete(&device->ubm_gatt, false, 0);
++		ubm_emit(device);
+ 		DBG("Failed to initialize");
+ 		return;
+ 	}
+ 
+ 	bt_gatt_client_set_debug(device->client, gatt_debug, NULL, NULL);
+ 	g_attrib_attach_client(device->attrib, device->client);
++	device->ubm_watch = g_new0(struct ubm_client_watch, 1);
++	device->ubm_watch->device = device;
++	device->ubm_watch->client = device->client;
++	device->ubm_watch->attachment = device->ubm_gatt.attachment;
++	bt_gatt_client_set_ubm_discovery_observer(device->client,
++				ubm_discovery_observed, device->ubm_watch);
+ 
+ 	/*
+ 	 * If we have cache, notify existing service about the new connection
+@@ -6343,10 +6547,11 @@
+ 
+ 	device->gatt_ready_id = bt_gatt_client_ready_register(device->client,
+ 							gatt_client_ready_cb,
+-							device, NULL);
++							device->ubm_watch, NULL);
+ 	if (!device->gatt_ready_id) {
+ 		DBG("Failed to register GATT ready callback");
+ 		gatt_client_cleanup(device);
++		ubm_gatt_registration_failed(device);
+ 		return;
+ 	}
+ 
+@@ -6355,6 +6560,7 @@
+ 						device, NULL)) {
+ 		DBG("Failed to set service changed handler");
+ 		gatt_client_cleanup(device);
++		ubm_gatt_registration_failed(device);
+ 		return;
+ 	}
+ 
+@@ -6433,6 +6639,7 @@
+ 	BtIOSecLevel sec_level;
+ 	uint16_t mtu;
+ 	uint16_t cid;
++	uint8_t dst_type;
+ 	struct btd_gatt_database *database;
+ 	const bdaddr_t *dst;
+ 	char dstaddr[18];
+@@ -6440,6 +6647,7 @@
+ 	bt_io_get(io, &gerr, BT_IO_OPT_SEC_LEVEL, &sec_level,
+ 						BT_IO_OPT_IMTU, &mtu,
+ 						BT_IO_OPT_CID, &cid,
++						BT_IO_OPT_DEST_TYPE, &dst_type,
+ 						BT_IO_OPT_INVALID);
+ 
+ 	if (gerr) {
+@@ -6455,6 +6663,8 @@
+ 		}
+ 
+ 		if (!bt_att_attach_fd(dev->att, g_io_channel_unix_get_fd(io))) {
++			ubm_gatt_attach(&dev->ubm_gatt, ubm_socket_bearer(dst_type));
++			ubm_emit(dev);
+ 			DBG("EATT channel connected");
+ 			g_io_channel_set_close_on_unref(io, FALSE);
+ 			return true;
+@@ -6488,6 +6698,7 @@
+ 
+ 	dev->attrib = attrib;
+ 	dev->att = g_attrib_get_att(attrib);
++	ubm_attach_primary(dev, dst_type);
+ 
+ 	bt_att_ref(dev->att);
+ 
+diff -ruN a/src/gatt-client.c b/src/gatt-client.c
+--- a/src/gatt-client.c	2026-05-12 04:25:36
++++ b/src/gatt-client.c	2026-09-27 22:01:27
+@@ -2232,6 +2232,120 @@
+ 	queue_foreach(client->services, update_included_services, client);
+ }
+ 
++struct ubm_projection {
++	struct queue *objects;
++	struct queue *seen;
++	unsigned int count;
++	bool complete;
++};
++
++static bool ubm_match_descriptor(const void *object, const void *attr)
++{
++	return ((const struct descriptor *) object)->attr == attr;
++}
++
++static bool ubm_match_characteristic(const void *object, const void *attr)
++{
++	return ((const struct characteristic *) object)->attr == attr;
++}
++
++static void ubm_check_descriptor(struct gatt_db_attribute *attr, void *data)
++{
++	struct ubm_projection *projection = data;
++	struct descriptor *descriptor;
++	projection->count++;
++	descriptor = queue_find(projection->objects, ubm_match_descriptor, attr);
++	if (!descriptor || descriptor->handle != gatt_db_attribute_get_handle(attr) ||
++		bt_uuid_cmp(&descriptor->uuid, gatt_db_attribute_get_type(attr)))
++		projection->complete = false;
++}
++
++static void ubm_check_characteristic(struct gatt_db_attribute *attr, void *data)
++{
++	struct ubm_projection *projection = data;
++	struct characteristic *chrc;
++	struct ubm_projection descriptors = { .complete = true };
++	uint16_t handle, value_handle, ext_props;
++	uint8_t props;
++	bt_uuid_t uuid;
++	projection->count++;
++	chrc = queue_find(projection->objects, ubm_match_characteristic, attr);
++	if (!chrc || !gatt_db_attribute_get_char_data(attr, &handle, &value_handle,
++						&props, &ext_props, &uuid) ||
++		chrc->handle != handle || chrc->value_handle != value_handle ||
++		chrc->props != props || chrc->ext_props != ext_props ||
++		bt_uuid_cmp(&chrc->uuid, &uuid)) {
++		projection->complete = false;
++		return;
++	}
++	descriptors.objects = chrc->descs;
++	gatt_db_service_foreach_desc(attr, ubm_check_descriptor, &descriptors);
++	if (!descriptors.complete || descriptors.count != queue_length(chrc->descs))
++		projection->complete = false;
++}
++
++static void ubm_check_include(struct gatt_db_attribute *attr, void *data)
++{
++	struct ubm_projection *projection = data;
++	struct service *service;
++	uint16_t start, end;
++	if (!gatt_db_attribute_get_incl_data(attr, NULL, &start, &end)) {
++		projection->complete = false;
++		return;
++	}
++	service = queue_find(projection->objects, match_service_handle,
++							UINT_TO_PTR(start));
++	if (!service || service->end_handle != end) {
++		projection->complete = false;
++		return;
++	}
++	if (!queue_find(projection->seen, NULL, service)) {
++		queue_push_tail(projection->seen, service);
++		projection->count++;
++	}
++}
++
++static void ubm_check_service(struct gatt_db_attribute *attr, void *data)
++{
++	struct ubm_projection *projection = data;
++	struct service *service;
++	struct ubm_projection characteristics = { .complete = true };
++	struct ubm_projection includes = { .complete = true };
++	uint16_t start, end;
++	bool primary;
++	bt_uuid_t uuid;
++	projection->count++;
++	gatt_db_attribute_get_service_data(attr, &start, &end, &primary, &uuid);
++	service = queue_find(projection->objects, match_service_handle,
++							UINT_TO_PTR(start));
++	if (!service || service->end_handle != end || service->primary != primary ||
++						bt_uuid_cmp(&service->uuid, &uuid)) {
++		projection->complete = false;
++		return;
++	}
++	characteristics.objects = service->chrcs;
++	gatt_db_service_foreach_char(attr, ubm_check_characteristic, &characteristics);
++	if (!characteristics.complete ||
++			characteristics.count != queue_length(service->chrcs))
++		projection->complete = false;
++	includes.objects = service->incl_services;
++	includes.seen = queue_new();
++	gatt_db_service_foreach_incl(attr, ubm_check_include, &includes);
++	if (!includes.complete || includes.count != queue_length(service->incl_services))
++		projection->complete = false;
++	queue_destroy(includes.seen, NULL);
++}
++
++bool btd_gatt_client_projection_complete(struct btd_gatt_client *client)
++{
++	struct ubm_projection projection = { .complete = true };
++	if (!client || !client->ready || !client->db)
++		return false;
++	projection.objects = client->services;
++	gatt_db_foreach_service(client->db, NULL, ubm_check_service, &projection);
++	return projection.complete && projection.count == queue_length(client->services);
++}
++
+ struct btd_gatt_client *btd_gatt_client_new(struct btd_device *device)
+ {
+ 	struct btd_gatt_client *client;
+diff -ruN a/src/gatt-client.h b/src/gatt-client.h
+--- a/src/gatt-client.h	2021-10-13 11:38:34
++++ b/src/gatt-client.h	2026-09-27 21:34:22
+@@ -14,6 +14,8 @@
+ void btd_gatt_client_destroy(struct btd_gatt_client *client);
+ 
+ void btd_gatt_client_ready(struct btd_gatt_client *client);
++/* UBM-private: compare the complete native graph with its exported graph. */
++bool btd_gatt_client_projection_complete(struct btd_gatt_client *client);
+ void btd_gatt_client_connected(struct btd_gatt_client *client);
+ void btd_gatt_client_service_added(struct btd_gatt_client *client,
+ 					struct gatt_db_attribute *attrib);
+diff -ruN a/src/shared/gatt-client.c b/src/shared/gatt-client.c
+--- a/src/shared/gatt-client.c	2026-05-12 04:25:36
++++ b/src/shared/gatt-client.c	2026-09-27 21:57:57
+@@ -20,6 +20,7 @@
+ #include "src/shared/queue.h"
+ #include "src/shared/gatt-db.h"
+ #include "src/shared/gatt-client.h"
++#include "src/ubm-gatt-state.h"
+ 
+ #include <assert.h>
+ #include <limits.h>
+@@ -59,6 +60,9 @@
+ 	bt_gatt_client_service_changed_callback_t svc_chngd_callback;
+ 	bt_gatt_client_destroy_func_t svc_chngd_destroy;
+ 	void *svc_chngd_data;
++	bt_gatt_client_ubm_discovery_t ubm_observer;
++	void *ubm_data;
++	struct ubm_gatt_refresh ubm_refresh;
+ 
+ 	bt_gatt_client_debug_func_t debug_callback;
+ 	bt_gatt_client_destroy_func_t debug_destroy;
+@@ -112,6 +116,42 @@
+ 	uint16_t pending_error_handle;
+ };
+ 
++void bt_gatt_client_set_ubm_discovery_observer(struct bt_gatt_client *client,
++			bt_gatt_client_ubm_discovery_t observer, void *user_data)
++{
++	if (!client)
++		return;
++	client->ubm_observer = observer;
++	client->ubm_data = user_data;
++}
++
++static void ubm_discovery_begin(struct bt_gatt_client *client)
++{
++	/* Clones share the parent's database and hold a reference to it. */
++	while (client->parent)
++		client = client->parent;
++	ubm_gatt_refresh_begin(&client->ubm_refresh);
++	if (client->ubm_observer)
++		client->ubm_observer(true, false,
++			client->ubm_refresh.exhausted ? EOVERFLOW : 0, 0,
++							client->ubm_data);
++}
++
++static void ubm_discovery_finish(struct bt_gatt_client *client,
++						bool success, uint8_t att_error)
++{
++	while (client->parent)
++		client = client->parent;
++	bool settled = ubm_gatt_refresh_finish(&client->ubm_refresh,
++							success, att_error);
++	if (client->ubm_observer)
++		client->ubm_observer(!settled,
++			settled && !client->ubm_refresh.failed,
++			client->ubm_refresh.exhausted ? EOVERFLOW :
++			client->ubm_refresh.failed ? EIO : 0,
++			client->ubm_refresh.att_error, client->ubm_data);
++}
++
+ struct request {
+ 	struct bt_gatt_client *client;
+ 	bool long_write;
+@@ -1645,7 +1685,8 @@
+ 
+ static void process_service_changed(struct bt_gatt_client *client,
+ 							uint16_t start_handle,
+-							uint16_t end_handle);
++							uint16_t end_handle,
++							bool invalidated);
+ static void service_changed_cb(uint16_t value_handle, const uint8_t *value,
+ 					uint16_t length, void *user_data);
+ 
+@@ -1913,10 +1954,11 @@
+ 	}
+ 
+ 	/* Process any queued events */
++	ubm_discovery_finish(client, success, att_ecode);
+ 	next_sc_op = queue_pop_head(client->svc_chngd_queue);
+ 	if (next_sc_op) {
+ 		process_service_changed(client, next_sc_op->start_handle,
+-							next_sc_op->end_handle);
++							next_sc_op->end_handle, true);
+ 		free(next_sc_op);
+ 		return;
+ 	}
+@@ -1937,9 +1979,12 @@
+ 
+ static void process_service_changed(struct bt_gatt_client *client,
+ 							uint16_t start_handle,
+-							uint16_t end_handle)
++							uint16_t end_handle,
++							bool invalidated)
+ {
+ 	struct discovery_op *op;
++	if (!invalidated)
++		ubm_discovery_begin(client);
+ 
+ 	op = discovery_op_create(client, start_handle, end_handle,
+ 						service_changed_complete,
+@@ -1960,6 +2005,13 @@
+ 	discovery_op_free(op);
+ 
+ fail:
++	ubm_discovery_finish(client, false, 0);
++	/* A synchronous dispatch refusal has no later completion callback to
++	 * advance accepted queued work. Settle that tail explicitly as failed. */
++	while (!queue_isempty(client->svc_chngd_queue)) {
++		free(queue_pop_head(client->svc_chngd_queue));
++		ubm_discovery_finish(client, false, 0);
++	}
+ 	DBG(client,
+ 		"Failed to initiate service discovery after Service Changed");
+ }
+@@ -1987,9 +2039,11 @@
+ 			start, end);
+ 
+ 	if (!client->in_svc_chngd) {
+-		process_service_changed(client, start, end);
++		process_service_changed(client, start, end, false);
+ 		return;
+ 	}
++	/* Queued changes invalidate immediately, not when their turn arrives. */
++	ubm_discovery_begin(client);
+ 
+ 	op = new0(struct service_changed_op, 1);
+ 
+@@ -2386,11 +2440,13 @@
+ 			DBG(client, "Error handle is in range of svc chngd");
+ 			bt_att_cancel(client->att, att_id);
+ 		}
++		ubm_discovery_finish(client, false, BT_ATT_ERROR_DB_OUT_OF_SYNC);
+ 		return;
+ 	}
+ 
+ 	if (!att_id) {
+ 		DBG(client, "No pending retry operation");
++		ubm_discovery_finish(client, false, 0);
+ 		return;
+ 	}
+ 
+@@ -2428,7 +2484,8 @@
+ 		/* Hashes match - safe to retry */
+ 		DBG(client, "DB Hash matches, approving retry");
+ 		bt_att_resend(client->att, att_id, 0, NULL, 0,
+-			      NULL, NULL, NULL);
++				      NULL, NULL, NULL);
++		ubm_discovery_finish(client, true, 0);
+ 		return;
+ 	}
+ 
+@@ -2439,7 +2496,9 @@
+ 	bt_att_cancel(client->att, att_id);
+ 
+ 	if (!client->in_svc_chngd)
+-		process_service_changed(client, 0x0001, 0xffff);
++		process_service_changed(client, 0x0001, 0xffff, true);
++	else
++		ubm_discovery_finish(client, false, att_ecode);
+ }
+ 
+ static void gatt_client_db_sync_cb(const struct bt_att_pdu_error_rsp *error,
+@@ -2475,6 +2534,7 @@
+ 
+ 	/* Store the att_id for later use */
+ 	client->pending_retry_att_id = att_id;
++	ubm_discovery_begin(client);
+ 
+ 	/* Read remote DB Hash to compare */
+ 	bt_uuid16_create(&uuid, GATT_CHARAC_DB_HASH);
+@@ -2485,6 +2545,7 @@
+ 		client->pending_retry_att_id = 0;
+ 		client->pending_error_handle = 0;
+ 		bt_att_cancel(client->att, att_id);
++		ubm_discovery_finish(client, false, 0);
+ 	}
+ }
+ 
+diff -ruN a/src/shared/gatt-client.h b/src/shared/gatt-client.h
+--- a/src/shared/gatt-client.h	2024-03-07 07:15:07
++++ b/src/shared/gatt-client.h	2026-09-27 21:44:50
+@@ -46,6 +46,13 @@
+ 							void *user_data);
+ 
+ bool bt_gatt_client_is_ready(struct bt_gatt_client *client);
++/* UBM-private observation only. No ATT work is started by registration.
++ * Clear the observer before freeing user_data. A pending=true notification
++ * precedes mutation; pending=false reports the complete cycle's own outcome. */
++typedef void (*bt_gatt_client_ubm_discovery_t)(bool pending, bool success,
++					int error, uint8_t att_error, void *user_data);
++void bt_gatt_client_set_ubm_discovery_observer(struct bt_gatt_client *client,
++			bt_gatt_client_ubm_discovery_t observer, void *user_data);
+ unsigned int bt_gatt_client_ready_register(struct bt_gatt_client *client,
+ 					bt_gatt_client_callback_t callback,
+ 					void *user_data,
+diff -ruN a/src/ubm-gatt-state.h b/src/ubm-gatt-state.h
+--- a/src/ubm-gatt-state.h	1969-12-31 16:00:00
++++ b/src/ubm-gatt-state.h	2026-09-27 22:02:54
+@@ -0,0 +1,140 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#ifndef UBM_GATT_STATE_H
++#define UBM_GATT_STATE_H
++#include <stdbool.h>
++#include <stdint.h>
++#include <stddef.h>
++#include <errno.h>
++
++enum ubm_gatt_bearer { UBM_GATT_NONE, UBM_GATT_LE, UBM_GATT_BREDR,
++							UBM_GATT_MIXED, UBM_GATT_UNKNOWN };
++enum ubm_gatt_status { UBM_GATT_DISCONNECTED, UBM_GATT_DISCOVERING,
++	UBM_GATT_READY, UBM_GATT_FAILED, UBM_GATT_UNSUPPORTED };
++struct ubm_gatt_state {
++	uint64_t attachment;
++	uint64_t revision;
++	enum ubm_gatt_bearer bearer;
++	enum ubm_gatt_status status;
++	int error;
++	uint8_t att_error;
++	const char *failure_stage;
++	bool exhausted;
++	bool retired;
++};
++
++/* One cycle includes every accepted queued invalidation and hash check. */
++struct ubm_gatt_refresh {
++	uint64_t pending;
++	bool failed;
++	bool exhausted;
++	uint8_t att_error;
++};
++static inline void ubm_gatt_refresh_begin(struct ubm_gatt_refresh *refresh)
++{
++	if (!refresh->pending && !refresh->exhausted) {
++		refresh->failed = false;
++		refresh->att_error = 0;
++	}
++	if (refresh->pending == UINT64_MAX) {
++		refresh->failed = true;
++		refresh->exhausted = true;
++		return;
++	}
++	refresh->pending++;
++}
++static inline bool ubm_gatt_refresh_finish(struct ubm_gatt_refresh *refresh,
++						bool success, uint8_t att_error)
++{
++	if (refresh->exhausted)
++		return false;
++	if (!success && !refresh->failed) {
++		refresh->failed = true;
++		refresh->att_error = att_error;
++	}
++	if (refresh->pending)
++		refresh->pending--;
++	return !refresh->pending;
++}
++
++static inline enum ubm_gatt_status ubm_gatt_status(
++					const struct ubm_gatt_state *state)
++{
++	return state->status;
++}
++
++static inline void ubm_gatt_begin(struct ubm_gatt_state *state)
++{
++	if (state->revision == UINT64_MAX || state->exhausted) {
++		state->exhausted = true;
++		state->status = UBM_GATT_FAILED;
++		state->error = EOVERFLOW;
++		state->failure_stage = NULL;
++		return;
++	}
++	state->revision++;
++	state->att_error = 0;
++	state->failure_stage = NULL;
++	if (state->bearer == UBM_GATT_NONE || state->retired) {
++		state->status = UBM_GATT_DISCONNECTED;
++		state->error = ENOTCONN;
++		return;
++	}
++	state->error = state->bearer == UBM_GATT_LE ? 0 : EOPNOTSUPP;
++	state->status = state->bearer == UBM_GATT_LE ?
++				UBM_GATT_DISCOVERING : UBM_GATT_UNSUPPORTED;
++}
++
++/* The caller supplies only a bearer read from the accepted ATT socket. */
++static inline void ubm_gatt_attach(struct ubm_gatt_state *state,
++						enum ubm_gatt_bearer bearer)
++{
++	if (state->bearer != UBM_GATT_NONE) {
++		if (state->bearer != bearer) {
++			state->bearer = UBM_GATT_MIXED;
++			ubm_gatt_begin(state);
++		}
++		return;
++	}
++	if (state->attachment == UINT64_MAX) {
++		state->exhausted = true;
++		ubm_gatt_begin(state);
++		return;
++	}
++	state->attachment++;
++	state->retired = false;
++	state->bearer = bearer;
++	ubm_gatt_begin(state);
++}
++
++static inline void ubm_gatt_complete(struct ubm_gatt_state *state,
++						bool success, uint8_t att_error)
++{
++	if (state->exhausted || state->retired || state->bearer == UBM_GATT_NONE)
++		return;
++	if (state->bearer != UBM_GATT_LE) {
++		state->status = UBM_GATT_UNSUPPORTED;
++		state->error = EOPNOTSUPP;
++		return;
++	}
++	state->status = success ? UBM_GATT_READY : UBM_GATT_FAILED;
++	state->failure_stage = NULL;
++	state->error = success ? 0 : EIO;
++	state->att_error = att_error;
++}
++
++static inline void ubm_gatt_retire(struct ubm_gatt_state *state)
++{
++	ubm_gatt_begin(state);
++	state->retired = true;
++	if (state->exhausted)
++		return;
++	state->status = UBM_GATT_DISCONNECTED;
++	state->error = ENOTCONN;
++	state->att_error = 0;
++}
++static inline void ubm_gatt_detach(struct ubm_gatt_state *state)
++{
++	ubm_gatt_retire(state);
++	state->bearer = UBM_GATT_NONE;
++}
++#endif
+diff -ruN a/unit/test-ubm-device.c b/unit/test-ubm-device.c
+--- a/unit/test-ubm-device.c	1969-12-31 16:00:00
++++ b/unit/test-ubm-device.c	2026-09-27 22:00:40
+@@ -0,0 +1,151 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/* Actual private method table/handler on a private D-Bus session only. */
++#include "src/device.c"
++#include <assert.h>
++#include <stdio.h>
++
++static bool projection_complete = true;
++struct btd_opts btd_opts;
++bool btd_gatt_client_projection_complete(struct btd_gatt_client *client)
++{
++	(void) client;
++	return projection_complete;
++}
++static GMainLoop *loop;
++static DBusMessage *received;
++static void reply_received(DBusPendingCall *pending, void *data)
++{
++	(void) data;
++	received = dbus_pending_call_steal_reply(pending);
++	g_main_loop_quit(loop);
++}
++static gboolean watchdog(void *data)
++{
++	(void) data;
++	fprintf(stderr, "private GetSnapshot did not reply\n");
++	abort();
++}
++static void snapshot(DBusConnection *client, const char *expected_status,
++					const char *expected_stage, int expected_error)
++{
++	DBusMessage *request;
++	DBusPendingCall *pending;
++	const char *bearer, *status, *stage;
++	uint32_t version;
++	uint64_t attachment, revision;
++	uint8_t att_error;
++	int32_t error;
++	guint timeout;
++	request = dbus_message_new_method_call("org.ubm.Test", "/org/bluez/test",
++					UBM_LE_GATT_INTERFACE, "GetSnapshot");
++	assert(dbus_connection_send_with_reply(client, request, &pending, 5000));
++	assert(dbus_pending_call_set_notify(pending, reply_received, NULL, NULL));
++	timeout = g_timeout_add_seconds(6, watchdog, NULL);
++	g_main_loop_run(loop);
++	g_source_remove(timeout);
++	assert(received && dbus_message_get_type(received) == DBUS_MESSAGE_TYPE_METHOD_RETURN);
++	assert(!strcmp(dbus_message_get_signature(received), "uttsssiy"));
++	assert(dbus_message_get_args(received, NULL, DBUS_TYPE_UINT32, &version,
++		DBUS_TYPE_UINT64, &attachment, DBUS_TYPE_UINT64, &revision,
++		DBUS_TYPE_STRING, &bearer, DBUS_TYPE_STRING, &status,
++		DBUS_TYPE_STRING, &stage, DBUS_TYPE_INT32, &error,
++		DBUS_TYPE_BYTE, &att_error, DBUS_TYPE_INVALID));
++	assert(version == 1 && attachment > 0 && revision > 0);
++	assert(!strcmp(status, expected_status));
++	assert(!strcmp(stage, expected_stage) && error == expected_error);
++	dbus_message_unref(received);
++	received = NULL;
++	dbus_pending_call_unref(pending);
++	dbus_message_unref(request);
++}
++int main(void)
++{
++	DBusConnection *client;
++	DBusError error = DBUS_ERROR_INIT;
++	struct btd_device device = { 0 };
++	struct btd_device replacement = { 0 };
++	struct ubm_client_watch old_watch = { .device = &device };
++	struct ubm_client_watch watch = { .device = &device, .attachment = 1,
++							.initial_ready = true };
++	device.le_state.connected = true;
++	device.path = "/org/bluez/test";
++	/* Exercise the exact production policy decision, before allocation. */
++	ubm_attach_primary(&device, BDADDR_LE_PUBLIC);
++	btd_opts.reverse_discovery = false;
++	btd_opts.gatt_client = true;
++	assert(!ubm_gatt_init_allowed(&device));
++	assert(device.ubm_gatt.status == UBM_GATT_UNSUPPORTED);
++	ubm_gatt_begin(&device.ubm_gatt);
++	btd_opts.reverse_discovery = true;
++	btd_opts.gatt_client = false;
++	assert(!ubm_gatt_init_allowed(&device));
++	assert(device.ubm_gatt.status == UBM_GATT_UNSUPPORTED);
++	btd_opts.gatt_client = true;
++	assert(ubm_gatt_init_allowed(&device));
++	ubm_gatt_registration_failed(&device);
++	assert(device.ubm_gatt.status == UBM_GATT_FAILED);
++	assert(!strcmp(device.ubm_gatt.failure_stage, "registration"));
++	ubm_gatt_detach(&device.ubm_gatt);
++	ubm_attach_primary(&replacement, 255);
++	ubm_gatt_complete(&replacement.ubm_gatt, true, 0);
++	assert(replacement.ubm_gatt.status == UBM_GATT_UNSUPPORTED);
++	/* This independent device must not alter the first receipt's identity. */
++	ubm_attachment_serial = 0;
++	ubm_attach_primary(&device, BDADDR_LE_PUBLIC);
++	ubm_gatt_complete(&device.ubm_gatt, true, 0);
++	device.ubm_watch = &watch;
++	ubm_discovery_observed(true, false, 0, 0, &old_watch);
++	assert(device.ubm_gatt.status == UBM_GATT_READY);
++	dbus_conn = g_dbus_setup_private(DBUS_BUS_SESSION, "org.ubm.Test", &error);
++	assert(dbus_conn);
++	client = g_dbus_setup_private(DBUS_BUS_SESSION, NULL, &error);
++	assert(client);
++	assert(g_dbus_register_interface(dbus_conn, device.path,
++		UBM_LE_GATT_INTERFACE, ubm_gatt_methods, ubm_gatt_signals,
++						NULL, &device, NULL));
++	loop = g_main_loop_new(NULL, FALSE);
++	snapshot(client, "ready", "none", 0);
++	projection_complete = false;
++	snapshot(client, "failed", "projection", EIO);
++	projection_complete = true;
++	ubm_discovery_observed(true, false, 0, 0, &watch);
++	snapshot(client, "discovering", "none", 0);
++	ubm_discovery_observed(false, false, EIO, 0x05, &watch);
++	snapshot(client, "failed", "discovery", EIO);
++	ubm_discovery_observed(false, true, 0, 0, &watch);
++	snapshot(client, "ready", "none", 0);
++	device.le_state.connected = false;
++	snapshot(client, "disconnected", "transport", ENOTCONN);
++	device.le_state.connected = true;
++	ubm_gatt_attach(&device.ubm_gatt, UBM_GATT_BREDR);
++	snapshot(client, "unsupported", "bearer", EOPNOTSUPP);
++	/* The actual wrapper rejects an old completion after a new ATT epoch,
++	 * even if that old watch is still presented as the device's watch. */
++	ubm_gatt_detach(&device.ubm_gatt);
++	ubm_attach_primary(&replacement, BDADDR_LE_PUBLIC);
++	ubm_attach_primary(&device, BDADDR_LE_PUBLIC);
++	assert(device.ubm_gatt.attachment != replacement.ubm_gatt.attachment);
++	assert(device.ubm_gatt.attachment != watch.attachment);
++	ubm_discovery_observed(false, true, 0, 0, &watch);
++	assert(device.ubm_gatt.status == UBM_GATT_DISCOVERING);
++	snapshot(client, "discovering", "none", 0);
++	/* The same physical generation still rejects a stale client identity. */
++	watch.attachment = device.ubm_gatt.attachment;
++	watch.client = (struct bt_gatt_client *) &old_watch;
++	ubm_discovery_observed(false, true, 0, 0, &watch);
++	assert(device.ubm_gatt.status == UBM_GATT_DISCOVERING);
++	/* Exhaustion never recycles a ready receipt, across device recreation. */
++	ubm_attachment_serial = UINT64_MAX;
++	ubm_gatt_detach(&device.ubm_gatt);
++	ubm_attach_primary(&device, BDADDR_LE_PUBLIC);
++	ubm_gatt_complete(&device.ubm_gatt, true, 0);
++	snapshot(client, "failed", "generation", EOVERFLOW);
++	g_dbus_unregister_interface(dbus_conn, device.path, UBM_LE_GATT_INTERFACE);
++	g_main_loop_unref(loop);
++	dbus_connection_close(client);
++	dbus_connection_unref(client);
++	dbus_connection_close(dbus_conn);
++	dbus_connection_unref(dbus_conn);
++	puts("Production private method/ownership/error envelope: OK");
++	return 0;
++}
+diff -ruN a/unit/test-ubm-gatt-projection.c b/unit/test-ubm-gatt-projection.c
+--- a/unit/test-ubm-gatt-projection.c	1969-12-31 16:00:00
++++ b/unit/test-ubm-gatt-projection.c	2026-09-27 22:01:09
+@@ -0,0 +1,90 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/* Exercise the production graph predicate; no system bus or radio. */
++#include "src/gatt-client.c"
++#include <assert.h>
++#include <stdio.h>
++
++int main(void)
++{
++	struct btd_gatt_client client = { .ready = true };
++	struct service service = { .client = &client };
++	struct characteristic chrc = { .service = &service };
++	struct descriptor descriptor = { .chrc = &chrc };
++	struct service included = { .client = &client };
++	struct gatt_db_attribute *attr, *value;
++	bt_uuid_t uuid;
++	client.db = gatt_db_new();
++	client.services = queue_new();
++	service.chrcs = queue_new();
++	service.incl_services = queue_new();
++	chrc.descs = queue_new();
++	assert(btd_gatt_client_projection_complete(&client));
++	bt_uuid16_create(&uuid, 0x180d);
++	attr = gatt_db_add_service(client.db, &uuid, true, 8);
++	assert(attr);
++	gatt_db_service_set_active(attr, true);
++	gatt_db_attribute_get_service_data(attr, &service.start_handle,
++		&service.end_handle, &service.primary, &service.uuid);
++	/* Native discovery succeeded, but service export failed. */
++	assert(!btd_gatt_client_projection_complete(&client));
++	queue_push_tail(client.services, &service);
++	assert(btd_gatt_client_projection_complete(&client));
++	bt_uuid16_create(&uuid, 0x2a37);
++	value = gatt_db_service_add_characteristic(attr, &uuid, 0, 2,
++						NULL, NULL, NULL);
++	assert(value);
++	/* Surviving service object does not hide failed characteristic export. */
++	assert(!btd_gatt_client_projection_complete(&client));
++	chrc.attr = gatt_db_get_attribute(client.db,
++			gatt_db_attribute_get_handle(value) - 1);
++	gatt_db_attribute_get_char_data(chrc.attr, &chrc.handle,
++		&chrc.value_handle, &chrc.props, &chrc.ext_props, &chrc.uuid);
++	queue_push_tail(service.chrcs, &chrc);
++	assert(btd_gatt_client_projection_complete(&client));
++	bt_uuid16_create(&uuid, 0x2902);
++	descriptor.attr = gatt_db_service_add_descriptor(attr, &uuid, 0,
++						NULL, NULL, NULL);
++	assert(descriptor.attr);
++	assert(!btd_gatt_client_projection_complete(&client));
++	queue_push_tail(chrc.descs, &descriptor);
++	descriptor.handle = gatt_db_attribute_get_handle(descriptor.attr);
++	descriptor.uuid = *gatt_db_attribute_get_type(descriptor.attr);
++	assert(btd_gatt_client_projection_complete(&client));
++	chrc.props = 0;
++	assert(!btd_gatt_client_projection_complete(&client));
++	chrc.props = 2;
++	/* D-Bus Includes intentionally deduplicates multiple native declarations
++	 * that point to one service. Completeness is about exported unique edges. */
++	bt_uuid16_create(&uuid, 0x180f);
++	value = gatt_db_add_service(client.db, &uuid, true, 4);
++	assert(value);
++	gatt_db_service_set_active(value, true);
++	included.chrcs = queue_new();
++	included.incl_services = queue_new();
++	gatt_db_attribute_get_service_data(value, &included.start_handle,
++		&included.end_handle, &included.primary, &included.uuid);
++	queue_push_tail(client.services, &included);
++	assert(gatt_db_service_add_included(attr, value));
++	assert(gatt_db_service_add_included(attr, value));
++	assert(!btd_gatt_client_projection_complete(&client));
++	queue_push_tail(service.incl_services, &included);
++	assert(btd_gatt_client_projection_complete(&client));
++	included.end_handle++;
++	assert(!btd_gatt_client_projection_complete(&client));
++	included.end_handle--;
++	queue_remove(service.incl_services, &included);
++	assert(!btd_gatt_client_projection_complete(&client));
++	queue_push_tail(service.incl_services, &included);
++	/* Extra cached objects are also not a complete current projection. */
++	queue_push_tail(chrc.descs, &descriptor);
++	assert(!btd_gatt_client_projection_complete(&client));
++	queue_destroy(chrc.descs, NULL);
++	queue_destroy(included.chrcs, NULL);
++	queue_destroy(included.incl_services, NULL);
++	queue_destroy(service.incl_services, NULL);
++	queue_destroy(service.chrcs, NULL);
++	queue_destroy(client.services, NULL);
++	gatt_db_unref(client.db);
++	puts("Production export graph completeness: OK");
++	return 0;
++}
+diff -ruN a/unit/test-ubm-gatt-state.c b/unit/test-ubm-gatt-state.c
+--- a/unit/test-ubm-gatt-state.c	1969-12-31 16:00:00
++++ b/unit/test-ubm-gatt-state.c	2026-09-27 22:02:53
+@@ -0,0 +1,90 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++#include <assert.h>
++#include <errno.h>
++#include <stdio.h>
++#include "src/ubm-gatt-state.h"
++
++int main(void)
++{
++	struct ubm_gatt_state state = { 0 };
++	uint64_t attachment, revision;
++	struct ubm_gatt_refresh refresh = { 0 };
++
++	ubm_gatt_refresh_begin(&refresh);
++	ubm_gatt_refresh_begin(&refresh);
++	assert(!ubm_gatt_refresh_finish(&refresh, false, 0x05));
++	assert(refresh.pending == 1 && refresh.failed && refresh.att_error == 5);
++	assert(ubm_gatt_refresh_finish(&refresh, true, 0));
++	assert(refresh.failed && refresh.att_error == 5);
++	ubm_gatt_refresh_begin(&refresh);
++	assert(!refresh.failed);
++	assert(ubm_gatt_refresh_finish(&refresh, true, 0));
++	assert(!refresh.failed && refresh.pending == 0);
++	refresh.pending = UINT64_MAX;
++	ubm_gatt_refresh_begin(&refresh);
++	assert(refresh.exhausted && refresh.failed);
++	assert(!ubm_gatt_refresh_finish(&refresh, true, 0));
++	assert(refresh.pending == UINT64_MAX);
++
++	assert(ubm_gatt_status(&state) == UBM_GATT_DISCONNECTED);
++	ubm_gatt_attach(&state, UBM_GATT_LE);
++	attachment = state.attachment;
++	assert(attachment != 0);
++	ubm_gatt_begin(&state);
++	revision = state.revision;
++	assert(ubm_gatt_status(&state) == UBM_GATT_DISCOVERING);
++	ubm_gatt_complete(&state, true, 0);
++	assert(ubm_gatt_status(&state) == UBM_GATT_READY);
++	assert(state.attachment == attachment && state.revision == revision);
++	ubm_gatt_retire(&state);
++	ubm_gatt_attach(&state, UBM_GATT_LE);
++	ubm_gatt_complete(&state, true, 0);
++	assert(state.status == UBM_GATT_DISCONNECTED && state.attachment == attachment);
++	ubm_gatt_detach(&state);
++	ubm_gatt_attach(&state, UBM_GATT_LE);
++	attachment = state.attachment;
++	ubm_gatt_complete(&state, true, 0);
++
++	/* An accepted invalidation precedes completion/export of a refresh. */
++	ubm_gatt_begin(&state);
++	assert(state.revision > revision);
++	assert(ubm_gatt_status(&state) != UBM_GATT_READY);
++	ubm_gatt_complete(&state, false, 0x05);
++	assert(ubm_gatt_status(&state) == UBM_GATT_FAILED);
++	assert(state.error == EIO && state.att_error == 0x05);
++	ubm_gatt_begin(&state);
++	ubm_gatt_complete(&state, true, 0);
++	assert(ubm_gatt_status(&state) == UBM_GATT_READY);
++
++	/* A second transport cannot turn the shared client into LE evidence. */
++	ubm_gatt_attach(&state, UBM_GATT_BREDR);
++	ubm_gatt_complete(&state, true, 0);
++	assert(ubm_gatt_status(&state) == UBM_GATT_UNSUPPORTED);
++	assert(state.bearer == UBM_GATT_MIXED && state.error == EOPNOTSUPP);
++	ubm_gatt_detach(&state);
++	assert(ubm_gatt_status(&state) == UBM_GATT_DISCONNECTED);
++	ubm_gatt_complete(&state, true, 0);
++	assert(ubm_gatt_status(&state) == UBM_GATT_DISCONNECTED);
++	ubm_gatt_attach(&state, UBM_GATT_BREDR);
++	ubm_gatt_begin(&state);
++	ubm_gatt_complete(&state, true, 0);
++	assert(ubm_gatt_status(&state) == UBM_GATT_UNSUPPORTED);
++	ubm_gatt_detach(&state);
++	ubm_gatt_attach(&state, UBM_GATT_LE);
++	assert(state.attachment > attachment);
++	assert(ubm_gatt_status(&state) == UBM_GATT_DISCOVERING);
++
++	/* Counter wrap is a terminal refusal, never a recycled receipt. */
++	state.revision = UINT64_MAX;
++	ubm_gatt_begin(&state);
++	ubm_gatt_complete(&state, true, 0);
++	assert(ubm_gatt_status(&state) == UBM_GATT_FAILED);
++	assert(state.error == EOVERFLOW);
++	ubm_gatt_detach(&state);
++	assert(state.status == UBM_GATT_FAILED && state.error == EOVERFLOW);
++	ubm_gatt_attach(&state, UBM_GATT_LE);
++	ubm_gatt_complete(&state, true, 0);
++	assert(state.status == UBM_GATT_FAILED && state.error == EOVERFLOW);
++	puts("LE GATT ownership/status lifecycle: OK");
++	return 0;
++}
+diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
+--- a/unit/test-ubm-refresh.c	1969-12-31 16:00:00
++++ b/unit/test-ubm-refresh.c	2026-09-27 21:58:48
+@@ -0,0 +1,91 @@
++// SPDX-License-Identifier: LGPL-2.1-or-later
++/* Production invalidation/completion paths with no ATT socket or radio. */
++#include "src/shared/gatt-client.c"
++#include <stdio.h>
++#include <sys/socket.h>
++#include <unistd.h>
++
++struct observed { unsigned int calls; bool pending, success; uint8_t error; };
++static void observe(bool pending, bool success, int cause, uint8_t error, void *data)
++{
++	struct observed *observed = data;
++	(void) cause;
++	observed->calls++;
++	observed->pending = pending;
++	observed->success = success;
++	observed->error = error;
++}
++
++int main(void)
++{
++	struct bt_gatt_client client = { 0 };
++	struct observed observed = { 0 };
++	struct discovery_op operation = { .client = &client, .start = 1, .end = 9 };
++	struct bt_att_pdu_error_rsp error = { .ecode = BT_ATT_ERROR_DB_OUT_OF_SYNC };
++	uint8_t changed[] = { 1, 0, 9, 0 };
++	client.db = gatt_db_new();
++	client.clones = queue_new();
++	client.svc_chngd_queue = queue_new();
++	bt_gatt_client_set_ubm_discovery_observer(&client, observe, &observed);
++	if (getenv("UBM_TEST_CLONE_ONLY"))
++		goto clone_test;
++	/* A real queued indication invalidates now, before its rediscovery. */
++	client.in_svc_chngd = true;
++	ubm_discovery_begin(&client);
++	service_changed_cb(1, changed, sizeof(changed), &client);
++	service_changed_cb(1, changed, sizeof(changed), &client);
++	assert(observed.calls == 3 && observed.pending && !observed.success);
++	assert(client.ubm_refresh.pending == 3);
++	/* A fails; queued B cannot erase A's own error even if B succeeds. */
++	service_changed_complete(&operation, false, 0x05);
++	/* B's actual dispatch has no socket, and must settle failed, not hang. */
++	assert(!observed.pending && !observed.success && observed.error == 0x05);
++	assert(client.ubm_refresh.pending == 0);
++	assert(queue_isempty(client.svc_chngd_queue));
++	/* Hash-check admission fails synchronously without an ATT socket. */
++	client.in_svc_chngd = false;
++	gatt_client_db_sync_cb(&error, NULL, 0, 7, &client);
++	assert(!observed.pending && !observed.success);
++	assert(client.ubm_refresh.pending == 0);
++	assert(client.pending_retry_att_id == 0);
++	/* Positive queued completion is one cycle, never a ready interlude. */
++	ubm_discovery_begin(&client);
++	ubm_discovery_begin(&client);
++	ubm_discovery_finish(&client, true, 0);
++	assert(observed.pending && !observed.success);
++	ubm_discovery_finish(&client, true, 0);
++	assert(!observed.pending && observed.success);
++clone_test:
++	/* The real clone constructor replaces the shared ATT sync callback.
++	 * A clone's DB-out-of-sync must invalidate its owning database observer. */
++	{
++		int sockets[2];
++		struct bt_att *att;
++		struct bt_gatt_client *parent, *clone;
++		struct observed parent_observed = { 0 };
++		assert(!socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sockets));
++		att = bt_att_new(sockets[0], false);
++		assert(att);
++		parent = bt_gatt_client_ref(gatt_client_new(client.db, att, 0));
++		assert(parent);
++		parent->ready = true;
++		bt_gatt_client_set_ubm_discovery_observer(parent, observe, &parent_observed);
++		clone = bt_gatt_client_clone(parent);
++		assert(clone && clone->parent == parent);
++		gatt_client_db_sync_cb(&error, NULL, 0, 7, clone);
++		assert(parent_observed.calls > 0 && parent_observed.pending);
++		assert(parent->ubm_refresh.pending == 1);
++		assert(clone->ubm_refresh.pending == 0);
++		bt_gatt_client_unref(clone);
++		bt_gatt_client_unref(parent);
++		bt_att_unref(att);
++		close(sockets[0]);
++		close(sockets[1]);
++	}
++	bt_gatt_client_set_ubm_discovery_observer(&client, NULL, NULL);
++	queue_destroy(client.svc_chngd_queue, free);
++	queue_destroy(client.clones, NULL);
++	gatt_db_unref(client.db);
++	puts("Production refresh ingress/failure settlement: OK");
++	return 0;
++}

@@ -4,6 +4,16 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Unreleased
 
+- BlueZ strict LE GATT discovery uses a versioned, owner-fenced daemon snapshot,
+  same-revision graph publication and scoped invalidation. The source-only BlueZ
+  5.87 extension has isolated build/protocol gates, original GPL/LGPL provenance
+  and explicit external deployment requirements; no daemon is automatically installed.
+- Rediscovery retires old subscription generations. Notification cleanup retains
+  its original native target across graph replacement, and observation failure
+  refuses GATT admission without inventing a physical Service Changed event.
+
+- Align automated review guidance with the current 5.x contract and guard
+  against stale contract-line references alongside the agent-guidance tests.
 - Keep native setup uncertainty fenced to the physical peer and authoritative
   connection/database generation across claim, session disposal and declaration
   replacement. A late old command reply cannot advance a replacement setup on

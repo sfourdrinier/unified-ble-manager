@@ -35,6 +35,12 @@ describe('AGENTS.md 5.x contract', () => {
     expect(agents.split('\n')[0]).not.toMatch(/4\.x/)
   })
 
+  test('automated review guidance names the same current contract line', () => {
+    const review = fs.readFileSync(path.join(root, '.coderabbit.yaml'), 'utf8')
+    expect(review).toContain('Contract violations against 5.x:')
+    expect(review).not.toMatch(/Contract violations against [34]\.x:/)
+  })
+
   test('no dbus-next-as-dependency statement remains', () => {
     for (const line of agents.split('\n')) {
       expect(line).not.toMatch(/optional.*dbus-next|dbus-next.*depend/)

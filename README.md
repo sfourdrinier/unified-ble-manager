@@ -116,6 +116,11 @@ Profile subpaths: `profiles/commands`, `profiles/standard-commands`, `profiles/h
 
 Deep imports are unsupported.
 
+Linux consumers require the explicit daemon mechanisms documented in
+[`docs/BLUEZ_LE_GATT.md`](docs/BLUEZ_LE_GATT.md). Installing this package does
+not install or replace the system Bluetooth daemon; stock aggregate discovery
+signals are not a substitute for authoritative LE GATT readiness.
+
 ## React provider and hooks
 
 `unified-ble-manager/react` supplies the provider and hooks; create the manager
