@@ -50,7 +50,7 @@ sh vendor/bluez/build-test-isolated.sh /absolute/new-source/bluez-5.87
 ```
 
 The build uses one worker and disk-backed, source-local temporary storage.
-It compiles `bluetoothd`, runs the original GATT unit suite and five added
+It compiles `bluetoothd`, runs the original GATT unit suite and six added
 tests. Only the method-table test starts a **private session bus**, never a
 daemon or a system-bus connection. The tests exercise the production snapshot
 handler/table, queued Service Changed and failed DB-out-of-sync dispatch paths
@@ -66,6 +66,13 @@ ATT-disconnect, acquired-socket and server-reconnection callbacks. It checks
 retained bonded CCC values, socket rearming without duplicate counts, delayed
 reply cancellation after CCC disable/disconnect/object removal, failed rearm
 retry, independent peers and unchanged callback-based notification behaviour.
+Actual ATT MTU-increase callbacks renew acquired sockets with the measured
+new MTU; default-MTU acquisition remains immediate. Tests cover equal-MTU
+no-op, canceled old replies, peer isolation, refusal/retry and callback
+registration/disconnect/free ownership without a negotiation timer.
+The actual shared ATT exchange-registration queue-refusal branch is also
+executed: it frees the refused registration, not the caller's ATT object,
+so disconnect-handler rollback and later ATT use remain valid.
 Its ATT and application sockets are AF_UNIX pairs and its application D-Bus
 replies are controlled fixtures, not physical or system-bus evidence.
 The clone fixture uses an AF_UNIX socket pair, not a Bluetooth socket. The
@@ -148,6 +155,13 @@ substitutes the callback-based `StartNotify` path. Ordinary initial acquisition
 retains BlueZ's existing fallback. CCC disable and disconnect/object teardown
 fence delayed replies, and per-device cleanup cannot close another peer's IO.
 The callback-based notification path and bonded CCC persistence are preserved.
+Acquired FDs carry an immutable MTU. An observed ATT MTU increase renews only
+that ATT's acquired-notification sockets and pending acquisitions, keeping
+CCC configuration/counts unchanged and fencing stale replies. No exchange is
+required for default-MTU clients: they acquire immediately. MTU renewal uses
+the existing ATT exchange observer and never guesses readiness or negotiates
+on behalf of the application. A failed renewal retains retryable CCC ownership
+and never falls back to the callback-based notification path.
 It does not change Connect/Disconnect, privilege, policy, trust or global radio
 settings. Strict LE acquisition/release still uses the separately implemented
 stock LE1 lifecycle under explicit owner attestation. A supported, reviewed

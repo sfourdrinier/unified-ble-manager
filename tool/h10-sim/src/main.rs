@@ -1022,12 +1022,29 @@ async fn send_battery(radio: &mut PlatformRadio, sim: &SimState, log: &mut Event
 }
 
 async fn send_ecg(
-    radio: &mut PlatformRadio,
+    radio: &mut impl PeripheralRadio,
     sim: &mut SimState,
     log: &mut EventLog,
     runtime: &mut Option<(Instant, sample_clock::SampleClock)>,
     clock_boot: Instant,
     boot_epoch_ns: u64,
+) {
+    let elapsed = sim
+        .ecg_started_at
+        .map(|started| started.elapsed())
+        .unwrap_or_default();
+    send_ecg_at(radio, sim, log, runtime, clock_boot, boot_epoch_ns, elapsed).await;
+}
+
+/// Snapshot acquisition time once per dispatch; packet count is not sensor time.
+async fn send_ecg_at(
+    radio: &mut impl PeripheralRadio,
+    sim: &mut SimState,
+    log: &mut EventLog,
+    runtime: &mut Option<(Instant, sample_clock::SampleClock)>,
+    clock_boot: Instant,
+    boot_epoch_ns: u64,
+    elapsed: Duration,
 ) {
     let Some(started) = sim.ecg_started_at.filter(|_| sim.ecg_streaming) else {
         *runtime = None;
@@ -1039,12 +1056,39 @@ async fn send_ecg(
     {
         *runtime = Some((started, sample_clock::SampleClock::new(130)));
     }
-    let count = sim.config.ecg_frame_samples;
+    let characteristic = Uuid::parse_str(gatt_spec::pmd::DATA).expect("constant PMD UUID");
+    let capacity = match radio.notification_payload_capacity(characteristic).await {
+        Ok(Some(capacity)) => capacity,
+        Ok(None) => return,
+        Err(error) => {
+            log.log(
+                "radio-error",
+                json!({"op": "ecg-notification-capacity", "error": error.to_string()}),
+            );
+            return;
+        }
+    };
+    let count =
+        match gatt_spec::ecg_frame_samples_for_capacity(sim.config.ecg_frame_samples, capacity) {
+            Ok(count) => count,
+            Err(error) => {
+                log.log("ecg-stream-failed", json!({"error": error}));
+                sim.apply_pmd_action(PmdAction::StopEcg);
+                return;
+            }
+        };
     let Some((_, clock)) = runtime.as_mut() else {
         return;
     };
-    for _ in 0..32 {
-        let batch = match clock.next(started.elapsed(), count as u64) {
+    // Preserve the bounded work in samples, not packets: a small writer needs
+    // more packets to carry the same acquisition budget at 130 Hz.
+    let frame_budget = sim
+        .config
+        .ecg_frame_samples
+        .saturating_mul(32)
+        .div_ceil(count);
+    for _ in 0..frame_budget {
+        let batch = match clock.next(elapsed, count as u64) {
             Ok(Some(batch)) => batch,
             Ok(None) => break,
             Err(error) => {
@@ -1107,8 +1151,7 @@ async fn send_ecg(
             }
         };
         let frame = gatt_spec::encode_ecg_frame(timestamp_ns, &samples);
-        let uuid = Uuid::parse_str(gatt_spec::pmd::DATA).unwrap_or_else(|_| Uuid::nil());
-        let outcome = radio.notify(uuid, frame.clone()).await;
+        let outcome = radio.notify(characteristic, frame.clone()).await;
         report_stream_notify(
             log,
             "ecg-notify",
@@ -1937,6 +1980,390 @@ async fn stale_callback(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct EcgRadio {
+        capacity: Result<Option<usize>, String>,
+        frames: Vec<Vec<u8>>,
+    }
+
+    #[async_trait::async_trait]
+    impl PeripheralRadio for EcgRadio {
+        async fn open(_: mpsc::Sender<RadioEvent>) -> Result<Self, radio::RadioError> {
+            unreachable!()
+        }
+        async fn is_powered(&mut self) -> Result<bool, radio::RadioError> {
+            unreachable!()
+        }
+        async fn is_advertising(&mut self) -> Result<bool, radio::RadioError> {
+            unreachable!()
+        }
+        async fn start_advertising(
+            &mut self,
+            _: &str,
+            _: &[Uuid],
+        ) -> Result<(), radio::RadioError> {
+            unreachable!()
+        }
+        async fn stop_advertising(&mut self) -> Result<(), radio::RadioError> {
+            unreachable!()
+        }
+        async fn add_service(&mut self, _: &radio::ServiceSpec) -> Result<(), radio::RadioError> {
+            unreachable!()
+        }
+        async fn notification_payload_capacity(
+            &self,
+            characteristic: Uuid,
+        ) -> Result<Option<usize>, radio::RadioError> {
+            assert_eq!(
+                characteristic.to_string(),
+                gatt_spec::pmd::DATA.to_lowercase()
+            );
+            self.capacity.clone().map_err(radio::RadioError)
+        }
+        async fn notify(
+            &mut self,
+            characteristic: Uuid,
+            frame: Vec<u8>,
+        ) -> Result<SendOutcome, radio::RadioError> {
+            assert_eq!(
+                characteristic.to_string(),
+                gatt_spec::pmd::DATA.to_lowercase()
+            );
+            let bytes = frame.len();
+            self.frames.push(frame);
+            match &self.capacity {
+                Ok(Some(capacity)) if bytes <= *capacity => Ok(SendOutcome::OsAccepted),
+                _ => Err(radio::RadioError("data length exceeds MTU".into())),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn ecg_notifications_fit_writer_capacity() {
+        let mut sim = SimState::new(SimConfig::default());
+        let started = Instant::now() - Duration::from_secs(1);
+        sim.ecg_streaming = true;
+        sim.ecg_started_at = Some(started);
+        let mut radio = EcgRadio {
+            capacity: Ok(Some(18)),
+            frames: Vec::new(),
+        };
+        send_ecg(
+            &mut radio,
+            &mut sim,
+            &mut EventLog::new(),
+            &mut None,
+            started - Duration::from_secs(10),
+            sim::POLAR_EPOCH_OFFSET_NS + 5_000_000_000,
+        )
+        .await;
+        assert!(
+            !radio.frames.is_empty(),
+            "small MTU must still deliver acquired ECG samples"
+        );
+        assert!(
+            radio.frames.iter().all(|frame| frame.len() <= 18),
+            "legal writer capacity18 must not receive the configured229-byte frame: {:?}",
+            radio.frames.iter().map(Vec::len).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn ecg_normal_small_and_exact_boundary_packets_preserve_samples_and_time() {
+        for (capacity, expected_count) in [
+            (13, 1),
+            (15, 1),
+            (16, 2),
+            (18, 2),
+            (228, 72),
+            (229, 73),
+            (244, 73),
+            (511, 73),
+        ] {
+            for recorded in [false, true] {
+                let mut sim = SimState::new(SimConfig::default());
+                if recorded {
+                    sim.ecg_replay = Some(vec![7, -8, 9]);
+                }
+                let started = Instant::now() - Duration::from_secs(1);
+                sim.ecg_streaming = true;
+                sim.ecg_started_at = Some(started);
+                let mut radio = EcgRadio {
+                    capacity: Ok(Some(capacity)),
+                    frames: Vec::new(),
+                };
+                send_ecg_at(
+                    &mut radio,
+                    &mut sim,
+                    &mut EventLog::new(),
+                    &mut None,
+                    started - Duration::from_secs(10),
+                    sim::POLAR_EPOCH_OFFSET_NS + 5_000_000_000,
+                    Duration::from_secs(1),
+                )
+                .await;
+                assert!(!radio.frames.is_empty());
+                let mut delivered = 0;
+                for frame in &radio.frames {
+                    assert!(frame.len() <= capacity);
+                    let count = (frame.len() - 10) / 3;
+                    assert_eq!(count, expected_count);
+                    let mut expected_samples = Vec::new();
+                    let index = 1300 + delivered;
+                    if let Some(samples) = &sim.ecg_replay {
+                        ecg::replay_samples(samples, index, count, &mut expected_samples);
+                    } else {
+                        ecg::ecg_frame_samples(
+                            index,
+                            count,
+                            f64::from(sim.config.bpm),
+                            &mut expected_samples,
+                        );
+                    }
+                    delivered += count as u64;
+                    let timestamp = 15_000_000_000 + (delivered - 1) * 1_000_000_000 / 130;
+                    assert_eq!(
+                        *frame,
+                        gatt_spec::encode_ecg_frame(timestamp, &expected_samples)
+                    );
+                }
+                assert_eq!(sim.ecg_sample_index, 1300 + delivered);
+                assert_eq!(sim.delivery_seq, radio.frames.len() as u64);
+                assert!(sim.ecg_streaming);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn ecg_capacity_changes_keep_acquisition_and_delivery_identity() {
+        let mut sim = SimState::new(SimConfig::default());
+        let started = Instant::now() - Duration::from_secs(1);
+        sim.ecg_streaming = true;
+        sim.ecg_started_at = Some(started);
+        let mut radio = EcgRadio {
+            capacity: Ok(Some(18)),
+            frames: Vec::new(),
+        };
+        let mut runtime = None;
+        let mut log = EventLog::new();
+        send_ecg_at(
+            &mut radio,
+            &mut sim,
+            &mut log,
+            &mut runtime,
+            started - Duration::from_secs(10),
+            sim::POLAR_EPOCH_OFFSET_NS + 5_000_000_000,
+            Duration::from_millis(500),
+        )
+        .await;
+        assert_eq!(radio.frames.len(), 32);
+        assert_eq!(sim.ecg_sample_index, 1364);
+        radio.capacity = Ok(Some(13));
+        send_ecg_at(
+            &mut radio,
+            &mut sim,
+            &mut log,
+            &mut runtime,
+            started - Duration::from_secs(10),
+            sim::POLAR_EPOCH_OFFSET_NS + 5_000_000_000,
+            Duration::from_millis(600),
+        )
+        .await;
+        assert_eq!(radio.frames.len(), 46);
+        assert_eq!(sim.ecg_sample_index, 1378);
+        assert_eq!(sim.delivery_seq, 46);
+        assert_eq!(
+            u64::from_le_bytes(radio.frames[32][1..9].try_into().unwrap()),
+            15_000_000_000 + 64 * 1_000_000_000 / 130
+        );
+    }
+
+    #[tokio::test]
+    async fn ecg_legal_small_writer_preserves_130_hz_across_normal_dispatch() {
+        for capacity in [13, 18, 229] {
+            let mut sim = SimState::new(SimConfig::default());
+            let started = Instant::now();
+            sim.ecg_streaming = true;
+            sim.ecg_started_at = Some(started);
+            let mut radio = EcgRadio {
+                capacity: Ok(Some(capacity)),
+                frames: Vec::new(),
+            };
+            let mut runtime = None;
+            let mut log = EventLog::new();
+            let mut delivered = 0;
+            for tick in 1..=100 {
+                // The normal 73/130-second cadence, rounded up by <1 ns.
+                let due = tick * 73_u64;
+                let elapsed = Duration::from_nanos((due * 1_000_000_000).div_ceil(130));
+                let previous = radio.frames.len();
+                send_ecg_at(
+                    &mut radio,
+                    &mut sim,
+                    &mut log,
+                    &mut runtime,
+                    started - Duration::from_secs(10),
+                    sim::POLAR_EPOCH_OFFSET_NS + 5_000_000_000,
+                    elapsed,
+                )
+                .await;
+                for frame in &radio.frames[previous..] {
+                    assert!(frame.len() <= capacity);
+                    delivered += ((frame.len() - 10) / 3) as u64;
+                    assert_eq!(
+                        u64::from_le_bytes(frame[1..9].try_into().unwrap()),
+                        15_000_000_000 + (delivered - 1) * 1_000_000_000 / 130
+                    );
+                }
+                let effective =
+                    gatt_spec::ecg_frame_samples_for_capacity(73, capacity).unwrap() as u64;
+                assert!(
+                    due - delivered < effective,
+                    "no artificial 32-packet throttle"
+                );
+                assert_eq!(sim.ecg_sample_index, 1300 + delivered);
+                if capacity == 13 {
+                    assert_eq!(radio.frames.len() - previous, 73);
+                }
+            }
+            assert_eq!(delivered, 7300);
+            assert_eq!(sim.delivery_seq, radio.frames.len() as u64);
+            assert!(sim.ecg_streaming);
+        }
+    }
+
+    #[tokio::test]
+    async fn ecg_missing_invalid_or_failed_capacity_never_dispatches_an_oversized_frame() {
+        for capacity in [
+            Ok(None),
+            Ok(Some(12)),
+            Err("injected writer query failure".to_string()),
+        ] {
+            let mut sim = SimState::new(SimConfig::default());
+            let started = Instant::now() - Duration::from_secs(1);
+            sim.ecg_streaming = true;
+            sim.ecg_started_at = Some(started);
+            let acc = acc::Settings {
+                sample_rate_hz: 200,
+                range_g: 8,
+            };
+            sim.acc_settings = Some(acc);
+            let mut radio = EcgRadio {
+                capacity: capacity.clone(),
+                frames: Vec::new(),
+            };
+            let mut log = EventLog::new();
+            let (sender, mut events) = mpsc::channel(16);
+            log.add_listener(sender);
+            send_ecg(
+                &mut radio,
+                &mut sim,
+                &mut log,
+                &mut None,
+                started - Duration::from_secs(10),
+                sim::POLAR_EPOCH_OFFSET_NS + 5_000_000_000,
+            )
+            .await;
+            assert!(radio.frames.is_empty());
+            assert_eq!(sim.ecg_sample_index, 0);
+            assert_eq!(sim.delivery_seq, 0);
+            assert_eq!(sim.acc_settings, Some(acc), "ECG refusal cannot stop ACC");
+            match capacity {
+                Ok(None) => {
+                    assert!(sim.ecg_streaming);
+                    assert!(events.try_recv().is_err());
+                }
+                Ok(Some(_)) => {
+                    assert!(!sim.ecg_streaming);
+                    assert_eq!(events.try_recv().unwrap()["kind"], "ecg-stream-failed");
+                }
+                Err(_) => {
+                    assert!(sim.ecg_streaming);
+                    let event = events.try_recv().unwrap();
+                    assert_eq!(event["op"], "ecg-notification-capacity");
+                    assert!(event["error"]
+                        .as_str()
+                        .unwrap()
+                        .contains("injected writer query failure"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ecg_capacity_geometry_keeps_configured_maximum_and_full_samples() {
+        for (configured, capacity, count) in [
+            (73, 18, 2),
+            (73, 229, 73),
+            (73, usize::MAX, 73),
+            (167, 510, 166),
+            (167, 511, 167),
+            (167, 512, 167),
+            (1, 512, 1),
+        ] {
+            let actual = gatt_spec::ecg_frame_samples_for_capacity(configured, capacity).unwrap();
+            assert_eq!(actual, count);
+            assert!(gatt_spec::encode_ecg_frame(0, &vec![0; actual]).len() <= capacity);
+        }
+        for capacity in [0, 9, 10, 12] {
+            assert!(gatt_spec::ecg_frame_samples_for_capacity(73, capacity).is_err());
+        }
+        assert!(gatt_spec::ecg_frame_samples_for_capacity(0, 512).is_err());
+    }
+
+    #[tokio::test]
+    async fn ecg_small_writer_reports_backlog_shedding_and_maximum_batches_still_fit() {
+        for (configured, capacity, expected_count, expected_shed) in
+            [(73, 13, 130, 130), (167, 511, 167, 0)]
+        {
+            let mut sim = SimState::new(SimConfig {
+                ecg_frame_samples: configured,
+                ..SimConfig::default()
+            });
+            let started = Instant::now();
+            sim.ecg_streaming = true;
+            sim.ecg_started_at = Some(started);
+            let mut radio = EcgRadio {
+                capacity: Ok(Some(capacity)),
+                frames: Vec::new(),
+            };
+            let mut log = EventLog::new();
+            let (sender, mut events) = mpsc::channel(256);
+            log.add_listener(sender);
+            send_ecg_at(
+                &mut radio,
+                &mut sim,
+                &mut log,
+                &mut None,
+                started - Duration::from_secs(10),
+                sim::POLAR_EPOCH_OFFSET_NS + 5_000_000_000,
+                Duration::from_secs(2),
+            )
+            .await;
+            assert_eq!(
+                radio
+                    .frames
+                    .iter()
+                    .map(|frame| (frame.len() - 10) / 3)
+                    .sum::<usize>(),
+                expected_count
+            );
+            assert!(radio.frames.iter().all(|frame| frame.len() <= capacity));
+            let mut shed = 0;
+            while let Ok(event) = events.try_recv() {
+                if event["kind"] == "ecg-samples-shed" {
+                    shed += event["samples"].as_u64().unwrap();
+                }
+                assert_ne!(event["kind"], "radio-error");
+            }
+            assert_eq!(shed, expected_shed);
+            assert_eq!(
+                sim.ecg_sample_index,
+                1300 + expected_count as u64 + expected_shed
+            );
+            assert!(sim.ecg_streaming);
+        }
+    }
 
     struct ProfileRadio {
         advertising: std::collections::VecDeque<Result<bool, radio::RadioError>>,

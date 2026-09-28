@@ -5,11 +5,17 @@ All notable changes to `unified-ble-manager` are documented here.
 ## Unreleased
 
 - Restore BlueZ server `AcquireNotify` sockets after bonded ATT reconnection
+  and renew their immutable MTU after an actual ATT MTU increase,
   without clearing CCC configuration or duplicating descriptor counts. Fence
   delayed replies after disable/disconnect/object removal, retain failed rearm
   for retry without callback-based fallback, and keep cleanup peer-scoped.
   Exercise the production server callbacks with isolated ATT/application sockets,
   including multiple peers, CCC mode changes and unchanged callback-based notifications.
+
+- Fit simulator ECG packets to the acquired notification capacity without
+  changing its 130 Hz sample clock, waveform indices or frame timestamps.
+  Preserve the bounded sample budget when small transports require more
+  packets, and report refused capacity or shed acquisition samples explicitly.
 
 - Track the exact installed UBM JavaScript package as an Android application
   bundle input. Replacing a pnpm package copy now invalidates stale Hermes

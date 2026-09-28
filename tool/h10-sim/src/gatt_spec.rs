@@ -230,18 +230,36 @@ pub fn encode_ecg_settings() -> Vec<u8> {
     out
 }
 
+/// Measurement byte, u64 last-sample timestamp and frame-type byte.
+pub const ECG_FRAME_HEADER_BYTES: usize = 10;
+/// Signed 24-bit little-endian microvolts per type-0 ECG sample.
+pub const ECG_SAMPLE_BYTES: usize = 3;
+
+/// The configured batch is an upper bound; a complete type-0 sample and its
+/// header must fit the current notification-value capacity. This capacity
+/// already excludes transport overhead, so do not subtract ATT bytes again.
+pub fn ecg_frame_samples_for_capacity(configured: usize, capacity: usize) -> Result<usize, String> {
+    let fit = capacity.saturating_sub(ECG_FRAME_HEADER_BYTES) / ECG_SAMPLE_BYTES;
+    if fit == 0 || configured == 0 {
+        return Err(format!(
+            "ECG requires a nonempty sample batch and at least 13 notification bytes; transport permits {capacity}"
+        ));
+    }
+    Ok(configured.min(fit))
+}
+
 /// Encodes one PMD ECG data frame: `[0x00, timestampNs:u64 LE, 0x00,
 /// samples…]` with type-0 samples as signed 24-bit little-endian microvolts.
 /// The timestamp is the sensor time of the frame's last sample.
 pub fn encode_ecg_frame(timestamp_ns: u64, samples_uv: &[i32]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(10 + samples_uv.len() * 3);
+    let mut out = Vec::with_capacity(ECG_FRAME_HEADER_BYTES + samples_uv.len() * ECG_SAMPLE_BYTES);
     out.push(PMD_MEASUREMENT_ECG);
     out.extend_from_slice(&timestamp_ns.to_le_bytes());
     out.push(0x00);
     for sample in samples_uv.iter().copied() {
         let clamped = sample.clamp(-8_388_608, 8_388_607);
         let unsigned = (clamped as i64 & 0xFF_FFFF) as u32;
-        out.extend_from_slice(&unsigned.to_le_bytes()[..3]);
+        out.extend_from_slice(&unsigned.to_le_bytes()[..ECG_SAMPLE_BYTES]);
     }
     out
 }

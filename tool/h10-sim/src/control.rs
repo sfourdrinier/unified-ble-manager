@@ -110,7 +110,8 @@ pub enum ControlCommand {
     LoadProfile { path: String },
     /// Change HR rate / ECG dispatch opportunities: `{"cmd":"set-rates","hrHz":2.0,"ecgFramesPerSec":4.0}`.
     /// ECG acquisition remains 130 Hz; a dispatch may send zero or multiple frames.
-    /// ECG frames carry `ecgFrameSamples` samples (1..=167 so a frame fits MTU 512).
+    /// ECG frames carry at most `ecgFrameSamples` samples (1..=167), further
+    /// limited by the current writer's notification-value capacity.
     SetRates {
         #[serde(rename = "hrHz")]
         hr_hz: Option<f64>,

@@ -1554,7 +1554,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  };
  
  struct notify {
-@@ -174,6 +178,7 @@
+@@ -174,9 +178,11 @@
  
  struct device_state {
  	struct btd_gatt_database *db;
@@ -1562,18 +1562,32 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  	bdaddr_t bdaddr;
  	uint8_t bdaddr_type;
  	unsigned int disc_id;
-@@ -293,6 +298,10 @@
++	unsigned int exchange_id;
+ 	uint8_t cli_feat[CLI_FEAT_SIZE];
+ 	bool change_aware;
+ 	bool out_of_sync;
+@@ -274,6 +280,8 @@
+ 	return queue_find(dev_state->ccc_states, ccc_state_match,
+ 							UINT_TO_PTR(handle));
+ }
++
++static void notify_mtu_changed(uint16_t mtu, void *user_data);
+ 
+ static struct device_state *device_state_create(struct btd_gatt_database *db,
+ 							const bdaddr_t *bdaddr,
+@@ -293,6 +301,11 @@
  static void device_state_free(void *data)
  {
  	struct device_state *state = data;
 +	if (state->att) {
++		bt_att_unregister_exchange(state->att, state->exchange_id);
 +		bt_att_unregister_disconnect(state->att, state->disc_id);
 +		bt_att_unref(state->att);
 +	}
  
  	queue_destroy(state->ccc_states, free);
  
-@@ -307,8 +316,10 @@
+@@ -307,8 +320,10 @@
  static void clear_ccc_state(void *data, void *user_data)
  {
  	struct ccc_state *ccc = data;
@@ -1585,7 +1599,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  
  	if (!ccc->value)
  		return;
-@@ -318,8 +329,13 @@
+@@ -318,8 +333,13 @@
  	if (!ccc_cb)
  		return;
  
@@ -1601,7 +1615,16 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  }
  
  static void att_disconnected(int err, void *user_data)
-@@ -347,6 +363,8 @@
+@@ -329,6 +349,8 @@
+ 
+ 	DBG("");
+ 
++	bt_att_unregister_exchange(state->att, state->exchange_id);
++	state->exchange_id = 0;
+ 	state->disc_id = 0;
+ 	state->out_of_sync = false;
+ 
+@@ -347,6 +369,8 @@
  		if (ccc && ccc->value)
  			device_store_svc_chng_ccc(device, state->bdaddr_type,
  								ccc->value);
@@ -1610,7 +1633,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  
  		return;
  	}
-@@ -354,7 +372,7 @@
+@@ -354,7 +378,7 @@
  remove:
  	/* Remove device state if device no longer exists or is not paired */
  	if (queue_remove(state->db->device_states, state)) {
@@ -1619,7 +1642,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  		device_state_free(state);
  	}
  }
-@@ -422,10 +440,14 @@
+@@ -422,10 +446,21 @@
  	queue_push_tail(database->device_states, dev_state);
  
  done:
@@ -1630,12 +1653,19 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  							dev_state, NULL);
 +		if (!dev_state->disc_id)
 +			return NULL;
++		dev_state->exchange_id = bt_att_register_exchange(att,
++						notify_mtu_changed, dev_state, NULL);
++		if (!dev_state->exchange_id) {
++			bt_att_unregister_disconnect(att, dev_state->disc_id);
++			dev_state->disc_id = 0;
++			return NULL;
++		}
 +		dev_state->att = bt_att_ref(att);
 +	}
  
  	return dev_state;
  }
-@@ -467,6 +489,13 @@
+@@ -467,6 +502,13 @@
  
  	gatt_db_attribute_write_result(op->attrib, op->id,
  					BT_ATT_ERROR_REQUEST_NOT_SUPPORTED);
@@ -1649,7 +1679,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  	op->owner_queue = NULL;
  }
  
-@@ -489,6 +518,7 @@
+@@ -489,6 +531,7 @@
  
  	queue_destroy(chrc->pending_reads, cancel_pending_read);
  	queue_destroy(chrc->pending_writes, cancel_pending_write);
@@ -1657,7 +1687,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  
  	g_free(chrc->path);
  
-@@ -999,9 +1029,14 @@
+@@ -999,9 +1042,14 @@
  {
  	struct pending_op *op = user_data;
  
@@ -1672,7 +1702,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  static struct pending_op *pending_ccc_new(struct bt_att *att,
  					struct gatt_db_attribute *attrib,
  					uint16_t value,
-@@ -1029,6 +1064,11 @@
+@@ -1029,6 +1077,11 @@
  				   pending_disconnect_cb,
  				   op,
  				   NULL);
@@ -1684,7 +1714,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  
  	return op;
  }
-@@ -1071,8 +1111,11 @@
+@@ -1071,8 +1124,11 @@
  		val = get_le16(value);
  
  	/* If value is identical, then just succeed */
@@ -1697,7 +1727,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  
  	ccc_cb = queue_find(database->ccc_callbacks, ccc_cb_match_handle,
  			UINT_TO_PTR(gatt_db_attribute_get_handle(attrib)));
-@@ -1085,6 +1128,7 @@
+@@ -1085,6 +1141,7 @@
  			ecode = BT_ATT_ERROR_UNLIKELY;
  			goto done;
  		}
@@ -1705,7 +1735,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  
  		ecode = ccc_cb->callback(op, ccc_cb->user_data);
  		if (ecode)
-@@ -1466,7 +1510,7 @@
+@@ -1466,7 +1523,7 @@
  	/* Remove device state if device no longer exists or is not paired */
  	if (queue_remove(notify->database->device_states, device_state)) {
  		queue_foreach(device_state->ccc_states, clear_ccc_state,
@@ -1714,7 +1744,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  		device_state_free(device_state);
  	}
  }
-@@ -1911,6 +1955,7 @@
+@@ -1911,6 +1968,7 @@
  	chrc = new0(struct external_chrc, 1);
  	chrc->pending_reads = queue_new();
  	chrc->pending_writes = queue_new();
@@ -1722,7 +1752,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  
  	chrc->path = g_strdup(path);
  	if (!chrc->path)
-@@ -2669,6 +2714,10 @@
+@@ -2669,6 +2727,10 @@
  	struct io *io;
  
  	io = io_new(fd);
@@ -1733,7 +1763,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  
  	io_set_close_on_destroy(io, true);
  
-@@ -2719,7 +2768,20 @@
+@@ -2719,7 +2781,20 @@
  	client->chrc = chrc;
  	client->disconn_id = bt_att_register_disconnect(att, att_disconnect_cb,
  							client, NULL);
@@ -1754,7 +1784,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  
  	return client;
  }
-@@ -2748,6 +2810,8 @@
+@@ -2748,6 +2823,8 @@
  		return client;
  
  	client = client_io_new(chrc, fd, att);
@@ -1763,7 +1793,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  
  	if (!chrc->write_ios)
  		chrc->write_ios = queue_new();
-@@ -2874,13 +2938,17 @@
+@@ -2874,13 +2951,17 @@
  		return client;
  
  	client = client_io_new(chrc, fd, att);
@@ -1783,7 +1813,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  
  	return client;
  }
-@@ -2927,15 +2995,21 @@
+@@ -2927,15 +3008,21 @@
  	if (!client)
  		goto retry;
  
@@ -1808,7 +1838,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  }
  
  static void acquire_notify_setup(DBusMessageIter *iter, void *user_data)
-@@ -2968,10 +3042,16 @@
+@@ -2968,10 +3055,16 @@
  
  	/* Notifications/indications disabled */
  	if (!value) {
@@ -1826,7 +1856,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  							op ? op->att : NULL);
  		if (client) {
  			client_io_free(client);
-@@ -2991,7 +3071,7 @@
+@@ -2991,7 +3084,7 @@
  		goto done;
  	}
  
@@ -1835,7 +1865,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  		/* Maximum number of per-device CCC descriptors configured */
  		return BT_ATT_ERROR_INSUFFICIENT_RESOURCES;
  
-@@ -3003,21 +3083,37 @@
+@@ -3003,21 +3096,37 @@
  
  	client = queue_find(chrc->notify_ios, match_client_att, op->att);
  	if (client) {
@@ -1876,7 +1906,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  
  	/*
  	 * Always call StartNotify for an incoming enable and ignore the return
-@@ -3027,7 +3123,8 @@
+@@ -3027,7 +3136,8 @@
  						NULL, NULL) == FALSE)
  		return BT_ATT_ERROR_UNLIKELY;
  
@@ -1886,7 +1916,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  
  done:
  	if (op)
-@@ -3036,6 +3133,58 @@
+@@ -3036,6 +3146,94 @@
  	return 0;
  }
  
@@ -1928,6 +1958,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
 +struct restore_notify_data {
 +	struct btd_gatt_database *database;
 +	struct bt_att *att;
++	bool renew_mtu;
 +};
 +
 +static void restore_notify(void *data, void *user_data)
@@ -1935,6 +1966,29 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
 +	struct restore_notify_data *restore = user_data;
 +	struct ccc_state *ccc = data;
 +	uint8_t ecode;
++	struct ccc_cb_data *cb;
++	struct external_chrc *chrc;
++	struct client_io *client;
++	DBusMessageIter iter;
++
++	/* AcquireNotify's MTU is immutable for the FD lifetime. A real ATT MTU
++	 * increase renews only this peer's IO, retaining the logical CCC count.
++	 * Default-MTU peers remain immediately usable without awaiting a request. */
++	if (restore->renew_mtu && ccc->value) {
++		cb = queue_find(restore->database->ccc_callbacks,
++				ccc_cb_match_handle, UINT_TO_PTR(ccc->handle));
++		if (!cb || cb->callback != ccc_write_cb)
++			return;
++		chrc = cb->user_data;
++		if (!g_dbus_proxy_get_property(chrc->proxy, "NotifyAcquired", &iter))
++			return;
++		queue_remove_all(chrc->pending_notifies, match_pending_notify_att,
++					restore->att, cancel_pending_notify);
++		client = queue_remove_if(chrc->notify_ios, match_client_att,
++								restore->att);
++		if (client)
++			client_io_free(client);
++	}
 +
 +	ecode = restore_ccc_notify(restore->database, restore->att, ccc);
 +	if (ecode)
@@ -1942,10 +1996,22 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
 +						ccc->handle, ecode);
 +}
 +
++static void notify_mtu_changed(uint16_t mtu, void *user_data)
++{
++	struct device_state *state = user_data;
++	struct restore_notify_data restore = {
++		.database = state->db,
++		.att = state->att,
++		.renew_mtu = true,
++	};
++
++	queue_foreach(state->ccc_states, restore_notify, &restore);
++}
++
  static void property_changed_cb(GDBusProxy *proxy, const char *name,
  					DBusMessageIter *iter, void *user_data)
  {
-@@ -4191,6 +4340,7 @@
+@@ -4191,6 +4389,7 @@
  {
  	struct bt_att *att = bt_gatt_server_get_att(server);
  	struct device_state *state;
@@ -1953,7 +2019,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  	bdaddr_t bdaddr;
  	uint8_t bdaddr_type;
  
-@@ -4199,9 +4349,12 @@
+@@ -4199,9 +4398,12 @@
  
  	bt_gatt_server_set_authorize(server, server_authorize, database);
  
@@ -1970,7 +2036,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
  
 --- /dev/null
 +++ b/unit/test-ubm-bonded-notify.c
-@@ -0,0 +1,451 @@
+@@ -0,0 +1,567 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +/* Production CCC/ATT/socket callbacks; no radio or system D-Bus. */
 +#define g_dbus_proxy_get_property test_proxy_get_property
@@ -1978,12 +2044,14 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
 +#define g_dbus_proxy_set_property_watch test_proxy_set_property_watch
 +#define g_dbus_proxy_unref test_proxy_unref
 +#define bt_att_register_disconnect test_register_disconnect
++#define bt_att_register_exchange test_register_exchange
 +#define bt_att_ref test_att_ref
 +#define bt_att_unref test_att_unref
 +#define queue_push_tail test_queue_push_tail
 +#define io_new test_io_new
 +#include "src/gatt-database.c"
 +#undef bt_att_register_disconnect
++#undef bt_att_register_exchange
 +#undef bt_att_ref
 +#undef bt_att_unref
 +#undef queue_push_tail
@@ -1996,6 +2064,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
 +static bdaddr_t peer;
 +static bool bonded = true, acquired = true, delayed, refuse;
 +static bool refuse_registration;
++static bool refuse_exchange_registration;
 +static bool refuse_pending_registration, refuse_client_registration;
 +static bool refuse_io;
 +static struct queue *refused_queue;
@@ -2034,6 +2103,14 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
 +		(refuse_client_registration && callback == att_disconnect_cb) ? 0 :
 +		bt_att_register_disconnect(att, callback, data, destroy);
 +}
++unsigned int bt_att_register_exchange(struct bt_att *att,
++		bt_att_exchange_func_t callback, void *data, bt_att_destroy_func_t destroy);
++unsigned int test_register_exchange(struct bt_att *att,
++		bt_att_exchange_func_t callback, void *data, bt_att_destroy_func_t destroy)
++{
++	return refuse_exchange_registration ? 0 :
++		bt_att_register_exchange(att, callback, data, destroy);
++}
 +static unsigned int enables, starts, stops;
 +static struct {
 +	GDBusReturnFunction callback;
@@ -2042,6 +2119,9 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
 +} pending[32];
 +static unsigned int pending_count;
 +static int writer_fd = -1;
++static struct bt_gatt_server *active_server;
++static bool capture_options;
++static uint16_t acquired_mtu;
 +static struct btd_device *device = (void *) 1;
 +static struct btd_adapter *adapter = (void *) 2;
 +struct btd_opts btd_opts;
@@ -2053,7 +2133,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
 +						uint16_t value) { }
 +bool btd_device_is_trusted(struct btd_device *d) { return true; }
 +struct bt_gatt_server *btd_device_get_gatt_server(struct btd_device *d)
-+{ return NULL; }
++{ return active_server; }
 +const char *device_get_path(const struct btd_device *d) { return "/test"; }
 +gboolean bt_io_get(GIOChannel *io, GError **err, BtIOOption first, ...)
 +{
@@ -2082,7 +2162,7 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
 +{
 +	DBusMessage *reply;
 +	int sockets[2];
-+	uint16_t mtu = 23;
++	uint16_t mtu = capture_options ? acquired_mtu : 23;
 +	if (failure) {
 +		reply = dbus_message_new(DBUS_MESSAGE_TYPE_ERROR);
 +		assert(dbus_message_set_error_name(reply, ERROR_FAILED));
@@ -2113,6 +2193,13 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
 +{
 +	if (!strcmp(method, "AcquireNotify")) {
 +		enables++;
++		if (capture_options && setup) {
++			DBusMessage *request = dbus_message_new(DBUS_MESSAGE_TYPE_METHOD_CALL);
++			DBusMessageIter iter;
++			dbus_message_iter_init_append(request, &iter);
++			setup(&iter, data);
++			dbus_message_unref(request);
++		}
 +		if (refuse) return false;
 +		if (delayed) {
 +			assert(pending_count < 32);
@@ -2128,7 +2215,8 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
 +void btd_error(uint16_t index, const char *format, ...) { }
 +void btd_debug(uint16_t index, const char *format, ...) { }
 +void dict_append_entry(DBusMessageIter *dict, const char *key, int type,
-+						void *value) { }
++						void *value)
++{ if (capture_options && !strcmp(key, "mtu")) acquired_mtu = *(uint16_t *) value; }
 +
 +int main(int argc, char **argv)
 +{
@@ -2169,6 +2257,100 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
 +	assert(!socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sockets));
 +	att = bt_att_new(sockets[0], false);
 +	assert(att);
++	if (argc > 1 && !strncmp(argv[1], "mtu-", 4)) {
++		capture_options = true;
++		server = bt_gatt_server_new(database.db, att, 512, 0);
++		assert(server);
++		active_server = server;
++		if (!strcmp(argv[1], "mtu-registration-refused")) {
++			refuse_exchange_registration = true;
++			unsigned int before = owned_refs - owned_unrefs;
++			btd_gatt_database_server_connected(&database, server);
++			state = find_device_state(&database, &peer, BDADDR_LE_PUBLIC);
++			assert(state && !state->att && !state->disc_id && !state->exchange_id);
++			gatt_ccc_write_cb(chrc.ccc, 1, 0, value, 2, 0, att, &database);
++			assert(enables == 0 && owned_refs - owned_unrefs == before);
++			refuse_exchange_registration = false;
++		}
++		btd_gatt_database_server_connected(&database, server);
++		gatt_ccc_write_cb(chrc.ccc, 1, 0, value, 2, 0, att, &database);
++		assert(enables == 1 && acquired_mtu == 23 && chrc.ntfy_cnt == 1);
++		assert(bt_att_set_mtu(att, 247));
++		assert(enables == 2 && acquired_mtu == 247 && chrc.ntfy_cnt == 1);
++		assert(queue_length(chrc.notify_ios) == 1 && starts == 0);
++		if (!strcmp(argv[1], "mtu-peer")) {
++			int other[2];
++			assert(!socketpair(AF_UNIX, SOCK_SEQPACKET, 0, other));
++			struct bt_att *other_att = bt_att_new(other[0], false);
++			peer.b[0] = 2;
++			gatt_ccc_write_cb(chrc.ccc, 3, 0, value, 2, 0, other_att, &database);
++			struct client_io *other_client = queue_find(chrc.notify_ios,
++							match_client_att, other_att);
++			assert(other_client && chrc.ntfy_cnt == 2);
++			peer.b[0] = 0;
++			assert(bt_att_set_mtu(att, 300));
++			assert(enables == 4 && queue_length(chrc.notify_ios) == 2);
++			assert(queue_find(chrc.notify_ios, match_client_att, other_att) == other_client);
++			assert(chrc.ntfy_cnt == 2 && starts == 0 && stops == 0);
++			return 0;
++		}
++		if (!strcmp(argv[1], "mtu-refused")) {
++			refuse = true;
++			assert(bt_att_set_mtu(att, 300));
++			assert(enables == 3 && queue_isempty(chrc.notify_ios));
++			assert(chrc.ntfy_cnt == 1 && starts == 0);
++			refuse = false;
++			gatt_ccc_write_cb(chrc.ccc, 3, 0, value, 2, 0, att, &database);
++			assert(enables == 4 && acquired_mtu == 300 && chrc.ntfy_cnt == 1);
++			return 0;
++		}
++		assert(bt_att_set_mtu(att, 247));
++		btd_gatt_database_server_connected(&database, server);
++		assert(enables == 2);
++		/* An old pending application reply cannot attach its immutable MTU FD. */
++		delayed = true;
++		assert(bt_att_set_mtu(att, 300));
++		assert(enables == 3 && pending_count == 1);
++		if (!strcmp(argv[1], "mtu-pending-disconnect")) {
++			state = find_device_state(&database, &peer, BDADDR_LE_PUBLIC);
++			pending_disconnect_cb(0, pending[0].data);
++			bt_att_unregister_disconnect(att, state->disc_id);
++			att_disconnected(0, state);
++			assert(!state->att && !state->exchange_id);
++			assert(bt_att_set_mtu(att, 400));
++			finish_notify(0, false);
++			assert(enables == 3 && queue_isempty(chrc.notify_ios));
++			assert(send(writer_fd, "a", 1, MSG_NOSIGNAL) == -1 && errno == EPIPE);
++			assert(queue_remove(database.device_states, state));
++			device_state_free(state);
++			assert(bt_att_set_mtu(att, 500));
++			assert(enables == 3);
++			return 0;
++		}
++		assert(bt_att_set_mtu(att, 400));
++		assert(enables == 4 && pending_count == 2);
++		finish_notify(0, false);
++		assert(queue_isempty(chrc.notify_ios));
++		assert(send(writer_fd, "a", 1, MSG_NOSIGNAL) == -1 && errno == EPIPE);
++		finish_notify(1, false);
++		assert(queue_length(chrc.notify_ios) == 1 && chrc.ntfy_cnt == 1);
++		value[0] = 0;
++		gatt_ccc_write_cb(chrc.ccc, 2, 0, value, 2, 0, att, &database);
++		assert(bt_att_set_mtu(att, 500));
++		assert(enables == 4 && chrc.ntfy_cnt == 0);
++		state = find_device_state(&database, &peer, BDADDR_LE_PUBLIC);
++		bt_att_unregister_disconnect(att, state->disc_id);
++		att_disconnected(0, state);
++		assert(!state->exchange_id);
++		assert(queue_remove(database.device_states, state));
++		device_state_free(state);
++		assert(bt_att_set_mtu(att, 517));
++		assert(enables == 4);
++		bt_gatt_server_unref(server);
++		bt_att_unref(att);
++		close(sockets[1]);
++		return 0;
++	}
 +#ifdef UBM_NOTIFY_TRACKED
 +	if (argc > 1 && !strcmp(argv[1], "registration-refused")) {
 +		unsigned int before = owned_refs - owned_unrefs;
@@ -2420,5 +2602,80 @@ diff -ruN a/unit/test-ubm-refresh.c b/unit/test-ubm-refresh.c
 +	finish_notify(argc == 1 ? 4 : 0, false);
 +	assert(send(writer_fd, "a", 1, MSG_NOSIGNAL) == -1 && errno == EPIPE);
 +	puts("Production bonded AcquireNotify reconnect: OK");
++	return 0;
++}
+--- a/src/shared/att.c
++++ b/src/shared/att.c
+@@ -1607,7 +1607,7 @@
+ 	mtu->id = att->next_reg_id++;
+ 
+ 	if (!queue_push_tail(att->exchange_list, mtu)) {
+-		free(att);
++		free(mtu);
+ 		return 0;
+ 	}
+ 
+--- /dev/null
++++ b/unit/test-ubm-att-exchange.c
+@@ -0,0 +1,61 @@
++// SPDX-License-Identifier: LGPL-2.1-or-later
++/* Actual exchange registration refusal; no Bluetooth or system D-Bus. */
++#define queue_push_tail test_queue_push_tail
++#define free test_free
++#include "src/shared/att.c"
++#undef queue_push_tail
++#undef free
++#include <assert.h>
++#include <stdio.h>
++
++static struct queue *refused_queue;
++static struct bt_att *watched_att;
++static unsigned int premature_att_frees;
++bool queue_push_tail(struct queue *queue, void *data);
++void free(void *data);
++
++bool test_queue_push_tail(struct queue *queue, void *data)
++{
++	return queue == refused_queue ? false : queue_push_tail(queue, data);
++}
++
++void test_free(void *data)
++{
++	/* Track the actual helper's erroneous free without letting allocator
++	 * reuse hide the ownership violation in a later caller assertion. */
++	if (data == watched_att) {
++		premature_att_frees++;
++		return;
++	}
++	free(data);
++}
++
++static void disconnected(int err, void *data) { }
++static void exchanged(uint16_t mtu, void *data) { }
++
++int main(void)
++{
++	int sockets[2];
++	unsigned int disconnect_id;
++	assert(!socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sockets));
++	struct bt_att *att = bt_att_new(sockets[0], false);
++	assert(att);
++	disconnect_id = bt_att_register_disconnect(att, disconnected, NULL, NULL);
++	assert(disconnect_id);
++	watched_att = att;
++	refused_queue = att->exchange_list;
++	assert(bt_att_register_exchange(att, exchanged, NULL, NULL) == 0);
++	assert(premature_att_frees == 0);
++	/* The new daemon caller rolls back its disconnect handler on refusal. */
++	assert(bt_att_unregister_disconnect(att, disconnect_id));
++	assert(bt_att_get_fd(att) == sockets[0]);
++	assert(bt_att_set_mtu(att, 247));
++	refused_queue = NULL;
++	unsigned int exchange_id = bt_att_register_exchange(att, exchanged, NULL, NULL);
++	assert(exchange_id && bt_att_unregister_exchange(att, exchange_id));
++	watched_att = NULL;
++	bt_att_unref(att);
++	close(sockets[1]);
++	puts("Actual ATT exchange queue refusal preserves caller ownership: OK");
 +	return 0;
 +}

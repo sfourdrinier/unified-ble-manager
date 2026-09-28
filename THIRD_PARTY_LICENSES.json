@@ -1937,7 +1937,7 @@
         },
         "patch": {
           "file": "ubm-le-gatt-5.87.patch",
-          "sha256": "6f32db678cdf9598a4f3ea757d9aa7f8bc8ef490143544d18c3497cf3e790c09"
+          "sha256": "5feafe4063f211283e9e3b821a225a49e55d9c2939527e17e7fa0c01520d7d87"
         },
         "licenseFiles": [
           {

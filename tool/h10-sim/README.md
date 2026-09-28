@@ -143,7 +143,7 @@ variance.
 | Polar vendor `6217FF4B-…` | `6217FF4C-…` readable (value UNCONFIRMED, served empty)                                                                                                                                                                                | read                             |
 |                           | `6217FF4D-…`: write-command, indications (no behaviour model: writes are refused loudly, nothing is ever indicated)                                                                                                                    | write-without-response, indicate |
 | Polar PMD `FB005C80-…`    | `FB005C81` control point: read returns features (ECG + ACC, the strap's exact 17 bytes); write `0x01` get-settings / `0x02` start / `0x03` stop, each answered with an indicate `[0xF0, op, type, status, more, params…]`              | read, write, indicate            |
-|                           | `FB005C82` data: ECG frames, 73 samples at 130 Hz (~561.6 ms cadence, signed 24-bit LE µV, recorded strap data by default); independently started ACC frames (signed 16-bit XYZ milli-g) on the same characteristic                    | notify                           |
+|                           | `FB005C82` data: ECG frames, up to 73 samples by default at 130 Hz (capacity-limited packets, ~561.6 ms dispatch cadence, signed 24-bit LE µV, recorded strap data by default); independently started ACC frames (signed 16-bit XYZ milli-g) on the same characteristic | notify                           |
 | Polar `FEEE`              | `FB005C51-…` (write, write-command, notify), `FB005C52-…` (notify), `FB005C53-…` (write, write-command): no behaviour model, writes refused loudly, nothing ever notified                                                              | mixed                            |
 
 Services, their order and the characteristic counts/properties match the
@@ -182,10 +182,23 @@ and logs the exact skipped sample count as `acc-samples-shed`.
 
 ECG and ACC share monotonic sample-clock accounting anchored to the same device
 boot clock. A successful START establishes each stream's acquisition origin;
-idle time and STOP/restart cannot compress sensor timestamps. ECG retains the
-configured frame size and dispatch cadence, but a late host loop never invents
-elapsed samples: it catches up at most 32 frames per opportunity, retaining at
-most one second (or two configured frames) of backlog and logging exact skipped
+idle time and STOP/restart cannot compress sensor timestamps. ECG treats the
+configured frame size as an upper bound and fits complete signed 24-bit samples
+plus the 10-byte PMD header into the current writer's notification-value capacity.
+That capacity already excludes transport overhead; it is not reduced again.
+The usual 73-sample / 229-byte packet remains unchanged when it fits. An
+18-byte writer carries two samples per packet; the minimum 13-byte capacity
+carries one. Smaller capacities stop only ECG with `ecg-stream-failed`; capacity
+query failures are explicit `radio-error` events, and absent subscribers send
+nothing. Changing capacity does not reset acquisition, waveform indices,
+last-sample timestamps or the delivery sequence.
+
+The configured dispatch cadence is unchanged, and a late host loop never invents
+elapsed samples. Each opportunity has a bounded sample budget equivalent to
+32 configured frames, expressed as enough smaller packets to preserve that
+budget (rounded up by at most one packet), rather than limiting small writers
+to 32 packets and throttling the 130 Hz acquisition rate. The sample clock
+retains at most one second (or two effective packet batches) of backlog and logs exact skipped
 samples as `ecg-samples-shed`. Recorded and synthetic ECG use the corresponding
 boot-relative waveform indices, so skipped samples are not replayed later.
 Deliberate `constrain-delivery` shedding remains separately logged. These are
@@ -527,7 +540,7 @@ printf '{"cmd":"get-state"}\n' | nc 127.0.0.1 17935
 | `{"cmd":"interrupt-next-subscribe"}`                                         | [adversarial] Tear down the next notify/indicate subscription as soon as it is set up                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `{"cmd":"stale-callback"}`                                                   | [adversarial] Re-notify the last PMD response out of sequence (fails loudly when no PMD response has gone out yet)                                                                                                                                                                                                                                                                                                                                                                                           |
 | `{"cmd":"constrain-delivery","keepEvery":4}`                                 | [adversarial] Deliver every `keepEvery`-th ECG frame only (`1` disables)                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `{"cmd":"set-rates","hrHz":2.0,"ecgFramesPerSec":1.78,"ecgFrameSamples":73}` | HR rate and ECG dispatch opportunities (`hrHz` 0.1–10, `ecgFramesPerSec` 0.5–10, samples 1–167 so a frame fits MTU 512; defaults 1 Hz / 73 samples / 130/73 opportunities per second). ECG acquisition stays 130 Hz; each opportunity may emit zero/multiple frames, with bounded backlog and explicit shedding.                                                                                                                                                                                             |
+| `{"cmd":"set-rates","hrHz":2.0,"ecgFramesPerSec":1.78,"ecgFrameSamples":73}` | HR rate and ECG dispatch opportunities (`hrHz` 0.1–10, `ecgFramesPerSec` 0.5–10, configured samples 1–167, further limited by the acquired writer's capacity; defaults 1 Hz / 73 samples / 130/73 opportunities per second). ECG acquisition stays 130 Hz; each opportunity may emit zero/multiple frames, with bounded backlog and explicit shedding.                                                                                                                                                                                             |
 | `{"cmd":"run-record"}`                                                       | Report this run's seed/profile, `--mode` and injected fault sequence with timestamps (telemetry, available in every mode)                                                                                                                                                                                                                                                                                                                                                                                    |
 | `{"cmd":"get-state"}`                                                        | Current state snapshot                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `{"cmd":"help"}`                                                             | Command list (generated from the same table the driver hello uses)                                                                                                                                                                                                                                                                                                                                                                                                                                           |

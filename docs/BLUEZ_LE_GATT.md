@@ -75,6 +75,10 @@ duplicate acquisitions. A failed rearm is logged, remains configured, and can
 be retried by an identical CCC write; no callback-based fallback is substituted.
 CCC disable and disconnect/object teardown invalidate delayed acquisition
 replies, and cleanup remains scoped to the original device's ATT identity.
+Acquired sockets snapshot their MTU. An actual ATT MTU increase renews only
+that ATT's sockets and pending acquisitions with the measured capacity,
+preserving CCC counts and rejecting stale replies. Default-MTU clients still
+acquire immediately; equal MTU does nothing. No negotiation timer is guessed.
 This server lifecycle repair does not change trust, bonds, central routing,
 privilege or daemon deployment authority. Its isolated regression is not
 physical-radio evidence; qualify the exact deployed derivative separately.
