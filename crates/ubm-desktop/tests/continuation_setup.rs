@@ -230,8 +230,8 @@ async fn close_fixture(
     let (closed, completion) = tokio::sync::oneshot::channel();
     *session.closed.0.lock().unwrap() = Some(closed);
     engine.stop_recovery();
-    // This also drops the registry's handles. Timed-out blocking work may
-    // still own Session; its final retirement, not gate release, is the fence.
+    // Timed-out blocking work may still own Session; its final retirement, not
+    // gate release, is the fence. The process cache retains the inactive journal.
     drop(engine);
     drop(session);
     tokio::time::timeout(std::time::Duration::from_secs(2), completion)
@@ -241,21 +241,68 @@ async fn close_fixture(
     journal
 }
 
-fn remove_closed_fixture(
-    directory: &std::path::Path,
+fn assert_fixture_owner_retired(
     journal: std::sync::Weak<ubm_desktop::continuation_journal::ContinuationJournal>,
 ) {
+    assert_eq!(
+        journal.strong_count(),
+        1,
+        "only the inactive process cache may retain the retired fixture journal"
+    );
+}
+
+/// Parent-owned cleanup follows process exit; the child still proves retirement
+/// of every async worker/session before marking the original scenario complete.
+fn isolated_fixture_process(test: &str) -> Option<std::path::PathBuf> {
+    const DIRECTORY_ENV: &str = "UBM_SETUP_FIXTURE_DIRECTORY";
+    const TEST_ENV: &str = "UBM_SETUP_FIXTURE_TEST";
+    if std::env::var(TEST_ENV).ok().as_deref() == Some(test) {
+        return Some(std::env::var_os(DIRECTORY_ENV).unwrap().into());
+    }
+    let directory = std::env::temp_dir().join(format!(
+        "ubm-setup-fixture-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let outcome = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test, "--nocapture"])
+        .env(DIRECTORY_ENV, &directory)
+        .env(TEST_ENV, test)
+        .status()
+        .unwrap();
     assert!(
-        journal.upgrade().is_none(),
-        "fixture journal must be closed before directory removal"
+        outcome.success(),
+        "fixture scenario {test} failed: {outcome}"
+    );
+    assert_eq!(
+        std::fs::read(directory.join("scenario-complete")).unwrap(),
+        b"all assertions passed"
     );
     std::fs::remove_dir_all(directory).unwrap();
+    None
+}
+
+fn complete_fixture_process(directory: &std::path::Path) {
+    std::fs::write(
+        directory.join("scenario-complete"),
+        b"all assertions passed",
+    )
+    .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn setup_deadline_includes_blocked_durable_observer_registration() {
+    let Some(root) =
+        isolated_fixture_process("setup_deadline_includes_blocked_durable_observer_registration")
+    else {
+        return;
+    };
     let (engine, session, declaration) = fixture();
-    let directory = std::env::temp_dir().join(format!(
+    let directory = root.join(format!(
         "ubm-observe-deadline-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -296,13 +343,19 @@ async fn setup_deadline_includes_blocked_durable_observer_registration() {
         "a timed-out observer cannot dispatch a late setup write"
     );
     release.send(()).unwrap();
-    remove_closed_fixture(&directory, close_fixture(engine, session).await);
+    assert_fixture_owner_retired(close_fixture(engine, session).await);
+    complete_fixture_process(&root);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn durable_setup_write_receives_only_the_budget_remaining_after_observer_admission() {
+    let Some(root) = isolated_fixture_process(
+        "durable_setup_write_receives_only_the_budget_remaining_after_observer_admission",
+    ) else {
+        return;
+    };
     let (engine, session, declaration) = fixture();
-    let directory = std::env::temp_dir().join(format!(
+    let directory = root.join(format!(
         "ubm-setup-budget-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -335,11 +388,17 @@ async fn durable_setup_write_receives_only_the_budget_remaining_after_observer_a
         "actual budget was {} ms",
         budgets[0]
     );
-    remove_closed_fixture(&directory, close_fixture(engine, session).await);
+    assert_fixture_owner_retired(close_fixture(engine, session).await);
+    complete_fixture_process(&root);
 }
 
 #[test]
 fn queued_durable_setup_write_cannot_start_after_its_deadline() {
+    let Some(root) =
+        isolated_fixture_process("queued_durable_setup_write_cannot_start_after_its_deadline")
+    else {
+        return;
+    };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .max_blocking_threads(1)
@@ -348,7 +407,7 @@ fn queued_durable_setup_write_cannot_start_after_its_deadline() {
         .unwrap();
     runtime.block_on(async {
         let (engine, session, declaration) = fixture();
-        let directory = std::env::temp_dir().join(format!(
+        let directory = root.join(format!(
             "ubm-queued-write-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -389,12 +448,18 @@ fn queued_durable_setup_write_cannot_start_after_its_deadline() {
             0,
             "a queued worker must recheck the deadline before native dispatch"
         );
-        remove_closed_fixture(&directory, journal);
+        assert_fixture_owner_retired(journal);
     });
+    complete_fixture_process(&root);
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn native_session_and_ack_observer_never_run_storage_on_runtime_thread() {
+    let Some(root) = isolated_fixture_process(
+        "native_session_and_ack_observer_never_run_storage_on_runtime_thread",
+    ) else {
+        return;
+    };
     for operation in [
         "connection.connect",
         "gatt.subscribe",
@@ -403,7 +468,7 @@ async fn native_session_and_ack_observer_never_run_storage_on_runtime_thread() {
         "session.continuation-dispose",
     ] {
         let (engine, session, declaration) = fixture();
-        let directory = std::env::temp_dir().join(format!(
+        let directory = root.join(format!(
             "ubm-storage-thread-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -477,8 +542,9 @@ async fn native_session_and_ack_observer_never_run_storage_on_runtime_thread() {
                 .iter()
                 .all(|thread| *thread != session.runtime_thread)
         );
-        remove_closed_fixture(&directory, close_fixture(engine, session).await);
+        assert_fixture_owner_retired(close_fixture(engine, session).await);
     }
+    complete_fixture_process(&root);
 }
 
 #[tokio::test]

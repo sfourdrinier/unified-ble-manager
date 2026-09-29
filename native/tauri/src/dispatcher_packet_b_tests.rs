@@ -1910,9 +1910,17 @@ fn wire_error(error: &DispatchError) -> Value {
 // Trusted continuation and offline recording use the same Tauri authority.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn trusted_continuation_replays_setup_and_retains_recording_without_offline_radio_open() {
-    let harness = Harness::new().await;
-    let peer = "native-recorded-peer";
-    harness.advertise(peer).await;
+    const DIRECTORY_ENV: &str = "UBM_TAURI_CONTINUATION_TEST_DIRECTORY";
+    if let Some(directory) = std::env::var_os(DIRECTORY_ENV) {
+        let directory = std::path::Path::new(&directory);
+        trusted_continuation_recording_scenario(directory).await;
+        std::fs::write(
+            directory.join("scenario-complete"),
+            b"all assertions passed",
+        )
+        .unwrap();
+        return;
+    }
     let directory = std::env::temp_dir().join(format!(
         "ubm-tauri-recording-{}-{}",
         std::process::id(),
@@ -1922,9 +1930,35 @@ async fn trusted_continuation_replays_setup_and_retains_recording_without_offlin
             .as_nanos()
     ));
     std::fs::create_dir(&directory).unwrap();
+    // Inactive journal authorities intentionally remain process-owned. Execute
+    // the complete scenario in a child so cleanup proves OS handles were released
+    // by process exit, rather than relying on Unix-only unlink-open-file behavior.
+    let module = module_path!().split_once("::").unwrap().1;
+    let test = format!("{module}::trusted_continuation_replays_setup_and_retains_recording_without_offline_radio_open");
+    let outcome = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", &test, "--nocapture"])
+        .env(DIRECTORY_ENV, &directory)
+        .status()
+        .unwrap();
+    assert!(
+        outcome.success(),
+        "continuation recording scenario failed: {outcome}"
+    );
+    assert_eq!(
+        std::fs::read(directory.join("scenario-complete")).unwrap(),
+        b"all assertions passed",
+        "the selected child test must actually finish the scenario"
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+async fn trusted_continuation_recording_scenario(directory: &std::path::Path) {
+    let harness = Harness::new().await;
+    let peer = "native-recorded-peer";
+    harness.advertise(peer).await;
     harness
         .dispatcher
-        .continuation_configure_recording_directory(&directory)
+        .continuation_configure_recording_directory(directory)
         .await
         .unwrap();
     let declaration = serde_json::json!({
@@ -2135,7 +2169,7 @@ async fn trusted_continuation_replays_setup_and_retains_recording_without_offlin
         panic!("offline recording opened radio")
     }));
     offline
-        .continuation_configure_recording_directory(&directory)
+        .continuation_configure_recording_directory(directory)
         .await
         .unwrap();
     assert_eq!(
@@ -2160,7 +2194,6 @@ async fn trusted_continuation_replays_setup_and_retains_recording_without_offlin
         0
     );
     drop(offline);
-    std::fs::remove_dir_all(directory).unwrap();
 }
 
 // PR210-04 — one peer's hung discovery must not stall another peer's
