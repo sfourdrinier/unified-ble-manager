@@ -478,6 +478,12 @@ reports no ready event. Removal first closes consumer ingress, then decrements
 physical enablement, then resolves. An implementation MUST NOT deliver a value
 after subscription removal resolves.
 
+On Apple, the operation's notification-state delegate callback must report
+`isNotifying` matching the requested state as well as no error. A nil error
+with notifications still disabled refuses enable rather than reporting ready;
+notifications still enabled refuse disable and retain the owned cleanup target.
+A platform error remains the original error even when the observed state changed.
+
 If public subscription construction fails after native acquisition, its owner
 retains removal debt until release is confirmed. Admission retries debt only
 for the conflicting attachment and GATT path; unrelated connections remain

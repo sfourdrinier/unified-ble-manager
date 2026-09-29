@@ -17,6 +17,65 @@ enum AppleCoreBluetoothReadNotifyProvenanceHarness {
     laneOrderChecks()
     notificationBeforeReadReplyRace()
     abandonedReadChecks()
+    notificationStateAnswerChecks()
+  }
+
+  /// Runs the production delegate's state-answer handler, without allocating
+  /// a central or touching a radio. A nil NSError is not an enabled CCCD.
+  static func notificationStateAnswerChecks() {
+    let radio = OwnedCoreBluetoothProtocolRadio(restoreIdentifierKey: nil)
+    let address = CharacteristicAddress(
+      peerIdentifier: "test-peer", serviceUUID: "180d", serviceOccurrence: 0,
+      characteristicUUID: "2a37", characteristicOccurrence: 0
+    )
+    radio.queue.sync {
+      var answers = [NSError?]()
+      func install(_ enabled: Bool) {
+        radio.pendingNotify[address] = PendingNotify(
+          operationIdentifier: "notification-state-test", subscriptionIdentifier: "owned-consumer",
+          enabled: enabled, completion: { answers.append($0) }
+        )
+      }
+      install(true)
+      radio.handleNotificationStateUpdate(address: address, isNotifying: false, error: nil)
+      precondition(answers.count == 1 && answers[0] != nil, "nil error with notifications off must refuse enable")
+      precondition(radio.subscriptions[address] == nil && radio.pendingNotify[address] == nil)
+      install(true)
+      radio.handleNotificationStateUpdate(address: address, isNotifying: true, error: nil)
+      precondition(answers.count == 2 && answers[1] == nil)
+      precondition(radio.subscriptions[address] == "owned-consumer", "confirmed enable installs its consumer")
+      install(false)
+      radio.handleNotificationStateUpdate(address: address, isNotifying: true, error: nil)
+      precondition(answers.count == 3 && answers[2] != nil, "nil error with notifications on must refuse disable")
+      precondition(radio.subscriptions[address] == "owned-consumer", "failed disable retains exact cleanup ownership")
+      let nativeFailure = NSError(domain: "test-native", code: 77)
+      install(false)
+      radio.handleNotificationStateUpdate(address: address, isNotifying: true, error: nativeFailure)
+      precondition(answers.count == 4 && answers[3] === nativeFailure, "the original platform refusal survives")
+      precondition(radio.subscriptions[address] == "owned-consumer")
+      install(false)
+      radio.handleNotificationStateUpdate(address: address, isNotifying: false, error: nativeFailure)
+      precondition(answers.count == 5 && answers[4] === nativeFailure)
+      precondition(radio.subscriptions[address] == "owned-consumer",
+        "an errored disable must retain its cleanup target even if notifications are off")
+      install(false)
+      radio.handleNotificationStateUpdate(address: address, isNotifying: false, error: nil)
+      precondition(answers.count == 6 && answers[5] == nil)
+      precondition(radio.subscriptions[address] == nil, "confirmed disable releases its consumer")
+      install(true)
+      radio.handleNotificationStateUpdate(address: address, isNotifying: true, error: nativeFailure)
+      precondition(answers.count == 7 && answers[6] === nativeFailure)
+      precondition(radio.subscriptions[address] == nil, "a platform enable failure is not ready")
+      radio.pendingCancellationCleanup["cancelled-enable"] = PendingCancellationCleanup(
+        notificationDesiredStates: [address: false], notificationAwaitingCallbacks: [address]
+      )
+      install(true)
+      radio.handleNotificationStateUpdate(address: address, isNotifying: false, error: nil)
+      precondition(answers.count == 8 && answers[7] != nil)
+      precondition(radio.pendingCancellationCleanup["cancelled-enable"] == nil,
+        "the same callback can refuse enable while authoritatively settling its cancelled-enable cleanup")
+      precondition(radio.central == nil, "the fixture must not allocate a Bluetooth manager")
+    }
   }
 
   static func provenanceChecks() {

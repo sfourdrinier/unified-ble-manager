@@ -292,6 +292,29 @@ extension OwnedCoreBluetoothProtocolRadio {
   }
 }
 
+/// Exact identifier lookup; the caller supplies the already-admitted central's
+/// retrieval and installs the returned object without inventing a radio event.
+enum OwnedCoreBluetoothKnownPeerLookup {
+  static func identifier(_ value: String) -> UUID? {
+    guard let identifier = UUID(uuidString: value),
+          identifier.uuidString == value else { return nil }
+    return identifier
+  }
+
+  static func resolve<Peripheral>(
+    identifier: UUID, cached: Peripheral?, retrieve: (UUID) -> [Peripheral],
+    identifierOf: (Peripheral) -> UUID
+  ) -> Peripheral? {
+    if let cached { return cached }
+    return retrieve(identifier).first { identifierOf($0) == identifier }
+  }
+
+  static func requiresConnection(hasCachedPeripheral: Bool, isConnected: Bool) -> Bool {
+    // OS retrieval returns an object, not this central's connection admission.
+    !hasCachedPeripheral || !isConnected
+  }
+}
+
 /// Shared radio value types, used by the radio and its cancellation and
 /// descriptor companions. Moved out of the radio file to keep it under its
 /// line cap; behavior is unchanged.

@@ -4,6 +4,21 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [5.0.0-rc.13] - 2026-09-28
 
+- Retrieve an explicitly supplied, OS-known CoreBluetooth UUID through the same
+  Apple mobile central when its process registry no longer holds the peer.
+  Preserve permission, power and pending-operation admission; keep cached
+  callback owners and refuse unknown identifiers. Do not scan, substitute a
+  service filter, or fabricate restoration/connection events for this lookup.
+  Preserve the exact OS-issued identifier across teardown, and acquire the
+  local central connection before accepting a newly retrieved connected object.
+
+- Refuse an Apple notification-state callback whose nil error accompanies a
+  state different from the requested enable/disable. Do not report a disabled
+  subscription ready or forget a still-enabled cleanup target; preserve the
+  original platform errors and cancellation cleanup. Exercise the production
+  callback handler without allocating a Bluetooth manager. This is a callback
+  correctness fix, not attribution of a physical notification-intake failure.
+
 - Confirm unsolicited ATT indications on server-only BlueZ connections when
   reverse service discovery is disabled. Keep registered client handlers solely
   responsible for their confirmations; do not invent client readiness or

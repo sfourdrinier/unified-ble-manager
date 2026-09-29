@@ -38,6 +38,11 @@ order below explicitly authorizes those operations without an app callback. The 
 events and vocabulary names run on iOS and Android; a platform that cannot
 do it reports `capability.unsupported` with a reason, never a fake.
 
+On Apple mobile, direct reconnect can retrieve an OS-known peripheral using its
+exact persisted, OS-issued identifier even when the new process has not scanned
+it. Retrieval is not a connection or restoration event: a newly retrieved object
+must still acquire the local central connection, and an unknown identifier fails.
+
 - **iOS:** CoreBluetooth state restoration via `background.ios.restoration`
   (`{id, generation}` in the Expo plugin, or the `restoration` manager
   option). The trusted native host derives the restore identifier from it.
