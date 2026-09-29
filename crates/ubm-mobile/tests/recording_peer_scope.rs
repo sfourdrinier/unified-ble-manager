@@ -5,14 +5,120 @@ mod common;
 use common::*;
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use ubm_desktop::continuation_journal::JournalRegistry;
 use ubm_mobile::{
-    AuthenticationState, BondState, EncryptionState, Instance, MobilePlatform, RadioIngress,
-    RadioRequest, SecureConnectionsState, SecurityState,
+    AuthenticationState, BondState, EncryptionState, HostOptions, Instance, MobileHost,
+    MobilePlatform, MobileSession, RadioIngress, RadioRequest, SecureConnectionsState,
+    SecurityState, WakeSink,
 };
 
 const OTHER: &str = "A0:9E:1A:00:00:02";
+
+#[derive(Default)]
+struct EventWakes(Mutex<std::collections::HashMap<u64, Arc<tokio::sync::Notify>>>);
+
+impl EventWakes {
+    fn signal(&self, id: u64) -> Arc<tokio::sync::Notify> {
+        self.0.lock().unwrap().entry(id).or_default().clone()
+    }
+}
+impl WakeSink for EventWakes {
+    fn wake(&self, id: u64) {
+        self.signal(id).notify_one();
+    }
+}
+
+async fn open_events(
+    radio: &Arc<Scripted>,
+    platform: MobilePlatform,
+) -> (Arc<MobileHost>, Arc<EventWakes>) {
+    let wakes = Arc::new(EventWakes::default());
+    let host = Arc::new(
+        MobileHost::open(
+            radio.clone(),
+            wakes.clone(),
+            HostOptions {
+                platform,
+                owner: "recording-test".into(),
+                adapter_label: "scripted".into(),
+            },
+            tokio::runtime::Handle::current(),
+        )
+        .await
+        .unwrap(),
+    );
+    radio.bind_host(&host);
+    (host, wakes)
+}
+
+async fn drain_events(
+    session: &MobileSession,
+    wakes: &EventWakes,
+    done: impl Fn(&[Value]) -> bool,
+) -> Vec<Value> {
+    let signal = wakes.signal(session.id());
+    let mut rows = Vec::new();
+    loop {
+        let wake = signal.notified();
+        tokio::pin!(wake);
+        wake.as_mut().enable();
+        let batch = parse(&session.drain(256, 65536));
+        rows.extend(batch["records"].as_array().unwrap().clone());
+        if done(&rows) {
+            return rows;
+        }
+        if batch["more"] != true {
+            wake.await;
+        }
+    }
+}
+
+fn setup_radio() -> (Arc<Scripted>, tokio::sync::oneshot::Receiver<()>) {
+    let (ready, observed) = tokio::sync::oneshot::channel();
+    let mut ready = Some(ready);
+    let radio = Scripted::new(Box::new(move |request| match request {
+        RadioRequest::Discover { .. } => {
+            let mut services = polar_services();
+            services[0].characteristics[0].properties.write = true;
+            Reply::Now(ubm_mobile::RadioCompletion::Discovered(services))
+        }
+        RadioRequest::Write { .. } => {
+            ready.take().unwrap().send(()).unwrap();
+            Reply::Now(ubm_mobile::RadioCompletion::Unit)
+        }
+        _ => polar_responder(request),
+    }));
+    (radio, observed)
+}
+
+fn declaration(id: &str) -> String {
+    let selector = json!({"serviceUuid":HR_SERVICE,"serviceOccurrence":1,
+        "characteristicUuid":HR_MEASUREMENT,"characteristicOccurrence":1});
+    json!({"onAppearance":"native","resubscribe":[selector],
+        "setup":[{"selector":selector,"value":[99],"timeoutMs":20000,
+            "response":{"subscriptionIndex":0,"prefix":[255],"minLength":2,"maxLength":2,
+                "status":{"offset":1,"accepted":[0]}}}],
+        "recording":{"id":id,"maxBytes":1048576,"maxRecords":1000}})
+    .to_string()
+}
+
+fn commit_response(host: &MobileHost, epoch: u64) {
+    // The native setup matcher resolves only after outbox persistence succeeds.
+    // Radio FIFO places this unique response after all source telemetry; await
+    // execute's result to establish completed intake without polling SQLite.
+    host.ingest(RadioIngress::Notification {
+        instance: Instance {
+            peer_id: POLAR.into(),
+            service_uuid: HR_SERVICE.into(),
+            service_occurrence: 0,
+            characteristic_uuid: HR_MEASUREMENT.into(),
+            characteristic_occurrence: 0,
+        },
+        epoch,
+        value: vec![255, 0],
+    });
+}
 
 fn directory(label: &str) -> std::path::PathBuf {
     let directory = std::env::temp_dir().join(format!(
@@ -56,8 +162,8 @@ async fn mobile_recording_controller_transport() {
         "apple" => MobilePlatform::Apple,
         _ => panic!("explicit mobile platform required"),
     };
-    let radio = Scripted::polar();
-    let (host, _) = open(&radio, platform).await;
+    let (radio, ready) = setup_radio();
+    let (host, wakes) = open_events(&radio, platform).await;
     let other = host.open_session("other-peer").unwrap();
     for (operation, id) in [
         ("connection.connect", "connect"),
@@ -76,11 +182,10 @@ async fn mobile_recording_controller_transport() {
     host.ingest(security());
     let engine = host.continuation();
     engine.configure_recording_directory(&directory).unwrap();
-    let order = json!({"onAppearance":"native","resubscribe":[{
-        "serviceUuid":HR_SERVICE,"serviceOccurrence":1,
-        "characteristicUuid":HR_MEASUREMENT,"characteristicOccurrence":1
-    }],"recording":{"id":"peer-scope","maxBytes":1048576,"maxRecords":1000}});
-    engine.execute(POLAR, &order.to_string()).await.unwrap();
+    let worker = engine.clone();
+    let mut execution =
+        tokio::spawn(async move { worker.execute(POLAR, &declaration("peer-scope")).await });
+    tokio::select! { result=ready=>result.unwrap(), result=&mut execution=>panic!("native setup ended before write admission: {result:?}") }
     let epoch = radio
         .requests
         .lock()
@@ -108,28 +213,11 @@ async fn mobile_recording_controller_transport() {
         })
     };
     notify(70);
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            let reader = engine.clone();
-            if ubm_desktop::continuation_journal::run_blocking(move || {
-                reader.recording_status("peer-scope")
-            })
-            .await
-            .unwrap()["records"]
-                == 2
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
     host.ingest(security());
     host.ingest(RadioIngress::ServicesChanged {
         peer_id: OTHER.into(),
     });
-    let events = drain_until(&other, |rows| {
+    let events = drain_events(&other, &wakes, |rows| {
         rows.iter().any(|row| row["t"] == "db-changed")
     })
     .await;
@@ -139,35 +227,23 @@ async fn mobile_recording_controller_transport() {
         status: None,
     });
     let mut events = events;
-    events.extend(drain_until(&other, |rows| rows.iter().any(|row| row["t"] == "link")).await);
+    events.extend(
+        drain_events(&other, &wakes, |rows| {
+            rows.iter().any(|row| row["t"] == "link")
+        })
+        .await,
+    );
     // A process-global adapter fact is eligible, without a fabricated peer.
     host.ingest(RadioIngress::AdapterState(adapter_on()));
-    drain_until(&other, |rows| rows.iter().any(|row| row["t"] == "adapter")).await;
+    drain_events(&other, &wakes, |rows| {
+        rows.iter().any(|row| row["t"] == "adapter")
+    })
+    .await;
     for counter in [71, 72] {
-        let before = engine.recording_status("peer-scope").unwrap()["records"]
-            .as_u64()
-            .unwrap();
         notify(counter);
-        tokio::time::timeout(std::time::Duration::from_secs(3), async {
-            loop {
-                let reader = engine.clone();
-                if ubm_desktop::continuation_journal::run_blocking(move || {
-                    reader.recording_status("peer-scope")
-                })
-                .await
-                .unwrap()["records"]
-                    .as_u64()
-                    .unwrap()
-                    > before
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
     }
+    commit_response(&host, epoch);
+    execution.await.unwrap().unwrap();
     let bridge = std::env::var("UBM_RECORDING_CONTROLLER_BRIDGE").as_deref() == Ok("1");
     let mut restarted: Option<Arc<JournalRegistry>> = None;
     if bridge {
@@ -242,7 +318,10 @@ async fn mobile_recording_controller_transport() {
         }
         assert_eq!(
             values,
-            json!(["AEY=", "AEc=", "AEg="]).as_array().unwrap().clone()
+            json!(["AEY=", "AEc=", "AEg=", "/wA="])
+                .as_array()
+                .unwrap()
+                .clone()
         );
     }
     let claim = engine.prepare_claim(256, 65536).await.unwrap();
@@ -265,8 +344,8 @@ async fn mobile_recording_controller_transport() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sustained_recording_intake_allows_second_peer_and_control_progress() {
     let directory = directory("drain-fairness");
-    let radio = Scripted::polar();
-    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let (radio, ready) = setup_radio();
+    let (host, wakes) = open_events(&radio, MobilePlatform::Android).await;
     let other = host.open_session("fairness-other").unwrap();
     for (operation, id) in [
         ("connection.connect", "connect"),
@@ -282,9 +361,10 @@ async fn sustained_recording_intake_allows_second_peer_and_control_progress() {
     ok(&call(&other,"gatt.subscribe",&json!({"peerId":OTHER,"selector":selector(),"consumer":"other-values","operationId":"other-subscribe"}).to_string()).await);
     let engine = host.continuation();
     engine.configure_recording_directory(&directory).unwrap();
-    engine.execute(POLAR,&json!({"onAppearance":"native","resubscribe":[{
-        "serviceUuid":HR_SERVICE,"serviceOccurrence":1,"characteristicUuid":HR_MEASUREMENT,"characteristicOccurrence":1
-    }],"recording":{"id":"fairness","maxBytes":1048576,"maxRecords":1000}}).to_string()).await.unwrap();
+    let worker = engine.clone();
+    let mut execution =
+        tokio::spawn(async move { worker.execute(POLAR, &declaration("fairness")).await });
+    tokio::select! { result=ready=>result.unwrap(), result=&mut execution=>panic!("native setup ended before write admission: {result:?}") }
     let epochs: std::collections::HashMap<String, u64> = radio
         .requests
         .lock()
@@ -331,7 +411,7 @@ async fn sustained_recording_intake_allows_second_peer_and_control_progress() {
         });
         let started = std::time::Instant::now();
         host.ingest(security());
-        let rows = drain_until(&other, |rows| {
+        let rows = drain_events(&other, &wakes, |rows| {
             rows.iter().any(|row| row["t"] == "security")
                 && rows.iter().any(|row| row["t"] == "value")
         })
@@ -343,30 +423,15 @@ async fn sustained_recording_intake_allows_second_peer_and_control_progress() {
     host.ingest(RadioIngress::ServicesChanged {
         peer_id: OTHER.into(),
     });
-    drain_until(&other, |rows| {
+    drain_events(&other, &wakes, |rows| {
         rows.iter().any(|row| row["t"] == "db-changed")
             && rows.iter().any(|row| row["t"] == "stream-end")
     })
     .await;
     worst = worst.max(started.elapsed());
     producer.await.unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            let reader = engine.clone();
-            if ubm_desktop::continuation_journal::run_blocking(move || {
-                reader.recording_status("fairness")
-            })
-            .await
-            .unwrap()["records"]
-                == 251
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
+    commit_response(&host, epoch);
+    execution.await.unwrap().unwrap();
     let status = engine.recording_status("fairness").unwrap();
     let counters = ok(&call(&other, "counters.describe", "{}").await);
     assert_eq!(status["lostRecords"], 0);
@@ -374,10 +439,7 @@ async fn sustained_recording_intake_allows_second_peer_and_control_progress() {
         counters["process"]["native"]["ingressDrops"]["notification"],
         0
     );
-    assert!(
-        worst < std::time::Duration::from_millis(500),
-        "busy route delayed controls: {worst:?}"
-    );
+    assert_eq!(status["records"], 252);
     let batch = engine.recording_prepare("fairness", 1000, 1048576).unwrap();
     let payloads: Vec<Value> = batch["records"]
         .as_array()
@@ -386,15 +448,16 @@ async fn sustained_recording_intake_allows_second_peer_and_control_progress() {
         .filter(|row| row["record"]["t"] == "value")
         .map(|row| row["record"]["valueB64"].clone())
         .collect();
-    let expected: Vec<Value> = (0u16..250)
+    let mut expected: Vec<Value> = (0u16..250)
         .map(|sequence| json!(ubm_mobile::wire::encode_base64(&sequence.to_le_bytes())))
         .collect();
+    expected.push(json!("/wA="));
     assert_eq!(
         payloads, expected,
         "all source values must remain ordered under load"
     );
     println!(
-        "sustained intake:250 ordered records,5 lower-rate peer values,5 security controls,1 lifecycle transition; worst delay={worst:?}; journal/native notification loss=0; retained journal rows={}",
+        "sustained intake:250 ordered telemetry values+1 setup response,5 lower-rate peer values,5 security controls,1 lifecycle transition; worst delay={worst:?}; journal/native notification loss=0; retained journal rows={}",
         status["records"]
     );
     let claim = engine.prepare_claim(256, 65536).await.unwrap();

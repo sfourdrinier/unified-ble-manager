@@ -3,22 +3,75 @@ import { createInterface } from 'node:readline'
 import { createNativeContinuationRecordingController } from '../../src/core/continuation-recording'
 import { awaitSignal } from '../helpers/async'
 
+let fixtureExecutable: string | undefined
+
+beforeAll(async () => {
+  const compiler = spawn(
+    'cargo',
+    ['test', '-p', 'ubm-mobile', '--test', 'recording_peer_scope', '--no-run', '--message-format=json'],
+    {
+      cwd: process.cwd(),
+      stdio: ['ignore', 'pipe', 'pipe']
+    }
+  )
+  let stderr = ''
+  let parseFailure: Error | undefined
+  compiler.stderr.on('data', chunk => {
+    stderr = `${stderr}${String(chunk)}`.slice(-16000)
+  })
+  const lines = createInterface({ input: compiler.stdout })
+  lines.on('line', line => {
+    try {
+      const message: unknown = JSON.parse(line)
+      if (typeof message !== 'object' || message === null || Reflect.get(message, 'reason') !== 'compiler-artifact')
+        return
+      const target: unknown = Reflect.get(message, 'target')
+      const executable: unknown = Reflect.get(message, 'executable')
+      if (
+        typeof target === 'object' &&
+        target !== null &&
+        Reflect.get(target, 'name') === 'recording_peer_scope' &&
+        typeof executable === 'string'
+      ) {
+        fixtureExecutable = executable
+      }
+    } catch (error) {
+      parseFailure = error instanceof Error ? error : new Error(String(error))
+      compiler.kill()
+    }
+  })
+  const closed = new Promise<void>((resolve, reject) => {
+    compiler.on('error', reject)
+    compiler.on('close', code => {
+      if (parseFailure) reject(parseFailure)
+      else if (code !== 0) reject(new Error(`mobile recording fixture compilation exited ${code}: ${stderr}`))
+      else if (fixtureExecutable === undefined) reject(new Error('Cargo emitted no mobile recording test executable'))
+      else resolve()
+    })
+  })
+  try {
+    await awaitSignal(closed, 'mobile recording fixture compilation', 180000)
+  } catch (error) {
+    compiler.kill()
+    await awaitSignal(
+      closed.catch(() => undefined),
+      'mobile recording compiler termination',
+      5000
+    )
+    throw error
+  } finally {
+    lines.close()
+  }
+}, 190000)
+
 /** Real Rust MobileHost + injected radio + SQLite, not copied source excerpts. */
 test.each(['android', 'apple'].flatMap(platform => [1, 2, 3].map(trial => ({ platform, trial }))))(
   'mobile $platform recording trial $trial excludes foreign-peer controls while ordinary delivery survives',
   async ({ platform }) => {
+    if (fixtureExecutable === undefined) throw new Error('mobile recording fixture not compiled')
     const child = spawn(
-      'cargo',
-      [
-        'test',
-        '-p',
-        'ubm-mobile',
-        '--test',
-        'recording_peer_scope',
-        'mobile_recording_controller_transport',
-        '--',
-        '--nocapture'
-      ],
+      fixtureExecutable,
+      ['mobile_recording_controller_transport', '--nocapture', '--test-threads=1'],
       {
         cwd: process.cwd(),
         env: { ...process.env, UBM_RECORDING_PLATFORM: platform, UBM_RECORDING_CONTROLLER_BRIDGE: '1' },
@@ -27,7 +80,7 @@ test.each(['android', 'apple'].flatMap(platform => [1, 2, 3].map(trial => ({ pla
     )
     let stderr = ''
     child.stderr.on('data', chunk => {
-      stderr += String(chunk)
+      stderr = `${stderr}${String(chunk)}`.slice(-16000)
     })
     const pending: Array<{ resolve(value: unknown): void; reject(error: Error): void }> = []
     const queued: unknown[] = []
@@ -40,10 +93,13 @@ test.each(['android', 'apple'].flatMap(platform => [1, 2, 3].map(trial => ({ pla
     const lines = createInterface({ input: child.stdout })
     lines.on('line', line => {
       const prefix = 'UBM_RECORDING '
-      if (!line.startsWith(prefix)) return
+      // libtest's single-thread runner prefixes its first stdout line with
+      // "test name ... "; subsequent bridge frames start at column zero.
+      const offset = line.indexOf(prefix)
+      if (offset < 0) return
       let value: unknown
       try {
-        value = JSON.parse(line.slice(prefix.length))
+        value = JSON.parse(line.slice(offset + prefix.length))
       } catch (error) {
         rejectPending(error instanceof Error ? error : new Error(String(error)))
         child.kill()
@@ -119,6 +175,7 @@ test.each(['android', 'apple'].flatMap(platform => [1, 2, 3].map(trial => ({ pla
       }
       expect(prefixes).toBeGreaterThan(1)
       expect(records.every(row => row.metadata.session.peerId === 'A0:9E:1A:00:00:01')).toBe(true)
+      expect(records.every(row => !('peerId' in row.record) || row.record.peerId === 'A0:9E:1A:00:00:01')).toBe(true)
       expect(
         records
           .filter(row => row.record.t === 'value')
@@ -129,7 +186,8 @@ test.each(['android', 'apple'].flatMap(platform => [1, 2, 3].map(trial => ({ pla
       ).toEqual([
         [0, 70],
         [0, 71],
-        [0, 72]
+        [0, 72],
+        [255, 0]
       ])
       expect(records.some(row => row.record.t === 'adapter')).toBe(true)
       expect((await controller.status('peer-scope')).records).toBe(0)
