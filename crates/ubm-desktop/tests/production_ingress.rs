@@ -59,7 +59,8 @@ use ubm_desktop::boundary::{FakeRadio, InstanceKey, RadioBoundary, RadioEvent};
 use ubm_desktop::btleplug_backend::{
     EnableStreamError, ForwardTarget, ForwarderEntry, NOTIFICATION_BYTES, NOTIFICATION_CAP,
     NotificationRoute, NotificationStream, NotificationTransport, forwarder_key, ingress_release,
-    ingress_try_reserve, spawn_notification_forwarder, subscribe_and_stream, unsubscribe_and_fold,
+    ingress_try_reserve, retire_parked_subscription, spawn_notification_forwarder,
+    subscribe_and_stream, unsubscribe_and_fold,
 };
 
 const HRM_SERVICE: &str = "0000180d-0000-1000-8000-00805f9b34fb";
@@ -172,6 +173,7 @@ fn script_pair() -> (UnboundedSender<ValueNotification>, ScriptedStream) {
 /// unsubscribe outcomes with exact call counts. Only the programmed calls
 /// may happen — anything else is a test-design bug and panics.
 struct StubTransport {
+    unsubscribe_gate: Option<Arc<tokio::sync::Notify>>,
     subscribe: StdMutex<VecDeque<Result<(), btleplug::Error>>>,
     notifications: StdMutex<VecDeque<Result<NotificationStream, btleplug::Error>>>,
     unsubscribe: StdMutex<VecDeque<Result<(), btleplug::Error>>>,
@@ -183,6 +185,7 @@ struct StubTransport {
 impl StubTransport {
     fn new() -> Self {
         Self {
+            unsubscribe_gate: None,
             subscribe: StdMutex::new(VecDeque::new()),
             notifications: StdMutex::new(VecDeque::new()),
             unsubscribe: StdMutex::new(VecDeque::new()),
@@ -247,12 +250,66 @@ impl NotificationTransport for StubTransport {
         _characteristic: &Characteristic,
     ) -> Result<(), btleplug::Error> {
         self.unsubscribe_calls.fetch_add(1, Ordering::Relaxed);
+        if let Some(gate) = &self.unsubscribe_gate {
+            gate.notified().await;
+        }
         self.unsubscribe
             .lock()
             .expect("stub")
             .pop_front()
             .expect("unstubbed transport_unsubscribe call")
     }
+}
+
+#[tokio::test]
+async fn reconnect_retires_only_owned_notify_session_and_retains_failed_or_cancelled_cleanup() {
+    let owned = scope(PEER, HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+    let other = scope("other-peer", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+    let key = forwarder_key(PEER, HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+    let ch = characteristic(HRM_SERVICE, HRM_MEASUREMENT);
+    let forwarders = StdMutex::new(HashMap::new());
+    let debt = StdMutex::new(HashSet::from([owned.clone(), other.clone()]));
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let mut transport = StubTransport::new()
+        .with_unsubscribe(Err(StubTransport::script_error("refused StopNotify")))
+        .with_unsubscribe(Ok(()));
+    assert!(
+        retire_parked_subscription(&transport, &ch, &forwarders, &debt, &key, &owned)
+            .await
+            .is_err()
+    );
+    assert!(debt.lock().unwrap().contains(&owned));
+    transport.unsubscribe_gate = Some(gate.clone());
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(10),
+            retire_parked_subscription(&transport, &ch, &forwarders, &debt, &key, &owned)
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        debt.lock().unwrap().contains(&owned),
+        "cancellation cannot forget native ownership"
+    );
+    assert_eq!(
+        transport.calls(),
+        (0, 0, 2),
+        "no new stream or enable before retirement"
+    );
+    gate.notify_one();
+    retire_parked_subscription(&transport, &ch, &forwarders, &debt, &key, &owned)
+        .await
+        .unwrap();
+    assert_eq!(*debt.lock().unwrap(), HashSet::from([other]));
+    retire_parked_subscription(&transport, &ch, &forwarders, &debt, &key, &owned)
+        .await
+        .unwrap();
+    assert_eq!(
+        transport.calls(),
+        (0, 0, 3),
+        "already retired ownership is not disabled again"
+    );
 }
 
 async fn recv_notification(

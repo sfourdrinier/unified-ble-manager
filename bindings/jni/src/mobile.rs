@@ -886,7 +886,7 @@ pub extern "system" fn Java_com_ubm_core_MobileCoreBridge_nativeInstallHost<'cal
                 vm: env.get_java_vm()?,
                 listener: env.new_global_ref(&wake)?,
             });
-            let host = MobileHost::open_blocking(
+            let host = MobileHost::open_blocking_with_recording_registry(
                 Arc::clone(&jni_radio) as Arc<dyn PlatformRadio>,
                 jni_wake,
                 HostOptions {
@@ -895,6 +895,7 @@ pub extern "system" fn Java_com_ubm_core_MobileCoreBridge_nativeInstallHost<'cal
                     adapter_label,
                 },
                 ubm_desktop::executor::desktop_runtime(),
+                ubm_mobile::continuation::process_recording_registry(),
             )?;
             let _ = jni_radio.owner.set(host.clone());
             *slot = Some(host);
@@ -1102,6 +1103,221 @@ pub extern "system" fn Java_com_ubm_core_MobileCoreBridge_nativeDrain<'caller>(
 }
 
 // -- natives: completions -----------------------------------------------
+
+fn continuation_callback(
+    env: &mut Env,
+    callback: &JObject,
+    operation: &'static str,
+) -> MobileResult<ubm_mobile::Completion> {
+    if callback.as_raw().is_null() {
+        return Err(invalid(operation, "callback is required"));
+    }
+    let callback = JniCallback {
+        vm: env.get_java_vm()?,
+        callback: env.new_global_ref(callback)?,
+    };
+    Ok(Box::new(move |envelope| callback.deliver(envelope)))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_core_MobileCoreBridge_nativeContinuationDescribeBacklog<
+    'caller,
+>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    callback: JObject<'caller>,
+) {
+    unowned_env
+        .with_env(|env| -> MobileResult<()> {
+            const OP: &str = "mobile.continuation.backlog";
+            let callback = continuation_callback(env, &callback, OP)?;
+            require_host(OP)?.continuation_describe_backlog(callback);
+            Ok(())
+        })
+        .resolve_with::<ThrowMobile, _>(|| "mobile.continuation.backlog")
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_core_MobileCoreBridge_nativeContinuationDeclarationReplacementFailure<
+    'caller,
+>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    declaration: JString<'caller>,
+) -> jstring {
+    unowned_env
+        .with_env(|env| -> MobileResult<jstring> {
+            const OP: &str = "mobile.continuation.declaration";
+            let declaration = read_text(env, &declaration, OP)?;
+            match require_host(OP)?.continuation_declaration_replacement_failure(&declaration) {
+                Some(reason) => Ok(env.new_string(reason)?.into_raw()),
+                None => Ok(std::ptr::null_mut()),
+            }
+        })
+        .resolve_with::<ThrowMobile, _>(|| "mobile.continuation.declaration")
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_core_MobileCoreBridge_nativeContinuationExecute<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    peer_id: JString<'caller>,
+    declaration: JString<'caller>,
+    callback: JObject<'caller>,
+) {
+    unowned_env
+        .with_env(|env| -> MobileResult<()> {
+            const OP: &str = "mobile.continuation.execute";
+            let peer = read_text(env, &peer_id, OP)?;
+            let declaration = read_text(env, &declaration, OP)?;
+            let callback = continuation_callback(env, &callback, OP)?;
+            require_host(OP)?.continuation_execute(&peer, &declaration, callback);
+            Ok(())
+        })
+        .resolve_with::<ThrowMobile, _>(|| "mobile.continuation.execute")
+}
+
+macro_rules! continuation_declaration_entry {
+    ($entry:ident, $method:ident) => {
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $entry<'caller>(
+            mut unowned_env: EnvUnowned<'caller>,
+            _class: JClass<'caller>,
+            argument: JString<'caller>,
+        ) -> jstring {
+            unowned_env
+                .with_env(|env| -> MobileResult<jstring> {
+                    const OP: &str = "mobile.continuation.declaration";
+                    let argument = read_text(env, &argument, OP)?;
+                    let answer = require_host(OP)?.$method(&argument);
+                    Ok(env.new_string(answer)?.into_raw())
+                })
+                .resolve_with::<ThrowMobile, _>(|| "mobile.continuation.declaration")
+        }
+    };
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_core_MobileCoreBridge_nativeContinuationConfigureRecordingDirectory<
+    'caller,
+>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    path: JString<'caller>,
+) -> jstring {
+    unowned_env
+        .with_env(|env| -> MobileResult<jstring> {
+            const OP: &str = "mobile.continuation.recording.configure";
+            let path = read_text(env, &path, OP)?;
+            let answer = ubm_desktop::continuation::envelope(
+                ubm_mobile::continuation::process_recording_registry()
+                    .configure_directory(std::path::Path::new(&path))
+                    .map_err(ubm_desktop::continuation::recording_failure),
+            );
+            Ok(env.new_string(answer)?.into_raw())
+        })
+        .resolve_with::<ThrowMobile, _>(|| "mobile.continuation.recording.configure")
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_core_MobileCoreBridge_nativeContinuationRecordingControl<
+    'caller,
+>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    operation: JString<'caller>,
+    id: JString<'caller>,
+    token: JString<'caller>,
+    max_items: jint,
+    max_bytes: jint,
+) -> jstring {
+    unowned_env
+        .with_env(|env| -> MobileResult<jstring> {
+            const OP: &str = "mobile.continuation.recording";
+            let operation = read_text(env, &operation, OP)?;
+            let id = read_text(env, &id, OP)?;
+            let token = read_text(env, &token, OP)?;
+            let items = u32::try_from(max_items).map_err(|_| invalid(OP, "maxItems"))?;
+            let bytes = u32::try_from(max_bytes).map_err(|_| invalid(OP, "maxBytes"))?;
+            let answer = if let Some(host) = current_host() {
+                host.continuation_recording_control(&operation, &id, &token, items, bytes)
+            } else {
+                ubm_mobile::continuation::recording_control(
+                    &ubm_mobile::continuation::process_recording_registry(),
+                    None,
+                    &operation,
+                    &id,
+                    &token,
+                    items,
+                    bytes,
+                )
+            };
+            Ok(env.new_string(answer)?.into_raw())
+        })
+        .resolve_with::<ThrowMobile, _>(|| "mobile.continuation.recording")
+}
+
+continuation_declaration_entry!(
+    Java_com_ubm_core_MobileCoreBridge_nativeContinuationReserveDeclaration,
+    continuation_reserve_declaration
+);
+continuation_declaration_entry!(
+    Java_com_ubm_core_MobileCoreBridge_nativeContinuationCommitDeclaration,
+    continuation_commit_declaration
+);
+continuation_declaration_entry!(
+    Java_com_ubm_core_MobileCoreBridge_nativeContinuationCancelDeclaration,
+    continuation_cancel_declaration
+);
+continuation_declaration_entry!(
+    Java_com_ubm_core_MobileCoreBridge_nativeContinuationSeedDeclaration,
+    continuation_seed_declaration
+);
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_core_MobileCoreBridge_nativeContinuationPrepareClaim<
+    'caller,
+>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    max_items: jint,
+    max_bytes: jint,
+    callback: JObject<'caller>,
+) {
+    unowned_env
+        .with_env(|env| -> MobileResult<()> {
+            const OP: &str = "mobile.continuation.prepare";
+            let items = u32::try_from(max_items).map_err(|_| invalid(OP, "maxItems"))?;
+            let bytes = u32::try_from(max_bytes).map_err(|_| invalid(OP, "maxBytes"))?;
+            if items == 0 || bytes == 0 {
+                return Err(invalid(OP, "claim bounds must be positive"));
+            }
+            let callback = continuation_callback(env, &callback, OP)?;
+            require_host(OP)?.continuation_prepare_claim(items, bytes, callback);
+            Ok(())
+        })
+        .resolve_with::<ThrowMobile, _>(|| "mobile.continuation.prepare")
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_core_MobileCoreBridge_nativeContinuationAcknowledgeClaim<
+    'caller,
+>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    token: JString<'caller>,
+    callback: JObject<'caller>,
+) {
+    unowned_env
+        .with_env(|env| -> MobileResult<()> {
+            const OP: &str = "mobile.continuation.acknowledge";
+            let token = read_text(env, &token, OP)?;
+            let callback = continuation_callback(env, &callback, OP)?;
+            require_host(OP)?.continuation_acknowledge_claim(&token, callback);
+            Ok(())
+        })
+        .resolve_with::<ThrowMobile, _>(|| "mobile.continuation.acknowledge")
+}
 
 macro_rules! completion_native {
     ($name:ident, $op:literal, ($($param:ident : $ty:ty),*), |$env:ident| $body:expr) => {
@@ -1784,11 +2000,18 @@ mod tests {
     }
 
     #[test]
-    fn java_copies_are_identical() {
-        let shipped =
-            include_str!("../../../android/src/main/java/com/ubm/core/MobileCoreBridge.java");
-        let probe = include_str!("../java/com/ubm/core/MobileCoreBridge.java");
-        assert_eq!(shipped, probe, "MobileCoreBridge.java copies drifted");
+    fn jvm_smoke_compiles_the_single_shipped_java_authority() {
+        let runner = include_str!("../run_mobile_roundtrip.sh");
+        assert!(
+            runner.contains("\"$ROOT/android/src/main/java/com/ubm/core/MobileCoreBridge.java\""),
+            "JNI smoke must compile the shipped Android authority"
+        );
+        assert!(
+            !std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("java/com/ubm/core/MobileCoreBridge.java")
+                .exists(),
+            "a second manually maintained facade is forbidden"
+        );
     }
 
     #[test]

@@ -3,14 +3,136 @@ import assert from 'node:assert/strict'
 import {
   EcgStreamStats,
   PmdParseError,
+  PmdControlPointResponseAssembler,
   buildGetEcgSettingsCommand,
+  buildGetAccSettingsCommand,
+  buildStartAccCommand,
+  buildStopAccCommand,
   buildStartEcgCommand,
   buildStopEcgCommand,
   parseControlPointMessage,
+  parseAccFrame,
   parseEcgFrame,
   parsePmdFeatures,
   parsePmdSettings
 } from '../polar-pmd.ts'
+
+test('multipart responses assemble correlated copied parameters only at the final fragment', () => {
+  const response = new PmdControlPointResponseAssembler(1, 2, 7)
+  const first = parseControlPointMessage(new Uint8Array([0xf0, 1, 2, 0, 1, 0, 1, 200]))
+  assert.equal(response.push(first, 7), null)
+  first.parameters.fill(99)
+  assert.equal(response.push(parseControlPointMessage(new Uint8Array([0xf0, 1, 0, 0, 0, 9])), 7), null)
+  assert.equal(response.push(parseControlPointMessage(new Uint8Array([0xf0, 1, 2, 0, 0, 9])), 6), null)
+  const final = response.push(parseControlPointMessage(new Uint8Array([0xf0, 1, 2, 0, 0, 0, 1, 1, 16, 0])), 7)
+  assert.equal(final.more, false)
+  assert.deepEqual(parsePmdSettings(final.parameters), { SAMPLE_RATE: [200], RESOLUTION: [16] })
+  assert.throws(() => response.push(first, 7), PmdParseError)
+})
+
+test('multipart rejection discards successful prefix and response assembly is bounded', () => {
+  const packet = more => parseControlPointMessage(new Uint8Array([0xf0, 1, 0, 0, more, 1]))
+  const rejected = new PmdControlPointResponseAssembler(1, 0, 1)
+  rejected.push(packet(1), 1)
+  const failure = rejected.push(parseControlPointMessage(new Uint8Array([0xf0, 1, 0, 6])), 1)
+  assert.equal(failure.status, 6)
+  assert.equal(failure.parameters.length, 0)
+  const flood = new PmdControlPointResponseAssembler(1, 0, 1)
+  for (let index = 0; index < 64; index++) assert.equal(flood.push(packet(1), 1), null)
+  assert.throws(() => flood.push(packet(0), 1), /fragment limit/)
+  const bytes = new PmdControlPointResponseAssembler(1, 0, 1)
+  assert.throws(() => bytes.push({ ...packet(0), parameters: new Uint8Array(32769) }, 1), /byte limit/)
+})
+
+test('H10 ACC commands encode all twelve supported rate/range settings with 16-bit resolution', () => {
+  for (const sampleRateHz of [25, 50, 100, 200]) {
+    for (const rangeG of [2, 4, 8]) {
+      assert.deepEqual(
+        [...buildStartAccCommand({ sampleRateHz, resolutionBits: 16, rangeG })],
+        [2, 2, 0, 1, sampleRateHz, 0, 1, 1, 16, 0, 2, 1, rangeG, 0]
+      )
+    }
+  }
+  assert.deepEqual([...buildGetAccSettingsCommand()], [1, 2])
+  assert.deepEqual([...buildStopAccCommand()], [3, 2])
+})
+
+test('H10 ACC builder refuses unsupported, missing or non-finite settings', () => {
+  const supported = { sampleRateHz: 25, resolutionBits: 16, rangeG: 2 }
+  for (const sampleRateHz of [0, 24, 26, 400, 25.5, NaN, Infinity, '25', undefined]) {
+    assert.throws(() => buildStartAccCommand({ ...supported, sampleRateHz }), RangeError)
+  }
+  for (const rangeG of [0, 1, 3, 16, NaN, undefined])
+    assert.throws(() => buildStartAccCommand({ ...supported, rangeG }), RangeError)
+  for (const resolutionBits of [8, 14, 24, undefined])
+    assert.throws(() => buildStartAccCommand({ ...supported, resolutionBits }), RangeError)
+})
+
+test('ACC decoder matches the official SDK raw16 vector', () => {
+  const frame = parseAccFrame(
+    new Uint8Array([
+      0x02, 0, 0x94, 0x35, 0x77, 0, 0, 0, 0, 1, 0xf7, 0xff, 0xff, 0xff, 0xe7, 3, 0xf8, 0xff, 0xfe, 0xff, 0xe5, 3
+    ])
+  )
+  assert.equal(frame.timestampNs, 2000000000n)
+  assert.deepEqual(frame.samplesMilliG, [
+    { x: -9, y: -1, z: 999 },
+    { x: -8, y: -2, z: 997 }
+  ])
+})
+
+// Literal vectors, independent of the simulator's encoder. Polar SDK AccData
+// raw TYPE_0/1/2 are signed 8/16/24-bit x,y,z values in milliG.
+for (const [frameType, payload, expected] of [
+  [
+    0,
+    [0x80, 0x7f, 0xff, 0, 1, 0xfe],
+    [
+      { x: -128, y: 127, z: -1 },
+      { x: 0, y: 1, z: -2 }
+    ]
+  ],
+  [
+    1,
+    [0, 0x80, 0xff, 0x7f, 0xff, 0xff, 0xe8, 3, 0x18, 0xfc, 0, 0],
+    [
+      { x: -32768, y: 32767, z: -1 },
+      { x: 1000, y: -1000, z: 0 }
+    ]
+  ],
+  [2, [0, 0, 0x80, 0xff, 0xff, 0x7f, 0xff, 0xff, 0xff], [{ x: -8388608, y: 8388607, z: -1 }]]
+]) {
+  test(`ACC raw type ${frameType} preserves signed axis extrema, milliG and uint64 timestamp`, () => {
+    const packet = new Uint8Array([2, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, frameType, ...payload])
+    const backing = new Uint8Array(packet.length + 7)
+    backing.set(packet, 3)
+    const frame = parseAccFrame(backing.subarray(3, 3 + packet.length))
+    assert.deepEqual(frame, {
+      timestampNs: 18446744073709551615n,
+      frameType,
+      compressed: false,
+      samplesMilliG: expected
+    })
+    backing.fill(0)
+    assert.deepEqual(frame.samplesMilliG, expected, 'decoded data must not alias the input')
+  })
+}
+
+test('ACC rejects truncated headers, wrong type, compressed/unknown formats and ragged axes', () => {
+  for (let size = 0; size < 10; size++) assert.throws(() => parseAccFrame(new Uint8Array(size)), PmdParseError)
+  const frame = (type, payload = [], measurement = 2) =>
+    new Uint8Array([measurement, 0, 0, 0, 0, 0, 0, 0, 0, type, ...payload])
+  assert.throws(() => parseAccFrame(frame(0, [1, 2, 3], 0)), /expected ACC/)
+  for (const type of [0x80, 0x81, 0x82]) assert.throws(() => parseAccFrame(frame(type, [1, 2, 3])), /compressed/)
+  assert.throws(() => parseAccFrame(frame(3, [1, 2, 3])), /frame type 3/)
+  for (const type of [0, 1, 2]) {
+    const stride = (type + 1) * 3
+    for (let size = 0; size < stride * 2; size++) {
+      if (size === stride) continue
+      assert.throws(() => parseAccFrame(frame(type, new Array(size).fill(0))), /non-zero multiple/)
+    }
+  }
+})
 
 // Reference: polarofficial/polar-ble-sdk (Android) BlePMDClient.startMeasurement,
 // PmdSetting.serializeSelected, PmdRecordingType.asBitField, PmdControlPointCommand:
@@ -26,7 +148,9 @@ test('stop and get-settings commands follow the Polar opcodes', () => {
 })
 
 test('control point response parses status, more flag and parameters', () => {
-  const ok = parseControlPointMessage(new Uint8Array([0xf0, 0x02, 0x00, 0x00, 0x00, 0x05, 0x01, 0x40, 0x9c, 0x00, 0x00]))
+  const ok = parseControlPointMessage(
+    new Uint8Array([0xf0, 0x02, 0x00, 0x00, 0x00, 0x05, 0x01, 0x40, 0x9c, 0x00, 0x00])
+  )
   assert.deepEqual(ok, {
     kind: 'response',
     opCode: 0x02,
@@ -66,7 +190,12 @@ test('settings TLV parses sample rates and resolutions with Polar field sizes', 
 })
 
 test('feature read reports ECG support from byte 1 bit 0', () => {
-  assert.deepEqual(parsePmdFeatures(new Uint8Array([0x0f, 0x05, 0x00])), { ecg: true, ppg: false, acc: true, ppi: false })
+  assert.deepEqual(parsePmdFeatures(new Uint8Array([0x0f, 0x05, 0x00])), {
+    ecg: true,
+    ppg: false,
+    acc: true,
+    ppi: false
+  })
   assert.throws(() => parsePmdFeatures(new Uint8Array([0x0f])), PmdParseError)
 })
 

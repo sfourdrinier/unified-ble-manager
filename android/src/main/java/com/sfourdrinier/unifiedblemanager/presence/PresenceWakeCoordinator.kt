@@ -21,9 +21,8 @@ data class PresenceRestoredPeer(val peerId: String, val name: String?, val conne
  * ([continuation]) may. `record-only` is this doc comment's behaviour;
  * `native` reconnects the declared known peer and resubscribes the declared
  * characteristics through [executeContinuation] (the Rust core, no
- * JavaScript). Deferred strategies (`headless-task`, `foreground-service`)
- * record `capability.unsupported` ("not implemented in this release") and
- * never fall back to another strategy silently.
+ * JavaScript). Android task/service strategies dispatch their declared
+ * mechanism and report its acceptance stage, never app-task completion.
  */
 class PresenceWakeCoordinator(
   private val associatedAddresses: () -> Set<String>,
@@ -75,8 +74,68 @@ class PresenceWakeCoordinator(
     )
   },
   /** Records the wake outcome for Diagnostics (and unsupported states). */
-  private val recordWakeOutcome: (ContinuationWakeRecord) -> Unit = {}
+  private val recordWakeOutcome: (ContinuationWakeRecord) -> Unit = {},
+  private val releaseContinuation: (String) -> ContinuationOutcome.Failed? = { null }
 ) {
+  private val modernSources = mutableMapOf<Int, Pair<String, MutableSet<Int>>>()
+  private val deliveryEpochs = mutableMapOf<String, Any>()
+  private var admissionRevision = 0L
+  private val retiredAt = mutableMapOf<String, Long>()
+  private val stoppedObservations = mutableSetOf<String>()
+  @Synchronized fun admissionTicket(): Long = admissionRevision
+  @Synchronized fun acceptsTicket(address: String, ticket: Long): Boolean =
+    !stoppedObservations.contains(address.uppercase()) && (retiredAt[address.uppercase()] ?: 0L) <= ticket
+  @Synchronized fun observationStarted(address: String) { stoppedObservations.remove(address.uppercase()) }
+
+  /** OS observation has stopped. Fence pending bootstrap before queued cleanup. */
+  fun retireObservation(address: String) {
+    val peer = address.uppercase()
+    synchronized(this) {
+      admissionRevision += 1
+      retiredAt[peer] = admissionRevision
+      stoppedObservations.add(peer)
+      retireDelivery(peer)
+    }
+  }
+
+  fun clearRetiredAppearance(address: String) = store.removeAppearance(address.uppercase())
+
+  @Synchronized private fun retireDelivery(peer: String) {
+    modernSources.entries.removeAll { it.value.first == peer }
+    delivered.remove(peer)
+    deliveryEpochs.remove(peer)
+  }
+
+  /** Source identity is retained alongside process-owned wake/lease identity. */
+  fun presenceEvent(address: String, associationId: Int, source: Int, present: Boolean) {
+    val peer = address.uppercase()
+    val ticket = admissionTicket()
+    if (!acceptsTicket(peer, ticket)) return
+    require(source in 0..2) { "Unsupported presence source" }
+    if (associatedAddresses().none { it.equals(peer, ignoreCase = true) }) {
+      log("presence source event for unassociated device ignored")
+      recordWakeOutcome(unassociatedRecord(peer))
+      return
+    }
+    val transition = synchronized(this) {
+      if (!acceptsTicket(peer, ticket)) return
+      val before = modernSources.values.any { it.first == peer && it.second.isNotEmpty() }
+      val previous = modernSources[associationId]
+      require(previous == null || previous.first == peer) { "Presence association changed its peer identity" }
+      if (present) {
+        val entry = previous ?: (peer to mutableSetOf<Int>()).also { modernSources[associationId] = it }
+        entry.second.add(source)
+      } else if (previous != null) {
+        previous.second.remove(source)
+        if (previous.second.isEmpty()) modernSources.remove(associationId)
+      }
+      val after = modernSources.values.any { it.first == peer && it.second.isNotEmpty() }
+      when { !before && after -> 1; before && !after -> -1; else -> 0 }
+    }
+    if (transition == 1) appeared(peer, associationId)
+    else if (transition == -1) disappeared(peer, associationId)
+  }
+
   /**
    * Routes one appearance callback. Returns true only when the wake reached
    * the owner (ingest accepted); duplicates, unassociated devices and
@@ -95,16 +154,22 @@ class PresenceWakeCoordinator(
     // tracking and persisting, so a differently-cased twin of an associated
     // device never reads as unassociated and never double-delivers.
     val normalized = address.uppercase()
+    val ticket = admissionTicket()
+    if (!acceptsTicket(normalized, ticket)) return false
     if (associatedAddresses().map { it.uppercase() }.toSet().contains(normalized).not()) {
       log("presence appearance for unassociated device ignored")
       recordWakeOutcome(unassociatedRecord(normalized))
       return false
     }
-    val firstDelivery = synchronized(this) { delivered.add(normalized) }
-    if (!firstDelivery) {
+    val epoch = synchronized(this) {
+      if (!acceptsTicket(normalized, ticket)) return false
+      if (delivered.add(normalized)) Any().also { deliveryEpochs[normalized] = it } else null
+    }
+    if (epoch == null) {
       log("presence duplicate appearance for $normalized ignored (associationId=${associationId ?: "none"}): no disappearance since the last delivery")
       return false
     }
+    fun current(): Boolean = synchronized(this) { deliveryEpochs[normalized] === epoch }
     val owned = try {
       ensureOwner()
     } catch (error: RuntimeException) {
@@ -112,6 +177,7 @@ class PresenceWakeCoordinator(
       false
     }
     var delivered = false
+    if (!current()) return false
     if (owned) {
       try {
         if (ingest(listOf(PresenceRestoredPeer(normalized, null, false)))) delivered = true
@@ -121,10 +187,18 @@ class PresenceWakeCoordinator(
     } else {
       log("presence appearance persisted for the next session open: no live owner")
     }
+    if (!current()) return false
     executeStandingOrder(normalized, owned, readDeclaration())
-    if (!delivered) {
-      store.saveAppearance(normalized, associationId, nowMs())
+    if (!current()) {
+      releaseContinuation(normalized)?.let { recordWakeOutcome(wakeRecord(normalized, it)) }
       return false
+    }
+    synchronized(this) {
+      if (deliveryEpochs[normalized] !== epoch) return false
+      if (!delivered) {
+        store.saveAppearance(normalized, associationId, nowMs())
+        return false
+      }
     }
     return true
   }
@@ -155,8 +229,8 @@ class PresenceWakeCoordinator(
   /**
    * Executes the declared standing order after the record-only ingest. Only
    * what was declared runs: `native` reconnects (scoped to the declared peer
-   * when one is named) while the deferred strategies record their
-   * `capability.unsupported` refusal. Nothing here invents a strategy.
+   * when one is named); task/service strategies use their matching platform
+   * executor. Nothing here invents or silently substitutes a strategy.
    */
   private fun executeStandingOrder(address: String, owned: Boolean, declaration: BackgroundContinuationDeclaration) {
     if (declaration.strategy == ContinuationStrategy.RECORD_ONLY) return
@@ -174,7 +248,7 @@ class PresenceWakeCoordinator(
       return
     }
     when (declaration.strategy) {
-      ContinuationStrategy.NATIVE -> {
+      ContinuationStrategy.NATIVE, ContinuationStrategy.HEADLESS_TASK, ContinuationStrategy.FOREGROUND_SERVICE -> {
         if (declaration.peerId != null && declaration.peerId != address) {
           log("presence native continuation skips $address: standing order scopes to ${declaration.peerId}")
           recordWakeOutcome(
@@ -194,27 +268,13 @@ class PresenceWakeCoordinator(
         } catch (error: RuntimeException) {
           log("presence native continuation failed: ${error.message ?: error.javaClass.simpleName}")
           ContinuationOutcome.failed(
-            ContinuationStrategy.NATIVE,
+            declaration.strategy,
             "lifecycle.invariant-violation",
             "continuation executor threw: ${error.message ?: error.javaClass.simpleName}",
             null
           )
         }
         recordWakeOutcome(wakeRecord(address, outcome))
-      }
-      ContinuationStrategy.HEADLESS_TASK, ContinuationStrategy.FOREGROUND_SERVICE -> {
-        val name = declaration.strategy.wire
-        log("presence $name continuation not executed: not implemented in this release")
-        recordWakeOutcome(
-          ContinuationWakeRecord(
-            observedAtMs = nowMs(),
-            event = "continuation.failed",
-            strategy = declaration.strategy,
-            peerAddress = address,
-            code = "capability.unsupported",
-            reason = "$name continuation is not implemented in this release"
-          )
-        )
       }
       ContinuationStrategy.RECORD_ONLY -> Unit
     }
@@ -228,7 +288,8 @@ class PresenceWakeCoordinator(
         strategy = outcome.strategy,
         peerAddress = address,
         code = null,
-        reason = null
+        reason = null,
+        stage = outcome.stage
       )
       is ContinuationOutcome.Failed -> ContinuationWakeRecord(
         observedAtMs = nowMs(),
@@ -236,14 +297,16 @@ class PresenceWakeCoordinator(
         strategy = outcome.strategy,
         peerAddress = address,
         code = outcome.code,
-        reason = outcome.reason
+        reason = outcome.reason,
+        platform = outcome.platform
       )
     }
   }
 
-  @Synchronized
   fun disappeared(address: String, associationId: Int?) {
-    delivered.remove(address.uppercase())
-    store.removeAppearance(address.uppercase())
+    val normalized = address.uppercase()
+    retireDelivery(normalized)
+    store.removeAppearance(normalized)
+    releaseContinuation(normalized)?.let { recordWakeOutcome(wakeRecord(normalized, it)) }
   }
 }

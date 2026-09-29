@@ -11,10 +11,18 @@ describe('the Tauri battery example', () => {
     expect(read).toHaveBeenCalledWith(options)
   })
 
-  test('does not silently accept an empty Battery Level value', async () => {
+  test.each([
+    [[], 'profile.codec.malformed'],
+    [[50, 51], 'profile.codec.malformed'],
+    [[101], 'profile.codec.invalid-value']
+  ])('preserves canonical Battery Level validation for %j', async (bytes, code) => {
     const gatt = {
-      characteristic: jest.fn().mockReturnValue({ read: jest.fn().mockResolvedValue(new Uint8Array()) })
+      characteristic: jest.fn().mockReturnValue({ read: jest.fn().mockResolvedValue(new Uint8Array(bytes)) })
     }
-    await expect(readBatteryLevel(gatt)).rejects.toThrow('Battery Level returned an empty value')
+    await expect(readBatteryLevel(gatt)).rejects.toMatchObject({
+      name: 'ProfileCodecError',
+      code,
+      codec: 'Battery Level'
+    })
   })
 })

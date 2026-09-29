@@ -42,6 +42,10 @@ function assert(condition, message) {
 for (const variant of ['neverTrueDebug', 'neverFalseDebug', 'neverTrueAgainDebug', 'legacyApi30Debug']) {
   const manifest = mergedManifest(variant)
   assert(manifest.includes(presencePermission), `${variant} did not inherit companion-presence permission`)
+  for (const permission of ['WAKE_LOCK', 'REQUEST_COMPANION_RUN_IN_BACKGROUND', 'REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND']) {
+    assert(manifest.includes(`android.permission.${permission}`), `${variant} did not inherit ${permission}`)
+  }
+  assert(/android:name="com\.sfourdrinier\.unifiedblemanager\.presence\.UbmHeadlessContinuationService"/.test(manifest), `${variant} has no headless continuation service`)
 }
 
 assert(

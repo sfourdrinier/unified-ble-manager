@@ -3,5 +3,5 @@
   "identifier": "main",
   "description": "BLE access for the proving consumer's main window only.",
   "windows": ["main"],
-  "permissions": ["core:default", "unified-ble-manager:default"]
+  "permissions": ["core:default", "unified-ble-manager:default", "allow-reference-process-continuation"]
 }

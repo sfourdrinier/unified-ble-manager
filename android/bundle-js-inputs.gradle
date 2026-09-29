@@ -1,0 +1,17 @@
+// React Native excludes node_modules from its default bundle input tree.
+// Track this exact autolinked package copy, not the repository beside the app.
+ext.configureUbmBundleInputs = { Project applicationProject, File packageRoot ->
+  if (!new File(packageRoot, "package.json").isFile() || !new File(packageRoot, "lib/module").isDirectory()) {
+    throw new GradleException("UBM bundle inputs require the installed package.json and lib/module at ${packageRoot}")
+  }
+  def packageInputs = fileTree(packageRoot) {
+    include "package.json", "lib/**", "src/**"
+  }
+  applicationProject.tasks.matching {
+    it.name.startsWith("createBundle") && it.name.endsWith("JsAndAssets")
+  }.configureEach {
+    inputs.files(packageInputs)
+      .withPropertyName("ubmInstalledJavaScript")
+      .withPathSensitivity(PathSensitivity.RELATIVE)
+  }
+}

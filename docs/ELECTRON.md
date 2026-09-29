@@ -4,7 +4,7 @@
 
 Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.
 
-This source targets `5.0.0-rc.12`. Main executes the shared Rust core (`DesktopCentral`) through one N-API addon. Tagged releases ship it prebuilt for Linux, macOS and Windows on `arm64`/`x64`. The addon is Node-API, so one binary serves Node and modern Electron alike.
+This source targets `5.0.0-rc.13`. Main executes the shared Rust core (`DesktopCentral`) through one N-API addon. Tagged releases ship it prebuilt for Linux, macOS and Windows on `arm64`/`x64`. The addon is Node-API, so one binary serves Node and modern Electron alike.
 
 `unified-ble-manager/electron/main` and
 `unified-ble-manager/electron/renderer` are the only Electron entrypoints.
@@ -128,6 +128,47 @@ The release workflow's packed Electron smoke is deterministic L1 package/IPC
 proof, not an Electron host, adapter, or peripheral support claim. Native
 prebuild compilation and runtime loading are L2/L3 evidence only; they do not
 by themselves establish a physical-radio support claim.
+
+## Native continuation owned by main
+
+`unified-ble-manager/electron/main` exports `loadDesktopCoreBinding` and
+`createNativeContinuationController`, with the same trusted-host recipe as
+[Node native continuation](NODE.md#native-continuation-in-a-trusted-process-host).
+Pass the **existing main-process Rust central** to the controller. Main retains
+the native owner while windows close or reload; renderer destruction is not a
+request to stop a process-owned recorder.
+
+```ts
+import { createNativeContinuationController } from 'unified-ble-manager/electron/main'
+import type { DesktopRustCoreCentral } from 'unified-ble-manager/electron/main'
+
+function recorderForMain(central: DesktopRustCoreCentral) {
+  return createNativeContinuationController(central)
+}
+```
+
+Only trusted main code may call `execute`, `status` and `claim`. This adds no
+renderer IPC privilege: expose any application-specific commands through your
+existing authenticated, scoped IPC policy. `execute` needs a known peer ID and
+explicit native resubscription declaration. `claim` validates values before
+acknowledging native handoff, reports loss and cleanup uncertainty, and ends the
+recording generation. Persist returned values according to your application.
+
+For an authenticated application bridge that forwards raw native control
+envelopes, main may use `encodeNativeContinuationFailure(error)` when a typed
+native-compatible failure was already decoded before dispatch (for example,
+recording-store configuration). This preserves the error code, operation,
+retryability and platform message/metadata across Electron's string-only error
+rejection transport. Keep authentication and request validation outside this
+conversion. Unknown exceptions are rethrown. This is not general `BleError`
+serialization: write commit states, limitations and nested/binary metadata are
+not representable in the native control envelope and are explicitly refused.
+
+This survives loss of a renderer, **not loss of the main process**. A bounded
+in-memory backlog is not disk persistence, and Electron relaunch/start-at-login
+configuration is the application's responsibility. On main shutdown, await the
+central's cleanup receipt; a failed receipt remains a retry obligation. Do not
+start a second central to add continuation to an existing host.
 
 ## Main-process backend selection (maintainer/host-authoring reference)
 
@@ -305,4 +346,4 @@ an advertisement, or establish live-radio support. Published evidence
 records state the exact backend, package digest, OS/runtime/ABI, hardware,
 scenario, limitations, and proof level.
 See [`PLATFORMS.md`](PLATFORMS.md) and the controlling
-[`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md).
+[Current 5.0 authority](README.md#current-50-authority).

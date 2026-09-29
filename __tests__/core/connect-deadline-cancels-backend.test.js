@@ -128,6 +128,58 @@ function installHangingRadio(fixture) {
 }
 
 describe('core connect deadline/abort cancels the backend acquisition (194)', () => {
+  test.each(['resolve', 'reject'])(
+    'destroy retains a cancelled backend until late %s settles, then retry releases',
+    async outcome => {
+      const { fixture, manager } = await createOwningFixture()
+      const original = fixture.backend.connections.connect.bind(fixture.backend.connections)
+      let finish
+      let seenSignal
+      const gate = new Promise(resolve => {
+        finish = resolve
+      })
+      fixture.backend.connections.connect = async (peerId, clientId, options) => {
+        seenSignal = options.signal
+        // Model an accepted platform request that cannot settle synchronously
+        // with cancellation. Its ownership must not disappear at the deadline.
+        await gate
+        if (outcome === 'reject') throw abortedError()
+        return original(peerId, clientId, { ...options, signal: null, deadline: null })
+      }
+      const pending = manager.connect(peer(), {
+        signal: null,
+        deadline: deadline(Number(fixture.controller.clock.now()) + 5)
+      })
+      const rejected = expect(pending).rejects.toMatchObject({ normalized: { code: 'connection.failed' } })
+      await flushMicrotasks()
+      fixture.controller.clock.advanceBy(10)
+      await rejected
+      expect(seenSignal.aborted).toBe(true)
+      const heldReceipt = {
+        state: 'release-failed',
+        failures: [
+          expect.objectContaining({
+            resourceKind: 'connection',
+            error: expect.objectContaining({ operation: 'connect.acquisition-pending' })
+          })
+        ]
+      }
+      await expect(manager.destroy()).resolves.toMatchObject(heldReceipt)
+      await expect(manager.destroy()).resolves.toMatchObject(heldReceipt)
+      finish()
+      await settle(fixture.controller, gate)
+      // Let the accepted backend's settlement and compensation run, without
+      // treating a requested abort as proof that either already happened.
+      let receipt
+      for (let attempt = 0; attempt < 20; attempt++) {
+        receipt = await settle(fixture.controller, manager.destroy())
+        if (receipt.state === 'released') break
+      }
+      expect(receipt).toEqual({ state: 'released', failures: [] })
+      expect(Number(fixture.backend.resourceCounters().connectionLeases)).toBe(0)
+    }
+  )
+
   test('deadline expiry cancels the backend call and reports connection.failed', async () => {
     const { fixture, manager } = await createOwningFixture()
     const radio = installHangingRadio(fixture)

@@ -29,6 +29,7 @@ export type AppStatePeriod = {
 export type BackgroundState = HeartRateState & {
   readonly appState: string
   readonly leaseRequested: boolean
+  /** This run's acquisition/API answer; cleanup receipts report subsequent release. */
   readonly leaseState: string | null
   readonly currentPeriod: AppStatePeriod | null
   readonly periods: readonly AppStatePeriod[]

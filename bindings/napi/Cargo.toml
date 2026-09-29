@@ -19,5 +19,8 @@ ubm-core = { path = "../../crates/ubm-core" }
 ubm-desktop = { path = "../../crates/ubm-desktop" }
 ubm-fake-radio = { path = "../../crates/ubm-fake-radio" }
 
+[dev-dependencies]
+serde_json = "1"
+
 [build-dependencies]
 napi-build = "=2.4.2"

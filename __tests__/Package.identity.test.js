@@ -13,7 +13,7 @@ const pluginSrc = fs.readFileSync(path.join(root, 'plugin/src/withBLE.ts'), 'utf
 describe('package identity (unified-ble-manager)', () => {
   test('npm package name and 5.0.0 release-candidate identity', () => {
     expect(pkg.name).toBe('unified-ble-manager')
-    expect(pkg.version).toBe('5.0.0-rc.12')
+    expect(pkg.version).toBe('5.0.0-rc.13')
   })
 
   test('strict package exports isolate manager, backend authoring, and deterministic testing', () => {
@@ -113,7 +113,8 @@ describe('package identity (unified-ble-manager)', () => {
     expect(mig).toContain('monitorCharacteristicForDevice')
     expect(mig).toContain('cancelTransaction')
     expect(mig).toContain('unified-ble-manager')
-    expect(mig).toContain('UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md')
+    expect(mig).toContain('docs/README.md#current-50-authority')
+    expect(mig).not.toContain('UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md')
     expect(mig).not.toContain('encode/decode explicitly through `unified-ble-manager/codecs`')
     expect(mig).not.toMatch(/zero-change (JS )?API/i)
   })

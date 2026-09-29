@@ -20,15 +20,37 @@ import {
   explicitDriverUrl,
   isJsonObject,
   type DriverUrlResolution,
-  type JsonObject,
-  type ScenarioRegistry
+  type JsonObject
 } from '../examples-shared/driver/index.ts'
 import { createNodeDriverHost, nodeSocket, parseBackend } from './host.ts'
+import { shutdownNodeDriver, createNodeShutdownHandler } from './cleanup.ts'
+import { flushDriverOutput } from './output.ts'
+
+async function exitAfterOutput(code: number): Promise<never> {
+  let exitCode = code
+  try {
+    await flushDriverOutput(process.stdout, process.stderr)
+  } catch (error) {
+    exitCode = 1
+    process.stderr.write(
+      `[example-node] output completion failed: ${error instanceof Error ? error.message : String(error)}\n`
+    )
+    try {
+      await flushDriverOutput(process.stderr, process.stderr)
+    } catch (diagnosticError) {
+      process.stderr.write(
+        `[example-node] diagnostic output also failed: ${diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError)}\n`
+      )
+    }
+  }
+  process.exit(exitCode)
+}
 
 const HELP = `example-node/driver.ts — the shared BLE test scenarios on a Node desktop host
 
-  serve-host [--backend B] [--driver-url URL|off]   Connect to the control server (default ${LOCAL_DRIVER_URL}) until Ctrl-C.
-  run <scenario> <command> [json-args] [--backend B] [--for MS]
+  serve-host [--backend B] [--adapter ID] [--driver-url URL|off]   Connect to the control server (default ${LOCAL_DRIVER_URL}) until Ctrl-C.
+  run <scenario> <command> [json-args] [--backend B] [--adapter ID] [--for MS]
+  --bluez-daemon-owner NAME   Trusted BlueZ LE1 daemon attestation (or UBM_BLUEZ_DAEMON_OWNER); BlueZ only.
                                                   Dispatch locally, print events as JSON lines; with --for, keep
                                                   the run going MS milliseconds, then dispatch "stop".
   list                                            Scenario descriptions (JSON).
@@ -47,6 +69,8 @@ function parseArgs(argv: readonly string[]): { positional: string[]; flags: Flag
       positional.push(value)
       continue
     }
+    if (!['backend', 'adapter', 'driver-url', 'for', 'bluez-daemon-owner'].includes(value.slice(2)))
+      fail(`unknown option ${value}`)
     const next = argv[index + 1]
     if (next === undefined || next.startsWith('--')) flags[value.slice(2)] = true
     else {
@@ -75,38 +99,46 @@ function printLine(value: unknown): void {
 function driverUrl(flags: Flags): DriverUrlResolution {
   return (
     explicitDriverUrl(stringFlag(flags, 'driver-url'), '--driver-url') ??
-    explicitDriverUrl(process.env.UBM_DRIVER_URL, 'UBM_DRIVER_URL') ?? { url: LOCAL_DRIVER_URL, reason: 'default local control server' }
+    explicitDriverUrl(process.env.UBM_DRIVER_URL, 'UBM_DRIVER_URL') ?? {
+      url: LOCAL_DRIVER_URL,
+      reason: 'default local control server'
+    }
   )
 }
 
-/** Stops every scenario (each reports its cleanup records) so no radio resource outlives the process. */
-async function stopAll(registry: ScenarioRegistry): Promise<void> {
-  for (const scenario of registry.list()) {
-    try {
-      const result = await scenario.dispatch('stop', {})
-      printLine({ type: 'shutdown-stop', scenario: scenario.id, result })
-    } catch (error) {
-      printLine({ type: 'shutdown-stop', scenario: scenario.id, error: describeError(error) })
-    }
-  }
-}
-
 async function serveHost(flags: Flags): Promise<void> {
-  const host = createNodeDriverHost(parseBackend(stringFlag(flags, 'backend'), process.platform))
+  const host = createNodeDriverHost(
+    parseBackend(stringFlag(flags, 'backend'), process.platform),
+    stringFlag(flags, 'adapter'),
+    { bluezDaemonOwner: stringFlag(flags, 'bluez-daemon-owner') ?? process.env.UBM_BLUEZ_DAEMON_OWNER }
+  )
   const registry = createScenarioRegistry(host)
   const resolution = driverUrl(flags)
   if (resolution.url === null) fail(`no control server: ${resolution.reason}`)
   const remote = createRemoteDriver(host, registry, { ...resolution, createSocket: nodeSocket })
-  remote.subscribe(state => process.stderr.write(`[example-node] remote ${state.status}${state.hostId === null ? '' : ` as ${state.hostId}`}${state.lastError === null ? '' : ` (${state.lastError})`}\n`))
+  remote.subscribe(state =>
+    process.stderr.write(
+      `[example-node] remote ${state.status}${state.hostId === null ? '' : ` as ${state.hostId}`}${state.lastError === null ? '' : ` (${state.lastError})`}\n`
+    )
+  )
   process.stderr.write(`[example-node] ${host.identity.backend} → ${resolution.url} (${resolution.reason})\n`)
   remote.start()
-  const shutdown = async () => {
-    remote.stop()
-    await stopAll(registry)
-    process.exit(0)
-  }
-  process.once('SIGINT', shutdown)
-  process.once('SIGTERM', shutdown)
+  const shutdown = createNodeShutdownHandler({
+    cleanup: async () => {
+      remote.stop()
+      await shutdownNodeDriver(registry, host, printLine)
+    },
+    released: () => exitAfterOutput(0),
+    failed: async error => {
+      printLine({ type: 'shutdown-failed', error: describeError(error) })
+      process.stderr.write('[example-node] cleanup remains owned; send SIGINT or SIGTERM again to retry\n')
+      await flushDriverOutput(process.stdout, process.stderr).catch(outputError => {
+        process.stderr.write(`[example-node] shutdown diagnostic flush failed: ${String(outputError)}\n`)
+      })
+    }
+  })
+  process.on('SIGINT', shutdown)
+  process.on('SIGTERM', shutdown)
 }
 
 function parseJsonArgs(raw: string | undefined): JsonObject {
@@ -126,19 +158,33 @@ async function runLocal(positional: readonly string[], flags: Flags): Promise<vo
   if (scenarioId === undefined || command === undefined) fail('usage: run <scenario> <command> [json-args]')
   const forMs = Number(stringFlag(flags, 'for') ?? '0')
   if (!Number.isFinite(forMs) || forMs < 0) fail('--for must be a non-negative number of milliseconds')
-  const host = createNodeDriverHost(parseBackend(stringFlag(flags, 'backend'), process.platform))
+  const host = createNodeDriverHost(
+    parseBackend(stringFlag(flags, 'backend'), process.platform),
+    stringFlag(flags, 'adapter'),
+    { bluezDaemonOwner: stringFlag(flags, 'bluez-daemon-owner') ?? process.env.UBM_BLUEZ_DAEMON_OWNER }
+  )
   const registry = createScenarioRegistry(host)
   registry.subscribe(update => printLine(update))
   let failed = false
   try {
-    printLine({ type: 'result', scenario: scenarioId, command, result: await registry.dispatch(scenarioId, command, parseJsonArgs(rawArgs)) })
+    printLine({
+      type: 'result',
+      scenario: scenarioId,
+      command,
+      result: await registry.dispatch(scenarioId, command, parseJsonArgs(rawArgs))
+    })
     if (forMs > 0) await new Promise(resolve => setTimeout(resolve, forMs))
   } catch (error) {
     failed = true
     printLine({ type: 'error', scenario: scenarioId, command, error: describeError(error) })
   }
-  await stopAll(registry)
-  process.exit(failed ? 1 : 0)
+  try {
+    await shutdownNodeDriver(registry, host, printLine)
+  } catch (error) {
+    failed = true
+    printLine({ type: 'shutdown-failed', error: describeError(error) })
+  }
+  await exitAfterOutput(failed ? 1 : 0)
 }
 
 async function main(): Promise<void> {
@@ -152,7 +198,11 @@ async function main(): Promise<void> {
       await runLocal(rest, flags)
       return
     case 'list': {
-      const host = createNodeDriverHost(parseBackend(stringFlag(flags, 'backend'), process.platform))
+      const host = createNodeDriverHost(
+        parseBackend(stringFlag(flags, 'backend'), process.platform),
+        stringFlag(flags, 'adapter'),
+        { bluezDaemonOwner: stringFlag(flags, 'bluez-daemon-owner') ?? process.env.UBM_BLUEZ_DAEMON_OWNER }
+      )
       printLine(createScenarioRegistry(host).describe())
       return
     }

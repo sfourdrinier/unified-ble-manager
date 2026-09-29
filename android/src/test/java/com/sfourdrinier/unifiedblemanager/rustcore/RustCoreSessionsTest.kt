@@ -21,6 +21,49 @@ class RustCoreSessionsTest {
   private var packageName: String? = "com.example.app"
   private val sessions = RustCoreSessions(core, host, DirectExecutor, { wakes.add(it) }, { packageName }, SecureRandom(), { logs.add(it) })
 
+  @Test fun trustedDirectRecordingRefusesMissingStorageBeforeNativeAcquisition() {
+    val declaration = com.sfourdrinier.unifiedblemanager.presence.BackgroundContinuationDeclaration.parse(
+      """{"onAppearance":"native","peerId":"AA:BB:CC:DD:EE:FF","resubscribe":[],"recording":{"id":"direct","maxBytes":1048576,"maxRecords":1000}}"""
+    )
+    var executions = 0
+    host.continuationStore().saveDeclaration("""{"onAppearance":"native","peerId":"AA:BB:CC:DD:EE:FF","resubscribe":[],"recording":{"id":"direct","maxBytes":1048576,"maxRecords":1000}}""")
+    core.continuationExecuteAnswer = { _, _, _ -> executions++ }
+    var result: String? = null
+    host.executeNativeContinuationRaw("AA:BB:CC:DD:EE:FF", declaration, MobileCoreBridge.InvokeCallback { result = it })
+    val envelope = RustCoreJson.parse(result!!) as Map<*, *>
+    assertEquals(false, envelope["ok"])
+    assertEquals("capability.unsupported", (envelope["error"] as Map<*, *>)["code"])
+    assertEquals(0, executions)
+    assertEquals(0, radioHostBuilds)
+    assertNull(host.continuationStore().lastWakeOutcome())
+  }
+
+  @Test fun directColdExecutionRequiresPersistedMatchingOrderAndExplicitReplacement() {
+    val json = """{"onAppearance":"native","peerId":"AA:BB:CC:DD:EE:FF","resubscribe":[]}"""
+    val declaration = com.sfourdrinier.unifiedblemanager.presence.BackgroundContinuationDeclaration.parse(json)
+    var calls = 0
+    core.continuationExecuteAnswer = { _, _, callback -> calls++; callback.onResult("{\"ok\":true,\"value\":{}}") }
+    var result: String? = null
+    val callback = MobileCoreBridge.InvokeCallback { result = it }
+    host.executeNativeContinuationRaw("AA:BB:CC:DD:EE:FF", declaration, callback)
+    assertTrue(result!!.contains("Explicit matching persisted"))
+    assertEquals(0, radioHostBuilds)
+    host.continuationStore().saveDeclaration(json.replace("AA:BB:CC:DD:EE:FF", "00:11:22:33:44:55"))
+    host.executeNativeContinuationRaw("AA:BB:CC:DD:EE:FF", declaration, callback)
+    assertEquals(0, calls)
+    host.continuationExecutor().persistDeclaration(declaration) { host.continuationStore().saveDeclaration(json) }
+    host.executeNativeContinuationRaw("AA:BB:CC:DD:EE:FF", declaration, callback)
+    assertEquals(1, calls)
+    assertNull(host.continuationStore().lastWakeOutcome())
+    val recordOnly = com.sfourdrinier.unifiedblemanager.presence.BackgroundContinuationDeclaration.recordOnly()
+    host.continuationExecutor().persistDeclaration(recordOnly) { host.continuationStore().saveDeclaration("{\"onAppearance\":\"record-only\"}") }
+    host.executeNativeContinuationRaw("AA:BB:CC:DD:EE:FF", declaration, callback)
+    assertEquals(1, calls)
+    val envelope = RustCoreJson.parse(result!!) as Map<*, *>
+    assertEquals(setOf("ok", "error", "commit", "retryability"), envelope.keys)
+    assertEquals("never", envelope["retryability"])
+  }
+
   private class Captured : RustCoreSessions.Reply {
     val resolved = mutableListOf<String?>()
     val rejected = mutableListOf<RustCoreRejection>()

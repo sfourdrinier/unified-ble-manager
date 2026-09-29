@@ -170,7 +170,10 @@ fn answer_value_update(characteristic: &mut CharacteristicInternal, data: &[u8])
             state
                 .lock()
                 .unwrap()
-                .set_reply(CoreBluetoothReply::CharacteristicRead(data.to_vec(), provenance));
+                .set_reply(CoreBluetoothReply::CharacteristicRead(
+                    data.to_vec(),
+                    provenance,
+                ));
         }
     }
     route.notification
@@ -266,6 +269,7 @@ struct PendingWriteWithoutResponse {
 
 #[derive(Clone, Debug)]
 pub enum CoreBluetoothReply {
+    DirectoryPeers(Vec<(Uuid, Option<String>)>),
     AdapterState(CBManagerState),
     ReadResult(Vec<u8>),
     // UBM patch (UBM_PATCHES.md #14): a characteristic read's value and what
@@ -308,6 +312,27 @@ pub enum PeripheralEventInternal {
 
 pub type CoreBluetoothReplyStateShared = BtlePlugFutureStateShared<CoreBluetoothReply>;
 pub type CoreBluetoothReplyFuture = BtlePlugFuture<CoreBluetoothReply>;
+
+pub(super) async fn enqueue_directory_event(
+    sender: &mpsc::Sender<CoreBluetoothEvent>,
+    event: CoreBluetoothEvent,
+    reply: &CoreBluetoothReplyStateShared,
+) -> Result<(), crate::PlatformError> {
+    if sender.clone().send(event).await.is_err() {
+        let error = crate::PlatformError::new(
+            "corebluetooth",
+            "directory-queue-closed",
+            "directory adapter event receiver is closed",
+        );
+        reply
+            .lock()
+            .unwrap()
+            .set_reply(CoreBluetoothReply::Failed(error.clone()));
+        Err(error)
+    } else {
+        Ok(())
+    }
+}
 
 struct ServiceInternal {
     cbservice: Retained<CBService>,
@@ -611,6 +636,11 @@ impl Debug for CoreBluetoothInternal {
 
 #[derive(Debug)]
 pub enum CoreBluetoothMessage {
+    DirectoryLookup {
+        services: Option<Vec<Uuid>>,
+        identifier: Option<Uuid>,
+        future: CoreBluetoothReplyStateShared,
+    },
     GetAdapterState {
         future: CoreBluetoothReplyStateShared,
     },
@@ -626,10 +656,6 @@ pub enum CoreBluetoothMessage {
         future: CoreBluetoothReplyStateShared,
     },
     // UBM patch (UBM_PATCHES.md #19): known, or retrieved by identifier.
-    ResolvePeripheral {
-        peripheral_uuid: Uuid,
-        future: CoreBluetoothReplyStateShared,
-    },
     DisconnectDevice {
         peripheral_uuid: Uuid,
         future: CoreBluetoothReplyStateShared,
@@ -701,6 +727,15 @@ pub enum CoreBluetoothMessage {
 
 #[derive(Debug)]
 pub enum CoreBluetoothEvent {
+    DirectoryReady {
+        peers: Vec<(Uuid, Option<String>)>,
+        future: CoreBluetoothReplyStateShared,
+    },
+    RetrievedPeripheral {
+        uuid: Uuid,
+        local_name: Option<String>,
+        event_receiver: Receiver<PeripheralEventInternal>,
+    },
     DidUpdateState {
         state: CBManagerState,
     },
@@ -1199,15 +1234,22 @@ impl CoreBluetoothInternal {
         // central no longer holds (CoreBluetooth invalidated it at a
         // power-off or reset) is retrieved by identifier, as the legacy addon
         // did; upstream never answered the connect.
-        if !self.peripherals.contains_key(&peripheral_uuid)
-            && !self.retrieve_peripheral(peripheral_uuid).await
-        {
-            fut.lock()
-                .unwrap()
-                .set_reply(CoreBluetoothReply::Err(String::from(
-                    "Peripheral not found",
-                )));
-            return;
+        if !self.peripherals.contains_key(&peripheral_uuid) {
+            match self.retrieve_peripheral(peripheral_uuid).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    fut.lock()
+                        .unwrap()
+                        .set_reply(CoreBluetoothReply::Err("Peripheral not found".to_owned()));
+                    return;
+                }
+                Err(error) => {
+                    fut.lock()
+                        .unwrap()
+                        .set_reply(CoreBluetoothReply::Failed(error));
+                    return;
+                }
+            }
         }
         if let Some(p) = self.peripherals.get_mut(&peripheral_uuid) {
             trace!("Connecting peripheral!");
@@ -1218,9 +1260,12 @@ impl CoreBluetoothInternal {
 
     /// UBM patch (UBM_PATCHES.md #19): `retrievePeripheralsWithIdentifiers`
     /// for one identifier (legacy addon `addon.mm:796-846`). A retrieved
-    /// peripheral is registered again; the adapter replaces its entry.
+    /// peripheral is registered without replacing an active callback owner.
     /// `false` when CoreBluetooth does not know the identifier.
-    async fn retrieve_peripheral(&mut self, peripheral_uuid: Uuid) -> bool {
+    async fn retrieve_peripheral(
+        &mut self,
+        peripheral_uuid: Uuid,
+    ) -> Result<bool, crate::PlatformError> {
         let identifier = objc2_foundation::NSUUID::from_bytes(*peripheral_uuid.as_bytes());
         let identifiers = NSArray::from_vec(vec![identifier]);
         let retrieved = unsafe {
@@ -1230,38 +1275,110 @@ impl CoreBluetoothInternal {
         let Some(peripheral) = retrieved.iter().find(|candidate| {
             nsuuid_to_uuid(&*unsafe { candidate.identifier() }) == peripheral_uuid
         }) else {
-            return false;
+            return Ok(false);
         };
+        self.register_retrieved(peripheral.retain(), None).await?;
+        Ok(true)
+    }
+
+    async fn register_retrieved(
+        &mut self,
+        peripheral: Retained<CBPeripheral>,
+        reply: Option<&CoreBluetoothReplyStateShared>,
+    ) -> Result<(), crate::PlatformError> {
+        let peripheral_uuid = nsuuid_to_uuid(&*unsafe { peripheral.identifier() });
+        // Retrieval must never replace an active peripheral's callback ownership.
+        if self.peripherals.contains_key(&peripheral_uuid) {
+            return Ok(());
+        }
         let local_name = unsafe { peripheral.name() }.map(|name| name.to_string());
         let (event_sender, event_receiver) = mpsc::channel(256);
         self.peripherals.insert(
             peripheral_uuid,
             PeripheralInternal::new(peripheral.retain(), event_sender),
         );
-        self.dispatch_event(CoreBluetoothEvent::DeviceDiscovered {
+        let event = CoreBluetoothEvent::RetrievedPeripheral {
             uuid: peripheral_uuid,
             local_name,
-            advertisement_name: None,
             event_receiver,
-        })
-        .await;
-        true
+        };
+        let outcome = if let Some(reply) = reply {
+            enqueue_directory_event(&self.event_sender, event, reply).await
+        } else {
+            self.event_sender.clone().send(event).await.map_err(|_| {
+                crate::PlatformError::new(
+                    "corebluetooth",
+                    "directory-queue-closed",
+                    "directory adapter event receiver is closed",
+                )
+            })
+        };
+        if outcome.is_err() {
+            self.peripherals.remove(&peripheral_uuid);
+        }
+        outcome
     }
 
-    /// UBM patch (UBM_PATCHES.md #19): resolve a peripheral by identifier
-    /// for `Central::add_peripheral`: known, or retrieved from CoreBluetooth.
-    async fn resolve_peripheral(
+    async fn directory_lookup(
         &mut self,
-        peripheral_uuid: Uuid,
-        fut: CoreBluetoothReplyStateShared,
+        services: Option<Vec<Uuid>>,
+        identifier: Option<Uuid>,
+        future: CoreBluetoothReplyStateShared,
     ) {
-        let known = self.peripherals.contains_key(&peripheral_uuid)
-            || self.retrieve_peripheral(peripheral_uuid).await;
-        fut.lock().unwrap().set_reply(if known {
-            CoreBluetoothReply::Ok
+        let state = unsafe { self.manager.state() };
+        if state != CBManagerState::PoweredOn {
+            future.lock().unwrap().set_reply(CoreBluetoothReply::Failed(
+                crate::PlatformError::new(
+                    "corebluetooth",
+                    format!("manager-state-{}", state.0),
+                    format!("directory query refused while manager state is {state:?}"),
+                ),
+            ));
+            return;
+        }
+        let retrieved = if let Some(services) = services {
+            let uuids = NSArray::from_vec(services.into_iter().map(uuid_to_cbuuid).collect());
+            unsafe {
+                self.manager
+                    .retrieveConnectedPeripheralsWithServices(&uuids)
+            }
         } else {
-            CoreBluetoothReply::Err(String::from("Peripheral not found"))
-        });
+            let identifiers = NSArray::from_vec(
+                identifier
+                    .into_iter()
+                    .map(|id| objc2_foundation::NSUUID::from_bytes(*id.as_bytes()))
+                    .collect(),
+            );
+            unsafe {
+                self.manager
+                    .retrievePeripheralsWithIdentifiers(&identifiers)
+            }
+        };
+        let mut peers = Vec::new();
+        for peripheral in retrieved.iter() {
+            peers.push((
+                nsuuid_to_uuid(&*unsafe { peripheral.identifier() }),
+                unsafe { peripheral.name() }.map(|name| name.to_string()),
+            ));
+            if self
+                .register_retrieved(peripheral.retain(), Some(&future))
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+        // Same FIFO as registrations: reply only once the public adapter cache
+        // has accepted every identity; no polling and no fabricated discovery.
+        let _ = enqueue_directory_event(
+            &self.event_sender,
+            CoreBluetoothEvent::DirectoryReady {
+                peers,
+                future: future.clone(),
+            },
+            &future,
+        )
+        .await;
     }
 
     fn disconnect_peripheral(&mut self, peripheral_uuid: Uuid, fut: CoreBluetoothReplyStateShared) {
@@ -1827,13 +1944,11 @@ impl CoreBluetoothInternal {
                         self.get_adapter_state(future);
                     },
                     CoreBluetoothMessage::StartScanning{filter, future} => self.start_discovery(filter, future),
+                    CoreBluetoothMessage::DirectoryLookup {services, identifier, future} => self.directory_lookup(services, identifier, future).await,
                     CoreBluetoothMessage::StopScanning => self.stop_discovery(),
                     CoreBluetoothMessage::ConnectDevice{peripheral_uuid, future} => {
                         trace!("got connectdevice msg!");
                         self.connect_peripheral(peripheral_uuid, future).await;
-                    }
-                    CoreBluetoothMessage::ResolvePeripheral{peripheral_uuid, future} => {
-                        self.resolve_peripheral(peripheral_uuid, future).await;
                     }
                     CoreBluetoothMessage::DisconnectDevice{peripheral_uuid, future} => {
                         self.disconnect_peripheral(peripheral_uuid, future);
@@ -2028,17 +2143,10 @@ mod ubm_instance_tests {
     /// reconnected without a scan) — never a scan, never a hang.
     #[test]
     fn an_unknown_identifier_resolves_without_a_scan() {
-        use super::{CoreBluetoothReply, CoreBluetoothReplyFuture};
         let (mut internal, _events) = headless_internal();
         let uuid = uuid::Uuid::parse_str(UNKNOWN_PEER).expect("fixture uuid");
-        let future = CoreBluetoothReplyFuture::default();
-        let state = future.get_state_clone();
-        futures::executor::block_on(internal.resolve_peripheral(uuid, state));
         assert!(
-            matches!(
-                futures::executor::block_on(future),
-                CoreBluetoothReply::Err(detail) if detail == "Peripheral not found"
-            ),
+            !futures::executor::block_on(internal.retrieve_peripheral(uuid)).unwrap(),
             "an unknown identifier is not-found, not a scan"
         );
         assert!(

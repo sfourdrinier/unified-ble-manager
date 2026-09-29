@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "name": "bluez",
+  "version": "5.87",
+  "upstream": {
+    "url": "https://www.kernel.org/pub/linux/bluetooth/bluez-5.87.tar.xz",
+    "archive": "bluez-5.87.tar.xz",
+    "sha256": "26bdcf2cebd7310c6f598850606b037ef0c515fe6608ebc54d22c50c4c32b35f"
+  },
+  "patch": {
+    "file": "ubm-le-gatt-5.87.patch",
+    "sha256": "2767a2adc9c4ad5ba343f7c9d18065077b06096596e462dd43be72b9b3bc79f8"
+  },
+  "licenseExpression": "GPL-2.0-or-later AND LGPL-2.1-or-later",
+  "licenseFiles": [
+    {
+      "file": "COPYING",
+      "sha256": "b499eddebda05a8859e32b820a64577d91f1de2b52efa2a1575a2cb4000bc259",
+      "license": "GPL-2.0-or-later",
+      "appliesTo": "Daemon code and daemon-source tests; retain upstream SPDX and copyright notices."
+    },
+    {
+      "file": "COPYING.LIB",
+      "sha256": "ec60b993835e2c6b79e6d9226345f4e614e686eb57dc13b6420c15a33a8996e5",
+      "license": "LGPL-2.1-or-later",
+      "appliesTo": "Shared GATT client code and reusable observation-state helper; retain upstream SPDX and copyright notices."
+    }
+  ],
+  "distribution": {
+    "kind": "source-only-daemon-extension",
+    "packageIncludesDaemonBinary": false,
+    "linkedIntoPackageNativeLibraries": false,
+    "deployment": "external-explicit-host-action",
+    "automaticInstallOrLaunch": false
+  }
+}

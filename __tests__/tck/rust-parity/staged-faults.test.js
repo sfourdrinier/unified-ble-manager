@@ -9,17 +9,13 @@
 // pins exact wires and receipts: faults settle truthfully, never silently,
 // and bounded-batch overflow preserves dropped-not-staged accounting.
 
-const path = require('node:path')
+const { addonPath: ADDON_PATH } = require('../../helpers/desktop-rust-core-harness')
 const {
   normalizeStagedLines,
   RUST_PARITY_REVISION,
   RustBackendDriver,
   STAGED_CAPABILITY_ROWS
 } = require('../../../src/tck/rust-driver')
-
-const ADDON_PATH =
-  process.env.UBM_NAPI_ADDON ||
-  path.join(__dirname, '..', '..', '..', 'bindings', 'napi', 'ubm_echo.linux-x64.node')
 
 function loadRustAddon() {
   let addon

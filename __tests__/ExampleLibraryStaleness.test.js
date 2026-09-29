@@ -19,9 +19,11 @@
 
 const fs = require('node:fs')
 const path = require('node:path')
+const os = require('node:os')
+const { writeBuildFingerprint } = require('../scripts/release/generate-build-fingerprint')
 
 const guardPath = path.join(__dirname, '..', 'examples-shared', 'dev', 'verify-example-library.js')
-const { inspectExampleLibrary, describeLibraryOutcome } = require(guardPath)
+const { inspectExampleLibrary, describeLibraryOutcome, readRepoFacts, readCopyFacts } = require(guardPath)
 const { prepareExampleIos } = require('../examples-shared/dev/prepare-example-ios')
 
 const ROOT = path.join(__dirname, '..')
@@ -30,6 +32,7 @@ function repoFacts(overrides = {}) {
   return {
     identity: 'sourceDigest: abc',
     version: '5.0.0-rc.10',
+    buildFingerprint: 'current-build',
     ...overrides
   }
 }
@@ -40,11 +43,25 @@ function copyFacts(overrides = {}) {
     identity: 'sourceDigest: abc',
     version: '5.0.0-rc.10',
     hasBuiltLib: true,
+    buildFingerprint: 'current-build',
     ...overrides
   }
 }
 
 describe('example library staleness guard', () => {
+  test('unchanged package/native identity cannot conceal an older JavaScript build', () => {
+    const outcome = inspectExampleLibrary({ repo: repoFacts(), copy: copyFacts({ buildFingerprint: 'old-build' }) })
+    expect(outcome).toMatchObject({ ok: false, state: 'stale-build' })
+    expect(describeLibraryOutcome(outcome)).toMatch(/prepack/)
+  })
+
+  test.each(['repo', 'copy'])('missing or invalid %s seal fails closed', side => {
+    const repo = repoFacts(side === 'repo' ? { buildFingerprint: null, buildError: 'Build seal is missing' } : {})
+    const copy = copyFacts(side === 'copy' ? { buildFingerprint: null, buildError: 'Build seal is missing' } : {})
+    const outcome = inspectExampleLibrary({ repo, copy })
+    expect(outcome).toMatchObject({ ok: false, state: side === 'repo' ? 'stale-root-build' : 'invalid-copy-build' })
+    expect(describeLibraryOutcome(outcome)).toContain('Build seal is missing')
+  })
   test('a copy that matches the repo and carries its build output is usable', () => {
     const outcome = inspectExampleLibrary({ repo: repoFacts(), copy: copyFacts() })
     expect(outcome.ok).toBe(true)
@@ -88,6 +105,70 @@ describe('example library staleness guard', () => {
     const outcome = inspectExampleLibrary({ repo: repoFacts(), copy: copyFacts({ identity: 'other' }) })
     expect(describeLibraryOutcome(outcome)).toContain('max-old-space-size')
   })
+
+  test('copy refresh guidance preserves the lockfile and uses supported force recopy', () => {
+    const outcome = inspectExampleLibrary({ repo: repoFacts(), copy: copyFacts({ identity: 'other' }) })
+    const advice = describeLibraryOutcome(outcome)
+    expect(advice).toContain('install --force --frozen-lockfile')
+    expect(advice).not.toContain('rm -rf')
+    expect(advice).not.toContain('--no-frozen-lockfile')
+  })
+})
+
+describe('canonical build seals for repository and packed example copies', () => {
+  let root
+  let example
+  let copyRoot
+  function write(relative, contents) {
+    const target = path.join(root, relative)
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.writeFileSync(target, contents)
+  }
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-example-build-'))
+    example = path.join(root, 'example-expo')
+    copyRoot = path.join(example, 'node_modules', 'unified-ble-manager')
+    write('package.json', JSON.stringify({ name: 'unified-ble-manager', version: '5.0.0-rc.10' }))
+    write('src/generated/native-build-identity.ts', "export const identity = { sourceDigest: 'abcdef0123456789' }\n")
+    write('src/supervisor.ts', 'export const retry = false\n')
+    write('scripts/dev-only.js', '// omitted by packaging\n')
+    write('lib/module/index.js', 'export const retry = false\n')
+    writeBuildFingerprint(root)
+    for (const relative of ['package.json', 'src', 'lib']) {
+      fs.mkdirSync(copyRoot, { recursive: true })
+      fs.cpSync(path.join(root, relative), path.join(copyRoot, relative), { recursive: true })
+    }
+  })
+  afterEach(() => fs.rmSync(root, { recursive: true, force: true }))
+  const inspect = () => inspectExampleLibrary({ repo: readRepoFacts(root), copy: readCopyFacts(example) })
+
+  test('a packed copy omitting checkout-only inputs validates against the current repository seal', () => {
+    expect(fs.existsSync(path.join(copyRoot, 'scripts'))).toBe(false)
+    expect(inspect()).toMatchObject({ ok: true, state: 'current' })
+  })
+  test('source changes require rebuilding root before an old or newly copied package can be current', () => {
+    write('src/supervisor.ts', 'export const retry = true\n')
+    const outcome = inspect()
+    expect(outcome).toMatchObject({ ok: false, state: 'stale-root-build' })
+    expect(describeLibraryOutcome(outcome)).toContain('src/supervisor.ts')
+    writeBuildFingerprint(root)
+    expect(inspect()).toMatchObject({ ok: false, state: 'stale-build' })
+  })
+  test.each(['missing', 'invalid-json', 'tampered'])('a %s copied seal cannot report current', kind => {
+    const target = path.join(copyRoot, 'lib', 'ubm-build-fingerprint.json')
+    if (kind === 'missing') fs.unlinkSync(target)
+    else if (kind === 'invalid-json') fs.writeFileSync(target, '{')
+    else {
+      const seal = JSON.parse(fs.readFileSync(target, 'utf8'))
+      seal.fingerprint = 'tampered'
+      fs.writeFileSync(target, JSON.stringify(seal))
+    }
+    expect(inspect()).toMatchObject({ ok: false, state: 'invalid-copy-build' })
+  })
+  test('a missing repository seal fails closed even when the copied seal remains valid', () => {
+    fs.unlinkSync(path.join(root, 'lib', 'ubm-build-fingerprint.json'))
+    expect(inspect()).toMatchObject({ ok: false, state: 'stale-root-build' })
+  })
 })
 
 describe('the Expo example runs the guard before it builds a native host', () => {
@@ -115,6 +196,27 @@ describe('the Expo example runs the guard before it builds a native host', () =>
 })
 
 describe('iOS example preparation', () => {
+  test.each(['stale-build', 'stale-root-build', 'invalid-copy-build'])(
+    '%s triggers one refresh and revalidation',
+    state => {
+      const steps = []
+      let refreshed = false
+      prepareExampleIos({
+        verifyRootIdentity: () => {},
+        ensureApple: () => steps.push('apple'),
+        inspectCopy: () => {
+          steps.push('inspect')
+          return refreshed ? { ok: true, state: 'current' } : { ok: false, state }
+        },
+        verifyCopyApple: () => steps.push('verify-apple'),
+        refreshCopy: () => {
+          steps.push('refresh')
+          refreshed = true
+        }
+      })
+      expect(steps).toEqual(['apple', 'inspect', 'refresh', 'inspect', 'verify-apple'])
+    }
+  )
   test('a fresh installed copy needs no package refresh', () => {
     const steps = []
     prepareExampleIos({
@@ -129,13 +231,17 @@ describe('iOS example preparation', () => {
 
   test('a stale generated root identity stops the build before it trusts the copy', () => {
     const steps = []
-    expect(() => prepareExampleIos({
-      verifyRootIdentity: () => { throw new Error('generated identity is stale') },
-      ensureApple: () => steps.push('apple'),
-      inspectCopy: () => ({ ok: true, state: 'current' }),
-      verifyCopyApple: () => steps.push('verify-apple'),
-      refreshCopy: () => steps.push('refresh')
-    })).toThrow(/generated identity is stale/)
+    expect(() =>
+      prepareExampleIos({
+        verifyRootIdentity: () => {
+          throw new Error('generated identity is stale')
+        },
+        ensureApple: () => steps.push('apple'),
+        inspectCopy: () => ({ ok: true, state: 'current' }),
+        verifyCopyApple: () => steps.push('verify-apple'),
+        refreshCopy: () => steps.push('refresh')
+      })
+    ).toThrow(/generated identity is stale/)
     expect(steps).toEqual([])
   })
 
@@ -160,13 +266,15 @@ describe('iOS example preparation', () => {
 
   test('a stale library copy refreshes once and fails closed if still stale', () => {
     const steps = []
-    expect(() => prepareExampleIos({
-      verifyRootIdentity: () => {},
-      ensureApple: () => steps.push('apple'),
-      inspectCopy: () => ({ ok: false, state: 'stale-identity' }),
-      verifyCopyApple: () => steps.push('verify-apple'),
-      refreshCopy: () => steps.push('refresh')
-    })).toThrow(/stale-identity/)
+    expect(() =>
+      prepareExampleIos({
+        verifyRootIdentity: () => {},
+        ensureApple: () => steps.push('apple'),
+        inspectCopy: () => ({ ok: false, state: 'stale-identity' }),
+        verifyCopyApple: () => steps.push('verify-apple'),
+        refreshCopy: () => steps.push('refresh')
+      })
+    ).toThrow(/stale-identity/)
     expect(steps).toEqual(['apple', 'refresh'])
   })
 })

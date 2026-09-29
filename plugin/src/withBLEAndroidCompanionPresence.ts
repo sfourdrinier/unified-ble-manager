@@ -6,6 +6,11 @@ export const COMPANION_PRESENCE_SERVICE_NAME = 'com.sfourdrinier.unifiedblemanag
 export const COMPANION_PRESENCE_SERVICE_ACTION = 'android.companion.CompanionDeviceService'
 export const COMPANION_PRESENCE_BIND_PERMISSION = 'android.permission.BIND_COMPANION_DEVICE_SERVICE'
 export const COMPANION_PRESENCE_OBSERVE_PERMISSION = 'android.permission.REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE'
+const COMPANION_PERMISSIONS = [
+  COMPANION_PRESENCE_OBSERVE_PERMISSION,
+  'android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND',
+  'android.permission.REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND'
+]
 
 type PluginIntentFilter = NonNullable<ManifestServiceWithExtraTools['intent-filter']>[number]
 
@@ -82,17 +87,18 @@ function permissionsOf(androidManifest: AndroidManifestWithExtraTools) {
 
 function isPluginOwnedPermission(permission: { $: Record<string, string> }): boolean {
   // Exact shape: any host-added attribute makes the declaration host-owned.
-  return (
-    Object.keys(permission.$).length === 1 && permission.$['android:name'] === COMPANION_PRESENCE_OBSERVE_PERMISSION
-  )
+  return Object.keys(permission.$).length === 1 && COMPANION_PERMISSIONS.includes(permission.$['android:name'])
 }
 
 function addCompanionPresencePermission(androidManifest: AndroidManifestWithExtraTools): void {
   const permissions = permissionsOf(androidManifest)
   // A host-declared entry with the same name stays untouched: the host owns
   // the declaration and the plugin must not clobber it.
-  if (permissions.some(permission => permission.$['android:name'] === COMPANION_PRESENCE_OBSERVE_PERMISSION)) return
-  permissions.push({ $: { 'android:name': COMPANION_PRESENCE_OBSERVE_PERMISSION } })
+  for (const name of COMPANION_PERMISSIONS) {
+    if (!permissions.some(permission => permission.$['android:name'] === name)) {
+      permissions.push({ $: { 'android:name': name } })
+    }
+  }
 }
 
 function removeCompanionPresencePermission(androidManifest: AndroidManifestWithExtraTools): void {

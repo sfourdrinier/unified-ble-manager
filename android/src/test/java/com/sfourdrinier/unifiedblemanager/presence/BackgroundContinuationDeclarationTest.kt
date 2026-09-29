@@ -57,6 +57,46 @@ class BackgroundContinuationDeclarationTest {
   }
 
   @Test
+  fun occurrencesRejectExplicitNullAndUnsafeIntegersForBothSelectors() {
+    for (field in listOf("serviceOccurrence", "characteristicOccurrence")) {
+      for (invalid in listOf("null", "9007199254740992", "9223372036854775807", "0", "-1", "1.5", "true", "\"2\"")) {
+        assertThrows("$field=$invalid", IllegalArgumentException::class.java) {
+          BackgroundContinuationDeclaration.parse(
+            """{"onAppearance":"native","resubscribe":[{"serviceUuid":"$hrService","characteristicUuid":"$hrMeasurement","$field":$invalid}]}"""
+          )
+        }
+      }
+    }
+  }
+
+  @Test
+  fun occurrencesAcceptExactSafeIntegerBoundary() {
+    val parsed = BackgroundContinuationDeclaration.parse(
+      """{"onAppearance":"native","resubscribe":[{"serviceUuid":"$hrService","characteristicUuid":"$hrMeasurement","serviceOccurrence":9007199254740991,"characteristicOccurrence":9007199254740991}]}"""
+    )
+    assertEquals(9007199254740991L, parsed.resubscribe.single().serviceOccurrence)
+    assertEquals(9007199254740991L, parsed.resubscribe.single().characteristicOccurrence)
+  }
+
+  @Test
+  fun optionalNotificationTextRejectsInvalidPresentValues() {
+    for (field in listOf("body", "icon")) {
+      for (invalid in listOf("null", "true", "2", "[]", "{}", "\"\"")) {
+        assertThrows("$field=$invalid", IllegalArgumentException::class.java) {
+          BackgroundContinuationDeclaration.parse(
+            """{"onAppearance":"foreground-service","foregroundService":{"notification":{"channelId":"ble","channelName":"BLE","title":"BLE","$field":$invalid}}}"""
+          )
+        }
+      }
+    }
+    val parsed = BackgroundContinuationDeclaration.parse(
+      """{"onAppearance":"foreground-service","foregroundService":{"notification":{"channelId":"ble","channelName":"BLE","title":"BLE","body":"Recording","icon":"ble_icon"}}}"""
+    )
+    assertEquals("Recording", parsed.foregroundService?.notification?.body)
+    assertEquals("ble_icon", parsed.foregroundService?.notification?.icon)
+  }
+
+  @Test
   fun unknownStrategiesAndKeysAreRefusedNeverSubstituted() {
     assertThrows(IllegalArgumentException::class.java) {
       BackgroundContinuationDeclaration.parse("{\"onAppearance\":\"auto-magic\",\"resubscribe\":[]}")

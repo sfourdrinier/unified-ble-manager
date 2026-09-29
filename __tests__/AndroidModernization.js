@@ -4,10 +4,7 @@ const fs = require('fs')
 const path = require('path')
 
 const root = path.join(__dirname, '..')
-const androidJavaRoot = path.join(
-  root,
-  'android/src/main/java/com/sfourdrinier/unifiedblemanager'
-)
+const androidJavaRoot = path.join(root, 'android/src/main/java/com/sfourdrinier/unifiedblemanager')
 
 function read(relativePath) {
   return fs.readFileSync(path.join(root, relativePath), 'utf8')
@@ -87,106 +84,118 @@ describe('Android RN 0.86 unified protocol boundary', () => {
   })
 
   test('ships only the current protocol source graph and no legacy Android bridge', () => {
-    expect(sourceFilesBelow(androidJavaRoot)).toEqual([
-      'BlePlxForegroundService.java',
-      'BlePlxPackage.java',
-      'background/AndroidConnectedDeviceForegroundServiceDriver.java',
-      'background/BlePlxForegroundServiceRecoveryReceiver.java',
-      'background/ConnectedDeviceForegroundServiceDriver.java',
-      'background/ConnectedDeviceForegroundServiceLeaseRegistry.java',
-      'background/ForegroundServiceControlException.java',
-      'background/ForegroundServiceNotificationConfiguration.java',
-      // FXM contract update (justified): `CompanionAssociations` is the
-      // pure association lookup both associate routes share (finding 236).
-      'companion/CompanionAssociations.java',
-      'expo/UnifiedBleExpoRuntimeModule.java',
-      // Issue #212 contract update (justified): the `presence` package is
-      // the Companion Device Manager presence endpoint (API 31+) that wakes
-      // the process for armed associated peers — observer, wake
-      // coordinator, persisted store, and the bound service. Covered by
-      // `CompanionPresenceObserverTest` and `PresenceWakeCoordinatorTest`.
-      // Current protocol graph member by design, not legacy residue.
-      // Background continuation (contract update, justified): the declared
-      // standing order, its store across process death, and the executor that
-      // reconnects and resubscribes from the wake through the Rust core.
-      // Current protocol graph members by design, not legacy residue.
-      'presence/BackgroundContinuation.kt',
-      'presence/BackgroundContinuationStore.kt',
-      'presence/CompanionPresenceObserver.kt',
-      'presence/PresenceRestoredStore.kt',
-      'presence/PresenceWakeCoordinator.kt',
-      'presence/RustCoreContinuationExecutor.kt',
-      'presence/UbmCompanionPresenceService.kt',
-      // R02 contract update (justified): `CoreCommandAuthority` is the
-      // admission table the dispatcher consults before radio execution
-      // (covered commands + scoped exceptions + core*-coded terminals),
-      // covered by `CoreCommandAuthorityTest`. Current protocol graph
-      // member by design, not legacy residue.
-      'protocol/CoreCommandAuthority.kt',
-      // FXH contract update (justified): `LegacyCompanionAssociationRequests`
-      // is the pure Companion Device Manager request builder the legacy
-      // protocol-control association shares with the Rust-route chooser's LE
-      // treatment (finding 222 twin: BLE-only filter, single-device only for
-      // named requests). Dependency-free holder so JVM unit tests can pin it
-      // without loading the native library; covered by
-      // `UnifiedBleProtocolControlModuleAssociationTest`. Current protocol
-      // graph member by design, not legacy residue.
-      'protocol/LegacyCompanionAssociationRequests.java',
-      'protocol/ProtocolCommandDecoder.kt',
-      'protocol/ProtocolWireEncoder.kt',
-      'protocol/UnifiedBleProtocolAndroidDispatcher.kt',
-      'protocol/UnifiedBleProtocolControlModule.java',
-      'protocol/UnifiedBleProtocolJsiBinding.java',
-      'protocol/generated/NativeProtocolV2Schema.kt',
-      'radio/DeferredCoreShadow.kt',
-      'radio/GattCentralWire.kt',
-      'radio/GattOccurrenceResolver.kt',
-      'radio/OwnedAndroidLog.kt',
-      'radio/OwnedAndroidGattRadio.kt',
-      'radio/UbmGattCentralBridge.kt',
-      // F01 contract update (justified): `UbmGattCoreBinding` is the
-      // production call site that instantiates the bridge with real JNI
-      // (the gap F01 flagged) — a thin fail-closed Android adapter in the
-      // same `radio` package, covered by `UbmGattCoreBindingTest`. Current
-      // protocol graph member by design, not legacy residue.
-      'radio/UbmGattCoreBinding.kt',
-      // R01 contract update (justified): the `rustcore` package is the
-      // D3(a) production session facade (module shell + JVM-tested op
-      // router over the JNI cdylib), covered by
-      // `RustCoreSessionRouterTest`. Current protocol graph member by
-      // design, not legacy residue.
-      // R01 Phase 3 contract update (justified): `RustCoreAdapterStateReader`
-      // is the production platform read behind `adapter.state`. Current
-      // protocol graph member by design, not legacy residue.
-      // PR210-01/14/17 contract update (justified): the process-owned Rust
-      // mobile host on Android. The module shell (UnifiedBleRustCoreModule)
-      // delegates to JVM-tested RustCoreSessions; RustCoreProcessHost installs
-      // the one host; RustRadioHostAdapter serves MobileCoreBridge.RadioHost
-      // over OwnedRadioPort -> OwnedAndroidGattRadio. Covered by
-      // RustRadioHostAdapterTest, RustCoreSessionsTest, RustCoreJsonTest and
-      // OwnedRadioPortMappingTest. RustCoreAdapterStateReader and
-      // RustCoreSessionRouter are legacy, kept until Phase 4 deletion.
-      'rustcore/AndroidRadioPort.kt',
-      'rustcore/MobileCorePort.kt',
-      'rustcore/OwnedRadioPort.kt',
-      'rustcore/PlatformServicePorts.kt',
-      'rustcore/ReactCompanionChooser.kt',
-      'rustcore/RustCoreAdapterStateReader.java',
-      'rustcore/RustCoreJson.kt',
-      'rustcore/RustCorePlatformValues.kt',
-      'rustcore/RustCoreProcessHost.kt',
-      'rustcore/RustCoreRejection.kt',
-      'rustcore/RustCoreSessionRouter.java',
-      'rustcore/RustCoreSessions.kt',
-      'rustcore/RustRadioHostAdapter.kt',
-      'rustcore/UnifiedBleRustCoreModule.java'
-    ].sort())
+    expect(sourceFilesBelow(androidJavaRoot)).toEqual(
+      [
+        'BlePlxForegroundService.java',
+        'BlePlxPackage.java',
+        'background/AndroidConnectedDeviceForegroundServiceDriver.java',
+        'background/BlePlxForegroundServiceRecoveryReceiver.java',
+        'background/ConnectedDeviceForegroundServiceDriver.java',
+        'background/ConnectedDeviceForegroundServiceLeaseRegistry.java',
+        'background/ForegroundServiceControlException.java',
+        'background/ForegroundServiceNotificationConfiguration.java',
+        // FXM contract update (justified): `CompanionAssociations` is the
+        // pure association lookup both associate routes share (finding 236).
+        'companion/CompanionAssociations.java',
+        'expo/UnifiedBleExpoRuntimeModule.java',
+        // Issue #212 contract update (justified): the `presence` package is
+        // the Companion Device Manager presence endpoint (API 31+) that wakes
+        // the process for armed associated peers — observer, wake
+        // coordinator, persisted store, and the bound service. Covered by
+        // `CompanionPresenceObserverTest` and `PresenceWakeCoordinatorTest`.
+        // Current protocol graph member by design, not legacy residue.
+        // Background continuation (contract update, justified): the declared
+        // standing order, its store across process death, and transport-only
+        // handoff mapping to the shared Rust continuation executor. Native policy
+        // is no longer duplicated in Kotlin (shared continuation parity tests).
+        // Current protocol graph members by design, not legacy residue.
+        'presence/BackgroundContinuation.kt',
+        'presence/BackgroundContinuationStore.kt',
+        'presence/CompanionPresenceObserver.kt',
+        'presence/ContinuationHandoff.kt',
+        // Bounded cold headless admission, typed wake outcomes, and shared FGS
+        // ownership are exercised by the Android continuation JVM suites.
+        'presence/HeadlessDispatchAdmission.kt',
+        'presence/NativeContinuationBinding.kt',
+        'presence/PresenceContinuationExecution.kt',
+        'presence/PresenceForegroundContinuation.kt',
+        'presence/PresenceRestoredStore.kt',
+        'presence/PresenceWakeCoordinator.kt',
+        'presence/UbmCompanionPresenceService.kt',
+        'presence/UbmHeadlessContinuationService.kt',
+        // R02 contract update (justified): `CoreCommandAuthority` is the
+        // admission table the dispatcher consults before radio execution
+        // (covered commands + scoped exceptions + core*-coded terminals),
+        // covered by `CoreCommandAuthorityTest`. Current protocol graph
+        // member by design, not legacy residue.
+        'protocol/CoreCommandAuthority.kt',
+        // FXH contract update (justified): `LegacyCompanionAssociationRequests`
+        // is the pure Companion Device Manager request builder the legacy
+        // protocol-control association shares with the Rust-route chooser's LE
+        // treatment (finding 222 twin: BLE-only filter, single-device only for
+        // named requests). Dependency-free holder so JVM unit tests can pin it
+        // without loading the native library; covered by
+        // `UnifiedBleProtocolControlModuleAssociationTest`. Current protocol
+        // graph member by design, not legacy residue.
+        'protocol/LegacyCompanionAssociationRequests.java',
+        'protocol/ProtocolCommandDecoder.kt',
+        'protocol/ProtocolWireEncoder.kt',
+        'protocol/UnifiedBleProtocolAndroidDispatcher.kt',
+        'protocol/UnifiedBleProtocolControlModule.java',
+        'protocol/UnifiedBleProtocolJsiBinding.java',
+        'protocol/generated/NativeProtocolV2Schema.kt',
+        'radio/DeferredCoreShadow.kt',
+        'radio/GattCentralWire.kt',
+        'radio/GattOccurrenceResolver.kt',
+        'radio/OwnedAndroidLog.kt',
+        'radio/OwnedAndroidGattRadio.kt',
+        'radio/UbmGattCentralBridge.kt',
+        // F01 contract update (justified): `UbmGattCoreBinding` is the
+        // production call site that instantiates the bridge with real JNI
+        // (the gap F01 flagged) — a thin fail-closed Android adapter in the
+        // same `radio` package, covered by `UbmGattCoreBindingTest`. Current
+        // protocol graph member by design, not legacy residue.
+        'radio/UbmGattCoreBinding.kt',
+        // R01 contract update (justified): the `rustcore` package is the
+        // D3(a) production session facade (module shell + JVM-tested op
+        // router over the JNI cdylib), covered by
+        // `RustCoreSessionRouterTest`. Current protocol graph member by
+        // design, not legacy residue.
+        // R01 Phase 3 contract update (justified): `RustCoreAdapterStateReader`
+        // is the production platform read behind `adapter.state`. Current
+        // protocol graph member by design, not legacy residue.
+        // PR210-01/14/17 contract update (justified): the process-owned Rust
+        // mobile host on Android. The module shell (UnifiedBleRustCoreModule)
+        // delegates to JVM-tested RustCoreSessions; RustCoreProcessHost installs
+        // the one host; RustRadioHostAdapter serves MobileCoreBridge.RadioHost
+        // over OwnedRadioPort -> OwnedAndroidGattRadio. Covered by
+        // RustRadioHostAdapterTest, RustCoreSessionsTest, RustCoreJsonTest and
+        // OwnedRadioPortMappingTest. RustCoreAdapterStateReader and
+        // RustCoreSessionRouter are legacy, kept until Phase 4 deletion.
+        'rustcore/AndroidRadioPort.kt',
+        'rustcore/MobileCorePort.kt',
+        'rustcore/OwnedRadioPort.kt',
+        'rustcore/PlatformServicePorts.kt',
+        'rustcore/ReactCompanionChooser.kt',
+        'rustcore/RustCoreAdapterStateReader.java',
+        'rustcore/RustCoreJson.kt',
+        'rustcore/RustCorePlatformValues.kt',
+        'rustcore/RustCoreProcessHost.kt',
+        'rustcore/RustCoreRejection.kt',
+        'rustcore/RustCoreSessionRouter.java',
+        'rustcore/RustCoreSessions.kt',
+        'rustcore/RustRadioHostAdapter.kt',
+        'rustcore/UnifiedBleRustCoreModule.java'
+      ].sort()
+    )
     const protocolDispatcher = read(
       'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt'
     )
     const radio = read('android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt')
     expect(protocolDispatcher).toContain('OwnedAndroidGattRadio')
-    expect(protocolDispatcher).not.toMatch(/com\.sfourdrinier\.unifiedblemanager\.(adapter|converter)|Base64|BlePlxModule/)
+    expect(protocolDispatcher).not.toMatch(
+      /com\.sfourdrinier\.unifiedblemanager\.(adapter|converter)|Base64|BlePlxModule/
+    )
     expect(radio).not.toMatch(/com\.sfourdrinier\.unifiedblemanager\.(adapter|converter)|Base64/)
   })
 
@@ -199,7 +208,11 @@ describe('Android RN 0.86 unified protocol boundary', () => {
     const plugin = read('plugin/src/withBLE.ts')
 
     for (const manifest of manifests) {
-      expect(manifest).not.toMatch(/BlePlxForegroundService|FOREGROUND_SERVICE|POST_NOTIFICATIONS/)
+      // Companion background-start permission is not an FGS declaration.
+      // The consumer still opts into the actual foreground-service permissions.
+      expect(manifest).not.toMatch(
+        /BlePlxForegroundService|android\.permission\.FOREGROUND_SERVICE(?:_CONNECTED_DEVICE)?["']|android\.permission\.POST_NOTIFICATIONS["']/
+      )
     }
     expect(plugin).toContain('withBLEAndroidForegroundService')
     expect(fs.existsSync(path.join(root, 'plugin/src/withBLEAndroidForegroundService.ts'))).toBe(true)
@@ -238,7 +251,9 @@ describe('Android RN 0.86 unified protocol boundary', () => {
     expect(control).toContain('backgroundLeases.release(leaseId)')
     expect(driver).toContain('startForegroundService')
     expect(driver).toContain('stopService')
-    expect(registry).toContain('if (leases.isEmpty()) driver.start(reason)')
+    expect(registry).toContain('driver.start(reason, configuration)')
+    expect(registry).toContain('foregroundServiceConfigurationConflict')
+    expect(registry).toContain('retryPendingStartCleanup()')
     expect(registry).toContain('if (leases.size() == 1) driver.stop()')
     expect(service).toContain('startForeground')
     expect(service).toContain('START_NOT_STICKY')

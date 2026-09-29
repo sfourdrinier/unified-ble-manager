@@ -17,6 +17,15 @@ apply plugin: "com.android.library"
 apply plugin: "com.facebook.react"
 apply plugin: "org.jetbrains.kotlin.android"
 apply from: file("elf-16k-verifier.gradle")
+apply from: file("bundle-js-inputs.gradle")
+
+def ubmJavaScriptPackageRoot = projectDir.parentFile
+def configureInstalledUbmBundleInputs = configureUbmBundleInputs
+rootProject.allprojects { applicationProject ->
+  applicationProject.pluginManager.withPlugin("com.android.application") {
+    configureInstalledUbmBundleInputs(applicationProject, ubmJavaScriptPackageRoot)
+  }
+}
 
 def appProject = rootProject.allprojects.find { it.plugins.hasPlugin('com.android.application') }
 

@@ -73,4 +73,6 @@ const REQUIRED_PATCHES: &[&str] = &[
     "bluez-device-changes",
     "disconnect-lifecycle",
     "winrt-att-error",
+    "bluez-optional-modalias",
+    "bluez-match-cleanup",
 ];

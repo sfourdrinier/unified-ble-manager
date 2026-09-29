@@ -1,4 +1,8 @@
 [workspace]
+exclude = ["vendor/ble-peripheral-rust"]
+
+[workspace.dependencies]
+ble-peripheral-rust = { version = "=0.2.0", path = "vendor/ble-peripheral-rust" }
 
 [package]
 name = "h10-sim"
@@ -28,12 +32,17 @@ chrono = "0.4"
 # Linux (it already did transitively through ble-peripheral-rust).
 [target.'cfg(target_os = "linux")'.dependencies]
 bluer = { version = "=0.17.4", features = ["bluetoothd"] }
+dbus = { version = "0.9", features = ["futures"] }
+dbus-tokio = "0.7"
 # `--linux-advertising mgmt-legacy`: the kernel's Bluetooth management socket
 # (socket/bind/poll/read/write on AF_BLUETOOTH). Already in the lock file
 # through tokio; declared for the direct use.
 libc = "0.2"
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
-ble-peripheral-rust = "=0.2.0"
+ble-peripheral-rust.workspace = true
 
 [dev-dependencies]
+# Activate the patched transport's pure contract tests on Linux too; production
+# Linux radio still uses the direct bluer adapter above.
+ble-peripheral-rust.workspace = true

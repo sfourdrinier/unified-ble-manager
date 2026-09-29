@@ -22,8 +22,7 @@ const argv = process.argv.slice(2)
 const rootFlag = argv.indexOf('--root')
 // Default: this checkout. The F01 packed proof passes the installed
 // consumer package root to evaluate the SHIPPED selection, not this tree.
-const repoRoot =
-  rootFlag === -1 ? path.resolve(__dirname, '..', '..') : path.resolve(argv[rootFlag + 1])
+const repoRoot = rootFlag === -1 ? path.resolve(__dirname, '..', '..') : path.resolve(argv[rootFlag + 1])
 
 function fail(message) {
   throw new Error(`podspec-rust-selection FAIL: ${message}`)
@@ -96,7 +95,9 @@ function checkPodspecSelection() {
       fail(`5.x podspec must refuse UBM_NATIVE_BUILD=${JSON.stringify(invalid)} instead of silently choosing a mode`)
     }
     if (!refused.stderr.includes("UBM_NATIVE_BUILD must be unset, 'prebuilt' or 'source'")) {
-      fail(`5.x podspec refused UBM_NATIVE_BUILD=${JSON.stringify(invalid)} without the actionable mode error: ${refused.stderr.trim()}`)
+      fail(
+        `5.x podspec refused UBM_NATIVE_BUILD=${JSON.stringify(invalid)} without the actionable mode error: ${refused.stderr.trim()}`
+      )
     }
   }
   const verifyMarker = '${PODS_TARGET_SRCROOT}/ios/verify-rust-core.sh'
@@ -107,6 +108,26 @@ function checkPodspecSelection() {
     ['prebuilt', prebuiltLane, false],
     ['source', sourceLane, true]
   ]) {
+    const consumer = evaluated.user_target_xcconfig
+    const consumerMap =
+      '-Xcc "-fmodule-map-file=$(PODS_XCFRAMEWORKS_BUILD_DIR)/unified-ble-manager/Headers/ubm_echoFFI.modulemap"'
+    if (
+      consumer === null ||
+      typeof consumer !== 'object' ||
+      typeof consumer.OTHER_SWIFT_FLAGS !== 'string' ||
+      !consumer.OTHER_SWIFT_FLAGS.includes('$(inherited)') ||
+      !consumer.OTHER_SWIFT_FLAGS.includes(consumerMap)
+    ) {
+      fail(
+        `5.x podspec ${mode} mode must expose the selected XCFramework FFI modulemap to Swift consumers with inherited flags`
+      )
+    }
+    if (
+      Object.keys(consumer).some(key => key !== 'OTHER_SWIFT_FLAGS') ||
+      consumer.OTHER_SWIFT_FLAGS.includes('PODS_TARGET_SRCROOT')
+    ) {
+      fail(`5.x podspec ${mode} mode must not add broad consumer search paths or a pod-local source-root dependency`)
+    }
     if (evaluated.prepare_command !== undefined && evaluated.prepare_command !== null) {
       fail(`5.x podspec must not use prepare_command (${mode} mode): it never runs for :path pods`)
     }
@@ -124,7 +145,9 @@ function checkPodspecSelection() {
       fail(`5.x podspec ${mode} mode must parse the XCFramework, not grep-count LibraryIdentifier lines`)
     }
     if (phase.script.includes(staleMarker) !== expectStaleCheck) {
-      fail(`5.x podspec ${mode} mode ${expectStaleCheck ? 'must' : 'must not'} run the source staleness check (--check-apple)`)
+      fail(
+        `5.x podspec ${mode} mode ${expectStaleCheck ? 'must' : 'must not'} run the source staleness check (--check-apple)`
+      )
     }
     if (!(evaluated.preserve_paths || []).includes('ios/verify-rust-core.sh')) {
       fail(`5.x podspec ${mode} mode must preserve ios/verify-rust-core.sh for the script phase`)
@@ -135,7 +158,9 @@ function checkPodspecSelection() {
   }
   const scripts = JSON.parse(readRepoFile('package.json')).scripts || {}
   if (scripts['native:apple:prepare'] !== 'sh ios/build-rust-core.sh') {
-    fail('package.json must expose native:apple:prepare = sh ios/build-rust-core.sh (the direct source preparation step)')
+    fail(
+      'package.json must expose native:apple:prepare = sh ios/build-rust-core.sh (the direct source preparation step)'
+    )
   }
   // 5.x lane outcome, executed (real package.json): Rust core selected
   // beside the Owned radio (mode-independent selection below).
@@ -208,7 +233,7 @@ function checkPodspecSelection() {
     if ((legacy.source_files || []).includes('bindings/uniffi/generated/swift/ubm_echo.swift')) {
       fail('4.x podspec must not select the generated Swift')
     }
-    if (!((legacy.source_files || []).includes('ios/Owned/OwnedCoreBluetoothProtocolRadio.swift'))) {
+    if (!(legacy.source_files || []).includes('ios/Owned/OwnedCoreBluetoothProtocolRadio.swift')) {
       fail('4.x podspec must keep the Owned radio')
     }
   } finally {

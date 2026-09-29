@@ -21,6 +21,14 @@ import type { NormalizedScanQuery } from './scan-query'
 
 /** How the backend obtained this observation, independent of individual field provenance. */
 export type ObservationSource = 'platform-raw' | 'platform-derived' | 'core-merged'
+/** Exact producer report kind; absent when the producer cannot distinguish it. */
+export type ObservationOrigin = 'advertisement' | 'device-state'
+export function isObservationOrigin(value: unknown): value is ObservationOrigin {
+  return value === 'advertisement' || value === 'device-state'
+}
+export function isObservationSource(value: unknown): value is ObservationSource {
+  return value === 'platform-raw' || value === 'platform-derived' || value === 'core-merged'
+}
 export type FieldProvenance = 'observed' | 'derived' | 'synthesized' | 'not-provided'
 export interface PresentField<Value> {
   readonly state: 'present'
@@ -83,6 +91,7 @@ export interface AdvertisementObservation<Attachment extends string> {
   /** Present only when the instantiated backend can issue a truthful scoped reference. */
   readonly peerReference?: PeerReference
   readonly provenance: ObservationSource
+  readonly origin?: ObservationOrigin
   readonly sourceTimestamp: AdvertisementField<SourceTimestamp>
   readonly receivedAtMonotonicMs: MonotonicTimestamp
   readonly ingressOrdinal: number

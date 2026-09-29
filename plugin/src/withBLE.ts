@@ -34,6 +34,7 @@ const retiredInfoPlistKeys = Object.freeze([
 ])
 const nativeConfigurationKeys = Object.freeze([
   'UnifiedBlePluginConfigurationMarker',
+  'UnifiedBleBackgroundContinuation',
   ...restorationInfoPlistKeys,
   ...appRestorationInfoPlistKeys,
   'UnifiedBleProtocolShowPowerAlert',
@@ -95,6 +96,13 @@ export function reconcileExpoInfoPlist(
   if (restoration !== undefined) {
     infoPlist.UnifiedBleProtocolRestorationId = restoration.id
     infoPlist.UnifiedBleProtocolRestorationGeneration = restoration.generation ?? '1'
+  }
+
+  // The native owner reads this before JavaScript starts. Keep unsupported
+  // strategies intact so native code reports its refusal, never downgrades it.
+  // tvOS has no restoration wake; the runtime reports that platform limitation.
+  if (!tvos && options.background?.continuation !== undefined) {
+    infoPlist.UnifiedBleBackgroundContinuation = JSON.stringify(options.background.continuation)
   }
 
   const showPowerAlert = options.background?.ios?.showPowerAlert

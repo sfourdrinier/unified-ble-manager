@@ -213,6 +213,22 @@ describe('PR8 documentation contract', () => {
     expect(html).toMatch(/not supported\s+application configuration/)
   })
 
+  test('keeps Expo continuation instructions free of duplicated conjunctions', () => {
+    for (const file of ['docs/EXPO_PLUGIN.md', 'docs/index.html']) {
+      expect(read(file)).not.toMatch(/\band\s+and\b/)
+    }
+  })
+
+  test('attaches desktop lease-release and disconnect documentation to their own methods', () => {
+    const source = read('crates/ubm-desktop/src/central.rs')
+    const docs = new Map(
+      [...source.matchAll(/((?: {4}\/\/\/[^\n]*\n)+) {4}pub async fn (\w+)\(/g)].map(match => [match[2], match[1]])
+    )
+    expect(docs.get('release_connection_lease')).toContain('Release only this lease')
+    expect(docs.get('release_connection_lease')).not.toContain('Explicit disconnect')
+    expect(docs.get('disconnect')).toContain('Explicit disconnect')
+  })
+
   test('labels provider construction as maintainer or host-authoring reference', () => {
     const node = read('docs/NODE.md')
     const electron = read('docs/ELECTRON.md')

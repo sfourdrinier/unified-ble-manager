@@ -29,8 +29,6 @@ pub const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
 /// Union of `ubm_core::central::GATT_PROP_*` bits.
 pub const GATT_PROPERTY_MASK: u8 = 0x1f;
 
-const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
 fn wire_error(code: BleErrorCode, domain: BleErrorDomain, path: &str) -> DesktopError {
     DesktopError::new(code, domain, format!("ubm-mobile.wire.{path}"))
 }
@@ -45,89 +43,16 @@ fn too_large(path: &str) -> DesktopError {
     wire_error(BleErrorCode::BytesTooLarge, BleErrorDomain::Core, path)
 }
 
-/// Encode bytes as padded base64.
-#[must_use]
-pub fn encode_base64(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b0 = u32::from(chunk[0]);
-        let b1 = chunk.get(1).map_or(0, |b| u32::from(*b));
-        let b2 = chunk.get(2).map_or(0, |b| u32::from(*b));
-        let triple = (b0 << 16) | (b1 << 8) | b2;
-        let sextet = |shift: u32| char::from(ALPHABET[((triple >> shift) & 0x3f) as usize]);
-        out.push(sextet(18));
-        out.push(sextet(12));
-        out.push(if chunk.len() > 1 { sextet(6) } else { '=' });
-        out.push(if chunk.len() > 2 { sextet(0) } else { '=' });
-    }
-    out
-}
+pub use ubm_desktop::continuation_outbox::encode_base64;
 
-fn sextet(byte: u8) -> Option<u32> {
-    match byte {
-        b'A'..=b'Z' => Some(u32::from(byte - b'A')),
-        b'a'..=b'z' => Some(u32::from(byte - b'a') + 26),
-        b'0'..=b'9' => Some(u32::from(byte - b'0') + 52),
-        b'+' => Some(62),
-        b'/' => Some(63),
-        _ => None,
-    }
-}
-
-/// Strict padded base64 decode: no whitespace, no URL alphabet, no inner
-/// padding, zero pad bits, and the size ceiling checked from the length
-/// alone before anything is allocated.
+/// Strict RFC 4648 decoding is shared with the native continuation boundary.
 pub fn decode_base64(text: &str, path: &str) -> Result<Vec<u8>, DesktopError> {
-    let input = text.as_bytes();
-    if input.len() > MAX_BASE64_LENGTH {
-        return Err(too_large(path));
-    }
-    if !input.len().is_multiple_of(4) {
-        return Err(invalid(path));
-    }
-    if input.is_empty() {
-        return Ok(Vec::new());
-    }
-    let padding = match (input[input.len() - 2], input[input.len() - 1]) {
-        (b'=', b'=') => 2,
-        (_, b'=') => 1,
-        _ => 0,
-    };
-    let decoded_len = input.len() / 4 * 3 - padding;
-    if decoded_len as u64 > MAX_OPERATION_BYTES {
-        return Err(too_large(path));
-    }
-    let mut out = Vec::with_capacity(decoded_len);
-    let (quads, _) = input.as_chunks::<4>();
-    let last = quads.len() - 1;
-    for (index, quad) in quads.iter().enumerate() {
-        let pad_here = if index == last { padding } else { 0 };
-        let mut value = 0u32;
-        for (position, byte) in quad.iter().enumerate() {
-            let digit = if position >= 4 - pad_here {
-                0
-            } else {
-                sextet(*byte).ok_or_else(|| invalid(path))?
-            };
-            value = (value << 6) | digit;
-        }
-        match pad_here {
-            0 => out.extend_from_slice(&[(value >> 16) as u8, (value >> 8) as u8, value as u8]),
-            1 => {
-                if value & 0xff != 0 {
-                    return Err(invalid(path));
-                }
-                out.extend_from_slice(&[(value >> 16) as u8, (value >> 8) as u8]);
-            }
-            _ => {
-                if value & 0xffff != 0 {
-                    return Err(invalid(path));
-                }
-                out.push((value >> 16) as u8);
-            }
-        }
-    }
-    Ok(out)
+    ubm_desktop::continuation_outbox::decode_base64(text, MAX_OPERATION_BYTES as usize).map_err(
+        |error| match error {
+            ubm_desktop::continuation_outbox::Base64Error::Invalid => invalid(path),
+            ubm_desktop::continuation_outbox::Base64Error::TooLarge => too_large(path),
+        },
+    )
 }
 
 /// Parsed invoke args with exact-key checking and typed readers.

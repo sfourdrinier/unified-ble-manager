@@ -86,7 +86,7 @@ version = "2.0.12"
 
 [dependencies.tokio]
 version = "1.45.1"
-features = ["rt"]
+features = ["rt", "sync"]
 
 [dependencies.uuid]
 version = "1.16.0"

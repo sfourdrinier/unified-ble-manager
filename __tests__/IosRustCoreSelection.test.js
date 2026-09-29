@@ -17,6 +17,23 @@ test('5.x podspec selects the Rust core beside the Owned radio', () => {
   expect(output).toContain('podspec-rust-selection PASS')
 })
 
+test.each(['prebuilt', 'source'])(
+  'evaluated %s podspec preserves existing Swift consumer flags and selects the staged FFI map',
+  mode => {
+    const output = execFileSync('ruby', [path.join(root, 'scripts/ci/podspec-stub-eval.rb'), '--dir', root], {
+      encoding: 'utf8',
+      env: { ...process.env, UBM_NATIVE_BUILD: mode, UBM_PODSPEC_STUB_USER_SWIFT_FLAGS: '-DCONSUMER_EXISTING_FLAG' }
+    })
+    const consumer = JSON.parse(output).user_target_xcconfig
+    expect(Object.keys(consumer)).toEqual(['OTHER_SWIFT_FLAGS'])
+    expect(consumer.OTHER_SWIFT_FLAGS).toContain('$(inherited) -DCONSUMER_EXISTING_FLAG')
+    expect(consumer.OTHER_SWIFT_FLAGS).toContain(
+      '-Xcc "-fmodule-map-file=$(PODS_XCFRAMEWORKS_BUILD_DIR)/unified-ble-manager/Headers/ubm_echoFFI.modulemap"'
+    )
+    expect(consumer.OTHER_SWIFT_FLAGS).not.toContain('PODS_TARGET_SRCROOT')
+  }
+)
+
 test('5.x podspec declares the loud-failure consumer contract (explicit modes, no prepare_command, verified staging)', () => {
   const podspec = fs.readFileSync(path.join(root, 'unified-ble-manager.podspec'), 'utf8')
   // Prebuilt consumption: the exact framework the builder assembles.

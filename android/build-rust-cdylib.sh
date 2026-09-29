@@ -105,6 +105,8 @@ LINKER="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin/${TARGET}${MINSDK}-clang"
 [ -x "$LINKER" ] || fail "NDK linker missing: $LINKER (NDK=$NDK host=$HOST_TAG). Reinstall NDK 27.x via: sdkmanager 'ndk;27.1.12297006'"
 LLVM_NM="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin/llvm-nm"
 [ -x "$LLVM_NM" ] || fail "NDK symbol reader missing: $LLVM_NM (NDK=$NDK host=$HOST_TAG). Reinstall NDK 27.x via: sdkmanager 'ndk;27.1.12297006'"
+LLVM_AR="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin/llvm-ar"
+[ -x "$LLVM_AR" ] || fail "NDK archiver missing: $LLVM_AR (NDK=$NDK host=$HOST_TAG). Reinstall NDK 27.x via: sdkmanager 'ndk;27.1.12297006'"
 
 command -v rustup >/dev/null 2>&1 || fail "rustup not on PATH (needed to pin toolchain $PINNED_TOOLCHAIN)"
 PINNED_RUSTC="$(rustup which --toolchain "$PINNED_TOOLCHAIN" rustc)" \
@@ -158,7 +160,10 @@ LINKER_ENV="$(printf 'CARGO_TARGET_%s_LINKER' "$(printf '%s' "$TARGET" | tr '[:l
 # construction. Appended ahead of any caller RUSTFLAGS, never replacing.
 # shellcheck disable=SC2086
 UBM_RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384${RUSTFLAGS:+ $RUSTFLAGS}"
-env "${LINKER_ENV}=${LINKER}" RUSTC="$PINNED_RUSTC" RUSTFLAGS="$UBM_RUSTFLAGS" \
+# Cargo's linker setting does not configure cc-rs C dependencies (such as
+# bundled SQLite). Target-qualified CC/AR select the same API-level NDK
+# toolchain without changing the compiler used by host build scripts.
+env "${LINKER_ENV}=${LINKER}" "CC_${TARGET}=${LINKER}" "AR_${TARGET}=${LLVM_AR}" RUSTC="$PINNED_RUSTC" RUSTFLAGS="$UBM_RUSTFLAGS" \
   rustup run "$PINNED_TOOLCHAIN" cargo build -p "$CRATE" --locked --target "$TARGET" $PROFILE_FLAG \
   || fail "cargo build failed for $TARGET/$PROFILE (pinned $PINNED_TOOLCHAIN). See the cargo output above; common causes: stale Cargo.lock (run cargo update -p $CRATE on the host target first) or a missing NDK platform for minsdk $MINSDK."
 

@@ -2,6 +2,11 @@
 //! traits. Refer for the `api` module for how to use them.
 
 #[cfg(target_os = "linux")]
+pub use crate::bluez::peripheral::{
+    LE_GATT_OBSERVATION_TIMEOUT, LeGattBearer, LeGattErrorStage, LeGattReadyToken, LeGattSnapshot,
+    LeGattStatus,
+};
+#[cfg(target_os = "linux")]
 pub use crate::bluez::{
     adapter::Adapter, manager::Manager, peripheral::Peripheral, peripheral::PeripheralId,
 };

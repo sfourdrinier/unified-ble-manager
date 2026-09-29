@@ -30,6 +30,12 @@
 //! x86_64-pc-windows-msvc` / `aarch64-pc-windows-msvc`); the translation
 //! rules are unit-tested in `os::winrt_model`. Behaviour against a live
 //! Windows Bluetooth stack is unproven here.
+//!
+//! Cleanup retains failed WinRT stages and retries only unconfirmed stages.
+//! Failed-open watches have no returned radio owner, so a process-owned vault
+//! retries them on the next open or explicit radio close of that same native
+//! adapter identity. Other adapters neither retry nor report that debt. It has no background
+//! retry loop: absent either trigger, ownership lasts until process exit.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -49,6 +55,9 @@ use windows::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName;
 use windows::core::HSTRING;
 use windows_future::IAsyncOperation;
 
+use super::winrt_cleanup::{
+    CallbackGate, CleanupStages, PeerAdmission, RetryVault, release_session_stages, retain_failed,
+};
 use super::winrt_model::{
     AdapterPresence, ListedAdapter, PairingStatus, PresenceChange, PresenceReport, RadioAccess,
     UnpairingStatus, address_of_peer, deployment_from_status, pairing_status, radio_access,
@@ -124,6 +133,8 @@ struct Maintained {
     session: GattSession,
     device: BluetoothLEDevice,
     services_changed: i64,
+    cleanup: CleanupStages<3>,
+    callbacks: Arc<CallbackGate>,
 }
 
 /// `GattServicesChanged` reports that found the event queue full. Counted,
@@ -140,8 +151,10 @@ pub(crate) fn services_changed_drops() -> u64 {
 /// maintained GATT sessions of live connections, and the selected
 /// adapter's presence watch (stopped at close, or when the radio drops).
 pub(crate) struct WinRt {
+    adapter_id: String,
     pairings: StdMutex<HashMap<String, IAsyncOperation<DevicePairingResult>>>,
-    sessions: StdMutex<HashMap<String, Maintained>>,
+    sessions: StdMutex<HashMap<String, Vec<Maintained>>>,
+    session_admission: PeerAdmission,
     adapter_watch: StdMutex<Option<AdapterWatch>>,
 }
 
@@ -154,25 +167,30 @@ impl WinRt {
         adapter: btleplug::platform::Adapter,
         events: tokio::sync::mpsc::Sender<RadioEvent>,
     ) -> Result<Self, DesktopError> {
+        cleanup_result(retry_failed_watches(adapter_id))?;
         Ok(Self {
+            adapter_id: adapter_id.to_owned(),
             pairings: StdMutex::new(HashMap::new()),
             sessions: StdMutex::new(HashMap::new()),
+            session_admission: PeerAdmission::new(),
             adapter_watch: StdMutex::new(Some(AdapterWatch::start(adapter_id, adapter, events)?)),
         })
     }
 
     /// Stop the adapter presence watch (radio close). Stopping twice is
     /// nothing to do.
-    pub(crate) fn stop_adapter_watch(&self) -> Result<(), DesktopError> {
-        let watch = self
+    pub(crate) fn stop_adapter_watch(&self) -> Vec<DesktopError> {
+        let mut watch = self
             .adapter_watch
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
-        match watch {
-            Some(mut watch) => watch.stop(),
-            None => Ok(()),
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut failures = watch.as_mut().map_or_else(Vec::new, AdapterWatch::stop);
+        if failures.is_empty() {
+            *watch = None;
         }
+        drop(watch);
+        failures.extend(retry_failed_watches(&self.adapter_id));
+        failures
     }
 
     fn pairings(
@@ -181,7 +199,7 @@ impl WinRt {
         self.pairings.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn sessions(&self) -> std::sync::MutexGuard<'_, HashMap<String, Maintained>> {
+    fn sessions(&self) -> std::sync::MutexGuard<'_, HashMap<String, Vec<Maintained>>> {
         self.sessions.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -302,6 +320,22 @@ impl WinRt {
         peer_id: &str,
         events: tokio::sync::mpsc::Sender<RadioEvent>,
     ) -> Result<(), DesktopError> {
+        let mut healthy = self
+            .session_admission
+            .acquire(peer_id)
+            .await
+            .map_err(|()| {
+                winrt_text(
+                    "connection.maintain",
+                    "radio cleanup has closed session admission",
+                )
+            })?;
+        if *healthy {
+            return Ok(());
+        }
+        // A healthy owner is shared by additional leases. Only failed
+        // cleanup is retried before creating a replacement shared session.
+        cleanup_result(self.release_owned(peer_id))?;
         let device = device(peer_id, "connection.maintain").await?;
         let id = device
             .BluetoothDeviceId()
@@ -310,76 +344,151 @@ impl WinRt {
             .map_err(|error| winrt("connection.maintain", error))?
             .await
             .map_err(|error| winrt("connection.maintain", error))?;
-        session
-            .SetMaintainConnection(true)
-            .map_err(|error| winrt("connection.maintain", error))?;
+        if let Err(error) = session.SetMaintainConnection(true) {
+            let mut owner = Maintained {
+                session,
+                device,
+                services_changed: 0,
+                cleanup: CleanupStages::new([false, true, true]),
+                callbacks: Arc::new(CallbackGate::new()),
+            };
+            let mut failures = vec![winrt("connection.maintain", error)];
+            let cleanup = release_maintained(&mut owner);
+            if !cleanup.is_empty() {
+                self.sessions()
+                    .entry(peer_id.to_owned())
+                    .or_default()
+                    .push(owner);
+            }
+            failures.extend(cleanup);
+            return cleanup_result(failures);
+        }
         let peer = peer_id.to_owned();
+        let callbacks = Arc::new(CallbackGate::new());
+        let handler_callbacks = Arc::clone(&callbacks);
         let handler = TypedEventHandler::<BluetoothLEDevice, windows::core::IInspectable>::new(
             move |_, _| {
-                if events
-                    .try_send(RadioEvent::ServicesChanged(peer.clone()))
-                    .is_err()
-                {
-                    SERVICES_CHANGED_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
+                handler_callbacks.run(|| {
+                    if events
+                        .try_send(RadioEvent::ServicesChanged(peer.clone()))
+                        .is_err()
+                    {
+                        SERVICES_CHANGED_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                });
                 Ok(())
             },
         );
         let services_changed = match device.GattServicesChanged(&handler) {
             Ok(token) => token,
             Err(error) => {
-                let _ = release_session(&session);
-                return Err(winrt("connection.maintain", error));
+                let mut owner = Maintained {
+                    session,
+                    device,
+                    services_changed: 0,
+                    cleanup: CleanupStages::new([false, true, true]),
+                    callbacks,
+                };
+                let failures = release_maintained(&mut owner);
+                let mut reported = vec![winrt("connection.maintain", error)];
+                if !failures.is_empty() {
+                    self.sessions()
+                        .entry(peer_id.to_owned())
+                        .or_default()
+                        .push(owner);
+                }
+                reported.extend(failures);
+                return cleanup_result(reported);
             }
         };
         let maintained = Maintained {
             session,
             device,
             services_changed,
+            cleanup: CleanupStages::new([true; 3]),
+            callbacks,
         };
-        if let Some(previous) = self.sessions().insert(peer_id.to_owned(), maintained) {
-            release_maintained(&previous)?;
-        }
+        self.sessions()
+            .entry(peer_id.to_owned())
+            .or_default()
+            .push(maintained);
+        *healthy = true;
         Ok(())
     }
 
     /// Release the maintained session of `peer_id`, if any.
     pub(crate) fn release(&self, peer_id: &str) -> Result<(), DesktopError> {
-        match self.sessions().remove(peer_id) {
-            Some(maintained) => release_maintained(&maintained),
-            None => Ok(()),
-        }
+        let mut healthy = self.session_admission.release(peer_id).map_err(|()| {
+            winrt_text(
+                "connection.maintain.release",
+                "session acquisition or cleanup is in flight; retry is required",
+            )
+        })?;
+        *healthy = false;
+        cleanup_result(self.release_owned(peer_id))
+    }
+
+    fn release_owned(&self, peer_id: &str) -> Vec<DesktopError> {
+        let mut sessions = self.sessions();
+        let failures = sessions
+            .get_mut(peer_id)
+            .map_or_else(Vec::new, |owners| retain_failed(owners, release_maintained));
+        sessions.retain(|_, owners| !owners.is_empty());
+        failures
     }
 
     /// Release every maintained session (radio close). Each failure is
     /// returned with its peer, never dropped.
     pub(crate) fn release_all(&self) -> Vec<(String, DesktopError)> {
-        let sessions: Vec<(String, Maintained)> = self.sessions().drain().collect();
-        sessions
-            .into_iter()
-            .filter_map(|(peer, maintained)| {
-                release_maintained(&maintained)
-                    .err()
-                    .map(|error| (peer, error))
-            })
-            .collect()
+        let mut failures = Vec::new();
+        for peer in self.session_admission.close() {
+            match self.session_admission.release(&peer) {
+                Ok(mut healthy) => {
+                    *healthy = false;
+                    failures.extend(
+                        self.release_owned(&peer)
+                            .into_iter()
+                            .map(|error| (peer.clone(), error)),
+                    );
+                }
+                Err(()) => failures.push((
+                    peer,
+                    winrt_text(
+                        "connection.maintain.release",
+                        "session acquisition or cleanup is in flight; retry is required",
+                    ),
+                )),
+            }
+        }
+        failures
     }
 }
 
-fn release_maintained(maintained: &Maintained) -> Result<(), DesktopError> {
-    let handler = maintained
-        .device
-        .RemoveGattServicesChanged(maintained.services_changed)
-        .map_err(|error| winrt("connection.maintain.release", error));
-    let session = release_session(&maintained.session);
-    handler.and(session)
+fn release_maintained(maintained: &mut Maintained) -> Vec<DesktopError> {
+    maintained.callbacks.close();
+    release_session_stages(&mut maintained.cleanup, |stage| {
+        let (operation, result) = match stage {
+            0 => (
+                "connection.maintain.release.handler",
+                maintained
+                    .device
+                    .RemoveGattServicesChanged(maintained.services_changed),
+            ),
+            1 => (
+                "connection.maintain.release.disable",
+                maintained.session.SetMaintainConnection(false),
+            ),
+            _ => (
+                "connection.maintain.release.close",
+                maintained.session.Close(),
+            ),
+        };
+        result.map_err(|error| winrt(operation, error))
+    })
 }
 
-fn release_session(session: &GattSession) -> Result<(), DesktopError> {
-    session
-        .SetMaintainConnection(false)
-        .and_then(|()| session.Close())
-        .map_err(|error| winrt("connection.maintain.release", error))
+fn cleanup_result(failures: Vec<DesktopError>) -> Result<(), DesktopError> {
+    super::winrt_cleanup::cleanup_result(failures)
 }
 
 /// Legacy `ReadAdapter` authorization: `DeviceAccessInformation` for the
@@ -557,10 +666,29 @@ fn watch_failure(context: &str, detail: impl std::fmt::Display) {
 /// is [`RadioEvent::AdapterLost`] with [`AdapterLossCause::Removed`]; its
 /// return rebinds the btleplug adapter to the new radio and is
 /// [`RadioEvent::AdapterRestored`]. Stopped with the radio.
+#[derive(Clone)]
 pub(crate) struct AdapterWatch {
+    adapter_id: String,
     watcher: DeviceWatcher,
     tokens: [i64; 5],
     stopping: Arc<AtomicBool>,
+    cleanup: CleanupStages<6>,
+    callbacks: Arc<CallbackGate>,
+}
+
+// Failed open has no radio owner to return. Retain its exact native watch
+// until the next open or explicit radio close retries it; no background loop.
+static FAILED_WATCHES: RetryVault<AdapterWatch> = RetryVault::new();
+
+fn retry_failed_watches(adapter_id: &str) -> Vec<DesktopError> {
+    FAILED_WATCHES
+        .retry(adapter_id, AdapterWatch::stop)
+        .unwrap_or_else(|()| {
+            vec![winrt_text(
+                "adapter.watch.cleanup",
+                "watch cleanup is still in flight or newly pending; retry is required",
+            )]
+        })
 }
 
 impl AdapterWatch {
@@ -576,24 +704,35 @@ impl AdapterWatch {
             .map_err(|error| winrt(OPERATION, error))?;
         let presence = Arc::new(StdMutex::new(AdapterPresence::new(adapter_id)));
         let stopping = Arc::new(AtomicBool::new(false));
+        let callbacks = Arc::new(CallbackGate::new());
+        let report_callbacks = Arc::clone(&callbacks);
         let id = adapter_id.to_owned();
+        let report_stopping = Arc::clone(&stopping);
         // One report at a time, in the watcher's order: the lock is held
         // while the change is delivered so a loss and a return never swap.
         let report = move |report: PresenceReport| {
-            let mut presence = presence.lock().unwrap_or_else(PoisonError::into_inner);
-            let event = match presence.observe(report) {
-                None => return,
-                Some(PresenceChange::Lost) => RadioEvent::AdapterLost(AdapterLossCause::Removed),
-                Some(PresenceChange::Restored) => {
-                    if let Err(error) = rebind(&adapter, &id) {
-                        watch_failure("rebinding the returned adapter's radio", error);
-                    }
-                    RadioEvent::AdapterRestored
+            report_callbacks.run(|| {
+                if report_stopping.load(Ordering::Acquire) {
+                    return;
                 }
-            };
-            // A closed queue means the radio closed: nobody is left to tell.
-            let _closed = events.blocking_send(event);
-            drop(presence);
+                let mut presence = presence.lock().unwrap_or_else(PoisonError::into_inner);
+                let event = match presence.observe(report) {
+                    None => return,
+                    Some(PresenceChange::Lost) => {
+                        RadioEvent::AdapterLost(AdapterLossCause::Removed)
+                    }
+                    Some(PresenceChange::Restored) => {
+                        if let Err(error) = rebind(&adapter, &id) {
+                            watch_failure("rebinding the returned adapter's radio", error);
+                        }
+                        RadioEvent::AdapterRestored
+                    }
+                };
+                if let Err(error) = events.try_send(event) {
+                    watch_failure("delivering adapter presence", error);
+                }
+                drop(presence);
+            });
         };
         let report = Arc::new(report);
         let added = {
@@ -652,72 +791,93 @@ impl AdapterWatch {
             watcher.Stopped(&stopped),
         ];
         let mut watch = Self {
+            adapter_id: adapter_id.to_owned(),
             watcher,
             tokens,
             stopping,
+            cleanup: CleanupStages::new([false, false, false, false, false, true]),
+            callbacks,
         };
+        let mut failures = Vec::new();
         for (slot, registration) in registrations.into_iter().enumerate() {
             match registration {
-                Ok(token) => tokens[slot] = token,
+                Ok(token) => {
+                    tokens[slot] = token;
+                    watch.cleanup.activate(slot);
+                }
                 Err(error) => {
-                    watch.tokens = tokens;
-                    if let Err(cleanup) = watch.stop() {
-                        watch_failure("removing a partial registration", cleanup);
-                    }
-                    return Err(winrt(OPERATION, error));
+                    failures.push(winrt(OPERATION, error));
                 }
             }
         }
         watch.tokens = tokens;
-        watch
-            .watcher
-            .Start()
-            .map_err(|error| winrt(OPERATION, error))?;
+        if failures.is_empty()
+            && let Err(error) = watch.watcher.Start()
+        {
+            failures.push(winrt(OPERATION, error));
+        }
+        if !failures.is_empty() {
+            let cleanup = watch.stop();
+            if !cleanup.is_empty() {
+                FAILED_WATCHES.push(adapter_id, watch);
+            }
+            failures.extend(cleanup);
+            return match cleanup_result(failures) {
+                Err(error) => Err(error),
+                Ok(()) => unreachable!("failed acquisition has a diagnostic"),
+            };
+        }
         Ok(watch)
     }
 
     /// Stop the watch and remove its handlers. Every failure is returned.
-    fn stop(&mut self) -> Result<(), DesktopError> {
-        const OPERATION: &str = "adapter.watch.stop";
-        if self.stopping.swap(true, Ordering::AcqRel) {
-            return Ok(());
-        }
-        let mut failures = Vec::new();
+    fn stop(&mut self) -> Vec<DesktopError> {
+        self.stopping.store(true, Ordering::Release);
+        self.callbacks.close();
         let [added, removed, updated, completed, stopped] = self.tokens;
-        for (name, result) in [
-            ("Added", self.watcher.RemoveAdded(added)),
-            ("Removed", self.watcher.RemoveRemoved(removed)),
-            ("Updated", self.watcher.RemoveUpdated(updated)),
-            (
-                "EnumerationCompleted",
-                self.watcher.RemoveEnumerationCompleted(completed),
-            ),
-            ("Stopped", self.watcher.RemoveStopped(stopped)),
-        ] {
-            if let Err(error) = result {
-                failures.push(format!("{name}: {error}"));
-            }
-        }
-        match self.watcher.Status() {
-            Ok(DeviceWatcherStatus::Started | DeviceWatcherStatus::EnumerationCompleted) => {
-                if let Err(error) = self.watcher.Stop() {
-                    failures.push(format!("Stop: {error}"));
-                }
-            }
-            Ok(_) => {}
-            Err(error) => failures.push(format!("Status: {error}")),
-        }
-        if failures.is_empty() {
-            Ok(())
-        } else {
-            Err(winrt_text(OPERATION, failures.join("; ")))
-        }
+        self.cleanup.run(|stage| {
+            let (operation, result) = match stage {
+                0 => (
+                    "adapter.watch.remove.added",
+                    self.watcher.RemoveAdded(added),
+                ),
+                1 => (
+                    "adapter.watch.remove.removed",
+                    self.watcher.RemoveRemoved(removed),
+                ),
+                2 => (
+                    "adapter.watch.remove.updated",
+                    self.watcher.RemoveUpdated(updated),
+                ),
+                3 => (
+                    "adapter.watch.remove.completed",
+                    self.watcher.RemoveEnumerationCompleted(completed),
+                ),
+                4 => (
+                    "adapter.watch.remove.stopped",
+                    self.watcher.RemoveStopped(stopped),
+                ),
+                _ => (
+                    "adapter.watch.stop",
+                    self.watcher.Status().and_then(|status| match status {
+                        DeviceWatcherStatus::Started
+                        | DeviceWatcherStatus::EnumerationCompleted => self.watcher.Stop(),
+                        _ => Ok(()),
+                    }),
+                ),
+            };
+            result.map_err(|error| winrt(operation, error))
+        })
     }
 }
 
 impl Drop for AdapterWatch {
     fn drop(&mut self) {
-        if let Err(error) = self.stop() {
+        let failures = self.stop();
+        if !failures.is_empty() {
+            FAILED_WATCHES.push(&self.adapter_id, self.clone());
+        }
+        for error in failures {
             watch_failure(
                 "stopping at drop",
                 error.detail().unwrap_or(error.code_str()),

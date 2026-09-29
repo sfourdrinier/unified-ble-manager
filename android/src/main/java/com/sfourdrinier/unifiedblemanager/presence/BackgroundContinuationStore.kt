@@ -4,6 +4,7 @@ package com.sfourdrinier.unifiedblemanager.presence
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.sfourdrinier.unifiedblemanager.rustcore.RustCoreJson
 
 /**
  * The persisted standing order (BGS4): written by the JS-declared owner
@@ -41,18 +42,38 @@ class SharedPreferencesBackgroundContinuationStore(
     manifestJson = { readManifestDeclaration(context.applicationContext) }
   )
 
-  private val lock = Any()
+  private class PersistenceState { var failure: RuntimeException? = null }
+  private val persistence = synchronized(persistenceStates) { persistenceStates.getOrPut(preferences) { PersistenceState() } }
+  private val lock = persistence
 
   override fun saveDeclaration(json: String) {
-    // Validated at parse on every read, so a write never fails: the wake
-    // refuses what it cannot parse instead of the app crashing on declare.
     synchronized(lock) {
-      preferences.edit().putString(DECLARATION_KEY, json).apply()
+      val previous = preferences.all[DECLARATION_KEY] as? String
+      val failure = try {
+        if (preferences.edit().putString(DECLARATION_KEY, json).commit()) null
+        else IllegalStateException("Continuation declaration persistence failed")
+      } catch (error: RuntimeException) { error }
+      if (failure != null) {
+        // SharedPreferences changes memory before attempting disk. Restore that
+        // view too; otherwise a refused declaration could still run in-process.
+        val rollbackFailure = try {
+          val rollback = preferences.edit()
+          if (previous == null) rollback.remove(DECLARATION_KEY) else rollback.putString(DECLARATION_KEY, previous)
+          if (rollback.commit()) null else IllegalStateException("Continuation declaration rollback was not persisted; execution is fenced")
+        } catch (error: RuntimeException) { error }
+        if (rollbackFailure != null) {
+          failure.addSuppressed(rollbackFailure)
+          persistence.failure = rollbackFailure
+        }
+        throw failure
+      }
+      persistence.failure = null
     }
   }
 
   override fun loadDeclaration(): BackgroundContinuationDeclaration {
     synchronized(lock) {
+      persistence.failure?.let { throw it }
       val runtime = preferences.all[DECLARATION_KEY] as? String
       if (runtime != null) return parsedOrRecordOnly(runtime, "runtime")
       val manifest = manifestJson()
@@ -96,8 +117,7 @@ class SharedPreferencesBackgroundContinuationStore(
       preferences.edit()
         .putString(
           WAKE_KEY,
-          "${outcome.observedAtMs}|${outcome.event}|${outcome.strategy.wire}|" +
-            "${outcome.peerAddress ?: ""}|${outcome.code ?: ""}|${outcome.reason ?: ""}"
+          RustCoreJson.write(outcome.wire())
         )
         .apply()
     }
@@ -106,6 +126,17 @@ class SharedPreferencesBackgroundContinuationStore(
   override fun lastWakeOutcome(): ContinuationWakeRecord? {
     synchronized(lock) {
       val text = preferences.all[WAKE_KEY] as? String ?: return null
+      if (text.startsWith("{")) {
+        val value = RustCoreJson.parse(text) as? Map<*, *> ?: error("Invalid persisted continuation wake")
+        val strategy = ContinuationStrategy.values().firstOrNull { it.wire == value["strategy"] }
+          ?: error("Invalid persisted continuation wake strategy")
+        return ContinuationWakeRecord(
+          (value["observedAtMs"] as? Number)?.toLong() ?: error("Invalid wake time"),
+          value["event"] as? String ?: error("Invalid wake event"), strategy,
+          value["peerAddress"] as? String, value["code"] as? String, value["reason"] as? String,
+          value["stage"] as? String, value["platform"]?.let { RustCoreJson.write(it) }
+        )
+      }
       val parts = text.split('|', limit = 6)
       if (parts.size != 6) return null
       val observedAt = parts[0].toLongOrNull() ?: return null
@@ -122,6 +153,7 @@ class SharedPreferencesBackgroundContinuationStore(
   }
 
   companion object {
+    private val persistenceStates = java.util.WeakHashMap<SharedPreferences, PersistenceState>()
     private const val DECLARATION_KEY = "background-continuation:declaration"
     private const val MALFORMED_COUNT_KEY = "background-continuation:malformed-count"
     private const val MALFORMED_PAYLOAD_KEY = "background-continuation:malformed-payload"

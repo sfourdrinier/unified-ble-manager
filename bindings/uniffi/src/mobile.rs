@@ -1050,7 +1050,7 @@ pub fn mobile_host_install(
                 "argument.invalid",
                 OP,
                 "platform must be android or apple",
-            ))
+            ));
         }
     };
     let mut slot = host_slot()
@@ -1063,7 +1063,7 @@ pub fn mobile_host_install(
             "a mobile host is already installed in this process",
         ));
     }
-    let host = MobileHost::open_blocking(
+    let host = MobileHost::open_blocking_with_recording_registry(
         Arc::new(ForeignPlatformRadio { radio }),
         Arc::new(ForeignWake { wake }),
         HostOptions {
@@ -1072,6 +1072,7 @@ pub fn mobile_host_install(
             adapter_label,
         },
         ubm_desktop::executor::desktop_runtime(),
+        ubm_mobile::continuation::process_recording_registry(),
     )?;
     let handle = Arc::new(MobileCoreHost { host });
     *slot = Some(Arc::clone(&handle));
@@ -1086,12 +1087,124 @@ pub fn mobile_host_current() -> Option<Arc<MobileCoreHost>> {
         .clone()
 }
 
+pub fn mobile_recording_configure_directory(path: String) -> String {
+    ubm_desktop::continuation::envelope(
+        ubm_mobile::continuation::process_recording_registry()
+            .configure_directory(std::path::Path::new(&path))
+            .map_err(ubm_desktop::continuation::recording_failure),
+    )
+}
+
+pub fn mobile_recording_control(
+    operation: String,
+    id: String,
+    token: String,
+    max_items: u32,
+    max_bytes: u32,
+) -> String {
+    if let Some(owner) = mobile_host_current() {
+        owner
+            .host
+            .continuation_recording_control(&operation, &id, &token, max_items, max_bytes)
+    } else {
+        ubm_mobile::continuation::recording_control(
+            &ubm_mobile::continuation::process_recording_registry(),
+            None,
+            &operation,
+            &id,
+            &token,
+            max_items,
+            max_bytes,
+        )
+    }
+}
+
 /// Mirrors UDL `interface MobileCoreHost`.
 pub struct MobileCoreHost {
     host: MobileHost,
 }
 
 impl MobileCoreHost {
+    pub fn continuation_configure_recording_directory(&self, path: String) -> String {
+        self.host
+            .continuation_configure_recording_directory(std::path::Path::new(&path))
+    }
+    pub fn continuation_recording_control(
+        &self,
+        operation: String,
+        id: String,
+        token: String,
+        max_items: u32,
+        max_bytes: u32,
+    ) -> String {
+        self.host
+            .continuation_recording_control(&operation, &id, &token, max_items, max_bytes)
+    }
+    pub fn continuation_reserve_declaration(&self, declaration_json: String) -> String {
+        self.host
+            .continuation_reserve_declaration(&declaration_json)
+    }
+    pub fn continuation_commit_declaration(&self, reservation_token: String) -> String {
+        self.host
+            .continuation_commit_declaration(&reservation_token)
+    }
+    pub fn continuation_cancel_declaration(&self, reservation_token: String) -> String {
+        self.host
+            .continuation_cancel_declaration(&reservation_token)
+    }
+    pub fn continuation_seed_declaration(&self, declaration_json: String) -> String {
+        self.host.continuation_seed_declaration(&declaration_json)
+    }
+    pub fn continuation_declaration_replacement_failure(
+        &self,
+        declaration_json: String,
+    ) -> Option<String> {
+        self.host
+            .continuation_declaration_replacement_failure(&declaration_json)
+    }
+
+    pub fn continuation_describe_backlog(&self, completion: Box<dyn MobileInvokeCompletion>) {
+        self.host
+            .continuation_describe_backlog(Box::new(move |value| completion.complete(value)));
+    }
+
+    pub fn continuation_execute(
+        &self,
+        peer_id: String,
+        declaration_json: String,
+        completion: Box<dyn MobileInvokeCompletion>,
+    ) {
+        self.host.continuation_execute(
+            &peer_id,
+            &declaration_json,
+            Box::new(move |value| completion.complete(value)),
+        );
+    }
+
+    pub fn continuation_prepare_claim(
+        &self,
+        max_items: u32,
+        max_bytes: u32,
+        completion: Box<dyn MobileInvokeCompletion>,
+    ) {
+        self.host.continuation_prepare_claim(
+            max_items,
+            max_bytes,
+            Box::new(move |value| completion.complete(value)),
+        );
+    }
+
+    pub fn continuation_acknowledge_claim(
+        &self,
+        claim_token: String,
+        completion: Box<dyn MobileInvokeCompletion>,
+    ) {
+        self.host.continuation_acknowledge_claim(
+            &claim_token,
+            Box::new(move |value| completion.complete(value)),
+        );
+    }
+
     pub fn complete(&self, request_id: u64, completion_value: MobileRadioCompletion) -> String {
         let typed = completion(completion_value).unwrap_or_else(|detail| {
             RadioCompletion::Failed(PlatformFailure::new(

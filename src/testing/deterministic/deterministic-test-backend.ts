@@ -882,10 +882,7 @@ export class DeterministicTestBackend
       physicalSubscriptions: this.physicalSubscriptions,
       subscriptionsById: this.subscriptionsById,
       managed,
-      operation,
-      requireCurrent: () => {
-        this.requireDatabase(managed.path, 'gatt.unsubscribe')
-      }
+      operation
     })
   }
 

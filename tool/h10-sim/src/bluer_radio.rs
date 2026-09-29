@@ -48,6 +48,7 @@ use tokio::sync::{mpsc, oneshot, Notify};
 use uuid::Uuid;
 
 use super::mgmt_socket::MgmtAdvertiser;
+use crate::daemon_lifetime::DaemonLifetime;
 use crate::linux_advertising::{self, AliasRecord, BluezRegistrationFailure};
 use crate::radio::{
     short_of, CharPermission, CharProperty, CharSpec, DisconnectReport, GattClientSet,
@@ -79,6 +80,8 @@ struct AdapterAliasClaim {
 
 /// [`PeripheralRadio`] implemented with `bluer` on Linux.
 pub struct BluerRadio {
+    daemon: DaemonWatch,
+    pump_task: tokio::task::JoinHandle<()>,
     adapter: Adapter,
     services: Vec<ServiceSpec>,
     adv_handle: Option<AdvertisementHandle>,
@@ -116,6 +119,91 @@ pub struct BluerRadio {
     _drop_tx: oneshot::Sender<()>,
 }
 
+struct DaemonWatch {
+    lifetime: Arc<DaemonLifetime>,
+    connection: Arc<dbus::nonblock::SyncConnection>,
+    _subscription: dbus::nonblock::MsgMatch,
+    worker: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for DaemonWatch {
+    fn drop(&mut self) {
+        self.worker.abort();
+    }
+}
+
+impl DaemonWatch {
+    async fn owner(connection: &Arc<dbus::nonblock::SyncConnection>) -> Result<String, RadioError> {
+        let proxy = dbus::nonblock::Proxy::new(
+            "org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            std::time::Duration::from_secs(2),
+            connection.clone(),
+        );
+        let (owner,): (String,) = proxy
+            .method_call("org.freedesktop.DBus", "GetNameOwner", ("org.bluez",))
+            .await
+            .map_err(|error| RadioError(format!("BlueZ owner query: {error}")))?;
+        Ok(owner)
+    }
+
+    async fn open() -> Result<Self, RadioError> {
+        Self::open_on_bus(dbus::channel::BusType::System).await
+    }
+
+    async fn open_on_bus(bus: dbus::channel::BusType) -> Result<Self, RadioError> {
+        let (resource, connection) =
+            dbus_tokio::connection::new::<dbus::nonblock::SyncConnection>(bus)
+                .map_err(|error| RadioError(format!("BlueZ lifetime connection: {error}")))?;
+        let lifetime = Arc::new(DaemonLifetime::default());
+        let failure = lifetime.clone();
+        let worker = tokio::spawn(async move {
+            let error = resource.await;
+            failure.owner_changed();
+            eprintln!("h10-sim: BlueZ lifetime connection ended: {error}");
+        });
+        let state = lifetime.clone();
+        let subscribed = connection
+            .add_match(
+                dbus::message::MatchRule::new_signal("org.freedesktop.DBus", "NameOwnerChanged")
+                    .with_sender("org.freedesktop.DBus"),
+            )
+            .await;
+        let subscription = match subscribed {
+            Ok(value) => value.cb(move |_, (name, _old, _new): (String, String, String)| {
+                if name == "org.bluez" {
+                    state.owner_changed();
+                }
+                true
+            }),
+            Err(error) => {
+                worker.abort();
+                return Err(RadioError(format!("BlueZ lifetime watch: {error}")));
+            }
+        };
+        let watch = Self {
+            lifetime,
+            connection,
+            _subscription: subscription,
+            worker,
+        };
+        let owner = Self::owner(&watch.connection).await?;
+        watch.lifetime.bind(&owner).map_err(RadioError)?;
+        Ok(watch)
+    }
+
+    async fn verify(&self) -> Result<(), RadioError> {
+        self.lifetime.admit().map_err(RadioError)?;
+        match Self::owner(&self.connection).await {
+            Ok(owner) => self.lifetime.check(&owner).map_err(RadioError),
+            Err(error) => {
+                self.lifetime.owner_changed();
+                Err(error)
+            }
+        }
+    }
+}
+
 /// Records one GATT interaction's central address in the client set. A
 /// malformed address or a dead lock is loud on stderr, never a silent skip.
 fn note_client(clients: &Arc<Mutex<GattClientSet>>, address: bluer::Address) {
@@ -141,9 +229,64 @@ fn prune_client(clients: &Arc<Mutex<GattClientSet>>, canonical: &str) {
     }
 }
 
+fn retire_failed_sends(
+    pump: &tokio::task::JoinHandle<()>,
+    writers: &Arc<Mutex<HashMap<Uuid, Arc<CharacteristicWriter>>>>,
+    queue: &Arc<Mutex<SendQueue>>,
+) -> serde_json::Value {
+    pump.abort();
+    let mut failures = Vec::new();
+    match writers.lock() {
+        Ok(mut writers) => writers.clear(),
+        Err(_) => failures.push("writer lock poisoned"),
+    }
+    let mut queued = Vec::new();
+    match queue.lock() {
+        Ok(mut queue) => {
+            while let Some(send) = queue.pop() {
+                queued.push(serde_json::json!({"id": send.id, "bytes": send.value.len(), "characteristic": send.characteristic.to_string()}));
+            }
+        }
+        Err(_) => failures.push("send queue lock poisoned"),
+    }
+    serde_json::json!({"queuedSendsNotConfirmed": queued, "inFlightDelivery": "unknown-at-most-one", "failures": failures})
+}
+
 #[async_trait]
 impl PeripheralRadio for BluerRadio {
+    fn fatal_failure(&self) -> Option<String> {
+        self.daemon.lifetime.admit().err()
+    }
+
+    fn retire_failed_collection(&mut self) -> serde_json::Value {
+        self.app_handle = None;
+        retire_failed_sends(&self.pump_task, &self.writers, &self.pump_queue)
+    }
+    async fn notification_payload_capacity(
+        &self,
+        characteristic: Uuid,
+    ) -> Result<Option<usize>, RadioError> {
+        if !self.services.iter().any(|service| {
+            service
+                .characteristics
+                .iter()
+                .any(|entry| entry.uuid == characteristic)
+        }) {
+            return Err(RadioError(format!(
+                "unknown notification characteristic {characteristic}"
+            )));
+        }
+        let writers = self
+            .writers
+            .lock()
+            .map_err(|error| RadioError(format!("notification capacity writer lock: {error}")))?;
+        // bluer already applies its payload safety adjustment; do not subtract
+        // the ATT header a second time.
+        Ok(writers.get(&characteristic).map(|writer| writer.mtu()))
+    }
+
     async fn open(events: mpsc::Sender<RadioEvent>) -> Result<Self, RadioError> {
+        let daemon = DaemonWatch::open().await?;
         let session = bluer::Session::new()
             .await
             .map_err(|error| backend_error("open session", error))?;
@@ -186,7 +329,8 @@ impl PeripheralRadio for BluerRadio {
         let ledger = Arc::new(Mutex::new(SubscriptionLedger::new()));
         let pump_queue = Arc::new(Mutex::new(SendQueue::new(SEND_QUEUE_CAPACITY)));
         let pump_wake = Arc::new(Notify::new());
-        tokio::spawn(send_pump(
+        daemon.verify().await?;
+        let pump_task = tokio::spawn(send_pump(
             pump_queue.clone(),
             pump_wake.clone(),
             writers.clone(),
@@ -195,6 +339,8 @@ impl PeripheralRadio for BluerRadio {
         ));
 
         Ok(Self {
+            daemon,
+            pump_task,
             adapter,
             services: Vec::new(),
             adv_handle: None,
@@ -221,6 +367,7 @@ impl PeripheralRadio for BluerRadio {
     }
 
     async fn is_advertising(&mut self) -> Result<bool, RadioError> {
+        self.daemon.lifetime.admit().map_err(RadioError)?;
         if let Some(mgmt) = self.mgmt.as_mut() {
             let active = tokio::task::block_in_place(|| mgmt.is_active()).map_err(RadioError)?;
             return Ok(active && self.app_handle.is_some());
@@ -234,6 +381,7 @@ impl PeripheralRadio for BluerRadio {
     }
 
     async fn start_advertising(&mut self, name: &str, uuids: &[Uuid]) -> Result<(), RadioError> {
+        self.daemon.verify().await?;
         // GATT application first — but only once: re-registering an identical
         // application makes BlueZ emit Service Changed to connected centrals,
         // and a real H10 never re-registers on re-advertise. The declarations
@@ -259,6 +407,8 @@ impl PeripheralRadio for BluerRadio {
             self.setup_char_handlers(handlers);
             self.app_handle = Some(app_handle);
         }
+
+        self.daemon.verify().await?;
 
         if let Some(mgmt) = self.mgmt.as_mut() {
             let uuids16 = uuids
@@ -295,12 +445,14 @@ impl PeripheralRadio for BluerRadio {
                 // back down rather than impersonate half the strap.
                 if let Some(mgmt) = self.mgmt.as_mut() {
                     if let Err(remove) = tokio::task::block_in_place(|| mgmt.stop()) {
-                        eprintln!("h10-sim: alias claim failed ({error}); removing the advertisement failed too: {remove}");
+                        eprintln!(
+                            "h10-sim: alias claim failed ({error}); removing the advertisement failed too: {remove}"
+                        );
                     }
                 }
                 return Err(error);
             }
-            return Ok(());
+            return self.daemon.verify().await;
         }
 
         let instances_before = self.advertising_instances().await;
@@ -315,7 +467,7 @@ impl PeripheralRadio for BluerRadio {
                     self.adv_handle = None;
                     return Err(error);
                 }
-                Ok(())
+                self.daemon.verify().await
             }
             Err(error) => {
                 // Never leave a half-registered peripheral behind after a
@@ -528,36 +680,14 @@ impl PeripheralRadio for BluerRadio {
         // generation is retired and the writer removed, so the next send on
         // it fails loudly instead of going out. The session task still ends
         // normally when the central unsubscribes.
-        let current = match self.ledger.lock() {
-            Ok(ledger) => ledger.current(characteristic),
-            Err(error) => {
-                return Err(RadioError(format!(
-                    "bluer subscription ledger lock: {error}"
-                )));
-            }
-        };
-        let Some(generation) = current else {
-            return Ok(false);
-        };
-        let torn = match self.ledger.lock() {
-            Ok(mut ledger) => ledger.unsubscribe(characteristic, generation),
-            Err(error) => {
-                return Err(RadioError(format!(
-                    "bluer subscription ledger lock: {error}"
-                )));
-            }
-        };
-        if torn {
-            match self.writers.lock() {
-                Ok(mut writers) => {
-                    writers.remove(&characteristic);
-                }
-                Err(error) => {
-                    eprintln!("h10-sim: notify writer lock: {error}");
-                }
-            }
-        }
-        Ok(torn)
+        drop_current_subscription(
+            &self.events,
+            &self.ledger,
+            &self.writers,
+            &self.service_of(characteristic),
+            characteristic,
+        )
+        .await
     }
 
     async fn notify(
@@ -565,6 +695,7 @@ impl PeripheralRadio for BluerRadio {
         characteristic: Uuid,
         value: Vec<u8>,
     ) -> Result<SendOutcome, RadioError> {
+        self.daemon.lifetime.admit().map_err(RadioError)?;
         let generation = match self.ledger.lock() {
             Ok(ledger) => {
                 if !ledger.is_subscribed(characteristic) {
@@ -583,21 +714,22 @@ impl PeripheralRadio for BluerRadio {
         // with a NotifySettled event. A full queue fails this send loudly
         // instead of growing memory or reordering frames.
         let send = QueuedSend {
+            id: 0,
             service: self.service_of(characteristic),
             characteristic,
             generation,
             value,
         };
         let queued = match self.pump_queue.lock() {
-            Ok(mut queue) => queue.push(send).is_ok(),
+            Ok(mut queue) => queue.push(send),
             Err(error) => return Err(RadioError(format!("bluer pump lock: {error}"))),
         };
-        if queued {
+        if let Ok(id) = queued {
             self.pump_wake.notify_one();
-            Ok(SendOutcome::Queued)
+            Ok(SendOutcome::Queued { id })
         } else {
             Ok(SendOutcome::Failed(format!(
-                "bluer notify {characteristic}: send queue full ({SEND_QUEUE_CAPACITY}); the value was dropped, link is dead"
+                "bluer notify {characteristic}: send queue full ({SEND_QUEUE_CAPACITY}) or correlation IDs exhausted; the value was not admitted"
             )))
         }
     }
@@ -651,8 +783,7 @@ fn classify_session_drain(result: std::io::Result<usize>) -> SessionFate {
 /// `bluer` never reads this fd itself, so a raw `recv` here races with
 /// nothing; `MSG_DONTWAIT` keeps a spurious wakeup from ever blocking the
 /// session task.
-fn drain_session_fd(writer: &CharacteristicWriter) -> std::io::Result<usize> {
-    use std::os::fd::AsRawFd;
+fn drain_session_fd(writer: &impl std::os::fd::AsRawFd) -> std::io::Result<usize> {
     let mut buf = [0u8; 64];
     let ret = unsafe {
         libc::recv(
@@ -666,6 +797,36 @@ fn drain_session_fd(writer: &CharacteristicWriter) -> std::io::Result<usize> {
         Err(std::io::Error::last_os_error())
     } else {
         Ok(ret as usize)
+    }
+}
+
+/// Own a separate readiness registration for session reads. Calling bluer's
+/// `closed()` and then reading through libc does not clear its Tokio readiness
+/// cache: after an indication confirmation that combination spins forever.
+fn session_readiness(
+    socket: &impl std::os::fd::AsRawFd,
+) -> std::io::Result<tokio::io::unix::AsyncFd<std::os::fd::OwnedFd>> {
+    use std::os::fd::FromRawFd;
+    let duplicate = unsafe { libc::fcntl(socket.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+    if duplicate < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // The fd is newly owned; AsyncFd drops it even when registration fails.
+    let owned = unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) };
+    tokio::io::unix::AsyncFd::new(owned)
+}
+
+async fn next_session_fate(
+    readiness: &tokio::io::unix::AsyncFd<std::os::fd::OwnedFd>,
+) -> std::io::Result<SessionFate> {
+    loop {
+        let mut guard = readiness.readable().await?;
+        // try_io consumes/clears readiness on WouldBlock; the next iteration
+        // genuinely waits for a fresh kernel event rather than hot-spinning.
+        match guard.try_io(|fd| drain_session_fd(fd.get_ref())) {
+            Ok(result) => return result.map(|count| classify_session_drain(Ok(count))),
+            Err(_) => continue,
+        }
     }
 }
 
@@ -850,6 +1011,16 @@ impl BluerRadio {
                     handler.control.next().await
                 {
                     let writer = Arc::new(writer);
+                    let readiness = match session_readiness(writer.as_ref()) {
+                        Ok(readiness) => readiness,
+                        Err(error) => {
+                            eprintln!(
+                                "h10-sim: cannot monitor notification session {}: {error}",
+                                handler.characteristic_uuid
+                            );
+                            continue;
+                        }
+                    };
                     let service = handler.service_uuid.to_string();
                     let characteristic = handler.characteristic_uuid.to_string();
                     // Install before announcing: the pump and `notify` see a
@@ -895,11 +1066,8 @@ impl BluerRadio {
                     // as an unsubscribe silently drops every later indication.
                     let mut ended = false;
                     while !ended {
-                        if writer.closed().await.is_err() {
-                            break;
-                        }
-                        match classify_session_drain(drain_session_fd(&writer)) {
-                            SessionFate::Confirmed => {
+                        match next_session_fate(&readiness).await {
+                            Ok(SessionFate::Confirmed) => {
                                 if sender
                                     .send(RadioEvent::IndicationConfirmed {
                                         service: service.clone(),
@@ -911,29 +1079,28 @@ impl BluerRadio {
                                     ended = true;
                                 }
                             }
-                            SessionFate::Spurious => {}
-                            SessionFate::Ended => ended = true,
+                            Ok(SessionFate::Spurious) => {}
+                            Ok(SessionFate::Ended) => ended = true,
+                            Err(error) => {
+                                eprintln!("h10-sim: notification session {characteristic} read failed: {error}");
+                                ended = true;
+                            }
                         }
                     }
                     // Generation-aware cleanup: only the still-live session
                     // removes its writer, so a resubscribe that landed while
                     // this session drained keeps its writer.
-                    if let Ok(mut ledger) = ledger.lock() {
-                        if ledger.unsubscribe(handler.characteristic_uuid, generation) {
-                            if let Ok(mut writers) = writers.lock() {
-                                writers.remove(&handler.characteristic_uuid);
-                            }
-                        }
-                    }
-                    if sender
-                        .send(RadioEvent::Subscription {
-                            service,
-                            characteristic,
-                            subscribed: false,
-                        })
-                        .await
-                        .is_err()
+                    if let Err(error) = retire_failed_subscription(
+                        &sender,
+                        &ledger,
+                        &writers,
+                        &service,
+                        handler.characteristic_uuid,
+                        generation,
+                    )
+                    .await
                     {
+                        eprintln!("h10-sim: notification session {characteristic} retirement failed: {error}");
                         break;
                     }
                 }
@@ -970,6 +1137,7 @@ async fn send_pump(
             if !live {
                 settle(
                     &events,
+                    send.id,
                     send.service,
                     characteristic,
                     SendOutcome::Failed(
@@ -986,6 +1154,7 @@ async fn send_pump(
             let Some(writer) = writer else {
                 settle(
                     &events,
+                    send.id,
                     send.service,
                     characteristic,
                     SendOutcome::Failed("writer gone before delivery".to_string()),
@@ -1000,6 +1169,7 @@ async fn send_pump(
                 Ok(()) => {
                     settle(
                         &events,
+                        send.id,
                         send.service,
                         characteristic,
                         SendOutcome::OsAccepted,
@@ -1009,18 +1179,27 @@ async fn send_pump(
                 Err(error) => {
                     // The session died under us: drop the writer only if this
                     // generation is still live, so a newer session keeps its own.
-                    if let Ok(mut ledger) = ledger.lock() {
-                        if ledger.unsubscribe(send.characteristic, send.generation) {
-                            if let Ok(mut writers) = writers.lock() {
-                                writers.remove(&send.characteristic);
-                            }
+                    let retirement = retire_failed_subscription(
+                        &events,
+                        &ledger,
+                        &writers,
+                        &send.service,
+                        send.characteristic,
+                        send.generation,
+                    )
+                    .await;
+                    let failure = match retirement {
+                        Ok(_) => format!("bluer notify: {error}"),
+                        Err(retirement) => {
+                            format!("bluer notify: {error}; subscription retirement: {retirement}")
                         }
-                    }
+                    };
                     settle(
                         &events,
+                        send.id,
                         send.service,
                         characteristic,
-                        SendOutcome::Failed(format!("bluer notify: {error}")),
+                        SendOutcome::Failed(failure),
                     )
                     .await;
                 }
@@ -1029,16 +1208,75 @@ async fn send_pump(
     }
 }
 
+async fn drop_current_subscription(
+    events: &mpsc::Sender<RadioEvent>,
+    ledger: &Arc<Mutex<SubscriptionLedger>>,
+    writers: &Arc<Mutex<HashMap<Uuid, Arc<CharacteristicWriter>>>>,
+    service: &str,
+    characteristic: Uuid,
+) -> Result<bool, RadioError> {
+    let current = ledger
+        .lock()
+        .map_err(|error| RadioError(format!("subscription ledger lock: {error}")))?
+        .current(characteristic);
+    match current {
+        Some(generation) => {
+            retire_failed_subscription(events, ledger, writers, service, characteristic, generation)
+                .await
+        }
+        None => Ok(false),
+    }
+}
+
+/// Retire and publish only this generation's loss. The session observer may
+/// finish later; it must not remove a replacement or emit duplicate loss.
+async fn retire_failed_subscription(
+    events: &mpsc::Sender<RadioEvent>,
+    ledger: &Arc<Mutex<SubscriptionLedger>>,
+    writers: &Arc<Mutex<HashMap<Uuid, Arc<CharacteristicWriter>>>>,
+    service: &str,
+    characteristic: Uuid,
+    generation: u64,
+) -> Result<bool, RadioError> {
+    let retired = {
+        let mut ledger = ledger
+            .lock()
+            .map_err(|error| RadioError(format!("subscription ledger lock: {error}")))?;
+        let mut writers = writers
+            .lock()
+            .map_err(|error| RadioError(format!("subscription writer lock: {error}")))?;
+        if ledger.unsubscribe(characteristic, generation) {
+            writers.remove(&characteristic);
+            true
+        } else {
+            false
+        }
+    };
+    if retired {
+        events
+            .send(RadioEvent::Subscription {
+                service: service.into(),
+                characteristic: characteristic.to_string(),
+                subscribed: false,
+            })
+            .await
+            .map_err(|error| RadioError(format!("publish subscription loss: {error}")))?;
+    }
+    Ok(retired)
+}
+
 /// Reports one settled send; a gone receiver means the loop is gone too, so
 /// there is nobody left to tell.
 async fn settle(
     events: &mpsc::Sender<RadioEvent>,
+    id: u64,
     service: String,
     characteristic: String,
     outcome: SendOutcome,
 ) {
     let _ = events
         .send(RadioEvent::NotifySettled {
+            id,
             service,
             characteristic,
             outcome,
@@ -1309,7 +1547,249 @@ fn build_services(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn fatal_retirement_reports_queued_values_and_cancels_held_pump() {
+        let delivered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ready = std::sync::Arc::new(tokio::sync::Notify::new());
+        let task = {
+            let ready = ready.clone();
+            let delivered = delivered.clone();
+            tokio::spawn(async move {
+                ready.notified().await;
+                delivered.store(true, std::sync::atomic::Ordering::SeqCst);
+            })
+        };
+        let queue = std::sync::Arc::new(std::sync::Mutex::new(crate::radio::SendQueue::new(2)));
+        let characteristic = uuid::Uuid::nil();
+        queue
+            .lock()
+            .unwrap()
+            .push(crate::radio::QueuedSend {
+                id: 0,
+                service: "test".into(),
+                characteristic,
+                generation: 1,
+                value: vec![1, 2, 3],
+            })
+            .unwrap();
+        let writers = Default::default();
+        let receipt = super::retire_failed_sends(&task, &writers, &queue);
+        ready.notify_one();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(!delivered.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(receipt["queuedSendsNotConfirmed"][0]["bytes"], 3);
+        assert_eq!(receipt["queuedSendsNotConfirmed"][0]["id"], 1);
+        assert_eq!(receipt["inFlightDelivery"], "unknown-at-most-one");
+        assert!(queue.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn daemon_watch_uses_a_private_bus_and_detects_real_owner_loss() {
+        let output = std::process::Command::new("dbus-run-session")
+            .arg("--")
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "radio::bluer_radio::tests::daemon_watch_private_bus_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("UBM_PRIVATE_DAEMON_WATCH_TEST", "1")
+            .output()
+            .expect("dbus-run-session is required for the Linux daemon-lifetime regression");
+        assert!(
+            output.status.success(),
+            "private daemon watcher regression: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "child test must actually execute"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "invoked only by private dbus-run-session parent test"]
+    async fn daemon_watch_private_bus_child() {
+        assert_eq!(
+            std::env::var("UBM_PRIVATE_DAEMON_WATCH_TEST").as_deref(),
+            Ok("1")
+        );
+        let (resource, owner) = dbus_tokio::connection::new_session_sync().unwrap();
+        let worker = tokio::spawn(resource);
+        owner
+            .request_name("org.bluez", true, false, true)
+            .await
+            .unwrap();
+        let watch = super::DaemonWatch::open_on_bus(dbus::channel::BusType::Session)
+            .await
+            .unwrap();
+        watch.verify().await.unwrap();
+        // Release and reacquire on the SAME unique connection: checking only
+        // the current owner would miss loss of every daemon registration.
+        owner.release_name("org.bluez").await.unwrap();
+        owner
+            .request_name("org.bluez", true, false, true)
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while watch.lifetime.admit().is_ok() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("real NameOwnerChanged must close admission");
+        assert!(watch.verify().await.is_err());
+        drop(watch);
+        // A DISTINCT owner replacing the daemon after open but before the
+        // caller's registration fence must also fail, without relying on a
+        // second owner query inside open itself.
+        let unopened_registration =
+            super::DaemonWatch::open_on_bus(dbus::channel::BusType::Session)
+                .await
+                .unwrap();
+        let (replacement_resource, replacement) =
+            dbus_tokio::connection::new_session_sync().unwrap();
+        let replacement_worker = tokio::spawn(replacement_resource);
+        replacement
+            .request_name("org.bluez", true, true, true)
+            .await
+            .unwrap();
+        assert!(unopened_registration.verify().await.is_err());
+        drop(unopened_registration);
+        replacement.release_name("org.bluez").await.unwrap();
+        replacement_worker.abort();
+        // A late owner change after watcher disposal cannot resurrect or panic it.
+        owner.release_name("org.bluez").await.unwrap();
+        assert!(
+            super::DaemonWatch::open_on_bus(dbus::channel::BusType::Session)
+                .await
+                .is_err()
+        );
+        worker.abort();
+    }
     use super::*;
+
+    #[tokio::test]
+    async fn explicit_subscription_drop_publishes_final_loss_once() {
+        let characteristic = Uuid::nil();
+        let ledger = Arc::new(Mutex::new(SubscriptionLedger::new()));
+        let writers = Arc::new(Mutex::new(HashMap::new()));
+        let (events, mut receiver) = mpsc::channel(4);
+        assert!(
+            !drop_current_subscription(&events, &ledger, &writers, "service", characteristic)
+                .await
+                .unwrap()
+        );
+        let generation = ledger.lock().unwrap().subscribe(characteristic);
+        assert!(
+            drop_current_subscription(&events, &ledger, &writers, "service", characteristic)
+                .await
+                .unwrap()
+        );
+        assert!(matches!(
+            receiver.recv().await,
+            Some(RadioEvent::Subscription {
+                subscribed: false,
+                ..
+            })
+        ));
+        assert!(
+            !drop_current_subscription(&events, &ledger, &writers, "service", characteristic)
+                .await
+                .unwrap()
+        );
+        retire_failed_subscription(
+            &events,
+            &ledger,
+            &writers,
+            "service",
+            characteristic,
+            generation,
+        )
+        .await
+        .unwrap();
+        assert!(
+            receiver.try_recv().is_err(),
+            "late observer must not repeat forced loss"
+        );
+    }
+
+    #[tokio::test]
+    async fn confirmation_readiness_clears_and_next_observation_waits_for_new_data() {
+        use std::io::Write;
+        let (socket, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        socket.set_nonblocking(true).unwrap();
+        let readiness = session_readiness(&socket).unwrap();
+        peer.write_all(&[1]).unwrap();
+        assert_eq!(
+            next_session_fate(&readiness).await.unwrap(),
+            SessionFate::Confirmed
+        );
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                next_session_fate(&readiness)
+            )
+            .await
+            .is_err(),
+            "drained confirmation must not leave cached readiness spinning"
+        );
+        peer.write_all(&[2]).unwrap();
+        assert_eq!(
+            next_session_fate(&readiness).await.unwrap(),
+            SessionFate::Confirmed
+        );
+        drop(peer);
+        assert_eq!(
+            next_session_fate(&readiness).await.unwrap(),
+            SessionFate::Ended
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_send_reports_final_loss_once_without_retiring_replacement() {
+        let characteristic = Uuid::nil();
+        let ledger = Arc::new(Mutex::new(SubscriptionLedger::new()));
+        let writers = Arc::new(Mutex::new(HashMap::new()));
+        let (events, mut receiver) = mpsc::channel(4);
+        let old = ledger.lock().unwrap().subscribe(characteristic);
+        let current = ledger.lock().unwrap().subscribe(characteristic);
+        retire_failed_subscription(&events, &ledger, &writers, "service", characteristic, old)
+            .await
+            .unwrap();
+        assert!(receiver.try_recv().is_err());
+        assert!(ledger.lock().unwrap().is_current(characteristic, current));
+        retire_failed_subscription(
+            &events,
+            &ledger,
+            &writers,
+            "service",
+            characteristic,
+            current,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            receiver.recv().await,
+            Some(RadioEvent::Subscription {
+                subscribed: false,
+                ..
+            })
+        ));
+        retire_failed_subscription(
+            &events,
+            &ledger,
+            &writers,
+            "service",
+            characteristic,
+            current,
+        )
+        .await
+        .unwrap();
+        assert!(receiver.try_recv().is_err());
+        assert!(!ledger.lock().unwrap().is_subscribed(characteristic));
+    }
     use crate::radio::h10_services;
     use crate::sim::SimConfig;
     use std::collections::BTreeMap;
@@ -1391,7 +1871,7 @@ mod tests {
             crate::advertisement::short_uuid(0x180D),
             crate::advertisement::short_uuid(0xFEEE),
         ];
-        let adv = h10_advertisement("Polar H10 SIM0001", &uuids, None);
+        let adv = h10_advertisement("SIM Polar H10 0001", &uuids, None);
         assert_eq!(adv.advertisement_type, AdvertisementType::Peripheral);
         assert_eq!(adv.service_uuids, uuids.into_iter().collect());
         assert!(adv.manufacturer_data.is_empty(), "no payload staged");
@@ -1404,7 +1884,7 @@ mod tests {
             adv.system_includes.is_empty(),
             "LocalName is set, so Includes must not repeat local-name"
         );
-        assert_eq!(adv.local_name.as_deref(), Some("Polar H10 SIM0001"));
+        assert_eq!(adv.local_name.as_deref(), Some("SIM Polar H10 0001"));
         assert_eq!(adv.appearance, None);
         assert_eq!(adv.duration, None);
         assert_eq!(adv.timeout, None);
@@ -1417,7 +1897,7 @@ mod tests {
     #[test]
     fn staged_manufacturer_data_is_advertised() {
         let staged = (0x006B, vec![0x33, 0x1C]);
-        let adv = h10_advertisement("Polar H10 SIM0001", &[], Some(&staged));
+        let adv = h10_advertisement("SIM Polar H10 0001", &[], Some(&staged));
         assert_eq!(
             adv.manufacturer_data,
             BTreeMap::from([(0x006B, vec![0x33, 0x1C])])

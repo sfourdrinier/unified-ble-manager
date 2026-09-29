@@ -4,12 +4,12 @@ package com.sfourdrinier.unifiedblemanager.presence
 
 import android.companion.CompanionDeviceManager
 import android.companion.DeviceNotAssociatedException
+import android.companion.ObservingDevicePresenceRequest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import com.sfourdrinier.unifiedblemanager.rustcore.RadioFailureKind
 import com.sfourdrinier.unifiedblemanager.rustcore.RadioPortFailure
-import java.util.concurrent.ConcurrentHashMap
 
 /** Device-presence observation for one associated peer (`ObservePresence` / `StopPresence`). */
 interface PresencePort {
@@ -34,9 +34,9 @@ class CompanionPresenceObserver(
   private val hasCompanionFeature: () -> Boolean,
   private val manager: () -> CompanionDeviceManager?,
   private val startObserving: (CompanionDeviceManager, String) -> Unit,
-  private val stopObserving: (CompanionDeviceManager, String) -> Unit
+  private val stopObserving: (CompanionDeviceManager, String) -> Unit,
+  private val releaseContinuation: (String) -> Unit = {}
 ) : PresencePort {
-  private val armed = ConcurrentHashMap.newKeySet<String>()
 
   override fun observe(peerId: String, onResult: (Result<Unit>) -> Unit) {
     val cdm = ready()
@@ -49,22 +49,19 @@ class CompanionPresenceObserver(
         nativeCode = "deviceNotAssociated"
       )
     }
-    armed.add(peerId)
     onResult(Result.success(Unit))
   }
 
   override fun unobserve(peerId: String, onResult: (Result<Unit>) -> Unit) {
-    if (!armed.remove(peerId)) {
-      // The state asked for already holds: nothing observes this peer.
-      onResult(Result.success(Unit))
-      return
-    }
+    // Android owns observation across object and process lifetimes. A fresh
+    // wrapper cannot infer that the OS is idle from an empty local set.
     val cdm = ready()
     try {
       stopObserving(cdm, peerId)
     } catch (error: DeviceNotAssociatedException) {
       // The association is gone, so the OS already stopped the callbacks.
     }
+    releaseContinuation(peerId)
     onResult(Result.success(Unit))
   }
 
@@ -93,7 +90,7 @@ class CompanionPresenceObserver(
   companion object {
     /** Production observer from the application context (no Activity needed). */
     @JvmStatic
-    fun application(context: Context): CompanionPresenceObserver {
+    fun application(context: Context, releaseContinuation: (String) -> Unit = {}): CompanionPresenceObserver {
       val application = context.applicationContext
       return CompanionPresenceObserver(
         sdkInt = Build.VERSION.SDK_INT,
@@ -103,9 +100,46 @@ class CompanionPresenceObserver(
         manager = {
           application.getSystemService(Context.COMPANION_DEVICE_SERVICE) as? CompanionDeviceManager
         },
-        startObserving = { cdm, address -> cdm.startObservingDevicePresence(address) },
-        stopObserving = { cdm, address -> cdm.stopObservingDevicePresence(address) }
+        startObserving = { cdm, address ->
+          UbmCompanionPresenceService.observe(application, address) {
+            routeObservation(Build.VERSION.SDK_INT, cdm, address,
+              legacy = { cdm.startObservingDevicePresence(address) },
+              modern = { id -> cdm.startObservingDevicePresence(ObservingDevicePresenceRequest.Builder().setAssociationId(id).build()) })
+          }
+        },
+        stopObserving = { cdm, address ->
+          routeObservation(Build.VERSION.SDK_INT, cdm, address,
+            legacy = { cdm.stopObservingDevicePresence(address) },
+            modern = { id -> cdm.stopObservingDevicePresence(ObservingDevicePresenceRequest.Builder().setAssociationId(id).build()) }, stopping = true)
+        },
+        releaseContinuation = { address ->
+          UbmCompanionPresenceService.retireObservation(application, address) { releaseContinuation(address) }
+        }
       )
+    }
+
+    internal fun routeObservation(sdk: Int, cdm: CompanionDeviceManager, address: String,
+      legacy: () -> Unit, modern: (Int) -> Unit, stopping: Boolean = false) {
+      if (sdk < 36) { legacy(); return }
+      val matches = cdm.myAssociations.filter { it.deviceMacAddress?.toString()?.equals(address, ignoreCase = true) == true }
+      if (matches.isEmpty()) {
+        if (stopping) return // No association can retain an observation.
+        throw RadioPortFailure(RadioFailureKind.PLATFORM,
+          "Companion Device Manager has no association for the requested peer",
+          nativeCode = "deviceNotAssociated")
+      }
+      val ids = matches.map { it.id }.distinct().sorted()
+      if (!stopping) { modern(ids.first()); return }
+      var failure: Exception? = null
+      for (id in ids) {
+        try { modern(id) }
+        catch (_: DeviceNotAssociatedException) { /* This association is already gone. */ }
+        catch (error: Exception) {
+          if (failure == null) failure = error
+          else if (failure !== error) failure.addSuppressed(error)
+        }
+      }
+      failure?.let { throw it }
     }
   }
 }

@@ -29,10 +29,25 @@ data class ContinuationSelector(
   val characteristicOccurrence: Long
 )
 
-/** Foreground-service configuration of the deferred `foreground-service` strategy. */
+data class ContinuationSetupResponse(
+  val subscriptionIndex: Long, val prefix: List<Long>, val minLength: Long,
+  val maxLength: Long, val statusOffset: Long, val accepted: List<Long>,
+  val trailing: ContinuationSetupTrailing? = null
+)
+
+data class ContinuationSetupTrailing(val offset: Long, val accepted: List<Long>)
+data class ContinuationLinkMtu(val requested: Long, val timeoutMs: Long, val onUnsupported: String)
+data class ContinuationRecording(val id: String, val maxBytes: Long, val maxRecords: Long)
+
+data class ContinuationSetupStep(
+  val selector: ContinuationSelector, val value: List<Long>, val timeoutMs: Long,
+  val response: ContinuationSetupResponse?
+)
+
+/** Foreground-service configuration of the Android presence strategy. */
 data class ContinuationForegroundService(val notification: ContinuationNotification)
 
-/** Notification of the deferred `foreground-service` strategy. */
+/** Notification requested by the Android foreground-service strategy. */
 data class ContinuationNotification(
   val channelId: String,
   val channelName: String,
@@ -53,11 +68,14 @@ data class BackgroundContinuationDeclaration(
   val peerId: String?,
   val resubscribe: List<ContinuationSelector>,
   val headlessTaskName: String?,
-  val foregroundService: ContinuationForegroundService?
+  val foregroundService: ContinuationForegroundService?,
+  val setup: List<ContinuationSetupStep>? = null,
+  val link: ContinuationLinkMtu? = null,
+  val recording: ContinuationRecording? = null
 ) {
   companion object {
     private const val OPERATION = "background.continuation"
-    private val TOP_KEYS = setOf("onAppearance", "peerId", "resubscribe", "headlessTaskName", "foregroundService")
+    private val TOP_KEYS = setOf("onAppearance", "peerId", "resubscribe", "setup", "link", "recording", "headlessTaskName", "foregroundService")
     private val SELECTOR_KEYS = setOf("serviceUuid", "serviceOccurrence", "characteristicUuid", "characteristicOccurrence")
     private val MAC = Regex("^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
     private val UUID = Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
@@ -114,7 +132,81 @@ data class BackgroundContinuationDeclaration(
       if (strategy != ContinuationStrategy.FOREGROUND_SERVICE && foregroundService != null) {
         throw IllegalArgumentException("$OPERATION: foregroundService applies only to foreground-service")
       }
-      return BackgroundContinuationDeclaration(strategy, peerId, resubscribe, headlessTaskName, foregroundService)
+      val setup = if (!root.containsKey("setup")) null else {
+        if (strategy != ContinuationStrategy.NATIVE) throw IllegalArgumentException("$OPERATION: setup requires native strategy")
+        setup(root["setup"], resubscribe.size)
+      }
+      val link = if (!root.containsKey("link")) null else {
+        if (strategy != ContinuationStrategy.NATIVE) throw IllegalArgumentException("$OPERATION: link requires native strategy")
+        val link = record(root["link"], setOf("mtu"), "link")
+        val mtu = record(link["mtu"], setOf("requested", "timeoutMs", "onUnsupported"), "link mtu")
+        val policy = mtu["onUnsupported"] as? String
+        if (policy != "continue" && policy != "fail") throw IllegalArgumentException("$OPERATION: link mtu onUnsupported")
+        ContinuationLinkMtu(boundedInteger(mtu["requested"], 23, 517, "link mtu requested"),
+          boundedInteger(mtu["timeoutMs"], 1, 20000, "link mtu timeoutMs"), policy)
+      }
+      val recording = if (!root.containsKey("recording")) null else {
+        if (strategy != ContinuationStrategy.NATIVE) throw IllegalArgumentException("$OPERATION: recording requires native strategy")
+        val journal = record(root["recording"], setOf("id", "maxBytes", "maxRecords"), "recording")
+        val id = journal["id"] as? String
+        if (id == null || !Regex("^[A-Za-z0-9_-]{1,64}$").matches(id)) throw IllegalArgumentException("$OPERATION: recording id")
+        ContinuationRecording(id, boundedInteger(journal["maxBytes"], 1048576, 1073741824, "recording maxBytes"),
+          boundedInteger(journal["maxRecords"], 1, 1000000, "recording maxRecords"))
+      }
+      return BackgroundContinuationDeclaration(strategy, peerId, resubscribe, headlessTaskName, foregroundService, setup, link, recording)
+    }
+
+    private fun setup(value: Any?, subscriptions: Int): List<ContinuationSetupStep> {
+      val steps = value as? List<*> ?: throw IllegalArgumentException("$OPERATION: setup must be an array")
+      if (steps.size > 16) throw IllegalArgumentException("$OPERATION: setup too many steps")
+      var totalTimeout = 0L
+      return steps.map { raw ->
+        val entry = record(raw, setOf("selector", "value", "timeoutMs", "response"), "setup step")
+        val timeout = boundedInteger(entry["timeoutMs"], 1, 20000, "setup timeoutMs")
+        totalTimeout += timeout
+        if (totalTimeout > 60000) throw IllegalArgumentException("$OPERATION: setup total timeout exceeds 60000")
+        val response = if (!entry.containsKey("response")) null else {
+          val reply = record(entry["response"], setOf("subscriptionIndex", "prefix", "minLength", "maxLength", "status", "trailing"), "setup response")
+          val prefix = bytes(reply["prefix"], 512, "setup response prefix")
+          val minimum = boundedInteger(reply["minLength"], prefix.size.toLong(), 512, "setup response minLength")
+          val maximum = boundedInteger(reply["maxLength"], minimum, 512, "setup response maxLength")
+          val status = record(reply["status"], setOf("offset", "accepted"), "setup response status")
+          val accepted = bytes(status["accepted"], 256, "setup response accepted")
+          if (accepted.distinct().size != accepted.size) throw IllegalArgumentException("$OPERATION: setup response duplicate accepted status")
+          val trailing = if (!reply.containsKey("trailing")) null else {
+            val tail = record(reply["trailing"], setOf("offset", "accepted"), "setup response trailing")
+            val offset = boundedInteger(tail["offset"], minimum, minimum, "setup response trailing offset")
+            if (maximum != offset + 1) throw IllegalArgumentException("$OPERATION: setup response trailing maxLength")
+            val acceptedTail = bytes(tail["accepted"], 256, "setup response trailing accepted")
+            if (acceptedTail.distinct().size != acceptedTail.size) throw IllegalArgumentException("$OPERATION: setup response duplicate trailing status")
+            ContinuationSetupTrailing(offset, acceptedTail)
+          }
+          ContinuationSetupResponse(
+            boundedInteger(reply["subscriptionIndex"], 0, subscriptions.toLong() - 1, "setup response subscriptionIndex"),
+            prefix, minimum, maximum,
+            boundedInteger(status["offset"], prefix.size.toLong(), minimum - 1, "setup response status offset"), accepted, trailing
+          )
+        }
+        ContinuationSetupStep(selector(entry["selector"]), bytes(entry["value"], 512, "setup value"), timeout, response)
+      }
+    }
+
+    private fun record(value: Any?, keys: Set<String>, label: String): Map<*, *> {
+      val entry = value as? Map<*, *> ?: throw IllegalArgumentException("$OPERATION: $label must be an object")
+      rejectUnknown(entry.keys, keys, "$OPERATION $label")
+      return entry
+    }
+
+    private fun boundedInteger(value: Any?, minimum: Long, maximum: Long, label: String): Long {
+      val integer = value as? Long ?: throw IllegalArgumentException("$OPERATION: $label must be an integer")
+      if (integer < minimum || integer > maximum) throw IllegalArgumentException("$OPERATION: $label out of range")
+      return integer
+    }
+
+    private fun bytes(value: Any?, maximum: Int, label: String): List<Long> {
+      val array = value as? List<*> ?: throw IllegalArgumentException("$OPERATION: $label must be an array")
+      if (array.isEmpty() || array.size > maximum) throw IllegalArgumentException("$OPERATION: $label invalid length")
+      return array.map { boundedInteger(it, 0, 255, label) }
     }
 
     private fun selector(value: Any?): ContinuationSelector {
@@ -123,9 +215,9 @@ data class BackgroundContinuationDeclaration(
       rejectUnknown(entry.keys, SELECTOR_KEYS, "$OPERATION resubscribe entry")
       return ContinuationSelector(
         serviceUuid = uuid(entry["serviceUuid"], "$OPERATION resubscribe serviceUuid"),
-        serviceOccurrence = occurrence(entry["serviceOccurrence"]),
+        serviceOccurrence = occurrence(entry, "serviceOccurrence"),
         characteristicUuid = uuid(entry["characteristicUuid"], "$OPERATION resubscribe characteristicUuid"),
-        characteristicOccurrence = occurrence(entry["characteristicOccurrence"])
+        characteristicOccurrence = occurrence(entry, "characteristicOccurrence")
       )
     }
 
@@ -135,11 +227,15 @@ data class BackgroundContinuationDeclaration(
       return text.lowercase()
     }
 
-    private fun occurrence(value: Any?): Long {
-      if (value == null) return 1L
-      val number = (value as? Number)?.toLong()
+    private fun occurrence(entry: Map<*, *>, key: String): Long {
+      if (!entry.containsKey(key)) return 1L
+      // RustCoreJson yields Long integers. Never truncate another numeric type,
+      // and keep the public Number.isSafeInteger boundary on persisted input.
+      val number = entry[key] as? Long
         ?: throw IllegalArgumentException("$OPERATION resubscribe occurrence must be a positive integer")
-      if (number < 1L) throw IllegalArgumentException("$OPERATION resubscribe occurrence must be a positive integer")
+      if (number < 1L || number > 9007199254740991L) {
+        throw IllegalArgumentException("$OPERATION resubscribe occurrence must be a positive safe integer")
+      }
       return number
     }
 
@@ -161,8 +257,8 @@ data class BackgroundContinuationDeclaration(
           channelId = text("channelId"),
           channelName = text("channelName"),
           title = text("title"),
-          body = raw["body"] as? String,
-          icon = raw["icon"] as? String
+          body = if (raw.containsKey("body")) text("body") else null,
+          icon = if (raw.containsKey("icon")) text("icon") else null
         )
       )
     }
@@ -186,7 +282,9 @@ sealed interface ContinuationOutcome {
   data class Completed(
     override val strategy: ContinuationStrategy,
     val peerAddress: String,
-    val resubscribed: Int
+    val resubscribed: Int,
+    /** Platform dispatch acceptance, never completion of the app's task. */
+    val stage: String? = null
   ) : ContinuationOutcome {
     override val event = "continuation.completed"
   }
@@ -219,5 +317,15 @@ data class ContinuationWakeRecord(
   val strategy: ContinuationStrategy,
   val peerAddress: String?,
   val code: String?,
-  val reason: String?
-)
+  val reason: String?,
+  val stage: String? = null,
+  val platform: String? = null
+) {
+  fun wire(): Map<String, Any?> = linkedMapOf<String, Any?>(
+    "observedAtMs" to observedAtMs, "event" to event, "strategy" to strategy.wire,
+    "peerAddress" to peerAddress, "code" to code, "reason" to reason
+  ).also { value ->
+    stage?.let { value["stage"] = it }
+    platform?.let { value["platform"] = com.sfourdrinier.unifiedblemanager.rustcore.RustCoreJson.parse(it) }
+  }
+}

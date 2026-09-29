@@ -19,6 +19,10 @@
 // differing fields, and no central is ever opened.
 
 import { contractError, BackendContractError } from './backend-contract/errors'
+import {
+  assertContinuationRecordingConfigured,
+  decodeNativeContinuationEnvelope
+} from './core/native-continuation-envelope'
 import { EXPECTED_NATIVE_BUILD_IDENTITY } from './generated/native-build-identity'
 import type { ExpectedNativeBuildIdentity } from './generated/native-build-identity'
 import {
@@ -28,12 +32,13 @@ import {
 } from './native-build-identity-check'
 import {
   desktopRustCoreOperation,
+  decodeDesktopRustCoreCapabilityStates,
   throwDesktopRustCoreError,
   type DesktopRustCoreAdapterListing,
   type DesktopRustCoreBluezBus,
   type DesktopRustCoreBinding,
-  type DesktopRustCoreCapabilityState,
   type DesktopRustCoreCentral,
+  type DesktopRustCoreRecordingStore,
   type DesktopRustCorePlatform
 } from './backends/desktop/desktop-rust-core-binding'
 
@@ -245,6 +250,7 @@ function centralEntry(module: unknown): CentralEntry | null {
 }
 
 const CENTRAL_METHODS: readonly (keyof DesktopRustCoreCentral)[] = Object.freeze([
+  'runtimeCapabilityStates',
   'createTicket',
   'cancelTicket',
   'releaseTicket',
@@ -285,6 +291,8 @@ const CENTRAL_METHODS: readonly (keyof DesktopRustCoreCentral)[] = Object.freeze
   'takeWriteReadinessEvent',
   'takeScanTerminalEvent',
   'peerRecords',
+  'connectedPeers',
+  'resolvePeer',
   'setEventWaker',
   'eventWakeFailures',
   'activeScanId',
@@ -330,6 +338,40 @@ function asCentral(value: unknown, operation: string): DesktopRustCoreCentral {
   return value
 }
 
+function recordingStore(host: DesktopCoreHost, module: unknown): DesktopRustCoreRecordingStore {
+  const constructor: unknown =
+    typeof module === 'object' && module !== null ? Reflect.get(module, 'ContinuationRecordingStore') : null
+  const operation = desktopRustCoreOperation(host.operationPrefix, 'recording-store')
+  if (typeof constructor !== 'function') throw contractError('capability.unsupported', 'platform', operation)
+  let store: unknown
+  try {
+    store = Reflect.construct(constructor, [])
+  } catch (error) {
+    throwDesktopRustCoreError(error, operation)
+  }
+  const methods = ['configureDirectory', 'status', 'prepare', 'acknowledge', 'stop', 'clear']
+  if (!methods.every(method => hasFunction(store, method)))
+    throw contractError('protocol.incompatible', 'core', operation)
+  async function invoke(method: string, args: readonly unknown[]): Promise<string> {
+    if (!hasFunction(store, method)) throw contractError('protocol.incompatible', 'core', operation)
+    try {
+      const result: unknown = await Reflect.apply(Reflect.get(store, method), store, args)
+      if (typeof result !== 'string') throw contractError('protocol.malformed', 'core', operation)
+      return result
+    } catch (error) {
+      throwDesktopRustCoreError(error, operation)
+    }
+  }
+  return Object.freeze({
+    configureDirectory: (directory: string) => invoke('configureDirectory', [directory]),
+    status: (id: string) => invoke('status', [id]),
+    prepare: (id: string, maxItems: number, maxBytes: number) => invoke('prepare', [id, maxItems, maxBytes]),
+    acknowledge: (id: string, token: string) => invoke('acknowledge', [id, token]),
+    stop: (id: string) => invoke('stop', [id]),
+    clear: (id: string) => invoke('clear', [id])
+  })
+}
+
 /**
  * Bind a loaded, identity-verified addon as the provider's core entry.
  * Exported for the acceptance tooling; production code calls
@@ -352,6 +394,18 @@ export function bindDesktopCore(host: DesktopCoreHost, loaded: LoadedDesktopCore
     )
   }
   return Object.freeze({
+    openRecordingStore: async (directory: string) => {
+      if (typeof directory !== 'string' || directory.length === 0)
+        throw contractError('argument.invalid', 'platform', 'continuation.recording.directory')
+      const store = recordingStore(host, loaded.module)
+      const configured = decodeNativeContinuationEnvelope(
+        await store.configureDirectory(directory),
+        'ubm-desktop',
+        'continuation.recording.configure'
+      )
+      assertContinuationRecordingConfigured(configured)
+      return store
+    },
     diagnostics: Object.freeze({
       addonPath: loaded.path,
       addonMode: loaded.mode,
@@ -384,37 +438,11 @@ export function bindDesktopCore(host: DesktopCoreHost, loaded: LoadedDesktopCore
         throwDesktopRustCoreError(error, desktopRustCoreOperation(host.operationPrefix, 'rust-core-open-synthetic'))
       }
     },
-    capabilityStates: (platform: DesktopRustCorePlatform, pairingGeneration = false) => {
-      const rows: unknown = entry.capabilityStates(platform, pairingGeneration)
-      if (!Array.isArray(rows)) {
-        throw contractError(
-          'protocol.malformed',
-          'core',
-          desktopRustCoreOperation(host.operationPrefix, 'capability-states.shape')
-        )
-      }
-      return Object.freeze(
-        rows.map((row: unknown): DesktopRustCoreCapabilityState => {
-          if (typeof row !== 'object' || row === null) {
-            throw contractError(
-              'protocol.malformed',
-              'core',
-              desktopRustCoreOperation(host.operationPrefix, 'capability-states.row')
-            )
-          }
-          const id = stringField(row, 'id')
-          const state = stringField(row, 'state')
-          if (id === null || (state !== 'limited' && state !== 'unsupported')) {
-            throw contractError(
-              'protocol.malformed',
-              'core',
-              desktopRustCoreOperation(host.operationPrefix, 'capability-states.row')
-            )
-          }
-          return Object.freeze({ id, state, limitation: stringField(row, 'limitation') })
-        })
-      )
-    },
+    capabilityStates: (platform: DesktopRustCorePlatform, pairingGeneration = false) =>
+      decodeDesktopRustCoreCapabilityStates(
+        entry.capabilityStates(platform, pairingGeneration),
+        desktopRustCoreOperation(host.operationPrefix, 'capability-states')
+      ),
     listAdapters: async (bluezBus?: DesktopRustCoreBluezBus) => {
       let listing: unknown
       try {

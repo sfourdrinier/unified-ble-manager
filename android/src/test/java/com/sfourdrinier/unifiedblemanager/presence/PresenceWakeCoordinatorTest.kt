@@ -43,6 +43,84 @@ class PresenceWakeCoordinatorTest {
   )
 
   @Test
+  fun unobserveDuringAssociationLookupCannotAdmitALateAppearance() {
+    val entered = java.util.concurrent.CountDownLatch(1)
+    val resume = java.util.concurrent.CountDownLatch(1)
+    val effects = java.util.concurrent.atomic.AtomicInteger()
+    val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+    val subject = PresenceWakeCoordinator(
+      associatedAddresses = { entered.countDown(); assertTrue(resume.await(5, java.util.concurrent.TimeUnit.SECONDS)); setOf(peer) },
+      store = store, nowMs = { 1L }, ensureOwner = { effects.incrementAndGet(); true },
+      ingest = { true }, log = {}
+    )
+    try {
+      val pending = worker.submit { subject.appeared(peer, 4) }
+      assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+      subject.retireObservation(peer)
+      resume.countDown()
+      pending.get(5, java.util.concurrent.TimeUnit.SECONDS)
+      assertEquals(0, effects.get())
+    } finally { resume.countDown(); worker.shutdownNow() }
+  }
+
+  @Test
+  fun sourcesAcrossAssociationsAndPeersRemainIndependent() {
+    val releases = mutableListOf<String>()
+    val arrivals = mutableListOf<String>()
+    val subject = PresenceWakeCoordinator(
+      associatedAddresses = { setOf(peer, stranger) }, store = store, nowMs = { 1L },
+      ensureOwner = { true }, ingest = { arrivals.add(it.single().peerId); true }, log = {},
+      releaseContinuation = { releases.add(it); null }
+    )
+    subject.presenceEvent(peer, 4, 0, true)
+    subject.presenceEvent(peer, 4, 1, true)
+    subject.presenceEvent(peer, 5, 0, true)
+    subject.presenceEvent(stranger, 6, 2, true)
+    subject.presenceEvent(peer, 4, 1, false)
+    subject.presenceEvent(peer, 4, 0, false)
+    assertTrue(releases.isEmpty())
+    subject.presenceEvent(peer, 5, 0, false)
+    assertEquals(listOf(peer), releases)
+    subject.presenceEvent(stranger, 6, 2, true)
+    assertEquals(listOf(peer, stranger), arrivals)
+    subject.presenceEvent(peer, 5, 0, true)
+    assertEquals(listOf(peer, stranger, peer), arrivals)
+    subject.presenceEvent(stranger, 6, 2, false)
+    assertEquals(listOf(peer, stranger), releases)
+  }
+
+  @Test
+  fun retiredHeldAppearanceCannotExecuteOrPersistAndCanReappear() {
+    val entered = java.util.concurrent.CountDownLatch(1)
+    val resume = java.util.concurrent.CountDownLatch(1)
+    val executions = java.util.concurrent.atomic.AtomicInteger()
+    val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    val declaration = BackgroundContinuationDeclaration(
+      ContinuationStrategy.NATIVE, null, emptyList(), null, null
+    )
+    val subject = PresenceWakeCoordinator(
+      associatedAddresses = { setOf(peer) }, store = store, nowMs = { 1L },
+      ensureOwner = { entered.countDown(); assertTrue(resume.await(5, java.util.concurrent.TimeUnit.SECONDS)); true },
+      ingest = { false }, log = {}, continuation = { declaration },
+      executeContinuation = { _, _ -> executions.incrementAndGet(); ContinuationOutcome.completed(ContinuationStrategy.NATIVE, peer, 0) }
+    )
+    try {
+      val pending = executor.submit { subject.presenceEvent(peer, 4, 0, true) }
+      assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+      subject.retireObservation(peer)
+      resume.countDown()
+      pending.get(5, java.util.concurrent.TimeUnit.SECONDS)
+      assertEquals(0, executions.get())
+      assertTrue(store.drainAppearances().isEmpty())
+      subject.presenceEvent(peer, 4, 0, true)
+      assertEquals(0, executions.get())
+      subject.observationStarted(peer)
+      subject.presenceEvent(peer, 4, 0, true)
+      assertEquals(1, executions.get())
+    } finally { resume.countDown(); executor.shutdownNow() }
+  }
+
+  @Test
   fun anAppearanceOfAnAssociatedPeerIsRecordedAndIngested() {
     coordinator.appeared(peer, null)
     assertEquals(listOf(PresenceRestoredPeer(peer, null, false)), ingested)

@@ -77,9 +77,16 @@ function printLine(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`)
 }
 
+class CliFailure extends Error {
+  constructor(message, exitCode) {
+    super(message)
+    this.exitCode = exitCode
+  }
+}
+
 function fail(message, code = 2) {
-  process.stderr.write(`${message}\n`)
-  process.exit(code)
+  // Unwind through withClient's finally before draining diagnostics at main.
+  throw new CliFailure(message, code)
 }
 
 function numberFlag(flags, name, fallback) {
@@ -133,7 +140,7 @@ async function serve(flags) {
   )
   const shutdown = async () => {
     await hub.close()
-    process.exit(0)
+    process.exitCode = 0
   }
   process.on('SIGINT', shutdown)
   process.on('SIGTERM', shutdown)
@@ -216,7 +223,9 @@ async function main() {
         printLine({ type: 'run-summary', scenario, command: scenarioCommand, args, outcomes })
         return outcomes.some(outcome => !outcome.ok)
       }).catch(error => fail(`${error.code ?? 'error'}: ${error.message}`, 1))
-      process.exit(failed ? 1 : 0)
+      // The client is closed; natural exit lets queued pipe writes drain.
+      // Immediate process.exit truncates large recording/capture results.
+      process.exitCode = failed ? 1 : 0
       return
     }
     case 'sequence': {
@@ -238,7 +247,7 @@ async function main() {
       printLine({ type: 'sequence-summary', ...summary })
       if (typeof flags.out === 'string') writeFileSync(flags.out, `${JSON.stringify(summary, null, 2)}\n`)
       process.stderr.write(`\n${formatComparison(summary)}\n`)
-      process.exit(summary.hosts.every(host => host.passed) ? 0 : 1)
+      process.exitCode = summary.hosts.every(host => host.passed) ? 0 : 1
       return
     }
     case 'capture': {
@@ -273,7 +282,7 @@ async function main() {
         printLine({ type: 'capture-summary', target, args, outcomes: outcomes.map(({ result, ...rest }) => rest), written })
         return outcomes.some(outcome => !outcome.ok)
       }).catch(error => fail(`${error.code ?? 'error'}: ${error.message}`, 1))
-      process.exit(failed ? 1 : 0)
+      process.exitCode = failed ? 1 : 0
       return
     }
     case undefined:
@@ -286,4 +295,10 @@ async function main() {
   }
 }
 
-await main()
+try {
+  await main()
+} catch (error) {
+  if (!(error instanceof CliFailure)) throw error
+  process.stderr.write(`${error.message}\n`)
+  process.exitCode = error.exitCode
+}

@@ -94,13 +94,13 @@ and `caller-decides` on every host, with the platform's own answer kept in
 `platform` (5.0; 4.x reported it `never`, and Android, iOS and BlueZ named it
 `platform.failure`). The library never retries it itself:
 
-| Host | Platform answer |
-| --- | --- |
-| Android | GATT status 133, 62 (HCI 0x3E, "connection failed to be established") or 147 (`metadata.androidGattStatus`) |
-| iOS, macOS | `CBErrorDomain` 6 (`connectionTimeout`) or 10 (`connectionFailed`) |
-| Windows | `GetGattServicesAsync` answered `Unreachable` (`{domain:"winrt", code:"gatt-status", metadata:{gattStatus:"unreachable"}}`) |
-| Linux (BlueZ) | `org.bluez.Error.Failed` (for example `le-connection-abort-by-local`) or `org.bluez.Error.ConnectionAttemptFailed` |
-| Web | `gatt.connect()` rejected with `NetworkError` |
+| Host          | Platform answer                                                                                                             |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Android       | GATT status 133, 62 (HCI 0x3E, "connection failed to be established") or 147 (`metadata.androidGattStatus`)                 |
+| iOS, macOS    | `CBErrorDomain` 6 (`connectionTimeout`) or 10 (`connectionFailed`)                                                          |
+| Windows       | `GetGattServicesAsync` answered `Unreachable` (`{domain:"winrt", code:"gatt-status", metadata:{gattStatus:"unreachable"}}`) |
+| Linux (BlueZ) | `org.bluez.Error.Failed` (for example `le-connection-abort-by-local`) or `org.bluez.Error.ConnectionAttemptFailed`          |
+| Web           | `gatt.connect()` rejected with `NetworkError`                                                                               |
 
 Every other connect failure stays `never`.
 
@@ -133,10 +133,11 @@ let prior = watch.initial
 for await (const item of watch.values) {
   if (item.kind !== 'value') continue
   const current = item.value
-  const becameReady = prior.power !== 'on'
-    && current.power === 'on'
-    && current.availability === 'available'
-    && current.authorization === 'granted'
+  const becameReady =
+    prior.power !== 'on' &&
+    current.power === 'on' &&
+    current.availability === 'available' &&
+    current.authorization === 'granted'
   prior = current
   if (becameReady) {
     // Resolve a fresh peer/reference and invoke the caller-owned retry policy.
@@ -159,12 +160,24 @@ adapter stays off, then reconnects through the same manager when it returns.
 Before 5.0 an adapter loss destroyed the manager (its supervisor ended
 `lifecycle.destroyed`) and the application had to create a new one.
 
-A link lost while the supervisor's `configure` callback runs (it rejects with
-`connection.lost`, the name every host uses) is a link loss like any other:
+A link lost while the supervisor's `configure` callback runs is a link loss like any other:
 the supervisor releases the connection, backs off and reconnects, and
-`configure` runs again on the new generation. An adapter lost during
-`configure` (`operation.reset`) waits for the adapter, then reconnects. Any
-other `configure` failure stops the supervisor, as before, including
+`configure` runs again on the new generation. Lifecycle observation starts
+before setup and uses the same owned iterator after setup. An observed
+terminal lifecycle event retains its original cause even if setup later
+rejects with a downstream `gatt.stale-handle`, or finishes successfully after
+the link has already ended. A stale-handle error alone is not evidence of
+link loss and does not authorize an automatic reconnect. Setup that has not
+settled still owns its eventual session; cancellation or terminal lifecycle
+observation releases the connection while retaining the existing late-session
+cleanup obligation. A successor setup waits for that obligation to settle.
+An ended or rejected lifecycle stream stops the supervisor with its error,
+even if setup remains pending; it is not inferred to be a physical link loss.
+
+An adapter lost during
+`configure` (`operation.reset` or an observed `adapter-loss`) waits for the
+adapter without consuming a retry attempt, then reconnects. Any
+other `configure` failure without an observed terminal lifecycle event stops the supervisor, including
 `operation.disconnected` — the app's own release cut the setup off (5.0; 4.x
 stopped on every `configure` failure). The supervisor makes the same decision
 for the same event on every host; the decisions are the "Supervisor" column

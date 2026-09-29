@@ -14,6 +14,7 @@ enum AppleCoreBluetoothBorrowerOwnerHarness {
   static func main() {
     checkPermissionDecision()
     checkAuthorizationWaiters()
+    checkKnownPeerRetrieval()
     let coordinator = OwnedCoreBluetoothBorrowerReleaseCoordinator()
     let first = NSObject()
     let second = NSObject()
@@ -47,6 +48,47 @@ enum AppleCoreBluetoothBorrowerOwnerHarness {
     precondition(coordinator.attach(second))
     guard case .noBorrower = coordinator.beginRelease(first, completion: { _ in }) else {
       preconditionFailure("A stale borrower was allowed to release the replacement")
+    }
+  }
+
+  /// The exact helper used by production connect. Script OS lookup only;
+  /// no central, scan, restoration event, or native connection is created.
+  static func checkKnownPeerRetrieval() {
+    final class Peripheral {
+      let id: UUID
+      init(_ id: UUID) { self.id = id }
+    }
+    let id = UUID(uuidString: "00112233-4455-6677-8899-AABBCCDDEEFF")!
+    precondition(OwnedCoreBluetoothKnownPeerLookup.identifier(id.uuidString) == id)
+    for invalid in [id.uuidString.lowercased(), "not-a-peer", id.uuidString + "\n", " " + id.uuidString, "00112233445566778899AABBCCDDEEFF"] {
+      precondition(OwnedCoreBluetoothKnownPeerLookup.identifier(invalid) == nil,
+        "only canonical UUID syntax is an identifier; do not normalize arbitrary strings")
+    }
+    let known = Peripheral(id)
+    let other = Peripheral(UUID(uuidString: "00112233-4455-6677-8899-AABBCCDDEE00")!)
+    var queried = [UUID]()
+    var returned = [other, known]
+    func resolve(_ cached: Peripheral?) -> Peripheral? {
+      OwnedCoreBluetoothKnownPeerLookup.resolve(
+        identifier: id, cached: cached, retrieve: { queried.append($0); return returned },
+        identifierOf: { $0.id }
+      )
+    }
+    precondition(resolve(nil) === known, "registry miss must retrieve the exact OS-known identifier")
+    precondition(queried == [id], "retrieval asks for only the supplied identifier")
+    precondition(resolve(known) === known && queried.count == 1,
+      "an existing callback owner must not be replaced or retrieved again")
+    returned = [other]
+    precondition(resolve(nil) == nil && queried.count == 2, "a foreign returned identifier is not this peer")
+    returned = []
+    precondition(resolve(nil) == nil && queried.count == 3, "unknown identifier remains unknown")
+    for cached in [false, true] {
+      for connected in [false, true] {
+        precondition(OwnedCoreBluetoothKnownPeerLookup.requiresConnection(
+          hasCachedPeripheral: cached, isConnected: connected
+        ) == (!cached || !connected),
+          "an OS-retrieved object must acquire the local central connection even if already physically connected")
+      }
     }
   }
 

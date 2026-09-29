@@ -228,4 +228,7 @@ test('an explicit driver url is used as given, "off" disables, a malformed one i
   assert.equal(refused.url, null)
   assert.match(refused.reason, /not a ws:\/\/ or wss:\/\/ URL/)
   assert.equal(explicitDriverUrl(undefined, 'X'), null)
+  for (const invalid of ['ws://localhost:bad/host', 'ws://localhost:8795/host\n']) {
+    assert.equal(explicitDriverUrl(invalid, 'X').url, null)
+  }
 })

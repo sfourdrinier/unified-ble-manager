@@ -108,8 +108,10 @@ pub enum ControlCommand {
     PairPolicy { policy: crate::sim::PairPolicy },
     /// Load a profile file live: `{"cmd":"load-profile","path":"profiles/stock-h10.json"}`.
     LoadProfile { path: String },
-    /// Change stream rates: `{"cmd":"set-rates","hrHz":2.0,"ecgFramesPerSec":4.0}`.
-    /// ECG frames carry `ecgFrameSamples` samples (1..=167 so a frame fits MTU 512).
+    /// Change HR rate / ECG dispatch opportunities: `{"cmd":"set-rates","hrHz":2.0,"ecgFramesPerSec":4.0}`.
+    /// ECG acquisition remains 130 Hz; a dispatch may send zero or multiple frames.
+    /// ECG frames carry at most `ecgFrameSamples` samples (1..=167), further
+    /// limited by the current writer's notification-value capacity.
     SetRates {
         #[serde(rename = "hrHz")]
         hr_hz: Option<f64>,
@@ -208,7 +210,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "drop-link",
         "halt ECG and disconnect simulator clients (plus --drop-link-allow extras); advertising and GATT stay up [adversarial]",
     ),
-    ("set-silent", "stop notifying while keeping the link up [adversarial]"),
+    (
+        "set-silent",
+        "stop notifying while keeping the link up [adversarial]",
+    ),
     (
         "reject-next-pmd",
         "fail the next PMD command with a status code [adversarial]",
@@ -238,7 +243,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "deliver every keepEvery-th ECG frame only, 1 disables [adversarial]",
     ),
     ("set-rates", "change HR/ECG stream rates"),
-    ("run-record", "report seed/profile, mode and injected fault sequence"),
+    (
+        "run-record",
+        "report seed/profile, mode and injected fault sequence",
+    ),
     ("get-state", "report the current simulator state"),
     ("help", "list the commands"),
 ];

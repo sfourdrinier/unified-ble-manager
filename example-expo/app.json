@@ -56,7 +56,9 @@
             }
           }
         }
-      ]
+      ],
+      "expo-sharing",
+      "./plugins/with-native-continuation.cjs"
     ],
     "web": {
       "favicon": "./assets/favicon.png"

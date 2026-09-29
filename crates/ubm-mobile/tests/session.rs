@@ -70,6 +70,123 @@ async fn counters(session: &ubm_mobile::MobileSession) -> Value {
     ok(&call(session, "counters.describe", "{}").await)
 }
 
+#[tokio::test]
+async fn shared_topology_gatt_uses_only_the_calling_mobile_sessions_lease() {
+    for platform in [MobilePlatform::Android, MobilePlatform::Apple] {
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, platform).await;
+        let a = host.open_session("owner-a").unwrap();
+        let b = host.open_session("owner-b").unwrap();
+        let stranger = host.open_session("stranger").unwrap();
+        connect(&a, "connect-a").await;
+        ok(&call(
+            &a,
+            "gatt.discover",
+            &json!({"peerId":POLAR,"lease":"lease-1","operationId":"discover-a"}).to_string(),
+        )
+        .await);
+        connect(&b, "connect-b").await;
+        let before = radio.kinds();
+        let denied = parse(
+            &call(
+                &stranger,
+                "gatt.read",
+                &json!({"peerId":POLAR,"selector":selector(),"operationId":"foreign-read"})
+                    .to_string(),
+            )
+            .await,
+        );
+        assert_eq!(denied["error"]["code"], "ownership.denied");
+        assert_eq!(
+            radio.kinds(),
+            before,
+            "a foreign session must not use another session's topology lease"
+        );
+        ok(&call(
+            &b,
+            "gatt.read",
+            &json!({"peerId":POLAR,"selector":selector(),"operationId":"b-read"}).to_string(),
+        )
+        .await);
+        assert_eq!(
+            ok(&call(&a, "session.dispose", "{}").await)["state"],
+            "released"
+        );
+        ok(&call(
+            &b,
+            "gatt.read",
+            &json!({"peerId":POLAR,"selector":selector(),"operationId":"b-read-after-a"})
+                .to_string(),
+        )
+        .await);
+        assert_eq!(
+            ok(&call(&b, "session.dispose", "{}").await)["state"],
+            "released"
+        );
+        assert_eq!(
+            ok(&call(&stranger, "session.dispose", "{}").await)["state"],
+            "released"
+        );
+        assert_eq!(parse(&host.shutdown().await)["state"], "released");
+    }
+}
+
+#[tokio::test]
+async fn failed_ingress_worker_closes_admission_and_retains_its_cleanup_result() {
+    let radio = Scripted::polar();
+    let (host, wakes) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("ordinary").unwrap();
+    connect(&session, "fatal-connect").await;
+    ok(&call(
+        &session,
+        "gatt.discover",
+        &json!({"peerId":POLAR,"lease":"lease-1","operationId":"fatal-discover"}).to_string(),
+    )
+    .await);
+    ok(&call(&session, "gatt.subscribe", &json!({"peerId":POLAR,"selector":selector(),"consumer":"fatal-consumer","deliveryMode":"require-notification","operationId":"fatal-subscribe"}).to_string()).await);
+    let initial = parse(&session.drain(64, 65536));
+    assert!(initial.is_object());
+    wakes.panic_next.store(true, Ordering::SeqCst);
+    host.ingest(RadioIngress::Dropped {
+        class: IngressClass::Control,
+        detail: "test".into(),
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if host
+                .ingress_failure()
+                .is_some_and(|failure| failure.get("cleanup").is_some())
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(host.open_session("after-failure").is_err());
+    let outcome = parse(&call(&session, "adapter.state", "{}").await);
+    assert_eq!(outcome["ok"], false);
+    assert_eq!(outcome["error"]["code"], "lifecycle.destroyed");
+    let retained = host.ingress_failure().unwrap();
+    assert_eq!(retained["error"]["code"], "platform.failure");
+    assert_eq!(retained["cleanup"]["state"], "released");
+    let drain = parse(&session.drain(64, 65536));
+    assert!(
+        drain.to_string().contains("ingress-drop"),
+        "ordinary session must retain failure diagnostics"
+    );
+    assert!(
+        drain.to_string().contains("stream-end") && drain.to_string().contains("fatal-consumer"),
+        "owned subscription receives a retained terminal"
+    );
+    assert_eq!(
+        parse(&host.shutdown().await)["state"],
+        "released",
+        "cleanup remains retryable"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn continuation_quiesce_seals_real_notification_intake_for_handoff() {
     let radio = Scripted::polar();

@@ -39,7 +39,7 @@ describe('open-source release policies and dependency artifacts', () => {
   test('keeps a reproducible CycloneDX SBOM and audited license inventory fresh', () => {
     execFileSync(process.execPath, ['scripts/release/generate-dependency-artifacts.js', '--check'], {
       cwd: root,
-      stdio: 'pipe',
+      stdio: 'pipe'
     })
 
     const sbom = readJson('SBOM.cdx.json')
@@ -53,12 +53,15 @@ describe('open-source release policies and dependency artifacts', () => {
     expect(new Set(sbom.components.map(component => component['bom-ref'])).size).toBe(sbom.components.length)
     expect(
       sbom.components.every(
-        component => component.purl.startsWith('pkg:npm/') || component.purl.startsWith('pkg:cargo/')
+        component =>
+          component.purl.startsWith('pkg:npm/') ||
+          component.purl.startsWith('pkg:cargo/') ||
+          (component.type === 'file' && component.purl === 'pkg:generic/bluez-ubm-le-gatt-source@5.87')
       )
     ).toBe(true)
     expect(inventory.schema).toBe('unified-ble-manager/third-party-license-inventory')
     expect(inventory.source.method).toBe(
-      'pnpm-lock production graph with installed-manifest license audit + cargo-metadata workspace graph (declared metadata plus exact reviewed cargo license-file evidence)'
+      'pnpm-lock production graph with installed-manifest license audit + cargo-metadata workspace graph (declared metadata plus exact reviewed cargo license-file evidence) + reviewed bundled source-asset manifests (not linked runtime dependencies)'
     )
     expect(inventory.unresolved).toEqual([])
     expect(inventory.packages.length).toBe(sbom.components.length)
@@ -104,9 +107,7 @@ describe('open-source release policies and dependency artifacts', () => {
     const verifyRelease = read('scripts/verify-release.sh')
     const tarballVerifier = read('scripts/ci/verify-package-tarballs.js')
 
-    expect(packageJson.scripts['release:artifacts']).toBe(
-      'node scripts/release/generate-dependency-artifacts.js'
-    )
+    expect(packageJson.scripts['release:artifacts']).toBe('node scripts/release/generate-dependency-artifacts.js')
     expect(packageJson.scripts['release:artifacts:check']).toBe(
       'node scripts/release/generate-dependency-artifacts.js --check'
     )
@@ -116,7 +117,7 @@ describe('open-source release policies and dependency artifacts', () => {
       'GOVERNANCE.md',
       'CONTRIBUTING.md',
       'SBOM.cdx.json',
-      'THIRD_PARTY_LICENSES.json',
+      'THIRD_PARTY_LICENSES.json'
     ]) {
       expect(packageJson.files).toContain(publishedFile)
       expect(tarballVerifier).toContain(`package/${publishedFile}`)

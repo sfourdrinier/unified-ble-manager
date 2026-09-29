@@ -58,18 +58,25 @@ describe('Unified Android native protocol structure', () => {
       // Boundary member by design, not legacy residue.
       // Background continuation (contract update, justified): the standing
       // order an application declares while it is alive, the store that keeps
-      // it across process death, and the executor that carries it out from the
-      // wake — reconnect and resubscribe through the Rust core with no
-      // JavaScript. Covered by the continuation Kotlin tests and the
-      // deterministic declaration suites. Boundary members by design: the wake
+      // it across process death, and transport-only mapping to the shared Rust
+      // executor — reconnect and resubscribe with no JavaScript. Covered by
+      // shared native policy tests, Kotlin mapping tests and the real JNI
+      // continuation roundtrip. Boundary members by design: the wake
       // has no other way to act on what the application declared.
       'presence/BackgroundContinuation.kt',
       'presence/BackgroundContinuationStore.kt',
       'presence/CompanionPresenceObserver.kt',
+      'presence/ContinuationHandoff.kt',
+      // Bounded cold headless admission, typed wake outcomes, and shared FGS
+      // ownership are exercised by the Android continuation JVM suites.
+      'presence/HeadlessDispatchAdmission.kt',
+      'presence/NativeContinuationBinding.kt',
+      'presence/PresenceContinuationExecution.kt',
+      'presence/PresenceForegroundContinuation.kt',
       'presence/PresenceRestoredStore.kt',
       'presence/PresenceWakeCoordinator.kt',
-      'presence/RustCoreContinuationExecutor.kt',
       'presence/UbmCompanionPresenceService.kt',
+      'presence/UbmHeadlessContinuationService.kt',
       // R02 contract update (justified): `CoreCommandAuthority` is the
       // admission table the dispatcher consults before radio execution
       // (covered commands + scoped exceptions + core*-coded terminals),

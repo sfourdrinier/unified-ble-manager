@@ -11,7 +11,7 @@
   },
   "battery": { "level": 15, "drain_per_min": 1.0 },
   "advertising": {
-    "name": "Polar H10 SIM0042",
+    "name": "SIM Polar H10 0042",
     "manufacturer_company": 107,
     "manufacturer_payload_hex": ""
   },

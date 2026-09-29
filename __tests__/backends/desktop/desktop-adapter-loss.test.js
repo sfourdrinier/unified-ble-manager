@@ -75,22 +75,34 @@ function deferAdapterEvents(harness) {
 }
 
 /** Hold both native queues until one deterministic drain sees their shared ordering. */
-function deferAdapterAndResetEvents(harness) {
+function deferAdapterAndResetEvents(harness, holdResetReceipt = false) {
   const openSynthetic = harness.binding.openSynthetic
   let released = false
   const heldResets = []
+  let releaseResetReceipt
+  const resetReceipt = new Promise(resolve => {
+    releaseResetReceipt = resolve
+  })
   harness.binding.openSynthetic = async (owner, options) => {
     const central = await openSynthetic(owner, options)
     return new Proxy(central, {
       get(target, property) {
         if (property === 'takeAdapterEvent') {
-          return () => (released ? target.takeAdapterEvent() : Promise.resolve(null))
+          // An earlier held reset poll may still return null after release().
+          // Keep state events held until the next reset poll delivers that
+          // owned receipt; releasing the two queues is not an atomic operation.
+          return () => (released && heldResets.length === 0 ? target.takeAdapterEvent() : Promise.resolve(null))
         }
         if (property === 'takeAdapterResetEvent') {
           return async () => {
             if (released) return heldResets.shift() ?? target.takeAdapterResetEvent()
             const reset = await target.takeAdapterResetEvent()
-            if (reset !== null && reset !== undefined) heldResets.push(reset)
+            if (reset !== null && reset !== undefined) {
+              heldResets.push(reset)
+              // Force the real native reset receipt to straddle release():
+              // its caller still receives the held poll's null answer.
+              if (holdResetReceipt) await resetReceipt
+            }
             return null
           }
         }
@@ -109,6 +121,7 @@ function deferAdapterAndResetEvents(harness) {
     },
     release() {
       released = true
+      releaseResetReceipt()
     },
     hold() {
       released = false
@@ -290,36 +303,40 @@ describe('adapter loss follows the legacy per-OS sequence (LEGACY-AUDIT-1 #57)',
     }
   })
 
-  test('a reset does not replay queued states at or before its causal sequence', async () => {
-    const harness = realBinding('bluez')
-    const deferredEvents = deferAdapterAndResetEvents(harness)
-    const provider = createTestDesktopRustCoreBackendProvider({
-      platform: 'bluez',
-      owner: 'reset-discards-pre-reset-state',
-      now: () => performance.now(),
-      radio: 'synthetic',
-      binding: harness.binding,
-      hostPlatform: 'linux'
-    })
-    const [adapter] = await provider.listAdapters()
-    const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
-    try {
-      const stage = harness.opened.at(-1)
-      const watch = await backend.adapter.watchState()
-      const transitions = watch.transitions[Symbol.asyncIterator]()
-      await stage.stageAdapterState('powered-on', true)
-      await stage.stageAdapterState('powered-off', true)
-      await deferredEvents.waitForReset()
-      deferredEvents.release()
-      await backend.settleCoreEvents()
-      const transition = await nextItem(transitions, 5000)
-      expect(transition).toMatchObject({ kind: 'value', value: { power: 'off' } })
-      expect(transition.value.backendGeneration).not.toBe(watch.initial.backendGeneration)
-      expect(await nextItem(transitions, 100).catch(() => null)).toBeNull()
-    } finally {
-      await backend.destroy()
+  test.each([false, true])(
+    'a reset does not replay queued states at or before its causal sequence (held receipt %s)',
+    async holdResetReceipt => {
+      const harness = realBinding('bluez')
+      const deferredEvents = deferAdapterAndResetEvents(harness, holdResetReceipt)
+      const provider = createTestDesktopRustCoreBackendProvider({
+        platform: 'bluez',
+        owner: 'reset-discards-pre-reset-state',
+        now: () => performance.now(),
+        radio: 'synthetic',
+        binding: harness.binding,
+        hostPlatform: 'linux'
+      })
+      const [adapter] = await provider.listAdapters()
+      const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
+      try {
+        const stage = harness.opened.at(-1)
+        const watch = await backend.adapter.watchState()
+        const transitions = watch.transitions[Symbol.asyncIterator]()
+        await stage.stageAdapterState('powered-on', true)
+        await stage.stageAdapterState('powered-off', true)
+        await deferredEvents.waitForReset()
+        deferredEvents.release()
+        await backend.settleCoreEvents()
+        const transition = await nextItem(transitions, 5000)
+        expect(transition).toMatchObject({ kind: 'value', value: { power: 'off' } })
+        expect(transition.value.backendGeneration).not.toBe(watch.initial.backendGeneration)
+        expect(await nextItem(transitions, 100).catch(() => null)).toBeNull()
+      } finally {
+        deferredEvents.release()
+        await backend.destroy()
+      }
     }
-  })
+  )
 
   test('a direct adapter removal carries its wake-state sequence across the reset boundary', async () => {
     const harness = realBinding('bluez')
@@ -435,8 +452,13 @@ describe('admission errors (LEGACY-AUDIT-1 #58)', () => {
 
   test('BlueZ keeps its legacy lifecycle-only admission: a powered-off adapter is not pre-refused', async () => {
     await withStaged('bluez', poweredOn, async ({ backend, stage }) => {
+      const generation = backend.identity.attachment.backendGeneration
       await stage.stageAdapterState('powered-off', true)
       await coreSees(stage, status => status.power === 'powered-off')
+      // adapterStatus publishes power before asynchronous reset teardown ends.
+      // A scan racing that reset correctly answers operation.reset; this test
+      // checks off-state admission after the causal reset, not that race.
+      expect(await generationAdvanced(backend, generation)).toBe(true)
       const lease = await backend.scanner.start(scanOptions(), 'client-1')
       await lease.stop()
     })

@@ -50,6 +50,9 @@ pub enum FaultOp {
     Unpair,
     /// Address resolution (`resolve_address()` fails).
     ResolveAddress,
+    PeerDirectory,
+    /// Post-event-loop transport cleanup.
+    FinishClose,
 }
 
 /// Adapter power state as the OS reports it. `Unknown` is the OS's own
@@ -211,6 +214,49 @@ pub enum BluezBus {
     #[default]
     System,
     Session,
+}
+
+/// Explicit BlueZ connection authority supplied by the trusted host.
+///
+/// An LE attestation applies to one daemon process, not an introspection
+/// signature: older BlueZ releases export an unimplemented LE interface.
+/// `None` at radio construction permits observation, but no link acquisition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BluezConnectionPolicy {
+    /// The host attests that this unique D-Bus owner implements LE1 lifecycle
+    /// methods. The radio never substitutes a later owner or Device1 calls.
+    LeBearer { daemon_unique_owner: String },
+}
+
+impl BluezConnectionPolicy {
+    /// Validate the portable unique-name grammar before allocating a radio.
+    /// The Linux boundary also uses libdbus validation and verifies the live
+    /// well-known-name owner before any LE operation.
+    pub fn validate(&self) -> Result<(), DesktopError> {
+        let Self::LeBearer {
+            daemon_unique_owner,
+        } = self;
+        let valid = daemon_unique_owner.len() <= 255
+            && daemon_unique_owner.strip_prefix(':').is_some_and(|body| {
+                body.contains('.')
+                    && body.split('.').all(|part| {
+                        !part.is_empty()
+                            && part.bytes().all(|byte| {
+                                byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
+                            })
+                    })
+            });
+        if valid {
+            Ok(())
+        } else {
+            Err(DesktopError::new(
+                ubm_core::contracts::BleErrorCode::ArgumentInvalid,
+                ubm_core::contracts::BleErrorDomain::Core,
+                "connection.policy",
+            )
+            .with_detail("daemonUniqueOwner must be a D-Bus unique name, not a well-known service"))
+        }
+    }
 }
 
 impl BluezBus {
@@ -750,6 +796,15 @@ pub struct ServiceSnapshot {
     pub characteristics: Vec<CharacteristicSnapshot>,
 }
 
+/// Authoritative identity of one accepted platform GATT graph. This is an
+/// internal boundary fence, not a replacement for public core generations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GattSnapshotIdentity {
+    pub owner: String,
+    pub attachment: u64,
+    pub revision: u64,
+}
+
 /// Radio-side events delivered to the central event loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RadioEvent {
@@ -796,6 +851,25 @@ pub enum RadioEvent {
     /// paths invalidate and rediscovery is required (never silently
     /// re-read through stale handles).
     ServicesChanged(String),
+    /// Raw platform trigger: the backend must reread authoritative state
+    /// before deciding whether an accepted database ended.
+    GattInvalidationHint(String),
+    /// Authoritative GATT control observation ended or became malformed.
+    /// No physical service-change or adapter-loss cause is implied.
+    GattWatchFailed(DesktopError),
+    /// One accepted peer graph lost authoritative observation. Unlike a
+    /// global watch failure, explicit rediscovery may repair this peer.
+    GattObservationFailed {
+        peer_id: String,
+        identity: GattSnapshotIdentity,
+        error: DesktopError,
+    },
+    /// A previously accepted database ended. Delayed delivery must not
+    /// invalidate a newer accepted database of the same peer.
+    ServicesChangedScoped {
+        peer_id: String,
+        identity: GattSnapshotIdentity,
+    },
     /// The OS notification broadcast outran one subscription's receiver
     /// (vendored btleplug patch 10): `lost` notifications of the peer were
     /// missed, any of which may have been this instance's. Accounted on the
@@ -836,6 +910,15 @@ pub enum RadioEvent {
     },
 }
 
+/// Read-only OS directory fact, independent of locally owned connections.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectoryPeer {
+    pub peer_id: String,
+    pub name: Option<String>,
+    /// Directory fact, never evidence that this central acquired a lease.
+    pub connection: &'static str,
+}
+
 /// The OS-radio seam. Implementations are `Send + Sync` and shareable: the
 /// central holds one `Arc`-capable boundary for the executor lifetime, and
 /// every future is `Send` so scan loops and op drivers can move across the
@@ -854,6 +937,75 @@ pub enum RadioEvent {
 /// answer `capability.unsupported`, so existing implementations keep
 /// compiling and never claim a capability they do not have.
 pub trait RadioBoundary: Send + Sync + 'static {
+    /// Identity of the currently accepted graph, read without radio I/O.
+    /// `None` preserves platforms without an authoritative snapshot token.
+    fn gatt_snapshot_identity(
+        &self,
+        _peer_id: &str,
+    ) -> Result<Option<GattSnapshotIdentity>, DesktopError> {
+        Ok(None)
+    }
+
+    /// Discover a graph together with its accepted identity. Token-aware
+    /// radios override this to capture both under their admission gate;
+    /// the default preserves radios without authoritative snapshot tokens.
+    fn discover_scoped(
+        &self,
+        peer_id: &str,
+    ) -> impl Future<
+        Output = Result<(Vec<ServiceSnapshot>, Option<GattSnapshotIdentity>), DesktopError>,
+    > + Send {
+        async {
+            let services = self.discover(peer_id).await?;
+            Ok((services, self.gatt_snapshot_identity(peer_id)?))
+        }
+    }
+
+    fn connected_peers(
+        &self,
+        _services: &[String],
+    ) -> impl Future<Output = Result<Vec<DirectoryPeer>, DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "peers.connected",
+                "system-connected retrieval is unavailable",
+            ))
+        }
+    }
+
+    fn resolve_peer(
+        &self,
+        _peer_id: &str,
+    ) -> impl Future<Output = Result<Option<DirectoryPeer>, DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "peers.resolve",
+                "identifier retrieval is unavailable",
+            ))
+        }
+    }
+    /// Exact identity emitted by this radio's lifecycle and GATT events.
+    /// Opaque identities are unchanged; only the platform parser may supply
+    /// another spelling. Admission never creates ownership under an alias.
+    fn canonical_peer_id(&self, peer_id: &str) -> String {
+        peer_id.to_owned()
+    }
+
+    fn validate_peer_identity(&self, peer_id: &str, operation: &str) -> Result<(), DesktopError> {
+        let canonical = self.canonical_peer_id(peer_id);
+        if canonical == peer_id {
+            return Ok(());
+        }
+        Err(DesktopError::new(
+            ubm_core::contracts::BleErrorCode::ArgumentInvalid,
+            ubm_core::contracts::BleErrorDomain::Connection,
+            operation,
+        )
+        .with_detail(format!(
+            "peer identity must use the radio's canonical spelling: {canonical}"
+        )))
+    }
+
     fn adapter_name(&self) -> impl Future<Output = Result<String, DesktopError>> + Send + '_;
     fn start_scan(
         &self,
@@ -958,6 +1110,11 @@ pub trait RadioBoundary: Send + Sync + 'static {
     /// release failures are retained, never raised — the host drains them
     /// via [`RadioBoundary::take_close_failures`] into the shutdown report.
     fn close(&self) -> impl Future<Output = ()> + Send + '_;
+    /// Release transport event resources after the central's event consumer
+    /// has joined. Refused cleanup remains owned and this hook is retryable.
+    fn finish_close(&self) -> impl Future<Output = Vec<DesktopError>> + Send + '_ {
+        async { Vec::new() }
+    }
     /// Drain close-time release failures retained by the last [`RadioBoundary::close`]
     /// (F14 receipts). Each entry names one characteristic scope whose native
     /// release did not complete; an empty vec means every scope released (or
@@ -1131,6 +1288,11 @@ pub trait RadioBoundary: Send + Sync + 'static {
     fn admission_policy(&self) -> AdmissionPolicy {
         AdmissionPolicy::LifecycleOnly
     }
+    /// An instantiated radio may lack connection authority while still scanning.
+    /// Defaults preserve deterministic and other hosts' existing mechanisms.
+    fn connection_capability_limitation(&self) -> Option<&'static str> {
+        None
+    }
     /// Whether an adapter loss tears down live work on this radio (finding
     /// 57): the desktop OS radios do, as their legacy backends did. Default:
     /// the loss is reported as a state change only.
@@ -1188,6 +1350,7 @@ const FAKE_CONTROL_CAP: usize = 64;
 pub struct FakeRadio {
     state: StdMutex<FakeInner>,
     notify: Arc<Notify>,
+    calls_changed: tokio::sync::watch::Sender<()>,
 }
 
 /// One characteristic instance address: (peer, service uuid, service
@@ -1219,6 +1382,9 @@ impl RadioCloseFailure {
 }
 
 struct FakeInner {
+    directory_peers: Option<Vec<DirectoryPeer>>,
+    directory_unblocked_reads: usize,
+    canonical_peer_ids: HashMap<String, String>,
     faults: HashMap<FaultOp, VecDeque<(String, Option<crate::errors::PlatformDetail>)>>,
     /// Scan filters the central passed to `start_scan`, in call order.
     scan_filters: Vec<ScanFilterSpec>,
@@ -1251,6 +1417,9 @@ struct FakeInner {
     notifications: Vec<(String, String, bool)>,
     scan_active: bool,
     services: HashMap<String, Vec<ServiceSnapshot>>,
+    gatt_identities: HashMap<String, GattSnapshotIdentity>,
+    gatt_identity_errors: HashMap<String, DesktopError>,
+    scripted_gatt_identities: HashMap<String, VecDeque<Option<GattSnapshotIdentity>>>,
     mtu: HashMap<String, u16>,
     /// Per-instance read payloads: values returned for one addressed
     /// characteristic instance (unset instances return the canned default).
@@ -1318,9 +1487,49 @@ impl Default for FakeRadio {
 }
 
 impl FakeRadio {
+    /// Set the identity subsequent successful discoveries report.
+    pub fn set_gatt_snapshot_identity(&self, peer_id: &str, identity: GattSnapshotIdentity) {
+        let mut state = self.state.lock().expect("fake radio state");
+        state.gatt_identity_errors.remove(peer_id);
+        state.gatt_identities.insert(peer_id.to_owned(), identity);
+    }
+
+    /// Script an actual snapshot read failure without affecting other peers.
+    pub fn fail_gatt_snapshot_identity(&self, peer_id: &str, error: DesktopError) {
+        let mut state = self.state.lock().expect("fake radio state");
+        state.gatt_identities.remove(peer_id);
+        state.gatt_identity_errors.insert(peer_id.to_owned(), error);
+    }
+
+    /// Script identity reads to reproduce replacement before publication.
+    pub fn script_gatt_snapshot_identities(
+        &self,
+        peer_id: &str,
+        identities: Vec<Option<GattSnapshotIdentity>>,
+    ) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .scripted_gatt_identities
+            .insert(peer_id.to_owned(), identities.into());
+    }
+
+    /// Script the platform parser's canonical spelling without applying
+    /// any case-folding policy to other opaque identities.
+    pub fn set_canonical_peer_id(&self, alias: &str, canonical: &str) {
+        self.state
+            .lock()
+            .unwrap()
+            .canonical_peer_ids
+            .insert(alias.to_owned(), canonical.to_owned());
+    }
+
     pub fn new() -> Self {
         Self {
             state: StdMutex::new(FakeInner {
+                directory_peers: None,
+                directory_unblocked_reads: 0,
+                canonical_peer_ids: HashMap::new(),
                 faults: HashMap::new(),
                 scan_filters: Vec::new(),
                 known_peers: Vec::new(),
@@ -1339,6 +1548,9 @@ impl FakeRadio {
                 notifications: Vec::new(),
                 scan_active: false,
                 services: HashMap::new(),
+                gatt_identities: HashMap::new(),
+                gatt_identity_errors: HashMap::new(),
+                scripted_gatt_identities: HashMap::new(),
                 mtu: HashMap::new(),
                 values: HashMap::new(),
                 read_provenance: ReadProvenance::ReadResponse,
@@ -1365,6 +1577,7 @@ impl FakeRadio {
                 write_readiness: HashMap::new(),
             }),
             notify: Arc::new(Notify::new()),
+            calls_changed: tokio::sync::watch::channel(()).0,
         }
     }
 
@@ -1375,6 +1588,34 @@ impl FakeRadio {
         let mut state = self.state.lock().expect("fake radio state");
         state.admission = admission;
         state.teardown = teardown;
+    }
+
+    /// Explicit opt-in deterministic directory; never a production fallback.
+    pub fn set_directory_peers(&self, peers: Vec<DirectoryPeer>) {
+        self.state.lock().expect("fake radio state").directory_peers = Some(peers);
+    }
+
+    /// Let exactly the next `count` directory calls bypass the scripted gate.
+    pub fn set_directory_unblocked_reads(&self, count: usize) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .directory_unblocked_reads = count;
+    }
+
+    async fn directory_gate(&self) {
+        let bypass = {
+            let mut state = self.state.lock().expect("fake radio state");
+            if state.directory_unblocked_reads == 0 {
+                false
+            } else {
+                state.directory_unblocked_reads -= 1;
+                true
+            }
+        };
+        if !bypass {
+            self.gate(FaultOp::PeerDirectory).await;
+        }
     }
 
     /// Script whether this radio's OS answers an unflagged subscribe
@@ -1794,6 +2035,31 @@ impl FakeRadio {
             .expect("fake radio state")
             .calls
             .push(call.to_owned());
+        self.calls_changed.send_replace(());
+    }
+
+    /// Deterministic fixture barrier: resolve when an operation has entered
+    /// this boundary the specified number of times. A caller may wrap this
+    /// event wait in a watchdog; elapsed time is never a completion signal.
+    pub async fn wait_for_calls(&self, call: &str, count: usize) {
+        let mut changed = self.calls_changed.subscribe();
+        loop {
+            changed.borrow_and_update();
+            if self
+                .calls()
+                .iter()
+                .filter(|name| name.as_str() == call)
+                .count()
+                >= count
+            {
+                return;
+            }
+            // The sender is owned by self, which remains borrowed throughout.
+            changed
+                .changed()
+                .await
+                .expect("fake radio call sender is alive");
+        }
     }
 }
 
@@ -1837,6 +2103,67 @@ fn descriptor_key(
 }
 
 impl RadioBoundary for FakeRadio {
+    fn gatt_snapshot_identity(
+        &self,
+        peer_id: &str,
+    ) -> Result<Option<GattSnapshotIdentity>, DesktopError> {
+        let mut state = self.state.lock().expect("fake radio state");
+        if let Some(error) = state.gatt_identity_errors.get(peer_id) {
+            return Err(error.clone());
+        }
+        if let Some(identity) = state
+            .scripted_gatt_identities
+            .get_mut(peer_id)
+            .and_then(VecDeque::pop_front)
+        {
+            return Ok(identity);
+        }
+        Ok(state.gatt_identities.get(peer_id).cloned())
+    }
+
+    async fn connected_peers(
+        &self,
+        _services: &[String],
+    ) -> Result<Vec<DirectoryPeer>, DesktopError> {
+        self.record("connected_peers");
+        self.directory_gate().await;
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .directory_peers
+            .clone()
+            .ok_or_else(|| unsupported("peers.connected", "directory not scripted"))
+    }
+
+    async fn resolve_peer(&self, peer_id: &str) -> Result<Option<DirectoryPeer>, DesktopError> {
+        self.record("resolve_peer");
+        self.directory_gate().await;
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .directory_peers
+            .as_ref()
+            .map(|peers| {
+                peers
+                    .iter()
+                    .find(|peer| peer.peer_id == peer_id)
+                    .cloned()
+                    .map(|mut peer| {
+                        peer.connection = "unknown";
+                        peer
+                    })
+            })
+            .ok_or_else(|| unsupported("peers.resolve", "directory not scripted"))
+    }
+    fn canonical_peer_id(&self, peer_id: &str) -> String {
+        self.state
+            .lock()
+            .unwrap()
+            .canonical_peer_ids
+            .get(peer_id)
+            .cloned()
+            .unwrap_or_else(|| peer_id.to_owned())
+    }
     async fn adapter_name(&self) -> Result<String, DesktopError> {
         self.record("adapter_name");
         if let Some(ScriptedFault { detail, platform }) = self.take_fault(FaultOp::AdapterName) {
@@ -2208,6 +2535,23 @@ impl RadioBoundary for FakeRadio {
 
     fn take_close_failures(&self) -> Vec<RadioCloseFailure> {
         std::mem::take(&mut self.state.lock().expect("fake radio state").close_failures)
+    }
+
+    async fn finish_close(&self) -> Vec<DesktopError> {
+        self.record("finish_close");
+        if let Some(ScriptedFault { detail, platform }) = self.take_fault(FaultOp::FinishClose) {
+            return vec![scripted(
+                DesktopError::new(
+                    ubm_core::contracts::BleErrorCode::PlatformFailure,
+                    ubm_core::contracts::BleErrorDomain::Cleanup,
+                    "radio.close.transport",
+                )
+                .with_detail(detail),
+                platform,
+            )];
+        }
+        self.gate(FaultOp::FinishClose).await;
+        Vec::new()
     }
 
     async fn read_rssi(&self, peer_id: &str) -> Result<i16, DesktopError> {

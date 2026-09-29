@@ -58,6 +58,10 @@ impl Scripted {
         *self.responder.lock().unwrap() = responder;
     }
 
+    pub fn bind_host(&self, host: &Arc<MobileHost>) {
+        assert!(self.host.set(Arc::downgrade(host)).is_ok());
+    }
+
     pub fn kinds(&self) -> Vec<RequestKind> {
         self.requests
             .lock()
@@ -178,12 +182,17 @@ pub fn polar_responder(request: &RadioRequest) -> Reply {
 
 #[derive(Default)]
 pub struct Wakes {
+    pub panic_next: std::sync::atomic::AtomicBool,
     pub count: AtomicU64,
     pub per_session: Mutex<HashMap<u64, u64>>,
 }
 
 impl WakeSink for Wakes {
     fn wake(&self, session_id: u64) {
+        assert!(
+            !self.panic_next.swap(false, Ordering::SeqCst),
+            "injected wake failure"
+        );
         self.count.fetch_add(1, Ordering::SeqCst);
         *self
             .per_session
@@ -213,7 +222,7 @@ pub async fn open(
         .await
         .expect("host opens"),
     );
-    assert!(radio.host.set(Arc::downgrade(&host)).is_ok());
+    radio.bind_host(&host);
     (host, wakes)
 }
 

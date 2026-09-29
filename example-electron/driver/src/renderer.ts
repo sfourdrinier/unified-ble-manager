@@ -7,7 +7,14 @@
 
 /// <reference types="vite/client" />
 
-import { createElectronRendererBleManager, type ElectronRendererIpcTransport } from 'unified-ble-manager/electron/renderer'
+import {
+  createElectronRendererBleManager,
+  createNativeContinuationControl,
+  createNativeContinuationRecordingController,
+  type ElectronRendererIpcTransport,
+  type NativeContinuationControlAccess,
+  type ContinuationRecordingAccess
+} from 'unified-ble-manager/electron/renderer'
 import ubmPackage from 'unified-ble-manager/package.json'
 import { bootBrowserDriver } from '../../../examples-shared/driver/browser/boot.ts'
 import { LOCAL_DRIVER_URL, adapterHostManager, driverUrlFromQuery } from '../../../examples-shared/driver/index.ts'
@@ -16,6 +23,7 @@ import '../../../examples-shared/driver/browser/driver.css'
 declare global {
   interface Window {
     readonly ubmElectronTransport: ElectronRendererIpcTransport<string, string>
+    readonly ubmProcessControl: NativeContinuationControlAccess & { readonly recordings: ContinuationRecordingAccess }
   }
 }
 
@@ -27,7 +35,16 @@ if (backend === null) throw new Error('main did not pass the backend it selected
 const driver = bootBrowserDriver({
   host: 'electron',
   backend,
-  createManager: async () => adapterHostManager(await createElectronRendererBleManager({ transport: window.ubmElectronTransport }), 'background:desktop-maintain-connection'),
+  createManager: async () =>
+    adapterHostManager(
+      await createElectronRendererBleManager({ transport: window.ubmElectronTransport }),
+      'background:desktop-maintain-connection'
+    ),
+  nativeContinuation: {
+    ...createNativeContinuationControl(window.ubmProcessControl),
+    recordings: async () =>
+      createNativeContinuationRecordingController(window.ubmProcessControl.recordings, 'ubm-desktop')
+  },
   requireUserGesture: false,
   driverUrl: driverUrlFromQuery(location.search) ?? { url: LOCAL_DRIVER_URL, reason: 'default local control server' },
   mount,

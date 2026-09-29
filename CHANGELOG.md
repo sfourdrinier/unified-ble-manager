@@ -2,6 +2,450 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.0.0-rc.13] - 2026-09-28
+
+- Retrieve an explicitly supplied, OS-known CoreBluetooth UUID through the same
+  Apple mobile central when its process registry no longer holds the peer.
+  Preserve permission, power and pending-operation admission; keep cached
+  callback owners and refuse unknown identifiers. Do not scan, substitute a
+  service filter, or fabricate restoration/connection events for this lookup.
+  Preserve the exact OS-issued identifier across teardown, and acquire the
+  local central connection before accepting a newly retrieved connected object.
+
+- Refuse an Apple notification-state callback whose nil error accompanies a
+  state different from the requested enable/disable. Do not report a disabled
+  subscription ready or forget a still-enabled cleanup target; preserve the
+  original platform errors and cancellation cleanup. Exercise the production
+  callback handler without allocating a Bluetooth manager. This is a callback
+  correctness fix, not attribution of a physical notification-intake failure.
+
+- Confirm unsolicited ATT indications on server-only BlueZ connections when
+  reverse service discovery is disabled. Keep registered client handlers solely
+  responsible for their confirmations; do not invent client readiness or
+  application delivery. Exercise both paths through the production ATT socket
+  dispatcher, including no-double-confirmation controls.
+- Observe durable mobile intake on the existing blocking pool without repeatedly
+  preparing and acknowledging partial journal prefixes. Keep the regression's
+  original deadline and exact value/context/replay assertions, and verify that
+  observation does not mutate the durable cursor or block the intake runtime.
+
+- Serialize Apple restoration startup central allocation on the process radio's
+  queue, alongside permission checks and initial CoreBluetooth callbacks, so
+  concurrent nil/create checks cannot allocate competing centrals. This fixes a
+  startup race; it does not establish physical restoration qualification.
+
+- Allow Release reference phone builds to opt into remote test commands through
+  an explicit `EXPO_PUBLIC_UBM_DRIVER_URL`. Keep default Release automation off,
+  development Metro discovery enabled, and explicit `off` or malformed endpoints
+  fail-closed. Document trusted local/USB testing and remote BLE control risk.
+- Allow reference `device-info read` to connect an explicit public `peerAddress`
+  without rescanning an already-connected, non-advertising device. Keep the
+  ordinary name-query route, typed address-targeting refusals and owned cleanup
+  unchanged; do not reinterpret a fresh manager's local peer ID as an address.
+
+- Restore BlueZ server `AcquireNotify` sockets after bonded ATT reconnection
+  and renew their immutable MTU after an actual ATT MTU increase,
+  without clearing CCC configuration or duplicating descriptor counts. Fence
+  delayed replies after disable/disconnect/object removal, retain failed rearm
+  for retry without callback-based fallback, and keep cleanup peer-scoped.
+  Exercise the production server callbacks with isolated ATT/application sockets,
+  including multiple peers, CCC mode changes and unchanged callback-based notifications.
+
+- Fit simulator ECG packets to the acquired notification capacity without
+  changing its 130 Hz sample clock, waveform indices or frame timestamps.
+  Preserve the bounded sample budget when small transports require more
+  packets, and report refused capacity or shed acquisition samples explicitly.
+
+- Track the exact installed UBM JavaScript package as an Android application
+  bundle input. Replacing a pnpm package copy now invalidates stale Hermes
+  output while unchanged inputs remain cached; missing compiled modules fail
+  explicitly. Exercise copied-module and metadata changes through Gradle and
+  require the shared input helper in packed artifacts. Align copy-refresh
+  guidance with the existing forced, frozen-lockfile recopy rather than
+  deleting the package or relaxing the lockfile.
+- Wait within the existing BlueZ discovery budget for a new primary ATT
+  attachment when accepted LE reconnection still reports a retired disconnected
+  attachment. Preserve real link loss, current discovery failure, daemon-owner
+  fences and exact graph-publication tokens; never accept the retired graph.
+  Exercise the boundary through the actual private D-Bus client.
+- Refresh each new strict BlueZ LE client's peer-local native GATT graph instead
+  of trusting an inherited hash-matched cache. Exercise changed-characteristic
+  replacement, refused discovery and reconnect through actual native client/server
+  exchanges, without deleting cached files/bonds or changing Classic initialization.
+- Validate BlueZ exported characteristics against their current native value
+  attributes, not declaration pointers. Regression fixtures now mirror the
+  production export layout and refuse stale, missing or mismatched identities.
+- Release accepted BlueZ LE acquisitions through their exact retained adapter,
+  device and daemon identity, independently of discovery or directory reads.
+  Exercise the actual adapter wrapper, refused cleanup retry and idempotent
+  no-authority cleanup without affecting another owner's bearer.
+
+- Preserve shared subscription cleanup ownership after service-change
+  invalidation. Retire usability immediately, but explicitly unsubscribe the
+  original native identity and retain a refused cleanup for retry without
+  releasing another connection owner. Exercise both terminal/release orderings
+  on all desktop profiles and preserve primary test failures alongside teardown
+  failures.
+- Do not infer native subscription release from stale/interrupted cleanup errors
+  or an event-source failure. Publish genuine connection-end evidence before
+  cancelling racing cleanup. Align the deterministic backend with original-
+  identity cleanup, and drive affected virtual-clock tests to actual completion
+  instead of abandoning scheduled work after a fixed microtask count.
+- Require explicit verified BlueZ daemon-owner policy in both simulator radio
+  probes, reusing production admission. Keep qualification fixtures portable
+  across Windows paths and synchronize powered-off scan admission with the
+  completed causal adapter reset rather than racing its teardown. Replace
+  private-bus daemon ownership through an independent connection and dispatch
+  late fixture replies on its sole processing worker, preserving exact
+  stale-owner refusal without concurrent blocking reply consumption.
+- BlueZ strict LE GATT discovery uses a versioned, owner-fenced daemon snapshot,
+  same-revision graph publication and scoped invalidation. The source-only BlueZ
+  5.87 extension has isolated build/protocol gates, original GPL/LGPL provenance
+  and explicit external deployment requirements; no daemon is automatically installed.
+- Rediscovery retires old subscription generations. Notification cleanup retains
+  its original native target across graph replacement, and observation failure
+  refuses GATT admission without inventing a physical Service Changed event.
+
+- Align automated review guidance with the current 5.x contract and guard
+  against stale contract-line references alongside the agent-guidance tests.
+- Keep native setup uncertainty fenced to the physical peer and authoritative
+  connection/database generation across claim, session disposal and declaration
+  replacement. A late old command reply cannot advance a replacement setup on
+  an independently held link; retain the original failure without another write.
+  Bound retained peer failures without evicting unresolved generations, and
+  allow setup again after a verified generation change without dropping another
+  owner's lease. Android and Apple mobile-host regressions exercise both paths.
+- Reuse the durable recording batch's canonical row decoder for internal offline
+  journal inspection, preserving metadata, owned values and original serialized
+  byte accounting without fabricating a prepare token or acknowledging records.
+- Keep Android toolchain test shims on Git Bash's executable temporary volume
+  on Windows, reusing the shared shell-fixture helper. Establish fixture PATH
+  priority inside the launched shell, after Git's launcher prepends its own
+  tools, and execute the POSIX shell directly for both admission and builder
+  checks. Verify the actual shell
+  resolves and executes the mocked host probe before testing compiler and
+  archiver forwarding; this does not add Windows Android build support.
+- Expose the staged UniFFI C modulemap to Swift application targets importing
+  `BlePlx`, preserving inherited flags without source-root or slice-specific
+  consumer paths. The reference iOS continuation bridge now compiles against
+  the production pod rather than only a deterministic stub module.
+- Bound reference `scan-details` and H10 advertisement capture through the
+  library's finite scan timeout as well as the JavaScript timer, so mobile radio
+  ownership can expire while JavaScript is suspended. Preserve native terminal
+  reasons, observation counts, and explicit cleanup; zero observations are not
+  radio qualification. H10 capture preserves source-failure causes and loss
+  notices, blocks a replacement scan while cleanup is refused, and retains timer
+  stop failures as diagnostic history after a successful retry. A simultaneous
+  iterator exception and cleanup failure retain both original causes. Scan rate
+  buckets preserve the final idle seconds and actual partial window without an
+  extra zero-length bucket at an exact boundary; right-closed windows conserve
+  observations received at the boundary itself.
+- Add explicit warm native continuation controls to the Android/iOS reference
+  app, using the existing process owner and shared envelope decoder. Require a
+  matching persisted declaration, verify binary identity, and bound outstanding
+  native callbacks. Direct execution does not fabricate an OS wake or acknowledge
+  durable recordings; cleanup and journal handoff remain explicit. Preserve
+  native mobile session/process status and canonicalize MAC/UUID identities
+  before execution, without inventing desktop status fields.
+- Enforce mobile finite scan lifetimes in the native owner, including admission,
+  independently of JavaScript timers or event draining. Expiry releases only its
+  membership, retains failed physical cleanup for process-owned retry, and yields
+  fairly under advertisement load. Bind each queued advertisement to its native
+  membership so buffered values cannot enter a replacement scan.
+- Admit early mobile advertisements into the eventual owner's same bounded
+  stream, matching the original start request without a second replay queue.
+  Preserve overflow and retained-byte accounting before publication. Keep native
+  release proof separate from delivery failure; a late stop refusal remains
+  diagnostic history after confirmed release, not renewed cleanup debt. Fence
+  reconciliation to the exact memberships present when its snapshot was requested.
+- Preserve the original peer-find deadline through queued result delivery on
+  local and IPC managers. Lower singleton service-any filters to native mobile
+  service filters without losing residual query semantics, including Android
+  screen-off scanning.
+- Require explicit trusted BlueZ LE-bearer implementation and daemon-owner
+  attestation for connections. Unattested hosts remain scan-capable; there is no
+  device-wide compatibility mode or silent fallback. One central policy covers
+  Node/Electron managers, process-host continuation and trusted Tauri setup.
+- Retain accepted BlueZ LE connect/disconnect and scoped discovery replies across
+  caller cancellation. Keep uncertain outcomes owned without resending effects,
+  retry refused cleanup, and fence discovered peers to their original daemon
+  owner. Address resolution never falls back to device-wide connection effects.
+- Project connection capability state and refusal reasons from the instantiated
+  native authority rather than static desktop tables, including dependent
+  connection retention. Deterministic and non-BlueZ capability answers remain
+  unchanged.
+
+- Recover an unexpectedly terminated Electron reference renderer with one bounded
+  trusted-document reload, retaining the same main-process continuation owner
+  and backlog; repeated crashes remain visible without automatic claim or ACK.
+- Keep the shared process-continuation reference UI's local cleanup obligation
+  current across repeated execute/claim cycles, including pending and refused
+  operations, without presenting it as proof of native acquisition.
+- Preserve scan observation provenance and exact producer origin through public
+  and IPC projections, distinguishing advertisements from cached OS device state
+  without filtering or relabelling reported service UUIDs.
+- Create the Electron reference app's private recording directory before live
+  recording or offline journal access. Preserve native control error identity
+  across Electron invocation through a bounded, typed failure envelope.
+- Fail simulator profile changes when advertising state cannot be queried;
+  restore the prior simulation state and report the failure instead of claiming
+  a successful profile load.
+- Preserve native error details while reporting the correct desktop host and
+  recording-configuration operation for offline recording setup failures.
+- Add explicit trusted desktop process hosts sharing one native owner across
+  ordinary borrowing managers and native continuation. Retain retry authority
+  for initialization cleanup failures and preserve explicit post-close backlog
+  handoff. Confirmed shutdown retries reconcile current physical connection debt
+  without rewriting earlier cleanup receipts or discarding unrelated failures.
+- Retrieve service-filtered system-connected CoreBluetooth peers and explicit
+  saved references through the existing native manager without acquiring a
+  connection. Keep OS directory facts separate from local lease ownership,
+  preserve query budgets and errors, and forward directory queries over the
+  authenticated Electron/Tauri boundary. The reference dashboard retains
+  Android's unfiltered query and retries only an explicit service-filter-required
+  refusal with Heart Rate Service, without renewing its deadline.
+- Validate and snapshot every peer-query filter entry before backend dispatch,
+  including sparse arrays, and canonicalize numeric service UUIDs with their
+  correct 16/32-bit width. IPC decoding rejects missing array entries instead of
+  silently preserving holes.
+
+- Gate shared, Node, web, Tauri and Electron reference-app typechecks after
+  package generation in Linux Node22 CI and clean preflight. Reuse a separate
+  canonical Expo check after its dependency installation, reporting fast-mode
+  skips explicitly instead of treating executable driver tests as type coverage.
+- Correct the minimal Tauri battery proof to consume the public scan envelope
+  and shared battery codec. Bound peer acquisition, preserve stream errors and
+  notices, retry refused cleanup before acquiring new owners, and restore the
+  run control after factory or cleanup failures. Include Tauri and Electron
+  regressions in the canonical cross-host driver suite.
+- Keep Node driver stdout exclusively JSON Lines and route human diagnostics to
+  stderr. Drain both output streams before controlled local/server exit, with
+  bounded waits and nonzero failure status, so large results and cleanup records
+  are not truncated by immediate process termination.
+
+### Native setup, durable recording and wake execution
+
+- Report deliberately aborted reference-dashboard PMD configuration with the
+  public typed error, preserving its cause through the connection supervisor
+  instead of converting an example-local exception into `connection.failed`.
+
+- Preserve native peer-directory observation timestamps with an explicit
+  backend-instance clock scope, so scanned peers remain usable through
+  connected, known and resolved directories without mixing clock epochs.
+
+- Enforce cancellation and deadlines at the shared public peer-directory
+  boundary, including connected-peer lookup, without inventing native query
+  cancellation or dropping late failures. Correct the peer persistence example
+  for empty directories and execute its empty, reference-less and saved cases.
+
+- Run bounded generic setup writes and correlated application acknowledgements
+  after native resubscription in each connection generation. Preserve uncertain
+  write outcomes, negotiate requested MTU where supported, and keep Polar
+  STOP/START recipes in the reference app rather than the BLE core.
+- Add opt-in quota-bounded SQLite recording with generation/selector metadata,
+  stable prepared prefixes and explicit acknowledgement. Commit journal records
+  before notifying setup observers; keep recording cursors independent from radio
+  claims. Retain explicit capacity/storage failures and offload blocking I/O
+  without introducing an unbounded ingestion queue.
+- Expose strict public recording controls and offline retrieval on mobile and
+  trusted Node/Electron/Tauri hosts. Offline storage access does not initialize
+  a radio. Native hosts choose private storage; the journal is plaintext and
+  does not imply an encryption or power-loss-durability guarantee.
+- Give prepared recording envelopes their documented bounded batch capacity
+  without relaxing ordinary protocol limits. Preserve retained-prefix replay
+  after a decoding failure and normalize offline-store constructor errors.
+  Permit initial recording setup to retry after its storage directory is fixed.
+- Implement Android headless-task dispatch and presence-started foreground
+  services with bounded admission, shared service leases, explicit acceptance
+  stages and retained failed compensation. Fence declaration replacement and
+  persist checked changes; stop OS presence observation even through a fresh
+  wrapper. Preserve structured errors across native and JavaScript boundaries.
+- Use Android 16 association-ID presence requests and aggregate BLE, Bluetooth
+  connection and self-managed presence events before releasing a peer's service
+  lease. Preserve duplicate associations, serialize service rebinds, and fence
+  pending or late callbacks after observation stops. Retain the legacy callback
+  path on Android 12–15, where source-aware events are unavailable.
+- Compare complete normalized continuation declarations before replacement,
+  including setup, link and recording policy. Derive strategy capabilities from
+  the running binding and valid platform facts, with explicit Apple platform
+  limits instead of obsolete not-implemented claims.
+- Close admission and retain terminal diagnostics when the mobile ingress
+  worker fails; fence queued session publication against fatal teardown.
+  Retire a released recording generation without deleting its independent
+  journal or poisoning admission of a subsequent recording.
+- Admit foreground claims fairly behind bounded automatic recovery, while
+  preserving explicit-execution exclusion. Retire exact subscription owners
+  after confirmed link loss so failed rediscovery cannot trap their cleanup;
+  preserve unrelated consumers and service-change cleanup obligations.
+- Keep idle adapter events out of native continuation admission so an empty
+  recovery supervisor cannot reject the first restoration wake. Preserve
+  recovery for owned sessions, including held acquisition and refused cleanup.
+- Make the reference continuation controls persist real declarations, replay
+  H10 setup and expose explicit offline recording operations without putting
+  payloads into command history. Register a bounded Android reference headless
+  battery-read task and keep its completion evidence distinct from dispatch.
+  Use an explicit known-address target in a fresh headless manager, retain its
+  cleanup owner across Fast Refresh, and require durable references for the
+  restoration reconnect command instead of stale manager-local identifiers.
+- Expose bounded headless completion summaries and exact-name association through
+  the real Android chooser. Report late accepted associations without pretending
+  cancellation undid them. Keep failed reference cleanup retryable and retain
+  precise setup failures in the dashboard instead of showing a normal stop.
+  Stop PMD configuration immediately after a cancelled settings wait, retaining
+  the aborted result without inventing later STOP/START attempts.
+  Seed scanning-host dashboard tiles from explicitly name-matched connected
+  peers before scanning, so a nonadvertising peer held by another owner remains
+  usable. Deduplicate both discovery sources, bound/cancel directory lookup,
+  and distinguish unsupported directories from genuine lookup failures.
+  Preserve bounded error identity tokens in diagnostic summaries while omitting
+  peer identifiers, messages and raw platform payloads.
+- Release one-shot reference managers before admitting the next operation;
+  preserve failed cleanup and native handoff loss details. Keep foreground-service
+  lease admission tied to its original configuration when notification text changes.
+- Drain command-line output before exit so large recording batches and failure
+  diagnostics are not truncated in pipes. Keep archival acknowledgement explicit.
+- Qualify explicit Node adapter selection and failed cleanup receipts in the
+  CLI driver. Extend the opt-in radio probe to archive validated durable
+  records before acknowledgement and verify offline retrieval after release.
+  Reject extra registered recovery generations, mismatched consumer identities
+  and cross-page recording gaps in the controlled one-outage probe instead of
+  allowing churn or missing records to pass a minimum-count check.
+- Retain desktop transport cleanup until release is confirmed. Share BlueZ
+  event-match registrations by connection while keeping adapter ownership
+  separate, and report bounded shutdown failures for retry instead of detached
+  cleanup panics. Keep Tauri authority and orphan-resource identities owned
+  across failed or cancelled shutdown without reopening admission. Retain exact
+  physical scans and unsubscribe scopes after refused or interrupted shutdown,
+  so a subsequent cleanup retry reaches the native operation instead of
+  forgetting its owner or inheriting a permanent failed-attempt receipt.
+- Retain generation-scoped native cleanup after failed connection acquisition,
+  even when the logical link is already lost. Retry it before same-peer
+  acquisition or shutdown, preserve caller deadlines, and report the original
+  native cleanup cause across Node, mobile and Tauri. Keep confirmed release,
+  late acquisition and stale cleanup callbacks distinct; unrelated peers and
+  historical cleanup failures are not discarded by a successful retry.
+- Retain WinRT watcher and maintained-session cleanup stage by stage, including
+  refused compensation after partial watcher creation. Fence callbacks during
+  teardown, serialize per-peer session acquisition and reuse healthy shared
+  sessions. Preserve every structured native cleanup cause across connect and
+  shutdown responses, including concurrent cleanup that still needs a retry.
+- Coordinate discovery across foreground and native continuation leases without
+  replacing a current shared snapshot just because another owner joins. Keep
+  each wait within its caller's original budget, and reject late discovery
+  completion after a service-change invalidation.
+- Carry the authenticated calling connection lease into native GATT admission
+  instead of borrowing the physical topology's original owner. Release only
+  that lease and its subscription children while preserving other owners of the
+  shared link; fence new work during release and retain failed cleanup for retry.
+- Distinguish ordered BlueZ link-loss and database-change signals even when
+  `Connected` and `ServicesResolved` arrive separately. Retire cached link facts
+  on Device1 removal/recreation and BlueZ owner changes, without accepting
+  another sender's signals or treating another adapter as the selected one.
+- Use one packaging source inventory and one authoritative JNI Java facade.
+  Configure target C compiler/archiver paths in the canonical Android builder
+  for bundled SQLite rather than relying on ambient host tools.
+
+### Reference guidance and PMD responses
+
+- Route contributors to current 5.0 contracts, semantics, distribution and
+  release guidance; retain the 4.0 implementation plan as historical context,
+  not current scope or release authority.
+- Assemble bounded multipart Polar control-point responses before parsing
+  settings or advancing setup. Preserve command/generation correlation and
+  report rejected, malformed, oversized or timed-out responses explicitly.
+- Restore the simulator guide's same-daemon two-adapter qualifier, which
+  explains why host profiles can interfere with otherwise isolated test radios.
+- Publish dynamic macOS simulator characteristics without immutable cached values,
+  preserving their read/write/notification properties and delegate-based reads.
+- Share monotonic ECG/ACC simulator sample accounting so host stalls produce
+  explicit skipped-sample diagnostics rather than compressed ECG timestamps.
+  Keep acquisition time separate from configurable notification dispatch cadence.
+- Fail closed when the Linux simulator loses its Bluetooth daemon generation,
+  reporting uncertain delivery and retiring its own advertisement instead of
+  continuing to advertise services that the daemon no longer hosts. Exercise
+  daemon loss on an isolated D-Bus test bus, not the system Bluetooth service.
+- Clarify current background contracts, arm continuation policy before presence
+  observation, and keep subscriptions active during the restoration test.
+
+### Connection setup and test-build integrity
+
+- Observe connection lifecycle while the supervisor configures GATT, retaining
+  an observed link-loss cause instead of treating its downstream stale-handle
+  failure as an unrelated terminal setup error.
+- Verify the canonical build fingerprint when preparing the copied Expo
+  dependency, so JavaScript-only changes cannot pass on version/native identity
+  alone. Missing or stale build seals trigger refresh and revalidation.
+- Declare the Expo-matched Babel preset directly in the reference app so
+  isolated pnpm installs can resolve its bundle configuration without relying
+  on a transitive dependency being hoisted.
+
+### Test-app ECG and accelerometer comparison
+
+- Add independent H10 ACC selection beside ECG in the shared live dashboard,
+  all 12 H10 rate/range combinations and a three-axis milli-g display in Expo.
+  ECG and ACC share one PMD control/data subscription and retain distinct
+  command and generation identities through reconnection and cleanup.
+- Read PMD feature bytes before subscribing to the control point, avoiding
+  CoreBluetooth read callbacks being misclassified as unsolicited PMD responses.
+- Add opt-in bounded raw PMD recording, explicit loss/error and generation
+  records, local JSON file export/share and an offline comparison summary.
+  Keep bulk captures out of automatic snapshots and event history. Captures
+  are host-observed data, not a promise of durable background recording or
+  proof that synthetic ACC matches real H10 motion.
+- Keep ECG-only errors out of ACC diagnostics and scope recording-start metadata
+  to the current run rather than a stopped run's retained display state.
+
+### H10 simulator
+
+- Implement all H10 accelerometer settings (25/50/100/200 Hz, 16-bit XYZ,
+  ±2/4/8 G), raw milli-g frames, sample-clock batching and independent ECG/ACC
+  start/stop. Cross-check Rust encoding with the shared TypeScript decoder.
+- Preserve PMD response order through delayed commands and retire pending
+  stream actions on session loss. Refuse malformed and unsupported mode
+  commands explicitly. Synthetic ACC data and unmeasured firmware timing remain
+  documented fidelity gaps, not real-device qualification.
+- Report actual peripheral send acceptance and negotiated payload capacity;
+  correlate queued control-response settlement before committing stream state.
+  Correct BlueZ indication-confirmation readiness handling and generation-scoped
+  session loss. Extend the existing simulator CI lane to Windows and test the
+  patched peripheral policy on all three hosts.
+
+### Native background continuation
+
+- Share native connect/discover/resubscribe, bounded collection, recovery, and
+  prepared-claim acknowledgement across mobile and trusted desktop hosts.
+  Android delegates to this owner instead of maintaining a second executor.
+- Bootstrap configured iOS continuation from native application launch and
+  CoreBluetooth restoration without waiting for JavaScript. Expo persists the
+  declaration for both mobile hosts and accepts Apple peripheral UUIDs.
+- Preserve scoped connection leases, retained cleanup failures, selector
+  identities, and explicit loss accounting through recovery and handoff.
+  Native-only sessions do not generate orphan JavaScript wake notifications.
+- Expose recovery diagnostics separately from the original wake. Ordinary Node
+  manager options refuse unsupported automatic wake configuration rather than
+  silently discarding it. Web background relaunch is not emulated.
+- Keep BlueZ adapters whose optional `Modalias` property is absent. Invalid
+  required adapter properties now report their error instead of silently
+  turning a real adapter into an empty enumeration.
+- Reject noncanonical desktop platform peer-ID aliases before creating peer
+  ownership or dispatching a connection. The radio's native parser supplies
+  the canonical spelling in `argument.invalid` detail; opaque IDs remain
+  case-sensitive. Native lifecycle events and GATT routes retain one identity.
+- Preserve adapter-scoped BlueZ peer IDs through trusted-host continuation
+  validation and exact outcome matching; mobile declarations retain their
+  separate UUID/MAC validation.
+- Retain BlueZ notification-session ownership across link loss and explicitly
+  retire that client's prior session before resubscribing. A refused or held
+  stop remains retryable cleanup debt; unrelated subscription scopes are
+  untouched.
+- Keep desktop notification collection running while another subscription is
+  pending, and record continuation connection ownership only after acquisition
+  succeeds. Preserve structured Android bridge errors and persist Apple
+  continuation setup failures before reporting completion.
+
+These changes do not promote backend support labels. Phone-only background and
+OS-relaunch qualification remains distinct from deterministic native tests.
+
 ## [5.0.0-rc.12] - 2026-09-25 (prerelease)
 
 This candidate addresses the two P2 IPC recovery findings and the P3 replay

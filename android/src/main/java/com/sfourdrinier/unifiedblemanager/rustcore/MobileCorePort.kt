@@ -24,6 +24,17 @@ interface MobileCorePort {
   fun releaseBackgroundScope(backgroundScope: String): String
   fun invoke(sessionId: Long, op: String, argsJson: String, callback: MobileCoreBridge.InvokeCallback)
   fun drain(sessionId: Long, maxItems: Int, maxBytes: Int): String
+  fun continuationConfigureRecordingDirectory(path: String): String
+  fun continuationRecordingControl(operation: String, id: String, token: String, maxItems: Int, maxBytes: Int): String
+  fun continuationExecute(peerId: String, declarationJson: String, callback: MobileCoreBridge.InvokeCallback)
+  fun continuationPrepareClaim(maxItems: Int, maxBytes: Int, callback: MobileCoreBridge.InvokeCallback)
+  fun continuationAcknowledgeClaim(claimToken: String, callback: MobileCoreBridge.InvokeCallback)
+  fun continuationDescribeBacklog(callback: MobileCoreBridge.InvokeCallback)
+  fun continuationDeclarationReplacementFailure(declarationJson: String): String?
+  fun continuationReserveDeclaration(declarationJson: String): String
+  fun continuationCommitDeclaration(token: String): String
+  fun continuationCancelDeclaration(token: String): String
+  fun continuationSeedDeclaration(declarationJson: String): String
 
   fun completeUnit(requestId: Long): Int
   /** A descriptor read's value. */
@@ -78,6 +89,9 @@ data class CloseFailure(val instance: CharacteristicInstance, val detail: String
 
 /** Production port: every call is the matching [MobileCoreBridge] native. */
 object JniMobileCorePort : MobileCorePort {
+  override fun continuationConfigureRecordingDirectory(path: String) = MobileCoreBridge.nativeContinuationConfigureRecordingDirectory(path)
+  override fun continuationRecordingControl(operation: String, id: String, token: String, maxItems: Int, maxBytes: Int) =
+    MobileCoreBridge.nativeContinuationRecordingControl(operation, id, token, maxItems, maxBytes)
   private fun optional(value: Int?): Int = value ?: MobileCoreBridge.ABSENT_INT
 
   private fun tristate(value: Boolean?): Int = when (value) {
@@ -105,6 +119,25 @@ object JniMobileCorePort : MobileCorePort {
 
   override fun drain(sessionId: Long, maxItems: Int, maxBytes: Int): String =
     MobileCoreBridge.nativeDrain(sessionId, maxItems, maxBytes)
+
+  override fun continuationExecute(peerId: String, declarationJson: String, callback: MobileCoreBridge.InvokeCallback) =
+    MobileCoreBridge.nativeContinuationExecute(peerId, declarationJson, callback)
+
+  override fun continuationPrepareClaim(maxItems: Int, maxBytes: Int, callback: MobileCoreBridge.InvokeCallback) =
+    MobileCoreBridge.nativeContinuationPrepareClaim(maxItems, maxBytes, callback)
+
+  override fun continuationAcknowledgeClaim(claimToken: String, callback: MobileCoreBridge.InvokeCallback) =
+    MobileCoreBridge.nativeContinuationAcknowledgeClaim(claimToken, callback)
+
+  override fun continuationDescribeBacklog(callback: MobileCoreBridge.InvokeCallback) =
+    MobileCoreBridge.nativeContinuationDescribeBacklog(callback)
+
+  override fun continuationDeclarationReplacementFailure(declarationJson: String): String? =
+    MobileCoreBridge.nativeContinuationDeclarationReplacementFailure(declarationJson)
+  override fun continuationReserveDeclaration(declarationJson: String) = MobileCoreBridge.nativeContinuationReserveDeclaration(declarationJson)
+  override fun continuationCommitDeclaration(token: String) = MobileCoreBridge.nativeContinuationCommitDeclaration(token)
+  override fun continuationCancelDeclaration(token: String) = MobileCoreBridge.nativeContinuationCancelDeclaration(token)
+  override fun continuationSeedDeclaration(declarationJson: String) = MobileCoreBridge.nativeContinuationSeedDeclaration(declarationJson)
 
   override fun completeUnit(requestId: Long): Int = MobileCoreBridge.nativeCompleteUnit(requestId)
   override fun completeBytes(requestId: Long, value: ByteArray): Int = MobileCoreBridge.nativeCompleteBytes(requestId, value)

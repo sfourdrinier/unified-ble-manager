@@ -24,6 +24,9 @@ pub mod boundary;
 pub mod btleplug_backend;
 pub mod capabilities;
 pub mod central;
+pub mod continuation_adapter;
+pub mod continuation_journal;
+pub mod continuation_outbox;
 pub mod delivery;
 pub mod errors;
 pub mod executor;
@@ -36,13 +39,15 @@ pub use boundary::{
     ATT_DEFAULT_LE_MTU, ATT_MAX_ATTRIBUTE_VALUE, AdapterAuthorization, AdapterAvailability,
     AdapterLossCause, AdapterPowerState, AddressType, AdmissionPolicy, AdvertisementExtras,
     BluezBus, BondState, CharacteristicAccess, CharacteristicRead, CharacteristicSnapshot,
-    DeliveryMode, DescriptorKey, DescriptorSnapshot, FakeRadio, FaultOp, HostDeployment,
-    InstanceKey, ManufacturerData, ObservationSource, ObservedDelivery, PairOutcome, PeerSnapshot,
-    PropertyFlags, RadioBoundary, RadioCloseFailure, RadioEvent, ReadProvenance, ScanFilterSpec,
-    SecurityState, ServiceData, ServiceSnapshot, UnpairOutcome, WriteLimits,
+    DeliveryMode, DescriptorKey, DescriptorSnapshot, DirectoryPeer, FakeRadio, FaultOp,
+    HostDeployment, InstanceKey, ManufacturerData, ObservationSource, ObservedDelivery,
+    PairOutcome, PeerSnapshot, PropertyFlags, RadioBoundary, RadioCloseFailure, RadioEvent,
+    ReadProvenance, ScanFilterSpec, SecurityState, ServiceData, ServiceSnapshot, UnpairOutcome,
+    WriteLimits,
 };
 #[cfg(feature = "btleplug")]
 pub use btleplug_backend::BtleplugRadio;
+pub mod continuation;
 pub use capabilities::{
     CapabilityVerdict, DESKTOP_CAPABILITIES, DesktopCapability, DesktopOs, OsOverride,
     desktop_capability_states, register_desktop_capabilities, register_desktop_capabilities_for,

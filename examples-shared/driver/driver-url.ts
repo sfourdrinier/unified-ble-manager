@@ -11,9 +11,11 @@ export const DRIVER_HOST_PATH = '/host'
 export const LOCAL_DRIVER_URL = `ws://127.0.0.1:${DRIVER_PORT.toString()}${DRIVER_HOST_PATH}`
 
 const SERVED_BUNDLE = /^https?:\/\/(\[[^\]]+\]|[^/:?#]+)(?::\d+)?\//
-const WEBSOCKET_URL = /^wss?:\/\/[^/?#\s]+(\/[^\s]*)?$/
+const WEBSOCKET_URL = /^wss?:\/\/[^/?#\s]+(\/[^\s]*)?(?![\s\S])/
 
-export type DriverUrlResolution = { readonly url: string; readonly reason: string } | { readonly url: null; readonly reason: string }
+export type DriverUrlResolution =
+  | { readonly url: string; readonly reason: string }
+  | { readonly url: null; readonly reason: string }
 
 /**
  * A device reaches the control server on the same host that served its code
@@ -35,8 +37,35 @@ export function driverUrlFromScriptUrl(scriptUrl: string | null, port: number = 
 export function explicitDriverUrl(value: string | null | undefined, source: string): DriverUrlResolution | null {
   if (value === null || value === undefined || value.length === 0) return null
   if (value === 'off') return { url: null, reason: `${source}=off` }
-  if (!WEBSOCKET_URL.test(value)) return { url: null, reason: `${source} is not a ws:// or wss:// URL: ${value}` }
+  const invalid = { url: null, reason: `${source} is not a ws:// or wss:// URL: ${value}` }
+  if (!WEBSOCKET_URL.test(value) || value.includes('#')) return invalid
+  try {
+    const parsed = new URL(value)
+    if (parsed.hostname.length === 0) return invalid
+  } catch {
+    return invalid
+  }
   return { url: value, reason: source }
+}
+
+/** Reference phones default to no remote channel in Release; only development discovers Metro. */
+export function resolvePhoneDriverUrl(options: {
+  readonly development: boolean
+  readonly explicitUrl: string | null | undefined
+  readonly source: string
+  readonly readScriptUrl: () => string | null
+}): DriverUrlResolution | null {
+  const explicit = explicitDriverUrl(options.explicitUrl, options.source)
+  if (explicit !== null) return explicit
+  if (!options.development) return null
+  const scriptUrl = options.readScriptUrl()
+  const url = driverUrlFromScriptUrl(scriptUrl)
+  return url === null
+    ? {
+        url: null,
+        reason: `bundle was not served by Metro (${scriptUrl ?? 'no SourceCode.scriptURL'}); set ${options.source}=ws://<host>:${DRIVER_PORT.toString()}${DRIVER_HOST_PATH}`
+      }
+    : { url, reason: 'derived from the Metro bundle URL' }
 }
 
 /** The `driver` query parameter of a page URL, as used by the browser hosts. */

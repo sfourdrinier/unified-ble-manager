@@ -7,6 +7,7 @@
 
 import type { BackendProvider, HostNeutralBackendIdentity } from './backend-contract/identity'
 import type { BluezBusKind } from './backends/desktop/platform-identity'
+import { admitBluezConnectionPolicy, type BluezConnectionPolicy } from './backends/desktop/bluez-connection-policy'
 import type { BluezPairingGenerationController } from './backends/desktop/bluez-pairing-generation'
 import { admitBluezBusKind, createDesktopCoreProvider, type DesktopCoreProviderOptions } from './node-desktop-manager'
 
@@ -14,6 +15,7 @@ export * from './node-corebluetooth'
 export * from './node-winrt'
 export * from './node-bluez'
 export * from './electron/main'
+export { encodeNativeContinuationFailure } from './core/native-continuation-envelope'
 
 /** Creates the Electron-main macOS provider over the shared Rust core. */
 export function createElectronMainCoreBluetoothBackendProvider(
@@ -37,6 +39,8 @@ export type {
 
 /** The Node BlueZ factory's options, for the Electron-main BlueZ provider. */
 export interface ElectronMainBluezProviderOptions extends DesktopCoreProviderOptions {
+  /** Trusted LE-bearer implementation/daemon-owner attestation; omission permits scanning only. */
+  readonly connectionPolicy?: BluezConnectionPolicy
   /** The D-Bus bus BlueZ is reached on (`'system'` by default). */
   readonly busKind?: BluezBusKind
   /**
@@ -52,9 +56,10 @@ export interface ElectronMainBluezProviderOptions extends DesktopCoreProviderOpt
 export function createElectronMainBluezBackendProvider(
   options: ElectronMainBluezProviderOptions
 ): BackendProvider<string, HostNeutralBackendIdentity<string>> {
-  const { busKind = 'system', pairingGeneration, ...providerOptions } = options
+  const { busKind = 'system', pairingGeneration, connectionPolicy, ...providerOptions } = options
   return createDesktopCoreProvider('bluez', providerOptions, 'desktop-native', {
     bluezBus: admitBluezBusKind(busKind),
+    connectionPolicy: admitBluezConnectionPolicy(connectionPolicy),
     ...(pairingGeneration === undefined ? {} : { pairingGeneration })
   })
 }

@@ -103,10 +103,12 @@ export type ConnectionIntent = 'direct' | 'when-available'
 
 /**
  * Out-of-band address entry form for `connect()` (NFC, QR codes, persisted state) minted
- * without a prior scan. Address targeting only works for peers using public/static
- * addresses; devices using resolvable private addresses need the durable `PeerReference`
- * form instead. Requires the `peer:address-targeting` capability and fails closed with
- * `capability.unsupported` on backends that do not implement it.
+ * without a prior scan. Targets a current public or random address, subject to the
+ * backend's address-targeting support and the platform's connection result. A private
+ * address may rotate and is not a durable identity; use the durable `PeerReference`
+ * form for retained identity across address rotation. Requires the
+ * `peer:address-targeting` capability and fails closed with `capability.unsupported`
+ * on backends that do not implement it.
  */
 export interface PeerAddress {
   readonly address: string
@@ -257,6 +259,8 @@ export type {
   NormalizedManufacturerDataPattern,
   NormalizedScanClause,
   NormalizedScanObservation,
+  ObservationOrigin,
+  ObservationSource,
   NormalizedScanQuery,
   NormalizedServiceDataPattern,
   ScanClause,
@@ -1823,7 +1827,10 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
 
   async find(options: FindOptions = {}): Promise<BlePeer> {
     const { select, ...scanOptions } = options
-    const operation = normalizeOperationOptions(options, this.now)
+    const operation = normalizeOperationOptions(
+      { ...options, timeoutMs: options.timeoutMs ?? DEFAULT_FIND_TIMEOUT_MS },
+      this.now
+    )
     const scan = await this.scan({
       ...scanOptions,
       duplicates: options.duplicates ?? 'coalesced',
@@ -2565,6 +2572,8 @@ export function filterScanObservations(
 function publicObservationFingerprint(observation: PublicScanObservation): string {
   const bytes = (value: Readonly<Uint8Array>): readonly number[] => [...value]
   return JSON.stringify({
+    provenance: observation.provenance ?? null,
+    origin: observation.origin ?? null,
     peerReference: observation.peerReference === undefined ? null : encodePeerReference(observation.peerReference),
     localName: observation.localName,
     rssi: observation.rssi,
@@ -3135,6 +3144,16 @@ export async function findPeerInScan(
       )
     }
     const peer = peerFromPublicObservation(item.value.value)
-    if (select === undefined || select === 'first' || select(peer)) return peer
+    if (select === undefined || select === 'first' || select(peer)) {
+      // A queued value is not a timely result merely because the JS deadline
+      // callback was suspended. Fence success against the original operation.
+      if (operation?.signal?.aborted === true) {
+        throw rehydratePublicError(contractError('operation.aborted', 'scan', 'public-ble-manager.find'))
+      }
+      if (operation !== null && operation.deadline !== null && operation.deadline <= operation.now()) {
+        throw rehydratePublicError(contractError('operation.timed-out', 'scan', 'public-ble-manager.find'))
+      }
+      return peer
+    }
   }
 }

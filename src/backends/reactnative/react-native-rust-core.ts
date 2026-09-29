@@ -50,6 +50,13 @@ export interface RustCoreRestorationIdentityRequest {
 
 /** Native Rust core entry. */
 export interface ReactNativeRustCoreBinding {
+  /** Verify the sealed binary and protocol revisions without acquiring a session. */
+  verifyNativeIdentity(): Promise<void>
+  continuationRecordingStatus?(id: string): Promise<string>
+  continuationRecordingPrepare?(id: string, maxItems: number, maxBytes: number): Promise<string>
+  continuationRecordingAcknowledge?(id: string, token: string): Promise<string>
+  continuationRecordingStop?(id: string): Promise<string>
+  continuationRecordingClear?(id: string): Promise<string>
   /** Verifies the binary identity, then admits one session lease. */
   openSession(owner: string): Promise<ReactNativeRustCoreSession>
   /**

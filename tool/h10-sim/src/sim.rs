@@ -78,17 +78,20 @@ impl DeviceClock {
 /// (2000-01-01T00:00:00Z): 946684800 seconds.
 pub const POLAR_EPOCH_OFFSET_NS: u64 = 946_684_800_000_000_000;
 
-/// ECG frame timestamp in nanoseconds for the frame whose last sample is
-/// `last_sample_index` (samples counted from boot at 130 Hz). A Polar-epoch
-/// clock anchors boot in device time; an unsynchronised clock counts from
-/// boot with no wall-clock component.
-pub fn device_timestamp_ns(clock: DeviceClock, boot_unix_ns: u64, last_sample_index: u64) -> u64 {
-    let since_boot_ns = last_sample_index.saturating_mul(1_000_000_000) / 130;
+/// Convert a rate-independent sensor elapsed time to the selected device clock.
+/// Refuses invalid epoch anchors and overflow instead of clipping a timestamp.
+pub fn device_timestamp_from_elapsed_ns(
+    clock: DeviceClock,
+    boot_unix_ns: u64,
+    elapsed_ns: u64,
+) -> Result<u64, String> {
     match clock {
-        DeviceClock::Unsynchronized => since_boot_ns,
+        DeviceClock::Unsynchronized => Ok(elapsed_ns),
         DeviceClock::PolarEpoch => boot_unix_ns
-            .saturating_sub(POLAR_EPOCH_OFFSET_NS)
-            .saturating_add(since_boot_ns),
+            .checked_sub(POLAR_EPOCH_OFFSET_NS)
+            .ok_or_else(|| "sensor clock anchor precedes the Polar epoch".to_owned())?
+            .checked_add(elapsed_ns)
+            .ok_or_else(|| "sensor timestamp exceeds u64 nanoseconds".to_owned()),
     }
 }
 
@@ -219,7 +222,8 @@ pub struct SimConfig {
     pub hr_hz: f64,
     /// ECG samples per data frame.
     pub ecg_frame_samples: usize,
-    /// ECG frames per second (samples/s ≈ frames × samples).
+    /// ECG dispatch opportunities per second, not sensor sample rate (fixed 130 Hz).
+    /// Each opportunity sends zero or bounded multiple acquired frames.
     pub ecg_frames_per_sec: f64,
     /// Device clock for ECG timestamps (default: the strap's Polar epoch).
     pub clock: DeviceClock,
@@ -271,6 +275,8 @@ pub enum PmdAction {
     None,
     StartEcg,
     StopEcg,
+    StartAcc(crate::acc::Settings),
+    StopAcc,
 }
 
 /// The answer to a PMD control-point write: bytes to indicate back, plus the
@@ -301,6 +307,11 @@ pub struct SimState {
     pub silent: bool,
     /// Whether the ECG stream is currently running.
     pub ecg_streaming: bool,
+    /// Selected ACC mode; absent until its successful START indication.
+    pub acc_settings: Option<crate::acc::Settings>,
+    /// Sensor scheduler origin, committed with ACC settings, never at write time.
+    pub acc_started_at: Option<Instant>,
+    pub ecg_started_at: Option<Instant>,
     /// Status code forced onto the next PMD command response, then cleared.
     pub reject_next_status: Option<u8>,
     /// Running ECG sample index (130 Hz clock).
@@ -317,6 +328,9 @@ pub struct SimState {
     pub ecg_replay: Option<Vec<i32>>,
     /// PMD indications whose measured latency has not expired yet.
     pub pending_indications: Vec<PendingIndication>,
+    /// Transport-queued responses whose OS acceptance is still unresolved.
+    /// IDs are process-monotonic and never reused by the transport.
+    pending_pmd_actions: Vec<(u64, PmdAction)>,
     /// Run posture (`--mode`; profiles cannot change it).
     pub run_mode: RunMode,
     /// Timing seed for this run (`--timing-seed`; same seed replays a run).
@@ -339,6 +353,63 @@ pub struct SimState {
     /// Last PMD response bytes sent (adversarial `stale-callback` replays
     /// them out of sequence).
     pub last_pmd_response: Option<Vec<u8>>,
+    /// Run-wide observed HR activity. Never inferred from a link-drop request.
+    hr_recovery: HrRecovery,
+}
+
+/// Cumulative evidence, not a delivery guarantee: peripheral APIs do not
+/// expose a portable central identity or confirmation of a notification read.
+#[derive(Debug, Default)]
+struct HrRecovery {
+    subscription_enable_events: u64,
+    subscription_disable_events: u64,
+    notification_attempts: u64,
+    notifications_queued: u64,
+    notifications_os_accepted: u64,
+    notifications_not_subscribed: u64,
+    notifications_failed: u64,
+    counters_saturated: bool,
+}
+
+impl HrRecovery {
+    fn increment(counter: &mut u64, saturated: &mut bool) {
+        match counter.checked_add(1) {
+            Some(next) => *counter = next,
+            None => *saturated = true,
+        }
+    }
+
+    fn observe_outcome(&mut self, outcome: &crate::radio::SendOutcome) {
+        use crate::radio::SendOutcome;
+        let counter = match outcome {
+            SendOutcome::Queued { .. } => &mut self.notifications_queued,
+            SendOutcome::OsAccepted => &mut self.notifications_os_accepted,
+            SendOutcome::NotSubscribed => &mut self.notifications_not_subscribed,
+            SendOutcome::Failed(_) => &mut self.notifications_failed,
+        };
+        Self::increment(counter, &mut self.counters_saturated);
+    }
+
+    fn snapshot(&self) -> serde_json::Value {
+        serde_json::json!({
+            "scope":"characteristic",
+            "clientAttribution":"unavailable",
+            "subscriptionEnableEvents":self.subscription_enable_events,
+            "subscriptionDisableEvents":self.subscription_disable_events,
+            "notificationAttempts":self.notification_attempts,
+            "notificationsQueued":self.notifications_queued,
+            "notificationsOsAccepted":self.notifications_os_accepted,
+            "notificationsNotSubscribed":self.notifications_not_subscribed,
+            "notificationsFailed":self.notifications_failed,
+            "countersSaturated":self.counters_saturated,
+        })
+    }
+}
+
+fn is_hr_characteristic(characteristic: &str) -> bool {
+    uuid::Uuid::parse_str(characteristic).is_ok_and(|uuid| {
+        uuid == crate::advertisement::short_uuid(gatt_spec::uuid16::HEART_RATE_MEASUREMENT)
+    })
 }
 
 /// One injected fault with its timestamp: the labelled sequence
@@ -364,6 +435,9 @@ impl SimState {
             config,
             silent: false,
             ecg_streaming: false,
+            acc_settings: None,
+            acc_started_at: None,
+            ecg_started_at: None,
             reject_next_status: None,
             ecg_sample_index: 0,
             hr_beat_index: 0,
@@ -372,6 +446,7 @@ impl SimState {
             battery_carry: 0.0,
             ecg_replay: None,
             pending_indications: Vec::new(),
+            pending_pmd_actions: Vec::new(),
             run_mode: RunMode::Faithful,
             run_seed: 0,
             run_started_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
@@ -381,6 +456,7 @@ impl SimState {
             delivery_keep_every: 1,
             delivery_seq: 0,
             last_pmd_response: None,
+            hr_recovery: HrRecovery::default(),
         }
     }
 
@@ -395,6 +471,45 @@ impl SimState {
         });
     }
 
+    pub fn observe_subscription(&mut self, characteristic: &str, enabled: bool) {
+        if !is_hr_characteristic(characteristic) {
+            return;
+        }
+        let counter = if enabled {
+            &mut self.hr_recovery.subscription_enable_events
+        } else {
+            &mut self.hr_recovery.subscription_disable_events
+        };
+        HrRecovery::increment(counter, &mut self.hr_recovery.counters_saturated);
+    }
+
+    pub fn observe_hr_notify(
+        &mut self,
+        outcome: &Result<crate::radio::SendOutcome, crate::radio::RadioError>,
+    ) {
+        HrRecovery::increment(
+            &mut self.hr_recovery.notification_attempts,
+            &mut self.hr_recovery.counters_saturated,
+        );
+        match outcome {
+            Ok(outcome) => self.hr_recovery.observe_outcome(outcome),
+            Err(_) => HrRecovery::increment(
+                &mut self.hr_recovery.notifications_failed,
+                &mut self.hr_recovery.counters_saturated,
+            ),
+        }
+    }
+
+    pub fn observe_notify_settled(
+        &mut self,
+        characteristic: &str,
+        outcome: &crate::radio::SendOutcome,
+    ) {
+        if is_hr_characteristic(characteristic) {
+            self.hr_recovery.observe_outcome(outcome);
+        }
+    }
+
     /// This run's seed/profile, mode and injected fault sequence with
     /// timestamps — the `run-record` answer.
     pub fn run_record(&self) -> serde_json::Value {
@@ -404,6 +519,7 @@ impl SimState {
             "profile": self.config.profile_path.clone().unwrap_or_else(|| "<builtin stock-h10>".to_string()),
             "name": self.config.name,
             "startedAt": self.run_started_at,
+            "hrRecovery": self.hr_recovery.snapshot(),
             "faults": self.faults.iter().map(|entry| {
                 serde_json::json!({"ts": entry.ts, "fault": entry.fault, "detail": entry.detail})
             }).collect::<Vec<_>>(),
@@ -569,6 +685,13 @@ impl SimState {
             "profile": self.config.profile_path,
             "silent": self.silent,
             "ecgStreaming": self.ecg_streaming,
+            "accStreaming": self.acc_settings.is_some(),
+            "accSettings": self.acc_settings.map(|settings| serde_json::json!({
+                "sampleRateHz": settings.sample_rate_hz,
+                "resolutionBits": crate::acc::RESOLUTION_BITS,
+                "rangeG": settings.range_g,
+                "channels": crate::acc::CHANNELS,
+            })),
             "rejectNextPmd": self.reject_next_status,
             "hrHz": self.config.hr_hz,
             "ecgFramesPerSec": self.config.ecg_frames_per_sec,
@@ -580,7 +703,17 @@ impl SimState {
             "responseDelayMs": self.response_delay_ms,
             "deliveryKeepEvery": self.delivery_keep_every,
             "faults": self.faults.len(),
+            "hrRecovery": self.hr_recovery.snapshot(),
         })
+    }
+
+    /// Bound delayed responses and queued streaming actions together. The
+    /// transport separately bounds queued responses that have no state action.
+    pub fn can_admit_pmd_command(&self) -> bool {
+        self.pending_indications
+            .len()
+            .saturating_add(self.pending_pmd_actions.len())
+            < crate::radio::SEND_QUEUE_CAPACITY
     }
 
     /// Handles a PMD control-point write, returning the indicate payload.
@@ -591,16 +724,19 @@ impl SimState {
     /// and a central that vanishes mid-latency leaves no stuck stream
     /// behind. (Takes `&mut` only to consume a pending injected fault.)
     pub fn handle_pmd_write(&mut self, bytes: &[u8]) -> PmdWriteOutcome {
-        let Some(&op) = bytes.first() else {
+        if !self.can_admit_pmd_command() {
+            return PmdWriteOutcome {
+                indicate: None,
+                action: PmdAction::None,
+            };
+        }
+        let [op, measurement_type, parameters @ ..] = bytes else {
             return PmdWriteOutcome {
                 indicate: None,
                 action: PmdAction::None,
             };
         };
-        let measurement_type = bytes
-            .get(1)
-            .copied()
-            .unwrap_or(gatt_spec::PMD_MEASUREMENT_ECG);
+        let (op, measurement_type) = (*op, *measurement_type);
         let answer = |status: u8, params: &[u8], action: PmdAction| PmdWriteOutcome {
             indicate: Some(gatt_spec::encode_pmd_response(
                 op,
@@ -620,11 +756,16 @@ impl SimState {
         ) {
             return answer(gatt_spec::PMD_STATUS_INVALID_OP, &[], PmdAction::None);
         }
-        // Known-but-unsupported types (PPG/ACC/PPI are valid Polar types but not
-        // on an H10) report NOT_SUPPORTED; anything else is not a measurement.
-        match measurement_type & 0x3F {
-            x if x == gatt_spec::PMD_MEASUREMENT_ECG => {}
-            0x01..=0x03 => {
+        // Polar SDK PmdRecordingType.asBitField uses bit 7 for offline mode.
+        // This simulator implements online ECG/ACC only. Do not mask mode
+        // bits and silently start a different mechanism. Bit 6 is likewise
+        // unimplemented; exact real-firmware refusal precedence is unmeasured.
+        if measurement_type & 0xc0 != 0 {
+            return answer(gatt_spec::PMD_STATUS_NOT_SUPPORTED, &[], PmdAction::None);
+        }
+        match measurement_type {
+            gatt_spec::PMD_MEASUREMENT_ECG | gatt_spec::PMD_MEASUREMENT_ACC => {}
+            0x01 | 0x03 => {
                 return answer(gatt_spec::PMD_STATUS_NOT_SUPPORTED, &[], PmdAction::None);
             }
             _ => {
@@ -635,29 +776,70 @@ impl SimState {
                 );
             }
         }
+        if op != gatt_spec::PMD_OP_START && !parameters.is_empty() {
+            return answer(gatt_spec::PMD_STATUS_INVALID_LENGTH, &[], PmdAction::None);
+        }
+        let pending_actions = self
+            .pending_pmd_actions
+            .iter()
+            .map(|(_, action)| *action)
+            .chain(
+                self.pending_indications
+                    .iter()
+                    .map(|pending| pending.action),
+            );
+        let (ecg_pending, acc_pending) = pending_actions.fold(
+            (self.ecg_streaming, self.acc_settings.is_some()),
+            |(ecg, acc), action| match action {
+                PmdAction::StartEcg => (true, acc),
+                PmdAction::StopEcg => (false, acc),
+                PmdAction::StartAcc(_) => (ecg, true),
+                PmdAction::StopAcc => (ecg, false),
+                PmdAction::None => (ecg, acc),
+            },
+        );
+        let is_acc = measurement_type == gatt_spec::PMD_MEASUREMENT_ACC;
+        let streaming = if is_acc { acc_pending } else { ecg_pending };
         match op {
             gatt_spec::PMD_OP_GET_SETTINGS => answer(
                 gatt_spec::PMD_STATUS_SUCCESS,
-                &gatt_spec::encode_ecg_settings(),
+                &if is_acc {
+                    crate::acc::settings_payload()
+                } else {
+                    gatt_spec::encode_ecg_settings()
+                },
                 PmdAction::None,
             ),
             gatt_spec::PMD_OP_START => {
                 // Like the strap, starting twice is ALREADY_IN_STATE: the
                 // stream keeps running, no second start is emitted.
-                if self.ecg_streaming {
+                if streaming {
                     return answer(gatt_spec::PMD_STATUS_ALREADY_IN_STATE, &[], PmdAction::None);
                 }
-                match validate_start_settings(&bytes[2..]) {
-                    Ok(()) => answer(gatt_spec::PMD_STATUS_SUCCESS, &[], PmdAction::StartEcg),
+                let action = if is_acc {
+                    crate::acc::validate_start(parameters).map(PmdAction::StartAcc)
+                } else {
+                    validate_start_settings(parameters).map(|()| PmdAction::StartEcg)
+                };
+                match action {
+                    Ok(action) => answer(gatt_spec::PMD_STATUS_SUCCESS, &[], action),
                     Err(status) => answer(status, &[], PmdAction::None),
                 }
             }
             gatt_spec::PMD_OP_STOP => {
                 // Like the strap, stopping while idle is ALREADY_IN_STATE.
-                if !self.ecg_streaming {
+                if !streaming {
                     return answer(gatt_spec::PMD_STATUS_ALREADY_IN_STATE, &[], PmdAction::None);
                 }
-                answer(gatt_spec::PMD_STATUS_SUCCESS, &[], PmdAction::StopEcg)
+                answer(
+                    gatt_spec::PMD_STATUS_SUCCESS,
+                    &[],
+                    if is_acc {
+                        PmdAction::StopAcc
+                    } else {
+                        PmdAction::StopEcg
+                    },
+                )
             }
             _ => unreachable!("op validity is checked above"),
         }
@@ -667,10 +849,64 @@ impl SimState {
     /// out (inline answer or deferred drain), never at write time.
     pub fn apply_pmd_action(&mut self, action: PmdAction) {
         match action {
-            PmdAction::StartEcg => self.ecg_streaming = true,
-            PmdAction::StopEcg => self.ecg_streaming = false,
+            PmdAction::StartEcg => {
+                self.ecg_streaming = true;
+                self.ecg_started_at = Some(Instant::now());
+            }
+            PmdAction::StopEcg => {
+                self.ecg_streaming = false;
+                self.ecg_started_at = None;
+            }
+            PmdAction::StartAcc(settings) => {
+                self.acc_settings = Some(settings);
+                self.acc_started_at = Some(Instant::now());
+            }
+            PmdAction::StopAcc => {
+                self.acc_settings = None;
+                self.acc_started_at = None;
+            }
             PmdAction::None => {}
         }
+    }
+
+    /// End the scoped PMD session without leaking old actions into a new one.
+    /// Run-wide configuration, injected faults and evidence counters survive.
+    pub fn reset_pmd_session(&mut self) {
+        self.ecg_streaming = false;
+        self.ecg_started_at = None;
+        self.acc_settings = None;
+        self.acc_started_at = None;
+        self.pending_indications.clear();
+        self.pending_pmd_actions.clear();
+        self.last_pmd_response = None;
+    }
+
+    /// Remember transport admission without claiming OS acceptance.
+    pub fn queue_pmd_action(&mut self, id: u64, action: PmdAction) {
+        if action != PmdAction::None {
+            self.pending_pmd_actions.push((id, action));
+        }
+    }
+
+    /// Return an exactly matched accepted action for the caller to commit/log.
+    /// A failed, repeated or prior-session completion must not start a stream.
+    pub fn settle_pmd_action(&mut self, id: u64, accepted: bool) -> Option<PmdAction> {
+        let index = self
+            .pending_pmd_actions
+            .iter()
+            .position(|(pending, _)| *pending == id)?;
+        let (_, action) = self.pending_pmd_actions.remove(index);
+        accepted.then_some(action)
+    }
+
+    /// A later response cannot overtake an earlier delayed START/STOP.
+    /// Dequeue is not commit: transport applies the action only after the
+    /// indication is accepted, and otherwise reports the failed indication.
+    pub fn take_due_indication(&mut self, now: Instant) -> Option<PendingIndication> {
+        self.pending_indications
+            .first()
+            .filter(|pending| pending.due <= now)?;
+        Some(self.pending_indications.remove(0))
     }
 }
 
@@ -678,11 +914,19 @@ impl SimState {
 /// ECG configuration (130 Hz / 14 bit). Returns the status code to report.
 fn validate_start_settings(tlv: &[u8]) -> Result<(), u8> {
     let mut offset = 0;
+    let mut selected = [false; 2];
     while offset < tlv.len() {
         let setting = tlv[offset];
         let Some(&count) = tlv.get(offset + 1) else {
             return Err(gatt_spec::PMD_STATUS_INVALID_LENGTH);
         };
+        let Some(seen) = selected.get_mut(usize::from(setting)) else {
+            return Err(gatt_spec::PMD_STATUS_INVALID_PARAMETER);
+        };
+        if count != 1 || *seen {
+            return Err(gatt_spec::PMD_STATUS_INVALID_PARAMETER);
+        }
+        *seen = true;
         let value_at = |index: usize| -> Option<u16> {
             let base = offset + 2 + index * 2;
             Some(u16::from_le_bytes([*tlv.get(base)?, *tlv.get(base + 1)?]))
@@ -718,7 +962,11 @@ fn validate_start_settings(tlv: &[u8]) -> Result<(), u8> {
             }
         }
     }
-    Ok(())
+    if selected.into_iter().all(|present| present) {
+        Ok(())
+    } else {
+        Err(gatt_spec::PMD_STATUS_INVALID_PARAMETER)
+    }
 }
 
 #[cfg(test)]
@@ -727,6 +975,96 @@ mod tests {
 
     fn state() -> SimState {
         SimState::new(SimConfig::default())
+    }
+
+    #[test]
+    fn arbitrary_rate_sensor_clock_checks_epoch_and_elapsed_overflow() {
+        assert_eq!(
+            device_timestamp_from_elapsed_ns(DeviceClock::Unsynchronized, 0, 123),
+            Ok(123)
+        );
+        assert_eq!(
+            device_timestamp_from_elapsed_ns(
+                DeviceClock::PolarEpoch,
+                POLAR_EPOCH_OFFSET_NS + 10,
+                20
+            ),
+            Ok(30)
+        );
+        assert!(device_timestamp_from_elapsed_ns(
+            DeviceClock::PolarEpoch,
+            POLAR_EPOCH_OFFSET_NS - 1,
+            0
+        )
+        .is_err());
+        assert!(device_timestamp_from_elapsed_ns(
+            DeviceClock::PolarEpoch,
+            u64::MAX,
+            POLAR_EPOCH_OFFSET_NS + 1
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn hr_recovery_records_actual_acceptance_without_counting_queued_as_delivered() {
+        use crate::radio::{RadioError, SendOutcome};
+        let mut sim = state();
+        let hr = "00002a37-0000-1000-8000-00805f9b34fb";
+        sim.observe_subscription(hr, true);
+        sim.observe_hr_notify(&Ok(SendOutcome::Queued { id: 1 }));
+        assert_eq!(sim.snapshot()["hrRecovery"]["notificationsOsAccepted"], 0);
+        sim.observe_notify_settled(hr, &SendOutcome::OsAccepted);
+        sim.observe_subscription(hr, false);
+        sim.record_fault("drop-link", serde_json::json!({"dropped":["peer"]}));
+        sim.observe_hr_notify(&Ok(SendOutcome::NotSubscribed));
+        sim.observe_subscription(hr, true);
+        sim.observe_hr_notify(&Ok(SendOutcome::OsAccepted));
+        sim.observe_hr_notify(&Ok(SendOutcome::Failed("queue-full".to_owned())));
+        sim.observe_hr_notify(&Err(RadioError("native refusal".to_owned())));
+        sim.observe_hr_notify(&Ok(SendOutcome::Queued { id: 2 }));
+        sim.observe_notify_settled(hr, &SendOutcome::Failed("old generation".to_owned()));
+        let telemetry = sim.snapshot()["hrRecovery"].clone();
+        assert_eq!(telemetry["subscriptionEnableEvents"], 2);
+        assert_eq!(telemetry["subscriptionDisableEvents"], 1);
+        assert_eq!(telemetry["notificationAttempts"], 6);
+        assert_eq!(telemetry["notificationsQueued"], 2);
+        assert_eq!(telemetry["notificationsOsAccepted"], 2);
+        assert_eq!(telemetry["notificationsNotSubscribed"], 1);
+        assert_eq!(telemetry["notificationsFailed"], 3);
+        assert_eq!(telemetry["clientAttribution"], "unavailable");
+        assert_eq!(telemetry, sim.run_record()["hrRecovery"]);
+        sim.config.bpm = 90;
+        assert_eq!(
+            telemetry,
+            sim.snapshot()["hrRecovery"],
+            "configuration changes cannot erase run evidence"
+        );
+    }
+
+    #[test]
+    fn other_characteristics_do_not_pollute_hr_recovery_evidence() {
+        let mut sim = state();
+        let before = sim.snapshot()["hrRecovery"].clone();
+        sim.observe_subscription(gatt_spec::pmd::DATA, true);
+        sim.observe_notify_settled(gatt_spec::pmd::DATA, &crate::radio::SendOutcome::OsAccepted);
+        assert_eq!(before, sim.snapshot()["hrRecovery"]);
+        sim.record_fault("drop-link", serde_json::json!({"dropped":["peer"]}));
+        assert_eq!(
+            before,
+            sim.snapshot()["hrRecovery"],
+            "a requested link drop cannot manufacture unsubscribe or delivery evidence"
+        );
+    }
+
+    #[test]
+    fn hr_recovery_counter_saturation_is_explicit() {
+        let mut sim = state();
+        sim.hr_recovery.notification_attempts = u64::MAX;
+        sim.observe_hr_notify(&Ok(crate::radio::SendOutcome::NotSubscribed));
+        let telemetry = sim.snapshot()["hrRecovery"].clone();
+        assert_eq!(telemetry["notificationAttempts"], u64::MAX);
+        assert_eq!(telemetry["notificationsNotSubscribed"], 1);
+        assert_eq!(telemetry["countersSaturated"], true);
     }
 
     #[test]
@@ -767,7 +1105,12 @@ mod tests {
         // nanoseconds — never a Unix-epoch value like the old wall clock.
         let boot_unix_ns = super::POLAR_EPOCH_OFFSET_NS + 500_000_000;
         assert_eq!(
-            super::device_timestamp_ns(super::DeviceClock::PolarEpoch, boot_unix_ns, 130),
+            super::device_timestamp_from_elapsed_ns(
+                super::DeviceClock::PolarEpoch,
+                boot_unix_ns,
+                1_000_000_000
+            )
+            .unwrap(),
             1_500_000_000
         );
     }
@@ -776,7 +1119,12 @@ mod tests {
     fn unsynchronised_clock_counts_from_boot() {
         // Explicitly unsynchronised: the wall clock never enters the stamp.
         assert_eq!(
-            super::device_timestamp_ns(super::DeviceClock::Unsynchronized, 9_999_999_999, 130),
+            super::device_timestamp_from_elapsed_ns(
+                super::DeviceClock::Unsynchronized,
+                9_999_999_999,
+                1_000_000_000
+            )
+            .unwrap(),
             1_000_000_000
         );
     }
@@ -785,11 +1133,12 @@ mod tests {
     fn polar_epoch_frame_encodes_exact_bytes() {
         // One second after the Polar epoch, one zero sample: the full frame
         // is pinned byte for byte.
-        let timestamp_ns = super::device_timestamp_ns(
+        let timestamp_ns = super::device_timestamp_from_elapsed_ns(
             super::DeviceClock::PolarEpoch,
             super::POLAR_EPOCH_OFFSET_NS,
-            130,
-        );
+            1_000_000_000,
+        )
+        .unwrap();
         assert_eq!(timestamp_ns, 1_000_000_000);
         let frame = gatt_spec::encode_ecg_frame(timestamp_ns, &[0]);
         assert_eq!(
@@ -990,6 +1339,375 @@ mod tests {
         assert_eq!(outcome.indicate, Some(expected));
     }
 
+    fn acc_start(rate: u16, range: u16) -> Vec<u8> {
+        let mut bytes = vec![gatt_spec::PMD_OP_START, gatt_spec::PMD_MEASUREMENT_ACC];
+        for (kind, value) in [(0, rate), (1, crate::acc::RESOLUTION_BITS), (2, range)] {
+            bytes.extend_from_slice(&[kind, 1]);
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn ecg_acquisition_origin_begins_at_start_commit_and_restarts_after_stop() {
+        let mut sim = state();
+        assert!(sim.ecg_started_at.is_none());
+        let before = Instant::now();
+        sim.apply_pmd_action(PmdAction::StartEcg);
+        let first = sim.ecg_started_at.unwrap();
+        assert!(first >= before);
+        sim.apply_pmd_action(PmdAction::StopEcg);
+        assert!(sim.ecg_started_at.is_none());
+        sim.apply_pmd_action(PmdAction::StartEcg);
+        assert!(sim.ecg_started_at.unwrap() >= first);
+        sim.reset_pmd_session();
+        assert!(sim.ecg_started_at.is_none());
+    }
+
+    #[test]
+    fn get_acc_settings_uses_the_shared_h10_catalog() {
+        let mut sim = state();
+        let outcome = sim.handle_pmd_write(&[
+            gatt_spec::PMD_OP_GET_SETTINGS,
+            gatt_spec::PMD_MEASUREMENT_ACC,
+        ]);
+        assert_eq!(outcome.action, PmdAction::None);
+        assert_eq!(
+            outcome.indicate,
+            Some(gatt_spec::encode_pmd_response(
+                gatt_spec::PMD_OP_GET_SETTINGS,
+                gatt_spec::PMD_MEASUREMENT_ACC,
+                gatt_spec::PMD_STATUS_SUCCESS,
+                false,
+                &crate::acc::settings_payload(),
+            ))
+        );
+    }
+
+    #[test]
+    fn all_twelve_acc_modes_start_and_stop_independently_of_ecg_at_indication() {
+        for rate in crate::acc::SAMPLE_RATES_HZ {
+            for range in crate::acc::RANGES_G {
+                let mut sim = state();
+                sim.apply_pmd_action(PmdAction::StartEcg);
+                let start = sim.handle_pmd_write(&acc_start(rate, range));
+                assert_eq!(
+                    start.indicate.as_ref().unwrap()[3],
+                    gatt_spec::PMD_STATUS_SUCCESS
+                );
+                assert_ne!(start.action, PmdAction::None);
+                assert_eq!(
+                    sim.snapshot()["accStreaming"],
+                    false,
+                    "decision is not streaming"
+                );
+                assert!(sim.snapshot()["accSettings"].is_null());
+                assert!(sim.acc_started_at.is_none());
+                let before_commit = Instant::now();
+                sim.apply_pmd_action(start.action);
+                assert!(sim.acc_started_at.unwrap() >= before_commit);
+                assert_eq!(sim.snapshot()["accStreaming"], true);
+                assert_eq!(
+                    sim.snapshot()["accSettings"],
+                    serde_json::json!({
+                        "sampleRateHz": rate, "resolutionBits":16, "rangeG":range, "channels":3,
+                    })
+                );
+                assert!(sim.ecg_streaming);
+                let repeated = sim.handle_pmd_write(&acc_start(rate, range));
+                assert_eq!(repeated.action, PmdAction::None);
+                assert_eq!(
+                    repeated.indicate.as_ref().unwrap()[3],
+                    gatt_spec::PMD_STATUS_ALREADY_IN_STATE
+                );
+                let ecg_stop =
+                    sim.handle_pmd_write(&[gatt_spec::PMD_OP_STOP, gatt_spec::PMD_MEASUREMENT_ECG]);
+                sim.apply_pmd_action(ecg_stop.action);
+                assert!(!sim.ecg_streaming);
+                assert_eq!(sim.snapshot()["accStreaming"], true);
+                sim.apply_pmd_action(PmdAction::StartEcg);
+                let acc_stop =
+                    sim.handle_pmd_write(&[gatt_spec::PMD_OP_STOP, gatt_spec::PMD_MEASUREMENT_ACC]);
+                assert_eq!(
+                    acc_stop.indicate.as_ref().unwrap()[3],
+                    gatt_spec::PMD_STATUS_SUCCESS
+                );
+                assert_eq!(
+                    sim.snapshot()["accStreaming"],
+                    true,
+                    "STOP also waits for indication"
+                );
+                sim.apply_pmd_action(acc_stop.action);
+                assert!(sim.ecg_streaming);
+                assert_eq!(sim.snapshot()["accStreaming"], false);
+                assert!(sim.snapshot()["accSettings"].is_null());
+                assert!(sim.acc_started_at.is_none());
+                let idle_stop =
+                    sim.handle_pmd_write(&[gatt_spec::PMD_OP_STOP, gatt_spec::PMD_MEASUREMENT_ACC]);
+                assert_eq!(idle_stop.action, PmdAction::None);
+                assert_eq!(
+                    idle_stop.indicate.as_ref().unwrap()[3],
+                    gatt_spec::PMD_STATUS_ALREADY_IN_STATE
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn incomplete_command_headers_and_acc_tlvs_never_panic_or_start_streaming() {
+        let command = acc_start(200, 8);
+        let mut sim = state();
+        for bytes in [
+            vec![],
+            vec![gatt_spec::PMD_OP_START],
+            vec![gatt_spec::PMD_OP_STOP],
+            vec![gatt_spec::PMD_OP_GET_SETTINGS],
+        ] {
+            let outcome = sim.handle_pmd_write(&bytes);
+            assert_eq!(
+                outcome.indicate, None,
+                "missing type cannot be fabricated as ECG"
+            );
+            assert_eq!(outcome.action, PmdAction::None);
+        }
+        for end in 2..command.len() {
+            let outcome = sim.handle_pmd_write(&command[..end]);
+            assert_eq!(outcome.action, PmdAction::None);
+            assert_ne!(
+                outcome.indicate.as_ref().unwrap()[3],
+                gatt_spec::PMD_STATUS_SUCCESS
+            );
+        }
+        assert!(!sim.ecg_streaming);
+    }
+
+    #[test]
+    fn incomplete_ecg_settings_and_extra_non_start_parameters_are_refused() {
+        let mut sim = state();
+        let command = [2, 0, 0, 1, 130, 0, 1, 1, 14, 0];
+        for end in 2..command.len() {
+            let outcome = sim.handle_pmd_write(&command[..end]);
+            assert_eq!(outcome.action, PmdAction::None, "ECG prefix length {end}");
+            assert_ne!(outcome.indicate.unwrap()[3], gatt_spec::PMD_STATUS_SUCCESS);
+        }
+        for command in [vec![1, 0, 0], vec![1, 2, 0], vec![3, 0, 0], vec![3, 2, 0]] {
+            let outcome = sim.handle_pmd_write(&command);
+            assert_eq!(outcome.action, PmdAction::None);
+            assert_eq!(
+                outcome.indicate.unwrap()[3],
+                gatt_spec::PMD_STATUS_INVALID_LENGTH
+            );
+        }
+        sim.reject_next_status = Some(gatt_spec::PMD_STATUS_NOT_SUPPORTED);
+        assert!(sim.handle_pmd_write(&[2]).indicate.is_none());
+        assert_eq!(
+            sim.reject_next_status,
+            Some(gatt_spec::PMD_STATUS_NOT_SUPPORTED)
+        );
+    }
+
+    #[test]
+    fn unsupported_pmd_mode_bits_are_refused_not_masked_into_online_streams() {
+        let mut sim = state();
+        for measurement in [
+            gatt_spec::PMD_MEASUREMENT_ECG,
+            gatt_spec::PMD_MEASUREMENT_ACC,
+        ] {
+            for flags in [0x40, 0x80, 0xc0] {
+                for op in [
+                    gatt_spec::PMD_OP_GET_SETTINGS,
+                    gatt_spec::PMD_OP_START,
+                    gatt_spec::PMD_OP_STOP,
+                ] {
+                    let outcome = sim.handle_pmd_write(&[op, measurement | flags]);
+                    assert_eq!(outcome.action, PmdAction::None);
+                    assert_eq!(
+                        outcome.indicate.as_ref().unwrap()[3],
+                        gatt_spec::PMD_STATUS_NOT_SUPPORTED
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pending_actions_reserve_stream_state_without_starting_a_clock() {
+        let mut sim = state();
+        let due = Instant::now() + std::time::Duration::from_secs(1);
+        let start = sim.handle_pmd_write(&acc_start(25, 2));
+        assert_ne!(start.action, PmdAction::None);
+        sim.pending_indications.push(PendingIndication {
+            due,
+            response: start.indicate.unwrap(),
+            action: start.action,
+        });
+        let duplicate = sim.handle_pmd_write(&acc_start(200, 8));
+        assert_eq!(duplicate.action, PmdAction::None);
+        assert_eq!(
+            duplicate.indicate.unwrap()[3],
+            gatt_spec::PMD_STATUS_ALREADY_IN_STATE
+        );
+        assert!(sim.acc_started_at.is_none());
+        assert!(sim.acc_settings.is_none());
+        let ecg_start = sim.handle_pmd_write(&[2, 0, 0, 1, 130, 0, 1, 1, 14, 0]);
+        assert_eq!(
+            ecg_start.action,
+            PmdAction::StartEcg,
+            "ACC reservation does not block ECG"
+        );
+        sim.pending_indications.push(PendingIndication {
+            due,
+            response: ecg_start.indicate.unwrap(),
+            action: ecg_start.action,
+        });
+        assert_eq!(
+            sim.handle_pmd_write(&[2, 0, 0, 1, 130, 0, 1, 1, 14, 0])
+                .indicate
+                .unwrap()[3],
+            gatt_spec::PMD_STATUS_ALREADY_IN_STATE
+        );
+        let stop = sim.handle_pmd_write(&[3, 2]);
+        assert_ne!(stop.action, PmdAction::None, "STOP follows a queued START");
+        sim.pending_indications.push(PendingIndication {
+            due,
+            response: stop.indicate.unwrap(),
+            action: stop.action,
+        });
+        assert_eq!(
+            sim.handle_pmd_write(&[3, 2]).indicate.unwrap()[3],
+            gatt_spec::PMD_STATUS_ALREADY_IN_STATE
+        );
+        for pending in std::mem::take(&mut sim.pending_indications) {
+            sim.apply_pmd_action(pending.action);
+        }
+        assert!(sim.ecg_streaming);
+        assert!(sim.acc_settings.is_none());
+        assert!(sim.acc_started_at.is_none());
+    }
+
+    #[test]
+    fn session_reset_drops_both_streams_and_uncommitted_indications() {
+        let mut sim = state();
+        sim.apply_pmd_action(PmdAction::StartEcg);
+        let acc = sim.handle_pmd_write(&acc_start(50, 4));
+        sim.apply_pmd_action(acc.action);
+        sim.pending_indications.push(PendingIndication {
+            due: Instant::now(),
+            response: acc.indicate.unwrap(),
+            action: acc.action,
+        });
+        sim.last_pmd_response = Some(vec![0xf0, 2, 2, 0, 0]);
+        sim.reset_pmd_session();
+        assert!(!sim.ecg_streaming);
+        assert!(sim.acc_settings.is_none());
+        assert!(sim.acc_started_at.is_none());
+        assert!(sim.pending_indications.is_empty());
+        assert!(sim.last_pmd_response.is_none());
+        assert_eq!(
+            sim.handle_pmd_write(&acc_start(200, 8)).indicate.unwrap()[3],
+            gatt_spec::PMD_STATUS_SUCCESS
+        );
+    }
+
+    #[test]
+    fn reversed_response_deadlines_cannot_commit_stop_before_start() {
+        let mut sim = state();
+        let now = Instant::now();
+        let later = now + std::time::Duration::from_secs(1);
+        let start = sim.handle_pmd_write(&acc_start(100, 8));
+        sim.pending_indications.push(PendingIndication {
+            due: later,
+            response: start.indicate.unwrap(),
+            action: start.action,
+        });
+        let stop = sim.handle_pmd_write(&[3, 2]);
+        sim.pending_indications.push(PendingIndication {
+            due: now,
+            response: stop.indicate.unwrap(),
+            action: stop.action,
+        });
+        assert!(
+            sim.take_due_indication(now).is_none(),
+            "due STOP cannot jump over START"
+        );
+        assert_eq!(sim.pending_indications.len(), 2);
+        let first = sim.take_due_indication(later).unwrap();
+        assert!(matches!(first.action, PmdAction::StartAcc(_)));
+        assert!(
+            sim.acc_settings.is_none(),
+            "dequeue does not commit a radio effect"
+        );
+        sim.apply_pmd_action(first.action);
+        let second = sim.take_due_indication(later).unwrap();
+        assert_eq!(second.action, PmdAction::StopAcc);
+        sim.apply_pmd_action(second.action);
+        assert!(sim.acc_settings.is_none());
+        assert!(sim.acc_started_at.is_none());
+        assert!(sim.take_due_indication(later).is_none());
+    }
+
+    #[test]
+    fn queued_transport_is_not_start_acceptance_and_failed_settlement_does_not_start() {
+        let mut sim = state();
+        let start = sim.handle_pmd_write(&acc_start(25, 2));
+        sim.queue_pmd_action(10, start.action);
+        assert!(sim.acc_settings.is_none());
+        assert!(sim.acc_started_at.is_none());
+        assert_eq!(
+            sim.handle_pmd_write(&acc_start(50, 4)).indicate.unwrap()[3],
+            gatt_spec::PMD_STATUS_ALREADY_IN_STATE
+        );
+        assert_eq!(sim.settle_pmd_action(10, false), None);
+        assert!(sim.acc_settings.is_none());
+        let retry = sim.handle_pmd_write(&acc_start(50, 4));
+        assert_ne!(retry.action, PmdAction::None);
+        sim.queue_pmd_action(11, retry.action);
+        let accepted = sim.settle_pmd_action(11, true).unwrap();
+        assert_eq!(accepted, retry.action);
+        assert!(
+            sim.acc_settings.is_none(),
+            "root commits and logs exactly once after settlement"
+        );
+        sim.apply_pmd_action(accepted);
+        assert_eq!(sim.acc_settings.unwrap().sample_rate_hz, 50);
+        assert_eq!(
+            sim.settle_pmd_action(11, true),
+            None,
+            "duplicate completion cannot restart sensor clock"
+        );
+    }
+
+    #[test]
+    fn inflight_actions_precede_deferred_admission_and_reset_ignores_old_completions() {
+        let mut sim = state();
+        let start = sim.handle_pmd_write(&acc_start(25, 2));
+        sim.queue_pmd_action(20, start.action);
+        let stop = sim.handle_pmd_write(&[3, 2]);
+        assert_eq!(stop.action, PmdAction::StopAcc);
+        sim.pending_indications.push(PendingIndication {
+            due: Instant::now(),
+            response: stop.indicate.unwrap(),
+            action: stop.action,
+        });
+        assert_ne!(
+            sim.handle_pmd_write(&acc_start(200, 8)).action,
+            PmdAction::None,
+            "inflight START followed by deferred STOP projects idle"
+        );
+        sim.reset_pmd_session();
+        assert_eq!(
+            sim.settle_pmd_action(20, true),
+            None,
+            "old-generation acceptance cannot resurrect a stream"
+        );
+        assert!(sim.pending_indications.is_empty());
+        assert!(sim.acc_settings.is_none());
+        let current = sim.handle_pmd_write(&acc_start(200, 8));
+        sim.queue_pmd_action(21, current.action);
+        assert_eq!(sim.settle_pmd_action(20, false), None);
+        assert_eq!(sim.settle_pmd_action(21, true), Some(current.action));
+    }
+
     #[test]
     fn start_ecg_with_sdk_bytes_streams() {
         let mut sim = state();
@@ -1112,6 +1830,48 @@ mod tests {
             idle_stop.indicate.as_ref().unwrap()[3],
             gatt_spec::PMD_STATUS_ALREADY_IN_STATE
         );
+    }
+
+    #[test]
+    fn pending_pmd_capacity_bounds_combined_queues_without_consuming_faults() {
+        for inflight in [0, 64, crate::radio::SEND_QUEUE_CAPACITY] {
+            let mut sim = state();
+            for id in 0..inflight {
+                sim.queue_pmd_action(id as u64, PmdAction::StartEcg);
+            }
+            for _ in inflight..crate::radio::SEND_QUEUE_CAPACITY {
+                sim.pending_indications.push(PendingIndication {
+                    due: Instant::now() + std::time::Duration::from_secs(60),
+                    response: vec![0xf0, 1, 2, 0],
+                    action: PmdAction::None,
+                });
+            }
+            sim.reject_next_status = Some(gatt_spec::PMD_STATUS_NOT_SUPPORTED);
+            for _ in 0..1000 {
+                assert!(!sim.can_admit_pmd_command());
+                let refused = sim.handle_pmd_write(&[1, 2]);
+                assert!(refused.indicate.is_none());
+                assert_eq!(refused.action, PmdAction::None);
+            }
+            assert_eq!(
+                sim.reject_next_status,
+                Some(gatt_spec::PMD_STATUS_NOT_SUPPORTED)
+            );
+            assert!(!sim.ecg_streaming);
+            assert!(sim.acc_settings.is_none());
+            if inflight > 0 {
+                sim.settle_pmd_action(0, false);
+            } else {
+                sim.pending_indications.remove(0);
+            }
+            assert!(sim.can_admit_pmd_command());
+            assert_eq!(
+                sim.handle_pmd_write(&[1, 2]).indicate.unwrap()[3],
+                gatt_spec::PMD_STATUS_NOT_SUPPORTED
+            );
+            sim.reset_pmd_session();
+            assert!(sim.can_admit_pmd_command());
+        }
     }
 
     #[test]

@@ -14,6 +14,7 @@ function hrBytes(bpm) {
 
 function makeHost(overrides = {}) {
   const calls = []
+  const scanOptions = []
   const hrStream = makeStream()
   const ecgStream = makeStream()
   const cpStream = makeStream()
@@ -139,6 +140,7 @@ function makeHost(overrides = {}) {
     async choose() { return peer },
     async scan(options) {
       calls.push('scan all')
+      scanOptions.push(options)
       if (scanOpen) throw alreadyActive()
       scanOpen = true
       return {
@@ -148,9 +150,12 @@ function makeHost(overrides = {}) {
         observations: scanStream,
         async stop() {
           calls.push('scan.stop')
+          const outcome = overrides.scanStopResults?.shift() ?? { state: 'released', failures: [] }
+          if (outcome instanceof Error) throw outcome
+          if (outcome.state !== 'released') return outcome
           scanOpen = false
           scanStream.end()
-          return { state: 'released', failures: [] }
+          return outcome
         }
       }
     },
@@ -169,8 +174,14 @@ function makeHost(overrides = {}) {
   // duration break — must stop the scan before find opens the next one).
   // The end rides the fake clock so the capture observes it mid-run, like a
   // real radio going quiet, instead of all in the first microtask drain.
-  runtime.schedule(() => scanStream.end(), 500)
+  runtime.schedule(() => {
+    if (overrides.advertisementOverflow) scanStream.notice(overrides.advertisementOverflow)
+    if (overrides.advertisementTerminal) scanStream.notice(overrides.advertisementTerminal)
+    if (overrides.advertisementIteratorError) scanStream.fail(overrides.advertisementIteratorError)
+    scanStream.end()
+  }, overrides.advertisementEndMs ?? 500)
   queueMicrotask(() => {
+    if (overrides.advertisementValues === 0) return
     scanStream.push({
       peer,
       localName: 'Polar H10 E997042F',
@@ -192,20 +203,26 @@ function makeHost(overrides = {}) {
       observedAtMonotonicMs: runtime.now()
     })
   })
-  return { host, calls, hrStream, ecgStream, cpStream, runtime }
+  return { host, calls, scanOptions, hrStream, ecgStream, cpStream, runtime }
 }
 
 function makeStream() {
   const items = []
   let wake = null
   let ended = false
+  let failure = null
   return {
     push(item) { items.push({ kind: 'value', value: item }); wake?.() },
+    notice(item) { items.push(item); wake?.() },
+    fail(error) { failure = error; ended = true; wake?.() },
     end() { ended = true; wake?.() },
     async *[Symbol.asyncIterator]() {
       for (;;) {
         if (items.length > 0) { yield items.shift(); continue }
-        if (ended) return
+        if (ended) {
+          if (failure !== null) throw failure
+          return
+        }
         await new Promise(resolve => (wake = resolve))
         wake = null
       }
@@ -224,7 +241,7 @@ test('summarizeDistribution reports n/min/p10/p50/p90/max/mean/stdev', () => {
 })
 
 test('h10-capture records a versioned fingerprint through public API only', async () => {
-  const { host, calls, hrStream, ecgStream, runtime } = makeHost()
+  const { host, calls, scanOptions, hrStream, ecgStream, runtime } = makeHost()
   const ecgFrame = () => {
     const bytes = new Uint8Array(13)
     bytes[0] = 0x00
@@ -257,6 +274,7 @@ test('h10-capture records a versioned fingerprint through public API only', asyn
   assert.equal(fingerprint.version, FINGERPRINT_VERSION)
   assert.equal(fingerprint.device.query.name, 'Polar H10 E997042F')
   assert.ok(fingerprint.advertisement.observations >= 2, 'scan observations recorded')
+  assert.equal(scanOptions[0].timeoutMs, 50, 'advertisement capture owns a native finite scan lifetime')
   assert.ok(fingerprint.gatt.services.length >= 1, 'GATT services recorded')
   assert.equal(fingerprint.values.batteryLevelPercent.ok, true)
   assert.equal(fingerprint.values.bodySensorLocation.ok, true)
@@ -279,3 +297,109 @@ test('h10-capture refuses bad durations instead of silently capturing nothing', 
   const scenario = new H10CaptureScenario(host)
   await assert.rejects(scenario.dispatch('capture', { scanDurationMs: -1 }), /scanDurationMs/)
 })
+
+async function captureFixture(fixture, scenario = new H10CaptureScenario(fixture.host)) {
+  const { hrStream, ecgStream, runtime } = fixture
+  let settled = false
+  const running = scenario.dispatch('capture', { device: 'Polar H10 E997042F', scanDurationMs: 1000, hrDurationMs: 2500, hrMinValues: 2, ecgFrames: 1 }).then(
+    value => { settled = true; return { value } },
+    error => { settled = true; return { error } }
+  )
+  while (!settled && fixture.scanOptions.length === 0) await new Promise(resolve => setImmediate(resolve))
+  for (let index = 0; index < 200 && !settled; index += 1) {
+    hrStream.push({ value: hrBytes(72), delivery: 'notification', observedAtMonotonicMs: runtime.now(), sequence: index })
+    ecgStream.push({ value: new Uint8Array(13), delivery: 'notification', observedAtMonotonicMs: runtime.now(), sequence: index })
+    runtime.advance(1000)
+    await new Promise(resolve => setImmediate(resolve))
+  }
+  const outcome = await running
+  if (outcome.error) throw outcome.error
+  return { fingerprint: outcome.value, events: scenario.recentEvents() }
+}
+
+test('H10 advertisement source failure retains its structured cause and loss notices with zero values', async () => {
+  const cause = { code: 'platform.failure', domain: 'platform', operation: 'native.scan', detail: 'controller refused', retryability: 'never', platform: { domain: 'android', code: 'scan-failed-2', message: 'controller refused' } }
+  const overflow = { kind: 'overflow', policy: 'drop-oldest', droppedItems: 2, droppedBytes: 100, replacedItems: 0 }
+  const terminal = { kind: 'terminal', reason: 'source-failed', error: cause, droppedItems: 2, droppedBytes: 100, replacedItems: 0 }
+  const { fingerprint, events } = await captureFixture(makeHost({ advertisementValues: 0, advertisementOverflow: overflow, advertisementTerminal: terminal }))
+  assert.equal(fingerprint.advertisement.ok, false)
+  assert.equal(fingerprint.advertisement.observations, 0)
+  assert.deepEqual(fingerprint.advertisement.error, cause)
+  assert.ok(events.some(event => event.kind === 'stream-terminal' && event.data.reason === 'source-failed' && event.data.droppedItems === 2))
+  assert.ok(events.some(event => event.kind === 'stream-overflow' && event.data.droppedBytes === 100))
+})
+
+for (const [reason, advertisementValues] of [['operation-timed-out', 0], ['operation-timed-out', 2], ['owner-released', 0], ['owner-released', 2]]) {
+  test(`H10 normal ${reason} remains normal and reports ${advertisementValues} actual advertisement values`, async () => {
+    const terminal = { kind: 'terminal', reason, droppedItems: 0, droppedBytes: 0, replacedItems: 0 }
+    const { fingerprint, events } = await captureFixture(makeHost({ advertisementValues, advertisementTerminal: terminal }))
+    assert.equal(fingerprint.advertisement.ok, true)
+    assert.equal(fingerprint.advertisement.observations, advertisementValues)
+    assert.ok(events.some(event => event.kind === 'stream-terminal' && event.data.reason === reason))
+  })
+}
+
+test('H10 advertisement refused stop blocks the next find and retains cleanup failure with the source cause', async () => {
+  const cause = { code: 'platform.failure', domain: 'platform', operation: 'native.scan', detail: 'source refused', retryability: 'never' }
+  const refused = { state: 'release-failed', failures: [{ resourceKind: 'scan', error: { code: 'platform.failure', operation: 'scan.stop' } }] }
+  const fixture = makeHost({ advertisementValues: 0, advertisementTerminal: { kind: 'terminal', reason: 'source-failed', error: cause, droppedItems: 0, droppedBytes: 0, replacedItems: 0 }, scanStopResults: [refused, refused, refused] })
+  const scenario = new H10CaptureScenario(fixture.host)
+  await assert.rejects(captureFixture(fixture, scenario), error => {
+    assert.equal(error.code, 'scenario.cleanup-failed')
+    assert.deepEqual(error.cause.source, cause)
+    assert.deepEqual(error.cause.cleanup, refused)
+    return true
+  })
+  assert.ok(!fixture.calls.includes('find'), 'no replacement scan is admitted while release is refused')
+  const retried = await scenario.dispatch('stop', {})
+  assert.ok(retried.cleanup.some(step => step.step === 'scan.stop' && step.state === 'released'))
+  assert.equal(fixture.calls.filter(call => call === 'scan.stop').length, 4)
+})
+
+for (const stopFailure of [
+  { state: 'release-failed', failures: [{ resourceKind: 'scan', error: { code: 'platform.failure', operation: 'scan.stop' } }] },
+  Object.assign(new Error('timer stop refused'), { code: 'platform.failure' })
+]) {
+  test(`H10 timer stop ${stopFailure instanceof Error ? 'rejection' : 'refused receipt'} remains diagnostic after successful cleanup retry`, async () => {
+    const fixture = makeHost({ advertisementEndMs: 4000, scanStopResults: [stopFailure] })
+    const { fingerprint, events } = await captureFixture(fixture)
+    assert.equal(fingerprint.advertisement.ok, true)
+    assert.ok(events.some(event => event.kind === 'scan-duration-elapsed' && (event.data.stop?.state === 'release-failed' || event.data.stopError?.code === 'platform.failure')))
+    assert.ok(fixture.calls.indexOf('find') > fixture.calls.indexOf('scan.stop'))
+  })
+}
+
+const iteratorFailure = Object.assign(new Error('scan iterator rejected'), {
+  code: 'platform.failure', domain: 'platform', operation: 'scan.next',
+  platform: { domain: 'android', code: 'iterator-2', message: 'scan iterator rejected' }
+})
+const iteratorFailureJson = {
+  code: 'platform.failure', message: 'scan iterator rejected',
+  detail: { domain: 'platform', operation: 'scan.next', platform: iteratorFailure.platform }
+}
+
+test('H10 thrown advertisement stream alone fails its stage with the original source identity', async () => {
+  const { fingerprint } = await captureFixture(makeHost({ advertisementValues: 0, advertisementIteratorError: iteratorFailure }))
+  assert.equal(fingerprint.advertisement.ok, false)
+  assert.equal(fingerprint.advertisement.observations, 0)
+  assert.deepEqual(fingerprint.advertisement.error, iteratorFailureJson)
+})
+
+for (const stopFailure of [
+  { state: 'release-failed', failures: [{ resourceKind: 'scan', error: { code: 'platform.failure', operation: 'scan.stop' } }] },
+  Object.assign(new Error('cleanup rejected'), { code: 'platform.failure', operation: 'scan.stop' })
+]) {
+  test(`H10 thrown advertisement source survives a ${stopFailure instanceof Error ? 'rejected' : 'refused'} cleanup`, async () => {
+    const fixture = makeHost({ advertisementValues: 0, advertisementIteratorError: iteratorFailure, scanStopResults: [stopFailure, stopFailure, stopFailure] })
+    await assert.rejects(captureFixture(fixture), error => {
+      assert.equal(error.code, 'scenario.cleanup-failed')
+      assert.deepEqual(error.cause.source, iteratorFailureJson)
+      if (stopFailure instanceof Error) {
+        assert.equal(error.cause.cleanup.code, 'platform.failure')
+        assert.equal(error.cause.cleanup.detail.operation, 'scan.stop')
+      } else assert.deepEqual(error.cause.cleanup, stopFailure)
+      return true
+    })
+    assert.ok(!fixture.calls.includes('find'))
+  })
+}

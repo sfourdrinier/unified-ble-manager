@@ -23,8 +23,9 @@ import {
   type PeerReference
 } from 'unified-ble-manager'
 import type { DriverHost, HostManager } from '../host.ts'
+import type { ExpoCompanionAssociationResult } from 'unified-ble-manager/expo'
 import type { JsonObject, JsonValue } from '../protocol.ts'
-import { toJsonValue } from '../protocol.ts'
+import { describeError, toJsonValue } from '../protocol.ts'
 import { ScenarioError, args, defineCommand, type ScenarioCommand } from '../scenario-core.ts'
 import { DEVICE_ARGUMENT_HELP, OPERATION_TIMEOUT_MS } from './ble-scenario.ts'
 import {
@@ -57,6 +58,19 @@ function hasPresenceApi(manager: BleManager): manager is ManagerWithPresence {
   return 'presence' in manager
 }
 
+function hasAssociationApi(manager: BleManager): manager is BleManager & {
+  readonly association: { associate(request: { readonly name: string }): Promise<ExpoCompanionAssociationResult> }
+} {
+  return 'association' in manager
+}
+
+type AssociationTiming = {
+  readonly state: 'deadline-expired'
+  readonly budgetMs: number
+  readonly elapsedMs: number
+  readonly followUp: 'caller-decides'
+}
+
 function capabilityState(manager: BleManager, feature: FeatureId): string {
   return manager.capabilities.get(feature)?.state ?? 'unregistered'
 }
@@ -75,11 +89,23 @@ export class RestorationScenario extends HeartRateScenario<RestorationState> {
   readonly id = 'restoration'
   readonly title = 'Restoration / known peer'
   readonly description =
-    'Connect and subscribe; then kill the app with the docs/BACKGROUND.md procedure. After relaunch, read restored peers and reconnect with the returned peerReference using direct intent (or explicitly use Android when-available with a peer id). The app reconnects; the library never does.'
+    'Connect and subscribe; keep ownership active while backgrounding and terminating the process with the docs/BACKGROUND.md procedure. In the record-only baseline, the app reads restored peers and explicitly reconnects after relaunch. An opt-in native continuation order instead permits native reconnect/setup before JavaScript; test that separately.'
   protected readonly commands: Readonly<Record<string, ScenarioCommand>> = {
+    associate: defineCommand({
+      label: 'Associate exact companion',
+      description: 'Open the Android system consent chooser for an exact supplied name. Does not replace or remove existing associations. Stop releases the scenario manager.',
+      parse: raw => {
+        const name = args.optionalString(raw, 'name')
+        if (name === null || name.length === 0 || name.trim() !== name || name.includes('*') || Object.keys(raw).some(key => key !== 'name')) {
+          throw new ScenarioError('scenario.invalid-argument', 'associate requires one exact nonempty name (no wildcard)')
+        }
+        return name
+      },
+      run: name => this.associateCompanion(name)
+    }),
     start: defineCommand({
       label: 'Start',
-      description: `Find the strap, connect, subscribe, and record the manager-local peer id. args: {autoReconnect?: boolean (default false), intent?: "direct" | "when-available", ${DEVICE_ARGUMENT_HELP}}. Stop, kill the app per docs/BACKGROUND.md, relaunch, run restored, then reconnect with its peerReference on iOS or an explicit Android peer id.`,
+      description: `Find the strap, connect, subscribe, and record the manager-local peer id. args: {autoReconnect?: boolean (default false), intent?: "direct" | "when-available", ${DEVICE_ARGUMENT_HELP}}. Keep the subscription active; do not run Stop before the restoration test. Background normally, terminate the process per docs/BACKGROUND.md (never swipe-force-quit or Android force-stop), relaunch, run restored, then explicitly reconnect in the record-only baseline with its durable peerReference.`,
       presets: [{ label: 'Start (supervised)', args: {} }],
       acceptsDevice: true,
       parse: raw => parseHeartRateOptions(raw, { autoReconnect: false, intent: 'direct' }),
@@ -88,13 +114,16 @@ export class RestorationScenario extends HeartRateScenario<RestorationState> {
     reconnect: defineCommand({
       label: 'Reconnect',
       description:
-        'Resolve a durable restored peerReference, or dial a recorded known peer id, without scanning; then subscribe again. args: {peerReference?: PeerReference (from restored), peerId?: string, intent?: "direct" | "when-available" (default "direct")}. Refused without a reference or peer id.',
+        'Resolve a durable restored peerReference without scanning, then subscribe again. args: {peerReference: PeerReference (from restored), intent?: "direct" | "when-available" (default "direct")}. This command creates a fresh manager; previous manager peerId strings are refused.',
       presets: [],
-      parse: raw => ({
-        intent: args.oneOf<ConnectionIntent>(raw, 'intent', ['direct', 'when-available'], 'direct'),
-        peerId: args.optionalString(raw, 'peerId'),
-        peerReference: parsePeerReference(raw)
-      }),
+      parse: raw => {
+        if (raw.peerId !== undefined)
+          throw new ScenarioError('scenario.invalid-argument', 'reconnect creates a fresh manager; pass a durable peerReference, not a manager-local peerId')
+        return {
+          intent: args.oneOf<ConnectionIntent>(raw, 'intent', ['direct', 'when-available'], 'direct'),
+          peerReference: parsePeerReference(raw)
+        }
+      },
       run: options => this.reconnectKnownPeer(options)
     }),
     'observe-presence': defineCommand({
@@ -144,6 +173,41 @@ export class RestorationScenario extends HeartRateScenario<RestorationState> {
     this.replace({ ...this.snapshot(), ...patch })
   }
 
+  private async associateCompanion(name: string): Promise<JsonObject> {
+    const result = await this.runOneShotJourney(async signal => {
+      const { manager } = await this.createManager(signal)
+      if (!hasAssociationApi(manager)) throw new ScenarioError('capability.unsupported', 'This host has no companion association API')
+      const startedAtMs = this.runtime.now()
+      return new Promise<ExpoCompanionAssociationResult & { readonly timing?: AssociationTiming }>((resolve, reject) => {
+        let settled = false
+        const finish = (answer: ExpoCompanionAssociationResult | null, error?: unknown) => {
+          if (settled) {
+            this.emit('association-late-result', { result: toJsonValue(answer), error: answer === null ? toJsonValue(describeError(error)) : null, followUp: 'caller-decides' })
+            return
+          }
+          settled = true
+          cancelDeadline()
+          signal.removeEventListener('abort', cancelled)
+          if (answer !== null) {
+            const elapsedMs = this.runtime.now() - startedAtMs
+            if (elapsedMs >= 60_000) {
+              const timing: AssociationTiming = { state: 'deadline-expired', budgetMs: 60_000, elapsedMs, followUp: 'caller-decides' }
+              this.emit('association-late-result', { result: toJsonValue(answer), timing: toJsonValue(timing), followUp: 'caller-decides', error: null })
+              resolve({ ...answer, timing })
+            } else resolve(answer)
+          }
+          else reject(error)
+        }
+        const cancelled = () => finish(null, new ScenarioError('operation.cancelled', 'Association scenario was stopped'))
+        const cancelDeadline = this.runtime.schedule(() => finish(null, new ScenarioError('operation.timeout', 'Association chooser exceeded its 60-second budget')), 60_000)
+        signal.addEventListener('abort', cancelled, { once: true })
+        if (signal.aborted) cancelled()
+        else Promise.resolve().then(() => manager.association.associate({ name })).then(answer => finish(answer), error => finish(null, error))
+      })
+    })
+    return { ...result }
+  }
+
   protected override async afterManagerReady(hosted: HostManager): Promise<void> {
     const manager = hosted.manager
     const capabilities = restorationCapabilities(manager)
@@ -178,7 +242,7 @@ export class RestorationScenario extends HeartRateScenario<RestorationState> {
         `${command} needs a known peer id (peerId); run "start" first, then pass its peer id after relaunch`
       )
     }
-    return this.runJourney(async signal => {
+    return this.runOneShotJourney(async signal => {
       const hosted = await this.createManager(signal)
       await this.afterManagerReady(hosted)
       const manager = hosted.manager
@@ -200,7 +264,7 @@ export class RestorationScenario extends HeartRateScenario<RestorationState> {
   }
 
   private async queryRestoredPeers(): Promise<JsonObject> {
-    return this.runJourney(async signal => {
+    return this.runOneShotJourney(async signal => {
       const hosted = await this.createManager(signal)
       await this.afterManagerReady(hosted)
       // The owner's answer is reported verbatim: one entry per restored
@@ -217,14 +281,13 @@ export class RestorationScenario extends HeartRateScenario<RestorationState> {
 
   private async reconnectKnownPeer(options: {
     readonly intent: ConnectionIntent
-    readonly peerId: string | null
     readonly peerReference: PeerReference | null
   }): Promise<JsonObject> {
-    const target = options.peerReference ?? options.peerId
-    if (target === null || (typeof target === 'string' && target.length === 0)) {
+    const target = options.peerReference
+    if (target === null) {
       throw new ScenarioError(
         'scenario.no-known-peer',
-        'reconnect needs a restored peerReference or recorded known peer id (peerId); run "restored" after relaunch, then pass its reference'
+        'reconnect needs a durable peerReference; run "restored" after relaunch, then pass its reference'
       )
     }
     return this.runJourney(async signal => {
@@ -233,8 +296,7 @@ export class RestorationScenario extends HeartRateScenario<RestorationState> {
       const manager = hosted.manager
       this.patchBase({ phase: 'connecting' })
       const startedAt = this.runtime.now()
-      // A durable reference resolves through this manager before connection;
-      // a manager-local id is used only when the caller explicitly supplied it.
+      // A durable reference resolves through this fresh manager before connection.
       // Neither path scans or opens a chooser. A failure is the library's typed
       // error and ends the run here.
       const connection = await manager.connect(target, { signal, timeoutMs: OPERATION_TIMEOUT_MS, intent: options.intent })

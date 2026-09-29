@@ -6,11 +6,16 @@ readonly profile="${1:-}"
 readonly -a bluez_packages=(
   libdbus-1-dev
   pkg-config
+  dbus-daemon
+  libglib2.0-dev
+  libudev-dev
+  build-essential
+  curl
+  patch
+  xz-utils
 )
 readonly -a tauri_packages=(
   libwebkit2gtk-4.1-dev
-  build-essential
-  curl
   wget
   file
   libxdo-dev

@@ -9,5 +9,5 @@ cargo build -p ubm5_jni_echo --locked
 LIBDIR="$(pwd)/$ROOT/target/debug"
 rm -rf target/jvm-mobile
 mkdir -p target/jvm-mobile
-javac -d target/jvm-mobile java/com/ubm/core/MobileCoreBridge.java java/com/ubm/core/TestMobile.java
+javac -d target/jvm-mobile "$ROOT/android/src/main/java/com/ubm/core/MobileCoreBridge.java" java/com/ubm/core/TestMobile.java
 java -Djava.library.path="$LIBDIR" -cp target/jvm-mobile com.ubm.core.TestMobile

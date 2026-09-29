@@ -124,7 +124,10 @@ describe('Tauri v2 Rust plugin boundary', () => {
     // Finding 43: attachment identity and adapter.state come from the one
     // shared central (its own adapter selection, ambiguity refused); the
     // plugin opens no second btleplug Manager (a second CBCentralManager).
-    expect(dispatcher).toContain('DesktopCentral::open_btleplug(profile)')
+    // The same central now also owns the trusted BlueZ policy. Do not
+    // bypass that authority when opening the Tauri host.
+    expect(dispatcher).toContain('DesktopCentral::open_btleplug_with_policy(profile, connection_policy)')
+    expect(dispatcher).not.toContain('DesktopCentral::open_btleplug(profile)')
     expect(dispatcher).toContain('authority.attachment()')
     expect(dispatcher).toContain('heard')
     expect(dispatcher).toContain('authority.adapter_state(ctl)')

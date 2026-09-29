@@ -2,7 +2,7 @@
 
 # Migrating from react-native-ble-plx
 
-This source targets `5.0.0-rc.12`. The `4.0.0` release is a new package and a new contract. It is **not a source-compatible rename**. There is no `new BleManager()` facade, no Base64 characteristic values, and no public transaction IDs.
+This source targets `5.0.0-rc.13`. The `4.0.0` release is a new package and a new contract. It is **not a source-compatible rename**. There is no `new BleManager()` facade, no Base64 characteristic values, and no public transaction IDs.
 
 This page is for a React Native app that already uses `react-native-ble-plx`. Web, Electron, Node, and Tauri are new hosts — use those pages after you understand the RN rewrite.
 
@@ -405,4 +405,4 @@ Restoration identity is now deterministic via `deriveRestorationIdentity({ appli
 
 [`README.md`](README.md) · [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) · [`docs/TUTORIALS.md`](docs/TUTORIALS.md) · [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md)
 
-Maintainers: [`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)
+Maintainers: [Current 5.0 authority](docs/README.md#current-50-authority)

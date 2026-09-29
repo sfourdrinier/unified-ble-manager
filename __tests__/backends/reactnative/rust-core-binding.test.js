@@ -36,6 +36,56 @@ beforeEach(() => {
   mockTurboModule = null
 })
 
+test.each(['android', 'apple'])('trusted %s host controls can verify identity without acquiring a session', async platform => {
+  const native = new DeterministicRustCoreNative({ platform })
+  const binding = createReactNativeRustCoreBinding({ platform, native })
+  await expect(binding.verifyNativeIdentity()).resolves.toBeUndefined()
+  expect(counts(native)).toEqual({ open: 0, close: 0, invoke: 0 })
+  native.identity = { ...native.identity, sourceDigest: '0'.repeat(64) }
+  await expect(failure(binding.verifyNativeIdentity())).resolves.toMatchObject({ code: 'protocol.incompatible' })
+  expect(counts(native)).toEqual({ open: 0, close: 0, invoke: 0 })
+})
+
+test('offline recording controls verify identity without opening a BLE session and preserve receivers', async () => {
+  const native = new DeterministicRustCoreNative({ platform: 'android' })
+  native.continuationRecordingStatus = async function (id) {
+    expect(this).toBe(native)
+    expect(id).toBe('recording_1')
+    return '{"ok":true,"value":{"id":"recording_1"}}'
+  }
+  const binding = createReactNativeRustCoreBinding({ platform: 'android', native })
+  await expect(binding.continuationRecordingStatus('recording_1')).resolves.toContain('recording_1')
+  expect(native.calls.some(call => call[0] === 'nativeBuildIdentity')).toBe(true)
+  expect(counts(native)).toEqual({ open: 0, close: 0, invoke: 0 })
+})
+
+test('offline recording controls refuse a mismatched binary before reaching storage', async () => {
+  const native = new DeterministicRustCoreNative({ platform: 'android' })
+  native.identity = { ...native.identity, sourceDigest: '0'.repeat(64) }
+  native.continuationRecordingClear = jest.fn()
+  const binding = createReactNativeRustCoreBinding({ platform: 'android', native })
+  await expect(failure(binding.continuationRecordingClear('recording_1'))).resolves.toMatchObject({
+    code: 'protocol.incompatible'
+  })
+  expect(native.continuationRecordingClear).not.toHaveBeenCalled()
+  expect(counts(native)).toEqual({ open: 0, close: 0, invoke: 0 })
+})
+
+test('binding does not advertise recording controls omitted by the native module', () => {
+  const native = new DeterministicRustCoreNative({ platform: 'android' })
+  const methods = [
+    'continuationRecordingStatus',
+    'continuationRecordingPrepare',
+    'continuationRecordingAcknowledge',
+    'continuationRecordingStop',
+    'continuationRecordingClear'
+  ]
+  for (const method of methods) native[method] = undefined
+  const binding = createReactNativeRustCoreBinding({ platform: 'android', native })
+  for (const method of methods) expect(Object.hasOwn(binding, method)).toBe(false)
+  expect(counts(native)).toEqual({ open: 0, close: 0, invoke: 0 })
+})
+
 describe('module resolution', () => {
   test('a missing UnifiedBleRustCore module fails loudly as capability.unsupported', () => {
     let thrown = null

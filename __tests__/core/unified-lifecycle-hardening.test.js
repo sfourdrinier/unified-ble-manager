@@ -455,6 +455,58 @@ describe('UnifiedBleCore lifecycle hardening', () => {
     expectNoResources(fixture.backend.resourceCounters())
   })
 
+  test.each(['backend-failure', 'backend-restart', 'adapter-loss'])(
+    '%s teardown is not physical release proof when child and parent cleanup refuse',
+    async cause => {
+      const { fixture, manager } = await createFixture()
+      const { connection, database, characteristic } = await connectedDatabase(fixture, manager)
+      const subscription = await settle(fixture.controller, database.subscribe(characteristic, subscriptionOptions()))
+      fixture.controller.queueCompletion('unsubscribe', {
+        delayMs: 1,
+        failure: 'platform.failure',
+        cancellable: false,
+        deadlineOrder: 'completion-first'
+      })
+      const parentFailure = {
+        state: 'release-failed',
+        failures: [
+          {
+            resourceKind: 'connection',
+            error: {
+              code: 'platform.failure',
+              domain: 'cleanup',
+              operation: 'test.parent-release',
+              retryability: 'caller-decides',
+              platform: null
+            }
+          }
+        ]
+      }
+      const coreConnection = connection.connection
+      const parent = jest.spyOn(coreConnection.lease, 'release').mockResolvedValue(parentFailure)
+      try {
+        const cleanup = await settle(fixture.controller, coreConnection.core.releaseConnection(coreConnection, cause))
+        expect(cleanup.state).toBe('release-failed')
+        expect(cleanup.failures.map(failure => failure.resourceKind)).toEqual(['subscription', 'connection'])
+        expect(parent).toHaveBeenCalledTimes(1)
+        expect(Number(manager.localResourceCounters().physicalCccdEnablements)).toBe(1)
+        expect(Number(fixture.backend.resourceCounters().physicalCccdEnablements)).toBe(1)
+      } finally {
+        parent.mockRestore()
+      }
+      await expect(settle(fixture.controller, subscription.remove())).resolves.toEqual({
+        state: 'released',
+        failures: []
+      })
+      await expect(settle(fixture.controller, connection.release())).resolves.toEqual({
+        state: 'released',
+        failures: []
+      })
+      await expect(settle(fixture.controller, manager.destroy())).resolves.toEqual({ state: 'released', failures: [] })
+      expectNoResources(fixture.backend.resourceCounters())
+    }
+  )
+
   test('connection cleanup receipt retains readiness-source cleanup failure', async () => {
     const readinessRegistration = createBackendOperationCapabilityRegistration({
       id: BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness,
@@ -573,24 +625,30 @@ describe('UnifiedBleCore lifecycle hardening', () => {
     expectNoResources(fixture.backend.resourceCounters())
   })
 
-  test('retries failed database-child cleanup before rediscovery and decrements the old snapshot once', async () => {
+  test.each(
+    ['manual', 'service-changed'].flatMap(reason =>
+      ['platform.failure', 'gatt.stale-handle', 'operation.disconnected'].map(failure => [reason, failure])
+    )
+  )('retries %s rediscovery after %s child refusal and decrements the old snapshot once', async (reason, failure) => {
     const { fixture, manager } = await createFixture()
     const { connection, database, characteristic } = await connectedDatabase(fixture, manager)
     await settle(fixture.controller, database.subscribe(characteristic, subscriptionOptions()))
     fixture.controller.queueCompletion('unsubscribe', {
       delayMs: 1,
-      failure: 'platform.failure',
+      failure,
       cancellable: false,
       deadlineOrder: 'completion-first'
     })
 
-    await expect(settle(fixture.controller, connection.discover(operation()))).rejects.toMatchObject({
-      normalized: { code: 'platform.failure' }
+    const rediscover = () =>
+      reason === 'manual' ? connection.discover(operation()) : connection.rediscoverGatt(operation(), reason)
+    await expect(settle(fixture.controller, rediscover())).rejects.toMatchObject({
+      normalized: { code: failure }
     })
     expect(Number(manager.localResourceCounters().databaseSnapshots)).toBe(0)
     expect(Number(fixture.backend.resourceCounters().physicalCccdEnablements)).toBe(1)
 
-    const rediscovered = await settle(fixture.controller, connection.discover(operation()))
+    const rediscovered = await settle(fixture.controller, rediscover())
     expect(rediscovered).toBeDefined()
     expect(Number(manager.localResourceCounters().databaseSnapshots)).toBe(1)
     expect(Number(fixture.backend.resourceCounters().physicalCccdEnablements)).toBe(0)

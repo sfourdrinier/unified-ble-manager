@@ -91,6 +91,30 @@ function recordingProvider(real, { reverseAdapters = false } = {}) {
 }
 
 describe('Node host adapter selection', () => {
+  test.each([
+    { onAppearance: 'native' },
+    { onAppearance: 'headless-task', headlessTaskName: 'BleWake' },
+    {
+      onAppearance: 'foreground-service',
+      foregroundService: { notification: { channelId: 'ble', channelName: 'BLE', title: 'Recording' } }
+    }
+  ])('refuses an unimplemented continuation provider before opening a radio: %j', async continuation => {
+    const provider = { listAdapters: jest.fn(), create: jest.fn() }
+    await expect(
+      createNodeBleManagerFromProvider(provider, compatibility(), { background: { continuation } })
+    ).rejects.toMatchObject({ code: 'capability.unsupported', operation: 'node-manager.background.continuation' })
+    expect(provider.listAdapters).not.toHaveBeenCalled()
+    expect(provider.create).not.toHaveBeenCalled()
+  })
+
+  test('allows the explicit record-only default without promising a continuation provider', async () => {
+    const { provider } = recordingProvider(twoAdapterProvider())
+    const manager = await createNodeBleManagerFromProvider(provider, compatibility(), {
+      background: { continuation: { onAppearance: 'record-only' } }
+    })
+    await manager.destroy()
+  })
+
   test('defaults to the first adapter, ordered by id, when the caller names none', async () => {
     const { provider, selections } = recordingProvider(twoAdapterProvider())
     const manager = await createNodeBleManagerFromProvider(provider, compatibility(), {})

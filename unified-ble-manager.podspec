@@ -27,6 +27,7 @@ Pod::Spec.new do |s|
     "ios/UnifiedBleProtocolControl.mm",
     "ios/UnifiedBleExpoRuntime.mm",
     "ios/UnifiedBleRustCore.mm",
+    "ios/UnifiedBleContinuationBootstrap.mm",
     "ios/UnifiedBleRustCoreSessions.swift",
     "ios/UnifiedBleRustCoreAdapterState.swift",
     "ios/UnifiedBleRustRadioAdapter.swift",
@@ -127,6 +128,15 @@ Pod::Spec.new do |s|
     s.pod_target_xcconfig = ubm_pod_xcconfig.merge(
       'SWIFT_INCLUDE_PATHS' => '$(PODS_TARGET_SRCROOT)/bindings/uniffi/generated/swift',
       'OTHER_SWIFT_FLAGS' => ubm_swift_flags
+    )
+    # A Swift application importing BlePlx also loads its transitive FFI
+    # module. CocoaPods stages the platform-selected XCFramework headers in
+    # this stable location for path and registry pods alike. Expose only the
+    # exact modulemap, not pod-local source roots or broad search paths.
+    ubm_user_xcconfig = s.to_hash['user_target_xcconfig'] || {}
+    ubm_consumer_map_flag = '-Xcc "-fmodule-map-file=$(PODS_XCFRAMEWORKS_BUILD_DIR)/unified-ble-manager/Headers/ubm_echoFFI.modulemap"'
+    s.user_target_xcconfig = ubm_user_xcconfig.merge(
+      'OTHER_SWIFT_FLAGS' => ['$(inherited)', ubm_user_xcconfig['OTHER_SWIFT_FLAGS'], ubm_consumer_map_flag].compact.join(' ')
     )
     # Before any source compiles, in both modes: ios/verify-rust-core.sh
     # (PR210-18) parses the XCFramework Info.plist and checks the exact

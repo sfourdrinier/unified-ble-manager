@@ -196,7 +196,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
   ) {
     queue.async {
       guard self.requireUsable(completion) else { return }
-      guard let peripheral = self.peripheralByIdentifier[peerIdentifier] else {
+      guard let identifier = OwnedCoreBluetoothKnownPeerLookup.identifier(peerIdentifier) else {
         completion(self.error(code: 1005, message: "The requested CoreBluetooth peripheral is unknown"))
         return
       }
@@ -209,8 +209,19 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
         return
       }
       guard let central = self.centralForUse(or: completion) else { return }
+      let cached = self.peripheralByIdentifier[peerIdentifier]
+      guard let peripheral = OwnedCoreBluetoothKnownPeerLookup.resolve(
+        identifier: identifier, cached: cached,
+        retrieve: { central.retrievePeripherals(withIdentifiers: [$0]) }, identifierOf: { $0.identifier }
+      ) else {
+        completion(self.error(code: 1005, message: "The requested CoreBluetooth peripheral is unknown"))
+        return
+      }
+      self.peripheralByIdentifier[peerIdentifier] = peripheral
       peripheral.delegate = self
-      if peripheral.state == .connected {
+      if !OwnedCoreBluetoothKnownPeerLookup.requiresConnection(
+        hasCachedPeripheral: cached != nil, isConnected: peripheral.state == .connected
+      ) {
         completion(nil)
         return
       }
@@ -642,26 +653,35 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
 
   public func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
     guard let address = address(for: characteristic, peerIdentifier: peripheral.identifier.uuidString) else { return }
+    handleNotificationStateUpdate(address: address, isNotifying: characteristic.isNotifying, error: error)
+  }
+
+  /// The delegate's operation-owned answer, separate from CB object lookup.
+  func handleNotificationStateUpdate(address: CharacteristicAddress, isNotifying: Bool, error: Error?) {
     let pending = pendingNotify.removeValue(forKey: address)
     let desiredCancellationState = cancellationDesiredState(forNotificationAddress: address)
     guard pending != nil || desiredCancellationState != nil else { return }
 
     if let pending {
       if pending.enabled {
-        if error == nil && characteristic.isNotifying {
+        if error == nil && isNotifying {
           subscriptions[address] = pending.subscriptionIdentifier
         } else {
           subscriptions.removeValue(forKey: address)
         }
-      } else if error == nil || !characteristic.isNotifying {
+      } else if error == nil && !isNotifying {
         subscriptions.removeValue(forKey: address)
       }
-      pending.completion(error as NSError?)
+      let answer = error as NSError? ?? (isNotifying == pending.enabled ? nil : self.error(
+        code: 1039,
+        message: "CoreBluetooth's notification state callback did not reach the requested state"
+      ))
+      pending.completion(answer)
     }
 
     guard let desired = desiredCancellationState else { return }
     markCancellationNotificationCallbackReceived(for: address)
-    if error == nil && characteristic.isNotifying == desired {
+    if error == nil && isNotifying == desired {
       clearCancellationCleanup(forNotificationAddress: address)
       return
     }

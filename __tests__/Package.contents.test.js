@@ -5,6 +5,7 @@ const path = require('path')
 
 const root = path.join(__dirname, '..')
 const packageJson = require('../package.json')
+const sourceClassification = require('../scripts/ci/package-source-classification')
 const buildScript = path.join(root, 'scripts', 'ci', 'build-package.js')
 const artifactVerifier = path.join(root, 'scripts', 'ci', 'verify-package-artifacts.js')
 const tarballVerifier = path.join(root, 'scripts', 'ci', 'verify-package-tarballs.js')
@@ -40,15 +41,36 @@ describe('published package contains the files and scripts it claims', () => {
     expect(verifierSource).toContain('assertNoForbiddenNobleManifestDependencies')
     expect(verifierSource).toContain('assertNoForbiddenNobleRuntimeReferences')
     expect(verifierSource).toContain("...listFiles(path.join(root, 'bin'))")
-    expect(verifierSource).toContain('NativeUnifiedBleProtocolControl.ts')
-    expect(verifierSource).toContain('native-protocol/rn-apple-boundary.ts')
-    expect(verifierSource).toContain('native-protocol/rn-android-boundary.ts')
+    for (const source of [verifierSource, tarballVerifierSource]) {
+      expect(source).toContain("require('./package-source-classification')")
+      expect(source).not.toMatch(/const internalRuntimeSourceFiles\s*=/)
+      expect(source).not.toMatch(/const internalTypeOnlySourceFiles\s*=/)
+      expect(source).not.toMatch(/const publicProfileSourceFiles\s*=/)
+    }
+    const { internalRuntimeSourceFiles, internalTypeOnlySourceFiles, publicProfileSourceFiles } = sourceClassification
+    expect(internalTypeOnlySourceFiles).toEqual([])
+    expect(internalRuntimeSourceFiles).toEqual(
+      expect.arrayContaining([
+        'NativeUnifiedBleProtocolControl.ts',
+        'native-protocol/rn-apple-boundary.ts',
+        'native-protocol/rn-android-boundary.ts',
+        'react-native-app-manager.ts',
+        'node-host-manager.ts',
+        'desktop-process-host.ts',
+        'desktop-process-initialization.ts',
+        'react-native-continuation-recording.ts'
+      ])
+    )
+    for (const sources of [internalRuntimeSourceFiles, internalTypeOnlySourceFiles, publicProfileSourceFiles]) {
+      expect(Object.isFrozen(sources)).toBe(true)
+      expect(new Set(sources).size).toBe(sources.length)
+      for (const source of sources) {
+        expect(source).not.toMatch(/[*?]|(?:^|\/)\.\.(?:\/|$)/)
+        expect(fs.statSync(path.join(root, 'src', source)).isFile()).toBe(true)
+      }
+    }
     expect(tarballVerifierSource).toContain('internalTypeOnlySourceFiles')
     expect(tarballVerifierSource).toContain('internalRuntimeSourceFiles')
-    expect(verifierSource).toContain('react-native-app-manager.ts')
-    expect(verifierSource).toContain('node-host-manager.ts')
-    expect(tarballVerifierSource).toContain('react-native-app-manager.ts')
-    expect(tarballVerifierSource).toContain('node-host-manager.ts')
     expect(tarballVerifierSource).toContain('expectedCodegenSourceEntries')
     expect(tarballVerifierSource).toContain('Packed React Native Codegen source set differs')
     expect(tarballVerifierSource).toContain('excludedHistoricalDocumentationEntries')

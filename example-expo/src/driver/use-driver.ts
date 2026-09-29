@@ -24,7 +24,7 @@ export function useScenarioView(scenario: Scenario): ScenarioView {
   return view
 }
 
-/** `null` in release builds, where the remote channel does not exist. */
+/** `null` when Release has no explicit remote endpoint. */
 export function useRemoteDriverState(): RemoteDriverState | null {
   const [state, setState] = useState(() => remoteDriver?.state() ?? null)
   useEffect(() => {
@@ -35,7 +35,7 @@ export function useRemoteDriverState(): RemoteDriverState | null {
   return state
 }
 
-/** Starts the remote channel for the app's lifetime (development builds only). */
+/** Starts the configured reference-app remote channel for the app's lifetime. */
 export function useRemoteDriverLifecycle(): void {
   useEffect(() => {
     if (remoteDriver === null) return undefined

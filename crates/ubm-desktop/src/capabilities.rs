@@ -261,24 +261,30 @@ pub const DESKTOP_CAPABILITIES: &[DesktopCapability] = &[
         limitation: None,
         per_os: &[OsOverride::adapter(
             DesktopOs::Linux,
-            "BlueZ (os::linux): an existing device object by address, else Adapter1.ConnectDevice, else (ConnectDevice is experimental) an LE discovery session on this connection until the object exists — the legacy fallback.",
+            "BlueZ (os::linux): an existing device object by address, otherwise an owned LE discovery session until the object exists. Address resolution never calls Adapter1.ConnectDevice or establishes a link.",
         )],
     },
     DesktopCapability {
         id: "peer:known",
         verdict: CapabilityVerdict::NarrowOsAdapterNeeded,
         scenario: "peer.known-peers",
-        note: "OS-known peer retrieval (retrievePeripherals/retrieveConnectedPeripherals) needs a narrow adapter.",
+        note: "OS-known peer lookup is platform-specific; CoreBluetooth resolves explicit identifiers, not an unrestricted OS peer inventory.",
         limitation: None,
-        per_os: &[],
+        per_os: &[OsOverride::adapter(
+            DesktopOs::MacOs,
+            "Read-only retrievePeripheralsWithIdentifiers on the existing manager; explicit identifiers only, no connection ownership.",
+        )],
     },
     DesktopCapability {
         id: "peer:system-connected",
         verdict: CapabilityVerdict::NarrowOsAdapterNeeded,
         scenario: "peer.system-connected",
-        note: "Adopting OS-connected peripherals needs a narrow adapter per platform.",
+        note: "System-connected retrieval does not acquire a local connection lease.",
         limitation: None,
-        per_os: &[],
+        per_os: &[OsOverride::adapter(
+            DesktopOs::MacOs,
+            "Read-only retrieveConnectedPeripheralsWithServices; nonempty service filters required; local connection state is independent.",
+        )],
     },
     DesktopCapability {
         id: "peer:bonded",
@@ -727,11 +733,86 @@ fn register_for(
 /// Limitation code for rows with no implementation yet.
 const NOT_IMPLEMENTED: &str = "not-implemented";
 
+/// Instance-specific reason for a scan-capable BlueZ radio without LE authority.
+pub const BLUEZ_LE_AUTHORITY_REQUIRED: &str = "bluez-le-bearer-attestation-required";
+
+/// Apply the instantiated radio's connection refusal, not a platform assumption.
+/// Deterministic and other host radios keep their own registered capabilities.
+pub(crate) fn apply_connection_capability_limitation(
+    core: &mut Central,
+    reason: Option<&str>,
+) -> Result<(), CoreError> {
+    let Some(reason) = reason else {
+        return Ok(());
+    };
+    for capability in DESKTOP_CAPABILITIES.iter().filter(|row| {
+        matches!(
+            row.id,
+            "connection:direct" | "background:desktop-maintain-connection"
+        )
+    }) {
+        core.register_capability(CapabilityDescriptor::new(
+            capability.id,
+            CapabilityState::Unsupported,
+            &[("availability", 0)],
+            &[reason],
+            &format!("ubm-desktop-instance-{}", capability.id),
+            EvidenceLevel::Blocked,
+            env!("CARGO_PKG_VERSION"),
+            "ubm-desktop-instance-capability-v1",
+            &[capability.scenario],
+        )?)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
 
     use super::{DESKTOP_CAPABILITIES, register_desktop_capabilities};
+
+    #[test]
+    fn instance_connection_refusal_overrides_only_dependent_mechanisms() {
+        use ubm_core::central::CapabilityState;
+        for os in super::DesktopOs::ALL {
+            let mut core = test_core();
+            super::register_desktop_capabilities_for(&mut core, Some(os), false).unwrap();
+            let before = core.registered_capability_states();
+            super::apply_connection_capability_limitation(&mut core, None).unwrap();
+            assert_eq!(core.registered_capability_states(), before);
+            super::apply_connection_capability_limitation(
+                &mut core,
+                Some("test-no-connection-authority"),
+            )
+            .unwrap();
+            for (id, original) in before {
+                let state = core
+                    .registered_capability_states()
+                    .into_iter()
+                    .find(|(key, _)| key == &id)
+                    .unwrap()
+                    .1;
+                assert_eq!(
+                    state,
+                    if matches!(
+                        id.as_str(),
+                        "connection:direct" | "background:desktop-maintain-connection"
+                    ) {
+                        CapabilityState::Unsupported
+                    } else {
+                        original
+                    }
+                );
+            }
+            let descriptors = core.registered_capability_descriptors();
+            let direct = descriptors
+                .iter()
+                .find(|row| row.id() == "connection:direct")
+                .unwrap();
+            assert_eq!(direct.limitations(), &["test-no-connection-authority"]);
+        }
+    }
     use ubm_core::central::{Central, CentralConfig};
     use ubm_core::contracts::{
         AdapterGeneration, AdapterId, AttachmentId, AttachmentTuple, BackendGeneration,
@@ -860,9 +941,10 @@ mod tests {
             42,
             "frozen matrix changed size: update this test and the desktop rows together"
         );
-        // Mobile-only rows: the desktop matrix does not carry them. The four
-        // continuation capabilities describe what an OS wake may do to a
-        // process it restarted, which no desktop host offers.
+        // These rows are not integrated into the desktop provider yet. Native
+        // continuation needs a process-owned executor and host-specific wake /
+        // restart configuration; absence here is an implementation boundary,
+        // not evidence that desktop operating systems cannot offer a wake.
         let scoped_out = [
             "background:apple-restoration",
             "background:android-connected-device-service",

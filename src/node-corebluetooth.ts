@@ -8,6 +8,7 @@
 import type { BackendProvider, HostNeutralBackendIdentity } from './backend-contract/identity'
 import {
   createDesktopCoreBleManager,
+  createDesktopCoreProcessHost,
   createDesktopCoreProvider,
   type DesktopCoreManagerOptions,
   type DesktopCoreProviderOptions
@@ -26,6 +27,11 @@ export type { DesktopCoreManagerOptions, DesktopCoreProviderOptions } from './no
 
 export type CoreBluetoothBleManagerAppOptions = DesktopCoreManagerOptions
 export type NativeCoreBluetoothProviderOptions = DesktopCoreProviderOptions
+
+/** Trusted process owner; ordinary managers created by it borrow the one radio. */
+export function createCoreBluetoothProcessHost(options: DesktopCoreManagerOptions = {}) {
+  return createDesktopCoreProcessHost('corebluetooth', options)
+}
 
 /** One-call Node CoreBluetooth manager over the shared Rust core. Does not fall back to another backend. */
 export async function createCoreBluetoothBleManager(

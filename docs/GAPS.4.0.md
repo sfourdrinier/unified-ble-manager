@@ -4,9 +4,9 @@
 
 **Status:** Current implementation and evidence inventory; not architecture authority
 
-**Architecture authority:** [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)
+**Architecture authority:** [Current 5.0 authority](README.md#current-50-authority)
 
-**Product scope:** [`../ROADMAP.4.0.md`](../ROADMAP.4.0.md)
+**Historical 4.0 scope reference:** [`../ROADMAP.4.0.md`](../ROADMAP.4.0.md); not a current 5.0 release prerequisite. Current release procedure: [`../RELEASE.md`](../RELEASE.md).
 
 ## How to read this inventory
 
@@ -14,7 +14,7 @@ This file tracks platform code, CI, package, lab, and live-radio evidence. It do
 
 The clean-baseline contract, unified core, public manager, deterministic backend, TCK, native protocol, first-party backend implementations, host-isolated package exports, SDK/CLI, and legacy-absence gates exist in the 4.0 source. Passing deterministic, compile, ABI, or package tests are implementation proof; they do not become physical-radio support evidence unless a retained record proves the corresponding live scenario.
 
-This source targets `unified-ble-manager@5.0.0-rc.12`; the npm registry and release
+This source targets `unified-ble-manager@5.0.0-rc.13`; the npm registry and release
 provenance, not a source version string, determine whether it is published.
 Earlier stable releases remain immutable published history. Backend support labels remain
 evidence-derived. This package does not rewrite the evidence inventory: a backend remains at the support level
@@ -78,7 +78,7 @@ Existing `GAP-*` labels in historical trackers/documents may continue to identif
 
 ## Related records
 
-- [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)
+- [Current 5.0 authority](README.md#current-50-authority)
 - [`../ROADMAP.4.0.md`](../ROADMAP.4.0.md)
 - [`../MIGRATION_4.0.md`](../MIGRATION_4.0.md)
 - [`PLATFORMS.md`](PLATFORMS.md)

@@ -56,6 +56,15 @@ export type {
 export type { ReactNativeRestorationAuthority } from './backends/reactnative/react-native-rust-core-restoration'
 export type { ReactNativeRustCoreRuntimeFacts } from './backends/reactnative/react-native-rust-core-features'
 export { createReactNativeBleManager } from './react-native-app-manager'
+export { createReactNativeContinuationRecordings } from './react-native-continuation-recording'
+export type {
+  ContinuationRecordingController,
+  ContinuationRecordingStatus,
+  ContinuationRecordingBatch,
+  ContinuationRecordingMetadata,
+  ContinuationRecordingFailure,
+  ContinuationRecordingPrepareOptions
+} from './core/continuation-recording'
 export type { CreateReactNativeBleManagerOptions } from './react-native-app-manager'
 export type { BleManagerCreateOptions } from './public/host-identity'
 export {

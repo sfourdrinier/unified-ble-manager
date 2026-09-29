@@ -3,6 +3,7 @@
 package com.sfourdrinier.unifiedblemanager.presence
 
 import android.companion.AssociationInfo
+import android.companion.DevicePresenceEvent
 import android.net.MacAddress
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -50,6 +51,7 @@ class UbmCompanionPresenceServiceTest {
 
   @After
   fun tearDown() {
+    UbmCompanionPresenceService.observe(mock(android.content.Context::class.java), peer) {}
     UbmCompanionPresenceService.coordinatorOverride = null
   }
 
@@ -72,6 +74,144 @@ class UbmCompanionPresenceServiceTest {
 
   private fun awaitIngestions() {
     assertTrue("presence worker should deliver the admitted appearance", expectedIngestions.await(5, TimeUnit.SECONDS))
+  }
+
+  @Test
+  fun modernSourcesReleaseOnlyTheLastSourceAndIgnoreLegacyDuplicates() {
+    val releases = java.util.concurrent.atomic.AtomicInteger()
+    coordinator = PresenceWakeCoordinator(
+      associatedAddresses = { setOf(peer) }, store = store, nowMs = { 1L },
+      ensureOwner = { true }, ingest = { peers ->
+        synchronized(ingested) { ingested.addAll(peers) }
+        expectedIngestions.countDown(); true
+      }, log = {}, releaseContinuation = { releases.incrementAndGet(); null }
+    )
+    UbmCompanionPresenceService.coordinatorOverride = coordinator
+    val service = object : UbmCompanionPresenceService() {
+      override fun presenceSdkInt() = 36
+      override fun associationForPresence(id: Int) = if (id == 4) association(4, peer) else null
+    }
+    fun event(kind: Int): DevicePresenceEvent = mock(DevicePresenceEvent::class.java).also {
+      `when`(it.associationId).thenReturn(4)
+      `when`(it.event).thenReturn(kind)
+    }
+    expectIngestions(2)
+    service.onDevicePresenceEvent(event(DevicePresenceEvent.EVENT_BLE_APPEARED))
+    service.onDeviceAppeared(association(4, peer))
+    service.onDevicePresenceEvent(event(DevicePresenceEvent.EVENT_BT_CONNECTED))
+    service.onDevicePresenceEvent(event(DevicePresenceEvent.EVENT_BLE_DISAPPEARED))
+    service.onDeviceDisappeared(association(4, peer))
+    service.onDevicePresenceEvent(event(DevicePresenceEvent.EVENT_BT_DISCONNECTED))
+    service.onDevicePresenceEvent(event(DevicePresenceEvent.EVENT_BLE_APPEARED))
+    awaitIngestions()
+    assertEquals(1, releases.get())
+    assertEquals(2, ingested.size)
+    service.onDestroy()
+  }
+
+  @Test
+  fun unobserveFencesHeldAndLaterCallbacksUntilSuccessfulObserve() {
+    val entered = CountDownLatch(1)
+    val resume = CountDownLatch(1)
+    val context = mock(android.content.Context::class.java)
+    val executions = java.util.concurrent.atomic.AtomicInteger()
+    val cleanup = java.util.concurrent.atomic.AtomicInteger()
+    coordinator = PresenceWakeCoordinator(
+      associatedAddresses = { setOf(peer) }, store = store, nowMs = { 1L },
+      ensureOwner = { entered.countDown(); assertTrue(resume.await(5, TimeUnit.SECONDS)); true },
+      ingest = { false }, log = {},
+      continuation = { BackgroundContinuationDeclaration(ContinuationStrategy.NATIVE, null, emptyList(), null, null) },
+      executeContinuation = { _, _ -> executions.incrementAndGet(); ContinuationOutcome.completed(ContinuationStrategy.NATIVE, peer, 0) }
+    )
+    UbmCompanionPresenceService.coordinatorOverride = coordinator
+    val service = UbmCompanionPresenceService()
+    val caller = Executors.newSingleThreadExecutor()
+    val observer = CompanionPresenceObserver(36, { true }, { mock(android.companion.CompanionDeviceManager::class.java) },
+      { _, _ -> }, { _, _ -> },
+      { address -> UbmCompanionPresenceService.retireObservation(context, address) { cleanup.incrementAndGet() } })
+    try {
+      service.onDeviceAppeared(peer)
+      assertTrue(entered.await(5, TimeUnit.SECONDS))
+      val stop = caller.submit { observer.unobserve(peer) { assertTrue(it.isSuccess) } }
+      val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+      while (coordinator.acceptsTicket(peer, coordinator.admissionTicket()) && System.nanoTime() < deadline) Thread.yield()
+      assertFalse("confirmed OS stop must retire admission before waiting for held work", coordinator.acceptsTicket(peer, coordinator.admissionTicket()))
+      service.onDeviceAppeared(peer)
+      resume.countDown()
+      stop.get(5, TimeUnit.SECONDS)
+      service.onDeviceAppeared(peer)
+      val refusal = SecurityException("denied")
+      try { UbmCompanionPresenceService.observe(context, peer) { throw refusal }; org.junit.Assert.fail("expected refusal") }
+      catch (actual: SecurityException) { org.junit.Assert.assertSame(refusal, actual) }
+      assertEquals(0, executions.get())
+      assertEquals(1, cleanup.get())
+      assertTrue(store.drainAppearances().isEmpty())
+      UbmCompanionPresenceService.observe(context, peer) {}
+      service.onDeviceAppeared(peer)
+      UbmCompanionPresenceService.observe(context, peer) {}
+      assertEquals(1, executions.get())
+    } finally { resume.countDown(); service.onDestroy(); caller.shutdownNow() }
+  }
+
+  @Test
+  fun reentrantUnobserveDoesNotDeadlockAndCleanupFailureIsPreserved() {
+    val context = mock(android.content.Context::class.java)
+    val failure = IllegalStateException("cleanup refused")
+    try {
+      UbmCompanionPresenceService.observe(context, peer) {
+        UbmCompanionPresenceService.retireObservation(context, peer) { throw failure }
+      }
+      org.junit.Assert.fail("cleanup failure lost")
+    } catch (actual: IllegalStateException) { org.junit.Assert.assertSame(failure, actual) }
+    assertFalse(coordinator.acceptsTicket(peer, coordinator.admissionTicket()))
+  }
+
+  @Test
+  fun modernUnknownUuidAndAssociationEventsDoNotAdmitAWake() {
+    val service = object : UbmCompanionPresenceService() {
+      override fun presenceSdkInt() = 36
+      override fun associationForPresence(id: Int) = if (id == 4) association(4, peer) else null
+    }
+    fun event(id: Int, kind: Int, uuid: Boolean = false) = mock(DevicePresenceEvent::class.java).also {
+      `when`(it.associationId).thenReturn(id); `when`(it.event).thenReturn(kind)
+      if (uuid) `when`(it.uuid).thenReturn(mock(android.os.ParcelUuid::class.java))
+    }
+    service.onDevicePresenceEvent(event(99, 0))
+    service.onDevicePresenceEvent(event(4, 99))
+    service.onDevicePresenceEvent(event(-1, 0, true))
+    UbmCompanionPresenceService.observe(mock(android.content.Context::class.java), peer) {}
+    assertTrue(ingested.isEmpty())
+    service.onDestroy()
+  }
+
+  @Test
+  fun serviceRebindCannotOvertakeAnAdmittedAppearance() {
+    val entered = CountDownLatch(1)
+    val resume = CountDownLatch(1)
+    val finished = CountDownLatch(1)
+    val calls = java.util.Collections.synchronizedList(mutableListOf<String>())
+    var first = true
+    coordinator = PresenceWakeCoordinator(
+      associatedAddresses = { setOf(peer) }, store = store, nowMs = { 1L },
+      ensureOwner = {
+        if (first) { first = false; entered.countDown(); assertTrue(resume.await(5, TimeUnit.SECONDS)) }
+        true
+      }, ingest = { calls.add("ingest"); if (calls.size == 3) finished.countDown(); true },
+      log = {}, releaseContinuation = { calls.add("release"); null }
+    )
+    UbmCompanionPresenceService.coordinatorOverride = coordinator
+    val old = UbmCompanionPresenceService()
+    val replacement = UbmCompanionPresenceService()
+    try {
+      old.onDeviceAppeared(peer)
+      assertTrue(entered.await(5, TimeUnit.SECONDS))
+      old.onDestroy()
+      replacement.onDeviceDisappeared(peer)
+      replacement.onDeviceAppeared(peer)
+      resume.countDown()
+      assertTrue(finished.await(5, TimeUnit.SECONDS))
+      assertEquals(listOf("ingest", "release", "ingest"), calls)
+    } finally { resume.countDown(); replacement.onDestroy() }
   }
 
   @Test

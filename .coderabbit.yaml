@@ -81,7 +81,7 @@ reviews:
       is a protocol invariant, a safety bound, or host policy.
     - Ownership and lifetime bugs: unreleased connections, leaked
       subscriptions, immortal device-object state, missing async teardown.
-    - Contract violations against 4.x: Base64 in a public value (public values
+    - Contract violations against 5.x: Base64 in a public value (public values
       are `Uint8Array`), caller-created transaction IDs (cancellation is
       `AbortSignal`), a static `supports()` matrix (capabilities are reported at
       runtime by the instantiated backend), or the host-neutral root choosing or

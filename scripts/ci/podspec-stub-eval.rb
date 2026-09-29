@@ -29,6 +29,9 @@ module Pod
 
     def initialize
       @attrs = {}
+      if ENV['UBM_PODSPEC_STUB_USER_SWIFT_FLAGS']
+        @attrs['user_target_xcconfig'] = { 'OTHER_SWIFT_FLAGS' => ENV['UBM_PODSPEC_STUB_USER_SWIFT_FLAGS'] }
+      end
     end
 
     # Pod::Specification has no getters; the podspec (like React Native's

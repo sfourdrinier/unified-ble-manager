@@ -588,3 +588,82 @@ async fn shutdown_reports_a_scan_stop_that_never_succeeded() {
         "the record names the unreleased scan instead of claiming a clean release"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_retries_exact_scan_without_poisoning_success_with_old_failure() {
+    let central = open().await;
+    let scan = central
+        .start_scan("owner-a", &[], OpControl::budget_ms(5000))
+        .await
+        .unwrap();
+    let original = central.active_scan_id().expect("physical scan identity");
+    for _ in 0..2 {
+        central
+            .boundary()
+            .fail_next(FaultOp::StopScan, "stop refused");
+        let report = central.shutdown().await;
+        assert!(report.scan_stop_failure.is_some());
+        assert_eq!(
+            report.record.unwrap().state(),
+            ubm_core::ownership::CleanupState::ReleaseFailed
+        );
+        assert_eq!(central.active_scan_id().as_ref(), Some(&original));
+        assert!(
+            central
+                .start_scan("late", &[], OpControl::budget_ms(5000))
+                .await
+                .is_err()
+        );
+    }
+    let before = count(&central, "stop_scan");
+    let report = central.shutdown().await;
+    assert!(report.scan_stop_failure.is_none());
+    assert_eq!(
+        report.record.unwrap().state(),
+        ubm_core::ownership::CleanupState::Released
+    );
+    assert!(central.active_scan_id().is_none());
+    assert!(!central.boundary().scan_active());
+    assert_eq!(count(&central, "stop_scan"), before + 1);
+    drop(scan);
+}
+
+#[tokio::test(start_paused = true)]
+async fn shutdown_keeps_an_inflight_stop_single_flight_and_observes_late_success() {
+    let central = open().await;
+    let session = central
+        .start_scan("owner-a", &[], OpControl::budget_ms(5000))
+        .await
+        .unwrap();
+    let id = session.operation_id().clone();
+    central.boundary().block_op(FaultOp::StopScan);
+    let pending = tokio::spawn({
+        let central = central.clone();
+        let id = id.clone();
+        async move { central.stop_scan(&id, OpControl::budget_ms(30_000)).await }
+    });
+    until(|| count(&central, "stop_scan") == 1, "native stop admitted").await;
+    let first = central.shutdown().await;
+    assert!(first.scan_stop_failure.is_some());
+    assert_eq!(central.active_scan_id(), Some(id));
+    assert_eq!(
+        count(&central, "stop_scan"),
+        1,
+        "shutdown followed the held owner instead of dispatching twice"
+    );
+    central.boundary().unblock_op(FaultOp::StopScan);
+    assert_eq!(pending.await.unwrap().unwrap(), ScanStop::Stopped);
+    assert!(central.active_scan_id().is_none());
+    assert!(!central.boundary().scan_active());
+    let retry = central.shutdown().await;
+    assert!(retry.scan_stop_failure.is_none());
+    assert_eq!(
+        retry.record.unwrap().state(),
+        ubm_core::ownership::CleanupState::Released
+    );
+    assert_eq!(
+        count(&central, "stop_scan"),
+        1,
+        "late success retires debt without another stop"
+    );
+}

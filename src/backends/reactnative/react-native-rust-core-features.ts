@@ -29,8 +29,11 @@ export type ReactNativeRustCoreFeaturePlatform = 'android' | 'apple'
 
 /** Facts about the running OS the host supplies (never inferred). */
 export interface ReactNativeRustCoreRuntimeFacts {
+  readonly continuationBindingAvailable?: boolean
   /** Android API level (`Platform.Version`); LE PHY control needs API 26+. */
   readonly androidApiLevel: number | null
+  /** Whether this Apple host has a configured native restoration authority. */
+  readonly appleRestorationConfigured?: boolean
 }
 
 /** The first Android API level with `BluetoothGatt.readPhy`/`setPreferredPhy`. */
@@ -217,7 +220,9 @@ export function createReactNativeRustCoreFeatureRegistry(
     // BGS4: one capability per continuation strategy, answered at runtime
     // for the instantiated platform — never a static matrix.
     createReactNativeContinuationFeatureRegistry(platform, implementationVersion, {
-      androidApiLevel: facts.androidApiLevel
+      androidApiLevel: facts.androidApiLevel,
+      continuationBindingAvailable: facts.continuationBindingAvailable === true,
+      appleRestorationConfigured: facts.appleRestorationConfigured === true
     }),
     createFeatureRegistry(
       Object.freeze([

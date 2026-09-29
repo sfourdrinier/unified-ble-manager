@@ -143,8 +143,16 @@ describe('4.0 public package surface', () => {
       'assertElectronAdvertisementObservation',
       'createElectronRendererBleManager',
       'createElectronRendererBleManagerWithEnvironment',
+      'createNativeContinuationControl',
+      'createNativeContinuationRecordingController',
       'isElectronConnectionEventsStreamHandle'
     ])
+    // Renderer helpers decode an authenticated transport; they do not expose
+    // native central construction, filesystem configuration, or process ownership.
+    expect(electronRenderer.loadDesktopCoreBinding).toBeUndefined()
+    expect(electronRenderer.createCoreBluetoothProcessHost).toBeUndefined()
+    expect(electronRenderer.createNativeContinuationController).toBeUndefined()
+    expect(electronRenderer.openNativeContinuationRecordings).toBeUndefined()
     expect(packageJson.exports['./web']).toBeDefined()
     expect(packageJson.exports['./codecs']).toBeDefined()
     expect(packageJson.exports['./profiles/commands']).toBeDefined()
@@ -263,6 +271,7 @@ describe('4.0 public package surface', () => {
     const privateRuntimeSources = [
       'src/react-native-manager.ts',
       'src/react-native-app-manager.ts',
+      'src/react-native-continuation-recording.ts',
       'src/node-host-manager.ts',
       'src/native-protocol/rn-android-protocol-records.ts'
     ]
@@ -280,7 +289,7 @@ describe('4.0 public package surface', () => {
 
     expect(electronRendererSource.match(/^\/\/ src\/electron-renderer\.ts$/gm)).toHaveLength(1)
     expect(electronRendererSource).toBe(
-      "// src/electron-renderer.ts\n\nexport * from './electron/protocol'\nexport { ElectronRendererBleClient } from './electron/renderer'\nexport type { ElectronConnectionEventCleanupReceipt, ElectronConnectionEventSubscription } from './electron/renderer'\nexport {\n  createElectronRendererBleManager,\n  createElectronRendererBleManagerWithEnvironment\n} from './electron/public-manager'\nexport type { ElectronRendererBleManagerEnvironment } from './electron/public-manager'\nexport { assertAdvertisementObservation as assertElectronAdvertisementObservation } from './electron/advertisement-observation'\n"
+      "// src/electron-renderer.ts\n\nexport { createNativeContinuationControl } from './backends/desktop/native-continuation-controller'\nexport type {\n  NativeContinuationControl,\n  NativeContinuationControlAccess,\n  NativeContinuationCompleted,\n  NativeContinuationStatus\n} from './backends/desktop/native-continuation-controller'\nexport { createNativeContinuationRecordingController } from './core/continuation-recording'\nexport type { ContinuationRecordingAccess, ContinuationRecordingController } from './core/continuation-recording'\n\nexport * from './electron/protocol'\nexport { ElectronRendererBleClient } from './electron/renderer'\nexport type { ElectronConnectionEventCleanupReceipt, ElectronConnectionEventSubscription } from './electron/renderer'\nexport {\n  createElectronRendererBleManager,\n  createElectronRendererBleManagerWithEnvironment\n} from './electron/public-manager'\nexport type { ElectronRendererBleManagerEnvironment } from './electron/public-manager'\nexport { assertAdvertisementObservation as assertElectronAdvertisementObservation } from './electron/advertisement-observation'\n"
     )
   })
 

@@ -9,6 +9,7 @@ import type {
   ServiceDataEntry
 } from '../backend-contract/advertisement'
 import { contractError } from '../backend-contract/errors'
+import { isObservationOrigin, isObservationSource } from '../backend-contract/advertisement'
 import {
   byteLimit,
   ownBytes,
@@ -46,6 +47,7 @@ export function snapshotAdvertisementObservation(value: AdvertisementObservation
   return Object.freeze({
     device: snapshotDevice(value.device),
     provenance: value.provenance,
+    ...(value.origin === undefined ? {} : { origin: value.origin }),
     sourceTimestamp: snapshotField(value.sourceTimestamp, item =>
       Object.freeze({ monotonicMs: item.monotonicMs, origin: item.origin })
     ),
@@ -69,12 +71,16 @@ export function snapshotAdvertisementObservation(value: AdvertisementObservation
 
 /** Rejects partial, malformed, or field-dropping advertisement values before IPC publication. */
 export function assertAdvertisementObservation(value: unknown): asserts value is AdvertisementObservation<string> {
-  if (!isRecord(value) || !hasExactKeys(value, advertisementKeys)) {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, Object.hasOwn(value, 'origin') ? [...advertisementKeys, 'origin'] : advertisementKeys)
+  ) {
     throw malformed('shape')
   }
   if (
     !isDeviceIdentity(value.device) ||
     !isObservationSource(value.provenance) ||
+    (value.origin !== undefined && !isObservationOrigin(value.origin)) ||
     !isField(value.sourceTimestamp, isSourceTimestamp) ||
     !isNonNegativeFiniteNumber(value.receivedAtMonotonicMs) ||
     !isNonNegativeSafeInteger(value.ingressOrdinal) ||
@@ -245,10 +251,6 @@ function isNonNegativeFiniteNumber(value: unknown): value is number {
 
 function isBoolean(value: unknown): value is boolean {
   return typeof value === 'boolean'
-}
-
-function isObservationSource(value: unknown): value is AdvertisementObservation<string>['provenance'] {
-  return value === 'platform-raw' || value === 'platform-derived' || value === 'core-merged'
 }
 
 function isFieldProvenance(value: unknown): value is FieldProvenance {

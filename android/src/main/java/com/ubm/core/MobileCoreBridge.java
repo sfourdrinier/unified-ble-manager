@@ -3,10 +3,9 @@
 // JNI facade of the process-owned mobile Rust owner (`crates/ubm-mobile`,
 // natives in `bindings/jni/src/mobile.rs`, library `libubm5_jni_echo.so`).
 //
-// Ownership: native signatures are single-owned by the Rust cdylib. The
-// probe-side copy at `bindings/jni/java/com/ubm/core/MobileCoreBridge.java`
-// must stay byte-identical (the JNI crate's `java_copies_are_identical`
-// test fails when they drift); the shipped AAR compiles this copy.
+// Ownership: native signatures are single-owned by the Rust cdylib. Both
+// the shipped AAR and standalone JVM smoke compile this authoritative facade;
+// there is no separately maintained probe-side copy.
 //
 // Shape (wire revision `ubm-mobile-wire/1`, docs/MOBILE_RUST_WIRE.md):
 //   * one host per process: `nativeInstallHost` binds the platform radio
@@ -240,6 +239,28 @@ public final class MobileCoreBridge {
     public static native void nativeInvoke(long sessionId, String op, String argsJson, InvokeCallback callback);
 
     public static native String nativeDrain(long sessionId, int maxItems, int maxBytes);
+    /** Trusted process bootstrap only; never exposed through the TurboModule. */
+    public static native String nativeContinuationConfigureRecordingDirectory(String path);
+    public static native String nativeContinuationRecordingControl(String operation, String id, String token, int maxItems, int maxBytes);
+
+    /** Executes a declared standing order in the process-owned Rust executor. */
+    public static native void nativeContinuationExecute(String peerId, String declarationJson, InvokeCallback callback);
+
+    /** Seals and prepares a replay-safe continuation handoff without acknowledging its bytes. */
+    public static native void nativeContinuationPrepareClaim(int maxItems, int maxBytes, InvokeCallback callback);
+
+    /** Acknowledges decoded bytes; failed native cleanup remains owned for retry. */
+    public static native void nativeContinuationAcknowledgeClaim(String claimToken, InvokeCallback callback);
+
+    /** Read-only queued counters, or JSON null when no continuation is owned. */
+    public static native void nativeContinuationDescribeBacklog(InvokeCallback callback);
+
+    /** Returns the active-declaration conflict reason, or null when replacement is admissible. */
+  public static native String nativeContinuationDeclarationReplacementFailure(String declarationJson);
+  public static native String nativeContinuationReserveDeclaration(String declarationJson);
+  public static native String nativeContinuationCommitDeclaration(String reservationToken);
+  public static native String nativeContinuationCancelDeclaration(String reservationToken);
+  public static native String nativeContinuationSeedDeclaration(String declarationJson);
 
     // -- completions (answer each RadioHost request exactly once) ---------
 

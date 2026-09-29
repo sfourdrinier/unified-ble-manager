@@ -73,7 +73,7 @@ class RustCoreSessions(
 
   fun drain(sessionIdText: String, maxItems: Double, maxBytes: Double, reply: Reply) = perform(reply, "session.drain") {
     val sessionId = sessionId(sessionIdText, "session.drain")
-    reply.resolve(core.drain(sessionId, positiveInt(maxItems, "maxItems"), positiveInt(maxBytes, "maxBytes")))
+    reply.resolve(core.drain(sessionId, positiveInt(maxItems, "maxItems", "session.drain"), positiveInt(maxBytes, "maxBytes", "session.drain")))
   }
 
   /**
@@ -136,24 +136,32 @@ class RustCoreSessions(
     } catch (error: IllegalArgumentException) {
       throw RustCoreRejection.invalid("continuation.declare", error.message ?: "declaration malformed")
     }
-    val conflict = host.continuationExecutor().declarationReplacementFailure(declaration)
-    if (conflict != null) {
-      throw RustCoreRejection("lifecycle.invalid-state", "lifecycle", "continuation.declare", conflict)
+    if (declaration.recording != null) {
+      host.ensureInstalled()
+      host.configureRecordingStorage()
     }
-    host.continuationStore().saveDeclaration(declarationJson)
+    host.continuationExecutor().persistDeclaration(declaration) {
+      host.continuationStore().saveDeclaration(declarationJson)
+    }
     reply.resolve("{\"state\":\"declared\"}")
   }
 
+  /** Offline journal access; this does not initialize or release the radio. */
+  fun recordingControl(operation: String, id: String, token: String, maxItems: Double, maxBytes: Double, reply: Reply) =
+    perform(reply, "continuation.recording.$operation") {
+      val items = if (operation == "prepare") positiveInt(maxItems, "maxItems", "continuation.recording.$operation") else 0
+      val bytes = if (operation == "prepare") positiveInt(maxBytes, "maxBytes", "continuation.recording.$operation") else 0
+      reply.resolve(host.recordingControl(operation, id, token, items, bytes))
+    }
+
   /**
-   * Drains the continuation backlog (verbatim drain batches for the JS
-   * codec) and disposes the continuation session, so the app's own session
-   * connects next. Values queued with no JS session drain here with the
-   * drain contract's own loss accounting — nothing silently dropped.
+   * Seals and prepares the continuation backlog with its loss accounting.
+   * Acknowledgement releases the session; durable journal data is separate.
    */
   fun prepareContinuationClaim(maxItems: Double, maxBytes: Double, reply: Reply) =
     perform(reply, "continuation.claim") {
-      val items = positiveInt(maxItems, "maxItems")
-      val bytes = positiveInt(maxBytes, "maxBytes")
+      val items = positiveInt(maxItems, "maxItems", "continuation.claim")
+      val bytes = positiveInt(maxBytes, "maxBytes", "continuation.claim")
       val claim = host.continuationExecutor().prepareClaim(items, bytes)
       val response = linkedMapOf<String, Any?>(
         // Session-pinned authority for the consumer names in these batches.
@@ -184,6 +192,7 @@ class RustCoreSessions(
       // No wake is the one valid tokenless response. Every prepared handoff
       // has a non-empty token and must be acknowledged by TypeScript.
       if (claim.claimToken.isNotEmpty()) response["claimToken"] = claim.claimToken
+      claim.recordingId?.let { response["recording"] = linkedMapOf("id" to it) }
       reply.resolve(
         RustCoreJson.write(response)
       )
@@ -224,14 +233,8 @@ class RustCoreSessions(
           "peerId" to declaration.peerId,
           "resubscribe" to declaration.resubscribe.size,
           "malformedDeclarations" to store.malformedDeclarationCount(),
-          "lastWake" to if (wake == null) null else linkedMapOf(
-            "observedAtMs" to wake.observedAtMs,
-            "event" to wake.event,
-            "strategy" to wake.strategy.wire,
-            "peerAddress" to wake.peerAddress,
-            "code" to wake.code,
-            "reason" to wake.reason
-          )
+          "lastRecovery" to host.continuationExecutor().lastRecovery(),
+          "lastWake" to wake?.wire()
         )
       )
     )
@@ -335,9 +338,9 @@ class RustCoreSessions(
       return text.toLongOrNull() ?: throw RustCoreRejection.invalid(operation, "sessionId is out of range")
     }
 
-    private fun positiveInt(value: Double, name: String): Int {
+    private fun positiveInt(value: Double, name: String, operation: String): Int {
       if (value != Math.rint(value) || value < 1 || value > Int.MAX_VALUE) {
-        throw RustCoreRejection.invalid("session.drain", "$name must be a positive integer")
+        throw RustCoreRejection.invalid(operation, "$name must be a positive integer")
       }
       return value.toInt()
     }

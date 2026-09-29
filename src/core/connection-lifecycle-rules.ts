@@ -41,6 +41,11 @@ export function isConnectionLossCause(cause: ConnectionLifecycleTerminalCause): 
   )
 }
 
+/** Teardown/restart/adapter markers alone are not a native connection-end receipt. */
+export function isNativeConnectionEndCause(cause: ConnectionLifecycleTerminalCause): boolean {
+  return cause === 'peer-link-loss'
+}
+
 function isAllowedBackendTransition(previous: ConnectionState, current: ConnectionState): boolean {
   if (previous === 'connecting') {
     return current === 'connected' || current === 'disconnecting' || current === 'disconnected' || current === 'lost'

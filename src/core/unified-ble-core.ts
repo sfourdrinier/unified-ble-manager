@@ -77,7 +77,11 @@ import {
   type CoreDeadlineScheduler
 } from './unified-ble-core-helpers'
 import { forwardCoreBackendEvents } from './core-backend-event-stream'
-import { isConnectionLossCause, lifecycleCauseFromBackendDisconnect } from './connection-lifecycle-rules'
+import {
+  isConnectionLossCause,
+  isNativeConnectionEndCause,
+  lifecycleCauseFromBackendDisconnect
+} from './connection-lifecycle-rules'
 import type { DiagnosticTraceDocument } from '../diagnostics/trace-format'
 export { DEFAULT_CORE_MAXIMUM_VALUE_BYTES } from './unified-ble-core-helpers'
 export type { CoreDeadlineHandle, CoreDeadlineScheduler } from './unified-ble-core-helpers'
@@ -926,6 +930,9 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     connection: CoreConnection<Attachment, Identity>,
     cause: ConnectionLifecycleTerminalCause
   ): Promise<CleanupRecord> {
+    if (isNativeConnectionEndCause(cause)) {
+      this.subscriptions.confirmConnectionReleased(connection.connectionPath)
+    }
     const key = String(connection.resource.connectionId)
     const inFlight = this.connectionReleases.get(key)
     if (inFlight !== undefined) {
@@ -963,7 +970,8 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       }
     }
     const disconnect = cause === 'requested-disconnect'
-    const reason = isConnectionLossCause(cause) ? 'connection-lost' : 'owner-released'
+    // A failed event source is not a confirmed native connection end.
+    const reason = isConnectionLossCause(cause) && cause !== 'backend-failure' ? 'connection-lost' : 'owner-released'
     const cleanup = await connection.cleanupChildren(reason)
     const mergeChildFailures = (record: CleanupRecord): CleanupRecord => {
       if (cleanup.state === 'released') return record

@@ -201,6 +201,7 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
 
   private let driver: UnifiedBleRustRadioDriver
   private let queue: DispatchQueue
+  private let onRestoredPeer: (String) -> Void
   // Everything below is confined to `queue`.
   private var sink: UnifiedBleRustRadioSink?
   private var inFlight = [UInt64: String]()
@@ -211,8 +212,9 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
   private var scanActive = false
   private var counters = UnifiedBleRustRadioAdapterCounters()
 
-  init(driver: UnifiedBleRustRadioDriver) {
+  init(driver: UnifiedBleRustRadioDriver, onRestoredPeer: @escaping (String) -> Void = { _ in }) {
     self.driver = driver
+    self.onRestoredPeer = onRestoredPeer
     queue = driver.workQueue
     super.init()
   }
@@ -633,6 +635,7 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
     pendingRestoredPeers.removeAll()
     announcedRestoredPeers.formUnion(batch.map(\.peerId))
     ingest(.restored(peers: batch))
+    for peer in batch { onRestoredPeer(peer.peerId) }
   }
 
   // MARK: - Translation

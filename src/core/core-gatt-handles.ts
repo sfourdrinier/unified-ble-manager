@@ -330,7 +330,7 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
     return connectionPathsEqual(path, this.connectionPath)
   }
 
-  private get connectionPath(): ConnectionPath<Attachment, string> {
+  get connectionPath(): ConnectionPath<Attachment, string> {
     return {
       attachment: this.resource.attachment,
       attachmentId: this.resource.attachmentId,

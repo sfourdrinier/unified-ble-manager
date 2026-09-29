@@ -28,6 +28,9 @@ describe('Expo example cold-review regressions', () => {
     expect(expoPackage.dependencies['react-dom']).toBe('19.2.3')
     expect(expoPackage.devDependencies).not.toHaveProperty('@expo/config-plugins')
     expect(expoPackage.devDependencies['@react-native/babel-preset']).toBe('~0.86.3')
+    // Babel resolves named presets from the app root; a transitive Expo copy
+    // is not sufficient under pnpm's isolated dependency layout.
+    expect(expoPackage.devDependencies['babel-preset-expo']).toBe('~57.0.12')
     expect(expoPackage.devDependencies['@react-native/metro-config']).toBe('~0.86.3')
     expect(expoPackage.devDependencies['@react-native/typescript-config']).toBe('~0.86.3')
     expect(expoPackage.devDependencies).not.toHaveProperty('babel-plugin-module-resolver')

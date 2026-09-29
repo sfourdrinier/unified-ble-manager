@@ -8,6 +8,10 @@ import java.util.concurrent.Executor
 
 /** Records every call the adapter/session layer makes into Rust, in order. */
 class FakeCore : MobileCorePort {
+  var recordingConfigure: (String) -> String = { "{\"ok\":true,\"value\":null}" }
+  var recordingControl: (String, String, String, Int, Int) -> String = { _, _, _, _, _ -> "{\"ok\":true,\"value\":null}" }
+  override fun continuationConfigureRecordingDirectory(path: String) = recordingConfigure(path)
+  override fun continuationRecordingControl(operation: String, id: String, token: String, maxItems: Int, maxBytes: Int) = recordingControl(operation, id, token, maxItems, maxBytes)
   val calls = mutableListOf<String>()
   var status = MobileCoreBridge.STATUS_DELIVERED
   var ingressStatus = MobileCoreBridge.STATUS_ACCEPTED
@@ -21,6 +25,36 @@ class FakeCore : MobileCorePort {
   val invokes = mutableListOf<Triple<Long, String, String>>()
   val callbacks = mutableListOf<MobileCoreBridge.InvokeCallback>()
   var drainAnswer = "{\"more\":false,\"records\":[]}"
+  var continuationExecuteAnswer: ((String, String, MobileCoreBridge.InvokeCallback) -> Unit)? = null
+  var continuationPrepareAnswer: ((Int, Int, MobileCoreBridge.InvokeCallback) -> Unit)? = null
+  var continuationAcknowledgeAnswer: ((String, MobileCoreBridge.InvokeCallback) -> Unit)? = null
+  var continuationBacklog = "{\"ok\":true,\"value\":null}"
+  var continuationReplacementFailure: String? = null
+  var continuationReserveAnswer: (String) -> String = { "{\"ok\":true,\"value\":{\"reservationToken\":\"reservation-1\"}}" }
+  val declarationCalls = mutableListOf<String>()
+  var continuationSeedAnswer: (String) -> String = { "{\"ok\":true,\"value\":{\"state\":\"seeded\"}}" }
+  override fun continuationReserveDeclaration(declarationJson: String) = continuationReserveAnswer(declarationJson)
+  override fun continuationCommitDeclaration(token: String): String { declarationCalls.add("commit:$token"); return "{\"ok\":true,\"value\":{\"state\":\"committed\"}}" }
+  override fun continuationCancelDeclaration(token: String): String { declarationCalls.add("cancel:$token"); return "{\"ok\":true,\"value\":{\"state\":\"cancelled\"}}" }
+  override fun continuationSeedDeclaration(declarationJson: String) = continuationSeedAnswer(declarationJson)
+
+  override fun continuationExecute(peerId: String, declarationJson: String, callback: MobileCoreBridge.InvokeCallback) {
+    val answer = continuationExecuteAnswer ?: error("no continuation execution answer configured")
+    answer(peerId, declarationJson, callback)
+  }
+
+  override fun continuationPrepareClaim(maxItems: Int, maxBytes: Int, callback: MobileCoreBridge.InvokeCallback) {
+    val answer = continuationPrepareAnswer ?: error("no continuation prepare answer configured")
+    answer(maxItems, maxBytes, callback)
+  }
+
+  override fun continuationAcknowledgeClaim(claimToken: String, callback: MobileCoreBridge.InvokeCallback) {
+    val answer = continuationAcknowledgeAnswer ?: error("no continuation acknowledgement answer configured")
+    answer(claimToken, callback)
+  }
+
+  override fun continuationDescribeBacklog(callback: MobileCoreBridge.InvokeCallback) = callback.onResult(continuationBacklog)
+  override fun continuationDeclarationReplacementFailure(declarationJson: String) = continuationReplacementFailure
 
   private fun record(entry: String): Int {
     calls.add(entry)

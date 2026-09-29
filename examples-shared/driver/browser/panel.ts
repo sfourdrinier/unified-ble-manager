@@ -10,6 +10,7 @@ import { describeError } from '../protocol.ts'
 import type { RemoteDriverChannel, RemoteDriverState } from '../remote-channel.ts'
 import type { Scenario, ScenarioRegistry } from '../scenario-core.ts'
 import type { PendingUserGestureGate, UserGestureRequest } from '../user-gesture.ts'
+import { preparePmdDownload } from './pmd-recording-download.ts'
 
 const RECENT_EVENTS_SHOWN = 12
 
@@ -24,7 +25,11 @@ export interface PanelOptions {
 export function mountDriverPanel(options: PanelOptions): () => void {
   const { mount, registry, remote, userGesture } = options
   const document = mount.ownerDocument
-  const element = <Tag extends keyof HTMLElementTagNameMap>(tag: Tag, className?: string, text?: string): HTMLElementTagNameMap[Tag] => {
+  const element = <Tag extends keyof HTMLElementTagNameMap>(
+    tag: Tag,
+    className?: string,
+    text?: string
+  ): HTMLElementTagNameMap[Tag] => {
     const node = document.createElement(tag)
     if (className !== undefined) node.className = className
     if (text !== undefined) node.textContent = text
@@ -40,7 +45,12 @@ export function mountDriverPanel(options: PanelOptions): () => void {
   const cleanups: (() => void)[] = []
 
   const renderRemote = (state: RemoteDriverState) => {
-    const parts = [`remote: ${state.status}`, state.url ?? 'no url', state.hostId === null ? null : `id ${state.hostId}`, state.lastError]
+    const parts = [
+      `remote: ${state.status}`,
+      state.url ?? 'no url',
+      state.hostId === null ? null : `id ${state.hostId}`,
+      state.lastError
+    ]
     remoteLine.textContent = parts.filter(part => part !== null).join(' · ')
   }
   renderRemote(remote.state())
@@ -68,7 +78,11 @@ export function mountDriverPanel(options: PanelOptions): () => void {
   }
 }
 
-type ElementFactory = <Tag extends keyof HTMLElementTagNameMap>(tag: Tag, className?: string, text?: string) => HTMLElementTagNameMap[Tag]
+type ElementFactory = <Tag extends keyof HTMLElementTagNameMap>(
+  tag: Tag,
+  className?: string,
+  text?: string
+) => HTMLElementTagNameMap[Tag]
 
 function mountScenario(scenario: Scenario, mount: HTMLElement, element: ElementFactory): () => void {
   const card = element('section', 'driver-scenario')
@@ -86,10 +100,29 @@ function mountScenario(scenario: Scenario, mount: HTMLElement, element: ElementF
       button.title = command.description
       button.addEventListener('click', () => {
         outcome.textContent = `${command.name} running…`
-        scenario.dispatch(command.name, preset.args).then(
-          result => (outcome.textContent = `${command.name} → ${pretty(result)}`),
-          error => (outcome.textContent = `${command.name} failed → ${pretty(describeError(error))}`)
-        )
+        void scenario
+          .dispatch(command.name, preset.args)
+          .then(result => {
+            if (scenario.id === 'live-dashboard' && command.name === 'record-export') {
+              const download = preparePmdDownload(result)
+              const url = URL.createObjectURL(new Blob([download.contents], { type: 'application/json' }))
+              const link = element('a')
+              link.href = url
+              link.download = download.filename
+              card.append(link)
+              try {
+                link.click()
+                outcome.textContent = `Download requested: ${download.filename} → ${pretty(download.summary)} (browser save is not confirmed)`
+              } finally {
+                link.remove()
+                // Allow the browser to consume the object URL before retiring it.
+                setTimeout(() => URL.revokeObjectURL(url), 1000)
+              }
+            } else outcome.textContent = `${command.name} → ${pretty(result)}`
+          })
+          .catch(error => {
+            outcome.textContent = `${command.name} failed → ${pretty(describeError(error))}`
+          })
       })
       buttons.append(button)
     }

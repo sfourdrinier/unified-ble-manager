@@ -77,7 +77,7 @@ import type { OperationOptions } from '../public/operation-options'
 import { normalizeScanQuery, scanQueryTargetsAddresses } from '../public/scan-query'
 import { bindScanSourceTerminal, createScanState, projectScanDeliveryTerminal } from '../public/scan-state'
 import type { ScanStateController } from '../public/scan-state'
-import { unsupportedPeerDirectory } from '../public/peer-directory'
+import { createIpcPeerDirectory } from './peer-directory'
 import type { BlePeerDirectory } from '../public/peer-directory'
 import { isPeerReference } from '../public/peer-reference'
 import type { PeerReference } from '../public/peer-reference'
@@ -170,7 +170,7 @@ export class IpcPublicManagerAdapter implements BleManager {
     )
     this.adapter = options.adapter ?? createIpcAdapter(ipc)
     this.diagnostics = options.diagnostics ?? diagnosticsUnavailable()
-    this.peers = options.peers ?? unsupportedPeerDirectory()
+    this.peers = options.peers ?? createIpcPeerDirectory(ipc)
     this.security = createPublicSecurity(undefined, this.peers, this.capabilities, () => globalThis.performance.now())
     this.discovery = Object.freeze({
       kind: options.discoveryKind ?? ipc.bootstrap.discovery?.kind ?? discoveryKindFromCapabilities(this.capabilities)
@@ -223,7 +223,10 @@ export class IpcPublicManagerAdapter implements BleManager {
   async find(options: FindOptions = {}): Promise<BlePeer> {
     try {
       const { select, ...scanOptions } = options
-      const operation = normalizeOperationOptions(options, () => globalThis.performance.now())
+      const operation = normalizeOperationOptions(
+        { ...options, timeoutMs: options.timeoutMs ?? DEFAULT_FIND_TIMEOUT_MS },
+        () => globalThis.performance.now()
+      )
       // Same host-policy defaults as the in-process manager; see FindOptions.
       const scan = await this.scan({
         ...scanOptions,
@@ -267,17 +270,26 @@ export class IpcPublicManagerAdapter implements BleManager {
       if (isReferenceLike(peer) && !isPeerReference(peer)) {
         throw contractError('peer.reference-invalid', 'connection', 'ipc-public-manager.connect-reference')
       }
-      if (isPeerReference(peer)) {
-        throw contractError('capability.unsupported', 'connection', 'ipc-public-manager.peer-reference')
-      }
-      const peerId = typeof peer === 'string' ? peer : peer.id
+      const resolvedPeer = isPeerReference(peer)
+        ? await this.peers.resolve(
+            peer,
+            remainingOperationOptions(
+              normalized,
+              () => globalThis.performance.now(),
+              'ipc-public-manager.connect-reference'
+            )
+          )
+        : peer
+      if (resolvedPeer === null)
+        throw contractError('peer.not-found', 'connection', 'ipc-public-manager.connect-reference')
+      const peerId = typeof resolvedPeer === 'string' ? resolvedPeer : resolvedPeer.id
       const base = await this.ipc.connect(peerId, {
         signal: normalized.signal ?? undefined,
         deadline: normalized.deadline
       })
       return new IpcPublicConnection(
         base,
-        peer,
+        resolvedPeer,
         this.capabilities,
         this.gattDeliverySelection,
         this.provisionalSubscriptions

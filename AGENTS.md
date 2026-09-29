@@ -11,10 +11,11 @@ hosts. `sfourdrinier/react-native-ble-plx` is historical and owns the 3.x line;
 never reintroduce its public contract here, and never infer 5.x behaviour from
 3.x source or docs.
 
-Read `docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md` for the clean-baseline
-architecture before cross-cutting changes, then read the applicable current
-5.0 distribution and release guidance. `README.md`,
-`docs/NATIVE_ARTIFACTS.md`, and `RELEASE.md` are current operational guidance.
+Start cross-cutting changes at
+[`Current 5.0 authority`](docs/README.md#current-50-authority): current contracts,
+semantics, implementation and tests, then the applicable distribution and
+release guidance. The 4.0 implementation plan is historical rationale, not
+current scope or sequencing; do not promote its old requirements into 5.0.
 
 ## How we work
 
@@ -35,6 +36,11 @@ swallowed failure: it reports something that is not so.
 
 Extreme DRY and test-first. Write the test before the behaviour, for logic,
 metadata, build configuration and contract guards alike.
+
+Keep required release gates, but make verification change-scoped: metadata,
+documentation and version-only edits do not require physical-device reruns.
+Repeat a hardware scenario only when the change affects its runtime behaviour
+or a concrete failure requires reproduction.
 
 Never silently swallow a failure. A dropped record, a swallowed exception or a
 filtered-out observation turns a specific fault into "nothing happened", which

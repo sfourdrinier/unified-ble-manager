@@ -10,6 +10,33 @@ Consumers of the published package should start with
 [`../README.md`](../README.md) and [`../llms.txt`](../llms.txt). Contributors
 and coding agents should read [`../AGENTS.md`](../AGENTS.md) first.
 
+## Current 5.0 authority
+
+Use these authorities together, in their respective scopes:
+
+1. **Behavior and architecture:** current public declarations in `src/public/`,
+   backend contracts in `src/backend-contract/`, native contract/wire definitions,
+   and [`UNIFIED_SEMANTICS.md`](UNIFIED_SEMANTICS.md). Trace the implementation and
+   regression tests for the instantiated host. A disagreement is a defect to
+   resolve, not permission to silently weaken a contract or advertise unimplemented behavior.
+2. **Consumer setup and distribution:** [`../README.md`](../README.md), the
+   applicable Current host guide, [`NATIVE_ARTIFACTS.md`](NATIVE_ARTIFACTS.md),
+   and [`5.0.0-PACKAGING.md`](5.0.0-PACKAGING.md). The
+   [`5.0.0-DISTRIBUTION_CONTRACT.md`](5.0.0-DISTRIBUTION_CONTRACT.md) retains its
+   stated draft/design status; it does not override the current operational
+   artifact lifecycle or authorize manual native rebuilds.
+3. **Release and evidence:** [`../RELEASE.md`](../RELEASE.md) controls the current
+   release procedure; [`PLATFORMS.md`](PLATFORMS.md) and generated evidence control
+   support claims. A historical migration gate is not a new 5.0 release prerequisite.
+4. **Agent workflow:** [`../AGENTS.md`](../AGENTS.md) and applicable directory
+   guidance. Accepted current ADRs explain decisions; drafts are proposals.
+
+The [4.0 implementation plan](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md) is a
+Historical architecture and migration record. Its clean-baseline rationale is
+useful context, but its old backend topology, migration/deletion gates, first-consumer
+requirements and deferred scope are not current 5.0 instructions. Do not rename
+that plan to 5.0 or treat its historical "authority" wording as live precedence.
+
 ## Status taxonomy
 
 - **Current** — live guidance. If it disagrees with the code, one of the two is
@@ -43,6 +70,7 @@ and coding agents should read [`../AGENTS.md`](../AGENTS.md) first.
 | --- | --- | --- |
 | [`WEB.md`](WEB.md) | Web Bluetooth host: chooser, HTTPS, user activation, lifecycle | Current |
 | [`NODE.md`](NODE.md) | Node hosts: CoreBluetooth, WinRT, and BlueZ entrypoints over the shared Rust core, prebuilds, runtime requirements | Current |
+| [`BLUEZ_LE_GATT.md`](BLUEZ_LE_GATT.md) | Strict BlueZ LE GATT observation, explicit source-only daemon extension, deployment boundary and cleanup | Current |
 | [`ELECTRON.md`](ELECTRON.md) | Electron main/renderer split, IPC router, composition sequence | Current |
 | [`ELECTRON_SECURITY_MODEL.md`](ELECTRON_SECURITY_MODEL.md) | Electron ownership and threat boundary; renderer permission snapshot rules | Current |
 | [`TAURI.md`](TAURI.md) | Tauri v2 host: `createTauriBleManager()` and the Rust plugin install recipe | Current |
@@ -54,12 +82,12 @@ and coding agents should read [`../AGENTS.md`](../AGENTS.md) first.
 | Document | What it is | Status |
 | --- | --- | --- |
 | [`UNIFIED_SEMANTICS.md`](UNIFIED_SEMANTICS.md) | Normative behavior contract (MUST/MUST NOT) for any conforming unified BLE implementation | Current |
-| [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md) | Clean-baseline architecture authority for the 4.0 package | Current |
+| [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md) | Historical clean-baseline architecture and migration plan; not current 5.0 authority | Historical |
 | [`MOBILE_RUST_WIRE.md`](MOBILE_RUST_WIRE.md) | React Native Rust owner: process host, session leases, `ubm-mobile-wire/1` op table, drain records, platform radio interface | Current |
 | [`BACKEND_AUTHORING.md`](BACKEND_AUTHORING.md) | Authoring a third-party backend against `unified-ble-manager/backend-sdk` | Current |
 | [`TCK.md`](TCK.md) | Backend TCK: required scenarios and running `runBackendAuthorTck` externally | Current |
 | [`DISCOVERY_AND_PROFILES.md`](DISCOVERY_AND_PROFILES.md) | Discovery helpers and the profile subpath import map (inherited helpers marked transitional) | Current |
-| [`FORK.md`](FORK.md) | Project lineage from `react-native-ble-plx` and the 4.x authority boundary | Current |
+| [`FORK.md`](FORK.md) | Project lineage from `react-native-ble-plx` and the current 5.x authority boundary | Current |
 | [`ADR/2026-07-4.0-backend-contract.md`](ADR/2026-07-4.0-backend-contract.md) | ADR: one versioned host-neutral `BleCentralBackend` contract | Current |
 | [`ADR/2026-07-4.0-boundary.md`](ADR/2026-07-4.0-boundary.md) | ADR: native/IPC wire projections and boundary protocol rules | Current |
 | [`ADR/2026-07-4.0-capability-registry.md`](ADR/2026-07-4.0-capability-registry.md) | ADR: runtime capability registry, four states, evidence binding | Current |

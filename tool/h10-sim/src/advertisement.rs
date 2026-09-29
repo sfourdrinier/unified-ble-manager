@@ -112,6 +112,15 @@ pub fn fit_name(name: &str) -> Cow<'_, str> {
     Cow::Owned(name[..end].to_string())
 }
 
+/// Simulator identity must remain visibly distinct from a physical strap.
+/// Reject rather than silently rewrite names, so exact driver targets agree.
+pub fn validate_simulator_name(name: &str) -> Result<(), String> {
+    if !name.starts_with("SIM") {
+        return Err("simulator advertising name must start with uppercase SIM".to_owned());
+    }
+    Ok(())
+}
+
 /// Builds the full 128-bit UUID for a 16-bit short UUID
 /// (`0000XXXX-0000-1000-8000-00805F9B34FB`), bit-identical to
 /// `ble_peripheral_rust::uuid::ShortUuid::from_short` so both radio backends
@@ -142,9 +151,9 @@ mod tests {
     #[test]
     fn default_name_fits_both_payloads() {
         let sizes = advertisement_sizes(gatt_spec::DEFAULT_ADV_NAME);
-        assert_eq!(gatt_spec::DEFAULT_ADV_NAME.len(), 17);
+        assert_eq!(gatt_spec::DEFAULT_ADV_NAME.len(), 18);
         assert_eq!(sizes.adv_len, 9, "flags (3) + UUID list (6)");
-        assert_eq!(sizes.scan_rsp_len, 19, "header (2) + name (17)");
+        assert_eq!(sizes.scan_rsp_len, 20, "header (2) + name (18)");
         assert!(fits_budget(gatt_spec::DEFAULT_ADV_NAME));
         assert!(matches!(
             fit_name(gatt_spec::DEFAULT_ADV_NAME),
@@ -181,9 +190,10 @@ mod tests {
 
     #[test]
     fn overlong_name_truncates_to_budget() {
-        let long = "Polar H10 SIM0001-with-a-very-long-suffix";
+        let long = "SIM Polar H10 0001-with-a-very-long-suffix";
         let fitted = fit_name(long);
         assert!(matches!(fitted, Cow::Owned(_)));
+        assert!(fitted.starts_with("SIM"));
         assert_eq!(fitted.len(), MAX_NAME_LEN);
         assert!(fits_budget(&fitted));
         assert_eq!(

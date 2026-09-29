@@ -16,6 +16,8 @@ public final class TestMobile {
 
     static volatile String lastPreferredPhy = null;
     static volatile long lastNotificationEpoch = -1;
+    static volatile boolean holdSetupWrites = false;
+    static final BlockingQueue<Long> setupWrites = new ArrayBlockingQueue<>(4);
     static final java.util.concurrent.atomic.AtomicInteger backgroundReleases = new java.util.concurrent.atomic.AtomicInteger();
 
     static final class Radio implements MobileCoreBridge.RadioHost {
@@ -35,7 +37,10 @@ public final class TestMobile {
                 new String[] {"180d", "2a37", "2902"}, new long[] {0, 0, 0}, new int[] {0, 0x1c, 0});
         }
         public void read(long id, String p, String s, long so, String c, long co) { MobileCoreBridge.nativeCompleteRead(id, new byte[] {0x42}, "read-response"); }
-        public void write(long id, String p, String s, long so, String c, long co, byte[] v, boolean r) { MobileCoreBridge.nativeCompleteUnit(id); }
+        public void write(long id, String p, String s, long so, String c, long co, byte[] v, boolean r) {
+            if (holdSetupWrites) { setupWrites.add(id); return; }
+            MobileCoreBridge.nativeCompleteUnit(id);
+        }
         public void readDescriptor(long id, String p, String s, long so, String c, long co, String d, long dco) { MobileCoreBridge.nativeCompleteBytes(id, new byte[] {1, 0}); }
         public void writeDescriptor(long id, String p, String s, long so, String c, long co, String d, long dco, byte[] v) { MobileCoreBridge.nativeCompleteUnit(id); }
         public void enableNotifications(long id, String p, String s, long so, String c, long co, long epoch, String req, String pref) {
@@ -93,6 +98,11 @@ public final class TestMobile {
         check(MobileCoreBridge.nativeWireRevision().equals("ubm-mobile-wire/1"), "wire revision");
         check(MobileCoreBridge.nativeBuildIdentityJson().contains("\"schema\":\"ubm-native-build-identity/1\""), "build identity");
         check(MobileCoreBridge.nativeCompleteUnit(1) == MobileCoreBridge.STATUS_NO_HOST, "no host before install");
+        java.nio.file.Path recordingDirectory = java.nio.file.Files.createTempDirectory("ubm-jni-offline-");
+        check(MobileCoreBridge.nativeContinuationConfigureRecordingDirectory(recordingDirectory.toString()).contains("\"ok\":true"), "offline storage config succeeds without radio");
+        String offline = MobileCoreBridge.nativeContinuationRecordingControl("unknown", "capture", "", 0, 0);
+        check(offline.contains("argument.invalid"), "offline controls retain closed operation validation");
+        check(!MobileCoreBridge.nativeHostInstalled(), "offline storage must not install a radio");
         MobileCoreBridge.nativeInstallHost(new Radio(), wakes::add, "android", "jvm-test", "jvm-adapter");
         check(MobileCoreBridge.nativeHostInstalled(), "host installed");
         try {
@@ -159,10 +169,128 @@ public final class TestMobile {
         check(backgroundReleases.get() == 0, "manager destroy keeps the module's foreground service");
         String scope = MobileCoreBridge.nativeReleaseBackgroundScope("jvm-module");
         check(scope.contains("\"state\":\"released\"") && backgroundReleases.get() == 1, "module invalidation releases the lease: " + scope);
+        // A process-owned standing order must collect with no application session.
+        // Exercise the real JNI/core boundary, not a Kotlin copy of its policy.
+        BlockingQueue<String> continuationResults = new ArrayBlockingQueue<>(1);
+        String continuationSelector = "{\"serviceUuid\":\"0000180d-0000-1000-8000-00805f9b34fb\",\"serviceOccurrence\":1,\"characteristicUuid\":\"00002a37-0000-1000-8000-00805f9b34fb\",\"characteristicOccurrence\":1}";
+        String declaration = "{\"onAppearance\":\"native\",\"peerId\":\"AA:BB:CC:DD:EE:FF\",\"resubscribe\":[" + continuationSelector + "]}";
+        check(MobileCoreBridge.nativeContinuationSeedDeclaration("{}").contains("seeded"), "seed persisted declaration");
+        String reservation = MobileCoreBridge.nativeContinuationReserveDeclaration(declaration);
+        String reservationToken = reservation.split("\"reservationToken\":\"")[1].split("\"")[0];
+        MobileCoreBridge.nativeContinuationExecute("AA:BB:CC:DD:EE:FF", declaration, continuationResults::add);
+        String reserved = continuationResults.poll(5, TimeUnit.SECONDS);
+        check(reserved != null && reserved.contains("lifecycle.invalid-state"), "pending persistence fences native admission");
+        check(MobileCoreBridge.nativeContinuationCancelDeclaration(reservationToken).contains("cancelled"), "failed persistence cancels reservation");
+        reservation = MobileCoreBridge.nativeContinuationReserveDeclaration(declaration);
+        reservationToken = reservation.split("\"reservationToken\":\"")[1].split("\"")[0];
+        check(MobileCoreBridge.nativeContinuationCommitDeclaration(reservationToken).contains("committed"), "persisted declaration commits");
+        check(MobileCoreBridge.nativeContinuationSeedDeclaration("{}").contains("lifecycle.invalid-state"), "stale captured declaration cannot roll authority back");
+        MobileCoreBridge.nativeContinuationExecute("AA:BB:CC:DD:EE:FF", declaration, continuationResults::add);
+        String continued = continuationResults.poll(5, TimeUnit.SECONDS);
+        check(continued != null && continued.contains("continuation.completed"), "native standing order reconnects and subscribes: " + continued);
+        wakes.clear();
+        check(MobileCoreBridge.nativeIngestNotification("AA:BB:CC:DD:EE:FF", "180D", 0, "2A37", 0, lastNotificationEpoch, new byte[] {4, 5}) == MobileCoreBridge.STATUS_ACCEPTED, "standing order receives without a JS session");
+        String backlog = "";
+        long backlogDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!backlog.contains("\"retainedByteBuffers\":1") && System.nanoTime() < backlogDeadline) {
+            MobileCoreBridge.nativeContinuationDescribeBacklog(continuationResults::add);
+            backlog = continuationResults.poll(5, TimeUnit.SECONDS);
+            check(backlog != null, "standing order backlog inspection answers");
+            if (!backlog.contains("\"retainedByteBuffers\":1")) Thread.sleep(5);
+        }
+        check(backlog.contains("\"retainedByteBuffers\":1"), "standing order notification reaches its bounded outbox: " + backlog);
+        check(wakes.isEmpty(), "native continuation never publishes an unknown session wake to JavaScript");
+        MobileCoreBridge.nativeContinuationPrepareClaim(256, 65536, continuationResults::add);
+        String prepared = continuationResults.poll(5, TimeUnit.SECONDS);
+        check(prepared != null && prepared.contains("claimToken") && prepared.contains("BAU="), "standing order prepares its queued bytes: " + prepared);
+        String claimToken = prepared.replaceAll(".*\"claimToken\":\"([^\"]+)\".*", "$1");
+        MobileCoreBridge.nativeContinuationAcknowledgeClaim(claimToken, continuationResults::add);
+        String acknowledged = continuationResults.poll(5, TimeUnit.SECONDS);
+        check(acknowledged != null && acknowledged.contains("\"disposed\":true"), "acknowledged standing order releases: " + acknowledged);
+        durableSetupContinuation(continuationSelector);
         String shutdown = MobileCoreBridge.nativeShutdownHost();
         check(shutdown.contains("\"state\":\"released\""), "host shutdown releases: " + shutdown);
         check(!MobileCoreBridge.nativeHostInstalled(), "host removed");
         System.out.println("mobile JNI exchange: OK");
         System.exit(0);
+    }
+
+    static void durableSetupContinuation(String selector) throws Exception {
+        final String peer = "AA:BB:CC:DD:EE:FF";
+        String order = "{\"onAppearance\":\"native\",\"peerId\":\"" + peer + "\",\"resubscribe\":[" + selector + "],"
+            + "\"recording\":{\"id\":\"jni-setup\",\"maxBytes\":1048576,\"maxRecords\":1000},"
+            + "\"setup\":[{\"selector\":" + selector + ",\"value\":[2,0],\"timeoutMs\":10000,\"response\":{\"subscriptionIndex\":0,\"prefix\":[240,2,0],\"minLength\":4,\"maxLength\":4,\"status\":{\"offset\":3,\"accepted\":[0]}}}]}";
+        String reservation = MobileCoreBridge.nativeContinuationReserveDeclaration(order);
+        String token = reservation.split("\"reservationToken\":\"")[1].split("\"")[0];
+        check(MobileCoreBridge.nativeContinuationCommitDeclaration(token).contains("committed"), "setup recording declaration committed");
+        BlockingQueue<String> results = new ArrayBlockingQueue<>(1);
+        holdSetupWrites = true;
+        MobileCoreBridge.nativeContinuationExecute(peer, order, results::add);
+        for (int generation = 0; generation < 2; generation++) {
+            Long write = setupWrites.poll(5, TimeUnit.SECONDS);
+            check(write != null, "setup write reached actual JNI radio generation " + generation);
+            MobileCoreBridge.nativeIngestNotification(peer, "180D", 0, "2A37", 0, lastNotificationEpoch, new byte[] {(byte)240,2,0,0});
+            // The durable ACK is positive evidence that the response observer can
+            // see it; it must not bypass the still-held ATT completion.
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            String page = "";
+            while (!page.contains("8AIAAA==") && System.nanoTime() < deadline) {
+                page = MobileCoreBridge.nativeContinuationRecordingControl("prepare", "jni-setup", "", 256, 65536);
+                if (!page.contains("8AIAAA==")) {
+                    // A prepare pins a prefix; release only the validated empty
+                    // registration/control prefix so the next read can include ACK.
+                    String prefixToken = page.replaceAll(".*\"token\":\"([^\"]+)\".*", "$1");
+                    if (!prefixToken.equals(page)) check(MobileCoreBridge.nativeContinuationRecordingControl("acknowledge", "jni-setup", prefixToken, 0, 0).contains("\"acknowledged\":true"), "registration prefix acknowledged");
+                    Thread.sleep(5);
+                }
+            }
+            check(page.contains("8AIAAA=="), "early application ACK persisted before ATT completion");
+            if (generation == 0) check(results.isEmpty(), "application ACK cannot finish while ATT held");
+            String prefixToken = page.replaceAll(".*\"token\":\"([^\"]+)\".*", "$1");
+            check(MobileCoreBridge.nativeContinuationRecordingControl("prepare", "jni-setup", "", 256, 65536).equals(page), "durable ACK prefix replay is stable");
+            check(MobileCoreBridge.nativeContinuationRecordingControl("acknowledge", "jni-setup", prefixToken, 0, 0).contains("\"acknowledged\":true"), "validated ACK prefix acknowledged");
+            MobileCoreBridge.nativeCompleteUnit(write);
+            if (generation == 0) {
+                String completed = results.poll(5, TimeUnit.SECONDS);
+                check(completed != null && completed.contains("continuation.completed"), "setup completes after ATT");
+                MobileCoreBridge.nativeIngestConnection(peer, false, 8);
+            }
+        }
+        holdSetupWrites = false;
+        String outcome = "";
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!outcome.contains("continuation.completed") && System.nanoTime() < deadline) {
+            MobileCoreBridge.nativeContinuationDescribeBacklog(results::add);
+            outcome = results.poll(5, TimeUnit.SECONDS);
+            check(outcome != null, "recovery status answers");
+            if (!outcome.contains("continuation.completed")) Thread.sleep(5);
+        }
+        check(outcome.contains("continuation.completed"), "link-loss replays setup autonomously through JNI");
+        MobileCoreBridge.nativeIngestNotification(peer, "180D", 0, "2A37", 0, lastNotificationEpoch, new byte[] {0,73});
+        String positive = "";
+        deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!positive.contains("AEk=") && System.nanoTime() < deadline) {
+            positive = MobileCoreBridge.nativeContinuationRecordingControl("prepare", "jni-setup", "", 256, 65536);
+            if (!positive.contains("AEk=")) {
+                String prefixToken = positive.replaceAll(".*\"token\":\"([^\"]+)\".*", "$1");
+                if (!prefixToken.equals(positive)) check(MobileCoreBridge.nativeContinuationRecordingControl("acknowledge", "jni-setup", prefixToken, 0, 0).contains("\"acknowledged\":true"), "pre-value control prefix acknowledged");
+                Thread.sleep(5);
+            }
+        }
+        check(positive.contains("AEk="), "positive data persisted before radio claim");
+        MobileCoreBridge.nativeContinuationPrepareClaim(256, 65536, results::add);
+        String claim = results.poll(5, TimeUnit.SECONDS);
+        check(claim != null && claim.contains("\"id\":\"jni-setup\""), "radio claim references retained journal");
+        check(claim.contains("\"consumerCount\":2"), "link recovery retains both subscription generations");
+        String claimToken = claim.replaceAll(".*\"claimToken\":\"([^\"]+)\".*", "$1");
+        MobileCoreBridge.nativeContinuationAcknowledgeClaim(claimToken, results::add);
+        check(results.poll(5, TimeUnit.SECONDS).contains("\"disposed\":true"), "setup radio released before offline cursor");
+        String retained = MobileCoreBridge.nativeContinuationRecordingControl("prepare", "jni-setup", "", 256, 65536);
+        check(retained.contains("AEk="), "offline journal preserves post-recovery positive bytes after radio release");
+        check(MobileCoreBridge.nativeContinuationRecordingControl("prepare", "jni-setup", "", 256, 65536).equals(retained), "offline prefix replays exactly");
+        String retainedToken = retained.replaceAll(".*\"token\":\"([^\"]+)\".*", "$1");
+        String receipt = MobileCoreBridge.nativeContinuationRecordingControl("acknowledge", "jni-setup", retainedToken, 0, 0);
+        check(receipt.contains("\"acknowledged\":true"), "offline prefix ACK succeeds");
+        check(MobileCoreBridge.nativeContinuationRecordingControl("acknowledge", "jni-setup", retainedToken, 0, 0).equals(receipt), "offline ACK is replayable");
     }
 }

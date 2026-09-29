@@ -18,6 +18,8 @@ export interface BrowserHostOptions {
   readonly host: Extract<HostKind, 'web' | 'tauri' | 'electron'>
   readonly backend: string
   readonly createManager: (instanceId: string) => Promise<HostManager>
+  /** Authenticated application process controls; absent for ordinary Web hosts. */
+  readonly nativeContinuation?: DriverHost['nativeContinuation']
   /** True only where the chooser needs a user activation (Web Bluetooth). */
   readonly requireUserGesture: boolean
   readonly driverUrl: DriverUrlResolution
@@ -53,6 +55,7 @@ export function bootBrowserDriver(options: BrowserHostOptions): BrowserDriver {
     identity,
     runtime: createConsoleRuntime(hostLabel(identity)),
     createManager: options.createManager,
+    ...(options.nativeContinuation === undefined ? {} : { nativeContinuation: options.nativeContinuation }),
     appState: documentAppState(document),
     userGesture: gate
   }

@@ -2,6 +2,23 @@
 
 # h10-sim — Polar H10 BLE peripheral simulator
 
+### Linux daemon lifetime
+
+The Linux simulator watches the unique `org.bluez` D-Bus owner before registering
+GATT. If that owner disappears or changes, it fails closed: collection stops,
+queued sends are reported as unconfirmed (an in-flight send has unknown delivery),
+and the simulator removes its own advertisement before a nonzero, restartable
+exit. A later daemon owner does not make the previous GATT registration valid.
+Restart the simulator after resolving the daemon failure; it never restarts
+Bluetooth itself. This matters especially for `mgmt-legacy`, whose kernel-owned
+advertisement can otherwise survive bluetoothd while the GATT application does not.
+Each management command has its existing five-second deadline; cleanup refusal
+is logged and the owned-instance record remains available for the next startup's
+scoped cleanup. A final destructor retry can add another bounded command wait.
+Keep JSON stdout and diagnostic stderr in separate retained files when collecting
+qualification evidence. An installed connectable advertising instance is not
+proof it is currently on air: an existing connection can suspend transmission.
+
 A test tool (not part of the published package) that impersonates a Polar H10
 strap so the shared driver scenarios (`examples-shared/driver/scenarios`:
 `h10-stream`, `device-info`, `mtu`, `ecg`, `link-loss`, `background`,
@@ -18,28 +35,55 @@ Identity and state come from one JSON device profile
 `--profile` picks one, CLI flags override single fields, and the control
 port / driver commands change everything live. See Device profiles below.
 
+## Fidelity acceptance contract
+
+For implemented features, the target is the same observable protocol behavior
+as a measured real Polar H10. The deliberate identification exception is the
+advertised name: it **must start with uppercase `SIM`**, by default
+`SIM Polar H10 0001`. CLI overrides and startup/live profiles with another
+prefix are rejected; names are never silently prefixed. Existing installed
+profiles must be updated explicitly. UTF-8-safe 29-byte truncation preserves
+the leading `SIM` and is still reported in the log.
+
+This is an acceptance objective, not a claim of whole-device equivalence.
+Missing features and platform/timing mismatches remain explicit gaps below;
+they are not waived by the name exception. Matching structural unit tests or
+one stream does not qualify every implemented feature. Retained real-versus-
+simulator over-the-air captures must establish each behavior being claimed.
+
 ## Peripheral backend: crate choice
 
 One `PeripheralRadio` trait (`src/radio.rs`), one backend per platform:
 
-| Platform | Backend | Version |
-| --- | --- | --- |
-| macOS | `ble-peripheral-rust` 0.2.0 (CoreBluetooth `CBPeripheralManager` via `objc2-core-bluetooth`) | 0.2.2 |
-| Linux | `bluer` directly (BlueZ GATT server + `LEAdvertisement1`); opt-in `--linux-advertising mgmt-legacy` adds the advertisement on the kernel MGMT socket (`libc`) | 0.17.4 |
-| Windows | `ble-peripheral-rust` 0.2.0 (WinRT `GattServiceProvider` via `windows`) | 0.57 |
+| Platform | Backend                                                                                                                                                       | Version |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| macOS    | `ble-peripheral-rust` 0.2.0 (CoreBluetooth `CBPeripheralManager` via `objc2-core-bluetooth`)                                                                  | 0.2.2   |
+| Linux    | `bluer` directly (BlueZ GATT server + `LEAdvertisement1`); opt-in `--linux-advertising mgmt-legacy` adds the advertisement on the kernel MGMT socket (`libc`) | 0.17.4  |
+| Windows  | `ble-peripheral-rust` 0.2.0 (WinRT `GattServiceProvider` via `windows`)                                                                                       | 0.57    |
 
 Linux drives `bluer` directly (`src/bluer_radio.rs`) instead of going through
 [`ble-peripheral-rust =0.2.0`](https://crates.io/crates/ble-peripheral-rust)
 (MIT, single maintainer, last release 2024-12-28): that crate hardcodes its
 BlueZ advertisement object to name plus service UUIDs with no control over
 `Includes`, `Appearance`, `TxPower`, duration or intervals, and it registers
-the advertisement *before* the GATT application. The direct backend registers
+the advertisement _before_ the GATT application. The direct backend registers
 byte-identical advertisement data (see Advertisement layout below) but builds
 every `LEAdvertisement1` property in the sim, registers the GATT application
 first, and names the stage that rejects a registration (`serve GATT
 application` vs `register advertisement`). Read/write/notify plumbing mirrors
 that crate's BlueZ backend against the same `bluer` version, so over-the-air
 behaviour is unchanged.
+
+The macOS/Windows dependency is a narrowly patched local copy, with its MIT
+license and patch provenance retained in
+[`vendor/ble-peripheral-rust/UBM_PATCHES.md`](vendor/ble-peripheral-rust/UBM_PATCHES.md).
+It exposes actual subscriber payload capacities, preserves CoreBluetooth's
+backpressure answer and inspects every WinRT notification recipient result.
+The simulator never equates queue admission with OS acceptance. Queued control
+responses start/stop streams only after their correlated successful settlement;
+old session completions cannot change a replacement session. Pending commands
+are bounded, and overload is an explicit rejected write rather than unbounded
+memory growth. These are simulator transport fixes, not another UBM backend.
 
 Deliberately not used:
 
@@ -74,33 +118,33 @@ name, a 29-character maximum and an over-long name.
 
 `--linux-advertising mgmt-legacy` (Linux, below) writes the same bytes itself
 (`src/mgmt.rs`, golden-byte tests): advertisement data `02 01 06 05 03 0D 18
-EE FE` (+ manufacturer data when staged), scan response `12 09 "Polar H10
-SIM0001"`. The Flags AD is written by the sim with the real H10's `0x06`
+EE FE` (+ manufacturer data when staged), scan response `13 09 "SIM Polar H10 0001"`.
+The Flags AD is written by the sim with the real H10's `0x06`
 (LE General Discoverable, BR/EDR not supported), so the instance is added
 connectable with no kernel-managed flag bits; the kernel would otherwise
 write its own Flags byte, which follows the adapter's BR/EDR setting.
 
 ## Simulated GATT surface
 
-Advertised name `Polar H10 SIM<4 hex>` (default `Polar H10 SIM0001`,
-`--name` overrides), advertising Heart Rate (`180D`) and Polar (`FEEE`),
+Advertised name `SIM Polar H10 <4 hex>` (default `SIM Polar H10 0001`,
+`--name` overrides must start with `SIM`), advertising Heart Rate (`180D`) and Polar (`FEEE`),
 plus Polar manufacturer data (company `0x006B`) with the profile's payload
 on Linux — Apple exposes no manufacturer-data peripheral API (an OS
 limitation), so the bytes stay off the air there; the `advertising-started`
 log states which happened every time. See fidelity gaps for the payload
 variance.
 
-| Service | Characteristics | Properties |
-| --- | --- | --- |
-| Heart Rate `180D` | `2A37` measurement: notify ~1 Hz, flags `0x10` (uint8 bpm, RR present, contact not supported — like the strap's 120 captured packets); contact bits only when the profile declares `contact_supported` | notify |
-| | `2A38` body sensor location: chest (`1`) | read |
-| Device Information `180A` | `2A29` manufacturer `Polar Electro Oy`, `2A24` model `H10`, `2A25` serial, `2A27` hardware, `2A26` firmware, `2A28` software, `2A23` system id (hardware before firmware, like the strap; every string NUL-terminated, like the strap) | read |
-| Battery `180F` | `2A19` level (default 90%, the captured charge state) | read, notify (60 s) |
-| Polar vendor `6217FF4B-…` | `6217FF4C-…` readable (value UNCONFIRMED, served empty) | read |
-| | `6217FF4D-…`: write-command, indications (no behaviour model: writes are refused loudly, nothing is ever indicated) | write-without-response, indicate |
-| Polar PMD `FB005C80-…` | `FB005C81` control point: read returns features (ECG + ACC, the strap's exact 17 bytes); write `0x01` get-settings / `0x02` start / `0x03` stop, each answered with an indicate `[0xF0, op, type, status, more, params…]` | read, write, indicate |
-| | `FB005C82` data: ECG frames, 73 samples at 130 Hz (~561.6 ms cadence, `[0x00, timestampNs u64 LE, 0x00, samples…]`, signed 24-bit LE µV, the real strap recording by default) | notify |
-| Polar `FEEE` | `FB005C51-…` (write, write-command, notify), `FB005C52-…` (notify), `FB005C53-…` (write, write-command): no behaviour model, writes refused loudly, nothing ever notified | mixed |
+| Service                   | Characteristics                                                                                                                                                                                                                        | Properties                       |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| Heart Rate `180D`         | `2A37` measurement: notify ~1 Hz, flags `0x10` (uint8 bpm, RR present, contact not supported — like the strap's 120 captured packets); contact bits only when the profile declares `contact_supported`                                 | notify                           |
+|                           | `2A38` body sensor location: chest (`1`)                                                                                                                                                                                               | read                             |
+| Device Information `180A` | `2A29` manufacturer `Polar Electro Oy`, `2A24` model `H10`, `2A25` serial, `2A27` hardware, `2A26` firmware, `2A28` software, `2A23` system id (hardware before firmware, like the strap; every string NUL-terminated, like the strap) | read                             |
+| Battery `180F`            | `2A19` level (default 90%, the captured charge state)                                                                                                                                                                                  | read, notify (60 s)              |
+| Polar vendor `6217FF4B-…` | `6217FF4C-…` readable (value UNCONFIRMED, served empty)                                                                                                                                                                                | read                             |
+|                           | `6217FF4D-…`: write-command, indications (no behaviour model: writes are refused loudly, nothing is ever indicated)                                                                                                                    | write-without-response, indicate |
+| Polar PMD `FB005C80-…`    | `FB005C81` control point: read returns features (ECG + ACC, the strap's exact 17 bytes); write `0x01` get-settings / `0x02` start / `0x03` stop, each answered with an indicate `[0xF0, op, type, status, more, params…]`              | read, write, indicate            |
+|                           | `FB005C82` data: ECG frames, up to 73 samples by default at 130 Hz (capacity-limited packets, ~561.6 ms dispatch cadence, signed 24-bit LE µV, recorded strap data by default); independently started ACC frames (signed 16-bit XYZ milli-g) on the same characteristic | notify                           |
+| Polar `FEEE`              | `FB005C51-…` (write, write-command, notify), `FB005C52-…` (notify), `FB005C53-…` (write, write-command): no behaviour model, writes refused loudly, nothing ever notified                                                              | mixed                            |
 
 Services, their order and the characteristic counts/properties match the
 captured strap fingerprints in `fixtures/h10-fingerprints/` exactly
@@ -110,13 +154,125 @@ confirmation on the notify file descriptor, and only a closed descriptor ends
 the session (logged as `indication-confirmed` vs `unsubscribed`).
 
 No PnP ID (`2A50`), like the real H10 — `device-info read` reports that read
-as its own failed outcome. Start commands must request 130 Hz / 14 bit;
+as its own failed outcome. ECG start commands request 130 Hz / 14 bit;
 anything else is refused with the SDK status codes (`ERROR_INVALID_SAMPLE_RATE`
 0x08, `ERROR_INVALID_RESOLUTION` 0x07). A repeated start and a stop while
 idle answer `ERROR_ALREADY_IN_STATE` (0x06) without changing the stream, like
-the strap. Valid Polar types the H10 cannot stream here (PPG/PPI, and ACC —
-the features bitmap advertises it but its frame format is UNCONFIRMED) answer
-`ERROR_NOT_SUPPORTED` (0x03).
+the strap. PPG/PPI and offline/SDK-mode command flags are not implemented and
+answer `ERROR_NOT_SUPPORTED` (0x03), never a success for another mode.
+
+### H10 accelerometer
+
+ACC get-settings (`01 02`) advertises every H10-supported combination:
+25/50/100/200 Hz, 16-bit resolution, and ±2/4/8 G. Three axes are fixed;
+there is no configurable channel-count setting. START (`02 02`) requires one
+selected value for each sample-rate, resolution and range TLV. STOP (`03 02`)
+affects ACC only; ECG and ACC may run together and are multiplexed on PMD data.
+Repeated START and idle STOP return `ALREADY_IN_STATE` independently per stream.
+
+The wire frame is `[02, lastSampleTimestampNs u64 LE, 01, XYZ i16 LE…]`,
+with values already in milli-g (no consumer-side range scaling). Sensor time
+uses the selected Polar-epoch or explicitly unsynchronized clock. Samples use
+a deterministic synthetic movement source, **not a recorded H10 ACC trace**.
+The sample clock preserves the chosen rate independently of host-loop jitter.
+Packets contain up to 100 ms of samples, limited by the current transport's
+notification-value capacity. This batching is simulator policy, not measured
+H10 firmware behavior. A stalled loop retains at most one second of backlog
+and logs the exact skipped sample count as `acc-samples-shed`.
+
+ECG and ACC share monotonic sample-clock accounting anchored to the same device
+boot clock. A successful START establishes each stream's acquisition origin;
+idle time and STOP/restart cannot compress sensor timestamps. ECG treats the
+configured frame size as an upper bound and fits complete signed 24-bit samples
+plus the 10-byte PMD header into the current writer's notification-value capacity.
+That capacity already excludes transport overhead; it is not reduced again.
+The usual 73-sample / 229-byte packet remains unchanged when it fits. An
+18-byte writer carries two samples per packet; the minimum 13-byte capacity
+carries one. Smaller capacities stop only ECG with `ecg-stream-failed`; capacity
+query failures are explicit `radio-error` events, and absent subscribers send
+nothing. Changing capacity does not reset acquisition, waveform indices,
+last-sample timestamps or the delivery sequence.
+
+The configured dispatch cadence is unchanged, and a late host loop never invents
+elapsed samples. Each opportunity has a bounded sample budget equivalent to
+32 configured frames, expressed as enough smaller packets to preserve that
+budget (rounded up by at most one packet), rather than limiting small writers
+to 32 packets and throttling the 130 Hz acquisition rate. The sample clock
+retains at most one second (or two effective packet batches) of backlog and logs exact skipped
+samples as `ecg-samples-shed`. Recorded and synthetic ECG use the corresponding
+boot-relative waveform indices, so skipped samples are not replayed later.
+Deliberate `constrain-delivery` shedding remains separately logged. These are
+simulator timing rules, not additional physical H10 fidelity evidence.
+`ecgFramesPerSec` is the dispatch-opportunity rate, not a way to alter the fixed
+130 Hz acquisition rate. Fast opportunities may emit no frame; slow opportunities
+may emit multiple retained frames and explicitly shed excess backlog. The
+`ecgFramesPerSec` state field reports that configured opportunity rate, while
+`ecgSampleIndex` reports the next boot-relative waveform index after batching.
+
+Sources: [Polar's H10 specification](https://github.com/polarofficial/polar-ble-sdk/blob/a693e9e944c9bc925addbdd8cf07fb9b28748bf7/documentation/products/PolarH10.md),
+the same pinned SDK's `technical_documentation/online_measurement.pdf` and
+`AccDataTest.kt`, and the [maintainer's H10 settings recipe](https://github.com/polarofficial/polar-ble-sdk/issues/124#issuecomment-772310984).
+Generic SDK support for decoding 8/24-bit ACC does not make those H10-selectable
+resolutions. Compression, exact firmware error precedence, real-device packet
+batching and concurrent ECG/ACC timing still require H10 capture comparison.
+
+The shared test-app live dashboard can display and record ECG plus XYZ ACC
+at every H10 rate/range pair, export raw timestamped JSON, and compare those
+captures offline. Follow the [recording and real-H10 comparison guide](../../examples-shared/driver/README.md#record-and-compare-a-simulator-with-a-real-h10).
+This new PMD recording schema is separate from the existing `h10-capture`
+fingerprint format. Synthetic ACC recordings do not qualify real-device fidelity.
+
+`cargo test --manifest-path tool/h10-sim/Cargo.toml` covers settings, encoding,
+sample-clock and lifecycle behavior. `node tool/h10-sim/tests/xcheck/run-xcheck.cjs`
+cross-checks Rust bytes using the shared TypeScript parser. The opt-in
+`node scripts/native-protocol/test-h10-acc-radio.js` probe requires
+`UBM_NAPI_ADDON` and `UBM_RADIO_PLATFORM` (`corebluetooth`, `bluez` or `winrt`),
+with `UBM_RADIO_ADAPTER` when needed; it connects only to `SIM Polar H10 0001`,
+checks all 12 combinations and exercises concurrent ECG/ACC with both stop
+orders. A passing simulator radio probe is not real-H10 qualification.
+This probe uses public manager adapter IDs: for BlueZ, pass
+`UBM_RADIO_ADAPTER=/org/bluez/hci1`, not the native label `hci1`.
+Both radio probes require `UBM_BLUEZ_DAEMON_OWNER` on BlueZ. The trusted host
+must verify the deployed LE bearer and LE GATT extension, then supply the
+current unique D-Bus owner of `org.bluez` (for example `:1.812`, never
+`org.bluez`). This explicitly forwards the production `le-bearer` policy;
+neither probe chooses a daemon, installs one, enables experimental APIs, or
+falls back to device-wide connection control. A daemon restart requires a new
+verified owner. See [Node/BlueZ deployment requirements](../../docs/NODE.md).
+
+The separate `node scripts/native-protocol/test-continuation-radio.js` probe
+checks native HR collection and controlled-disconnect recovery without a JavaScript
+drain during collection. Set the same explicit addon/platform/adapter, plus
+`UBM_SIM_CONTROL_PORT` for this simulator's loopback control endpoint and
+`UBM_CONTINUATION_SECONDS=600` for a ten-minute run. On the two-adapter Linux
+fixture, select the client adapter explicitly (for example `hci1`), not the
+adapter hosting the simulator. Run this separately from phone qualification;
+its result does not prove mobile OS background execution.
+The default BlueZ `drop-link` is not an RF supervision-timeout simulation.
+For non-trusted LE peers, `Device1.Disconnect` disables incoming connections
+until `Device1.Connect` is called again. Keeping advertising enabled therefore
+does not guarantee immediate reconnection. This is an additional host policy,
+not proof of a central recovery defect; see the
+[BlueZ Device API](https://github.com/bluez/bluez/blob/5.85/doc/org.bluez.Device.rst).
+Any controller-level fault used by a qualification harness must be explicitly
+supplied by the host, restricted to the test adapter and peer, and report its
+actual termination reason. It must not silently escalate privileges, change
+trust or bonds, reset an adapter, or claim RF-timeout evidence.
+This lower-level trusted-controller probe selects the native adapter label;
+the public-manager ACC probe and Node driver instead use `/org/bluez/hci1`.
+
+To additionally test durable storage, set `UBM_RECORDING_DIRECTORY` to an
+absolute, private **test-only** directory. The probe creates a unique recording,
+checks growth across the disruption, closes its radio owner, and reopens the
+recording through the public offline API. Each prepared prefix must replay
+unchanged. Validated records are written to a mode-0600 JSONL evidence file and
+flushed before explicit acknowledgement. The probe verifies positive HR from
+both connection generations, the duration-specific sample minimum, and zero
+reported storage/stream/handoff loss before clearing the consumed test journal.
+The evidence file remains, including when a later check fails; manage its
+retention as sensor data. Failed export never authorizes acknowledgement.
+This checks runtime persistence and explicit consumption, not power-loss
+durability or real Polar firmware fidelity.
 
 Byte layouts follow the Polar BLE SDK source
 ([`polarofficial/polar-ble-sdk`](https://github.com/polarofficial/polar-ble-sdk):
@@ -130,13 +286,16 @@ specifications ([spec index](https://www.bluetooth.com/specifications/specs/)).
 ```sh
 cd tool/h10-sim
 cargo build        # binary: target/debug/h10-sim (set CARGO_TARGET_DIR to redirect)
-cargo test         # 122 unit tests on macOS/Windows, 134 on Linux (see Tests below)
-node tests/xcheck/run-xcheck.cjs   # run from the repo root; see Tests below
+cargo test         # platform-specific unit suite (see Tests below)
+node tests/xcheck/run-xcheck.cjs   # from tool/h10-sim after cd above; see Tests below
 cargo clippy --all-targets -- -D warnings   # must stay warning-free
 cargo fmt --check
 ```
 
 Linux builds need `libdbus-1-dev` (the `bluer` backend binds `libdbus-1`).
+Linux tests also need `dbus-run-session` from `dbus-daemon` for isolated daemon
+lifetime regressions. The shared CI `bluez` dependency profile installs both;
+these tests never restart the system Bluetooth daemon.
 Cross-checking from macOS
 (`cargo check --target x86_64-unknown-linux-gnu`, target is installed) stops
 in the `libdbus-sys` build script without a Linux sysroot providing it;
@@ -147,7 +306,7 @@ module (`src/bluer_radio.rs`) is not compiled on macOS at all, so a Linux
 ## Run
 
 ```sh
-./target/debug/h10-sim [--profile profiles/low-battery-legacy.json] [--name "Polar H10 SIM0001"]
+./target/debug/h10-sim [--profile profiles/low-battery-legacy.json] [--name "SIM Polar H10 0001"]
   [--bpm 72] [--battery 90] [--pair-policy just-works] [--ecg-file ecg.txt]
   [--hr-replay fixtures/h10-raw/tauri-E9B93D29-2026-09-19-raw.json]
   [--timing-profile fixtures/h10-fingerprints/<real>.json] [--timing-seed 7]
@@ -167,15 +326,15 @@ Later flags win: `--profile` applies first, then `--name`/`--bpm`/`--battery`.
 - `bluetoothd` running (BlueZ 5.72 and 5.85 verified; advertising on current
   kernels needs `--linux-advertising mgmt-legacy`, see below), adapter powered; build needs
   `libdbus-1-dev` (`sudo apt install libdbus-1-dev`).
-- Known identity: the default profile advertises `Polar H10 SIM0001` with
+- Known identity: the default profile advertises `SIM Polar H10 0001` with
   serial `SIM000001`, firmware `5.0.0` / hardware `00760690.03` / software
   `4.2.0` (the strap's revisions), battery 90% and the strap's System ID
   (`3db9e9feff1a9ea0`). The radio address is the controller's own public address, not
   the sim's to choose — read it with `bluetoothctl show` (controller
   `90:DE:80:3B:69:78` on the reference host, `DC:56:7B:D9:E8:A4` on
   lx5090wifi) and document it beside the
-  profile. Driver scenarios target the sim by name (`device: "Polar H10
-  SIM0001"`), so the address never enters a command; use the address only to
+  profile. Driver scenarios target the sim by name (`device: "SIM Polar H10 0001"`),
+  so the address never enters a command; use the address only to
   confirm over the air (e.g. in `btmon` or `bluetoothctl devices`) that the
   peer you found is this host.
 - D-Bus access to `org.bluez`: run as root or as a user in the `bluetooth`
@@ -191,7 +350,7 @@ Later flags win: `--profile` applies first, then `--name`/`--bpm`/`--battery`.
   `DeviceID = false` under `[General]` in `/etc/bluetooth/main.conf`, then
   `sudo systemctl restart bluetooth` and restarts the sim (its GATT
   registration is lost with the daemon). Two central-view deltas versus a
-  real strap remain, neither breaking any scenario: host services whose
+  real strap remain and can affect client behavior: host services whose
   UUIDs match BlueZ's MIDI profile (`03B80E5A-…`, `7772E5DB-…`, see
   `profiles/midi/libmidi.h`) plus unattributed host services
   (`d0611e78-…`, `9fa480e0-…`), and ATT attribute order, which varies per sim
@@ -199,6 +358,35 @@ Later flags win: `--profile` applies first, then `--name`/`--bpm`/`--battery`.
   `HashMap` (`dbus-crossroads` 0.5.3 `stdimpl.rs` `PathPropMap`) — the
   declared order is the strap's, but BlueZ numbers handles in enumeration
   order.
+- BlueZ can automatically probe services on the connected central as well as
+  serve the simulator. Two-adapter testing observed encrypted MIDI reads; an
+  iPhone run observed BlueZ reading the phone's Battery Level, receiving
+  Insufficient Authentication, requesting security and then disconnecting after
+  pairing was refused. These host-profile probes are not H10 PMD requirements.
+  An Android run also observed a protected reverse MCP/Content Control ID read
+  triggering security negotiation on the shared ATT connection, delaying the
+  phone's discovery until its deadline. For a dedicated simulator host,
+  `ReverseServiceDiscovery = false` under `[General]` in
+  `/etc/bluetooth/main.conf` disables automatic discovery of an incoming
+  central's services; the simulator still serves its GATT database and explicit
+  outgoing central discovery still works. A controlled Android retest completed
+  discovery and Device Information reads without pairing at the original
+  deadline after changing only that setting. This is source-checkout simulator
+  evidence, not real-H10 or published-artifact qualification.
+  The setting affects the whole daemon, not just the simulator. An operator
+  must authorize it, back up the original configuration, restart Bluetooth and
+  restart the simulator (its registrations are lost), then restore the original
+  configuration and restart both after temporary testing. Other incoming
+  peers lose automatic reverse discovery during that window. The package
+  never makes this privileged host change automatically; it neither disables
+  an attribute's security requirement nor enables blanket pairing/trust.
+  In the same-daemon, two-adapter test, a pairing agent restricted to the two test peer paths
+  allowed collection. Restrict any qualification agent to the exact test peers;
+  never register a blanket-accepting default agent. Record whether a
+  run is paired: that result does not establish unpaired compatibility. Never
+  blanket-trust other peers, and remove only test-created bonds after the run.
+  Successful reconnect or CCCD configuration alone is insufficient recovery
+  evidence: require new central-received values and confirmed owner cleanup.
 - Stop any other advertiser first (`bluetoothctl advertise clear`, companion
   apps, a previous sim still running) — instances are per-registration and a
   stale owner confuses the diagnosis.
@@ -270,7 +458,7 @@ and in the `advertising-started` detail (`"method":
   advertising of other programs) and administer other network interfaces
   (routes, firewall, addresses). Grant it only on a dedicated test host, to a
   binary only you can write. Remove it with `sudo setcap -r
-  target/debug/h10-sim` (a rebuild also replaces the file and drops it). A
+target/debug/h10-sim` (a rebuild also replaces the file and drops it). A
   failed start leaves no setting behind: the sim changes nothing but its own
   advertising instance.
 - **Instance choice.** `MGMT_OP_READ_ADV_FEATURES` lists the instances in use;
@@ -288,7 +476,7 @@ and in the `advertising-started` detail (`"method":
   instance (`"stale":{"removedInstance":N}` in `advertising-backend`). A
   removal by anyone else is read from the kernel's `Advertising Removed`
   event. Check with `sudo btmgmt advinfo`; remove by hand with `sudo btmgmt
-  rm-adv <instance>`.
+rm-adv <instance>`.
 - **Residual risk.** Another MGMT client (bluetoothd, `btmgmt`) that adds an
   instance with the sim's number replaces it without an event; do not run a
   second advertiser on the same controller.
@@ -307,7 +495,7 @@ the stored alias shadows.
 
 - **What changes.** Exactly one D-Bus property on the advertising adapter,
   from the previous alias to the advertised name (e.g. `lx5090` →
-  `Polar H10 SIM0001`), plus a record file
+  `SIM Polar H10 0001`), plus a record file
   (`$XDG_RUNTIME_DIR/h10-sim-alias-hci0.instance`, else the temp dir) holding
   the boot id and the previous alias. The claim and every restore are printed
   on stderr and the claim rides in the `advertising-started` detail as
@@ -323,7 +511,7 @@ the stored alias shadows.
   (`set-advertising off`, and the SIGINT/SIGTERM shutdown path, which stops
   advertising before exiting),
   from a main-thread panic hook (which runs `bluetoothctl system-alias
-  <previous>` — `reset-alias` when the previous alias was empty — and keeps
+<previous>` — `reset-alias` when the previous alias was empty — and keeps
   the record when that fails), and by stale-record adoption on the next start
   (a leftover sim-name alias with a same-boot record restores the recorded
   alias at the next stop; a record from another boot or controller is
@@ -352,27 +540,27 @@ printf '{"cmd":"reject-next-pmd","status":3}\n' | nc 127.0.0.1 17935
 printf '{"cmd":"get-state"}\n' | nc 127.0.0.1 17935
 ```
 
-| Command | Effect |
-| --- | --- |
-| `{"cmd":"set-bpm","bpm":96}` | Heart rate for HR notifies and the ECG waveform (clears a scripted curve) |
-| `{"cmd":"set-battery","level":15}` | Battery level now (0–100, notified immediately) |
-| `{"cmd":"set-contact","detected":false}` | Sensor-contact lost/detected — recorded always, but changes the HR flags (`0x04`/`0x06`) only when the profile declares `contact_supported` (the stock strap profile does not) |
-| `{"cmd":"pair-policy","policy":"disabled"}` | Pairing policy `just-works`/`disabled` |
-| `{"cmd":"load-profile","path":"…"}` | Load a profile file live (re-advertises when advertising) |
-| `{"cmd":"set-advertising","on":false}` | Stop/start advertising |
-| `{"cmd":"drop-link"}` | [adversarial] Halt ECG and disconnect the simulator's tracked GATT clients plus any `--drop-link-allow` extras, reporting `dropped`/`skipped` per address in `state` (no targets reports the note `no simulator clients` and disconnects nothing); advertising and the GATT database stay up so centrals see a lifecycle loss with no Service Changed and can reconnect at once (BlueZ `Device1.Disconnect`; on CoreBluetooth a connected central stays connected — no disconnect API) |
-| `{"cmd":"set-silent","on":true}` | [adversarial] Stop notifying while keeping the link up |
-| `{"cmd":"reject-next-pmd","status":3}` | [adversarial] Fail the next PMD command with a status code, then clear |
-| `{"cmd":"clear-pmd-fault"}` | [adversarial] Disarm without firing |
-| `{"cmd":"delay-responses","ms":250}` | [adversarial] Add `ms` of extra PMD response latency on top of any measured latency (`0` clears) |
-| `{"cmd":"flap-link"}` | [adversarial] Drop the simulator's client links and bounce advertising so centrals run a rapid disconnect/reconnect cycle |
-| `{"cmd":"interrupt-next-subscribe"}` | [adversarial] Tear down the next notify/indicate subscription as soon as it is set up |
-| `{"cmd":"stale-callback"}` | [adversarial] Re-notify the last PMD response out of sequence (fails loudly when no PMD response has gone out yet) |
-| `{"cmd":"constrain-delivery","keepEvery":4}` | [adversarial] Deliver every `keepEvery`-th ECG frame only (`1` disables) |
-| `{"cmd":"set-rates","hrHz":2.0,"ecgFramesPerSec":1.78,"ecgFrameSamples":73}` | Stream rates (`hrHz` 0.1–10, `ecgFramesPerSec` 0.5–10, samples 1–167 so a frame fits MTU 512; strap defaults 1 Hz / 73 samples / 130/73 fps) |
-| `{"cmd":"run-record"}` | Report this run's seed/profile, `--mode` and injected fault sequence with timestamps (telemetry, available in every mode) |
-| `{"cmd":"get-state"}` | Current state snapshot |
-| `{"cmd":"help"}` | Command list (generated from the same table the driver hello uses) |
+| Command                                                                      | Effect                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `{"cmd":"set-bpm","bpm":96}`                                                 | Heart rate for HR notifies and the ECG waveform (clears a scripted curve)                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `{"cmd":"set-battery","level":15}`                                           | Battery level now (0–100, notified immediately)                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `{"cmd":"set-contact","detected":false}`                                     | Sensor-contact lost/detected — recorded always, but changes the HR flags (`0x04`/`0x06`) only when the profile declares `contact_supported` (the stock strap profile does not)                                                                                                                                                                                                                                                                                                                               |
+| `{"cmd":"pair-policy","policy":"disabled"}`                                  | Pairing policy `just-works`/`disabled`                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `{"cmd":"load-profile","path":"…"}`                                          | Load a profile file live (re-advertises when advertising)                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `{"cmd":"set-advertising","on":false}`                                       | Stop/start advertising                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `{"cmd":"drop-link"}`                                                        | [adversarial] Halt ECG and disconnect the simulator's tracked GATT clients plus any `--drop-link-allow` extras, reporting `dropped`/`skipped` per address in `state` (no targets reports the note `no simulator clients` and disconnects nothing). Advertising and the GATT database stay up, but BlueZ `Device1.Disconnect` also changes incoming-connection policy for non-trusted LE peers; see the qualification caveat above. On CoreBluetooth a connected central stays connected — no disconnect API. |
+| `{"cmd":"set-silent","on":true}`                                             | [adversarial] Stop notifying while keeping the link up                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `{"cmd":"reject-next-pmd","status":3}`                                       | [adversarial] Fail the next PMD command with a status code, then clear                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `{"cmd":"clear-pmd-fault"}`                                                  | [adversarial] Disarm without firing                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `{"cmd":"delay-responses","ms":250}`                                         | [adversarial] Add `ms` of extra PMD response latency on top of any measured latency (`0` clears)                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `{"cmd":"flap-link"}`                                                        | [adversarial] Drop the simulator's client links and bounce advertising so centrals run a rapid disconnect/reconnect cycle                                                                                                                                                                                                                                                                                                                                                                                    |
+| `{"cmd":"interrupt-next-subscribe"}`                                         | [adversarial] Tear down the next notify/indicate subscription as soon as it is set up                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `{"cmd":"stale-callback"}`                                                   | [adversarial] Re-notify the last PMD response out of sequence (fails loudly when no PMD response has gone out yet)                                                                                                                                                                                                                                                                                                                                                                                           |
+| `{"cmd":"constrain-delivery","keepEvery":4}`                                 | [adversarial] Deliver every `keepEvery`-th ECG frame only (`1` disables)                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `{"cmd":"set-rates","hrHz":2.0,"ecgFramesPerSec":1.78,"ecgFrameSamples":73}` | HR rate and ECG dispatch opportunities (`hrHz` 0.1–10, `ecgFramesPerSec` 0.5–10, configured samples 1–167, further limited by the acquired writer's capacity; defaults 1 Hz / 73 samples / 130/73 opportunities per second). ECG acquisition stays 130 Hz; each opportunity may emit zero/multiple frames, with bounded backlog and explicit shedding.                                                                                                                                                                                             |
+| `{"cmd":"run-record"}`                                                       | Report this run's seed/profile, `--mode` and injected fault sequence with timestamps (telemetry, available in every mode)                                                                                                                                                                                                                                                                                                                                                                                    |
+| `{"cmd":"get-state"}`                                                        | Current state snapshot                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `{"cmd":"help"}`                                                             | Command list (generated from the same table the driver hello uses)                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 Unknown commands and out-of-range values get `{"ok":false,"error":"…"}`.
 
@@ -394,6 +582,43 @@ name>","startedAt":"<RFC 3339>","faults":[{"ts":"<RFC 3339>","fault":"<command
 name>","detail":{…}},…]}}` — one entry per fired adversarial command, in
 order, each with its own detail (e.g. `drop-link` records `dropped` and
 `targets`).
+
+Both `get-state` and `run-record` also include the same cumulative `hrRecovery`
+object. It reports observed `subscriptionEnableEvents`,
+`subscriptionDisableEvents`, `notificationAttempts`, `notificationsQueued`,
+`notificationsOsAccepted`, `notificationsNotSubscribed`, and
+`notificationsFailed`. Counters survive link drops and live configuration
+changes; restarting the simulator starts a new run. `countersSaturated: true`
+means at least one counter reached its integer limit and is now a lower bound.
+
+For a recovery check, retain a `get-state` baseline, inject `drop-link`, then
+retain another snapshot after the central reports recovery. A new enable event
+and increasing OS-accepted notifications establish peripheral-side activity;
+compare these with the central's own received-value evidence. Merely injecting
+a fault does not increment subscription counters. A queued Linux send counts
+as queued immediately and as OS-accepted or failed only when its asynchronous
+send actually settles, so it is never counted twice as accepted.
+
+The native continuation radio probe (`scripts/native-protocol/test-continuation-radio.js`)
+injects one controlled outage. Volatile mode requires positive values from
+exactly two subscription consumers. Durable mode requires exactly two registered
+HR consumers and two registered connection/database generation pairs, with
+positive values from both connection generations and both generation pairs.
+Every value and stream terminal must match its preceding immutable registration.
+Even a third registration with no values fails qualification, preventing
+control-only recovery churn from hiding behind a minimum sample count. These
+identity checks do not impose an undocumented exact terminal count or prove that
+every lifecycle reason was expected. Failed qualification retains archived data
+and does not clear the recording.
+
+This telemetry has `scope: "characteristic"` and
+`clientAttribution: "unavailable"`: the portable peripheral event interface
+does not identify an individual central. Enable/disable counts are observed
+events, not an inferred connected-client count. OS acceptance is **not** proof
+that a central received or persisted a value; the macOS/Windows peripheral API
+can stage a characteristic update even without a subscriber. Battery and PMD
+traffic do not contribute to these HR-only counters. Existing timestamped
+event logs remain the source for detailed ordering across a link drop.
 
 ### Authentication
 
@@ -417,6 +642,15 @@ and ECG source. `profiles/low-battery-legacy.json` is a second unit (15%,
 firmware 1.5.9, serial `SIM000042`, draining 1%/min with a 68→96 bpm curve)
 so tests can pick one. A bad path, bad JSON, out-of-range battery or bad hex
 fails loudly naming the file — never a silent fallback.
+
+Live `load-profile` also fails if advertising state cannot be queried or the
+replacement advertisement is refused. It restores the prior configuration,
+replay data/cursor and pending indications, emits `profile-rolled-back`, and
+does not emit `profile-loaded`. Radio registration may already have stopped
+before a replacement failure; rollback of simulator state is not proof that
+the prior advertisement is back on air. Success is logged only after the
+advertising-state/re-registration operation succeeds (or confirms advertising
+is off).
 
 Battery drain (`drain_per_min`) notifies `2A19` whenever the level changes
 (the 60 s heartbeat stays regardless). RR jitter is a deterministic sine of
@@ -452,16 +686,18 @@ uses the caller's own D-Bus session.
 ## Pointing driver scenarios at the sim
 
 Every peer-acquiring command takes the `device` argument (exact advertised
-name, or a prefix ending in `*`; default `Polar H10*`):
+name, or a prefix ending in `*`; default `Polar H10*` selects physical straps,
+so simulator scenarios must explicitly supply `SIM Polar H10 0001` or a
+deliberate `SIM*` target):
 
-- `h10-stream start '{"device":"Polar H10 SIM0001"}'` — HR stream; drive with `set-bpm`.
-- `device-info read '{"device":"Polar H10 SIM0001"}'` — DIS + battery reads.
-- `mtu probe '{"mtu":517,"device":"Polar H10 SIM0001"}'` — MTU is the
+- `h10-stream start '{"device":"SIM Polar H10 0001"}'` — HR stream; drive with `set-bpm`.
+- `device-info read '{"device":"SIM Polar H10 0001"}'` — DIS + battery reads.
+- `mtu probe '{"mtu":517,"device":"SIM Polar H10 0001"}'` — MTU is the
   platform's own answer; the sim cannot raise it.
-- `ecg start '{"mtu":517,"device":"Polar H10 SIM0001"}'` — PMD ECG at 130 Hz.
-- `link-loss start '{"device":"Polar H10 SIM0001"}'` — combine with
+- `ecg start '{"mtu":517,"device":"SIM Polar H10 0001"}'` — PMD ECG at 130 Hz.
+- `link-loss start '{"device":"SIM Polar H10 0001"}'` — combine with
   `set-silent` (no data, link up) and `drop-link` (BlueZ tears the link down).
-- `background start '{"device":"Polar H10 SIM0001"}'` — the background lease
+- `background start '{"device":"SIM Polar H10 0001"}'` — the background lease
   itself is the host platform's answer, as always.
 - `scan-details` — sees the sim's name, `180D`/`FEEE` service UUIDs, Polar
   manufacturer data (company `0x006B`, Linux only) and RSSI.
@@ -491,7 +727,7 @@ drift (a node conformance test decodes the checked-in
 regenerates it from the binary). Sim log lines stream back as scenario
 events. Combined sequences live in
 `examples-shared/driver/server/sequences/`: `h10-sim-drop-link.json`
-(android streams from `Polar H10 SIM0001` while peripheral-sim drops the
+(android streams from `SIM Polar H10 0001` while peripheral-sim drops the
 link: lifecycle loss + reconnect + resumed values) and
 `h10-sim-ecg-fault.json` (`reject-next-pmd`, then the DUT's `ecg start`
 reports `pmd.request-rejected`).
@@ -521,18 +757,18 @@ owner with sudo, never by the script:
 
 - user unit (default): the mode goes to `~/.config/h10-sim/env` as
   `H10SIM_LINUX_ADVERTISING=mgmt-legacy`; the script prints `sudo setcap
-  cap_net_admin+ep ~/.local/bin/h10-sim` and does not start the unit until
+cap_net_admin+ep ~/.local/bin/h10-sim` and does not start the unit until
   `getcap` shows it (each install replaces the binary and drops it);
 - `--system-unit`: renders `systemd/h10-sim-mgmt-legacy.service.in` into
   `~/.config/h10-sim/h10-sim-mgmt-legacy.service` — `User=` you,
   `AmbientCapabilities=CAP_NET_ADMIN`, `CapabilityBoundingSet=CAP_NET_ADMIN`,
   `NoNewPrivileges=yes`, so the capability exists only inside that service and
   no file capability sits on disk — verifies it, and prints the `sudo
-  install` / `systemctl enable --now` commands and how to remove it.
+install` / `systemctl enable --now` commands and how to remove it.
 
 ## Tests
 
-- `cargo test` — 112 unit tests on macOS/Windows (124 on Linux, which adds the `bluer`
+- `cargo test` — deterministic unit tests (Linux adds the `bluer`
   backend tests): encoders (HR measurement with the strap's `0x10` default
   plus explicit contact states, DIS NUL termination, PMD ECG frames,
   control-point responses, settings TLV, features incl. the strap's 17
@@ -571,7 +807,7 @@ owner with sudo, never by the script:
   session while a closed fd ends it, first live reads equal to the declared
   initial values) and the exact `LEAdvertisement1` object (every property
   pinned).
-- `node tests/xcheck/run-xcheck.cjs` (repo root) — emits vectors from the Rust
+- `node tool/h10-sim/tests/xcheck/run-xcheck.cjs` (repo root) — emits vectors from the Rust
   encoders via `h10-sim --emit-test-vectors`, compiles the repo's own
   `examples-shared/driver/polar-pmd.ts` and `src/profiles/heart-rate.ts` with
   `tsc`, and decodes every vector through them. No hardware involved.
@@ -595,21 +831,22 @@ owner with sudo, never by the script:
   distribution it is built from; the steady-state fast path is documented
   here, not modelled.
 - `drop-link` drops the link, not the peripheral: advertising and the GATT
-  database stay up, so centrals see a lifecycle loss with no Service Changed
-  and reconnect at once. On CoreBluetooth it cannot force-disconnect an
+  database stay up, but reconnection remains subject to the BlueZ incoming
+  admission policy described above. On CoreBluetooth it cannot force-disconnect an
   active central (no disconnect API); BlueZ disconnects via
   `Device1.Disconnect` (counted in the reply).
 - No encryption-gated characteristics: like the real H10, PMD streams without
   a bond; `--pair-policy disabled` is policy state, not a BlueZ pairing
   refusal (a GATT app cannot enforce that — see Pairing and bonding).
-- ECG only: no ACC/PPI streams (their PMD types answer `NOT_SUPPORTED`;
-  the features bitmap advertises ACC like the strap, but its PMD frame format
-  needs a documented source before implementing). The vendor `6217ff4c` value
+- No PPG/PPI or offline-recording streams. ACC has SDK-backed settings and
+  encoding but synthetic data; its batching, timing, compression and precise
+  malformed-command status precedence are not qualified against a real H10.
+  The vendor `6217ff4c` value
   and the FEEE characteristics' payloads are likewise UNCONFIRMED (empty /
   refused loudly, never guessed).
 - Recorded ECG and HR replay cycle one strap session (~25 s ECG, 120 HR
   packets); the synthetic serial stays (`SIM000001`), and 130 Hz is the only
-  rate (no other sample rates).
+  ECG rate (ACC has its own negotiated sample rate).
 - ATT MTU, connection parameters and the advertising interval are the
   platform's answer, not the sim's. The Android capture additionally shows
   platform-injected GAP/GATT services (`1800`/`1801`) that CoreBluetooth and
@@ -648,7 +885,7 @@ host (short windows are fine here):
 
 ```sh
 ./target/debug/h10-sim --driver ws://127.0.0.1:8795/host &
-node examples-shared/driver/server/cli.mjs capture <host-id> --device "Polar H10 SIM0001" --hr-ms 10000 --ecg-frames 10 --out /tmp/h10sim
+node examples-shared/driver/server/cli.mjs capture <host-id> --device "SIM Polar H10 0001" --hr-ms 10000 --ecg-frames 10 --out /tmp/h10sim
 ```
 
 The fingerprint (`FINGERPRINT_VERSION = 1`) records the advertisement and
@@ -724,17 +961,18 @@ central's own answers and are never synthesized.
 
 ### Behaviour sources and UNCONFIRMED list
 
-| Behaviour | Source |
-| --- | --- |
-| HR flags `0x10` (RR present, contact not supported), RR in 1/1024 s, chest location `1` | SIG HRS 1.0 §3.3–§3.4 + the 120 raw packets in `fixtures/h10-raw/` (`src/gatt_spec.rs`) |
-| Battery uint8 percent; DIS strings UTF-8 with trailing NUL; System ID 8 bytes | SIG BAS 1.1 §3.2; SIG DIS 1.1 + `fixtures/h10-fingerprints/` (`src/gatt_spec.rs`) |
-| PMD response `[0xF0, op, type, status, more, params…]`, ECG frames `[0x00, tsNs u64 LE, 0x00, s24 LE µV]`, 130 Hz / 14 bit, 73-sample frames, settings TLV, status codes | Polar BLE SDK `BlePMDClient` / `PmdControlPointResponse` / `PmdDataFrame` / `PmdSetting` / `PmdMeasurementType` (`src/gatt_spec.rs`, `examples-shared/driver/polar-pmd.ts`) + `fixtures/h10-fingerprints/` |
-| GATT database (services, counts, properties, DIS hardware-before-firmware order, seven CCCDs), PMD feature bytes (`0f0500…`, 17 bytes, ECG + ACC), `ALREADY_IN_STATE` on repeated start / idle stop, indication confirmations keeping the session | h10-capture fingerprints `fixtures/h10-fingerprints/` (all three capture hosts agree) |
-| Advertisement: Flags + 16-bit UUID list in AD, name in scan response, Polar company `0x006B` | BlueZ 5.72 `src/advertising.c` layout (`src/advertisement.rs`) + `fixtures/h10-fingerprints/` |
-| HR interval (p50 993 ms), PMD response (p50 994 ms), ECG frame jitter (spread 0.009 ms around the 73/130 s cadence), advertising interval (p50 1042 ms) | Tauri capture `timings.*` / `advertisement.*` — **all four CONFIRMED** in `profiles/timing-h10-measured.json` |
+| Behaviour                                                                                                                                                                                                                                         | Source                                                                                                                                                                                                     |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| HR flags `0x10` (RR present, contact not supported), RR in 1/1024 s, chest location `1`                                                                                                                                                           | SIG HRS 1.0 §3.3–§3.4 + the 120 raw packets in `fixtures/h10-raw/` (`src/gatt_spec.rs`)                                                                                                                    |
+| Battery uint8 percent; DIS strings UTF-8 with trailing NUL; System ID 8 bytes                                                                                                                                                                     | SIG BAS 1.1 §3.2; SIG DIS 1.1 + `fixtures/h10-fingerprints/` (`src/gatt_spec.rs`)                                                                                                                          |
+| PMD response `[0xF0, op, type, status, more, params…]`, ECG frames `[0x00, tsNs u64 LE, 0x00, s24 LE µV]`, 130 Hz / 14 bit, 73-sample frames, settings TLV, status codes                                                                          | Polar BLE SDK `BlePMDClient` / `PmdControlPointResponse` / `PmdDataFrame` / `PmdSetting` / `PmdMeasurementType` (`src/gatt_spec.rs`, `examples-shared/driver/polar-pmd.ts`) + `fixtures/h10-fingerprints/` |
+| H10 ACC 25/50/100/200 Hz × ±2/4/8 G, 16-bit XYZ milli-g, raw type-1 frame and last-sample timestamp                                                                                                                                               | Pinned Polar SDK product specification, online measurement protocol, `AccDataTest.kt` and maintainer settings recipe linked above; no retained real-H10 ACC capture                                        |
+| GATT database (services, counts, properties, DIS hardware-before-firmware order, seven CCCDs), PMD feature bytes (`0f0500…`, 17 bytes, ECG + ACC), `ALREADY_IN_STATE` on repeated start / idle stop, indication confirmations keeping the session | h10-capture fingerprints `fixtures/h10-fingerprints/` (all three capture hosts agree)                                                                                                                      |
+| Advertisement: Flags + 16-bit UUID list in AD, name in scan response, Polar company `0x006B`                                                                                                                                                      | BlueZ 5.72 `src/advertising.c` layout (`src/advertisement.rs`) + `fixtures/h10-fingerprints/`                                                                                                              |
+| HR interval (p50 993 ms), PMD response (p50 994 ms), ECG frame jitter (spread 0.009 ms around the 73/130 s cadence), advertising interval (p50 1042 ms)                                                                                           | Tauri capture `timings.*` / `advertisement.*` — **all four CONFIRMED** in `profiles/timing-h10-measured.json`                                                                                              |
 
 Still UNCONFIRMED (placeholders in `profiles/timing-default-unconfirmed.json`
-for explicit opt-in; live defaults are the measured profile above): nothing
-timing-related remains — the open gaps are the vendor `6217ff4c` value, the
-FEEE payloads and ACC streaming (see fidelity gaps), which need a documented
-source before implementing.
+for explicit opt-in; live defaults use the measured profile above): the
+existing HR/ECG timing sources do not establish ACC timing. ACC packet batching,
+concurrent-stream timing and firmware error precedence still need real-H10
+captures. The vendor `6217ff4c` value and FEEE payloads remain unmodeled.

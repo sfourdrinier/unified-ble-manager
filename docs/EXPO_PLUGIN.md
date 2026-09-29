@@ -7,7 +7,7 @@ start a radio, request runtime permissions during prebuild, or prove physical
 radio/restoration reliability. Expo Go is not a supported BLE execution
 environment because it cannot contain this native module.
 
-Use the v2 plugin options in this `5.0.0-rc.12` source. Those options match
+Use the v2 plugin options in this `5.0.0-rc.13` source. Those options match
 the schema introduced at `4.0.0-rc.4`. Expo Go cannot load this native module.
 
 ## Installation and development build
@@ -15,7 +15,7 @@ the schema introduced at `4.0.0-rc.4`. Expo Go cannot load this native module.
 Pin the package so a later `latest` bump does not change native plugin options
 without a rebuild:
 
-    pnpm add unified-ble-manager@5.0.0-rc.12
+    pnpm add unified-ble-manager@5.0.0-rc.13
     pnpm add expo@^57.0.0 expo-dev-client
     npx expo prebuild --clean
     npx expo run:ios
@@ -140,7 +140,7 @@ hosts fail explicitly.
 - continuation declares the background standing order a wake may execute
   before any JavaScript runs (`background.continuation`). `onAppearance` is
   one of `record-only` (the default, and today's behaviour), `native`,
-  `headless-task` or `foreground-service`; `peerId` is an optional MAC subject
+  `headless-task` or `foreground-service`; `peerId` is an optional Android MAC or Apple peripheral UUID
   and `resubscribe` an optional list of service/characteristic selectors with
   optional occurrences. `headlessTaskName` is required for `headless-task` and
   rejected for anything else; `foregroundService` is required for
@@ -148,9 +148,39 @@ hosts fail explicitly.
   could not execute is refused at prebuild rather than at 3 a.m. on a user's
   phone. The plugin writes the validated declaration as the Android manifest
   meta-data `com.sfourdrinier.unifiedblemanager.BACKGROUND_CONTINUATION`, and
-  removes it again when the option is dropped. The strategies, what the wake
+  the iOS Info.plist `UnifiedBleBackgroundContinuation` key (not tvOS), and
+  removes them again when the option is dropped. A native iOS order also needs
+  configured restoration authority and the Bluetooth background mode. Schema
+  validation does not imply that the selected platform provides the mechanism: runtime
+  capabilities and refusal outcomes remain authoritative. The strategies, what the wake
   does, and how an app reads the outcome and drains the backlog are in
   [`BACKGROUND.md`](BACKGROUND.md).
+
+For `onAppearance: "native"`, the continuation options also accept:
+
+- `setup`: up to 16 sequential device setup steps, each with a canonical
+  `selector`, `value` as a JSON array of integer bytes (0–255, length 1–512),
+  and `timeoutMs` (1–20,000; total at most 60,000). Optional `response`
+  correlates a declared `subscriptionIndex` with byte-array `prefix`,
+  `minLength`/`maxLength`, and `status: { offset, accepted }`; optional
+  `trailing: { offset, accepted }` verifies a final byte. The native observer
+  is installed before the write. These are application protocol commands,
+  not another set of subscriptions.
+- `link.mtu`: `{ requested, timeoutMs, onUnsupported }`, with requested ATT
+  MTU 23–517, timeout 1–20,000 ms, and explicit `onUnsupported: "continue"`
+  or `"fail"`. The actual native outcome is reported; a request is not proof
+  of negotiation. Apple may provide no explicit MTU negotiation mechanism.
+- `recording`: `{ id, maxBytes, maxRecords }`, with an ID of 1–64 ASCII
+  letters/digits/underscores/hyphens, explicit quota of 1 MiB–1 GiB and
+  1–1,000,000 records. Native selects app-private storage; JSON never accepts
+  a filesystem path. This opts into a plaintext durable journal, separate
+  from the volatile claim cursor. No recording is enabled by default.
+
+These fields are rejected for non-native strategies, and unknown fields or
+out-of-range bytes are rejected rather than truncated. Runtime TypeScript uses
+`Uint8Array` for payloads; only the plugin's JSON configuration uses number
+arrays. See [per-generation setup and recording](BACKGROUND.md#per-generation-device-setup)
+for the exact response, ownership, storage and explicit-acknowledgement contract.
 
 When the Android connected-device service is active, applications can publish
 current user-facing state without changing service ownership:
@@ -252,4 +282,4 @@ the migration boundary remains auditable. Use the v2 one-token schema above.
 - MIGRATION_4.0.md
 - BACKGROUND.md
 - PLATFORMS.md
-- UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md
+- [Current 5.0 authority](README.md#current-50-authority)

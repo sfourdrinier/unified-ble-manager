@@ -31,12 +31,19 @@ public final class AndroidConnectedDeviceForegroundServiceDriver
 
   @Override
   public void start(String reason) {
+    start(reason, configuration());
+  }
+
+  @Override
+  public ForegroundServiceNotificationConfiguration notificationConfiguration() { return configuration(); }
+
+  @Override
+  public void start(String reason, ForegroundServiceNotificationConfiguration configuration) {
     if (Looper.myLooper() == Looper.getMainLooper()) {
       throw new ForegroundServiceControlException(
           "foregroundServiceMainThreadUnavailable",
           "Android foreground-service acquisition cannot wait for promotion on the main thread.");
     }
-    final ForegroundServiceNotificationConfiguration configuration = configuration();
     requireRuntimePermissions();
     final CountDownLatch acknowledgement = new CountDownLatch(1);
     final AtomicInteger resultCode = new AtomicInteger(0);
@@ -51,6 +58,7 @@ public final class AndroidConnectedDeviceForegroundServiceDriver
     };
     final Intent intent = BlePlxForegroundService.startIntent(context, configuration)
         .putExtra(BlePlxForegroundService.EXTRA_ACK, receiver);
+    boolean accepted = false;
     try {
       final ComponentName started = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
           ? context.startForegroundService(intent)
@@ -60,6 +68,7 @@ public final class AndroidConnectedDeviceForegroundServiceDriver
             "foregroundServiceNotConfigured",
             "Android could not resolve the configured connected-device foreground service. Rebuild the native app.");
       }
+      accepted = true;
       try {
       if (!acknowledgement.await(5, TimeUnit.SECONDS)) {
           if (!context.getSharedPreferences("unified-ble-manager", Context.MODE_PRIVATE)
@@ -71,6 +80,7 @@ public final class AndroidConnectedDeviceForegroundServiceDriver
                 "Android could not persist the timed-out connected-device foreground service release; retry the lease.");
           }
           context.stopService(new Intent(context, BlePlxForegroundService.class));
+          accepted = false;
           throw new ForegroundServiceControlException(
               "foregroundServiceStartTimedOut",
               "Android did not acknowledge foreground-service promotion within five seconds; retry the lease.");
@@ -80,7 +90,7 @@ public final class AndroidConnectedDeviceForegroundServiceDriver
         throw new ForegroundServiceControlException(
             "foregroundServiceStartInterrupted",
             "Android foreground-service promotion was interrupted; retry the lease.",
-            error);
+            error, true);
       }
       if (resultCode.get() != BlePlxForegroundService.ACK_STARTED) {
         throw new ForegroundServiceControlException(
@@ -90,13 +100,21 @@ public final class AndroidConnectedDeviceForegroundServiceDriver
     } catch (SecurityException error) {
       throw new ForegroundServiceControlException(
           "foregroundServicePermissionDenied",
-          "Android denied the connected-device foreground service. Grant Bluetooth and notification permissions, then retry.",
-          error);
+          "Android denied the connected-device foreground service. Check Bluetooth permission and the application's foreground-service entitlements, then retry.",
+          error, accepted);
     } catch (IllegalStateException error) {
       throw new ForegroundServiceControlException(
           "foregroundServiceStartNotAllowed",
           "Android did not allow the connected-device foreground service to start from the current app state. Bring the app to the foreground and retry.",
-          error);
+          error, accepted);
+    } catch (RuntimeException error) {
+      if (error instanceof ForegroundServiceControlException) {
+        ForegroundServiceControlException failure = (ForegroundServiceControlException) error;
+        if (!accepted) throw failure;
+        throw new ForegroundServiceControlException(failure.code, failure.getMessage(), failure.getCause(), true);
+      }
+      throw new ForegroundServiceControlException("foregroundServiceStartFailed",
+          error.getMessage() == null ? error.getClass().getName() : error.getMessage(), error, accepted);
     }
   }
 
@@ -147,18 +165,18 @@ public final class AndroidConnectedDeviceForegroundServiceDriver
   }
 
   private void requireRuntimePermissions() {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-        && context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-      throw new ForegroundServiceControlException(
-          "foregroundServicePermissionDenied",
-          "Bluetooth connect permission is required before acquiring a connected-device background lease.");
+    for (String permission : requiredRuntimePermissions(Build.VERSION.SDK_INT)) {
+      if (context.checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) {
+        throw new ForegroundServiceControlException(
+            "foregroundServicePermissionDenied", "Bluetooth connect permission is required before acquiring a connected-device background lease.");
+      }
     }
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
-        && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-      throw new ForegroundServiceControlException(
-          "foregroundServicePermissionDenied",
-          "Notification permission is required before acquiring a connected-device background lease.");
-    }
+  }
+
+  // Android requires the service notification, but POST_NOTIFICATIONS is not
+  // a prerequisite for FGS startup; denial changes where the OS displays it.
+  static String[] requiredRuntimePermissions(int sdk) {
+    return sdk >= 31 ? new String[] { Manifest.permission.BLUETOOTH_CONNECT } : new String[0];
   }
 
   private static Map<String, String> metadataMap(Bundle metadata) {

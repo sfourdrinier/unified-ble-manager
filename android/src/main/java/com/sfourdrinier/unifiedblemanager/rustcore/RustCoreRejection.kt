@@ -11,12 +11,25 @@ class RustCoreRejection(
   val code: String,
   val domain: String,
   val operation: String,
-  val detail: String?
+  val detail: String?,
+  val platform: Map<*, *>? = null
 ) : RuntimeException("$code|$domain|$operation|${detail ?: ""}") {
 
-  fun toJson(): String = RustCoreJson.write(
-    linkedMapOf("code" to code, "domain" to domain, "operation" to operation, "detail" to detail)
-  )
+  fun toJson(): String {
+    val failure = linkedMapOf<String, Any?>("code" to code, "domain" to domain, "operation" to operation, "detail" to detail)
+    platform?.let { failure["platform"] = it }
+    return RustCoreJson.write(failure)
+  }
+
+  /** Host-side refusal has no write commit and no platform retry advice.
+   * Native envelopes are forwarded unchanged instead of reconstructed here. */
+  fun toContinuationEnvelope(): String = RustCoreJson.write(linkedMapOf(
+    "ok" to false,
+    "error" to linkedMapOf("code" to code, "domain" to domain, "operation" to operation,
+      "detail" to detail, "platform" to platform),
+    "commit" to null,
+    "retryability" to "never"
+  ))
 
   companion object {
     /** Parses the JNI `MobileCoreException` wire text `code|domain|operation|detail`. */

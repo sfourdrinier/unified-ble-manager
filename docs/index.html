@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>unified-ble-manager 5.0.0-rc.12 | Documentation</title>
+    <title>unified-ble-manager 5.0.0-rc.13 | Documentation</title>
     <meta
       name="description"
       content="Unified Bluetooth Low Energy manager for React Native, Electron, Tauri, Web, and desktop"
@@ -18,7 +18,7 @@
       <div id="split-left" class="overflow-auto fs0 height-viewport-100">
         <div class="py1 px2">
           <h3 class="mb0 no-anchor">unified-ble-manager</h3>
-          <div class="mb1"><code>5.0.0-rc.12</code></div>
+          <div class="mb1"><code>5.0.0-rc.13</code></div>
           <input
             placeholder="Filter"
             id="filter-input"
@@ -64,7 +64,7 @@
               This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are
               linked at the bottom. The root import does not turn Bluetooth on.
             </p>
-            <p>This source targets <code>5.0.0-rc.12</code>; verify the published version in the npm registry.</p>
+            <p>This source targets <code>5.0.0-rc.13</code>; verify the published version in the npm registry.</p>
             <h2>Pick a host</h2>
             <table>
               <thead>
@@ -143,7 +143,7 @@
             <h4>Expo / CNG v2</h4>
             <p>
               The Expo v2 schema and <code>unified-ble-manager/expo</code> factory are in this source. After the npm
-              registry lists <code>5.0.0-rc.12</code>, install that exact version and keep it in your lockfile while
+              registry lists <code>5.0.0-rc.13</code>, install that exact version and keep it in your lockfile while
               validating the native build:
             </p>
             <p>The package does not run in Expo Go.</p>
@@ -248,9 +248,8 @@
             </p>
             <h2>Maintainers</h2>
             <p>
-              Normative contract and evidence rules:
-              <a href="UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md"><code>UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md</code></a
-              >, <a href="PLATFORMS.md"><code>PLATFORMS.md</code></a
+              Normative contract and evidence rules: <a href="README.md#current-50-authority">Current 5.0 authority</a>,
+              <a href="PLATFORMS.md"><code>PLATFORMS.md</code></a
               >.
             </p>
           </section>
@@ -611,7 +610,7 @@
               supported BLE execution environment because it cannot contain this native module.
             </p>
             <p>
-              Use the v2 plugin options in this <code>5.0.0-rc.12</code> source. Those options match the schema
+              Use the v2 plugin options in this <code>5.0.0-rc.13</code> source. Those options match the schema
               introduced at <code>4.0.0-rc.4</code>. Expo Go cannot load this native module.
             </p>
             <h2>Installation and development build</h2>
@@ -619,7 +618,7 @@
               Pin the package so a later <code>latest</code> bump does not change native plugin options without a
               rebuild:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.12
+            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.13
 pnpm add expo@^57.0.0 expo-dev-client
 npx expo prebuild --clean
 npx expo run:ios
@@ -761,20 +760,55 @@ bunx eas build --profile development --platform android
                   continuation declares the background standing order a wake may execute before any JavaScript runs
                   (<code>background.continuation</code>). <code>onAppearance</code> is one of
                   <code>record-only</code> (the default, and today's behaviour), <code>native</code>,
-                  <code>headless-task</code> or <code>foreground-service</code>; <code>peerId</code> is an optional MAC
-                  subject and <code>resubscribe</code> an optional list of service/characteristic selectors with
-                  optional occurrences. <code>headlessTaskName</code> is required for <code>headless-task</code> and
-                  rejected for anything else; <code>foregroundService</code> is required for
-                  <code>foreground-service</code> and rejected for anything else — a declaration that could not execute
-                  is refused at prebuild rather than at 3 a.m. on a user's phone. The plugin writes the validated
-                  declaration as the Android manifest meta-data
-                  <code>com.sfourdrinier.unifiedblemanager.BACKGROUND_CONTINUATION</code>, and removes it again when the
-                  option is dropped. The strategies, what the wake does, and how an app reads the outcome and drains the
-                  backlog are in <a href="BACKGROUND.md"><code>BACKGROUND.md</code></a
+                  <code>headless-task</code> or <code>foreground-service</code>; <code>peerId</code> is an optional
+                  Android MAC or Apple peripheral UUID and <code>resubscribe</code> an optional list of
+                  service/characteristic selectors with optional occurrences. <code>headlessTaskName</code> is required
+                  for <code>headless-task</code> and rejected for anything else; <code>foregroundService</code> is
+                  required for <code>foreground-service</code> and rejected for anything else — a declaration that could
+                  not execute is refused at prebuild rather than at 3 a.m. on a user's phone. The plugin writes the
+                  validated declaration as the Android manifest meta-data
+                  <code>com.sfourdrinier.unifiedblemanager.BACKGROUND_CONTINUATION</code>, and the iOS Info.plist
+                  <code>UnifiedBleBackgroundContinuation</code> key (not tvOS), and removes them again when the option
+                  is dropped. A native iOS order also needs configured restoration authority and the Bluetooth
+                  background mode. Schema validation does not imply that the selected platform provides the mechanism:
+                  runtime capabilities and refusal outcomes remain authoritative. The strategies, what the wake does,
+                  and how an app reads the outcome and drains the backlog are in
+                  <a href="BACKGROUND.md"><code>BACKGROUND.md</code></a
                   >.
                 </p>
               </li>
             </ul>
+            <p>For <code>onAppearance: "native"</code>, the continuation options also accept:</p>
+            <ul>
+              <li>
+                <code>setup</code>: up to 16 sequential device setup steps, each with a canonical <code>selector</code>,
+                <code>value</code> as a JSON array of integer bytes (0–255, length 1–512), and
+                <code>timeoutMs</code> (1–20,000; total at most 60,000). Optional <code>response</code> correlates a
+                declared <code>subscriptionIndex</code> with byte-array <code>prefix</code>,
+                <code>minLength</code>/<code>maxLength</code>, and <code>status: { offset, accepted }</code>; optional
+                <code>trailing: { offset, accepted }</code> verifies a final byte. The native observer is installed
+                before the write. These are application protocol commands, not another set of subscriptions.
+              </li>
+              <li>
+                <code>link.mtu</code>: <code>{ requested, timeoutMs, onUnsupported }</code>, with requested ATT MTU
+                23–517, timeout 1–20,000 ms, and explicit <code>onUnsupported: "continue"</code> or <code>"fail"</code>.
+                The actual native outcome is reported; a request is not proof of negotiation. Apple may provide no
+                explicit MTU negotiation mechanism.
+              </li>
+              <li>
+                <code>recording</code>: <code>{ id, maxBytes, maxRecords }</code>, with an ID of 1–64 ASCII
+                letters/digits/underscores/hyphens, explicit quota of 1 MiB–1 GiB and 1–1,000,000 records. Native
+                selects app-private storage; JSON never accepts a filesystem path. This opts into a plaintext durable
+                journal, separate from the volatile claim cursor. No recording is enabled by default.
+              </li>
+            </ul>
+            <p>
+              These fields are rejected for non-native strategies, and unknown fields or out-of-range bytes are rejected
+              rather than truncated. Runtime TypeScript uses <code>Uint8Array</code> for payloads; only the plugin's
+              JSON configuration uses number arrays. See
+              <a href="BACKGROUND.md#per-generation-device-setup">per-generation setup and recording</a> for the exact
+              response, ownership, storage and explicit-acknowledgement contract.
+            </p>
             <p>
               When the Android connected-device service is active, applications can publish current user-facing state
               without changing service ownership:
@@ -873,7 +907,7 @@ await manager.background.updateNotification({
               <li>MIGRATION_4.0.md</li>
               <li>BACKGROUND.md</li>
               <li>PLATFORMS.md</li>
-              <li>UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md</li>
+              <li><a href="README.md#current-50-authority">Current 5.0 authority</a></li>
             </ul>
           </section>
         </div>
@@ -885,7 +919,7 @@ await manager.background.updateNotification({
             <h1>Electron</h1>
             <p>Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.</p>
             <p>
-              This source targets <code>5.0.0-rc.12</code>. Main executes the shared Rust core
+              This source targets <code>5.0.0-rc.13</code>. Main executes the shared Rust core
               (<code>DesktopCentral</code>) through one N-API addon. Tagged releases ship it prebuilt for Linux, macOS
               and Windows on <code>arm64</code>/<code>x64</code>. The addon is Node-API, so one binary serves Node and
               modern Electron alike.
@@ -988,6 +1022,37 @@ await manager.background.updateNotification({
               The release workflow's packed Electron smoke is deterministic L1 package/IPC proof, not an Electron host,
               adapter, or peripheral support claim. Native prebuild compilation and runtime loading are L2/L3 evidence
               only; they do not by themselves establish a physical-radio support claim.
+            </p>
+            <h2>Native continuation owned by main</h2>
+            <p>
+              <code>unified-ble-manager/electron/main</code> exports <code>loadDesktopCoreBinding</code> and
+              <code>createNativeContinuationController</code>, with the same trusted-host recipe as
+              <a href="NODE.md#native-continuation-in-a-trusted-process-host">Node native continuation</a>. Pass the
+              <strong>existing main-process Rust central</strong> to the controller. Main retains the native owner while
+              windows close or reload; renderer destruction is not a request to stop a process-owned recorder.
+            </p>
+            <p>
+              Only trusted main code may call <code>execute</code>, <code>status</code> and <code>claim</code>. This
+              adds no renderer IPC privilege: expose any application-specific commands through your existing
+              authenticated, scoped IPC policy. <code>execute</code> needs a known peer ID and explicit native
+              resubscription declaration. <code>claim</code> validates values before acknowledging native handoff,
+              reports loss and cleanup uncertainty, and ends the recording generation. Persist returned values according
+              to your application.
+            </p>
+            <p>
+              For an authenticated application bridge that forwards raw native control envelopes, main may use
+              <code>encodeNativeContinuationFailure(error)</code> when a typed native-compatible failure was already
+              decoded before dispatch (for example, recording-store configuration). This preserves the error code,
+              operation, retryability and platform message/metadata across Electron's string-only error rejection
+              transport. Keep authentication and request validation outside this conversion. Unknown exceptions are
+              rethrown. This is not general <code>BleError</code> serialization: write commit states, limitations and
+              nested/binary metadata are not representable in the native control envelope and are explicitly refused.
+            </p>
+            <p>
+              This survives loss of a renderer, <strong>not loss of the main process</strong>. A bounded in-memory
+              backlog is not disk persistence, and Electron relaunch/start-at-login configuration is the application's
+              responsibility. On main shutdown, await the central's cleanup receipt; a failed receipt remains a retry
+              obligation. Do not start a second central to add continuation to an existing host.
             </p>
             <h2>Main-process backend selection (maintainer/host-authoring reference)</h2>
             <blockquote>
@@ -1158,8 +1223,7 @@ await manager.background.updateNotification({
               real scan, observe an advertisement, or establish live-radio support. Published evidence records state the
               exact backend, package digest, OS/runtime/ABI, hardware, scenario, limitations, and proof level. See
               <a href="PLATFORMS.md"><code>PLATFORMS.md</code></a> and the controlling
-              <a href="UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md"><code>UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md</code></a
-              >.
+              <a href="README.md#current-50-authority">Current 5.0 authority</a>.
             </p>
           </section>
         </div>
@@ -1171,7 +1235,7 @@ await manager.background.updateNotification({
             <h1>Platform support and evidence</h1>
             <p>
               <strong>Architecture authority:</strong>
-              <a href="UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md"><code>UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md</code></a>
+              <a href="README.md#current-50-authority">Current 5.0 authority</a>
             </p>
             <p>
               This page is an evidence index, not a static compatibility matrix. An application learns optional behavior
@@ -1400,9 +1464,7 @@ await manager.background.updateNotification({
               <li>
                 <a href="../ROADMAP.4.0.md"><code>../ROADMAP.4.0.md</code></a>
               </li>
-              <li>
-                <a href="UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md"><code>UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md</code></a>
-              </li>
+              <li><a href="README.md#current-50-authority">Current 5.0 authority</a></li>
               <li>
                 <a href="GAPS.4.0.md"><code>GAPS.4.0.md</code></a>
               </li>

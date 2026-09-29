@@ -88,6 +88,174 @@ function deferred() {
 }
 
 describe('public connection supervisor', () => {
+  test('reports a throwing lifecycle iterator factory and releases without configuring', async () => {
+    const current = connection()
+    const failure = new BleError('stream.closed', 'connection', 'test.events')
+    current.lifecycleEvents = {
+      [Symbol.asyncIterator]() {
+        throw failure
+      }
+    }
+    const configure = jest.fn()
+    const supervisor = createConnectionSupervisor(manager(current), 'iterator-factory', {
+      configure,
+      retry: { initialDelayMs: 0, maximumDelayMs: 0, multiplier: 1, jitter: 0 }
+    })
+    supervisor.start()
+    for (let tick = 0; tick < 100; tick++) await Promise.resolve()
+    await expect(supervisor.stop()).resolves.toMatchObject({ state: 'released' })
+    expect(configure).not.toHaveBeenCalled()
+    expect(current.release).toHaveBeenCalledTimes(1)
+    expect(supervisor.snapshot.lastError.code).toBe('stream.closed')
+  })
+
+  test.each(['done', 'reject', 'adapter-loss', 'adapter-loss-racing-success'])(
+    'settles %s lifecycle during setup and owns late completion',
+    async kind => {
+      const setup = deferred()
+      const event = deferred()
+      const first = connection()
+      const returned = jest.fn(async () => ({ done: true, value: undefined }))
+      first.lifecycleEvents = { [Symbol.asyncIterator]: () => ({ next: () => event.promise, return: returned }) }
+      const second = connection()
+      const ble = manager(first)
+      ble.connect.mockResolvedValueOnce(first).mockResolvedValue(second)
+      const configure = jest.fn().mockReturnValueOnce(setup.promise).mockResolvedValue('second')
+      const disposeSession = jest.fn(async () => {})
+      const supervisor = createConnectionSupervisor(ble, 'setup-observer', {
+        configure,
+        disposeSession,
+        retry: { initialDelayMs: 0, maximumDelayMs: 0, multiplier: 1, jitter: 0, maximumAttempts: 1 }
+      })
+      supervisor.start()
+      for (let tick = 0; tick < 100 && configure.mock.calls.length === 0; tick++) await Promise.resolve()
+      if (kind === 'adapter-loss-racing-success') setup.resolve('late')
+      if (kind === 'reject') event.reject(new BleError('stream.closed', 'connection', 'test.events'))
+      else
+        event.resolve(
+          kind === 'done'
+            ? { done: true }
+            : {
+                done: false,
+                value: {
+                  kind: 'connection-lifecycle',
+                  previous: 'connected',
+                  current: 'lost',
+                  cause: 'adapter-loss',
+                  connectionGeneration: 'generation-1',
+                  sequence: 2
+                }
+              }
+        )
+      for (let tick = 0; tick < 100; tick++) await Promise.resolve()
+      expect(first.release).toHaveBeenCalledTimes(1)
+      expect(returned).toHaveBeenCalledTimes(1)
+      if (kind !== 'adapter-loss-racing-success') expect(ble.connect).toHaveBeenCalledTimes(1)
+      setup.resolve('late')
+      for (let tick = 0; tick < 200; tick++) await Promise.resolve()
+      expect(disposeSession).toHaveBeenCalledWith('late')
+      if (kind.startsWith('adapter-loss')) {
+        expect(ble.adapter.waitUntilReady).toHaveBeenCalledTimes(1)
+        expect(ble.connect).toHaveBeenCalledTimes(2)
+        expect(supervisor.snapshot.state).toBe('connected')
+      } else {
+        expect(supervisor.snapshot.state).toBe('stopped')
+        expect(supervisor.snapshot.lastError.code).toBe('stream.closed')
+      }
+      await supervisor.stop()
+    }
+  )
+
+  test('stop owns and returns the lifecycle iterator acquired during a pending configure', async () => {
+    const setup = deferred()
+    const current = connection()
+    let next
+    const returned = jest.fn(async () => {
+      next?.({ done: true, value: undefined })
+      return { done: true, value: undefined }
+    })
+    current.lifecycleEvents = {
+      [Symbol.asyncIterator]: () => ({
+        next: () =>
+          new Promise(resolve => {
+            next = resolve
+          }),
+        return: returned
+      })
+    }
+    const configure = jest.fn(() => setup.promise)
+    const disposeSession = jest.fn(async () => {})
+    const ble = manager(current)
+    const supervisor = createConnectionSupervisor(ble, 'pending-setup-stop', {
+      retry: { initialDelayMs: 0, maximumDelayMs: 0, multiplier: 1, jitter: 0 },
+      configure,
+      disposeSession
+    })
+    supervisor.start()
+    for (let tick = 0; tick < 100 && configure.mock.calls.length === 0; tick++) await Promise.resolve()
+    await expect(supervisor.stop()).resolves.toMatchObject({ state: 'release-failed' })
+    expect(returned).toHaveBeenCalledTimes(1)
+    expect(current.release).toHaveBeenCalledTimes(1)
+    setup.resolve('late-session')
+    for (let tick = 0; tick < 100; tick++) await Promise.resolve()
+    await expect(supervisor.stop()).resolves.toMatchObject({ state: 'released' })
+    expect(disposeSession).toHaveBeenCalledWith('late-session')
+    expect(ble.connect).toHaveBeenCalledTimes(1)
+  })
+
+  test.each(['reject', 'resolve'])(
+    'observed link loss during configure survives its later %s outcome',
+    async outcome => {
+      const setup = deferred()
+      const first = connection()
+      let reader
+      const returned = jest.fn(async () => {
+        reader?.({ done: true, value: undefined })
+        return { done: true, value: undefined }
+      })
+      first.lifecycleEvents = {
+        [Symbol.asyncIterator]: () => ({
+          next: () =>
+            new Promise(resolve => {
+              reader = resolve
+            }),
+          return: returned
+        })
+      }
+      const second = connection()
+      const ble = manager(first)
+      ble.connect.mockResolvedValueOnce(first).mockResolvedValue(second)
+      const configure = jest.fn().mockReturnValueOnce(setup.promise).mockResolvedValue('second-session')
+      const disposeSession = jest.fn(async () => {})
+      const supervisor = createConnectionSupervisor(ble, 'setup-loss', {
+        retry: { initialDelayMs: 0, maximumDelayMs: 0, multiplier: 1, jitter: 0, maximumAttempts: 2 },
+        configure,
+        disposeSession
+      })
+      supervisor.start()
+      for (let tick = 0; tick < 100 && configure.mock.calls.length === 0; tick++) await Promise.resolve()
+      const lost = {
+        sequence: 2,
+        previous: 'connected',
+        current: 'lost',
+        cause: 'peer-link-loss',
+        connectionGeneration: 'first-generation'
+      }
+      reader?.({ done: false, value: lost })
+      await Promise.resolve()
+      if (outcome === 'reject') setup.reject(new BleError('gatt.stale-handle', 'gatt', 'test.configure'))
+      else setup.resolve('first-session')
+      for (let tick = 0; tick < 300 && supervisor.snapshot.state !== 'connected'; tick++) await Promise.resolve()
+      expect(ble.connect).toHaveBeenCalledTimes(2)
+      expect(supervisor.snapshot.state).toBe('connected')
+      expect(supervisor.snapshot.lastDisconnect).toMatchObject(lost)
+      expect(first.release).toHaveBeenCalledTimes(1)
+      expect(returned).toHaveBeenCalledTimes(1)
+      if (outcome === 'resolve') expect(disposeSession).toHaveBeenCalledWith('first-session')
+      await supervisor.stop()
+    }
+  )
+
   // Physical Samsung run (2026-09-18): Bluetooth stayed off longer than the
   // 10 s readiness window; the supervisor parked in `waiting-for-gate` until a
   // manual wake and never reconnected. A readiness wait that times out, or an
@@ -318,6 +486,7 @@ describe('public connection supervisor', () => {
 
   test.each([
     ['platform.failure', 'platform'],
+    ['gatt.stale-handle', 'gatt'],
     ['operation.disconnected', 'connection'],
     ['platform.security', 'platform']
   ])('a %s configure failure still stops the supervisor', async (code, domain) => {
@@ -625,13 +794,20 @@ describe('public connection supervisor', () => {
     await expect(supervisor.stop()).resolves.toMatchObject({ state: 'released' })
   })
 
-  test('does not reconnect after configure fails with a released connection', async () => {
+  test.each([
+    [new Error('configuration failed'), 'connection.failed', 'connection-supervisor.attempt'],
+    [
+      new BleError('operation.aborted', 'gatt', 'live-dashboard.pmd.configure'),
+      'operation.aborted',
+      'live-dashboard.pmd.configure'
+    ]
+  ])('does not reconnect and preserves typed configure failure %s', async (failure, code, operation) => {
     const current = connection()
     const ble = manager(current)
     const supervisor = createConnectionSupervisor(ble, 'peer-configure-failure', {
       retry: { initialDelayMs: 0, maximumDelayMs: 0, multiplier: 1, jitter: 0, maximumAttempts: 3 },
       configure: async () => {
-        throw new Error('configuration failed')
+        throw failure
       }
     })
 
@@ -640,6 +816,7 @@ describe('public connection supervisor', () => {
 
     expect(ble.connect).toHaveBeenCalledTimes(1)
     expect(supervisor.snapshot.state).toBe('stopped')
+    expect(supervisor.snapshot.lastError).toMatchObject({ code, operation })
     await expect(supervisor.stop()).resolves.toMatchObject({ state: 'released' })
   })
 

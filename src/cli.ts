@@ -623,6 +623,9 @@ function initFragments(host: CliHost): readonly { readonly fileName: string; rea
         "import { createCoreBluetoothBleManager } from 'unified-ble-manager/node/corebluetooth'",
         "import { createWinRtBleManager } from 'unified-ble-manager/node/winrt'",
         "import { createBluezBleManager } from 'unified-ble-manager/node/bluez'",
+        '// BlueZ connections require an implemented LE bearer API and trusted host configuration:',
+        "// { connectionPolicy: { mode: 'le-bearer', daemonUniqueOwner } }",
+        '// Omission permits scanning only; no device-wide fallback exists. See docs/NODE.md.',
         ''
       ].join('\n')
     }

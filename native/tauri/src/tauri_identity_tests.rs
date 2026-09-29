@@ -81,8 +81,9 @@ fn dispatcher_over(radio: FakeRadio) -> (BtleplugDispatcher, Opened) {
     let slot = Arc::clone(&opened);
     let radio = StdMutex::new(Some(radio));
     let dispatcher = BtleplugDispatcher::with_profiled_opener(
-        None,
-        Arc::new(move |profile| {
+        super::BtleplugDispatcherOptions::default(),
+        Arc::new(move |profile, connection_policy| {
+            assert!(connection_policy.is_none());
             let slot = Arc::clone(&slot);
             let radio = radio.lock().expect("radio").take().expect("opened once");
             Box::pin(async move {

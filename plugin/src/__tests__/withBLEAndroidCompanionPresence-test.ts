@@ -38,6 +38,15 @@ function permissionsOf(manifest: { manifest: { 'uses-permission'?: Array<{ $: Re
 }
 
 describe('withBLEAndroidCompanionPresence', () => {
+  it('supplies companion task and foreground service background-start permissions', () => {
+    const configured = reconcileAndroidCompanionPresence(emptyManifest(), connectedDeviceOptions)
+    for (const name of [
+      'android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND',
+      'android.permission.REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND'
+    ]) {
+      expect(permissionsOf(configured)).toContainEqual({ $: { 'android:name': name } })
+    }
+  })
   it('declares the permission-gated presence service when background android is configured', () => {
     const configured = reconcileAndroidCompanionPresence(emptyManifest(), connectedDeviceOptions)
 

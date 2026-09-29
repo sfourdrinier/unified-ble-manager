@@ -5,10 +5,60 @@ import { createHub } from '../hub.mjs'
 import { connectControl } from '../client.mjs'
 import { formatComparison, resolveDevice, runSequence, validateSequence } from '../sequence.mjs'
 import { matchesTarget } from '../targets.mjs'
-import { startNodeHost, waitFor } from './node-host.mjs'
+import { nodeSocketFactory, startNodeHost, waitFor } from './node-host.mjs'
+import { createScenarioRegistry } from '../../create-driver.ts'
+import { RemoteDriverChannel } from '../../remote-channel.ts'
+import { adapterHostManager } from '../../host.ts'
+import { createFakeHost, createFakeManager } from '../../__tests__/fake-host.mjs'
 
 const STRAP_A = 'Polar H10 E997042F'
 const STRAP_B = 'Polar H10 E9B93D29'
+
+async function withDeviceInfo(run) {
+  const hub = createHub({ port: 0, host: '127.0.0.1', onRecord: () => {} })
+  const { port } = await hub.listen()
+  const client = await connectControl(`ws://127.0.0.1:${port}/control`)
+  const { manager, calls } = createFakeManager()
+  const targets = []
+  const connect = manager.connect
+  manager.connect = async (target, controls) => { targets.push(target); return connect(target, controls) }
+  const host = createFakeHost({ manager, adapterHostManager, host: 'expo', platform: 'android' })
+  const registry = createScenarioRegistry(host)
+  const channel = new RemoteDriverChannel({ url: `ws://127.0.0.1:${port}/host`, noHostReason: 'unused',
+    registry, runtime: host.runtime, identity: host.identity, createSocket: nodeSocketFactory })
+  channel.start()
+  try {
+    await waitFor(() => hub.hosts().length === 1)
+    await run(client, { calls, targets })
+  } finally {
+    channel.stop()
+    await registry.stopAll()
+    await client.close()
+    await hub.close()
+  }
+}
+
+test('real sequence bound device is not injected over an explicit public address', async () => {
+  await withDeviceInfo(async (client, { calls, targets }) => {
+    const summary = await runSequence(client, { name: 'address peer', devices: { android: STRAP_A },
+      steps: [{ run: 'device-info', command: 'read', args: { peerAddress: { address: 'AA:BB:CC:DD:EE:FF' } } }] })
+    assert.equal(summary.hosts[0].passed, true)
+    assert.deepEqual(targets, [{ address: 'AA:BB:CC:DD:EE:FF', addressType: 'public' }])
+    assert.ok(!calls.some(call => /^(find|scan|choose)\b/.test(call)))
+    assert.deepEqual(calls.slice(-2), ['connection.release', 'manager.destroy'])
+  })
+})
+
+test('real sequence preserves explicitly conflicting device and peerAddress for scenario refusal', async () => {
+  await withDeviceInfo(async (client, { calls, targets }) => {
+    const summary = await runSequence(client, { name: 'conflicting peer', devices: { android: STRAP_A },
+      steps: [{ run: 'device-info', command: 'read', args: { peerAddress: { address: 'AA:BB:CC:DD:EE:FF' }, device: STRAP_B } }] })
+    assert.equal(summary.hosts[0].passed, false)
+    assert.equal(summary.hosts[0].steps[0].detail.error.code, 'scenario.invalid-argument')
+    assert.deepEqual(calls, [])
+    assert.deepEqual(targets, [])
+  })
+})
 
 async function withHosts(specs, run) {
   const hub = createHub({ port: 0, host: '127.0.0.1', onRecord: () => {} })
@@ -100,7 +150,7 @@ test('without devices every host keeps the default device and nothing is injecte
 test('h10-sim-drop-link.json pairs the android DUT with the peripheral-sim fault host', () => {
   const spec = validateSequence(JSON.parse(readFileSync(new URL('../sequences/h10-sim-drop-link.json', import.meta.url), 'utf8')))
   assert.deepEqual(spec.target, ['android', 'peripheral-sim'])
-  assert.deepEqual(spec.devices, { android: 'Polar H10 SIM0001' })
+  assert.deepEqual(spec.devices, { android: 'SIM Polar H10 0001' })
   const drop = spec.steps.find(step => step.run === 'sim-control')
   assert.equal(drop.command, 'drop-link')
   assert.deepEqual(drop.hosts, ['peripheral-sim'])
@@ -113,6 +163,7 @@ test('h10-sim-drop-link.json pairs the android DUT with the peripheral-sim fault
 
 test('h10-sim-ecg-fault.json injects reject-next-pmd then expects the rejected start', () => {
   const spec = validateSequence(JSON.parse(readFileSync(new URL('../sequences/h10-sim-ecg-fault.json', import.meta.url), 'utf8')))
+  for (const name of Object.values(spec.devices)) assert.ok(name.startsWith('SIM'), 'simulator targets must be visibly marked')
   const fault = spec.steps.find(step => step.run === 'sim-control')
   assert.equal(fault.command, 'reject-next-pmd')
   assert.deepEqual(fault.args, { status: 3 })

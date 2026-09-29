@@ -6,7 +6,8 @@
 // the radio chooser needs a user gesture. Everything else is shared, so every
 // host runs the same scenario code against the same public API.
 
-import type { BleManager, FeatureId } from 'unified-ble-manager'
+import type { BleManager, BackgroundContinuationDeclaration, ContinuationRecordingController, FeatureId } from 'unified-ble-manager'
+import type { NativeContinuationControl } from 'unified-ble-manager/backend-sdk'
 import type { JsonObject, JsonValue } from './protocol.ts'
 import { toJsonValue } from './protocol.ts'
 import type { RemoteDriverHost } from './remote-channel.ts'
@@ -16,6 +17,12 @@ import type { UserGestureGate } from './user-gesture.ts'
 export const READINESS_TIMEOUT_MS = 15_000
 
 export type HostReport = (kind: string, data: JsonObject) => void
+export type HostContinuationDeclaration = BackgroundContinuationDeclaration
+
+/** Trusted process owner; no renderer-selected storage paths or OS-wake claims. */
+export type HostNativeContinuation = NativeContinuationControl & {
+  recordings(): Promise<ContinuationRecordingController>
+}
 
 export interface BackgroundLease {
   /** What the host's API answered, for example `acquired` or `capability-supported`. */
@@ -47,6 +54,14 @@ export interface DriverHost {
   readonly identity: RemoteDriverHost
   readonly runtime: ScenarioRuntime
   createManager(instanceId: string): Promise<HostManager>
+  /** Persist through the host's public factory/control API. Absent means unsupported,
+   * never an intent-only successful declaration. */
+  configureContinuation?(declaration: HostContinuationDeclaration): Promise<HostManager>
+  readonly nativeContinuation?: HostNativeContinuation
+  /** Offline journal controls; obtaining these must not open a BLE session. */
+  continuationRecordings?(): ContinuationRecordingController
+  /** Explicit bounded reference-task diagnostics, not native dispatch status. */
+  readHeadlessContinuationHistory?(): Promise<JsonObject>
   /** Null when the runtime has no app lifecycle (a CLI process). */
   readonly appState: AppStateSource | null
   /** Non-null when the radio chooser must run inside a user activation (Web Bluetooth). */

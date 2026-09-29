@@ -96,8 +96,20 @@ describe('ci-release canonical package (4.0)', () => {
     expect(doc).toContain('git tag -a v4.0.0')
     expect(doc).toContain('4.0.0-rc.*')
     expect(doc).toContain('npm trusted publisher')
-    expect(doc).toContain('UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md')
+    expect(doc).toContain('docs/README.md#current-50-authority')
+    expect(doc).not.toContain('UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md')
     expect(doc).not.toMatch(/publishes the \*\*4\.0 dual identity\*\*/i)
+  })
+
+  test('native continuation work cannot inherit the historical rc.12 no-native-change exemption', () => {
+    const doc = read('RELEASE.md')
+    expect(doc).toContain('The instructions below record the historical rc.12 IPC remediation')
+    expect(doc).toContain('No native implementation changed in that historical IPC remediation')
+    expect(doc).not.toContain('No native implementation changed in this candidate')
+    expect(doc).toContain('Current native-continuation work changes native sources')
+    expect(doc).toContain('[native artifact lifecycle](docs/NATIVE_ARTIFACTS.md)')
+    expect(doc).toContain('rerun native identity, native host, and packaged-consumer gates')
+    expect(doc).toContain('does not select a new release version')
   })
 
   test('verify-release.sh is multi-host and validates the canonical tarball', () => {

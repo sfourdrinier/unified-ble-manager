@@ -24,7 +24,7 @@ import {
 import { BODY_SENSOR_LOCATION_CHARACTERISTIC, HEART_RATE_SERVICE } from 'unified-ble-manager/profiles/heart-rate'
 import type { DriverHost } from '../host.ts'
 import type { JsonObject, JsonValue } from '../protocol.ts'
-import { bytesToHex, toJsonValue } from '../protocol.ts'
+import { bytesToHex, describeError, toJsonValue } from '../protocol.ts'
 import { ScenarioError, defineCommand, type ScenarioCommand } from '../scenario-core.ts'
 import {
   BleScenario,
@@ -294,16 +294,32 @@ export class H10CaptureScenario extends BleScenario<H10CaptureState> {
     const atMs: number[] = []
     let firstDump: JsonObject | null = null
     let txPowerSeen = false
+    let terminalFailure: JsonValue | undefined
+    let iterationFailure: JsonValue | undefined
+    let cleanupFailure: ScenarioError | undefined
     try {
-      const session = await manager.scan({ query: undefined, duplicates: 'all', delivery: 'balanced', signal })
+      const session = await manager.scan({ query: undefined, duplicates: 'all', delivery: 'balanced', signal, timeoutMs: Math.floor(durationMs) })
       this.own('scan.stop', () => session.stop())
       const stopAt = this.runtime.now() + durationMs
       const stopTimer = this.runtime.schedule(() => {
-        void session.stop().catch(() => {})
+        void session.stop().then(
+          record => this.emit('scan-duration-elapsed', { stop: toJsonValue(record) }),
+          error => this.emit('scan-duration-elapsed', { stopError: describeError(error) })
+        )
       }, durationMs)
       try {
         for await (const item of session.observations) {
-          if (item.kind !== 'value') continue
+          if (item.kind === 'overflow') {
+            this.emit('stream-overflow', { stream: 'scan.observations', policy: item.policy, droppedItems: item.droppedItems, droppedBytes: item.droppedBytes, replacedItems: item.replacedItems })
+            continue
+          }
+          if (item.kind === 'terminal') {
+            this.emit('stream-terminal', { stream: 'scan.observations', reason: item.reason, error: toJsonValue(item.error ?? null), droppedItems: item.droppedItems, droppedBytes: item.droppedBytes, replacedItems: item.replacedItems })
+            if (item.reason === 'source-failed' || item.reason === 'connection-lost' || item.reason === 'overflow' || item.reason === 'service-changed') {
+              terminalFailure = toJsonValue(item.error ?? new ScenarioError('stream.closed', `Advertisement scan ended with ${item.reason}`))
+            }
+            break
+          }
           const observation = item.value
           if (!matchesDevice(observation, device)) continue
           observations.push(observation)
@@ -312,6 +328,10 @@ export class H10CaptureScenario extends BleScenario<H10CaptureState> {
           if ('txPowerLevel' in observation || 'txPower' in observation) txPowerSeen = true
           if (this.runtime.now() >= stopAt) break
         }
+      } catch (error) {
+        iterationFailure = toJsonValue(error)
+        this.emit('stream-threw', { stream: 'scan.observations', error: describeError(error) })
+        throw error
       } finally {
         stopTimer()
         // Finding 209: one manager admits one physical scan, so whatever
@@ -321,11 +341,22 @@ export class H10CaptureScenario extends BleScenario<H10CaptureState> {
         // timer stop reports the same record; the ledger stop at teardown
         // then re-reports it. A stop failure here is the run's answer, not
         // a later scan.already-active from a scan left open.
-        await session.stop()
+        try {
+          const receipt = await session.stop()
+          if (receipt.state !== 'released') {
+            cleanupFailure = new ScenarioError('scenario.cleanup-failed', 'Advertisement scan cleanup remains unresolved; retry stop before another scan', { cause: { source: terminalFailure ?? iterationFailure ?? null, cleanup: toJsonValue(receipt) } })
+            throw cleanupFailure
+          }
+        } catch (error) {
+          cleanupFailure ??= new ScenarioError('scenario.cleanup-failed', 'Advertisement scan cleanup was rejected; retry stop before another scan', { cause: { source: terminalFailure ?? iterationFailure ?? null, cleanup: toJsonValue(error) } })
+          throw cleanupFailure
+        }
       }
     } catch (error) {
-      return { ok: false, error: toJsonValue(error), observations: 0 }
+      if (cleanupFailure !== undefined) throw cleanupFailure
+      return { ok: false, error: terminalFailure === undefined ? toJsonValue(error) : { source: terminalFailure, cleanup: toJsonValue(error) }, observations: observations.length }
     }
+    if (terminalFailure !== undefined) return { ok: false, error: terminalFailure, observations: observations.length }
     const gaps: number[] = []
     for (let index = 1; index < atMs.length; index += 1) {
       const current = atMs[index]

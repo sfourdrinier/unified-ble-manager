@@ -45,6 +45,8 @@ import { snapshotSerializableRecord } from '../backend-contract/serializable'
 import { snapshotScanPlan } from '../backend-contract/scan-planning'
 import type { ScanPlan } from '../backend-contract/scan-planning'
 import { decodeIpcScanQuery, encodeIpcScanPlan } from '../ipc/scan-planning'
+import { decodePeerQuery, encodePeerRecord } from '../ipc/peer-directory'
+import { snapshotPeerReference } from '../public/peer-reference'
 import { IPC_ATTACHMENT_STREAM_ID, IPC_CLIENT_COMPATIBILITY_OFFER, ipcAttachmentRecordV2 } from '../ipc/protocol'
 import { BleManager, Connection, DiscoveredGattDatabase } from '../manager/ble-manager'
 import type {
@@ -416,6 +418,17 @@ export class ElectronMainBleRouter {
         response = await this.connect(resources, envelope.payload, controller)
       } else if (envelope.command === 'adapter.state') {
         response = await this.adapterState(controller)
+      } else if (
+        [
+          'peers.resolve',
+          'peers.known',
+          'peers.connected',
+          'peers.bonded',
+          'peers.authorized',
+          'peers.restored'
+        ].includes(envelope.command)
+      ) {
+        response = await this.peerDirectory(envelope.command, envelope.payload, controller)
       } else if (envelope.command === 'connection.rssi') {
         response = await this.readRssi(resources, envelope.payload, controller)
       } else if (envelope.command === 'connection.effective-mtu') {
@@ -575,6 +588,36 @@ export class ElectronMainBleRouter {
         () => undefined
       )
     }
+  }
+
+  private async peerDirectory(
+    command: string,
+    payload: SerializableRecord,
+    controller: AbortController
+  ): Promise<SerializableRecord> {
+    const peers = this.manager.attachedBackend.backend?.peers
+    if (peers === undefined) throw contractError('capability.unsupported', 'connection', 'electron-main-router.peers')
+    const controls = operationOptions(payload, controller)
+    if (command === 'peers.resolve') {
+      const reference = snapshotPeerReference(payload.reference, 'electron-main-router.peers.resolve')
+      const peer = await peers.resolve(reference, controls)
+      return { peer: peer === null ? null : encodePeerRecord(peer) }
+    }
+    const options = { ...decodePeerQuery(payload.query), ...controls }
+    const records =
+      command === 'peers.known'
+        ? await peers.known(options)
+        : command === 'peers.connected'
+          ? await peers.connected(options)
+          : command === 'peers.bonded'
+            ? await peers.bonded(options)
+            : command === 'peers.authorized'
+              ? await peers.authorized(options)
+              : command === 'peers.restored'
+                ? await peers.restored(options)
+                : null
+    if (records === null) throw contractError('argument.invalid', 'ipc', 'electron-main-router.peers.command')
+    return { peers: records.map(encodePeerRecord) }
   }
 
   private async maximumWriteLength(

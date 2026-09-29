@@ -6,6 +6,98 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ConnectedDeviceForegroundServiceLeaseRegistryTest {
+  @Test fun `display text update does not replace pinned acquisition configuration`() {
+    val configuration = ForegroundServiceNotificationConfiguration.fromValues("ble", "BLE", "Recording", null, null, false)
+    val updates = mutableListOf<String>()
+    var starts = 0
+    val driver = object : ConnectedDeviceForegroundServiceDriver {
+      override fun notificationConfiguration() = configuration
+      override fun start(reason: String) { starts++ }
+      override fun start(reason: String, value: ForegroundServiceNotificationConfiguration) { start(reason) }
+      override fun stop() {}
+      override fun update(title: String, body: String?) { updates.add(title) }
+    }
+    var id = 0
+    val registry = ConnectedDeviceForegroundServiceLeaseRegistry(driver) { "lease-${++id}" }
+    val first = registry.acquire("first")
+    registry.update(first, "Live heart rate", "72 bpm")
+    val second = registry.acquire("second", configuration)
+    assertEquals(1, starts)
+    assertEquals(2, registry.activeLeaseCount())
+    assertEquals(listOf("Live heart rate"), updates)
+    assertTrue(runCatching { registry.acquire("different", configuration.withText("Other", null)) }.exceptionOrNull() is ForegroundServiceControlException)
+    registry.release(first)
+    registry.release(second)
+  }
+
+  @Test fun `blank update title is rejected before driver effects and preserves ownership`() {
+    val configuration = ForegroundServiceNotificationConfiguration.fromValues("ble", "BLE", "Recording", null, null, false)
+    var updates = 0
+    val driver = object : ConnectedDeviceForegroundServiceDriver {
+      override fun notificationConfiguration() = configuration
+      override fun start(reason: String) {}
+      override fun start(reason: String, value: ForegroundServiceNotificationConfiguration) { start(reason) }
+      override fun stop() {}
+      override fun update(title: String, body: String?) { updates++ }
+    }
+    var id = 0
+    val registry = ConnectedDeviceForegroundServiceLeaseRegistry(driver) { "lease-${++id}" }
+    val first = registry.acquire("first")
+    val failure = runCatching { registry.update(first, "   ", null) }.exceptionOrNull()
+    assertTrue(failure is ForegroundServiceControlException)
+    assertEquals("foregroundServiceNotConfigured", (failure as ForegroundServiceControlException).code)
+    assertEquals(0, updates)
+    assertTrue(registry.hasLease(first))
+    registry.acquire("same", configuration)
+    registry.close()
+  }
+  @Test fun `accepted start failure retains refused compensation until retry succeeds`() {
+    var starts = 0
+    var stops = 0
+    val driver = object : ConnectedDeviceForegroundServiceDriver {
+      override fun start(reason: String) {
+        starts++
+        throw ForegroundServiceControlException("foregroundServiceStartInterrupted", "accepted start interrupted", InterruptedException("interrupted"), true)
+      }
+      override fun stop() { if (++stops == 1) throw IllegalStateException("stop refused") }
+      override fun update(title: String, body: String?) {}
+    }
+    val registry = ConnectedDeviceForegroundServiceLeaseRegistry(driver) { "lease" }
+    val failure = runCatching { registry.acquire("presence") }.exceptionOrNull()
+    assertTrue(failure is ForegroundServiceControlException)
+    assertEquals(1, failure!!.suppressed.size)
+    assertTrue(registry.hasPendingStartCleanup())
+    assertEquals(0, registry.activeLeaseCount())
+    registry.close()
+    assertFalse(registry.hasPendingStartCleanup())
+    assertEquals(2, stops)
+    assertEquals(1, starts)
+  }
+  @Test
+  fun `explicit notification is pinned while any shared lease survives`() {
+    val configuration = ForegroundServiceNotificationConfiguration.fromValues("ble", "BLE", "Recording", null, null, false)
+    val different = ForegroundServiceNotificationConfiguration.fromValues("ble", "BLE", "Other", null, null, false)
+    val starts = mutableListOf<ForegroundServiceNotificationConfiguration>()
+    val driver = object : ConnectedDeviceForegroundServiceDriver {
+      override fun notificationConfiguration() = configuration
+      override fun start(reason: String) = error("must dispatch exact configuration")
+      override fun start(reason: String, value: ForegroundServiceNotificationConfiguration) { starts.add(value) }
+      override fun stop() {}
+      override fun update(title: String, body: String?) {}
+    }
+    var id = 0
+    val registry = ConnectedDeviceForegroundServiceLeaseRegistry(driver) { "lease-${++id}" }
+    val first = registry.acquire("presence", configuration)
+    val second = registry.acquire("manager")
+    assertEquals(1, starts.size)
+    assertTrue(runCatching { registry.acquire("other", different) }.exceptionOrNull() is ForegroundServiceControlException)
+    assertEquals(2, registry.activeLeaseCount())
+    registry.release(first)
+    assertEquals(1, registry.activeLeaseCount())
+    registry.release(second)
+    registry.acquire("new", different)
+    assertEquals(listOf(configuration, different), starts)
+  }
   @Test
   fun `first acquire starts one service and final release stops it`() {
     val driver = RecordingServiceDriver()

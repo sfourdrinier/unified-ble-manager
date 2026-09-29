@@ -110,7 +110,7 @@ export class ScanDetailsScenario extends BleScenario<ScanDetailsState> {
       this.patchScan({ filter: options.filter, duplicates: options.duplicates, durationMs: options.durationMs })
       const { manager } = await this.createManager(signal)
       this.patchBase({ phase: 'scanning' })
-      const session = await manager.scan({ query: QUERIES[options.filter], duplicates: options.duplicates, delivery: 'balanced', signal })
+      const session = await manager.scan({ query: QUERIES[options.filter], duplicates: options.duplicates, delivery: 'balanced', signal, timeoutMs: Math.floor(options.durationMs) })
       this.own('scan.stop', () => session.stop())
       this.patchScan({ planDigest: session.plan?.queryDigest ?? null })
       this.emit('scan-started', { plan: toJsonValue(session.plan), options: { ...options } })
@@ -127,8 +127,9 @@ export class ScanDetailsScenario extends BleScenario<ScanDetailsState> {
       }, options.durationMs)
       await this.consume('scan.observations', session.observations, { value: observation => this.record(observation) })
       cancelTimer()
-      this.closeBucket(this.runtime.now())
-      const summary = this.summary(this.runtime.now() - startedAt)
+      const finishedAt = this.runtime.now()
+      this.advanceBuckets(finishedAt, true)
+      const summary = this.summary(finishedAt - startedAt)
       await this.teardown('done')
       return summary
     })
@@ -136,7 +137,7 @@ export class ScanDetailsScenario extends BleScenario<ScanDetailsState> {
 
   private record(observation: PublicScanObservation): void {
     const now = this.runtime.now()
-    while (now - this.bucketStartMs >= 1_000) this.closeBucket(this.bucketStartMs + 1_000)
+    this.advanceBuckets(now)
     this.bucketCount += 1
     const state = this.snapshot()
     const existing = this.peers.get(observation.peer.id)
@@ -159,6 +160,13 @@ export class ScanDetailsScenario extends BleScenario<ScanDetailsState> {
       txPowerSeen: state.txPowerSeen || txPowerPresent,
       peers: [...this.peers.values()].sort((a, b) => (b.rssi ?? -999) - (a.rssi ?? -999)).slice(0, PEER_TABLE_LIMIT)
     })
+  }
+
+  private advanceBuckets(nowMs: number, finish = false): void {
+    while (nowMs - this.bucketStartMs > 1_000 || (finish && nowMs - this.bucketStartMs === 1_000)) {
+      this.closeBucket(this.bucketStartMs + 1_000)
+    }
+    if (finish && nowMs > this.bucketStartMs) this.closeBucket(nowMs)
   }
 
   private closeBucket(endMs: number): void {

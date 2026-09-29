@@ -40,10 +40,10 @@ use tokio::sync::{Mutex, mpsc};
 
 use crate::boundary::{
     AdapterAuthorization, AdapterPowerState, AddressType, CharacteristicAccess, CharacteristicRead,
-    CharacteristicSnapshot, DeliveryMode, DescriptorSnapshot, InstanceKey, ManufacturerData,
-    ObservedDelivery, PairOutcome, PeerSnapshot, PropertyFlags, RadioBoundary, RadioCloseFailure,
-    RadioEvent, ScanFilterSpec, SecurityState, ServiceData, ServiceSnapshot, UnpairOutcome,
-    WriteLimits,
+    CharacteristicSnapshot, DeliveryMode, DescriptorSnapshot, GattSnapshotIdentity, InstanceKey,
+    ManufacturerData, ObservedDelivery, PairOutcome, PeerSnapshot, PropertyFlags, RadioBoundary,
+    RadioCloseFailure, RadioEvent, ScanFilterSpec, SecurityState, ServiceData, ServiceSnapshot,
+    UnpairOutcome, WriteLimits,
 };
 use crate::delivery::{
     DeliveryPlan, os_answers_unflagged_subscribe, plan_delivery_for_os, platform_rule,
@@ -417,6 +417,89 @@ pub fn find_peer<P>(
 /// is never held across an await.
 pub struct GattCache<P> {
     entries: StdMutex<HashMap<String, P>>,
+    peer_gates: StdMutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
+    accepted_identities: StdMutex<HashMap<String, GattSnapshotIdentity>>,
+}
+
+type GattWork = futures_util::future::Shared<futures_util::future::BoxFuture<'static, ()>>;
+
+#[derive(Default)]
+struct GattWorkQueue {
+    entries: StdMutex<HashMap<String, (GattWork, Option<GattWork>)>>,
+}
+
+impl GattWorkQueue {
+    #[cfg(any(target_os = "linux", test))]
+    fn enqueue(&self, key: String, work: impl Future<Output = ()> + Send + 'static) {
+        let work = work.boxed().shared();
+        let mut entries = self.entries.lock().expect("GATT observation work");
+        if let Some((_, rerun)) = entries.get_mut(&key) {
+            // One fresh reread after current work settles covers every hint
+            // received during it; never reuse the current work's old answer.
+            *rerun = Some(work);
+        } else {
+            entries.insert(key, (work, None));
+        }
+    }
+
+    async fn completed(&self) {
+        let pending: Vec<_> = self
+            .entries
+            .lock()
+            .expect("GATT observation work")
+            .iter()
+            .map(|(key, (work, _))| (key.clone(), work.clone()))
+            .collect();
+        if pending.is_empty() {
+            std::future::pending::<()>().await;
+            return;
+        }
+        let futures = pending.iter().map(|(_, work)| work.clone());
+        let (_, index, _) = futures_util::future::select_all(futures).await;
+        let (key, work) = &pending[index];
+        let mut entries = self.entries.lock().expect("GATT observation work");
+        if let Some((current, rerun)) = entries.get_mut(key)
+            && current.ptr_eq(work)
+        {
+            if let Some(next) = rerun.take() {
+                *current = next;
+            } else {
+                entries.remove(key);
+            }
+        }
+    }
+
+    async fn drain(&self) {
+        while !self
+            .entries
+            .lock()
+            .expect("GATT observation work")
+            .is_empty()
+        {
+            self.completed().await;
+        }
+    }
+}
+
+enum EventStep {
+    Work,
+    Notification(Option<RadioEvent>),
+    Os(Option<RadioEvent>),
+    Adapter(Option<CentralEvent>),
+}
+
+async fn select_radio_event(
+    work: impl Future<Output = ()>,
+    notification: impl Future<Output = Option<RadioEvent>>,
+    os: impl Future<Output = Option<RadioEvent>>,
+    adapter: impl Future<Output = Option<CentralEvent>>,
+) -> EventStep {
+    tokio::select! {
+        () = work => EventStep::Work,
+        event = notification => EventStep::Notification(event),
+        event = os => EventStep::Os(event),
+        event = adapter => EventStep::Adapter(event),
+    }
 }
 
 impl<P: Clone> Default for GattCache<P> {
@@ -431,7 +514,47 @@ impl<P: Clone> GattCache<P> {
     pub fn new() -> Self {
         Self {
             entries: StdMutex::new(HashMap::new()),
+            peer_gates: StdMutex::new(HashMap::new()),
+            accepted_identities: StdMutex::new(HashMap::new()),
         }
+    }
+
+    /// Serialize publication and retirement for one peer. Weak entries are
+    /// reclaimed on admission; a finished peer leaves no immortal gate owner.
+    pub async fn lock_peer(&self, peer_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let gate = {
+            let mut gates = self
+                .peer_gates
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            gates.retain(|_, gate| gate.strong_count() > 0);
+            match gates.get(peer_id).and_then(std::sync::Weak::upgrade) {
+                Some(gate) => gate,
+                None => {
+                    let gate = Arc::new(Mutex::new(()));
+                    gates.insert(peer_id.to_owned(), Arc::downgrade(&gate));
+                    gate
+                }
+            }
+        };
+        gate.lock_owned().await
+    }
+
+    #[cfg(any(target_os = "linux", test))]
+    fn accepted_identity(&self, peer: &str) -> Option<GattSnapshotIdentity> {
+        self.accepted_identities
+            .lock()
+            .expect("accepted GATT identities")
+            .get(peer)
+            .cloned()
+    }
+
+    #[cfg(any(target_os = "linux", test))]
+    fn remember_identity(&self, peer: &str, identity: GattSnapshotIdentity) {
+        self.accepted_identities
+            .lock()
+            .expect("accepted GATT identities")
+            .insert(peer.to_owned(), identity);
     }
 
     fn entries(&self) -> std::sync::MutexGuard<'_, HashMap<String, P>> {
@@ -445,17 +568,29 @@ impl<P: Clone> GattCache<P> {
 
     /// Cache `peripheral` for `peer_id`, replacing any entry.
     pub fn insert(&self, peer_id: &str, peripheral: P) {
+        self.accepted_identities
+            .lock()
+            .expect("accepted GATT identities")
+            .remove(peer_id);
         self.entries().insert(peer_id.to_owned(), peripheral);
     }
 
     /// Forget `peer_id` (its connection or database ended).
     pub fn evict(&self, peer_id: &str) {
         self.entries().remove(peer_id);
+        self.accepted_identities
+            .lock()
+            .expect("accepted GATT identities")
+            .remove(peer_id);
     }
 
     /// Forget every peer.
     pub fn clear(&self) {
         self.entries().clear();
+        self.accepted_identities
+            .lock()
+            .expect("accepted GATT identities")
+            .clear();
     }
 
     /// The peripheral for one verb: the cached one, else `lookup()`, with
@@ -509,6 +644,27 @@ impl<P: Clone> GattCache<P> {
         self.insert(peer_id, peripheral.clone());
         Ok(peripheral)
     }
+
+    /// Retire old notification ownership before a replacement can mutate the
+    /// shared peripheral graph. The caller holds the peer publication gate.
+    pub async fn refresh_retiring<L, LF, R, RF, D, DF>(
+        &self,
+        peer_id: &str,
+        lookup: L,
+        retire: R,
+        discover: D,
+    ) -> Result<P, DesktopError>
+    where
+        L: FnOnce() -> LF,
+        LF: Future<Output = Result<P, DesktopError>>,
+        R: FnOnce() -> RF,
+        RF: Future<Output = Result<(), DesktopError>>,
+        D: FnOnce(P) -> DF,
+        DF: Future<Output = Result<P, DesktopError>>,
+    {
+        retire().await?;
+        self.refresh(peer_id, lookup, discover).await
+    }
 }
 
 /// Why one close-time scope release did not complete.
@@ -547,7 +703,45 @@ pub fn close_receipt(
     }
 }
 
+async fn close_scope_debt<F, Fut>(
+    debt: &StdMutex<HashSet<InstanceKey>>,
+    mut release: F,
+) -> Vec<RadioCloseFailure>
+where
+    F: FnMut(InstanceKey) -> Fut,
+    Fut: std::future::Future<Output = Result<Result<(), ScopeRelease>, CloseScopeElapsed>>,
+{
+    // Snapshot identities without transferring ownership into this cancellable
+    // future. A confirmed link end can retire debt while a release is pending.
+    let mut scopes: Vec<_> = debt.lock().expect("cleanup debt").iter().cloned().collect();
+    scopes.sort();
+    let mut failures = Vec::new();
+    for scope in scopes {
+        if !debt.lock().expect("cleanup debt").contains(&scope) {
+            continue;
+        }
+        if let Some(failure) = close_receipt(&scope, release(scope.clone()).await) {
+            failures.push(failure);
+        } else {
+            debt.lock().expect("cleanup debt").remove(&scope);
+        }
+    }
+    failures
+}
+
 type EventStream = std::pin::Pin<Box<dyn futures_util::Stream<Item = CentralEvent> + Send>>;
+
+#[cfg(any(target_os = "windows", test))]
+fn maintained_connection_failure(error: DesktopError) -> DesktopError {
+    let failure = DesktopError::connection_failed(format!(
+        "GattSession.MaintainConnection could not be held: {}",
+        error.detail().unwrap_or(error.code_str())
+    ));
+    match error.platform() {
+        Some(platform) => failure.with_platform(platform.clone()),
+        None => failure,
+    }
+}
 /// One peripheral-wide notification stream as btleplug 0.12 yields it from
 /// [`btleplug::api::Peripheral::notifications`]. Public so the
 /// production-path ingress harness can inject scripted streams into the real
@@ -624,20 +818,27 @@ pub struct BtleplugRadio {
     ingress_dropped: Arc<AtomicU64>,
     /// Link and database events held until the notifications queued ahead
     /// of them are delivered (finding 129).
-    deferred: Mutex<VecDeque<RadioEvent>>,
-    forwarders: StdMutex<HashMap<String, ForwarderEntry>>,
+    deferred: Arc<Mutex<VecDeque<RadioEvent>>>,
+    forwarders: Arc<StdMutex<HashMap<String, ForwarderEntry>>>,
+    gatt_work: GattWorkQueue,
+    #[cfg(target_os = "linux")]
+    gatt_control_failure: Arc<StdMutex<Option<DesktopError>>>,
+    #[cfg(target_os = "linux")]
+    gatt_peer_failures: Arc<StdMutex<HashMap<String, DesktopError>>>,
+    closing_forwarders: Mutex<Vec<tokio::task::JoinHandle<u64>>>,
     /// Cleanup debt (F13): scopes whose native CCCD may be live without
     /// an installed forwarder — a failed setup rollback or a failed
     /// consumer-less teardown. Retry and dispose keep attempting the
     /// native release until it succeeds; the ambiguity check (F09)
     /// treats debt as live because the CCCD may still emit.
-    cleanup_debt: StdMutex<HashSet<InstanceKey>>,
+    cleanup_debt: Arc<StdMutex<HashSet<InstanceKey>>>,
+    notification_targets: NotificationTargets<Peripheral>,
     /// Close-time release failures retained by the last [`RadioBoundary::close`]
     /// (F14 receipts): one entry per scope whose native unsubscribe did not
     /// complete. Drained by `take_close_failures` into the shutdown report.
     close_failures: StdMutex<Vec<RadioCloseFailure>>,
     /// Per-peer GATT cache (PR210-25).
-    gatt: GattCache<Peripheral>,
+    gatt: Arc<GattCache<Peripheral>>,
     /// OS control events from the narrow adapters (bond changes), a
     /// separate bounded source so a notification flood never starves them.
     /// The radio keeps one sender so the source never closes under it; the
@@ -649,9 +850,13 @@ pub struct BtleplugRadio {
     /// every call that needs it, never swallowed.
     #[cfg(target_os = "linux")]
     bluez: Result<Arc<crate::os::linux::Bluez>, DesktopError>,
+    #[cfg(target_os = "linux")]
+    bluez_connection_policy: Option<crate::boundary::BluezConnectionPolicy>,
     /// The BlueZ bond-change watcher task (Linux), aborted with the radio.
     #[cfg(target_os = "linux")]
     bluez_watch: Option<tokio::task::JoinHandle<()>>,
+    #[cfg(target_os = "linux")]
+    bluez_gatt_watch: Result<(), DesktopError>,
     /// The BlueZ adapter-presence watcher task (Linux, finding 57),
     /// aborted with the radio.
     #[cfg(target_os = "linux")]
@@ -740,6 +945,28 @@ impl BtleplugRadio {
         adapter_id: Option<String>,
         bus: crate::boundary::BluezBus,
     ) -> Result<Self, DesktopError> {
+        Self::open_on_with_policy(spawn, adapter_id, bus, None).await
+    }
+
+    /// Open with an explicit trusted-host BlueZ LE daemon attestation.
+    /// Other platforms reject a supplied BlueZ policy before allocation.
+    pub async fn open_on_with_policy(
+        spawn: tokio::runtime::Handle,
+        adapter_id: Option<String>,
+        bus: crate::boundary::BluezBus,
+        connection_policy: Option<crate::boundary::BluezConnectionPolicy>,
+    ) -> Result<Self, DesktopError> {
+        if let Some(policy) = &connection_policy {
+            policy.validate()?;
+        }
+        if !cfg!(target_os = "linux") && connection_policy.is_some() {
+            return Err(DesktopError::new(
+                BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability,
+                "connection.policy",
+            )
+            .with_detail("a BlueZ connection policy applies to Linux only"));
+        }
         crate::boundary::bluez_bus_supported(bus)?;
         let manager = open_manager(bus).await.map_err(|error| {
             DesktopError::adapter_unavailable("adapter.open")
@@ -760,12 +987,24 @@ impl BtleplugRadio {
         let (notifications, notification_rx) = mpsc::channel(NOTIFICATION_CAP);
         let (os_events_tx, os_events) = mpsc::channel(OS_EVENT_CAP);
         #[cfg(target_os = "linux")]
-        let bluez = crate::os::linux::Bluez::open(&adapter_label, bus).await;
+        let bluez = crate::os::linux::Bluez::open_with_le_owner(
+            &adapter_label,
+            bus,
+            connection_policy.as_ref().map(|policy| match policy {
+                crate::boundary::BluezConnectionPolicy::LeBearer {
+                    daemon_unique_owner,
+                } => daemon_unique_owner.clone(),
+            }),
+        )
+        .await;
         #[cfg(target_os = "linux")]
-        let bluez_watch = bluez
-            .as_ref()
-            .ok()
-            .map(|bluez| bluez.watch_security(os_events_tx.clone(), &spawn));
+        let (bluez_watch, bluez_gatt_watch) = match &bluez {
+            Ok(bluez) => match bluez.watch_security(os_events_tx.clone(), &spawn).await {
+                Ok(watch) => (Some(watch), Ok(())),
+                Err(error) => (None, Err(error)),
+            },
+            Err(error) => (None, Err(error.clone())),
+        };
         #[cfg(target_os = "linux")]
         let bluez_adapter_watch = bluez
             .as_ref()
@@ -790,17 +1029,28 @@ impl BtleplugRadio {
             notification_rx: Mutex::new(notification_rx),
             ingress_bytes: Arc::new(AtomicU64::new(0)),
             ingress_dropped: Arc::new(AtomicU64::new(0)),
-            deferred: Mutex::new(VecDeque::new()),
-            forwarders: StdMutex::new(HashMap::new()),
-            cleanup_debt: StdMutex::new(HashSet::new()),
+            deferred: Arc::new(Mutex::new(VecDeque::new())),
+            forwarders: Arc::new(StdMutex::new(HashMap::new())),
+            gatt_work: GattWorkQueue::default(),
+            #[cfg(target_os = "linux")]
+            gatt_control_failure: Arc::new(StdMutex::new(None)),
+            #[cfg(target_os = "linux")]
+            gatt_peer_failures: Arc::new(StdMutex::new(HashMap::new())),
+            cleanup_debt: Arc::new(StdMutex::new(HashSet::new())),
+            notification_targets: NotificationTargets::default(),
             close_failures: StdMutex::new(Vec::new()),
-            gatt: GattCache::new(),
+            closing_forwarders: Mutex::new(Vec::new()),
+            gatt: Arc::new(GattCache::new()),
             _os_events_tx: os_events_tx,
             os_events: Mutex::new(os_events),
             #[cfg(target_os = "linux")]
             bluez,
             #[cfg(target_os = "linux")]
+            bluez_connection_policy: connection_policy,
+            #[cfg(target_os = "linux")]
             bluez_watch,
+            #[cfg(target_os = "linux")]
+            bluez_gatt_watch,
             #[cfg(target_os = "linux")]
             bluez_adapter_watch,
             #[cfg(target_os = "windows")]
@@ -866,6 +1116,37 @@ impl BtleplugRadio {
         self.bluez.as_ref().map_err(Clone::clone)
     }
 
+    #[cfg(target_os = "linux")]
+    fn bluez_owner(&self, operation: &str) -> Result<&str, DesktopError> {
+        match &self.bluez_connection_policy {
+            Some(crate::boundary::BluezConnectionPolicy::LeBearer { daemon_unique_owner }) => Ok(daemon_unique_owner),
+            None => Err(DesktopError::new(BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability, operation).with_detail(
+                    "BlueZ LE lifecycle requires a trusted host attestation for the current unique daemon owner implementing org.bluez.Bearer.LE1; Device1 fallback is not supported")),
+        }
+    }
+
+    async fn observe_link_ended(&self, peer_id: String) {
+        self.gatt.evict(&peer_id);
+        let retirement = if cfg!(target_os = "linux") {
+            PeerRetirement::LinkEndedRetainingNotifySession
+        } else {
+            PeerRetirement::LinkEnded
+        };
+        self.drain_peer_forwarders(&peer_id, retirement).await;
+        if let Err(error) = self.release_link_state(&peer_id) {
+            OS_RELEASE_FAILURES.fetch_add(1, Ordering::Relaxed);
+            eprintln!(
+                "ubm-desktop: link state of {peer_id} not released after loss: {}",
+                error.detail().unwrap_or(error.code_str())
+            );
+        }
+        self.deferred
+            .lock()
+            .await
+            .push_back(RadioEvent::Disconnected(peer_id));
+    }
+
     /// Bytes currently queued in the bounded notification ingress (F07).
     #[must_use]
     pub fn ingress_queued_bytes(&self) -> u64 {
@@ -882,7 +1163,7 @@ impl BtleplugRadio {
         let found = find_peer(self.adapter.peripherals().await, peer_id, |peripheral| {
             peripheral.id().to_string()
         });
-        match found {
+        let peripheral = match found {
             Err(error) if error.code() == BleErrorCode::PeerNotFound => {
                 // Finding 127: a peer the adapter no longer lists is resolved
                 // by identity, as the legacy backends reconnected without a
@@ -898,7 +1179,13 @@ impl BtleplugRadio {
                 }
             }
             other => other,
-        }
+        }?;
+        #[cfg(target_os = "linux")]
+        let peripheral = peripheral
+            .with_le_owner(self.bluez_owner("connection.authority")?)
+            .await
+            .map_err(|error| DesktopError::connection_failed(error.to_string()).with_os(&error))?;
+        Ok(peripheral)
     }
 
     async fn discover_services_on(peripheral: Peripheral) -> Result<Peripheral, DesktopError> {
@@ -913,6 +1200,15 @@ impl BtleplugRadio {
     /// The peripheral a GATT verb runs on (PR210-25): the one cached for
     /// this connection, discovering services only when it has none.
     async fn cached_peripheral(&self, peer_id: &str) -> Result<Peripheral, DesktopError> {
+        #[cfg(target_os = "linux")]
+        {
+            self.gatt_watch_health()?;
+            // An explicit, attested discovery owns graph publication. A verb
+            // or cleanup must not silently publish a replacement graph while
+            // the central still owns paths from the preceding revision.
+            cached_gatt_peer(&self.gatt, &self.gatt_peer_failures, peer_id)
+        }
+        #[cfg(not(target_os = "linux"))]
         self.gatt
             .resolve(
                 peer_id,
@@ -923,31 +1219,365 @@ impl BtleplugRadio {
             .await
     }
 
-    /// Release one characteristic scope at close: resolve, find, and
-    /// unsubscribe. Only a confirmed-missing peer is a skip.
-    async fn release_scope(&self, scope: &InstanceKey) -> Result<(), ScopeRelease> {
-        let peripheral = match self.cached_peripheral(&scope.0).await {
-            Ok(peripheral) => peripheral,
-            Err(error) if error.code() == BleErrorCode::PeerNotFound => {
-                return Err(ScopeRelease::PeerGone(error));
-            }
+    async fn discover_with_identity(
+        &self,
+        peer_id: &str,
+    ) -> Result<(Vec<ServiceSnapshot>, Option<GattSnapshotIdentity>), DesktopError> {
+        #[cfg(target_os = "linux")]
+        self.gatt_watch_health()?;
+        let _gate = self.gatt.lock_peer(peer_id).await;
+        let peripheral = self
+            .gatt
+            .refresh_retiring(
+                peer_id,
+                || self.peripheral_by_id(peer_id),
+                || self.retire_notifications_for_discovery(peer_id),
+                |peripheral| async {
+                    let peripheral = Self::discover_services_on(peripheral).await?;
+                    #[cfg(target_os = "linux")]
+                    self.gatt_watch_health()?;
+                    Ok(peripheral)
+                },
+            )
+            .await?;
+        let graph = service_snapshots(&peripheral.services());
+        let identity = match self.gatt_snapshot_identity(peer_id) {
+            Ok(identity) => identity,
             Err(error) => {
-                return Err(ScopeRelease::Failed(format!(
-                    "{}: {}",
-                    error.code_str(),
-                    error.detail().unwrap_or(error.operation())
-                )));
+                self.gatt.evict(peer_id);
+                return Err(error);
             }
         };
-        let characteristic =
-            Self::find_characteristic(&peripheral, &scope.1, scope.2, &scope.3, scope.4)
-                .ok_or_else(|| {
-                    ScopeRelease::Failed("characteristic not found in the peer database".to_owned())
-                })?;
-        peripheral
-            .unsubscribe(&characteristic)
+        #[cfg(target_os = "linux")]
+        if identity.is_none() {
+            self.gatt.evict(peer_id);
+            return Err(DesktopError::new(
+                BleErrorCode::GattDiscoveryRequired,
+                BleErrorDomain::Gatt,
+                "discovery.complete",
+            )
+            .with_detail("the discovered graph has no accepted LE GATT identity"));
+        }
+        #[cfg(target_os = "linux")]
+        {
+            if let Err(error) = self.gatt_watch_health() {
+                self.gatt.evict(peer_id);
+                return Err(error);
+            }
+            if let Some(identity) = &identity {
+                self.gatt_observation_state()
+                    .confirm_reverification(peer_id, identity.clone());
+            }
+        }
+        Ok((graph, identity))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn gatt_watch_health(&self) -> Result<(), DesktopError> {
+        if let Some(error) = self
+            .gatt_control_failure
+            .lock()
+            .expect("GATT control failure")
+            .as_ref()
+        {
+            return Err(error.clone());
+        }
+        self.bluez_gatt_watch.clone()?;
+        self.bluez
+            .as_ref()
+            .map_err(Clone::clone)?
+            .gatt_watch_health()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn observe_gatt_hint(&self, peer_id: &str) {
+        if self.gatt.get(peer_id).is_none() {
+            return;
+        }
+        let state = self.gatt_observation_state();
+        let peer_id = peer_id.to_owned();
+        self.gatt_work
+            .enqueue(format!("peer:{peer_id}"), async move {
+                state.observe_hint(&peer_id).await;
+            });
+    }
+
+    #[cfg(target_os = "linux")]
+    fn gatt_observation_state(&self) -> GattObservationState {
+        GattObservationState {
+            gatt: Arc::clone(&self.gatt),
+            forwarders: Arc::clone(&self.forwarders),
+            debt: Arc::clone(&self.cleanup_debt),
+            deferred: Arc::clone(&self.deferred),
+            failure: Arc::clone(&self.gatt_control_failure),
+            peer_failures: Arc::clone(&self.gatt_peer_failures),
+            observation_bound: btleplug::platform::LE_GATT_OBSERVATION_TIMEOUT,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn observe_gatt_watch_failure(&self, error: DesktopError) {
+        let state = self.gatt_observation_state();
+        retain_gatt_control_failure(&state.failure, &error);
+        self.gatt_work.enqueue("watch-failure".into(), async move {
+            state.fail(error).await;
+        });
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+#[derive(Clone)]
+struct GattObservationState<P = Peripheral> {
+    gatt: Arc<GattCache<P>>,
+    forwarders: Arc<StdMutex<HashMap<String, ForwarderEntry>>>,
+    debt: Arc<StdMutex<HashSet<InstanceKey>>>,
+    deferred: Arc<Mutex<VecDeque<RadioEvent>>>,
+    failure: Arc<StdMutex<Option<DesktopError>>>,
+    peer_failures: Arc<StdMutex<HashMap<String, DesktopError>>>,
+    observation_bound: Duration,
+}
+
+#[cfg(any(target_os = "linux", test))]
+trait GattObservationSource: Clone + Send + Sync + 'static {
+    fn accepted_identity(&self) -> Result<Option<GattSnapshotIdentity>, DesktopError>;
+    fn current_identity(
+        &self,
+    ) -> impl Future<Output = Result<GattSnapshotIdentity, DesktopError>> + Send;
+}
+
+#[cfg(target_os = "linux")]
+impl GattObservationSource for Peripheral {
+    fn accepted_identity(&self) -> Result<Option<GattSnapshotIdentity>, DesktopError> {
+        self.accepted_le_gatt_ready_token()
+            .map(|token| {
+                token.map(|token| GattSnapshotIdentity {
+                    owner: token.daemon_owner,
+                    attachment: token.attachment,
+                    revision: token.revision,
+                })
+            })
+            .map_err(map_radio(
+                "gatt.snapshot-identity",
+                BleErrorCode::GattDiscoveryRequired,
+                BleErrorDomain::Gatt,
+            ))
+    }
+    async fn current_identity(&self) -> Result<GattSnapshotIdentity, DesktopError> {
+        let snapshot = self
+            .le_gatt_snapshot()
             .await
-            .map_err(|error| ScopeRelease::Failed(error.to_string()))
+            .map_err(|error| capability_error("gatt.observe", error))?;
+        let token = snapshot
+            .ready_token()
+            .map_err(btleplug::Error::from)
+            .map_err(|error| capability_error("gatt.observe", error))?;
+        Ok(GattSnapshotIdentity {
+            owner: token.daemon_owner,
+            attachment: token.attachment,
+            revision: token.revision,
+        })
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn retain_gatt_control_failure(slot: &StdMutex<Option<DesktopError>>, error: &DesktopError) {
+    slot.lock()
+        .expect("GATT control failure")
+        .get_or_insert_with(|| error.clone());
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn cached_gatt_peer<P: Clone>(
+    gatt: &GattCache<P>,
+    failures: &StdMutex<HashMap<String, DesktopError>>,
+    peer: &str,
+) -> Result<P, DesktopError> {
+    if let Some(error) = failures
+        .lock()
+        .expect("GATT peer observation failures")
+        .get(peer)
+    {
+        return Err(error.clone());
+    }
+    gatt.get(peer).ok_or_else(|| {
+        DesktopError::new(
+            BleErrorCode::GattDiscoveryRequired,
+            BleErrorDomain::Gatt,
+            "gatt.snapshot",
+        )
+        .with_detail("an explicit current LE GATT discovery is required")
+    })
+}
+
+#[cfg(any(target_os = "linux", test))]
+impl<P: Clone> GattObservationState<P> {
+    fn confirm_reverification(&self, peer: &str, identity: GattSnapshotIdentity) {
+        self.gatt.remember_identity(peer, identity);
+        self.peer_failures
+            .lock()
+            .expect("GATT peer observation failures")
+            .remove(peer);
+    }
+    async fn fail_peer(&self, peer: &str, identity: GattSnapshotIdentity, error: DesktopError) {
+        self.peer_failures
+            .lock()
+            .expect("GATT peer observation failures")
+            .insert(peer.to_owned(), error.clone());
+        self.gatt.evict(peer);
+        drain_gatt_forwarders(
+            &self.forwarders,
+            &self.debt,
+            &self.deferred,
+            peer,
+            PeerRetirement::DatabaseChanged,
+        )
+        .await;
+        self.deferred
+            .lock()
+            .await
+            .push_back(RadioEvent::GattObservationFailed {
+                peer_id: peer.to_owned(),
+                identity,
+                error,
+            });
+    }
+    async fn fail(&self, error: DesktopError) {
+        retain_gatt_control_failure(&self.failure, &error);
+        let mut peers: BTreeSet<_> = self.gatt.entries().keys().cloned().collect();
+        peers.extend(
+            self.forwarders
+                .lock()
+                .expect("forwarder table")
+                .values()
+                .map(|entry| entry.peer_id.clone()),
+        );
+        for peer in peers {
+            let _gate = self.gatt.lock_peer(&peer).await;
+            self.gatt.evict(&peer);
+            drain_gatt_forwarders(
+                &self.forwarders,
+                &self.debt,
+                &self.deferred,
+                &peer,
+                PeerRetirement::DatabaseChanged,
+            )
+            .await;
+        }
+        self.deferred
+            .lock()
+            .await
+            .push_back(RadioEvent::GattWatchFailed(error));
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+impl<P: GattObservationSource> GattObservationState<P> {
+    async fn observe_hint(&self, peer_id: &str) {
+        // Capture and retire under the same gate as graph publication and
+        // forwarder installation. Central consumption has a second fence:
+        // this deferred R1 event must never invalidate a later R2 database.
+        let _gate = self.gatt.lock_peer(peer_id).await;
+        let Some(peripheral) = self.gatt.get(peer_id) else {
+            return;
+        };
+        let Some(last_accepted) = self.gatt.accepted_identity(peer_id) else {
+            return;
+        };
+        let accepted = peripheral.accepted_identity();
+        let identity = match accepted {
+            Ok(Some(identity)) => identity,
+            Ok(None) => {
+                self.fail_peer(
+                    peer_id,
+                    last_accepted,
+                    DesktopError::new(
+                        BleErrorCode::ProtocolMalformed,
+                        BleErrorDomain::Gatt,
+                        "gatt.snapshot-identity",
+                    )
+                    .with_detail("a published graph lost its accepted native identity"),
+                )
+                .await;
+                return;
+            }
+            Err(error) => {
+                self.fail_peer(peer_id, last_accepted, error).await;
+                return;
+            }
+        };
+        let answer =
+            tokio::time::timeout(self.observation_bound, peripheral.current_identity()).await;
+        let current = match answer {
+            Ok(Ok(current)) => current,
+            Ok(Err(error)) => {
+                self.fail_peer(peer_id, identity, error).await;
+                return;
+            }
+            Err(_) => {
+                self.fail_peer(
+                    peer_id,
+                    identity,
+                    DesktopError::new(
+                        BleErrorCode::OperationTimedOut,
+                        BleErrorDomain::Gatt,
+                        "gatt.observe",
+                    )
+                    .with_detail(
+                        "authoritative LE GATT snapshot read exceeded its observation bound",
+                    ),
+                )
+                .await;
+                return;
+            }
+        };
+        if current == identity {
+            return;
+        }
+        self.gatt.evict(peer_id);
+        drain_gatt_forwarders(
+            &self.forwarders,
+            &self.debt,
+            &self.deferred,
+            peer_id,
+            PeerRetirement::DatabaseChanged,
+        )
+        .await;
+        self.deferred
+            .lock()
+            .await
+            .push_back(RadioEvent::ServicesChangedScoped {
+                peer_id: peer_id.to_owned(),
+                identity,
+            });
+    }
+}
+
+impl BtleplugRadio {
+    /// Release the original immutable native target, without a new graph lookup.
+    async fn release_scope(&self, scope: &InstanceKey) -> Result<(), ScopeRelease> {
+        let _gate = self.gatt.lock_peer(&scope.0).await;
+        let target = self.notification_targets.get(scope).ok_or_else(|| {
+            ScopeRelease::Failed("original native notification cleanup target is absent".to_owned())
+        })?;
+        release_original_notification_target(&target)
+            .await
+            .map_err(|error| ScopeRelease::Failed(error.to_string()))?;
+        self.notification_targets.remove_if(scope, &target);
+        Ok(())
+    }
+
+    /// No replacement graph/enable may reuse a native path while an older
+    /// sender-owned notify client at that path still needs retirement.
+    async fn retire_notifications_for_discovery(&self, peer_id: &str) -> Result<(), DesktopError> {
+        self.drain_peer_forwarders(peer_id, PeerRetirement::DatabaseChanged)
+            .await;
+        retire_notification_debt_for_peer(
+            &self.notification_targets,
+            &self.forwarders,
+            &self.cleanup_debt,
+            peer_id,
+        )
+        .await
     }
 
     /// A known peripheral's merged OS state (labelled
@@ -1085,37 +1715,60 @@ impl BtleplugRadio {
     /// values the OS already buffered for it, so they reach the central
     /// before the event that ends the subscription; what did not fit the
     /// ingress is queued here as that subscription's loss, ahead of the
-    /// event. No OS unsubscribe runs here: a lost link released its CCCDs,
-    /// and a changed database parks them as cleanup debt
+    /// event. No OS unsubscribe runs here: released link-scoped CCCDs are
+    /// forgotten; a changed database or a BlueZ client notification session
+    /// retained across link loss is parked as cleanup debt
     /// ([`PeerRetirement`], finding 40).
     async fn drain_peer_forwarders(&self, peer_id: &str, retire: PeerRetirement) {
-        let retired = retire_peer_forwarders(
-            &mut self.forwarders.lock().expect("forwarder table"),
-            &mut self.cleanup_debt.lock().expect("cleanup debt"),
+        if matches!(retire, PeerRetirement::LinkEnded) {
+            self.notification_targets.retire_peer(peer_id);
+        }
+        drain_gatt_forwarders(
+            &self.forwarders,
+            &self.cleanup_debt,
+            &self.deferred,
             peer_id,
             retire,
-        );
-        for entry in retired {
-            let scope = entry.scope();
-            let lost = entry.task.drain(FORWARDER_DRAIN_BOUND).await;
-            if lost > 0 {
-                let epoch = entry.epoch;
-                self.deferred
-                    .lock()
-                    .await
-                    .push_back(RadioEvent::NotificationsLost {
-                        peer_id: scope.0,
-                        service_uuid: scope.1,
-                        service_occurrence: scope.2,
-                        characteristic_uuid: scope.3,
-                        characteristic_occurrence: scope.4,
-                        epoch,
-                        lost,
-                    });
-            }
+        )
+        .await;
+    }
+}
+
+async fn drain_gatt_forwarders(
+    forwarders: &StdMutex<HashMap<String, ForwarderEntry>>,
+    debt: &StdMutex<HashSet<InstanceKey>>,
+    deferred: &Mutex<VecDeque<RadioEvent>>,
+    peer_id: &str,
+    retire: PeerRetirement,
+) {
+    let retired = retire_peer_forwarders(
+        &mut forwarders.lock().expect("forwarder table"),
+        &mut debt.lock().expect("cleanup debt"),
+        peer_id,
+        retire,
+    );
+    for entry in retired {
+        let scope = entry.scope();
+        let lost = entry.task.drain(FORWARDER_DRAIN_BOUND).await;
+        if lost > 0 {
+            let epoch = entry.epoch;
+            deferred
+                .lock()
+                .await
+                .push_back(RadioEvent::NotificationsLost {
+                    peer_id: scope.0,
+                    service_uuid: scope.1,
+                    service_occurrence: scope.2,
+                    characteristic_uuid: scope.3,
+                    characteristic_occurrence: scope.4,
+                    epoch,
+                    lost,
+                });
         }
     }
+}
 
+impl BtleplugRadio {
     /// The next event whose turn has come (finding 129): notifications
     /// already in the ingress go before a deferred link or database event,
     /// so a value that arrived before a disconnect is delivered before it.
@@ -1210,8 +1863,6 @@ impl BtleplugRadio {
     #[allow(clippy::too_many_arguments)]
     async fn rewrite_cccd(
         &self,
-        peripheral: &Peripheral,
-        characteristic: &Characteristic,
         scope: &InstanceKey,
         key: &str,
         mode: DeliveryMode,
@@ -1227,9 +1878,8 @@ impl BtleplugRadio {
             Ok(()) => Ok(observed(mode)),
             Err(_) if !required => Ok(observed(platform_writes)),
             Err(error) => {
-                if let Err(rollback) = unsubscribe_and_fold(
-                    peripheral,
-                    characteristic,
+                if let Err(rollback) = release_notification_target(
+                    &self.notification_targets,
                     &self.forwarders,
                     &self.cleanup_debt,
                     key,
@@ -1327,6 +1977,10 @@ pub enum PeerRetirement {
     /// The link ended: the OS released every CCCD with it, so no
     /// unsubscribe is owed and the peer's cleanup debt settles.
     LinkEnded,
+    /// BlueZ keeps this D-Bus client's StartNotify session across link loss.
+    /// It must be explicitly stopped before a new enable; another StartNotify
+    /// alone can succeed without reacquiring the server's notification source.
+    LinkEndedRetainingNotifySession,
     /// The GATT database changed under a live link (finding 40): the
     /// forwarders stop (their routing identity is stale), but the OS-side
     /// CCCDs may still be live — CoreBluetooth reports every modification
@@ -1362,7 +2016,9 @@ pub fn retire_peer_forwarders(
     }
     match retire {
         PeerRetirement::LinkEnded => debt.retain(|scope| scope.0 != peer_id),
-        PeerRetirement::DatabaseChanged => debt.extend(scopes),
+        PeerRetirement::DatabaseChanged | PeerRetirement::LinkEndedRetainingNotifySession => {
+            debt.extend(scopes)
+        }
     }
     retired
 }
@@ -1568,6 +2224,275 @@ pub trait NotificationTransport: Send + Sync {
     ) -> impl Future<Output = Result<(), btleplug::Error>> + Send + 'a;
 }
 
+struct NotificationTarget<T> {
+    transport: T,
+    characteristic: Characteristic,
+    release: StdMutex<
+        Option<
+            futures_util::future::Shared<
+                futures_util::future::BoxFuture<'static, NativeNotificationRelease>,
+            >,
+        >,
+    >,
+}
+
+#[derive(Clone)]
+struct NativeNotificationRelease {
+    outcome: Result<(), DesktopError>,
+    indeterminate: bool,
+}
+
+async fn release_original_notification_target<T: NotificationTransport + Clone + 'static>(
+    target: &Arc<NotificationTarget<T>>,
+) -> Result<(), DesktopError> {
+    let release = {
+        let mut retained = target
+            .release
+            .lock()
+            .expect("original notification release");
+        if retained.as_ref().is_some_and(|reply| {
+            reply
+                .peek()
+                .is_some_and(|result| result.outcome.is_err() && !result.indeterminate)
+        }) {
+            *retained = None;
+        }
+        retained
+            .get_or_insert_with(|| {
+                let transport = target.transport.clone();
+                let characteristic = target.characteristic.clone();
+                async move {
+                    let result = transport.transport_unsubscribe(&characteristic).await;
+                    let indeterminate = result
+                        .as_ref()
+                        .is_err_and(notification_error_is_indeterminate);
+                    let outcome = match result {
+                        Err(error) if notification_error_confirms_retired(&error) => Ok(()),
+                        other => other.map_err(|error| {
+                            DesktopError::subscribe_failed(error.to_string()).with_os(&error)
+                        }),
+                    };
+                    NativeNotificationRelease {
+                        outcome,
+                        indeterminate,
+                    }
+                }
+                .boxed()
+                .shared()
+            })
+            .clone()
+    };
+    release.await.outcome
+}
+
+/// A sidecar of exact native targets, not a second obligation ledger. Live
+/// forwarders or cleanup_debt own each entry until confirmed retirement.
+struct NotificationTargets<T> {
+    entries: StdMutex<HashMap<InstanceKey, Arc<NotificationTarget<T>>>>,
+}
+
+impl<T> Default for NotificationTargets<T> {
+    fn default() -> Self {
+        Self {
+            entries: StdMutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl<T> NotificationTargets<T> {
+    fn retain(
+        &self,
+        scope: &InstanceKey,
+        transport: T,
+        characteristic: Characteristic,
+    ) -> Result<Arc<NotificationTarget<T>>, DesktopError> {
+        let mut entries = self.entries.lock().expect("notification targets");
+        if entries.contains_key(scope) {
+            return Err(DesktopError::new(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Cleanup,
+                "gatt.subscribe",
+            )
+            .with_detail("the original native notification target still owns cleanup"));
+        }
+        let target = Arc::new(NotificationTarget {
+            transport,
+            characteristic,
+            release: StdMutex::new(None),
+        });
+        entries.insert(scope.clone(), target.clone());
+        Ok(target)
+    }
+    fn get(&self, scope: &InstanceKey) -> Option<Arc<NotificationTarget<T>>> {
+        self.entries
+            .lock()
+            .expect("notification targets")
+            .get(scope)
+            .cloned()
+    }
+    fn remove_if(&self, scope: &InstanceKey, target: &Arc<NotificationTarget<T>>) -> bool {
+        let mut entries = self.entries.lock().expect("notification targets");
+        if entries
+            .get(scope)
+            .is_some_and(|held| Arc::ptr_eq(held, target))
+        {
+            entries.remove(scope);
+            return true;
+        }
+        false
+    }
+    fn retire_peer(&self, peer_id: &str) {
+        self.entries
+            .lock()
+            .expect("notification targets")
+            .retain(|scope, _| scope.0 != peer_id);
+    }
+}
+
+async fn subscribe_and_stream_owned<T: NotificationTransport + Clone>(
+    transport: &T,
+    characteristic: &Characteristic,
+    targets: &NotificationTargets<T>,
+    debt: &StdMutex<HashSet<InstanceKey>>,
+    scope: &InstanceKey,
+) -> Result<NotificationStream, EnableStreamError> {
+    let admitted = StdMutex::new(None);
+    subscribe_and_stream_admitted(
+        transport,
+        characteristic,
+        || {
+            let target = targets.retain(scope, transport.clone(), characteristic.clone())?;
+            *admitted.lock().expect("admitted notification target") = Some(target);
+            debt.lock().expect("cleanup debt").insert(scope.clone());
+            Ok(())
+        },
+        |error| {
+            // Only the operation's own structured pre-effect refusal retires
+            // this admission. Cancellation and ambiguous failures keep ownership;
+            // a failed retain must never erase a previously admitted target.
+            if notification_enable_confirms_no_effect(error)
+                && let Some(target) = admitted
+                    .lock()
+                    .expect("admitted notification target")
+                    .as_ref()
+                && targets.remove_if(scope, target)
+            {
+                debt.lock().expect("cleanup debt").remove(scope);
+            }
+        },
+    )
+    .await
+}
+
+async fn release_notification_target<T: NotificationTransport + Clone + 'static>(
+    targets: &NotificationTargets<T>,
+    forwarders: &StdMutex<HashMap<String, ForwarderEntry>>,
+    debt: &StdMutex<HashSet<InstanceKey>>,
+    key: &str,
+    scope: &InstanceKey,
+) -> Result<(), DesktopError> {
+    let Some(target) = targets.get(scope) else {
+        if debt.lock().expect("cleanup debt").contains(scope)
+            || forwarders
+                .lock()
+                .expect("forwarder table")
+                .contains_key(key)
+        {
+            return Err(DesktopError::subscribe_failed(
+                "the original native notification cleanup target is absent",
+            ));
+        }
+        // A failed stream acquisition admitted no native enable. Never issue
+        // an unowned StopNotify just to fabricate a cleanup receipt.
+        return Ok(());
+    };
+    let result = release_original_notification_target(&target).await;
+    apply_unsubscribe_outcome(
+        &mut forwarders.lock().expect("forwarder table"),
+        &mut debt.lock().expect("cleanup debt"),
+        key,
+        scope,
+        result.is_ok(),
+    );
+    result?;
+    targets.remove_if(scope, &target);
+    Ok(())
+}
+
+async fn retire_notification_debt_for_peer<T: NotificationTransport + Clone + 'static>(
+    targets: &NotificationTargets<T>,
+    forwarders: &StdMutex<HashMap<String, ForwarderEntry>>,
+    debt: &StdMutex<HashSet<InstanceKey>>,
+    peer: &str,
+) -> Result<(), DesktopError> {
+    let scopes: Vec<_> = debt
+        .lock()
+        .expect("cleanup debt")
+        .iter()
+        .filter(|scope| scope.0 == peer)
+        .cloned()
+        .collect();
+    for scope in scopes {
+        tokio::time::timeout(
+            CLOSE_SCOPE_BOUND,
+            release_notification_target(
+                targets,
+                forwarders,
+                debt,
+                &forwarder_key(&scope.0, &scope.1, scope.2, &scope.3, scope.4),
+                &scope,
+            ),
+        )
+        .await
+        .map_err(|_| {
+            DesktopError::subscribe_failed(
+                "original notification retirement exceeded its cleanup bound",
+            )
+        })??;
+    }
+    Ok(())
+}
+
+/// Only the pinned original StopNotify object's own absence reply retires
+/// its obligation. BlueZ frees all sender notify clients on characteristic
+/// object destruction; cached topology absence is deliberately not proof.
+fn notification_error_confirms_retired(error: &btleplug::Error) -> bool {
+    matches!(error, btleplug::Error::Platform(detail)
+        if detail.domain == "bluez-dbus"
+        && detail.code == "org.freedesktop.DBus.Error.UnknownObject")
+}
+
+fn notification_error_is_indeterminate(error: &btleplug::Error) -> bool {
+    matches!(
+        error,
+        btleplug::Error::TimedOut(_) | btleplug::Error::Other(_)
+    ) || matches!(error, btleplug::Error::Platform(detail) if matches!(
+            detail.code.as_str(), "org.freedesktop.DBus.Error.NoReply"
+            | "org.freedesktop.DBus.Error.Timeout" | "org.freedesktop.DBus.Error.TimedOut"))
+}
+
+fn notification_enable_confirms_no_effect(error: &btleplug::Error) -> bool {
+    if notification_error_is_indeterminate(error) {
+        return false;
+    }
+    // These typed local refusals precede dispatch. Do not generalize to
+    // RuntimeError, generic Failed, or InProgress (an existing notify client).
+    matches!(
+        error,
+        btleplug::Error::NotSupported(_) | btleplug::Error::NoSuchCharacteristic
+    ) || matches!(error, btleplug::Error::Platform(detail)
+            if detail.domain == "bluez-dbus" && matches!(detail.code.as_str(),
+                // BlueZ 5.87 gatt-client.c characteristic_start_notify returns
+                // these before notify_client_create/registration.
+                "org.bluez.Error.NotConnected" | "org.bluez.Error.NotPermitted"
+                | "org.bluez.Error.NotSupported"
+                // D-Bus dispatch refused before invoking StartNotify.
+                | "org.freedesktop.DBus.Error.UnknownObject"
+                | "org.freedesktop.DBus.Error.UnknownInterface"
+                | "org.freedesktop.DBus.Error.UnknownMethod"
+                | "org.freedesktop.DBus.Error.AccessDenied"))
+}
+
 impl<T> NotificationTransport for T
 where
     T: btleplug::api::Peripheral,
@@ -1622,13 +2547,24 @@ pub async fn subscribe_and_stream<T>(
 where
     T: NotificationTransport,
 {
+    subscribe_and_stream_admitted(transport, characteristic, || Ok(()), |_| {}).await
+}
+
+async fn subscribe_and_stream_admitted<T: NotificationTransport>(
+    transport: &T,
+    characteristic: &Characteristic,
+    before_enable: impl FnOnce() -> Result<(), DesktopError>,
+    enable_refused: impl FnOnce(&btleplug::Error),
+) -> Result<NotificationStream, EnableStreamError> {
     let stream = transport.transport_notifications().await.map_err(|error| {
         EnableStreamError::Stream(DesktopError::subscribe_failed(error.to_string()).with_os(&error))
     })?;
+    before_enable().map_err(EnableStreamError::Subscribe)?;
     transport
         .transport_subscribe(characteristic)
         .await
         .map_err(|error| {
+            enable_refused(&error);
             EnableStreamError::Subscribe(
                 DesktopError::subscribe_failed(error.to_string()).with_os(&error),
             )
@@ -1657,6 +2593,10 @@ where
     T: NotificationTransport,
 {
     let outcome = transport.transport_unsubscribe(characteristic).await;
+    let outcome = match outcome {
+        Err(error) if notification_error_confirms_retired(&error) => Ok(()),
+        other => other,
+    };
     apply_unsubscribe_outcome(
         &mut forwarders.lock().expect("forwarder table"),
         &mut debt.lock().expect("cleanup debt"),
@@ -1666,6 +2606,27 @@ where
     );
     // Finding 124: a refused disable keeps the platform's answer.
     outcome.map_err(|error| DesktopError::subscribe_failed(error.to_string()).with_os(&error))
+}
+
+/// Resolve only this radio owner's parked notification scope before reuse.
+/// Failed or cancelled native stops leave the obligation retryable; unrelated
+/// scopes and other D-Bus clients' subscriptions are not touched.
+pub async fn retire_parked_subscription<T>(
+    transport: &T,
+    characteristic: &Characteristic,
+    forwarders: &StdMutex<HashMap<String, ForwarderEntry>>,
+    debt: &StdMutex<HashSet<InstanceKey>>,
+    key: &str,
+    scope: &InstanceKey,
+) -> Result<(), DesktopError>
+where
+    T: NotificationTransport,
+{
+    let retained = debt.lock().expect("cleanup debt").contains(scope);
+    if retained {
+        unsubscribe_and_fold(transport, characteristic, forwarders, debt, key, scope).await?;
+    }
+    Ok(())
 }
 
 /// Address one notification forwarder stamps on every value it emits (F10):
@@ -2090,7 +3051,69 @@ fn map_radio(
     domain: ubm_core::contracts::BleErrorDomain,
 ) -> impl Fn(btleplug::Error) -> DesktopError {
     move |error| {
+        let unsupported = matches!(&error, btleplug::Error::Platform(platform)
+            if (platform.domain == "bluez-le-gatt"
+                && matches!(platform.code.as_str(), "unsupported" | "unsupported-version"))
+                || (platform.domain == "bluez-dbus"
+                    && platform.metadata.iter().any(|(key, value)| *key == "mechanism" && value == "le-gatt-snapshot")
+                    && platform.metadata.iter().any(|(key, value)| *key == "capability" && value == "unsupported")));
+        let (code, domain) = if operation == "discovery.complete" && unsupported {
+            (
+                BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability,
+            )
+        } else if operation == "discovery.complete" && matches!(error, btleplug::Error::TimedOut(_))
+        {
+            (BleErrorCode::OperationTimedOut, BleErrorDomain::Connection)
+        } else {
+            (code, domain)
+        };
         DesktopError::new(code, domain, operation)
+            .with_detail(error.to_string())
+            .with_os(&error)
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn map_directory_error(operation: &'static str) -> impl Fn(btleplug::Error) -> DesktopError {
+    move |error| {
+        let state = match &error {
+            btleplug::Error::Platform(detail) if detail.domain == "corebluetooth" => {
+                match detail.code.as_str() {
+                    "manager-state-0" => Some(AdapterPowerState::Unknown),
+                    "manager-state-1" => Some(AdapterPowerState::Resetting),
+                    "manager-state-2" => Some(AdapterPowerState::Unsupported),
+                    "manager-state-3" => Some(AdapterPowerState::Unauthorized),
+                    "manager-state-4" => Some(AdapterPowerState::PoweredOff),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        state
+            .and_then(|power| {
+                crate::central::admission_refusal(
+                    crate::boundary::AdmissionPolicy::CoreBluetooth,
+                    crate::central::AdapterStatus {
+                        power: Some(power),
+                        authorization: None,
+                        availability: if power == AdapterPowerState::Unsupported {
+                            crate::boundary::AdapterAvailability::Unsupported
+                        } else {
+                            crate::boundary::AdapterAvailability::Available
+                        },
+                        lost: false,
+                    },
+                    operation,
+                )
+            })
+            .unwrap_or_else(|| {
+                DesktopError::new(
+                    ubm_core::contracts::BleErrorCode::PlatformFailure,
+                    ubm_core::contracts::BleErrorDomain::Platform,
+                    operation,
+                )
+            })
             .with_detail(error.to_string())
             .with_os(&error)
     }
@@ -2147,6 +3170,12 @@ fn platform_peripheral_id(peer_id: &str) -> Option<PeripheralId> {
     }
 }
 
+fn canonical_platform_peer_id(peer_id: &str) -> String {
+    platform_peripheral_id(peer_id)
+        .map(|identity| identity.to_string())
+        .unwrap_or_else(|| peer_id.to_owned())
+}
+
 /// The peripheral's address, when the OS reports one (CoreBluetooth hides
 /// it).
 fn peripheral_address(peripheral: &Peripheral) -> Option<String> {
@@ -2183,12 +3212,108 @@ fn sorted_service_data(sections: &HashMap<uuid::Uuid, Vec<u8>>) -> Vec<ServiceDa
 }
 
 impl RadioBoundary for BtleplugRadio {
+    async fn connected_peers(
+        &self,
+        services: &[String],
+    ) -> Result<Vec<crate::boundary::DirectoryPeer>, DesktopError> {
+        #[cfg(target_os = "macos")]
+        {
+            if services.is_empty() {
+                return Err(DesktopError::new(BleErrorCode::CapabilityUnsupported, BleErrorDomain::Capability, "peers.connected.services-required").with_detail("CoreBluetooth requires at least one service UUID for system-connected retrieval"));
+            }
+            let services = services
+                .iter()
+                .map(|value| {
+                    uuid::Uuid::parse_str(value).map_err(|_| {
+                        DesktopError::new(
+                            BleErrorCode::ArgumentInvalid,
+                            BleErrorDomain::Connection,
+                            "peers.connected.services",
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let peers = self
+                .adapter
+                .directory_peers(Some(services), None)
+                .await
+                .map_err(map_directory_error("peers.connected"))?;
+            Ok(peers
+                .into_iter()
+                .map(|(id, name)| crate::boundary::DirectoryPeer {
+                    peer_id: id.to_string(),
+                    name,
+                    connection: "connected",
+                })
+                .collect())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = services;
+            Err(DesktopError::new(
+                BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability,
+                "peers.connected",
+            ))
+        }
+    }
+
+    async fn resolve_peer(
+        &self,
+        peer_id: &str,
+    ) -> Result<Option<crate::boundary::DirectoryPeer>, DesktopError> {
+        #[cfg(target_os = "macos")]
+        {
+            let id = uuid::Uuid::parse_str(peer_id).map_err(|_| {
+                DesktopError::new(
+                    BleErrorCode::ArgumentInvalid,
+                    BleErrorDomain::Connection,
+                    "peers.resolve",
+                )
+            })?;
+            let peers = self
+                .adapter
+                .directory_peers(None, Some(id))
+                .await
+                .map_err(map_directory_error("peers.resolve"))?;
+            Ok(peers
+                .into_iter()
+                .find(|(candidate, _)| *candidate == id)
+                .map(|(id, name)| crate::boundary::DirectoryPeer {
+                    peer_id: id.to_string(),
+                    name,
+                    connection: "unknown",
+                }))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = peer_id;
+            Err(DesktopError::new(
+                BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability,
+                "peers.resolve",
+            ))
+        }
+    }
+
+    fn canonical_peer_id(&self, peer_id: &str) -> String {
+        canonical_platform_peer_id(peer_id)
+    }
+
     async fn adapter_name(&self) -> Result<String, DesktopError> {
         Ok(self.adapter_label.clone())
     }
 
     fn admission_policy(&self) -> crate::boundary::AdmissionPolicy {
         host_admission_policy()
+    }
+
+    fn connection_capability_limitation(&self) -> Option<&'static str> {
+        #[cfg(target_os = "linux")]
+        if self.bluez_connection_policy.is_none() {
+            return Some(crate::capabilities::BLUEZ_LE_AUTHORITY_REQUIRED);
+        }
+        None
     }
 
     fn tears_down_on_adapter_loss(&self) -> bool {
@@ -2264,6 +3389,9 @@ impl RadioBoundary for BtleplugRadio {
     }
 
     async fn connect(&self, peer_id: &str) -> Result<(), DesktopError> {
+        #[cfg(target_os = "linux")]
+        let owner = self.bluez_owner("connection.connect")?;
+        self.validate_peer_identity(peer_id, "connection.connect")?;
         // A new connection gets a fresh GATT state.
         self.gatt.evict(peer_id);
         #[cfg(target_os = "linux")]
@@ -2271,9 +3399,11 @@ impl RadioBoundary for BtleplugRadio {
             bluez.forget(peer_id);
         }
         let peripheral = self.peripheral_by_id(peer_id).await?;
-        peripheral
-            .connect()
-            .await
+        #[cfg(target_os = "linux")]
+        let connected = peripheral.connect_le(owner).await;
+        #[cfg(not(target_os = "linux"))]
+        let connected = peripheral.connect().await;
+        connected
             .map_err(|error| DesktopError::connection_failed(error.to_string()).with_os(&error))?;
         // Windows: hold the link like the legacy addon's connect did. A
         // link that cannot be maintained fails the connect; the central
@@ -2284,10 +3414,7 @@ impl RadioBoundary for BtleplugRadio {
             .maintain(peer_id, self._os_events_tx.clone())
             .await
         {
-            return Err(DesktopError::connection_failed(format!(
-                "GattSession.MaintainConnection could not be held: {}",
-                error.detail().unwrap_or(error.code_str())
-            )));
+            return Err(maintained_connection_failure(error));
         }
         self.watch_write_readiness(peer_id, &peripheral);
         Ok(())
@@ -2297,8 +3424,20 @@ impl RadioBoundary for BtleplugRadio {
         // T-R2: straight to the radio, as legacy went straight to
         // `peripheral.disconnect()` — no pre-disconnect `is_connected()`
         // query (an extra D-Bus read the legacy path never made).
-        let peripheral = self.peripheral_by_id(peer_id).await?;
-        if let Err(error) = peripheral.disconnect().await {
+        #[cfg(target_os = "linux")]
+        let disconnected = match &self.bluez_connection_policy {
+            None => Ok(()), // No acquisition can be admitted by this radio.
+            Some(crate::boundary::BluezConnectionPolicy::LeBearer {
+                daemon_unique_owner,
+            }) => {
+                self.adapter
+                    .disconnect_le(peer_id, daemon_unique_owner)
+                    .await
+            }
+        };
+        #[cfg(not(target_os = "linux"))]
+        let disconnected = self.peripheral_by_id(peer_id).await?.disconnect().await;
+        if let Err(error) = disconnected {
             // T-R1: a removed device object is not a failure of this
             // release — it is the answer. BlueZ drops the D-Bus object, so
             // the object never comes back and every retry would fail
@@ -2325,15 +3464,50 @@ impl RadioBoundary for BtleplugRadio {
     }
 
     async fn discover(&self, peer_id: &str) -> Result<Vec<ServiceSnapshot>, DesktopError> {
-        let peripheral = self
-            .gatt
-            .refresh(
-                peer_id,
-                || self.peripheral_by_id(peer_id),
-                Self::discover_services_on,
-            )
-            .await?;
-        Ok(service_snapshots(&peripheral.services()))
+        self.discover_with_identity(peer_id)
+            .await
+            .map(|(graph, _)| graph)
+    }
+
+    async fn discover_scoped(
+        &self,
+        peer_id: &str,
+    ) -> Result<(Vec<ServiceSnapshot>, Option<GattSnapshotIdentity>), DesktopError> {
+        self.discover_with_identity(peer_id).await
+    }
+
+    fn gatt_snapshot_identity(
+        &self,
+        peer_id: &str,
+    ) -> Result<Option<GattSnapshotIdentity>, DesktopError> {
+        #[cfg(target_os = "linux")]
+        {
+            self.gatt
+                .get(peer_id)
+                .map(|peripheral| {
+                    peripheral
+                        .accepted_le_gatt_ready_token()
+                        .map(|token| {
+                            token.map(|token| GattSnapshotIdentity {
+                                owner: token.daemon_owner,
+                                attachment: token.attachment,
+                                revision: token.revision,
+                            })
+                        })
+                        .map_err(map_radio(
+                            "gatt.snapshot-identity",
+                            BleErrorCode::GattDiscoveryRequired,
+                            BleErrorDomain::Gatt,
+                        ))
+                })
+                .transpose()
+                .map(Option::flatten)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = peer_id;
+            Ok(None)
+        }
     }
 
     async fn read_characteristic(
@@ -2500,19 +3674,7 @@ impl RadioBoundary for BtleplugRadio {
         epoch: u64,
         requested: Option<DeliveryMode>,
     ) -> Result<ObservedDelivery, DesktopError> {
-        let peripheral = self.cached_peripheral(peer_id).await?;
-        let characteristic = Self::find_characteristic(
-            &peripheral,
-            service_uuid,
-            service_occurrence,
-            characteristic_uuid,
-            characteristic_occurrence,
-        )
-        .ok_or_else(|| {
-            DesktopError::subscribe_failed(format!(
-                "unknown characteristic {characteristic_uuid} occurrence {characteristic_occurrence}"
-            ))
-        })?;
+        let _gate = self.gatt.lock_peer(peer_id).await;
         let scope: InstanceKey = (
             peer_id.to_owned(),
             service_uuid.to_owned(),
@@ -2527,6 +3689,32 @@ impl RadioBoundary for BtleplugRadio {
             characteristic_uuid,
             characteristic_occurrence,
         );
+        // Cleanup uses the target captured before the original native effect,
+        // even after graph eviction/replacement or watcher failure.
+        if !enable {
+            release_notification_target(
+                &self.notification_targets,
+                &self.forwarders,
+                &self.cleanup_debt,
+                &key,
+                &scope,
+            )
+            .await?;
+            return Ok(ObservedDelivery::Unknown);
+        }
+        let peripheral = self.cached_peripheral(peer_id).await?;
+        let characteristic = Self::find_characteristic(
+            &peripheral,
+            service_uuid,
+            service_occurrence,
+            characteristic_uuid,
+            characteristic_occurrence,
+        )
+        .ok_or_else(|| {
+            DesktopError::subscribe_failed(format!(
+                "unknown characteristic {characteristic_uuid} occurrence {characteristic_occurrence}"
+            ))
+        })?;
         if enable {
             // Finding 39: answer the delivery mode from the characteristic's
             // properties and the platform's documented rule, before any
@@ -2537,20 +3725,48 @@ impl RadioBoundary for BtleplugRadio {
                 platform_rule(),
                 os_answers_unflagged_subscribe(),
             )?;
+            if self
+                .cleanup_debt
+                .lock()
+                .expect("cleanup debt")
+                .contains(&scope)
+            {
+                release_notification_target(
+                    &self.notification_targets,
+                    &self.forwarders,
+                    &self.cleanup_debt,
+                    &key,
+                    &scope,
+                )
+                .await?;
+            }
+            #[cfg(target_os = "linux")]
+            let cleanup_peripheral = peripheral
+                .notification_cleanup_peripheral(&characteristic)
+                .map_err(|error| {
+                    DesktopError::subscribe_failed(error.to_string()).with_os(&error)
+                })?;
+            #[cfg(not(target_os = "linux"))]
+            let cleanup_peripheral = peripheral.clone();
             // F09: every value routes by the exact attribute instance
             // (UBM_PATCHES.md #6), so same-UUID siblings subscribe side by
             // side and never share bytes.
             // F13 / finding 128: shared enable sequencing — the value
             // stream opens before the native enable.
-            let stream: NotificationStream =
-                match subscribe_and_stream(&peripheral, &characteristic).await {
-                    Ok(stream) => stream,
-                    Err(
-                        EnableStreamError::Subscribe(refusal) | EnableStreamError::Stream(refusal),
-                    ) => {
-                        return Err(refusal);
-                    }
-                };
+            let stream: NotificationStream = match subscribe_and_stream_owned(
+                &cleanup_peripheral,
+                &characteristic,
+                &self.notification_targets,
+                &self.cleanup_debt,
+                &scope,
+            )
+            .await
+            {
+                Ok(stream) => stream,
+                Err(EnableStreamError::Subscribe(refusal) | EnableStreamError::Stream(refusal)) => {
+                    return Err(refusal);
+                }
+            };
             // The btleplug stream is peripheral-wide: filter on the full
             // (service, characteristic) identity, each with its attribute
             // instance, so one subscription never routes another
@@ -2605,32 +3821,10 @@ impl RadioBoundary for BtleplugRadio {
                     mode,
                     platform_writes,
                 } => {
-                    self.rewrite_cccd(
-                        &peripheral,
-                        &characteristic,
-                        &scope,
-                        &key,
-                        mode,
-                        platform_writes,
-                        requested.is_some(),
-                    )
-                    .await
+                    self.rewrite_cccd(&scope, &key, mode, platform_writes, requested.is_some())
+                        .await
                 }
             };
-        } else {
-            // F13: shared disable sequencing — the native disable runs
-            // BEFORE the forwarder is touched, so a still-enabled CCCD
-            // keeps forwarding until a retry disables it (the central's
-            // L7 path relies on values continuing to flow here).
-            unsubscribe_and_fold(
-                &peripheral,
-                &characteristic,
-                &self.forwarders,
-                &self.cleanup_debt,
-                &key,
-                &scope,
-            )
-            .await?;
         }
         Ok(ObservedDelivery::Unknown)
     }
@@ -2648,8 +3842,8 @@ impl RadioBoundary for BtleplugRadio {
         // NOTE: the adapter event stream is deliberately NOT taken here.
         // The scan loop holds the events guard across its select until
         // loop_stop (sent after this returns), so taking it here deadlocks
-        // shutdown. The stream releases via the `Drop` impl instead: by
-        // then the loop is joined and the handoff is uncontended.
+        // shutdown. finish_close releases it after the loop is joined,
+        // so the transport cleanup receipt includes its stream lease.
         let entries: Vec<ForwarderEntry> = self
             .forwarders
             .lock()
@@ -2660,40 +3854,94 @@ impl RadioBoundary for BtleplugRadio {
         for entry in &entries {
             entry.task.abort();
         }
-        let mut scopes: Vec<InstanceKey> = entries.iter().map(ForwarderEntry::scope).collect();
-        scopes.extend(self.cleanup_debt.lock().expect("cleanup debt").drain());
-        scopes.sort();
-        let mut failures = Vec::new();
-        for scope in &scopes {
-            let outcome = tokio::time::timeout(CLOSE_SCOPE_BOUND, self.release_scope(scope))
+        self.cleanup_debt
+            .lock()
+            .expect("cleanup debt")
+            .extend(entries.iter().map(ForwarderEntry::scope));
+        self.closing_forwarders
+            .lock()
+            .await
+            .extend(entries.into_iter().map(|entry| entry.task.handle));
+        let failures = close_scope_debt(&self.cleanup_debt, |scope| async move {
+            tokio::time::timeout(CLOSE_SCOPE_BOUND, self.release_scope(&scope))
                 .await
-                .map_err(|_| CloseScopeElapsed);
-            if let Some(failure) = close_receipt(scope, outcome) {
-                failures.push(failure);
-            }
-        }
+                .map_err(|_| CloseScopeElapsed)
+        })
+        .await;
         self.gatt.clear();
-        #[cfg(target_os = "windows")]
-        for (peer_id, error) in self.winrt.release_all() {
-            OS_RELEASE_FAILURES.fetch_add(1, Ordering::Relaxed);
-            eprintln!(
-                "ubm-desktop: maintained session of {peer_id} not released at close: {}",
-                error.detail().unwrap_or(error.code_str())
-            );
-        }
-        #[cfg(target_os = "windows")]
-        if let Err(error) = self.winrt.stop_adapter_watch() {
-            OS_RELEASE_FAILURES.fetch_add(1, Ordering::Relaxed);
-            eprintln!(
-                "ubm-desktop: adapter presence watch not stopped at close: {}",
-                error.detail().unwrap_or(error.code_str())
-            );
-        }
         *self.close_failures.lock().expect("close failures") = failures;
     }
 
     fn take_close_failures(&self) -> Vec<RadioCloseFailure> {
         std::mem::take(&mut self.close_failures.lock().expect("close failures"))
+    }
+
+    async fn finish_close(&self) -> Vec<DesktopError> {
+        let mut failures = Vec::new();
+        if tokio::time::timeout(CLOSE_SCOPE_BOUND, self.gatt_work.drain())
+            .await
+            .is_err()
+        {
+            failures.push(
+                DesktopError::new(
+                    BleErrorCode::OperationTimedOut,
+                    BleErrorDomain::Cleanup,
+                    "radio.close.gatt-observation",
+                )
+                .with_detail(
+                    "owned GATT observation work remains pending; retry transport cleanup",
+                ),
+            );
+        }
+        // Cancellation of the bounded waiter leaves unjoined handles here.
+        // A subsequent close retries; no late stream Drop escapes accounting.
+        let mut forwarders = self.closing_forwarders.lock().await;
+        while let Some(task) = forwarders.last_mut() {
+            let outcome = task.await;
+            forwarders.pop();
+            if outcome.is_err_and(|error| !error.is_cancelled()) {
+                failures.push(
+                    DesktopError::new(
+                        BleErrorCode::PlatformFailure,
+                        BleErrorDomain::Cleanup,
+                        "radio.close.transport",
+                    )
+                    .with_detail("Notification forwarder failed during transport teardown"),
+                );
+            }
+        }
+        drop(forwarders);
+        drop(self.events.lock().await.take());
+        #[cfg(target_os = "linux")]
+        if let Ok(bluez) = self.bluez()
+            && let Err(error) = bluez.finish_discovery().await
+        {
+            failures.push(error);
+        }
+        #[cfg(target_os = "linux")]
+        if let Err(error) = self.adapter.drain_match_cleanup().await {
+            failures.push(
+                DesktopError::new(
+                    BleErrorCode::PlatformFailure,
+                    BleErrorDomain::Cleanup,
+                    "radio.close.transport",
+                )
+                .with_detail(error.to_string())
+                .with_os(&error),
+            );
+        }
+        #[cfg(target_os = "windows")]
+        {
+            for (_, error) in self.winrt.release_all() {
+                OS_RELEASE_FAILURES.fetch_add(1, Ordering::Relaxed);
+                failures.push(error);
+            }
+            for error in self.winrt.stop_adapter_watch() {
+                OS_RELEASE_FAILURES.fetch_add(1, Ordering::Relaxed);
+                failures.push(error);
+            }
+        }
+        failures
     }
 
     /// Connected RSSI is a link measurement only on CoreBluetooth
@@ -3049,11 +4297,7 @@ impl RadioBoundary for BtleplugRadio {
     }
 
     async fn next_event(&self) -> Option<RadioEvent> {
-        enum Step {
-            Notification(Option<RadioEvent>),
-            Os(Option<RadioEvent>),
-            Adapter(Option<CentralEvent>),
-        }
+        use EventStep as Step;
         loop {
             if let Some(event) = self.take_deferred().await {
                 return Some(event);
@@ -3068,14 +4312,25 @@ impl RadioBoundary for BtleplugRadio {
                 // starve adapter events (a delayed DeviceDisconnected is
                 // a stale link, not a slow one).
                 let mut os_events = self.os_events.lock().await;
-                tokio::select! {
-                    notified = self.recv_notification() => Step::Notification(notified),
-                    os_event = os_events.recv() => Step::Os(os_event),
-                    event = stream.next() => Step::Adapter(event),
-                }
+                select_radio_event(
+                    self.gatt_work.completed(),
+                    self.recv_notification(),
+                    os_events.recv(),
+                    stream.next(),
+                )
+                .await
             };
             match step {
+                Step::Work => {}
                 Step::Notification(notified) => return notified,
+                #[cfg(target_os = "linux")]
+                Step::Os(Some(RadioEvent::GattInvalidationHint(peer_id))) => {
+                    self.observe_gatt_hint(&peer_id);
+                }
+                #[cfg(target_os = "linux")]
+                Step::Os(Some(RadioEvent::GattWatchFailed(detail))) => {
+                    self.observe_gatt_watch_failure(detail);
+                }
                 // The radio holds a sender, so the OS source never closes
                 // while the radio lives.
                 Step::Os(Some(RadioEvent::ServicesChanged(peer_id))) => {
@@ -3089,6 +4344,9 @@ impl RadioBoundary for BtleplugRadio {
                         .lock()
                         .await
                         .push_back(RadioEvent::ServicesChanged(peer_id));
+                }
+                Step::Os(Some(RadioEvent::Disconnected(peer_id))) => {
+                    self.observe_link_ended(peer_id).await;
                 }
                 Step::Os(Some(event)) => return Some(event),
                 Step::Os(None) => {}
@@ -3110,13 +4368,20 @@ impl RadioBoundary for BtleplugRadio {
                 // next discovery refreshes the snapshot.
                 Step::Adapter(Some(CentralEvent::DeviceServicesModified(id))) => {
                     let peer_id = id.to_string();
-                    self.gatt.evict(&peer_id);
-                    self.drain_peer_forwarders(&peer_id, PeerRetirement::DatabaseChanged)
-                        .await;
-                    self.deferred
-                        .lock()
-                        .await
-                        .push_back(RadioEvent::ServicesChanged(peer_id));
+                    #[cfg(target_os = "linux")]
+                    {
+                        self.observe_gatt_hint(&peer_id);
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        self.gatt.evict(&peer_id);
+                        self.drain_peer_forwarders(&peer_id, PeerRetirement::DatabaseChanged)
+                            .await;
+                        self.deferred
+                            .lock()
+                            .await
+                            .push_back(RadioEvent::ServicesChanged(peer_id));
+                    }
                 }
                 // Vendored patch 10: the adapter event broadcast outran this
                 // receiver; the lost events are reported, never skipped.
@@ -3150,26 +4415,16 @@ impl RadioBoundary for BtleplugRadio {
                     return Some(RadioEvent::AdapterState(power_state(state)));
                 }
                 Step::Adapter(Some(CentralEvent::DeviceConnected(id))) => {
+                    if cfg!(target_os = "linux") {
+                        continue;
+                    }
                     return Some(RadioEvent::Connected(id.to_string()));
                 }
                 Step::Adapter(Some(CentralEvent::DeviceDisconnected(id))) => {
-                    let peer_id = id.to_string();
-                    self.gatt.evict(&peer_id);
-                    // Finding 129: values that arrived before the loss are
-                    // delivered (or counted) before it.
-                    self.drain_peer_forwarders(&peer_id, PeerRetirement::LinkEnded)
-                        .await;
-                    if let Err(error) = self.release_link_state(&peer_id) {
-                        OS_RELEASE_FAILURES.fetch_add(1, Ordering::Relaxed);
-                        eprintln!(
-                            "ubm-desktop: link state of {peer_id} not released after loss: {}",
-                            error.detail().unwrap_or(error.code_str())
-                        );
+                    if cfg!(target_os = "linux") {
+                        continue;
                     }
-                    self.deferred
-                        .lock()
-                        .await
-                        .push_back(RadioEvent::Disconnected(peer_id));
+                    self.observe_link_ended(id.to_string()).await;
                 }
                 Step::Adapter(Some(_)) => {}
             }
@@ -3426,6 +4681,92 @@ pub fn core_property_bits(flags: PropertyFlags) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn discovery_reports_missing_le_gatt_mechanism_without_losing_platform_answer() {
+        use ubm_core::contracts::{BleErrorCode, BleErrorDomain};
+        let error = super::map_radio(
+            "discovery.complete",
+            BleErrorCode::GattDiscoveryRequired,
+            BleErrorDomain::Gatt,
+        )(btleplug::Error::Platform(btleplug::PlatformError {
+            domain: "bluez-dbus",
+            code: "org.freedesktop.DBus.Error.UnknownMethod".into(),
+            message: "GetSnapshot is absent".into(),
+            metadata: vec![
+                ("capability", "unsupported".into()),
+                ("mechanism", "le-gatt-snapshot".into()),
+            ],
+        }));
+        assert_eq!(error.code(), BleErrorCode::CapabilityUnsupported);
+        assert_eq!(
+            error.platform().unwrap().code,
+            "org.freedesktop.DBus.Error.UnknownMethod"
+        );
+    }
+    #[tokio::test]
+    async fn gatt_peer_gate_serializes_one_peer_without_blocking_another() {
+        use futures_util::FutureExt;
+        let cache = super::GattCache::<u8>::new();
+        let first = cache.lock_peer("first").await;
+        let same = cache.lock_peer("first");
+        tokio::pin!(same);
+        assert!(same.as_mut().now_or_never().is_none());
+        let other = cache
+            .lock_peer("other")
+            .now_or_never()
+            .expect("unrelated peer must remain usable");
+        drop(other);
+        drop(first);
+        let acquired = same.await;
+        drop(acquired);
+        assert_eq!(
+            cache
+                .peer_gates
+                .lock()
+                .unwrap()
+                .values()
+                .filter(|gate| gate.strong_count() > 0)
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn directory_nonplatform_failures_preserve_diagnostic_detail() {
+        for detail in ["Channel closed", "Unexpected directory reply"] {
+            let cause = btleplug::Error::Other(detail.into());
+            let rendered = cause.to_string();
+            let error = super::map_directory_error("peers.connected")(cause);
+            assert_eq!(
+                error.code(),
+                ubm_core::contracts::BleErrorCode::PlatformFailure
+            );
+            assert_eq!(error.detail(), Some(rendered.as_str()));
+        }
+    }
+
+    #[test]
+    fn directory_queued_manager_state_preserves_specific_refusal() {
+        for (state, code) in [
+            (
+                "manager-state-3",
+                ubm_core::contracts::BleErrorCode::PermissionDenied,
+            ),
+            (
+                "manager-state-4",
+                ubm_core::contracts::BleErrorCode::AdapterPoweredOff,
+            ),
+        ] {
+            let cause = btleplug::Error::Platform(btleplug::PlatformError::new(
+                "corebluetooth",
+                state,
+                "state changed before lookup",
+            ));
+            let error = super::map_directory_error("peers.connected")(cause);
+            assert_eq!(error.code(), code);
+            assert_eq!(error.platform().unwrap().code, state);
+        }
+    }
     use std::collections::{BTreeSet, HashMap};
 
     use btleplug::api::{CharPropFlags, Characteristic, Descriptor, Service, ValueNotification};
@@ -3506,6 +4847,27 @@ mod tests {
     /// Finding 127: the OS identity a peer id names round-trips — the
     /// string the adapter lists a peripheral under is what the resolve
     /// path (`add_peripheral`) re-resolves it by, with no scan first.
+    #[test]
+    fn platform_peer_identity_uses_the_native_event_spelling_without_folding_opaque_ids() {
+        assert_eq!(super::canonical_platform_peer_id("opaque-A"), "opaque-A");
+        #[cfg(target_vendor = "apple")]
+        {
+            assert_eq!(
+                super::canonical_platform_peer_id("00E2CE71-3BA4-6569-E3DE-3081CE0C95FB"),
+                "00e2ce71-3ba4-6569-e3de-3081ce0c95fb"
+            );
+            assert_eq!(
+                super::canonical_platform_peer_id("00e2ce71-3ba4-6569-e3de-3081ce0c95fb"),
+                "00e2ce71-3ba4-6569-e3de-3081ce0c95fb"
+            );
+        }
+        #[cfg(target_os = "windows")]
+        assert_eq!(
+            super::canonical_platform_peer_id("aa:bb:cc:dd:ee:ff"),
+            "AA:BB:CC:DD:EE:FF"
+        );
+    }
+
     #[test]
     fn f127_a_listed_identity_resolves_without_a_scan() {
         #[cfg(target_vendor = "apple")]
@@ -4248,6 +5610,1094 @@ mod tests {
         )
     }
 
+    #[derive(Clone, Default)]
+    struct ExactNotificationTransport {
+        subscribed: std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
+        unsubscribed: std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
+        refuse_release: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        refuse_stream: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        subscribe_refusal: std::sync::Arc<std::sync::Mutex<Option<btleplug::PlatformError>>>,
+        subscribe_local_refusal: std::sync::Arc<std::sync::atomic::AtomicU8>,
+        object_gone: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        release_no_reply: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        release_gate: Option<std::sync::Arc<tokio::sync::Notify>>,
+        enable_gate: Option<std::sync::Arc<tokio::sync::Notify>>,
+    }
+
+    impl super::NotificationTransport for ExactNotificationTransport {
+        async fn transport_subscribe(
+            &self,
+            characteristic: &Characteristic,
+        ) -> Result<(), btleplug::Error> {
+            self.subscribed
+                .lock()
+                .unwrap()
+                .push(characteristic.instance);
+            if let Some(gate) = &self.enable_gate {
+                gate.notified().await;
+            }
+            if let Some(error) = self.subscribe_refusal.lock().unwrap().clone() {
+                return Err(btleplug::Error::Platform(error));
+            }
+            match self
+                .subscribe_local_refusal
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                1 => {
+                    return Err(btleplug::Error::NotSupported(
+                        "local predispatch refusal".into(),
+                    ));
+                }
+                2 => return Err(btleplug::Error::NoSuchCharacteristic),
+                3 => return Err(btleplug::Error::TimedOut(std::time::Duration::from_secs(1))),
+                4 => return Err(btleplug::Error::Other("unclassified native effect".into())),
+                _ => {}
+            }
+            Ok(())
+        }
+        async fn transport_notifications(
+            &self,
+        ) -> Result<super::NotificationStream, btleplug::Error> {
+            if self.refuse_stream.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(btleplug::Error::NotSupported(
+                    "fixture stream refusal".into(),
+                ));
+            }
+            Ok(Box::pin(futures_util::stream::empty()))
+        }
+        async fn transport_unsubscribe(
+            &self,
+            characteristic: &Characteristic,
+        ) -> Result<(), btleplug::Error> {
+            self.unsubscribed
+                .lock()
+                .unwrap()
+                .push(characteristic.instance);
+            if self.object_gone.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(btleplug::Error::Platform(
+                    btleplug::PlatformError::bluez_dbus(
+                        Some("org.freedesktop.DBus.Error.UnknownObject"),
+                        Some("original characteristic no longer exists"),
+                    ),
+                ));
+            }
+            if self
+                .release_no_reply
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(btleplug::Error::Platform(
+                    btleplug::PlatformError::bluez_dbus(
+                        Some("org.freedesktop.DBus.Error.NoReply"),
+                        Some("accepted release result unknown"),
+                    ),
+                ));
+            }
+            if self
+                .refuse_release
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(btleplug::Error::NotSupported(
+                    "fixture cleanup refusal".into(),
+                ));
+            }
+            if let Some(gate) = &self.release_gate {
+                gate.notified().await;
+            }
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn rediscovery_retires_original_debt_before_reused_native_path_enable() {
+        let transport = ExactNotificationTransport::default();
+        let old = characteristic(HRM_SERVICE, HRM_MEASUREMENT, 0x20, CharPropFlags::NOTIFY);
+        let replacement = characteristic(HRM_SERVICE, BATTERY_LEVEL, 0x20, CharPropFlags::NOTIFY);
+        let owned = scope("peer", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let next = scope("peer", HRM_SERVICE, 0, BATTERY_LEVEL, 0);
+        let targets = super::NotificationTargets::default();
+        let debt = std::sync::Mutex::new(std::collections::HashSet::new());
+        let forwarders = std::sync::Mutex::new(std::collections::HashMap::new());
+        let _stream = super::subscribe_and_stream_owned(&transport, &old, &targets, &debt, &owned)
+            .await
+            .unwrap();
+        let cache = GattCache::new();
+        cache.insert("peer", 1);
+        cache
+            .refresh_retiring(
+                "peer",
+                || async { Ok(1) },
+                || async {
+                    super::retire_notification_debt_for_peer(&targets, &forwarders, &debt, "peer")
+                        .await
+                },
+                |_| async {
+                    assert_eq!(
+                        *transport.unsubscribed.lock().unwrap(),
+                        [0x20],
+                        "old native path must settle before replacement publication/enable"
+                    );
+                    let _stream = super::subscribe_and_stream_owned(
+                        &transport,
+                        &replacement,
+                        &targets,
+                        &debt,
+                        &next,
+                    )
+                    .await
+                    .unwrap();
+                    Ok(2)
+                },
+            )
+            .await
+            .unwrap();
+        // A delayed R1 logical cleanup cannot StopNotify the R2 reuse.
+        super::release_notification_target(
+            &targets,
+            &forwarders,
+            &debt,
+            &scope_key(&owned),
+            &owned,
+        )
+        .await
+        .unwrap();
+        assert_eq!(*transport.unsubscribed.lock().unwrap(), [0x20]);
+        assert!(targets.get(&next).is_some());
+        assert!(debt.lock().unwrap().contains(&next));
+        assert_eq!(cache.get("peer"), Some(2));
+    }
+
+    #[tokio::test]
+    async fn rediscovery_refused_original_debt_prevents_graph_publication() {
+        let transport = ExactNotificationTransport::default();
+        let old = characteristic(HRM_SERVICE, HRM_MEASUREMENT, 0x20, CharPropFlags::NOTIFY);
+        let owned = scope("peer", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let other = scope("other", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let targets = super::NotificationTargets::default();
+        let debt = std::sync::Mutex::new(std::collections::HashSet::new());
+        let forwarders = std::sync::Mutex::new(std::collections::HashMap::new());
+        for scope in [&owned, &other] {
+            let _stream =
+                super::subscribe_and_stream_owned(&transport, &old, &targets, &debt, scope)
+                    .await
+                    .unwrap();
+        }
+        transport
+            .refuse_release
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let published = std::sync::atomic::AtomicBool::new(false);
+        let cache = GattCache::new();
+        cache.insert("peer", 1);
+        let result = cache
+            .refresh_retiring(
+                "peer",
+                || async { Ok(1) },
+                || async {
+                    super::retire_notification_debt_for_peer(&targets, &forwarders, &debt, "peer")
+                        .await
+                },
+                |_| async {
+                    published.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(2)
+                },
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(!published.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(cache.get("peer"), Some(1));
+        assert!(targets.get(&owned).is_some());
+        assert!(targets.get(&other).is_some());
+        assert_eq!(debt.lock().unwrap().len(), 2);
+        transport
+            .refuse_release
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        super::retire_notification_debt_for_peer(&targets, &forwarders, &debt, "peer")
+            .await
+            .unwrap();
+        assert!(targets.get(&owned).is_none());
+        assert!(targets.get(&other).is_some());
+        assert_eq!(debt.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn original_notification_target_exact_object_retirement_settles_only_owned_scope() {
+        let transport = ExactNotificationTransport::default();
+        let old = characteristic(HRM_SERVICE, HRM_MEASUREMENT, 0x20, CharPropFlags::NOTIFY);
+        let owned = scope("peer", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let other = scope("other", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let targets = super::NotificationTargets::default();
+        let debt = std::sync::Mutex::new(std::collections::HashSet::new());
+        let forwarders = std::sync::Mutex::new(std::collections::HashMap::new());
+        for scope in [&owned, &other] {
+            let _stream =
+                super::subscribe_and_stream_owned(&transport, &old, &targets, &debt, scope)
+                    .await
+                    .unwrap();
+        }
+        transport
+            .object_gone
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        super::release_notification_target(
+            &targets,
+            &forwarders,
+            &debt,
+            &scope_key(&owned),
+            &owned,
+        )
+        .await
+        .unwrap();
+        assert!(targets.get(&owned).is_none());
+        assert!(!debt.lock().unwrap().contains(&owned));
+        assert!(targets.get(&other).is_some());
+        assert!(debt.lock().unwrap().contains(&other));
+        assert_eq!(*transport.unsubscribed.lock().unwrap(), [0x20]);
+    }
+
+    #[tokio::test]
+    async fn original_notification_target_survives_graph_replacement() {
+        let transport = ExactNotificationTransport::default();
+        let old = characteristic(HRM_SERVICE, HRM_MEASUREMENT, 0x20, CharPropFlags::NOTIFY);
+        let new = characteristic(HRM_SERVICE, HRM_MEASUREMENT, 0x30, CharPropFlags::NOTIFY);
+        let owned = scope("peer", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let key = scope_key(&owned);
+        let forwarders = std::sync::Mutex::new(std::collections::HashMap::new());
+        let debt = std::sync::Mutex::new(std::collections::HashSet::from([owned.clone()]));
+        let targets = super::NotificationTargets::default();
+        let _stream = super::subscribe_and_stream_owned(&transport, &old, &targets, &debt, &owned)
+            .await
+            .unwrap();
+        assert_ne!(old.instance, new.instance);
+        super::release_notification_target(&targets, &forwarders, &debt, &key, &owned)
+            .await
+            .unwrap();
+        assert_eq!(
+            *transport.unsubscribed.lock().unwrap(),
+            vec![0x20],
+            "cleanup must address the original native attribute, never R2"
+        );
+        assert!(debt.lock().unwrap().is_empty());
+        assert!(targets.get(&owned).is_none());
+        super::release_notification_target(&targets, &forwarders, &debt, &key, &owned)
+            .await
+            .unwrap();
+        assert_eq!(
+            *transport.unsubscribed.lock().unwrap(),
+            vec![0x20],
+            "already-confirmed cleanup cannot stop an unrelated scope"
+        );
+    }
+
+    #[tokio::test]
+    async fn rediscovery_retires_forwarders_before_new_graph_publication() {
+        let cache = super::GattCache::new();
+        cache.insert("peer", 1_u64);
+        let owned = scope("peer", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let other = scope("other", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let task = super::spawn_notification_forwarder(
+            &tokio::runtime::Handle::current(),
+            futures_util::stream::iter(vec![notification(
+                HRM_SERVICE,
+                HRM_MEASUREMENT,
+                vec![0x51],
+            )]),
+            super::NotificationRoute::new(uuid(HRM_SERVICE), 0, uuid(HRM_MEASUREMENT), 0),
+            super::ForwardTarget {
+                peer_id: "peer".into(),
+                service_uuid: HRM_SERVICE.into(),
+                service_occurrence: 0,
+                characteristic_uuid: HRM_MEASUREMENT.into(),
+                characteristic_occurrence: 0,
+                epoch: 1,
+            },
+            tx,
+            std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        );
+        let mut entry = forwarder(tokio::spawn(async {}), &owned);
+        entry.task.abort();
+        entry.task = task;
+        let forwarders =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
+                (scope_key(&owned), entry),
+                (scope_key(&other), forwarder(tokio::spawn(async {}), &other)),
+            ])));
+        let debt = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        let graph = forwarders.clone();
+        let retire = forwarders.clone();
+        let retired_debt = debt.clone();
+        cache
+            .refresh_retiring(
+                "peer",
+                || async { Ok(1) },
+                move || async move {
+                    let entries = super::retire_peer_forwarders(
+                        &mut retire.lock().unwrap(),
+                        &mut retired_debt.lock().unwrap(),
+                        "peer",
+                        super::PeerRetirement::DatabaseChanged,
+                    );
+                    for entry in entries {
+                        assert_eq!(entry.task.drain(super::FORWARDER_DRAIN_BOUND).await, 0);
+                    }
+                    Ok(())
+                },
+                move |_| async move {
+                    assert!(
+                        !graph
+                            .lock()
+                            .unwrap()
+                            .values()
+                            .any(|entry| entry.peer_id == "peer"),
+                        "R1 forwarder must retire before reading/publishing R2"
+                    );
+                    Ok(2)
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(cache.get("peer"), Some(2));
+        assert!(debt.lock().unwrap().contains(&owned));
+        assert!(forwarders.lock().unwrap().contains_key(&scope_key(&other)));
+        assert!(
+            matches!(rx.recv().await, Some(super::RadioEvent::Notification { value, .. }) if value == vec![0x51]),
+            "R1 buffered FIFO must survive retirement"
+        );
+    }
+
+    #[tokio::test]
+    async fn held_enable_hint_keeps_unrelated_notification_and_link_event_live() {
+        use super::RadioEvent;
+        use std::{future::Future, task::Poll};
+        let cache = std::sync::Arc::new(GattCache::<usize>::new());
+        let enable_gate = std::sync::Arc::new(tokio::sync::Notify::new());
+        let transport = ExactNotificationTransport {
+            enable_gate: Some(enable_gate.clone()),
+            ..Default::default()
+        };
+        let targets = super::NotificationTargets::default();
+        let debt = std::sync::Mutex::new(std::collections::HashSet::new());
+        let owned = scope("held", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let characteristic =
+            characteristic(HRM_SERVICE, HRM_MEASUREMENT, 0x20, CharPropFlags::NOTIFY);
+        let enabling = async {
+            let _gate = cache.lock_peer("held").await;
+            super::subscribe_and_stream_owned(&transport, &characteristic, &targets, &debt, &owned)
+                .await
+        };
+        tokio::pin!(enabling);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(enabling.as_mut().poll(cx).is_pending())).await
+        );
+        assert_eq!(*transport.subscribed.lock().unwrap(), [0x20]);
+        let queue = super::GattWorkQueue::default();
+        let retired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = retired.clone();
+        let work_cache = cache.clone();
+        queue.enqueue("held".into(), async move {
+            let _gate = work_cache.lock_peer("held").await;
+            observed.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        let (notify_tx, mut notify_rx) = tokio::sync::mpsc::channel(1);
+        let (os_tx, mut os_rx) = tokio::sync::mpsc::channel(1);
+        notify_tx
+            .send(RadioEvent::Notification {
+                peer_id: "other-peer".into(),
+                service_uuid: HRM_SERVICE.into(),
+                service_occurrence: 0,
+                characteristic_uuid: HRM_MEASUREMENT.into(),
+                characteristic_occurrence: 0,
+                epoch: 1,
+                value: vec![0, 81],
+            })
+            .await
+            .unwrap();
+        os_tx
+            .send(RadioEvent::Disconnected("other-peer".into()))
+            .await
+            .unwrap();
+        let mut saw_value = false;
+        let mut saw_link = false;
+        for _ in 0..2 {
+            let event = super::select_radio_event(
+                queue.completed(),
+                notify_rx.recv(),
+                os_rx.recv(),
+                std::future::pending(),
+            );
+            tokio::pin!(event);
+            let step = std::future::poll_fn(|cx| Poll::Ready(event.as_mut().poll(cx))).await;
+            assert!(
+                matches!(
+                    step,
+                    Poll::Ready(super::EventStep::Notification(Some(_)))
+                        | Poll::Ready(super::EventStep::Os(Some(_)))
+                ),
+                "held peer invalidation must not stall independent event sources"
+            );
+            match step {
+                Poll::Ready(super::EventStep::Notification(Some(RadioEvent::Notification {
+                    value,
+                    peer_id,
+                    ..
+                }))) => {
+                    assert_eq!(value, [0, 81]);
+                    assert_eq!(peer_id, "other-peer");
+                    saw_value = true;
+                }
+                Poll::Ready(super::EventStep::Os(Some(RadioEvent::Disconnected(peer)))) => {
+                    assert_eq!(peer, "other-peer");
+                    saw_link = true;
+                }
+                _ => panic!("unexpected independent event"),
+            }
+        }
+        assert!(saw_value && saw_link);
+        assert!(!retired.load(std::sync::atomic::Ordering::SeqCst));
+        enable_gate.notify_one();
+        let _stream = enabling.await.unwrap();
+        queue.drain().await;
+        assert!(retired.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[derive(Clone)]
+    struct ObservedGatt {
+        accepted: Result<Option<super::GattSnapshotIdentity>, super::DesktopError>,
+        current: Result<super::GattSnapshotIdentity, super::DesktopError>,
+        calls: std::sync::Arc<std::sync::atomic::AtomicU64>,
+        held: bool,
+    }
+
+    impl super::GattObservationSource for ObservedGatt {
+        fn accepted_identity(
+            &self,
+        ) -> Result<Option<super::GattSnapshotIdentity>, super::DesktopError> {
+            self.accepted.clone()
+        }
+        async fn current_identity(
+            &self,
+        ) -> Result<super::GattSnapshotIdentity, super::DesktopError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.held {
+                std::future::pending::<()>().await;
+            }
+            self.current.clone()
+        }
+    }
+
+    fn observation_fixture(
+        source: ObservedGatt,
+        identity: super::GattSnapshotIdentity,
+    ) -> super::GattObservationState<ObservedGatt> {
+        let gatt = std::sync::Arc::new(GattCache::new());
+        gatt.insert("affected", source.clone());
+        gatt.remember_identity("affected", identity.clone());
+        gatt.insert(
+            "unrelated",
+            ObservedGatt {
+                accepted: Ok(Some(identity.clone())),
+                current: Ok(identity.clone()),
+                calls: Default::default(),
+                held: false,
+            },
+        );
+        gatt.remember_identity("unrelated", identity);
+        super::GattObservationState {
+            gatt,
+            forwarders: Default::default(),
+            debt: Default::default(),
+            deferred: Default::default(),
+            failure: Default::default(),
+            peer_failures: Default::default(),
+            observation_bound: std::time::Duration::from_millis(10),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gatt_observation_failures_are_peer_scoped_typed_and_reverifiable() {
+        use super::{BleErrorCode, BleErrorDomain, DesktopError, RadioEvent};
+        let identity = super::GattSnapshotIdentity {
+            owner: ":1.2".into(),
+            attachment: 1,
+            revision: 1,
+        };
+        let malformed = DesktopError::new(
+            BleErrorCode::ProtocolMalformed,
+            BleErrorDomain::Gatt,
+            "gatt.observe",
+        )
+        .with_detail("actual malformed snapshot reply");
+        for (accepted, current, held, expected, expected_calls) in [
+            (
+                Ok(Some(identity.clone())),
+                Err(malformed.clone()),
+                false,
+                BleErrorCode::ProtocolMalformed,
+                1,
+            ),
+            (
+                Err(malformed.clone()),
+                Ok(identity.clone()),
+                false,
+                BleErrorCode::ProtocolMalformed,
+                0,
+            ),
+            (
+                Ok(None),
+                Ok(identity.clone()),
+                false,
+                BleErrorCode::ProtocolMalformed,
+                0,
+            ),
+            (
+                Ok(Some(identity.clone())),
+                Ok(identity.clone()),
+                true,
+                BleErrorCode::OperationTimedOut,
+                1,
+            ),
+        ] {
+            let source = ObservedGatt {
+                accepted,
+                current,
+                calls: Default::default(),
+                held,
+            };
+            let state = observation_fixture(source.clone(), identity.clone());
+            state.observe_hint("affected").await;
+            assert!(
+                state.failure.lock().unwrap().is_none(),
+                "peer read refusal must not fence host"
+            );
+            assert!(state.gatt.get("affected").is_none());
+            assert!(
+                super::cached_gatt_peer(&state.gatt, &state.peer_failures, "unrelated").is_ok()
+            );
+            let error = super::cached_gatt_peer(&state.gatt, &state.peer_failures, "affected")
+                .err()
+                .unwrap();
+            assert_eq!(error.code(), expected);
+            assert_eq!(
+                source.calls.load(std::sync::atomic::Ordering::SeqCst),
+                expected_calls
+            );
+            let event = state.deferred.lock().await.pop_front().unwrap();
+            assert!(
+                matches!(event, RadioEvent::GattObservationFailed { peer_id, identity: captured, error: cause }
+                if peer_id == "affected" && captured == identity && cause == error),
+                "read/getter failure must retain its own cause, never manufacture ServicesChanged"
+            );
+            let good = ObservedGatt {
+                accepted: Ok(Some(identity.clone())),
+                current: Ok(identity.clone()),
+                calls: Default::default(),
+                held: false,
+            };
+            state.gatt.insert("affected", good.clone());
+            state.confirm_reverification("affected", identity.clone());
+            state.observe_hint("affected").await;
+            assert!(super::cached_gatt_peer(&state.gatt, &state.peer_failures, "affected").is_ok());
+            assert_eq!(good.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert!(state.deferred.lock().await.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn gatt_observation_timeout_is_not_a_physical_change() {
+        let identity = super::GattSnapshotIdentity {
+            owner: ":1.2".into(),
+            attachment: 1,
+            revision: 1,
+        };
+        let source = ObservedGatt {
+            accepted: Ok(Some(identity.clone())),
+            current: Ok(identity.clone()),
+            calls: Default::default(),
+            held: true,
+        };
+        let state = observation_fixture(source, identity.clone());
+        state.observe_hint("affected").await;
+        assert!(matches!(state.deferred.lock().await.pop_front(),
+            Some(super::RadioEvent::GattObservationFailed { error, identity: captured, .. })
+            if error.code() == super::BleErrorCode::OperationTimedOut && captured == identity));
+        assert!(state.failure.lock().unwrap().is_none());
+        assert!(state.gatt.get("unrelated").is_some());
+    }
+
+    #[tokio::test]
+    async fn gatt_observation_getter_refusal_is_not_silent() {
+        let identity = super::GattSnapshotIdentity {
+            owner: ":1.2".into(),
+            attachment: 1,
+            revision: 1,
+        };
+        let error = super::DesktopError::new(
+            super::BleErrorCode::ProtocolMalformed,
+            super::BleErrorDomain::Gatt,
+            "gatt.snapshot-identity",
+        )
+        .with_detail("actual accepted identity getter refusal");
+        let state = observation_fixture(
+            ObservedGatt {
+                accepted: Err(error.clone()),
+                current: Ok(identity.clone()),
+                calls: Default::default(),
+                held: false,
+            },
+            identity.clone(),
+        );
+        state.observe_hint("affected").await;
+        assert!(matches!(state.deferred.lock().await.pop_front(),
+            Some(super::RadioEvent::GattObservationFailed { identity: captured, error: cause, .. })
+            if captured == identity && cause == error));
+        assert!(state.gatt.get("affected").is_none());
+        assert!(state.gatt.get("unrelated").is_some());
+    }
+
+    #[tokio::test]
+    async fn gatt_observation_host_watch_failure_retains_first_cause_and_retires_all() {
+        let identity = super::GattSnapshotIdentity {
+            owner: ":1.2".into(),
+            attachment: 1,
+            revision: 1,
+        };
+        let source = ObservedGatt {
+            accepted: Ok(Some(identity.clone())),
+            current: Ok(identity.clone()),
+            calls: Default::default(),
+            held: false,
+        };
+        let state = observation_fixture(source, identity);
+        let first = super::DesktopError::new(
+            super::BleErrorCode::PlatformFailure,
+            super::BleErrorDomain::Platform,
+            "gatt.watch",
+        )
+        .with_detail("actual watch transport closed");
+        state.fail(first.clone()).await;
+        let second = super::DesktopError::new(
+            super::BleErrorCode::ProtocolMalformed,
+            super::BleErrorDomain::Platform,
+            "gatt.watch",
+        )
+        .with_detail("later watch diagnostic");
+        state.fail(second.clone()).await;
+        assert_eq!(*state.failure.lock().unwrap(), Some(first.clone()));
+        assert!(state.gatt.get("affected").is_none() && state.gatt.get("unrelated").is_none());
+        let mut events = state.deferred.lock().await;
+        assert_eq!(
+            events.pop_front(),
+            Some(super::RadioEvent::GattWatchFailed(first))
+        );
+        assert_eq!(
+            events.pop_front(),
+            Some(super::RadioEvent::GattWatchFailed(second))
+        );
+    }
+
+    #[tokio::test]
+    async fn gatt_observation_new_ready_identity_is_actual_scoped_change() {
+        let old = super::GattSnapshotIdentity {
+            owner: ":1.2".into(),
+            attachment: 1,
+            revision: 1,
+        };
+        let next = super::GattSnapshotIdentity {
+            revision: 2,
+            ..old.clone()
+        };
+        let source = ObservedGatt {
+            accepted: Ok(Some(old.clone())),
+            current: Ok(next),
+            calls: Default::default(),
+            held: false,
+        };
+        let state = observation_fixture(source, old.clone());
+        state.observe_hint("affected").await;
+        assert!(matches!(state.deferred.lock().await.pop_front(),
+            Some(super::RadioEvent::ServicesChangedScoped { peer_id, identity }) if peer_id == "affected" && identity == old));
+        assert!(state.peer_failures.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gatt_work_cancellation_coalescing_and_close_are_owned_and_bounded() {
+        use std::{future::Future, task::Poll};
+        let queue = super::GattWorkQueue::default();
+        let gate = std::sync::Arc::new(tokio::sync::Notify::new());
+        let called = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let first_gate = gate.clone();
+        let first_count = called.clone();
+        queue.enqueue("peer".into(), async move {
+            first_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            first_gate.notified().await;
+        });
+        {
+            let work = queue.completed();
+            tokio::pin!(work);
+            assert!(
+                std::future::poll_fn(|cx| Poll::Ready(work.as_mut().poll(cx).is_pending())).await
+            );
+        }
+        assert_eq!(called.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let reread = called.clone();
+        queue.enqueue("peer".into(), async move {
+            reread.fetch_add(10, std::sync::atomic::Ordering::SeqCst);
+        });
+        assert!(
+            tokio::time::timeout(super::CLOSE_SCOPE_BOUND, queue.drain())
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            queue.entries.lock().unwrap().len(),
+            1,
+            "bounded close must retain unfinished work"
+        );
+        gate.notify_one();
+        queue.drain().await;
+        assert_eq!(
+            called.load(std::sync::atomic::Ordering::SeqCst),
+            11,
+            "cancel/retry must retain initial call and fresh rerun"
+        );
+        assert!(queue.entries.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn original_notification_target_indeterminate_release_fences_retry_and_new_graph() {
+        let transport = ExactNotificationTransport::default();
+        let old = characteristic(HRM_SERVICE, HRM_MEASUREMENT, 0x20, CharPropFlags::NOTIFY);
+        let owned = scope("peer", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let targets = super::NotificationTargets::default();
+        let debt = std::sync::Mutex::new(std::collections::HashSet::new());
+        let forwarders = std::sync::Mutex::new(std::collections::HashMap::new());
+        let _stream = super::subscribe_and_stream_owned(&transport, &old, &targets, &debt, &owned)
+            .await
+            .unwrap();
+        transport
+            .release_no_reply
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let error = super::release_notification_target(
+            &targets,
+            &forwarders,
+            &debt,
+            &scope_key(&owned),
+            &owned,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.platform().unwrap().code,
+            "org.freedesktop.DBus.Error.NoReply"
+        );
+        transport
+            .release_no_reply
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let cache = GattCache::new();
+        let candidate = std::sync::atomic::AtomicBool::new(false);
+        assert!(
+            cache
+                .refresh_retiring(
+                    "peer",
+                    || async { Ok(1) },
+                    || async {
+                        super::retire_notification_debt_for_peer(
+                            &targets,
+                            &forwarders,
+                            &debt,
+                            "peer",
+                        )
+                        .await
+                    },
+                    |_| async {
+                        candidate.store(true, std::sync::atomic::Ordering::SeqCst);
+                        Ok(2)
+                    }
+                )
+                .await
+                .is_err()
+        );
+        assert!(!candidate.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(cache.get("peer").is_none());
+        assert!(targets.get(&owned).is_some() && debt.lock().unwrap().contains(&owned));
+        assert_eq!(*transport.unsubscribed.lock().unwrap(), [0x20]);
+    }
+
+    #[tokio::test]
+    async fn original_notification_target_retains_refused_cancelled_and_unrelated_cleanup() {
+        use std::{future::Future, task::Poll};
+        let gate = std::sync::Arc::new(tokio::sync::Notify::new());
+        let transport = ExactNotificationTransport {
+            release_gate: Some(gate.clone()),
+            ..Default::default()
+        };
+        let original = characteristic(HRM_SERVICE, HRM_MEASUREMENT, 0x20, CharPropFlags::NOTIFY);
+        let owned = scope("peer", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let other = scope("other", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let key = scope_key(&owned);
+        let targets = super::NotificationTargets::default();
+        let forwarders = std::sync::Mutex::new(std::collections::HashMap::new());
+        let debt = std::sync::Mutex::new(std::collections::HashSet::new());
+        let _owned =
+            super::subscribe_and_stream_owned(&transport, &original, &targets, &debt, &owned)
+                .await
+                .unwrap();
+        let _other =
+            super::subscribe_and_stream_owned(&transport, &original, &targets, &debt, &other)
+                .await
+                .unwrap();
+        transport
+            .refuse_release
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            super::release_notification_target(&targets, &forwarders, &debt, &key, &owned)
+                .await
+                .is_err()
+        );
+        assert!(targets.get(&owned).is_some() && debt.lock().unwrap().contains(&owned));
+        transport
+            .refuse_release
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        {
+            let release =
+                super::release_notification_target(&targets, &forwarders, &debt, &key, &owned);
+            tokio::pin!(release);
+            assert!(
+                std::future::poll_fn(|cx| Poll::Ready(release.as_mut().poll(cx).is_pending()))
+                    .await
+            );
+        }
+        assert!(targets.get(&owned).is_some() && debt.lock().unwrap().contains(&owned));
+        gate.notify_one();
+        super::release_notification_target(&targets, &forwarders, &debt, &key, &owned)
+            .await
+            .unwrap();
+        assert!(targets.get(&owned).is_none());
+        assert!(targets.get(&other).is_some() && debt.lock().unwrap().contains(&other));
+        assert_eq!(*transport.unsubscribed.lock().unwrap(), vec![0x20, 0x20]);
+    }
+
+    #[tokio::test]
+    async fn original_notification_target_enable_answer_matrix_preserves_uncertain_ownership() {
+        let platform_answers = [
+            ("bluez-dbus", "org.bluez.Error.NotSupported", true),
+            ("bluez-dbus", "org.bluez.Error.NotPermitted", true),
+            ("bluez-dbus", "org.bluez.Error.NotConnected", true),
+            (
+                "bluez-dbus",
+                "org.freedesktop.DBus.Error.UnknownObject",
+                true,
+            ),
+            (
+                "bluez-dbus",
+                "org.freedesktop.DBus.Error.UnknownInterface",
+                true,
+            ),
+            (
+                "bluez-dbus",
+                "org.freedesktop.DBus.Error.UnknownMethod",
+                true,
+            ),
+            (
+                "bluez-dbus",
+                "org.freedesktop.DBus.Error.AccessDenied",
+                true,
+            ),
+            ("bluez-dbus", "org.bluez.Error.Failed", false),
+            ("bluez-dbus", "org.bluez.Error.InProgress", false),
+            ("bluez-dbus", "org.freedesktop.DBus.Error.NoReply", false),
+            ("bluez-dbus", "org.freedesktop.DBus.Error.Timeout", false),
+            ("bluez-dbus", "org.freedesktop.DBus.Error.TimedOut", false),
+            ("other-native", "org.bluez.Error.NotSupported", false),
+        ];
+        for (platform, local, no_effect) in platform_answers
+            .into_iter()
+            .map(|(domain, code, no_effect)| {
+                let mut error =
+                    btleplug::PlatformError::bluez_dbus(Some(code), Some("fixture native answer"));
+                error.domain = domain;
+                (Some(error), 0, no_effect)
+            })
+            .chain([
+                (None, 1, true),
+                (None, 2, true),
+                (None, 3, false),
+                (None, 4, false),
+            ])
+        {
+            let transport = ExactNotificationTransport::default();
+            *transport.subscribe_refusal.lock().unwrap() = platform;
+            transport
+                .subscribe_local_refusal
+                .store(local, std::sync::atomic::Ordering::SeqCst);
+            transport
+                .refuse_release
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let original =
+                characteristic(HRM_SERVICE, HRM_MEASUREMENT, 0x20, CharPropFlags::NOTIFY);
+            let owned = scope("peer", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+            let targets = super::NotificationTargets::default();
+            let forwarders = std::sync::Mutex::new(std::collections::HashMap::new());
+            let debt = std::sync::Mutex::new(std::collections::HashSet::new());
+            assert!(
+                super::subscribe_and_stream_owned(&transport, &original, &targets, &debt, &owned)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(targets.get(&owned).is_none(), no_effect);
+            assert_eq!(!debt.lock().unwrap().contains(&owned), no_effect);
+            let retirement =
+                super::retire_notification_debt_for_peer(&targets, &forwarders, &debt, "peer")
+                    .await;
+            assert_eq!(retirement.is_ok(), no_effect);
+            assert_eq!(
+                transport.unsubscribed.lock().unwrap().len(),
+                usize::from(!no_effect)
+            );
+            *transport.subscribe_refusal.lock().unwrap() = None;
+            transport
+                .subscribe_local_refusal
+                .store(0, std::sync::atomic::Ordering::SeqCst);
+            if !no_effect {
+                let old_target = targets.get(&owned).unwrap();
+                assert!(
+                    super::subscribe_and_stream_owned(
+                        &transport, &original, &targets, &debt, &owned
+                    )
+                    .await
+                    .is_err()
+                );
+                assert!(std::sync::Arc::ptr_eq(
+                    &targets.get(&owned).unwrap(),
+                    &old_target
+                ));
+                assert_eq!(
+                    transport.subscribed.lock().unwrap().len(),
+                    1,
+                    "unsettled ownership fences new native enable"
+                );
+                transport
+                    .refuse_release
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                super::retire_notification_debt_for_peer(&targets, &forwarders, &debt, "peer")
+                    .await
+                    .unwrap();
+                assert_eq!(*transport.unsubscribed.lock().unwrap(), vec![0x20, 0x20]);
+            }
+            drop(
+                super::subscribe_and_stream_owned(&transport, &original, &targets, &debt, &owned)
+                    .await
+                    .unwrap(),
+            );
+            transport
+                .refuse_release
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            super::retire_notification_debt_for_peer(&targets, &forwarders, &debt, "peer")
+                .await
+                .unwrap();
+            assert!(targets.get(&owned).is_none() && debt.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn original_notification_target_definite_enable_refusal_allows_retry_and_graph_retirement()
+     {
+        let transport = ExactNotificationTransport::default();
+        *transport.subscribe_refusal.lock().unwrap() = Some(btleplug::PlatformError::bluez_dbus(
+            Some("org.bluez.Error.NotSupported"),
+            Some("no notify property"),
+        ));
+        transport
+            .refuse_release
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let original = characteristic(HRM_SERVICE, HRM_MEASUREMENT, 0x20, CharPropFlags::NOTIFY);
+        let owned = scope("peer", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let unrelated = scope("other", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let targets = super::NotificationTargets::default();
+        let forwarders = std::sync::Mutex::new(std::collections::HashMap::new());
+        let debt = std::sync::Mutex::new(std::collections::HashSet::new());
+        let other = ExactNotificationTransport::default();
+        drop(
+            super::subscribe_and_stream_owned(&other, &original, &targets, &debt, &unrelated)
+                .await
+                .unwrap(),
+        );
+        let error =
+            super::subscribe_and_stream_owned(&transport, &original, &targets, &debt, &owned)
+                .await
+                .err()
+                .unwrap();
+        assert!(
+            matches!(error, super::EnableStreamError::Subscribe(ref cause)
+            if cause.platform().is_some_and(|p| p.code == "org.bluez.Error.NotSupported"))
+        );
+        assert!(
+            targets.get(&owned).is_none(),
+            "pre-effect refusal must not invent a native cleanup target"
+        );
+        assert!(!debt.lock().unwrap().contains(&owned));
+        super::release_notification_target(
+            &targets,
+            &forwarders,
+            &debt,
+            &scope_key(&owned),
+            &owned,
+        )
+        .await
+        .unwrap();
+        assert!(
+            transport.unsubscribed.lock().unwrap().is_empty(),
+            "no unowned StopNotify"
+        );
+        *transport.subscribe_refusal.lock().unwrap() = None;
+        transport
+            .refuse_release
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        drop(
+            super::subscribe_and_stream_owned(&transport, &original, &targets, &debt, &owned)
+                .await
+                .unwrap(),
+        );
+        super::retire_notification_debt_for_peer(&targets, &forwarders, &debt, "peer")
+            .await
+            .unwrap();
+        assert_eq!(*transport.subscribed.lock().unwrap(), vec![0x20, 0x20]);
+        assert_eq!(*transport.unsubscribed.lock().unwrap(), vec![0x20]);
+        assert!(targets.get(&unrelated).is_some() && debt.lock().unwrap().contains(&unrelated));
+        super::retire_notification_debt_for_peer(&targets, &forwarders, &debt, "other")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn original_notification_target_stream_refusal_admits_no_native_cleanup() {
+        let transport = ExactNotificationTransport::default();
+        transport
+            .refuse_stream
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let original = characteristic(HRM_SERVICE, HRM_MEASUREMENT, 0x20, CharPropFlags::NOTIFY);
+        let owned = scope("peer", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let targets = super::NotificationTargets::default();
+        let forwarders = std::sync::Mutex::new(std::collections::HashMap::new());
+        let debt = std::sync::Mutex::new(std::collections::HashSet::new());
+        assert!(
+            super::subscribe_and_stream_owned(&transport, &original, &targets, &debt, &owned)
+                .await
+                .is_err()
+        );
+        super::release_notification_target(
+            &targets,
+            &forwarders,
+            &debt,
+            &scope_key(&owned),
+            &owned,
+        )
+        .await
+        .unwrap();
+        assert!(transport.subscribed.lock().unwrap().is_empty());
+        assert!(transport.unsubscribed.lock().unwrap().is_empty());
+        assert!(targets.get(&owned).is_none() && debt.lock().unwrap().is_empty());
+    }
+
     fn forwarder(
         task: tokio::task::JoinHandle<()>,
         scope: &crate::boundary::InstanceKey,
@@ -4340,6 +6790,8 @@ mod tests {
                     "bluez-device-changes",
                     "disconnect-lifecycle",
                     "winrt-att-error",
+                    "bluez-optional-modalias",
+                    "bluez-match-cleanup",
                 ],
             "DEP_BTLEPLUG_UBM_PATCHES missing: the vendored btleplug is not linked"
         );
@@ -4469,6 +6921,35 @@ mod tests {
     }
 
     #[test]
+    fn maintained_connect_preserves_every_structured_cleanup_failure() {
+        use crate::errors::{DesktopError, PlatformDetail, PlatformValue};
+        use ubm_core::contracts::{BleErrorCode, BleErrorDomain};
+        let errors = ["maintain", "close"].map(|operation| {
+            DesktopError::new(
+                BleErrorCode::PlatformFailure,
+                BleErrorDomain::Platform,
+                operation,
+            )
+            .with_platform(
+                PlatformDetail::new("winrt", "hresult")
+                    .with_metadata("hresult", PlatformValue::Text(operation.into())),
+            )
+        });
+        let original = crate::os::winrt_cleanup::cleanup_result(errors.into()).unwrap_err();
+        let mapped = super::maintained_connection_failure(original.clone());
+        assert_eq!(mapped.code(), BleErrorCode::ConnectionFailed);
+        assert_eq!(mapped.operation(), "connection.connect");
+        assert_eq!(mapped.platform(), original.platform());
+        assert!(
+            mapped
+                .platform()
+                .unwrap()
+                .metadata
+                .contains_key("failure.1.platform.metadata.hresult")
+        );
+    }
+
+    #[test]
     fn close_scope_outcomes_skip_only_a_confirmed_missing_peer() {
         let scope = scope("peer-1", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
         let missing = crate::errors::DesktopError::new(
@@ -4499,6 +6980,86 @@ mod tests {
             close_receipt(&scope, Ok(Ok(()))),
             None,
             "a released scope has no receipt"
+        );
+    }
+
+    #[tokio::test]
+    async fn close_retains_failed_scopes_until_actual_retry_succeeds() {
+        let failed = scope("peer-1", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let released = scope("peer-2", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let debt = std::sync::Mutex::new(std::collections::HashSet::from([
+            failed.clone(),
+            released.clone(),
+        ]));
+        let failures = super::close_scope_debt(&debt, |owned| {
+            let refused = owned == failed;
+            async move {
+                if refused {
+                    Ok(Err(ScopeRelease::Failed("refused".into())))
+                } else {
+                    Ok(Ok(()))
+                }
+            }
+        })
+        .await;
+        assert_eq!(failures.len(), 1);
+        assert_eq!(
+            *debt.lock().unwrap(),
+            std::collections::HashSet::from([failed.clone()])
+        );
+        let mut calls = Vec::new();
+        assert!(
+            super::close_scope_debt(&debt, |owned| {
+                calls.push(owned);
+                async { Ok(Ok(())) }
+            })
+            .await
+            .is_empty()
+        );
+        assert_eq!(calls, vec![failed]);
+        assert!(debt.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelling_close_keeps_every_pending_scope_owned() {
+        let first = scope("peer-1", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let second = scope("peer-2", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let expected = std::collections::HashSet::from([first, second]);
+        let debt = std::sync::Mutex::new(expected.clone());
+        let mut calls = 0;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(1),
+            super::close_scope_debt(&debt, |_| {
+                calls += 1;
+                std::future::pending()
+            }),
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
+        assert_eq!(*debt.lock().unwrap(), expected);
+    }
+
+    #[tokio::test]
+    async fn close_timeout_retains_debt_but_late_failure_never_revives_released_parent() {
+        let owned = scope("peer-1", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let debt = std::sync::Mutex::new(std::collections::HashSet::from([owned.clone()]));
+        assert_eq!(
+            super::close_scope_debt(&debt, |_| async { Err(CloseScopeElapsed) })
+                .await
+                .len(),
+            1
+        );
+        assert!(debt.lock().unwrap().contains(&owned));
+        let failures = super::close_scope_debt(&debt, |_| {
+            debt.lock().unwrap().remove(&owned);
+            async { Ok(Err(ScopeRelease::Failed("late refusal".into()))) }
+        })
+        .await;
+        assert_eq!(failures.len(), 1, "attempt failure remains diagnostic");
+        assert!(
+            debt.lock().unwrap().is_empty(),
+            "confirmed parent release stays retired"
         );
     }
 
@@ -4585,5 +7146,25 @@ mod tests {
         );
         apply_unsubscribe_outcome(&mut forwarders, &mut debt, &key, &scope, true);
         assert!(debt.is_empty(), "retry success clears the debt");
+    }
+
+    #[tokio::test]
+    async fn bluez_link_loss_keeps_notify_session_owned_until_explicit_retirement() {
+        let owned = scope("peer-1", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let other = scope("peer-2", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let mut forwarders = std::collections::HashMap::from([
+            (scope_key(&owned), forwarder(tokio::spawn(async {}), &owned)),
+            (scope_key(&other), forwarder(tokio::spawn(async {}), &other)),
+        ]);
+        let mut debt = std::collections::HashSet::new();
+        super::retire_peer_forwarders(
+            &mut forwarders,
+            &mut debt,
+            "peer-1",
+            super::PeerRetirement::LinkEndedRetainingNotifySession,
+        );
+        assert_eq!(debt, std::collections::HashSet::from([owned]));
+        assert_eq!(forwarders.len(), 1);
+        assert!(forwarders.contains_key(&scope_key(&other)));
     }
 }

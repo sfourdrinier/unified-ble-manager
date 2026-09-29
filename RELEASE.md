@@ -74,6 +74,26 @@ npm pack --dry-run
 ```
 
 CI additionally owns the platform-specific native compilation and ABI lanes.
+The clean Linux preflight checks pinned workspace Rust formatting before
+package pretests; its separate Tauri formatting check does not replace that
+workspace gate.
+
+On Linux, the existing Rust CI lane and clean preflight share the same BlueZ
+lifecycle regression gate:
+
+```sh
+bash scripts/ci/test-bluez-private-bus.sh
+```
+
+Each suite runs on a separate private D-Bus, covering owned match cleanup,
+split connection signals, LE bearer ownership, strict GATT snapshot consumers,
+and the source-only daemon-extension build against the pinned official archive.
+The Rust-only lane needs no pnpm installation for that source gate. A failing
+suite stops the gate. No daemon is installed or launched. This tests protocol
+handling against controlled services; it does not
+qualify physical-radio behavior or replace native binary matrix checks.
+Deployment and rollback require a separate approved host window; see
+[`docs/BLUEZ_LE_GATT.md`](docs/BLUEZ_LE_GATT.md).
 
 ## Historical 4.0.0-rc.\* release train
 
@@ -86,7 +106,7 @@ once tagged. Stable `4.0.0` through `4.0.20` are immutable. The unpublished
 `4.0.23`, `4.0.24`, `4.0.25`, `4.0.26`, and `4.0.27` are immutable tagged
 history. `4.0.28` is immutable tagged history. The unpublished
 `v5.0.0-rc.5` tag is immutable after its publish-only Tauri consumer failure.
-The current candidate is `5.0.0-rc.12`; rc.11 is immutable published history.
+The current candidate is `5.0.0-rc.13`; rc.12 is immutable published history.
 
 ```sh
 release_candidate=4.0.0-rc.N
@@ -114,7 +134,33 @@ The first stable tag `v4.0.0` is immutable published history. Do not recreate or
 git tag -a v4.0.0 -m "v4.0.0"
 ```
 
+## Releasing 5.0.0-rc.13
+
+`v5.0.0-rc.12` is immutable published history. Release `v5.0.0-rc.13` only
+from the exact current `main` commit after the review-remediation PR and
+canonical CI succeed. Verify `package.json` is `5.0.0-rc.13`, the worktree is
+clean, and release-note extraction finds `## [5.0.0-rc.13]`. Push a new
+annotated `v5.0.0-rc.13` tag; the existing tag workflow publishes the exact
+packed artifact to npm `next` with provenance and creates a GitHub prerelease.
+Never publish manually or move an earlier tag. This is not the final 5.0
+release and does not promote backend support labels.
+
+This candidate includes native-continuation ownership and durable recording,
+per-generation setup replay, native finite scan lifetime, connected-peer
+retrieval, and the lifecycle and consumer fixes recorded in its changelog.
+Follow the [native artifact lifecycle](docs/NATIVE_ARTIFACTS.md) for changed
+native sources and verify every packed artifact's source/schema identity.
+Package version changes alone do not change native source identities; they
+still require fresh JavaScript seals, generated release artifacts, and exact
+packed-consumer validation. Keep deterministic, compile, and physical-radio
+evidence distinct, including the exact artifact and limitations of each
+retained physical run. Do not relabel earlier candidate evidence.
+
 ## Releasing 5.0.0-rc.12
+
+The instructions below record the historical rc.12 IPC remediation, not the
+subsequent native-continuation work. The published `v5.0.0-rc.12` tag is
+immutable; do not execute its tag-creation instructions again.
 
 `v5.0.0-rc.11` is immutable published history. Release `v5.0.0-rc.12` only
 from the exact current `main` commit after the review-remediation PR and
@@ -130,9 +176,16 @@ scoped parent-release outcomes, retry and late completion, discovery timeout
 and cancellation while old cleanup is pending, and once-only pending-replay
 terminal notification with retained upstream loss counters. Keep unrelated
 connections usable and local iterator failures distinct from confirmed native
-release. No native implementation changed in this candidate; retain the
-source-bound native artifacts and run their existing identity checks. These
+release. No native implementation changed in that historical IPC remediation;
+its source-bound native artifacts required their existing identity checks. These
 checks do not constitute physical-radio qualification.
+
+Current native-continuation work changes native sources and must follow the
+[native artifact lifecycle](docs/NATIVE_ARTIFACTS.md): regenerate the expected
+identity, refresh each affected source-bound artifact through its canonical
+builder, and rerun native identity, native host, and packaged-consumer gates.
+The historical no-native-change statement is not an exemption for this work.
+This clarification does not select a new release version or authorize publication.
 
 ## Releasing 5.0.0-rc.11
 
@@ -715,7 +768,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=5.0.0-rc.12
+version=5.0.0-rc.13
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -726,7 +779,7 @@ npm view "unified-ble-manager@$version" dist.integrity
 
 Then verify:
 
-- npm `next` resolves to `5.0.0-rc.12`, while `latest` remains on the 4.0 stable
+- npm `next` resolves to `5.0.0-rc.13`, while `latest` remains on the 4.0 stable
   line; a stable release moves `latest`;
 - the npm package page shows provenance for the published artifact;
 - the GitHub Release exists at that tag, and is marked prerelease only if the
@@ -734,7 +787,7 @@ Then verify:
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager@5.0.0-rc.12` explicitly and import the documented host
+  `unified-ble-manager@5.0.0-rc.13` explicitly and import the documented host
   entrypoints. A bare install still selects `latest` (the 4.0 line). This
   catches a packaging gap the repository's
   own tests cannot see: `@babel/runtime` shipped undeclared in 4.0.4 and only a
@@ -761,9 +814,8 @@ The release process must never synthesize, backdate, or relabel hardware evidenc
 
 ## Architecture authority
 
-The 4.0 baseline architecture is recorded in
-[`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md);
-the 5.0 distribution contract is in
-[`docs/5.0.0-DISTRIBUTION_CONTRACT.md`](docs/5.0.0-DISTRIBUTION_CONTRACT.md).
-This release procedure controls publication mechanics; it does not override
-those contracts.
+Follow [Current 5.0 authority](docs/README.md#current-50-authority) for the
+current behavior contracts, distribution guidance and evidence rules. This
+release procedure controls publication mechanics; historical 4.0 migration
+gates and draft distribution proposals do not override it or the current
+native artifact lifecycle.

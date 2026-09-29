@@ -344,7 +344,7 @@ internal inline fun<T, reified E: Throwable> uniffiTraitInterfaceCallWithError(
         }
     }
 }
-// Initial value and increment amount for handles. 
+// Initial value and increment amount for handles.
 // These ensure that Kotlin-generated handles always have the lowest bit set
 private const val UNIFFI_HANDLEMAP_INITIAL = 1.toLong()
 private const val UNIFFI_HANDLEMAP_DELTA = 2.toLong()
@@ -354,7 +354,7 @@ private const val UNIFFI_HANDLEMAP_DELTA = 2.toLong()
 // This is used pass an opaque 64-bit handle representing a foreign object to the Rust code.
 internal class UniffiHandleMap<T: Any> {
     private val map = ConcurrentHashMap<Long, T>()
-    // Start 
+    // Start
     private val counter = java.util.concurrent.atomic.AtomicLong(UNIFFI_HANDLEMAP_INITIAL)
 
     val size: Int
@@ -392,7 +392,7 @@ private fun findLibraryName(componentName: String): String {
     if (libOverride != null) {
         return libOverride
     }
-    return "ubm5_uniffi_echo"
+    return "uniffi_ubm_echo"
 }
 
 // Define FFI callback types
@@ -753,6 +753,10 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_install(
     ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_configure_directory(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_control(
+    ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_func_mobile_wire_revision(
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_ble_scan_start(
@@ -787,6 +791,28 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_complete(
     ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_claim(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_cancel_declaration(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_commit_declaration(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_configure_recording_directory(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_declaration_replacement_failure(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_describe_backlog(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_execute(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_claim(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_recording_control(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_reserve_declaration(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_seed_declaration(
+    ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_ingest(
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_open_session(
@@ -814,83 +840,105 @@ internal object IntegrityCheckingUniffiLib {
     external fun ffi_ubm5_uniffi_echo_uniffi_contract_version(
     ): Int
 
-        
+
 }
 
 internal object UniffiLib {
-    
+
     // The Cleaner for the whole library
     internal val CLEANER: UniffiCleaner by lazy {
         UniffiCleaner.create()
     }
-    
+
 
     init {
         Native.register(UniffiLib::class.java, findLibraryName(componentName = "ubm_echo"))
         uniffiCallbackInterfaceMobileInvokeCompletion.register(this)
         uniffiCallbackInterfaceMobilePlatformRadio.register(this)
         uniffiCallbackInterfaceMobileWakeSink.register(this)
-        
+
     }
-    external fun uniffi_ubm5_uniffi_echo_fn_clone_echosession(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_clone_echosession(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Long
-    external fun uniffi_ubm5_uniffi_echo_fn_free_echosession(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_free_echosession(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Unit
-    external fun uniffi_ubm5_uniffi_echo_fn_constructor_echosession_new(`revision`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_constructor_echosession_new(`revision`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
     ): Long
-    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_start(`ptr`: Long,`owner`: RustBuffer.ByValue,`timeoutMs`: RustBuffer.ByValue,`nowMs`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_start(`ptr`: Long,`owner`: RustBuffer.ByValue,`timeoutMs`: RustBuffer.ByValue,`nowMs`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
-    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_stop(`ptr`: Long,`opId`: RustBuffer.ByValue,`nowMs`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_stop(`ptr`: Long,`opId`: RustBuffer.ByValue,`nowMs`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
-    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_take(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_take(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
-    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_cancel_inflight(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_cancel_inflight(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
-    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_central_status(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_central_status(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
-    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_close(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_close(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
-    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_drive_destroy(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_drive_destroy(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
-    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_drive_expire_sweep(`ptr`: Long,`nowMs`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_drive_expire_sweep(`ptr`: Long,`nowMs`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
-    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_echo_bytes(`ptr`: Long,`input`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_echo_bytes(`ptr`: Long,`input`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
-    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_echo_bytes_chunked(`ptr`: Long,`input`: RustBuffer.ByValue,`chunks`: Int,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_echo_bytes_chunked(`ptr`: Long,`input`: RustBuffer.ByValue,`chunks`: Int,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
-    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_echo_counter(`ptr`: Long,`decimal`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_echo_counter(`ptr`: Long,`decimal`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
-    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_request_ble_transition(`ptr`: Long,`transition`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_request_ble_transition(`ptr`: Long,`transition`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
-    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_counters(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_counters(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
-    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_drain_log(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_drain_log(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
-    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_step(`ptr`: Long,`line`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_step(`ptr`: Long,`line`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
-    external fun uniffi_ubm5_uniffi_echo_fn_clone_mobilecorehost(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_clone_mobilecorehost(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Long
-    external fun uniffi_ubm5_uniffi_echo_fn_free_mobilecorehost(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_free_mobilecorehost(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Unit
-    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_complete(`ptr`: Long,`requestId`: Long,`completion`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_complete(`ptr`: Long,`requestId`: Long,`completion`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
-    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_ingest(`ptr`: Long,`ingress`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-    ): RustBuffer.ByValue
-    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_open_session(`ptr`: Long,`owner`: RustBuffer.ByValue,`expectedWireRevision`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-    ): Long
-    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_shutdown(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): RustBuffer.ByValue
-    external fun uniffi_ubm5_uniffi_echo_fn_clone_mobilecoresession(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Long
-    external fun uniffi_ubm5_uniffi_echo_fn_free_mobilecoresession(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_claim(`ptr`: Long,`claimToken`: RustBuffer.ByValue,`completion`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Unit
-    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_admission_json(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_cancel_declaration(`ptr`: Long,`reservationToken`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
-    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_drain(`ptr`: Long,`maxItems`: Int,`maxBytes`: Int,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_commit_declaration(`ptr`: Long,`reservationToken`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
-    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_invoke(`ptr`: Long,`op`: RustBuffer.ByValue,`argsJson`: RustBuffer.ByValue,`completion`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_configure_recording_directory(`ptr`: Long,`path`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_declaration_replacement_failure(`ptr`: Long,`declarationJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_describe_backlog(`ptr`: Long,`completion`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Unit
-    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_session_id(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_execute(`ptr`: Long,`peerId`: RustBuffer.ByValue,`declarationJson`: RustBuffer.ByValue,`completion`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_claim(`ptr`: Long,`maxItems`: Int,`maxBytes`: Int,`completion`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_recording_control(`ptr`: Long,`operation`: RustBuffer.ByValue,`id`: RustBuffer.ByValue,`token`: RustBuffer.ByValue,`maxItems`: Int,`maxBytes`: Int,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_reserve_declaration(`ptr`: Long,`declarationJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_seed_declaration(`ptr`: Long,`declarationJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_ingest(`ptr`: Long,`ingress`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_open_session(`ptr`: Long,`owner`: RustBuffer.ByValue,`expectedWireRevision`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): Long
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_shutdown(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_clone_mobilecoresession(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Long
+    external fun uniffi_ubm5_uniffi_echo_fn_free_mobilecoresession(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_admission_json(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_drain(`ptr`: Long,`maxItems`: Int,`maxBytes`: Int,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_invoke(`ptr`: Long,`op`: RustBuffer.ByValue,`argsJson`: RustBuffer.ByValue,`completion`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): Unit
+    external fun uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_session_id(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Long
     external fun uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobileinvokecompletion(`vtable`: UniffiVTableCallbackInterfaceMobileInvokeCompletion,
     ): Unit
@@ -898,23 +946,27 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_ubm5_uniffi_echo_fn_init_callback_vtable_mobilewakesink(`vtable`: UniffiVTableCallbackInterfaceMobileWakeSink,
     ): Unit
-    external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_build_identity_json(uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_build_identity_json(uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
-    external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_contract_revision(uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_contract_revision(uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
-    external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_host_current(uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_host_current(uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
-    external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_host_install(`radio`: Long,`wake`: Long,`platform`: RustBuffer.ByValue,`owner`: RustBuffer.ByValue,`adapterLabel`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_host_install(`radio`: Long,`wake`: Long,`platform`: RustBuffer.ByValue,`owner`: RustBuffer.ByValue,`adapterLabel`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
     ): Long
-    external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_wire_revision(uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_recording_configure_directory(`path`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
-    external fun ffi_ubm5_uniffi_echo_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_recording_control(`operation`: RustBuffer.ByValue,`id`: RustBuffer.ByValue,`token`: RustBuffer.ByValue,`maxItems`: Int,`maxBytes`: Int,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
-    external fun ffi_ubm5_uniffi_echo_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ubm5_uniffi_echo_fn_func_mobile_wire_revision(uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
-    external fun ffi_ubm5_uniffi_echo_rustbuffer_free(`buf`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    external fun ffi_ubm5_uniffi_echo_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun ffi_ubm5_uniffi_echo_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+    external fun ffi_ubm5_uniffi_echo_rustbuffer_free(`buf`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
     ): Unit
-    external fun ffi_ubm5_uniffi_echo_rustbuffer_reserve(`buf`: RustBuffer.ByValue,`additional`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun ffi_ubm5_uniffi_echo_rustbuffer_reserve(`buf`: RustBuffer.ByValue,`additional`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
     external fun ffi_ubm5_uniffi_echo_rust_future_poll_u8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
@@ -922,7 +974,7 @@ internal object UniffiLib {
     ): Unit
     external fun ffi_ubm5_uniffi_echo_rust_future_free_u8(`handle`: Long,
     ): Unit
-    external fun ffi_ubm5_uniffi_echo_rust_future_complete_u8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun ffi_ubm5_uniffi_echo_rust_future_complete_u8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Int
     external fun ffi_ubm5_uniffi_echo_rust_future_poll_i8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
@@ -930,7 +982,7 @@ internal object UniffiLib {
     ): Unit
     external fun ffi_ubm5_uniffi_echo_rust_future_free_i8(`handle`: Long,
     ): Unit
-    external fun ffi_ubm5_uniffi_echo_rust_future_complete_i8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun ffi_ubm5_uniffi_echo_rust_future_complete_i8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Byte
     external fun ffi_ubm5_uniffi_echo_rust_future_poll_u16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
@@ -938,7 +990,7 @@ internal object UniffiLib {
     ): Unit
     external fun ffi_ubm5_uniffi_echo_rust_future_free_u16(`handle`: Long,
     ): Unit
-    external fun ffi_ubm5_uniffi_echo_rust_future_complete_u16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun ffi_ubm5_uniffi_echo_rust_future_complete_u16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Int
     external fun ffi_ubm5_uniffi_echo_rust_future_poll_i16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
@@ -946,7 +998,7 @@ internal object UniffiLib {
     ): Unit
     external fun ffi_ubm5_uniffi_echo_rust_future_free_i16(`handle`: Long,
     ): Unit
-    external fun ffi_ubm5_uniffi_echo_rust_future_complete_i16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun ffi_ubm5_uniffi_echo_rust_future_complete_i16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Short
     external fun ffi_ubm5_uniffi_echo_rust_future_poll_u32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
@@ -954,7 +1006,7 @@ internal object UniffiLib {
     ): Unit
     external fun ffi_ubm5_uniffi_echo_rust_future_free_u32(`handle`: Long,
     ): Unit
-    external fun ffi_ubm5_uniffi_echo_rust_future_complete_u32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun ffi_ubm5_uniffi_echo_rust_future_complete_u32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Int
     external fun ffi_ubm5_uniffi_echo_rust_future_poll_i32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
@@ -962,7 +1014,7 @@ internal object UniffiLib {
     ): Unit
     external fun ffi_ubm5_uniffi_echo_rust_future_free_i32(`handle`: Long,
     ): Unit
-    external fun ffi_ubm5_uniffi_echo_rust_future_complete_i32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun ffi_ubm5_uniffi_echo_rust_future_complete_i32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Int
     external fun ffi_ubm5_uniffi_echo_rust_future_poll_u64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
@@ -970,7 +1022,7 @@ internal object UniffiLib {
     ): Unit
     external fun ffi_ubm5_uniffi_echo_rust_future_free_u64(`handle`: Long,
     ): Unit
-    external fun ffi_ubm5_uniffi_echo_rust_future_complete_u64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun ffi_ubm5_uniffi_echo_rust_future_complete_u64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Long
     external fun ffi_ubm5_uniffi_echo_rust_future_poll_i64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
@@ -978,7 +1030,7 @@ internal object UniffiLib {
     ): Unit
     external fun ffi_ubm5_uniffi_echo_rust_future_free_i64(`handle`: Long,
     ): Unit
-    external fun ffi_ubm5_uniffi_echo_rust_future_complete_i64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun ffi_ubm5_uniffi_echo_rust_future_complete_i64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Long
     external fun ffi_ubm5_uniffi_echo_rust_future_poll_f32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
@@ -986,7 +1038,7 @@ internal object UniffiLib {
     ): Unit
     external fun ffi_ubm5_uniffi_echo_rust_future_free_f32(`handle`: Long,
     ): Unit
-    external fun ffi_ubm5_uniffi_echo_rust_future_complete_f32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun ffi_ubm5_uniffi_echo_rust_future_complete_f32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Float
     external fun ffi_ubm5_uniffi_echo_rust_future_poll_f64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
@@ -994,7 +1046,7 @@ internal object UniffiLib {
     ): Unit
     external fun ffi_ubm5_uniffi_echo_rust_future_free_f64(`handle`: Long,
     ): Unit
-    external fun ffi_ubm5_uniffi_echo_rust_future_complete_f64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun ffi_ubm5_uniffi_echo_rust_future_complete_f64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Double
     external fun ffi_ubm5_uniffi_echo_rust_future_poll_rust_buffer(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
@@ -1002,7 +1054,7 @@ internal object UniffiLib {
     ): Unit
     external fun ffi_ubm5_uniffi_echo_rust_future_free_rust_buffer(`handle`: Long,
     ): Unit
-    external fun ffi_ubm5_uniffi_echo_rust_future_complete_rust_buffer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun ffi_ubm5_uniffi_echo_rust_future_complete_rust_buffer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
     external fun ffi_ubm5_uniffi_echo_rust_future_poll_void(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
@@ -1010,10 +1062,10 @@ internal object UniffiLib {
     ): Unit
     external fun ffi_ubm5_uniffi_echo_rust_future_free_void(`handle`: Long,
     ): Unit
-    external fun ffi_ubm5_uniffi_echo_rust_future_complete_void(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun ffi_ubm5_uniffi_echo_rust_future_complete_void(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
     ): Unit
 
-        
+
 }
 
 private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
@@ -1037,6 +1089,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_host_install() and 0xFFFF) != 16863) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_configure_directory() and 0xFFFF) != 4705) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_recording_control() and 0xFFFF) != 47672) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_func_mobile_wire_revision() and 0xFFFF) != 16069) {
@@ -1088,6 +1146,39 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_complete() and 0xFFFF) != 1326) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_acknowledge_claim() and 0xFFFF) != 49070) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_cancel_declaration() and 0xFFFF) != 47548) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_commit_declaration() and 0xFFFF) != 7090) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_configure_recording_directory() and 0xFFFF) != 14238) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_declaration_replacement_failure() and 0xFFFF) != 61722) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_describe_backlog() and 0xFFFF) != 38878) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_execute() and 0xFFFF) != 53239) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_prepare_claim() and 0xFFFF) != 27863) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_recording_control() and 0xFFFF) != 50250) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_reserve_declaration() and 0xFFFF) != 64088) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_continuation_seed_declaration() and 0xFFFF) != 3468) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_mobilecorehost_ingest() and 0xFFFF) != 56427) {
@@ -1201,7 +1292,7 @@ inline fun <T : Disposable?, R> T.use(block: (T) -> R) =
         }
     }
 
-/** 
+/**
  * Placeholder object used to signal that we're constructing an interface with a FFI handle.
  *
  * This is the first argument for interface constructors that input a raw handle. It exists is that
@@ -1212,7 +1303,7 @@ inline fun <T : Disposable?, R> T.use(block: (T) -> R) =
  * */
 object UniffiWithHandle
 
-/** 
+/**
  * Used to instantiate an interface without an actual pointer, for fakes in tests, mostly.
  *
  * @suppress
@@ -1652,37 +1743,37 @@ public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
 
 
 public interface EchoSessionInterface {
-    
+
     fun `bleScanStart`(`owner`: kotlin.String, `timeoutMs`: kotlin.String, `nowMs`: kotlin.String): EchoCounterResult
-    
+
     fun `bleScanStop`(`opId`: kotlin.String, `nowMs`: kotlin.String): EchoCounterResult
-    
+
     fun `bleScanTake`(): EchoCounterResult
-    
+
     fun `cancelInflight`(): EchoStatus
-    
+
     fun `centralStatus`(): EchoCounterResult
-    
+
     fun `close`(): EchoStatus
-    
+
     fun `driveDestroy`(): EchoCounterResult
-    
+
     fun `driveExpireSweep`(`nowMs`: kotlin.String): EchoCounterResult
-    
+
     fun `echoBytes`(`input`: kotlin.ByteArray): EchoBytesResult
-    
+
     fun `echoBytesChunked`(`input`: kotlin.ByteArray, `chunks`: kotlin.UInt): EchoBytesResult
-    
+
     fun `echoCounter`(`decimal`: kotlin.String): EchoCounterResult
-    
+
     fun `requestBleTransition`(`transition`: kotlin.String): EchoStatus
-    
+
     fun `stagedCounters`(): EchoCounterResult
-    
+
     fun `stagedDrainLog`(): EchoCounterResult
-    
+
     fun `stagedStep`(`line`: kotlin.String): EchoCounterResult
-    
+
     companion object
 }
 
@@ -1711,11 +1802,11 @@ open class EchoSession: Disposable, AutoCloseable, EchoSessionInterface
         this.cleanable = null
     }
     constructor(`revision`: kotlin.String) :
-        this(UniffiWithHandle, 
+        this(UniffiWithHandle,
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_ubm5_uniffi_echo_fn_constructor_echosession_new(
-    
-        
+
+
         FfiConverterString.lower(`revision`),_status)
 }
     )
@@ -1802,7 +1893,7 @@ open class EchoSession: Disposable, AutoCloseable, EchoSessionInterface
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_start(
         it,
-        
+
         FfiConverterString.lower(`owner`),
         FfiConverterString.lower(`timeoutMs`),
         FfiConverterString.lower(`nowMs`),_status)
@@ -1810,7 +1901,7 @@ open class EchoSession: Disposable, AutoCloseable, EchoSessionInterface
     }
     )
     }
-    
+
 
     override fun `bleScanStop`(`opId`: kotlin.String, `nowMs`: kotlin.String): EchoCounterResult {
             return FfiConverterTypeEchoCounterResult.lift(
@@ -1818,14 +1909,14 @@ open class EchoSession: Disposable, AutoCloseable, EchoSessionInterface
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_ble_scan_stop(
         it,
-        
+
         FfiConverterString.lower(`opId`),
         FfiConverterString.lower(`nowMs`),_status)
 }
     }
     )
     }
-    
+
 
     override fun `bleScanTake`(): EchoCounterResult {
             return FfiConverterTypeEchoCounterResult.lift(
@@ -1838,7 +1929,7 @@ open class EchoSession: Disposable, AutoCloseable, EchoSessionInterface
     }
     )
     }
-    
+
 
     override fun `cancelInflight`(): EchoStatus {
             return FfiConverterTypeEchoStatus.lift(
@@ -1851,7 +1942,7 @@ open class EchoSession: Disposable, AutoCloseable, EchoSessionInterface
     }
     )
     }
-    
+
 
     override fun `centralStatus`(): EchoCounterResult {
             return FfiConverterTypeEchoCounterResult.lift(
@@ -1864,7 +1955,7 @@ open class EchoSession: Disposable, AutoCloseable, EchoSessionInterface
     }
     )
     }
-    
+
 
     override fun `close`(): EchoStatus {
             return FfiConverterTypeEchoStatus.lift(
@@ -1877,7 +1968,7 @@ open class EchoSession: Disposable, AutoCloseable, EchoSessionInterface
     }
     )
     }
-    
+
 
     override fun `driveDestroy`(): EchoCounterResult {
             return FfiConverterTypeEchoCounterResult.lift(
@@ -1890,7 +1981,7 @@ open class EchoSession: Disposable, AutoCloseable, EchoSessionInterface
     }
     )
     }
-    
+
 
     override fun `driveExpireSweep`(`nowMs`: kotlin.String): EchoCounterResult {
             return FfiConverterTypeEchoCounterResult.lift(
@@ -1898,13 +1989,13 @@ open class EchoSession: Disposable, AutoCloseable, EchoSessionInterface
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_drive_expire_sweep(
         it,
-        
+
         FfiConverterString.lower(`nowMs`),_status)
 }
     }
     )
     }
-    
+
 
     override fun `echoBytes`(`input`: kotlin.ByteArray): EchoBytesResult {
             return FfiConverterTypeEchoBytesResult.lift(
@@ -1912,13 +2003,13 @@ open class EchoSession: Disposable, AutoCloseable, EchoSessionInterface
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_echo_bytes(
         it,
-        
+
         FfiConverterByteArray.lower(`input`),_status)
 }
     }
     )
     }
-    
+
 
     override fun `echoBytesChunked`(`input`: kotlin.ByteArray, `chunks`: kotlin.UInt): EchoBytesResult {
             return FfiConverterTypeEchoBytesResult.lift(
@@ -1926,14 +2017,14 @@ open class EchoSession: Disposable, AutoCloseable, EchoSessionInterface
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_echo_bytes_chunked(
         it,
-        
+
         FfiConverterByteArray.lower(`input`),
         FfiConverterUInt.lower(`chunks`),_status)
 }
     }
     )
     }
-    
+
 
     override fun `echoCounter`(`decimal`: kotlin.String): EchoCounterResult {
             return FfiConverterTypeEchoCounterResult.lift(
@@ -1941,13 +2032,13 @@ open class EchoSession: Disposable, AutoCloseable, EchoSessionInterface
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_echo_counter(
         it,
-        
+
         FfiConverterString.lower(`decimal`),_status)
 }
     }
     )
     }
-    
+
 
     override fun `requestBleTransition`(`transition`: kotlin.String): EchoStatus {
             return FfiConverterTypeEchoStatus.lift(
@@ -1955,13 +2046,13 @@ open class EchoSession: Disposable, AutoCloseable, EchoSessionInterface
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_request_ble_transition(
         it,
-        
+
         FfiConverterString.lower(`transition`),_status)
 }
     }
     )
     }
-    
+
 
     override fun `stagedCounters`(): EchoCounterResult {
             return FfiConverterTypeEchoCounterResult.lift(
@@ -1974,7 +2065,7 @@ open class EchoSession: Disposable, AutoCloseable, EchoSessionInterface
     }
     )
     }
-    
+
 
     override fun `stagedDrainLog`(): EchoCounterResult {
             return FfiConverterTypeEchoCounterResult.lift(
@@ -1987,7 +2078,7 @@ open class EchoSession: Disposable, AutoCloseable, EchoSessionInterface
     }
     )
     }
-    
+
 
     override fun `stagedStep`(`line`: kotlin.String): EchoCounterResult {
             return FfiConverterTypeEchoCounterResult.lift(
@@ -1995,26 +2086,26 @@ open class EchoSession: Disposable, AutoCloseable, EchoSessionInterface
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_staged_step(
         it,
-        
+
         FfiConverterString.lower(`line`),_status)
 }
     }
     )
     }
-    
-
-    
-
-    
 
 
-    
-    
+
+
+
+
+
+
+
     /**
      * @suppress
      */
     companion object
-    
+
 }
 
 
@@ -2138,15 +2229,37 @@ public object FfiConverterTypeEchoSession: FfiConverter<EchoSession, Long> {
 
 
 public interface MobileCoreHostInterface {
-    
+
     fun `complete`(`requestId`: kotlin.ULong, `completion`: MobileRadioCompletion): kotlin.String
-    
+
+    fun `continuationAcknowledgeClaim`(`claimToken`: kotlin.String, `completion`: MobileInvokeCompletion)
+
+    fun `continuationCancelDeclaration`(`reservationToken`: kotlin.String): kotlin.String
+
+    fun `continuationCommitDeclaration`(`reservationToken`: kotlin.String): kotlin.String
+
+    fun `continuationConfigureRecordingDirectory`(`path`: kotlin.String): kotlin.String
+
+    fun `continuationDeclarationReplacementFailure`(`declarationJson`: kotlin.String): kotlin.String?
+
+    fun `continuationDescribeBacklog`(`completion`: MobileInvokeCompletion)
+
+    fun `continuationExecute`(`peerId`: kotlin.String, `declarationJson`: kotlin.String, `completion`: MobileInvokeCompletion)
+
+    fun `continuationPrepareClaim`(`maxItems`: kotlin.UInt, `maxBytes`: kotlin.UInt, `completion`: MobileInvokeCompletion)
+
+    fun `continuationRecordingControl`(`operation`: kotlin.String, `id`: kotlin.String, `token`: kotlin.String, `maxItems`: kotlin.UInt, `maxBytes`: kotlin.UInt): kotlin.String
+
+    fun `continuationReserveDeclaration`(`declarationJson`: kotlin.String): kotlin.String
+
+    fun `continuationSeedDeclaration`(`declarationJson`: kotlin.String): kotlin.String
+
     fun `ingest`(`ingress`: MobileRadioIngress): kotlin.String
-    
+
     fun `openSession`(`owner`: kotlin.String, `expectedWireRevision`: kotlin.String): MobileCoreSession
-    
+
     fun `shutdown`(): kotlin.String
-    
+
     companion object
 }
 
@@ -2257,14 +2370,173 @@ open class MobileCoreHost: Disposable, AutoCloseable, MobileCoreHostInterface
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_complete(
         it,
-        
+
         FfiConverterULong.lower(`requestId`),
         FfiConverterTypeMobileRadioCompletion.lower(`completion`),_status)
 }
     }
     )
     }
-    
+
+
+    override fun `continuationAcknowledgeClaim`(`claimToken`: kotlin.String, `completion`: MobileInvokeCompletion)
+        =
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_acknowledge_claim(
+        it,
+
+        FfiConverterString.lower(`claimToken`),
+        FfiConverterTypeMobileInvokeCompletion.lower(`completion`),_status)
+}
+    }
+
+
+
+    override fun `continuationCancelDeclaration`(`reservationToken`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_cancel_declaration(
+        it,
+
+        FfiConverterString.lower(`reservationToken`),_status)
+}
+    }
+    )
+    }
+
+
+    override fun `continuationCommitDeclaration`(`reservationToken`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_commit_declaration(
+        it,
+
+        FfiConverterString.lower(`reservationToken`),_status)
+}
+    }
+    )
+    }
+
+
+    override fun `continuationConfigureRecordingDirectory`(`path`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_configure_recording_directory(
+        it,
+
+        FfiConverterString.lower(`path`),_status)
+}
+    }
+    )
+    }
+
+
+    override fun `continuationDeclarationReplacementFailure`(`declarationJson`: kotlin.String): kotlin.String? {
+            return FfiConverterOptionalString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_declaration_replacement_failure(
+        it,
+
+        FfiConverterString.lower(`declarationJson`),_status)
+}
+    }
+    )
+    }
+
+
+    override fun `continuationDescribeBacklog`(`completion`: MobileInvokeCompletion)
+        =
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_describe_backlog(
+        it,
+
+        FfiConverterTypeMobileInvokeCompletion.lower(`completion`),_status)
+}
+    }
+
+
+
+    override fun `continuationExecute`(`peerId`: kotlin.String, `declarationJson`: kotlin.String, `completion`: MobileInvokeCompletion)
+        =
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_execute(
+        it,
+
+        FfiConverterString.lower(`peerId`),
+        FfiConverterString.lower(`declarationJson`),
+        FfiConverterTypeMobileInvokeCompletion.lower(`completion`),_status)
+}
+    }
+
+
+
+    override fun `continuationPrepareClaim`(`maxItems`: kotlin.UInt, `maxBytes`: kotlin.UInt, `completion`: MobileInvokeCompletion)
+        =
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_prepare_claim(
+        it,
+
+        FfiConverterUInt.lower(`maxItems`),
+        FfiConverterUInt.lower(`maxBytes`),
+        FfiConverterTypeMobileInvokeCompletion.lower(`completion`),_status)
+}
+    }
+
+
+
+    override fun `continuationRecordingControl`(`operation`: kotlin.String, `id`: kotlin.String, `token`: kotlin.String, `maxItems`: kotlin.UInt, `maxBytes`: kotlin.UInt): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_recording_control(
+        it,
+
+        FfiConverterString.lower(`operation`),
+        FfiConverterString.lower(`id`),
+        FfiConverterString.lower(`token`),
+        FfiConverterUInt.lower(`maxItems`),
+        FfiConverterUInt.lower(`maxBytes`),_status)
+}
+    }
+    )
+    }
+
+
+    override fun `continuationReserveDeclaration`(`declarationJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_reserve_declaration(
+        it,
+
+        FfiConverterString.lower(`declarationJson`),_status)
+}
+    }
+    )
+    }
+
+
+    override fun `continuationSeedDeclaration`(`declarationJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_continuation_seed_declaration(
+        it,
+
+        FfiConverterString.lower(`declarationJson`),_status)
+}
+    }
+    )
+    }
+
 
     override fun `ingest`(`ingress`: MobileRadioIngress): kotlin.String {
             return FfiConverterString.lift(
@@ -2272,29 +2544,29 @@ open class MobileCoreHost: Disposable, AutoCloseable, MobileCoreHostInterface
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_ingest(
         it,
-        
+
         FfiConverterTypeMobileRadioIngress.lower(`ingress`),_status)
 }
     }
     )
     }
-    
 
-    
+
+
     @Throws(MobileCoreException::class)override fun `openSession`(`owner`: kotlin.String, `expectedWireRevision`: kotlin.String): MobileCoreSession {
             return FfiConverterTypeMobileCoreSession.lift(
     callWithHandle {
     uniffiRustCallWithError(MobileCoreException) { _status ->
     UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecorehost_open_session(
         it,
-        
+
         FfiConverterString.lower(`owner`),
         FfiConverterString.lower(`expectedWireRevision`),_status)
 }
     }
     )
     }
-    
+
 
     override fun `shutdown`(): kotlin.String {
             return FfiConverterString.lift(
@@ -2307,20 +2579,20 @@ open class MobileCoreHost: Disposable, AutoCloseable, MobileCoreHostInterface
     }
     )
     }
-    
-
-    
-
-    
 
 
-    
-    
+
+
+
+
+
+
+
     /**
      * @suppress
      */
     companion object
-    
+
 }
 
 
@@ -2444,15 +2716,15 @@ public object FfiConverterTypeMobileCoreHost: FfiConverter<MobileCoreHost, Long>
 
 
 public interface MobileCoreSessionInterface {
-    
+
     fun `admissionJson`(): kotlin.String
-    
+
     fun `drain`(`maxItems`: kotlin.UInt, `maxBytes`: kotlin.UInt): kotlin.String
-    
+
     fun `invoke`(`op`: kotlin.String, `argsJson`: kotlin.String, `completion`: MobileInvokeCompletion)
-    
+
     fun `sessionId`(): kotlin.ULong
-    
+
     companion object
 }
 
@@ -2568,7 +2840,7 @@ open class MobileCoreSession: Disposable, AutoCloseable, MobileCoreSessionInterf
     }
     )
     }
-    
+
 
     override fun `drain`(`maxItems`: kotlin.UInt, `maxBytes`: kotlin.UInt): kotlin.String {
             return FfiConverterString.lift(
@@ -2576,29 +2848,29 @@ open class MobileCoreSession: Disposable, AutoCloseable, MobileCoreSessionInterf
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_drain(
         it,
-        
+
         FfiConverterUInt.lower(`maxItems`),
         FfiConverterUInt.lower(`maxBytes`),_status)
 }
     }
     )
     }
-    
+
 
     override fun `invoke`(`op`: kotlin.String, `argsJson`: kotlin.String, `completion`: MobileInvokeCompletion)
-        = 
+        =
     callWithHandle {
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_mobilecoresession_invoke(
         it,
-        
+
         FfiConverterString.lower(`op`),
         FfiConverterString.lower(`argsJson`),
         FfiConverterTypeMobileInvokeCompletion.lower(`completion`),_status)
 }
     }
-    
-    
+
+
 
     override fun `sessionId`(): kotlin.ULong {
             return FfiConverterULong.lift(
@@ -2611,20 +2883,20 @@ open class MobileCoreSession: Disposable, AutoCloseable, MobileCoreSessionInterf
     }
     )
     }
-    
-
-    
-
-    
 
 
-    
-    
+
+
+
+
+
+
+
     /**
      * @suppress
      */
     companion object
-    
+
 }
 
 
@@ -2655,21 +2927,21 @@ public object FfiConverterTypeMobileCoreSession: FfiConverter<MobileCoreSession,
 
 data class EchoBytesResult (
     var `ok`: kotlin.Boolean
-    , 
+    ,
     var `data`: kotlin.ByteArray
-    , 
+    ,
     var `code`: kotlin.String
-    , 
+    ,
     var `domain`: kotlin.String
-    , 
+    ,
     var `operation`: kotlin.String
-    
+
 ){
-    
 
-    
 
-    
+
+
+
     companion object
 }
 
@@ -2708,21 +2980,21 @@ public object FfiConverterTypeEchoBytesResult: FfiConverterRustBuffer<EchoBytesR
 
 data class EchoCounterResult (
     var `ok`: kotlin.Boolean
-    , 
+    ,
     var `value`: kotlin.String
-    , 
+    ,
     var `code`: kotlin.String
-    , 
+    ,
     var `domain`: kotlin.String
-    , 
+    ,
     var `operation`: kotlin.String
-    
+
 ){
-    
 
-    
 
-    
+
+
+
     companion object
 }
 
@@ -2761,19 +3033,19 @@ public object FfiConverterTypeEchoCounterResult: FfiConverterRustBuffer<EchoCoun
 
 data class EchoStatus (
     var `ok`: kotlin.Boolean
-    , 
+    ,
     var `code`: kotlin.String
-    , 
+    ,
     var `domain`: kotlin.String
-    , 
+    ,
     var `operation`: kotlin.String
-    
+
 ){
-    
 
-    
 
-    
+
+
+
     companion object
 }
 
@@ -2809,19 +3081,19 @@ public object FfiConverterTypeEchoStatus: FfiConverterRustBuffer<EchoStatus> {
 
 data class MobileAdapterSnapshot (
     var `availability`: kotlin.String
-    , 
+    ,
     var `authorization`: kotlin.String
-    , 
+    ,
     var `power`: kotlin.String
-    , 
+    ,
     var `safeReason`: kotlin.String?
-    
+
 ){
-    
 
-    
 
-    
+
+
+
     companion object
 }
 
@@ -2857,33 +3129,33 @@ public object FfiConverterTypeMobileAdapterSnapshot: FfiConverterRustBuffer<Mobi
 
 data class MobileAdvertisement (
     var `peerId`: kotlin.String
-    , 
+    ,
     var `address`: kotlin.String?
-    , 
+    ,
     var `localName`: kotlin.String?
-    , 
+    ,
     var `rssi`: kotlin.Short?
-    , 
+    ,
     var `txPowerLevel`: kotlin.Short?
-    , 
+    ,
     var `serviceUuids`: List<kotlin.String>
-    , 
+    ,
     var `manufacturerData`: List<MobileManufacturerData>
-    , 
+    ,
     var `serviceData`: List<MobileServiceData>
-    , 
+    ,
     var `connectable`: kotlin.Boolean?
-    , 
+    ,
     var `solicitedServiceUuids`: List<kotlin.String>?
-    , 
+    ,
     var `overflowServiceUuids`: List<kotlin.String>?
-    
+
 ){
-    
 
-    
 
-    
+
+
+
     companion object
 }
 
@@ -2940,15 +3212,15 @@ public object FfiConverterTypeMobileAdvertisement: FfiConverterRustBuffer<Mobile
 
 data class MobileCloseFailure (
     var `instance`: MobileInstance
-    , 
+    ,
     var `detail`: kotlin.String
-    
+
 ){
-    
 
-    
 
-    
+
+
+
     companion object
 }
 
@@ -2976,21 +3248,64 @@ public object FfiConverterTypeMobileCloseFailure: FfiConverterRustBuffer<MobileC
 
 
 
+data class MobileCompanionRecord (
+    var `associationId`: kotlin.Long
+    ,
+    var `peerId`: kotlin.String?
+    ,
+    var `displayName`: kotlin.String?
+
+){
+
+
+
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMobileCompanionRecord: FfiConverterRustBuffer<MobileCompanionRecord> {
+    override fun read(buf: ByteBuffer): MobileCompanionRecord {
+        return MobileCompanionRecord(
+            FfiConverterLong.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MobileCompanionRecord) = (
+            FfiConverterLong.allocationSize(value.`associationId`) +
+            FfiConverterOptionalString.allocationSize(value.`peerId`) +
+            FfiConverterOptionalString.allocationSize(value.`displayName`)
+    )
+
+    override fun write(value: MobileCompanionRecord, buf: ByteBuffer) {
+            FfiConverterLong.write(value.`associationId`, buf)
+            FfiConverterOptionalString.write(value.`peerId`, buf)
+            FfiConverterOptionalString.write(value.`displayName`, buf)
+    }
+}
+
+
+
 data class MobileGattCharacteristic (
     var `uuid`: kotlin.String
-    , 
+    ,
     var `occurrence`: kotlin.ULong
-    , 
+    ,
     var `properties`: MobileGattProperties
-    , 
+    ,
     var `descriptors`: List<MobileGattDescriptor>
-    
+
 ){
-    
 
-    
 
-    
+
+
+
     companion object
 }
 
@@ -3026,15 +3341,15 @@ public object FfiConverterTypeMobileGattCharacteristic: FfiConverterRustBuffer<M
 
 data class MobileGattDescriptor (
     var `uuid`: kotlin.String
-    , 
+    ,
     var `occurrence`: kotlin.ULong
-    
+
 ){
-    
 
-    
 
-    
+
+
+
     companion object
 }
 
@@ -3064,21 +3379,21 @@ public object FfiConverterTypeMobileGattDescriptor: FfiConverterRustBuffer<Mobil
 
 data class MobileGattProperties (
     var `read`: kotlin.Boolean
-    , 
+    ,
     var `write`: kotlin.Boolean
-    , 
+    ,
     var `writeWithoutResponse`: kotlin.Boolean
-    , 
+    ,
     var `notify`: kotlin.Boolean
-    , 
+    ,
     var `indicate`: kotlin.Boolean
-    
+
 ){
-    
 
-    
 
-    
+
+
+
     companion object
 }
 
@@ -3117,17 +3432,17 @@ public object FfiConverterTypeMobileGattProperties: FfiConverterRustBuffer<Mobil
 
 data class MobileGattService (
     var `uuid`: kotlin.String
-    , 
+    ,
     var `occurrence`: kotlin.ULong
-    , 
+    ,
     var `characteristics`: List<MobileGattCharacteristic>
-    
+
 ){
-    
 
-    
 
-    
+
+
+
     companion object
 }
 
@@ -3160,21 +3475,21 @@ public object FfiConverterTypeMobileGattService: FfiConverterRustBuffer<MobileGa
 
 data class MobileInstance (
     var `peerId`: kotlin.String
-    , 
+    ,
     var `serviceUuid`: kotlin.String
-    , 
+    ,
     var `serviceOccurrence`: kotlin.ULong
-    , 
+    ,
     var `characteristicUuid`: kotlin.String
-    , 
+    ,
     var `characteristicOccurrence`: kotlin.ULong
-    
+
 ){
-    
 
-    
 
-    
+
+
+
     companion object
 }
 
@@ -3213,15 +3528,15 @@ public object FfiConverterTypeMobileInstance: FfiConverterRustBuffer<MobileInsta
 
 data class MobileManufacturerData (
     var `companyId`: kotlin.UShort
-    , 
+    ,
     var `payload`: kotlin.ByteArray
-    
+
 ){
-    
 
-    
 
-    
+
+
+
     companion object
 }
 
@@ -3251,15 +3566,15 @@ public object FfiConverterTypeMobileManufacturerData: FfiConverterRustBuffer<Mob
 
 data class MobilePeerName (
     var `peerId`: kotlin.String
-    , 
+    ,
     var `name`: kotlin.String?
-    
+
 ){
-    
 
-    
 
-    
+
+
+
     companion object
 }
 
@@ -3289,17 +3604,17 @@ public object FfiConverterTypeMobilePeerName: FfiConverterRustBuffer<MobilePeerN
 
 data class MobileRestoredPeer (
     var `peerId`: kotlin.String
-    , 
+    ,
     var `name`: kotlin.String?
-    , 
+    ,
     var `connected`: kotlin.Boolean
-    
+
 ){
-    
 
-    
 
-    
+
+
+
     companion object
 }
 
@@ -3332,21 +3647,21 @@ public object FfiConverterTypeMobileRestoredPeer: FfiConverterRustBuffer<MobileR
 
 data class MobileSecurityState (
     var `bond`: kotlin.String
-    , 
+    ,
     var `encryption`: kotlin.String
-    , 
+    ,
     var `authentication`: kotlin.String
-    , 
+    ,
     var `secureConnections`: kotlin.String
-    , 
+    ,
     var `pairingPossible`: kotlin.Boolean?
-    
+
 ){
-    
 
-    
 
-    
+
+
+
     companion object
 }
 
@@ -3385,15 +3700,15 @@ public object FfiConverterTypeMobileSecurityState: FfiConverterRustBuffer<Mobile
 
 data class MobileServiceData (
     var `uuid`: kotlin.String
-    , 
+    ,
     var `payload`: kotlin.ByteArray
-    
+
 ){
-    
 
-    
 
-    
+
+
+
     companion object
 }
 
@@ -3424,30 +3739,30 @@ public object FfiConverterTypeMobileServiceData: FfiConverterRustBuffer<MobileSe
 
 
 sealed class MobileCoreException: kotlin.Exception() {
-    
+
     class Failed(
-        
-        val `code`: kotlin.String, 
-        
-        val `domain`: kotlin.String, 
-        
-        val `operation`: kotlin.String, 
-        
+
+        val `code`: kotlin.String,
+
+        val `domain`: kotlin.String,
+
+        val `operation`: kotlin.String,
+
         val `detail`: kotlin.String?
         ) : MobileCoreException() {
         override val message
             get() = "code=${ `code` }, domain=${ `domain` }, operation=${ `operation` }, detail=${ `detail` }"
     }
-    
 
-    
+
+
 
 
     companion object ErrorHandler : UniffiRustCallStatusErrorHandler<MobileCoreException> {
         override fun lift(error_buf: RustBuffer.ByValue): MobileCoreException = FfiConverterTypeMobileCoreError.lift(error_buf)
     }
 
-    
+
 }
 
 /**
@@ -3455,7 +3770,7 @@ sealed class MobileCoreException: kotlin.Exception() {
  */
 public object FfiConverterTypeMobileCoreError : FfiConverterRustBuffer<MobileCoreException> {
     override fun read(buf: ByteBuffer): MobileCoreException {
-        
+
 
         return when(buf.getInt()) {
             1 -> MobileCoreException.Failed(
@@ -3499,180 +3814,190 @@ public object FfiConverterTypeMobileCoreError : FfiConverterRustBuffer<MobileCor
 
 
 sealed class MobileRadioCompletion {
-    
+
     object Unit : MobileRadioCompletion()
-    
-    
+
+
     data class Bytes(
         val `value`: kotlin.ByteArray) : MobileRadioCompletion()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class Read(
-        val `value`: kotlin.ByteArray, 
+        val `value`: kotlin.ByteArray,
         val `provenance`: kotlin.String) : MobileRadioCompletion()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class Adapter(
         val `snapshot`: uniffi.ubm_echo.MobileAdapterSnapshot) : MobileRadioCompletion()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class Discovered(
         val `services`: List<uniffi.ubm_echo.MobileGattService>) : MobileRadioCompletion()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class NotifyEnabled(
         val `delivery`: kotlin.String) : MobileRadioCompletion()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class Mtu(
         val `mtu`: kotlin.UShort?) : MobileRadioCompletion()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class WriteLimits(
-        val `withResponse`: kotlin.UShort, 
+        val `withResponse`: kotlin.UShort,
         val `withoutResponse`: kotlin.UShort) : MobileRadioCompletion()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class Rssi(
         val `rssi`: kotlin.Short) : MobileRadioCompletion()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class Accepted(
         val `accepted`: kotlin.Boolean) : MobileRadioCompletion()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class Phy(
-        val `tx`: kotlin.String, 
+        val `tx`: kotlin.String,
         val `rx`: kotlin.String) : MobileRadioCompletion()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class PhyRequest(
-        val `accepted`: kotlin.Boolean, 
-        val `tx`: kotlin.String?, 
+        val `accepted`: kotlin.Boolean,
+        val `tx`: kotlin.String?,
         val `rx`: kotlin.String?) : MobileRadioCompletion()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class Security(
         val `state`: uniffi.ubm_echo.MobileSecurityState) : MobileRadioCompletion()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class BondedPeers(
         val `peers`: List<uniffi.ubm_echo.MobilePeerName>) : MobileRadioCompletion()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class Lease(
         val `leaseId`: kotlin.String) : MobileRadioCompletion()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class Companion(
-        val `associationId`: kotlin.Long, 
-        val `peerId`: kotlin.String?, 
-        val `displayName`: kotlin.String?) : MobileRadioCompletion()
-        
+        val `associationId`: kotlin.Long,
+        val `peerId`: kotlin.String?,
+        val `displayName`: kotlin.String?,
+        val `alreadyAssociated`: kotlin.Boolean) : MobileRadioCompletion()
+
     {
-        
+
 
         companion object
     }
-    
+
+    data class CompanionList(
+        val `records`: List<uniffi.ubm_echo.MobileCompanionRecord>) : MobileRadioCompletion()
+
+    {
+
+
+        companion object
+    }
+
     data class Closed(
         val `failures`: List<uniffi.ubm_echo.MobileCloseFailure>) : MobileRadioCompletion()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class Failed(
-        val `kind`: kotlin.String, 
-        val `gattStatus`: kotlin.Int?, 
-        val `nativeDomain`: kotlin.String?, 
-        val `nativeCode`: kotlin.Long?, 
-        val `detail`: kotlin.String, 
+        val `kind`: kotlin.String,
+        val `gattStatus`: kotlin.Int?,
+        val `nativeDomain`: kotlin.String?,
+        val `nativeCode`: kotlin.Long?,
+        val `detail`: kotlin.String,
         val `dispatched`: kotlin.Boolean) : MobileRadioCompletion()
-        
+
     {
-        
+
 
         companion object
     }
-    
 
-    
 
-    
-    
+
+
+
+
 
 
     companion object
@@ -3736,11 +4061,15 @@ public object FfiConverterTypeMobileRadioCompletion : FfiConverterRustBuffer<Mob
                 FfiConverterLong.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterOptionalString.read(buf),
+                FfiConverterBoolean.read(buf),
                 )
-            17 -> MobileRadioCompletion.Closed(
+            17 -> MobileRadioCompletion.CompanionList(
+                FfiConverterSequenceTypeMobileCompanionRecord.read(buf),
+                )
+            18 -> MobileRadioCompletion.Closed(
                 FfiConverterSequenceTypeMobileCloseFailure.read(buf),
                 )
-            18 -> MobileRadioCompletion.Failed(
+            19 -> MobileRadioCompletion.Failed(
                 FfiConverterString.read(buf),
                 FfiConverterOptionalInt.read(buf),
                 FfiConverterOptionalString.read(buf),
@@ -3869,6 +4198,14 @@ public object FfiConverterTypeMobileRadioCompletion : FfiConverterRustBuffer<Mob
                 + FfiConverterLong.allocationSize(value.`associationId`)
                 + FfiConverterOptionalString.allocationSize(value.`peerId`)
                 + FfiConverterOptionalString.allocationSize(value.`displayName`)
+                + FfiConverterBoolean.allocationSize(value.`alreadyAssociated`)
+            )
+        }
+        is MobileRadioCompletion.CompanionList -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterSequenceTypeMobileCompanionRecord.allocationSize(value.`records`)
             )
         }
         is MobileRadioCompletion.Closed -> {
@@ -3978,15 +4315,21 @@ public object FfiConverterTypeMobileRadioCompletion : FfiConverterRustBuffer<Mob
                 FfiConverterLong.write(value.`associationId`, buf)
                 FfiConverterOptionalString.write(value.`peerId`, buf)
                 FfiConverterOptionalString.write(value.`displayName`, buf)
+                FfiConverterBoolean.write(value.`alreadyAssociated`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.CompanionList -> {
+                buf.putInt(17)
+                FfiConverterSequenceTypeMobileCompanionRecord.write(value.`records`, buf)
                 Unit
             }
             is MobileRadioCompletion.Closed -> {
-                buf.putInt(17)
+                buf.putInt(18)
                 FfiConverterSequenceTypeMobileCloseFailure.write(value.`failures`, buf)
                 Unit
             }
             is MobileRadioCompletion.Failed -> {
-                buf.putInt(18)
+                buf.putInt(19)
                 FfiConverterString.write(value.`kind`, buf)
                 FfiConverterOptionalInt.write(value.`gattStatus`, buf)
                 FfiConverterOptionalString.write(value.`nativeDomain`, buf)
@@ -4004,99 +4347,99 @@ public object FfiConverterTypeMobileRadioCompletion : FfiConverterRustBuffer<Mob
 
 
 sealed class MobileRadioIngress {
-    
+
     data class Advertisement(
         val `advertisement`: uniffi.ubm_echo.MobileAdvertisement) : MobileRadioIngress()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class Connection(
-        val `peerId`: kotlin.String, 
-        val `connected`: kotlin.Boolean, 
+        val `peerId`: kotlin.String,
+        val `connected`: kotlin.Boolean,
         val `status`: kotlin.Int?) : MobileRadioIngress()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class ServicesChanged(
         val `peerId`: kotlin.String) : MobileRadioIngress()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class Notification(
-        val `instance`: uniffi.ubm_echo.MobileInstance, 
-        val `epoch`: kotlin.ULong, 
+        val `instance`: uniffi.ubm_echo.MobileInstance,
+        val `epoch`: kotlin.ULong,
         val `value`: kotlin.ByteArray) : MobileRadioIngress()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class AdapterState(
         val `snapshot`: uniffi.ubm_echo.MobileAdapterSnapshot) : MobileRadioIngress()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class ScanFailed(
         val `detail`: kotlin.String) : MobileRadioIngress()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class SecurityChanged(
-        val `peerId`: kotlin.String, 
+        val `peerId`: kotlin.String,
         val `state`: uniffi.ubm_echo.MobileSecurityState) : MobileRadioIngress()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class Restored(
         val `peers`: List<uniffi.ubm_echo.MobileRestoredPeer>) : MobileRadioIngress()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class Dropped(
-        val `ingressClass`: kotlin.String, 
+        val `ingressClass`: kotlin.String,
         val `detail`: kotlin.String) : MobileRadioIngress()
-        
+
     {
-        
+
 
         companion object
     }
-    
 
-    
 
-    
-    
+
+
+
+
 
 
     companion object
@@ -4279,333 +4622,352 @@ public object FfiConverterTypeMobileRadioIngress : FfiConverterRustBuffer<Mobile
 
 
 sealed class MobileRadioRequest {
-    
+
     data class AdapterState(
         val `id`: kotlin.ULong) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class StartScan(
-        val `id`: kotlin.ULong, 
-        val `serviceUuids`: List<kotlin.String>, 
-        val `deviceAddresses`: List<kotlin.String>, 
-        val `scanMode`: kotlin.String?, 
-        val `callbackType`: kotlin.String?, 
+        val `id`: kotlin.ULong,
+        val `serviceUuids`: List<kotlin.String>,
+        val `deviceAddresses`: List<kotlin.String>,
+        val `scanMode`: kotlin.String?,
+        val `callbackType`: kotlin.String?,
         val `legacy`: kotlin.Boolean?) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class StopScan(
         val `id`: kotlin.ULong) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class Connect(
-        val `id`: kotlin.ULong, 
-        val `peerId`: kotlin.String, 
-        val `autoConnect`: kotlin.Boolean, 
+        val `id`: kotlin.ULong,
+        val `peerId`: kotlin.String,
+        val `autoConnect`: kotlin.Boolean,
         val `preferredPhy`: List<kotlin.String>) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class Disconnect(
-        val `id`: kotlin.ULong, 
+        val `id`: kotlin.ULong,
         val `peerId`: kotlin.String) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class Discover(
-        val `id`: kotlin.ULong, 
+        val `id`: kotlin.ULong,
         val `peerId`: kotlin.String) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class Read(
-        val `id`: kotlin.ULong, 
+        val `id`: kotlin.ULong,
         val `instance`: uniffi.ubm_echo.MobileInstance) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class Write(
-        val `id`: kotlin.ULong, 
-        val `instance`: uniffi.ubm_echo.MobileInstance, 
-        val `value`: kotlin.ByteArray, 
+        val `id`: kotlin.ULong,
+        val `instance`: uniffi.ubm_echo.MobileInstance,
+        val `value`: kotlin.ByteArray,
         val `withResponse`: kotlin.Boolean) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class ReadDescriptor(
-        val `id`: kotlin.ULong, 
-        val `instance`: uniffi.ubm_echo.MobileInstance, 
-        val `descriptorUuid`: kotlin.String, 
+        val `id`: kotlin.ULong,
+        val `instance`: uniffi.ubm_echo.MobileInstance,
+        val `descriptorUuid`: kotlin.String,
         val `descriptorOccurrence`: kotlin.ULong) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class WriteDescriptor(
-        val `id`: kotlin.ULong, 
-        val `instance`: uniffi.ubm_echo.MobileInstance, 
-        val `descriptorUuid`: kotlin.String, 
-        val `descriptorOccurrence`: kotlin.ULong, 
+        val `id`: kotlin.ULong,
+        val `instance`: uniffi.ubm_echo.MobileInstance,
+        val `descriptorUuid`: kotlin.String,
+        val `descriptorOccurrence`: kotlin.ULong,
         val `value`: kotlin.ByteArray) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class EnableNotifications(
-        val `id`: kotlin.ULong, 
-        val `instance`: uniffi.ubm_echo.MobileInstance, 
-        val `epoch`: kotlin.ULong, 
-        val `requested`: kotlin.String?, 
+        val `id`: kotlin.ULong,
+        val `instance`: uniffi.ubm_echo.MobileInstance,
+        val `epoch`: kotlin.ULong,
+        val `requested`: kotlin.String?,
         val `preferred`: kotlin.String?) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class DisableNotifications(
-        val `id`: kotlin.ULong, 
+        val `id`: kotlin.ULong,
         val `instance`: uniffi.ubm_echo.MobileInstance) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class ReadMtu(
-        val `id`: kotlin.ULong, 
+        val `id`: kotlin.ULong,
         val `peerId`: kotlin.String) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class ReadWriteLimits(
-        val `id`: kotlin.ULong, 
+        val `id`: kotlin.ULong,
         val `peerId`: kotlin.String) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class RequestMtu(
-        val `id`: kotlin.ULong, 
-        val `peerId`: kotlin.String, 
+        val `id`: kotlin.ULong,
+        val `peerId`: kotlin.String,
         val `mtu`: kotlin.UShort) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class ReadRssi(
-        val `id`: kotlin.ULong, 
+        val `id`: kotlin.ULong,
         val `peerId`: kotlin.String) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class RequestConnectionPriority(
-        val `id`: kotlin.ULong, 
-        val `peerId`: kotlin.String, 
+        val `id`: kotlin.ULong,
+        val `peerId`: kotlin.String,
         val `priority`: kotlin.String) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class ReadPhy(
-        val `id`: kotlin.ULong, 
+        val `id`: kotlin.ULong,
         val `peerId`: kotlin.String) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class RequestPhy(
-        val `id`: kotlin.ULong, 
-        val `peerId`: kotlin.String, 
-        val `tx`: kotlin.String?, 
+        val `id`: kotlin.ULong,
+        val `peerId`: kotlin.String,
+        val `tx`: kotlin.String?,
         val `rx`: kotlin.String?) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class SecurityState(
-        val `id`: kotlin.ULong, 
+        val `id`: kotlin.ULong,
         val `peerId`: kotlin.String) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class CreateBond(
-        val `id`: kotlin.ULong, 
-        val `peerId`: kotlin.String, 
+        val `id`: kotlin.ULong,
+        val `peerId`: kotlin.String,
         val `transport`: kotlin.String) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class CancelBond(
-        val `id`: kotlin.ULong, 
+        val `id`: kotlin.ULong,
         val `peerId`: kotlin.String) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class BondedPeers(
         val `id`: kotlin.ULong) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class AcquireBackground(
-        val `id`: kotlin.ULong, 
-        val `kind`: kotlin.String, 
+        val `id`: kotlin.ULong,
+        val `kind`: kotlin.String,
         val `reason`: kotlin.String) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class ReleaseBackground(
-        val `id`: kotlin.ULong, 
+        val `id`: kotlin.ULong,
         val `leaseId`: kotlin.String) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class UpdateBackgroundNotification(
-        val `id`: kotlin.ULong, 
-        val `leaseId`: kotlin.String, 
-        val `title`: kotlin.String, 
+        val `id`: kotlin.ULong,
+        val `leaseId`: kotlin.String,
+        val `title`: kotlin.String,
         val `body`: kotlin.String?) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class AssociateCompanion(
-        val `id`: kotlin.ULong, 
-        val `name`: kotlin.String?, 
+        val `id`: kotlin.ULong,
+        val `name`: kotlin.String?,
         val `serviceUuid`: kotlin.String?) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
+    data class ListCompanion(
+        val `id`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class DisassociateCompanion(
+        val `id`: kotlin.ULong,
+        val `associationId`: kotlin.Long) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
     data class ObservePresence(
-        val `id`: kotlin.ULong, 
+        val `id`: kotlin.ULong,
         val `peerId`: kotlin.String) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class StopPresence(
-        val `id`: kotlin.ULong, 
+        val `id`: kotlin.ULong,
         val `peerId`: kotlin.String) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
+
     data class Close(
         val `id`: kotlin.ULong) : MobileRadioRequest()
-        
+
     {
-        
+
 
         companion object
     }
-    
 
-    
 
-    
-    
+
+
+
+
 
 
     companion object
@@ -4747,15 +5109,22 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 FfiConverterOptionalString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 )
-            28 -> MobileRadioRequest.ObservePresence(
+            28 -> MobileRadioRequest.ListCompanion(
+                FfiConverterULong.read(buf),
+                )
+            29 -> MobileRadioRequest.DisassociateCompanion(
+                FfiConverterULong.read(buf),
+                FfiConverterLong.read(buf),
+                )
+            30 -> MobileRadioRequest.ObservePresence(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 )
-            29 -> MobileRadioRequest.StopPresence(
+            31 -> MobileRadioRequest.StopPresence(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 )
-            30 -> MobileRadioRequest.Close(
+            32 -> MobileRadioRequest.Close(
                 FfiConverterULong.read(buf),
                 )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
@@ -5001,6 +5370,21 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 + FfiConverterOptionalString.allocationSize(value.`serviceUuid`)
             )
         }
+        is MobileRadioRequest.ListCompanion -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+            )
+        }
+        is MobileRadioRequest.DisassociateCompanion -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterLong.allocationSize(value.`associationId`)
+            )
+        }
         is MobileRadioRequest.ObservePresence -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
@@ -5212,20 +5596,31 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 FfiConverterOptionalString.write(value.`serviceUuid`, buf)
                 Unit
             }
-            is MobileRadioRequest.ObservePresence -> {
+            is MobileRadioRequest.ListCompanion -> {
                 buf.putInt(28)
+                FfiConverterULong.write(value.`id`, buf)
+                Unit
+            }
+            is MobileRadioRequest.DisassociateCompanion -> {
+                buf.putInt(29)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterLong.write(value.`associationId`, buf)
+                Unit
+            }
+            is MobileRadioRequest.ObservePresence -> {
+                buf.putInt(30)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`peerId`, buf)
                 Unit
             }
             is MobileRadioRequest.StopPresence -> {
-                buf.putInt(29)
+                buf.putInt(31)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`peerId`, buf)
                 Unit
             }
             is MobileRadioRequest.Close -> {
-                buf.putInt(30)
+                buf.putInt(32)
                 FfiConverterULong.write(value.`id`, buf)
                 Unit
             }
@@ -5240,9 +5635,9 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
 
 
 public interface MobileInvokeCompletion {
-    
+
     fun `complete`(`envelope`: kotlin.String)
-    
+
     companion object
 }
 
@@ -5300,11 +5695,11 @@ public object FfiConverterTypeMobileInvokeCompletion: FfiConverterCallbackInterf
 
 
 public interface MobilePlatformRadio {
-    
+
     fun `submit`(`request`: MobileRadioRequest)
-    
+
     fun `cancel`(`requestId`: kotlin.ULong)
-    
+
     companion object
 }
 
@@ -5375,9 +5770,9 @@ public object FfiConverterTypeMobilePlatformRadio: FfiConverterCallbackInterface
 
 
 public interface MobileWakeSink {
-    
+
     fun `wake`(`sessionId`: kotlin.ULong)
-    
+
     companion object
 }
 
@@ -5748,6 +6143,34 @@ public object FfiConverterSequenceTypeMobileCloseFailure: FfiConverterRustBuffer
 /**
  * @suppress
  */
+public object FfiConverterSequenceTypeMobileCompanionRecord: FfiConverterRustBuffer<List<MobileCompanionRecord>> {
+    override fun read(buf: ByteBuffer): List<MobileCompanionRecord> {
+        val len = buf.getInt()
+        return List<MobileCompanionRecord>(len) {
+            FfiConverterTypeMobileCompanionRecord.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<MobileCompanionRecord>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeMobileCompanionRecord.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<MobileCompanionRecord>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeMobileCompanionRecord.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterSequenceTypeMobileGattCharacteristic: FfiConverterRustBuffer<List<MobileGattCharacteristic>> {
     override fun read(buf: ByteBuffer): List<MobileGattCharacteristic> {
         val len = buf.getInt()
@@ -5940,39 +6363,39 @@ public object FfiConverterSequenceTypeMobileServiceData: FfiConverterRustBuffer<
             return FfiConverterString.lift(
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_build_identity_json(
-    
+
         _status)
 }
     )
     }
-    
+
  fun `mobileContractRevision`(): kotlin.String {
             return FfiConverterString.lift(
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_contract_revision(
-    
+
         _status)
 }
     )
     }
-    
+
  fun `mobileHostCurrent`(): MobileCoreHost? {
             return FfiConverterOptionalTypeMobileCoreHost.lift(
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_current(
-    
+
         _status)
 }
     )
     }
-    
+
 
     @Throws(MobileCoreException::class) fun `mobileHostInstall`(`radio`: MobilePlatformRadio, `wake`: MobileWakeSink, `platform`: kotlin.String, `owner`: kotlin.String, `adapterLabel`: kotlin.String): MobileCoreHost {
             return FfiConverterTypeMobileCoreHost.lift(
     uniffiRustCallWithError(MobileCoreException) { _status ->
     UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_host_install(
-    
-        
+
+
         FfiConverterTypeMobilePlatformRadio.lower(`radio`),
         FfiConverterTypeMobileWakeSink.lower(`wake`),
         FfiConverterString.lower(`platform`),
@@ -5981,16 +6404,42 @@ public object FfiConverterSequenceTypeMobileServiceData: FfiConverterRustBuffer<
 }
     )
     }
-    
+
+ fun `mobileRecordingConfigureDirectory`(`path`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_recording_configure_directory(
+
+
+        FfiConverterString.lower(`path`),_status)
+}
+    )
+    }
+
+ fun `mobileRecordingControl`(`operation`: kotlin.String, `id`: kotlin.String, `token`: kotlin.String, `maxItems`: kotlin.UInt, `maxBytes`: kotlin.UInt): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_recording_control(
+
+
+        FfiConverterString.lower(`operation`),
+        FfiConverterString.lower(`id`),
+        FfiConverterString.lower(`token`),
+        FfiConverterUInt.lower(`maxItems`),
+        FfiConverterUInt.lower(`maxBytes`),_status)
+}
+    )
+    }
+
  fun `mobileWireRevision`(): kotlin.String {
             return FfiConverterString.lift(
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_ubm5_uniffi_echo_fn_func_mobile_wire_revision(
-    
+
         _status)
 }
     )
     }
-    
+
 
 

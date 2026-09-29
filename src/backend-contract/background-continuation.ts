@@ -10,12 +10,23 @@
 // `native` (reconnect the declared known peer + resubscribe the declared
 // characteristics through the Rust core, no JavaScript), `headless-task` (run
 // the registered headless JS task, Android), `foreground-service` (start the
-// configured connected-device foreground service from the wake). The deferred
-// strategies keep their validated option shape here so rc.1 adds executors
-// with no breaking change; until then they answer `capability.unsupported`
-// with "not implemented in this release" — never "the platform cannot".
+// configured connected-device foreground service from the wake). Task/service
+// mechanisms are Android-specific; runtime admission reports the actual OS
+// refusal and dispatch acceptance never claims application-task completion.
 
 import { contractError } from './errors'
+import { normalizeContinuationSelector, type BackgroundContinuationResubscribeSelector } from './continuation-selector'
+import {
+  normalizeContinuationSetup,
+  serializeContinuationSetup,
+  normalizeContinuationLink,
+  normalizeContinuationRecording,
+  type ContinuationRecordingConfiguration,
+  type ContinuationSetupStep,
+  type ContinuationLinkConfiguration
+} from './continuation-setup'
+export type { BackgroundContinuationResubscribeSelector } from './continuation-selector'
+export type { ContinuationSetupStep, ContinuationSetupResponse } from './continuation-setup'
 
 /** Wake strategies in declaration order. `record-only` is the default. */
 export const CONTINUATION_STRATEGIES = Object.freeze([
@@ -42,22 +53,13 @@ export type BackgroundContinuationFeatureId =
  * Wake outcome vocabulary. ONE vocabulary on both hosts: the wake reports
  * `continuation.completed` or `continuation.failed` with the platform's own
  * detail underneath — the same event names and words on Android and iOS.
- * iOS parity arrives in rc.1; these names are designed so the Apple path
- * reports the same events.
+ * Both native mobile adapters report the shared executor's outcome.
  */
 export const CONTINUATION_OUTCOME_EVENTS = Object.freeze(['continuation.completed', 'continuation.failed'] as const)
 
 export type BackgroundContinuationOutcomeEvent = (typeof CONTINUATION_OUTCOME_EVENTS)[number]
 
-/** One declared GATT resubscription for the `native` standing order. */
-export interface BackgroundContinuationResubscribeSelector {
-  readonly serviceUuid: string
-  readonly serviceOccurrence: number
-  readonly characteristicUuid: string
-  readonly characteristicOccurrence: number
-}
-
-/** Foreground-service configuration for the deferred `foreground-service` strategy. */
+/** Foreground-service configuration for Android's explicit wake strategy. */
 export interface BackgroundContinuationForegroundService {
   readonly notification: {
     readonly channelId: string
@@ -71,9 +73,15 @@ export interface BackgroundContinuationForegroundService {
 /** The declared standing order: what one OS wake may do, and to what. */
 export interface BackgroundContinuationDeclaration {
   readonly onAppearance: BackgroundContinuationStrategy
-  /** Uppercase MAC subject; absent scopes the order to whichever armed peer appears. */
+  /** Mobile: Android MAC or Apple peripheral UUID. Trusted desktop hosts use
+   * the exact radio identity, including adapter-scoped BlueZ IDs. Absent
+   * scopes a mobile order to the armed peer that appears. */
   readonly peerId?: string
   readonly resubscribe: readonly BackgroundContinuationResubscribeSelector[]
+  /** Native-only bounded application setup, after subscriptions, once per database generation. */
+  readonly setup?: readonly ContinuationSetupStep[]
+  readonly link?: ContinuationLinkConfiguration
+  readonly recording?: ContinuationRecordingConfiguration
   readonly headlessTaskName?: string
   readonly foregroundService?: BackgroundContinuationForegroundService
 }
@@ -97,14 +105,11 @@ const DECLARATION_KEYS = Object.freeze([
   'onAppearance',
   'peerId',
   'resubscribe',
+  'setup',
+  'link',
+  'recording',
   'headlessTaskName',
   'foregroundService'
-])
-const SELECTOR_KEYS = Object.freeze([
-  'serviceUuid',
-  'serviceOccurrence',
-  'characteristicUuid',
-  'characteristicOccurrence'
 ])
 const FOREGROUND_SERVICE_KEYS = Object.freeze(['notification'])
 const NOTIFICATION_KEYS = Object.freeze(['channelId', 'channelName', 'title', 'body', 'icon'])
@@ -128,41 +133,6 @@ function nonEmptyString(value: unknown, label: string): string {
     throw contractError('argument.invalid', 'restoration', label)
   }
   return value
-}
-
-function occurrence(value: unknown, label: string): number {
-  if (value === undefined) return 1
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
-    throw contractError('argument.invalid', 'restoration', label)
-  }
-  return value
-}
-
-function canonicalUuid(value: unknown, label: string): string {
-  const text = nonEmptyString(value, label)
-  if (!UUID_PATTERN.test(text)) {
-    throw contractError('argument.invalid', 'restoration', label)
-  }
-  return text.toLowerCase()
-}
-
-function selector(value: unknown): BackgroundContinuationResubscribeSelector {
-  if (!isPlainRecord(value)) {
-    throw contractError('argument.invalid', 'restoration', 'background.continuation.resubscribe.entry')
-  }
-  rejectUnknownKeys(value, SELECTOR_KEYS, 'background.continuation.resubscribe.entry')
-  return Object.freeze({
-    serviceUuid: canonicalUuid(value.serviceUuid, 'background.continuation.resubscribe.serviceUuid'),
-    serviceOccurrence: occurrence(value.serviceOccurrence, 'background.continuation.resubscribe.serviceOccurrence'),
-    characteristicUuid: canonicalUuid(
-      value.characteristicUuid,
-      'background.continuation.resubscribe.characteristicUuid'
-    ),
-    characteristicOccurrence: occurrence(
-      value.characteristicOccurrence,
-      'background.continuation.resubscribe.characteristicOccurrence'
-    )
-  })
 }
 
 function notification(value: unknown): BackgroundContinuationForegroundService['notification'] {
@@ -198,19 +168,51 @@ function notification(value: unknown): BackgroundContinuationForegroundService['
  * and unknown keys are refused — never replaced with a quieter path.
  */
 export function normalizeBackgroundContinuation(input: unknown): BackgroundContinuationDeclaration {
+  return normalizeContinuation(input, 'mobile')
+}
+
+/** Trusted process-host declaration: radio IDs are opaque and preserved.
+ * Platform-specific admission remains the selected radio's authority. */
+export function normalizeHostBackgroundContinuation(input: unknown): BackgroundContinuationDeclaration {
+  return normalizeContinuation(input, 'host')
+}
+
+function normalizeContinuation(input: unknown, peerPolicy: 'mobile' | 'host'): BackgroundContinuationDeclaration {
   if (input === undefined) return DEFAULT_BACKGROUND_CONTINUATION
   if (!isPlainRecord(input)) {
     throw contractError('argument.invalid', 'restoration', 'background.continuation')
   }
   rejectUnknownKeys(input, DECLARATION_KEYS, 'background.continuation')
   const onAppearance = input.onAppearance === undefined ? 'record-only' : input.onAppearance
-  if (typeof onAppearance !== 'string' || !(CONTINUATION_STRATEGIES as readonly string[]).includes(onAppearance)) {
+  if (
+    onAppearance !== 'record-only' &&
+    onAppearance !== 'native' &&
+    onAppearance !== 'headless-task' &&
+    onAppearance !== 'foreground-service'
+  ) {
     throw contractError('argument.invalid', 'restoration', 'background.continuation.onAppearance')
   }
-  const strategy = onAppearance as BackgroundContinuationStrategy
-  const peerId = input.peerId === undefined ? undefined : normalizePeerAddress(input.peerId)
+  const strategy = onAppearance
+  const peerId =
+    input.peerId === undefined
+      ? undefined
+      : peerPolicy === 'mobile'
+        ? normalizePeerAddress(input.peerId)
+        : normalizeHostPeerIdentity(input.peerId)
   const resubscribe =
     input.resubscribe === undefined ? Object.freeze([]) : Object.freeze(normalizeResubscribe(input.resubscribe))
+  if (input.setup !== undefined && strategy !== 'native') {
+    throw contractError('argument.invalid', 'restoration', 'background.continuation.setup.strategy')
+  }
+  const setup = input.setup === undefined ? undefined : normalizeContinuationSetup(input.setup, resubscribe.length)
+  if (input.link !== undefined && strategy !== 'native') {
+    throw contractError('argument.invalid', 'restoration', 'background.continuation.link.strategy')
+  }
+  const link = input.link === undefined ? undefined : normalizeContinuationLink(input.link)
+  if (input.recording !== undefined && strategy !== 'native') {
+    throw contractError('argument.invalid', 'restoration', 'background.continuation.recording.strategy')
+  }
+  const recording = input.recording === undefined ? undefined : normalizeContinuationRecording(input.recording)
   const headlessTaskName =
     input.headlessTaskName === undefined
       ? undefined
@@ -233,6 +235,9 @@ export function normalizeBackgroundContinuation(input: unknown): BackgroundConti
     onAppearance: strategy,
     ...(peerId === undefined ? {} : { peerId }),
     resubscribe,
+    ...(setup === undefined ? {} : { setup }),
+    ...(link === undefined ? {} : { link }),
+    ...(recording === undefined ? {} : { recording }),
     ...(headlessTaskName === undefined ? {} : { headlessTaskName }),
     ...(foregroundService === undefined ? {} : { foregroundService })
   })
@@ -240,10 +245,22 @@ export function normalizeBackgroundContinuation(input: unknown): BackgroundConti
 
 function normalizePeerAddress(value: unknown): string {
   const text = nonEmptyString(value, 'background.continuation.peerId')
-  if (!MAC_PATTERN.test(text)) {
+  if (!MAC_PATTERN.test(text) && !UUID_PATTERN.test(text)) {
     throw contractError('argument.invalid', 'restoration', 'background.continuation.peerId')
   }
   return text.toUpperCase()
+}
+
+function normalizeHostPeerIdentity(value: unknown): string {
+  const text = nonEmptyString(value, 'background.continuation.peerId')
+  if (
+    text.length > 1024 ||
+    text.trim() !== text ||
+    [...text].some(character => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
+  ) {
+    throw contractError('argument.invalid', 'restoration', 'background.continuation.peerId')
+  }
+  return text
 }
 
 function normalizeResubscribe(value: unknown): BackgroundContinuationResubscribeSelector[] {
@@ -253,7 +270,7 @@ function normalizeResubscribe(value: unknown): BackgroundContinuationResubscribe
   if (value.length > 64) {
     throw contractError('argument.invalid', 'restoration', 'background.continuation.resubscribe.too-many')
   }
-  return value.map(selector)
+  return value.map(entry => normalizeContinuationSelector(entry))
 }
 
 /**
@@ -271,6 +288,9 @@ export function serializeBackgroundContinuation(declaration: BackgroundContinuat
       characteristicUuid: entry.characteristicUuid,
       characteristicOccurrence: entry.characteristicOccurrence
     })),
+    ...(declaration.setup === undefined ? {} : { setup: serializeContinuationSetup(declaration.setup) }),
+    ...(declaration.link === undefined ? {} : { link: declaration.link }),
+    ...(declaration.recording === undefined ? {} : { recording: declaration.recording }),
     ...(declaration.headlessTaskName === undefined ? {} : { headlessTaskName: declaration.headlessTaskName }),
     ...(declaration.foregroundService === undefined ? {} : { foregroundService: declaration.foregroundService })
   })

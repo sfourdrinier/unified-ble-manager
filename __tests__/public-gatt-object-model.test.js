@@ -11,6 +11,7 @@ const { createDeterministicTestBackend } = require('../src/testing/deterministic
 const { opaqueId, version, versionRange } = require('../src/backend-contract/primitives')
 const { capacity } = require('../src/backend-contract/primitives')
 const { CoreBoundedStream } = require('../src/core/bounded-stream')
+const { driveVirtualClock } = require('./helpers/async')
 
 function compatibility() {
   return {
@@ -58,20 +59,7 @@ async function createPublicFixture(observedDeliveryOverride, onNativeSubscribe) 
 }
 
 async function settle(fixture, promise) {
-  let settled = false
-  void promise.then(
-    () => {
-      settled = true
-    },
-    () => {
-      settled = true
-    }
-  )
-  for (let attempt = 0; attempt < 20 && !settled; attempt += 1) {
-    fixture.controller.clock.runUntilIdle()
-    await Promise.resolve()
-  }
-  return promise
+  return driveVirtualClock(fixture.controller.clock, promise, 'public GATT operation')
 }
 
 async function connectAndDiscover(fixture, manager) {

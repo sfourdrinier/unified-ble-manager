@@ -9,7 +9,7 @@ The Rust plugin owns the radio (btleplug: CoreBluetooth, WinRT, or BlueZ). The w
 ## Install
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.12 @tauri-apps/api
+pnpm add unified-ble-manager@5.0.0-rc.13 @tauri-apps/api
 ```
 
 Use the Rust plugin source shipped in the same npm package. In the normal
@@ -158,6 +158,20 @@ Connected RSSI (`connection.rssi`) is the OS measurement of the live link, read 
 
 ## Adapter
 
+On Linux, trusted Rust setup must also supply
+`BtleplugDispatcherOptions::connection_policy` as
+`Some(tauri_plugin_unified_ble_manager::BluezConnectionPolicy::LeBearer { daemon_unique_owner })`.
+This attests that the current unique D-Bus owner of `org.bluez` implements the
+LE-only bearer lifecycle API. Introspection alone is insufficient (including
+BlueZ 5.85's placeholder interface). Without attestation scanning remains
+available but connections are unsupported. No renderer option, privileged
+shell command or device-wide fallback supplies this authority. A daemon restart
+invalidates the owner pin. See [BlueZ setup and migration](NODE.md#bluez-connection-policy-bus-and-pairing-generation).
+
+The bootstrap capability snapshot preserves the instantiated central's
+connection refusal and reason, including an omitted LE attestation; the webview
+does not receive a generic platform-level connection claim in its place.
+
 The attachment and `adapter.state` come from the one shared central; the plugin opens no second btleplug manager (on macOS, no second `CBCentralManager`). `BtleplugDispatcherOptions::adapter_id` names the adapter by the identity `ubm_desktop::btleplug_backend::list_adapters` reports (BlueZ `hci0`, the Windows adapter device id, `CoreBluetooth` on macOS). Without a name the sole adapter is used; with several adapters the first BLE operation fails `adapter.ambiguous`, and a name that matches none fails `adapter.selection-required`.
 
 `adapter.state` reports what the OS reported through the core: `power` is `on`, `off`, `resetting`, `unsupported` or `unknown`; `unsupported` power makes the adapter `unsupported` with authorization `unavailable`; macOS `Unauthorized` is authorization `denied` with power `unknown`. `authorization` is `granted`, `denied`, `restricted` or `not-determined` where the OS has the concept (macOS, Windows) and `unknown` with the reason in `safeReason` where it does not (BlueZ). A removed adapter is `unavailable`. `heard` is the radio's own peer list.
@@ -193,6 +207,66 @@ pairing implementation and matching TCK/evidence are added.
 
 See [`example-tauri/`](../example-tauri/) for a small public-API proof.
 
+## Native continuation owned by the Rust host
+
+Keep a clone of the **same** `BtleplugDispatcher` passed to `PluginBuilder`.
+Its trusted Rust methods run continuation on the dispatcher's existing central;
+they do not construct another radio or grant a webview new IPC authority.
+
+```rust
+use tauri_plugin_unified_ble_manager::{BtleplugDispatcher, PluginBuilder};
+
+let dispatcher = BtleplugDispatcher::default();
+let continuation_host = dispatcher.clone();
+let builder = tauri::Builder::default()
+    .plugin(PluginBuilder::new(dispatcher).build());
+// Retain continuation_host in your trusted application state. From an async
+// startup or explicit OS-wake integration, call its methods below.
+```
+
+`continuation_host.continuation_execute(peer_id, declaration_json).await` accepts
+the exact peer identity reported by the central; do not rewrite its casing. Use
+the same `onAppearance: "native"`, known `peerId`, and canonical UUID/occurrence
+`resubscribe` declaration as [Node continuation](NODE.md#native-continuation-in-a-trusted-process-host).
+`continuation_describe_backlog().await` reports the queued-data count and the
+shared native supervisor's last outcome. Native collection and permitted
+recovery continue when the webview is absent, as long as the Rust host lives.
+
+For handoff, call `continuation_prepare_claim(max_items, max_bytes).await`.
+Validate and retain all returned batches and their loss accounting **before**
+calling `continuation_acknowledge_claim(claim_token).await`. Repeated prepare
+before acknowledgement returns the same prepared batch. An incomplete prefix
+is acknowledged before preparing its retained tail; a refused disposal remains
+owned and retryable. Never acknowledge data you could not decode, and never
+equate a requested release with a successful receipt.
+
+These methods return structured `Result<serde_json::Value, serde_json::Value>`
+answers; preserve failures rather than replacing them with an empty backlog.
+No renderer route is added: expose host-approved operations only through your
+own authenticated application policy. On final application shutdown,
+`authority_shutdown().await` stops native recovery and reports central cleanup.
+
+The default queue is volatile, but a trusted Rust host can opt into durable
+recording. Call `continuation_configure_recording_directory(&private_path)`
+before a declaration containing `recording: { id, maxBytes, maxRecords }`.
+The independent journal registry is available without radio initialization:
+`continuation_recording_status(id)`,
+`continuation_recording_prepare(id, max_items, max_bytes)`,
+`continuation_recording_acknowledge(id, token)`,
+`continuation_recording_stop(id)` and `continuation_recording_clear(id)` are
+async trusted-host methods. Save/process a prepared prefix before explicitly
+acknowledging it; a native claim never consumes durable records. Recording stop
+does not release a radio. The same registry is used if a radio owner is later
+created, rather than opening an unrelated store beside it. Paths are host-only,
+and these methods do not create a new renderer route. The journal is plaintext,
+bounded and explicit about storage failures; see [background recording](BACKGROUND.md).
+
+Collection still requires the Rust process to run: durable disk records do not
+make OS relaunch automatic. The application supplies any OS startup/wake registration and
+persists its standing declaration; UBM does not install or escalate a service.
+The bounded native queue reports overflow and cutoff loss. Physical-radio
+qualification remains separate from deterministic and compile evidence.
+
 ## Maintainers
 
-[`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md), [`PLATFORMS.md`](PLATFORMS.md).
+[Current 5.0 authority](README.md#current-50-authority), [`PLATFORMS.md`](PLATFORMS.md).

@@ -4,25 +4,33 @@
 // the Expo manager factory with its readiness/permission step and background
 // lease, React Native AppState, the RN WebSocket, and the driver URL derived
 // from the Metro bundle. The scenarios themselves are the shared ones, and in
-// development builds the remote channel lets the control server drive them.
+// development, or explicitly opted-in Release, builds the remote channel
+// lets the control server drive them.
 
 /// <reference types="expo/types" />
 
 import { AppState, Platform, TurboModuleRegistry, type AppStateStatus, type TurboModule } from 'react-native'
 import { resolveExpoDriverPlatform } from './expo-driver-platform.ts'
-import { createExpoBleManager, type BleReadinessAction, type ExpoBleManager } from 'unified-ble-manager/expo'
+import { headlessHistory } from './register-headless-continuation.ts'
+import { createReferenceNativeContinuation, type ReferenceNativeContinuationModule } from './native-continuation.ts'
+import { createNativeContinuationControl } from 'unified-ble-manager/backend-sdk'
+import { createReactNativeRustCoreBinding } from 'unified-ble-manager/react-native'
+import {
+  createExpoBleManager,
+  createReactNativeContinuationRecordings,
+  type BleReadinessAction,
+  type ExpoBleManager
+} from 'unified-ble-manager/expo'
+import type { BackgroundContinuationDeclaration } from 'unified-ble-manager'
 import ubmPackage from 'unified-ble-manager/package.json'
 import {
-  DRIVER_PORT,
-  DRIVER_HOST_PATH,
   ScenarioError,
   createConsoleRuntime,
   createRemoteDriver,
   createScenarioRegistry,
   describeError,
   disposeDriver,
-  driverUrlFromScriptUrl,
-  explicitDriverUrl,
+  resolvePhoneDriverUrl,
   hostLabel,
   toJsonObject,
   toJsonValue,
@@ -31,7 +39,6 @@ import {
   type DriverHost,
   type DriverSocket,
   type DriverSocketHandlers,
-  type DriverUrlResolution,
   type HostManager,
   type HostReport,
   type JsonObject,
@@ -80,7 +87,11 @@ function appBuild(): JsonObject {
 async function prepareExpo(manager: ExpoBleManager, report: HostReport): Promise<void> {
   for (let round = 0; round < 3; round += 1) {
     const readiness = await manager.readiness()
-    report('readiness', { state: readiness.state, actions: toJsonValue(readiness.actions), adapter: toJsonValue(readiness.adapter) })
+    report('readiness', {
+      state: readiness.state,
+      actions: toJsonValue(readiness.actions),
+      adapter: toJsonValue(readiness.adapter)
+    })
     if (readiness.state === 'ready') return
     const permission = readiness.actions.find(action => action.kind === 'request-permission')
     if (permission !== undefined && permission.permission === 'bluetooth') {
@@ -126,8 +137,14 @@ function describeReadinessAction(action: BleReadinessAction): string {
   }
 }
 
-async function createExpoHostManager(instanceId: string): Promise<HostManager> {
-  const manager = await createExpoBleManager({ instanceId })
+async function createExpoHostManager(
+  instanceId: string,
+  continuation?: BackgroundContinuationDeclaration
+): Promise<HostManager> {
+  const manager = await createExpoBleManager({
+    instanceId,
+    ...(continuation === undefined ? {} : { background: { continuation } })
+  })
   return {
     manager,
     prepare: report => prepareExpo(manager, report),
@@ -158,12 +175,36 @@ const reactNativeAppState: AppStateSource = {
 }
 
 const facts = deviceFacts()
-const identity = { host: 'expo', platform: facts.platform, backend: `expo/${facts.platform}`, model: facts.model, osVersion: facts.osVersion, appBuild: appBuild() } as const
+const identity = {
+  host: 'expo',
+  platform: facts.platform,
+  backend: `expo/${facts.platform}`,
+  model: facts.model,
+  osVersion: facts.osVersion,
+  appBuild: appBuild()
+} as const
+const nativeContinuationModule = TurboModuleRegistry.get<ReferenceNativeContinuationModule>('UBMReferenceContinuation')
+const nativeContinuation =
+  nativeContinuationModule === null || (Platform.OS !== 'android' && Platform.OS !== 'ios')
+    ? undefined
+    : createReferenceNativeContinuation(
+        nativeContinuationModule,
+        () =>
+          createReactNativeRustCoreBinding({
+            platform: Platform.OS === 'android' ? 'android' : 'apple'
+          }).verifyNativeIdentity(),
+        createNativeContinuationControl,
+        createReactNativeContinuationRecordings
+      )
 
 export const expoDriverHost: DriverHost = {
   identity,
   runtime: createConsoleRuntime(hostLabel(identity)),
   createManager: createExpoHostManager,
+  configureContinuation: declaration => createExpoHostManager('continuation-configure', declaration),
+  continuationRecordings: createReactNativeContinuationRecordings,
+  ...(nativeContinuation === undefined ? {} : { nativeContinuation }),
+  ...(Platform.OS === 'android' ? { readHeadlessContinuationHistory: () => headlessHistory.read() } : {}),
   appState: reactNativeAppState,
   userGesture: null
 }
@@ -175,34 +216,28 @@ interface SourceCodeModule extends TurboModule {
   getConstants(): { scriptURL: string | null }
 }
 
-function resolveDriverUrl(): DriverUrlResolution {
-  const explicit = explicitDriverUrl(process.env.EXPO_PUBLIC_UBM_DRIVER_URL, 'EXPO_PUBLIC_UBM_DRIVER_URL')
-  if (explicit !== null) return explicit
-  const scriptUrl = TurboModuleRegistry.get<SourceCodeModule>('SourceCode')?.getConstants().scriptURL ?? null
-  const url = driverUrlFromScriptUrl(scriptUrl)
-  return url === null
-    ? {
-        url: null,
-        reason: `bundle was not served by Metro (${scriptUrl ?? 'no SourceCode.scriptURL'}); set EXPO_PUBLIC_UBM_DRIVER_URL=ws://<mac>:${DRIVER_PORT.toString()}${DRIVER_HOST_PATH}`
-      }
-    : { url, reason: 'derived from the Metro bundle URL' }
-}
-
 function reactNativeSocket(url: string, handlers: DriverSocketHandlers): DriverSocket {
   const socket = new WebSocket(url)
   socket.onopen = () => handlers.onOpen()
   socket.onmessage = event => handlers.onMessage(event.data)
-  socket.onerror = event => handlers.onError('message' in event && typeof event.message === 'string' ? event.message : 'WebSocket error')
+  socket.onerror = event =>
+    handlers.onError('message' in event && typeof event.message === 'string' ? event.message : 'WebSocket error')
   socket.onclose = event => handlers.onClose(event.code, event.reason)
   return { send: text => socket.send(text), close: () => socket.close() }
 }
 
 function createAppRemoteDriver(): RemoteDriverChannel | null {
-  if (!__DEV__) return null
-  return createRemoteDriver(expoDriverHost, scenarioRegistry, { ...resolveDriverUrl(), createSocket: reactNativeSocket })
+  const resolution = resolvePhoneDriverUrl({
+    development: __DEV__,
+    explicitUrl: process.env.EXPO_PUBLIC_UBM_DRIVER_URL,
+    source: 'EXPO_PUBLIC_UBM_DRIVER_URL',
+    readScriptUrl: () => TurboModuleRegistry.get<SourceCodeModule>('SourceCode')?.getConstants().scriptURL ?? null
+  })
+  if (resolution === null) return null
+  return createRemoteDriver(expoDriverHost, scenarioRegistry, { ...resolution, createSocket: reactNativeSocket })
 }
 
-/** Null in release builds: the remote channel exists only in development builds. */
+/** Release requires an explicit endpoint; absent configuration never opens a remote channel. */
 export const remoteDriver = createAppRemoteDriver()
 
 declare global {
@@ -220,7 +255,10 @@ declare global {
 // await this callback, so a cleanup failure is reported here (disposeDriver
 // has already logged its report), never left as a silent rejection.
 module.hot?.dispose(() => {
-  disposeDriver({ remote: remoteDriver, registry: scenarioRegistry, runtime: expoDriverHost.runtime }, 'fast-refresh-dispose').catch((error: unknown) => {
+  disposeDriver(
+    { remote: remoteDriver, registry: scenarioRegistry, runtime: expoDriverHost.runtime },
+    'fast-refresh-dispose'
+  ).catch((error: unknown) => {
     console.error('[driver] Fast Refresh dispose left resources behind', JSON.stringify(describeError(error)))
   })
 })

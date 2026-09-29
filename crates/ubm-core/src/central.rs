@@ -663,7 +663,9 @@ pub fn step_database(
             Ok(DatabaseState::Undiscovered)
         }
         (DatabaseState::Discovering, DatabaseEvent::ConnectionLoss) => Ok(DatabaseState::Invalid),
-        (DatabaseState::Current, DatabaseEvent::ServicesChanged) => Ok(DatabaseState::Changed),
+        (DatabaseState::Current | DatabaseState::Discovering, DatabaseEvent::ServicesChanged) => {
+            Ok(DatabaseState::Changed)
+        }
         (DatabaseState::Current, DatabaseEvent::ConnectionLoss) => Ok(DatabaseState::Invalid),
         (DatabaseState::Changed, DatabaseEvent::RequireRediscovery) => {
             Ok(DatabaseState::Undiscovered)
@@ -1474,6 +1476,33 @@ type PathIdentity = (
     Option<u64>,
 );
 
+/// Internal physical path plus an optional authoritative caller lease.
+/// Hosts sharing a physical topology pass the caller; an index alone is the
+/// trusted topology-owner form and never selects an arbitrary live borrower.
+#[derive(Debug, Clone)]
+pub struct GattOperationPath {
+    index: usize,
+    caller_lease: Option<String>,
+}
+
+impl From<usize> for GattOperationPath {
+    fn from(index: usize) -> Self {
+        Self {
+            index,
+            caller_lease: None,
+        }
+    }
+}
+
+impl From<(usize, &str)> for GattOperationPath {
+    fn from((index, lease): (usize, &str)) -> Self {
+        Self {
+            index,
+            caller_lease: Some(String::from(lease)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredPath {
     peer_key: String,
@@ -1574,6 +1603,7 @@ struct ConnectionRecord {
     database_generation: Generation,
     db_state: DatabaseState,
     leases: Vec<String>,
+    closing_leases: Vec<String>,
     sharing: bool,
     /// Operation owning the pending establishment, if the link never came up.
     connect_op: Option<OperationId>,
@@ -1586,6 +1616,7 @@ struct ConnectionRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ConsumerRecord {
     lease: String,
+    connection_lease: String,
     state: ConsumerState,
     op: Option<OperationId>,
     stream: Stream,
@@ -1722,6 +1753,7 @@ pub struct Central {
     security: Vec<SecurityExchange>,
     typed_effects: Vec<CentralEffect>,
     destroy_record: Option<CleanupRecord>,
+    destroy_kernel_failures: Vec<CleanupFailure>,
     /// Retained disconnect failures, keyed by the peer whose link did not
     /// release. A confirmed release of that peer supersedes them (finding
     /// 38): the record reports what is still outstanding, not every
@@ -1828,6 +1860,7 @@ impl Central {
             security: Vec::new(),
             typed_effects: Vec::new(),
             destroy_record: None,
+            destroy_kernel_failures: Vec::new(),
             disconnect_failures: Vec::new(),
             shutdown_tombstones: HashMap::new(),
             // Every platform shares a same-process link (OWN-01/FX1B): a
@@ -2676,6 +2709,8 @@ impl Central {
         }
         if let Some(index) = self.connection_position(peer_key) {
             if !self.connections[index].state.is_terminal() {
+                self.require_connection_admission(index, "connection.connect")?;
+                self.require_lease_not_closing(index, client_lease, "connection.connect")?;
                 let leases = self.connections[index].leases.len() as u64;
                 let sharing = self.connections[index].sharing;
                 match arbitrate_connection_request(sharing, leases) {
@@ -2715,6 +2750,7 @@ impl Central {
             database_generation,
             db_state: DatabaseState::Undiscovered,
             leases: Vec::from([String::from(client_lease)]),
+            closing_leases: Vec::new(),
             sharing: self.sharing_supported,
             connect_op: Some(id.clone()),
             live_paths: 0,
@@ -2758,6 +2794,8 @@ impl Central {
                 "connection.borrow",
             ));
         }
+        self.require_connection_admission(index, "connection.borrow")?;
+        self.require_lease_not_closing(index, client_lease, "connection.borrow")?;
         let leases = self.connections[index].leases.len() as u64;
         let sharing = self.connections[index].sharing;
         match arbitrate_connection_request(sharing, leases) {
@@ -2770,6 +2808,20 @@ impl Central {
         self.connections[index]
             .leases
             .push(String::from(client_lease));
+        // A prior release may have left only a closing lease, which cannot
+        // authorize new physical GATT work. Rebind that shared path when a
+        // newly admitted borrower becomes the first live owner again.
+        let live_leases = &self.connections[index].leases;
+        let closing_leases = &self.connections[index].closing_leases;
+        let replacement = String::from(client_lease);
+        for path in &mut self.paths {
+            if path.peer_key == peer_key
+                && (!live_leases.contains(&path.owner_lease)
+                    || closing_leases.contains(&path.owner_lease))
+            {
+                path.owner_lease.clone_from(&replacement);
+            }
+        }
         self.op_peers.push((id.clone(), String::from(peer_key)));
         self.stage_effect(CentralEffectKind::Borrow, &id, "connection.borrow");
         Ok(id)
@@ -2835,6 +2887,8 @@ impl Central {
                 "lease.transfer",
             ));
         }
+        self.require_lease_not_closing(index, source, "lease.transfer")?;
+        self.require_lease_not_closing(index, dest, "lease.transfer")?;
         let held = self.connections[index]
             .leases
             .iter()
@@ -2856,7 +2910,25 @@ impl Central {
         {
             self.connections[index].leases.push(String::from(dest));
         }
+        self.reassign_path_owner(peer_key, source, dest);
         Ok(())
+    }
+
+    fn reassign_path_owner(&mut self, peer_key: &str, former: &str, successor: &str) {
+        for path in &mut self.paths {
+            if path.peer_key == peer_key && path.owner_lease == former {
+                path.owner_lease.clear();
+                path.owner_lease.push_str(successor);
+            }
+        }
+    }
+
+    fn remaining_path_owner(&self, index: usize) -> Option<String> {
+        self.connections[index]
+            .leases
+            .iter()
+            .find(|candidate| !self.connections[index].closing_leases.contains(candidate))
+            .cloned()
     }
 
     /// Release one lease. Returns true when the final release ends the
@@ -2890,6 +2962,15 @@ impl Central {
             ));
         }
         self.connections[index].leases.retain(|held| held != lease);
+        self.connections[index]
+            .closing_leases
+            .retain(|held| held != lease);
+        // Paths describe the shared physical topology, not a public logical
+        // handle. Future physical operations must belong to a remaining live
+        // lease; already-admitted operations retain their original owner.
+        if let Some(successor) = self.remaining_path_owner(index) {
+            self.reassign_path_owner(peer_key, lease, &successor);
+        }
         if self.connections[index].leases.is_empty() {
             let state = self.connections[index].state;
             if !state.is_terminal() {
@@ -3068,8 +3149,8 @@ impl Central {
             .collect()
     }
 
-    /// Every `(peer key, consumer)` of a subscription hub, as an adapter
-    /// reset is about to clear them.
+    /// Every `(peer key, consumer)` of a subscription hub, before a confirmed
+    /// link end or adapter reset invalidates their ownership paths.
     #[must_use]
     pub fn held_consumers(&self) -> Vec<(String, String)> {
         self.hubs
@@ -3079,6 +3160,29 @@ impl Central {
                 hub.consumers
                     .iter()
                     .map(|consumer| (path.peer_key.clone(), consumer.lease.clone()))
+            })
+            .collect()
+    }
+
+    /// Subscription obligations admitted by this exact parent connection
+    /// lease, including pending and failed cleanup on older database paths.
+    #[must_use]
+    pub fn consumers_for_lease(&self, peer_key: &str, lease: &str) -> Vec<(usize, String)> {
+        self.hubs
+            .iter()
+            .filter(|hub| {
+                self.paths
+                    .get(hub.path_index)
+                    .is_some_and(|path| path.peer_key == peer_key)
+            })
+            .flat_map(|hub| {
+                hub.consumers
+                    .iter()
+                    .filter(|consumer| {
+                        consumer.connection_lease == lease
+                            && consumer.state != ConsumerState::Removed
+                    })
+                    .map(|consumer| (hub.path_index, consumer.lease.clone()))
             })
             .collect()
     }
@@ -3095,6 +3199,71 @@ impl Central {
                 .iter()
                 .any(|held| held == lease)
         })
+    }
+
+    /// True only while this exact lease may admit new connection work.
+    #[must_use]
+    pub fn lease_accepts_work(&self, peer_key: &str, lease: &str) -> bool {
+        self.connection_position(peer_key).is_some_and(|index| {
+            let connection = &self.connections[index];
+            connection.leases.iter().any(|held| held == lease)
+                && !connection.closing_leases.iter().any(|held| held == lease)
+        })
+    }
+
+    /// Fence new GATT admission before scoped child teardown. The lease stays
+    /// owned until cleanup confirms release, so retries retain authority.
+    pub fn begin_lease_release(&mut self, peer_key: &str, lease: &str) -> Result<(), CoreError> {
+        let index = self.connection_position(peer_key).ok_or_else(|| {
+            err(
+                BleErrorCode::ConnectionNotFound,
+                BleErrorDomain::Connection,
+                "connection.release",
+            )
+        })?;
+        let connection = &mut self.connections[index];
+        if !connection.leases.iter().any(|held| held == lease) {
+            return Err(err(
+                BleErrorCode::OwnershipDenied,
+                BleErrorDomain::Connection,
+                "connection.release",
+            ));
+        }
+        if !connection.closing_leases.iter().any(|held| held == lease) {
+            connection.closing_leases.push(String::from(lease));
+        }
+        Ok(())
+    }
+
+    fn require_lease_not_closing(
+        &self,
+        index: usize,
+        lease: &str,
+        operation: &str,
+    ) -> Result<(), CoreError> {
+        if self.connections[index]
+            .closing_leases
+            .iter()
+            .any(|held| held == lease)
+        {
+            return Err(err(
+                BleErrorCode::OwnershipDenied,
+                BleErrorDomain::Connection,
+                operation,
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_connection_admission(&self, index: usize, operation: &str) -> Result<(), CoreError> {
+        if self.connections[index].state == ConnectionState::Disconnecting {
+            return Err(err(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Connection,
+                operation,
+            ));
+        }
+        Ok(())
     }
 
     fn count_ops_in(&self, wanted: OpStateView) -> usize {
@@ -3262,8 +3431,12 @@ impl Central {
                 ));
             }
         };
+        let replacing = self.connections[index].db_state == DatabaseState::Current;
         let next = step_database(self.connections[index].db_state, event)?;
         self.connections[index].db_state = next;
+        if replacing {
+            self.invalidate_peer_hubs(peer_key);
+        }
         Ok(())
     }
 
@@ -3689,14 +3862,19 @@ impl Central {
     /// before kernel admission, so a stale path never dispatches.
     pub fn start_read(
         &mut self,
-        path_index: usize,
+        path: impl Into<GattOperationPath>,
         timeout_ms: u64,
         now: MonotonicTime,
         out: &mut EffectBatch,
     ) -> Result<OperationId, CoreError> {
+        let GattOperationPath {
+            index: path_index,
+            caller_lease,
+        } = path.into();
         self.check_effect_room()?;
         self.check_path_fresh(path_index)?;
-        let (owner, peer_key) = self.require_gatt_link(path_index, "read")?;
+        let (owner, peer_key) =
+            self.require_gatt_link(path_index, caller_lease.as_deref(), "read")?;
         let id = self.admit_op(&owner, timeout_ms, now, out)?;
         self.op_paths.push((id.clone(), path_index));
         self.op_peers.push((id.clone(), peer_key));
@@ -3705,13 +3883,28 @@ impl Central {
     }
 
     /// Shared GATT readiness gate: the link is live, the database is current
-    /// and a lease holds the link. Every check runs before kernel admission.
-    /// Returns the owner lease and peer key. Reads and writes carry no
-    /// property check: every legacy host let the OS answer them (finding
-    /// 83). Subscribe checks notify-or-indicate separately, as legacy did.
+    /// and the exact caller lease holds the link and accepts new work. Hosts
+    /// use this before native prerequisites; operation admission repeats it
+    /// after any await. Reads and writes leave property support to the OS;
+    /// subscribe checks notify-or-indicate separately.
+    pub fn validate_gatt_admission(
+        &self,
+        path: impl Into<GattOperationPath>,
+        operation: &str,
+    ) -> Result<(), CoreError> {
+        let GattOperationPath {
+            index,
+            caller_lease,
+        } = path.into();
+        self.check_path_fresh(index)?;
+        self.require_gatt_link(index, caller_lease.as_deref(), operation)
+            .map(|_| ())
+    }
+
     fn require_gatt_link(
         &self,
         path_index: usize,
+        caller_lease: Option<&str>,
         operation: &str,
     ) -> Result<(String, String), CoreError> {
         let path = self.paths.get(path_index).ok_or_else(|| {
@@ -3760,7 +3953,17 @@ impl Central {
                 operation,
             ));
         }
-        Ok((path.owner_lease.clone(), path.peer_key.clone()))
+        let owner = caller_lease.unwrap_or(&path.owner_lease);
+        if !connection.leases.iter().any(|lease| lease == owner)
+            || connection.closing_leases.iter().any(|lease| lease == owner)
+        {
+            return Err(err(
+                BleErrorCode::OwnershipDenied,
+                BleErrorDomain::Connection,
+                operation,
+            ));
+        }
+        Ok((String::from(owner), path.peer_key.clone()))
     }
 
     /// Start a write, mirroring C-UBM `validateWriteRequest` field order:
@@ -3769,7 +3972,7 @@ impl Central {
     #[allow(clippy::too_many_arguments)]
     pub fn start_write(
         &mut self,
-        path_index: usize,
+        path: impl Into<GattOperationPath>,
         mode: &str,
         value_len: u64,
         effective_maximum: Option<u64>,
@@ -3778,6 +3981,10 @@ impl Central {
         now: MonotonicTime,
         out: &mut EffectBatch,
     ) -> Result<OperationId, CoreError> {
+        let GattOperationPath {
+            index: path_index,
+            caller_lease,
+        } = path.into();
         self.check_effect_room()?;
         if WriteMode::from_str(mode).is_none() {
             return Err(err(
@@ -3794,7 +4001,8 @@ impl Central {
             ));
         }
         self.check_path_fresh(path_index)?;
-        let (owner, peer_key) = self.require_gatt_link(path_index, "write")?;
+        let (owner, peer_key) =
+            self.require_gatt_link(path_index, caller_lease.as_deref(), "write")?;
         let Some(maximum) = effective_maximum else {
             return Err(err(
                 BleErrorCode::CapabilityUnavailable,
@@ -3819,15 +4027,20 @@ impl Central {
     /// Start a descriptor read (descriptor-level paths only).
     pub fn start_read_descriptor(
         &mut self,
-        path_index: usize,
+        path: impl Into<GattOperationPath>,
         timeout_ms: u64,
         now: MonotonicTime,
         out: &mut EffectBatch,
     ) -> Result<OperationId, CoreError> {
+        let GattOperationPath {
+            index: path_index,
+            caller_lease,
+        } = path.into();
         self.check_effect_room()?;
         self.require_descriptor_path(path_index)?;
         self.check_path_fresh(path_index)?;
-        let (owner, peer_key) = self.require_gatt_link(path_index, "read")?;
+        let (owner, peer_key) =
+            self.require_gatt_link(path_index, caller_lease.as_deref(), "read")?;
         let id = self.admit_op(&owner, timeout_ms, now, out)?;
         self.op_paths.push((id.clone(), path_index));
         self.op_peers.push((id.clone(), peer_key));
@@ -3843,13 +4056,17 @@ impl Central {
     /// `gatt.cccd-managed`: CCCD state moves only through subscribe.
     pub fn start_write_descriptor(
         &mut self,
-        path_index: usize,
+        path: impl Into<GattOperationPath>,
         value_len: u64,
         effective_maximum: Option<u64>,
         timeout_ms: u64,
         now: MonotonicTime,
         out: &mut EffectBatch,
     ) -> Result<OperationId, CoreError> {
+        let GattOperationPath {
+            index: path_index,
+            caller_lease,
+        } = path.into();
         self.check_effect_room()?;
         self.require_descriptor_path(path_index)?;
         self.check_path_fresh(path_index)?;
@@ -3860,7 +4077,8 @@ impl Central {
                 "write.cccd",
             ));
         }
-        let (owner, peer_key) = self.require_gatt_link(path_index, "write")?;
+        let (owner, peer_key) =
+            self.require_gatt_link(path_index, caller_lease.as_deref(), "write")?;
         let Some(maximum) = effective_maximum else {
             return Err(err(
                 BleErrorCode::CapabilityUnavailable,
@@ -3949,7 +4167,7 @@ impl Central {
     #[allow(clippy::too_many_arguments)]
     pub fn execute_long_write(
         &mut self,
-        path_index: usize,
+        path: impl Into<GattOperationPath>,
         value_len: u64,
         operation_payload_limit: Option<u64>,
         negotiated_directional_limit: Option<u64>,
@@ -3959,9 +4177,14 @@ impl Central {
         now: MonotonicTime,
         out: &mut EffectBatch,
     ) -> Result<LongWriteOutcome, CoreError> {
+        let GattOperationPath {
+            index: path_index,
+            caller_lease,
+        } = path.into();
         self.check_effect_room()?;
         self.check_path_fresh(path_index)?;
-        let (owner, peer_key) = self.require_gatt_link(path_index, "long-write")?;
+        let (owner, peer_key) =
+            self.require_gatt_link(path_index, caller_lease.as_deref(), "long-write")?;
         let plan = plan_long_write(
             value_len,
             operation_payload_limit,
@@ -4255,6 +4478,19 @@ impl Central {
         Ok(())
     }
 
+    /// Snapshot every registered descriptor, including optional capabilities.
+    pub fn registered_capability_descriptors(&self) -> Vec<CapabilityDescriptor> {
+        self.capabilities.clone()
+    }
+
+    /// Snapshot registered states without discarding optional capabilities.
+    pub fn registered_capability_states(&self) -> Vec<(String, CapabilityState)> {
+        self.capabilities
+            .iter()
+            .map(|descriptor| (descriptor.id().to_owned(), descriptor.state()))
+            .collect()
+    }
+
     /// Gate one operation on a capability. Unknown ids fail closed with
     /// `capability.unsupported`; `limited` proceeds with an explicit
     /// limitation admission; required rows are never erased.
@@ -4446,7 +4682,7 @@ impl Central {
     #[allow(clippy::too_many_arguments)]
     pub fn subscribe(
         &mut self,
-        path_index: usize,
+        path: impl Into<GattOperationPath>,
         policy: &str,
         item_capacity: u64,
         byte_capacity: u64,
@@ -4455,6 +4691,10 @@ impl Central {
         now: MonotonicTime,
         out: &mut EffectBatch,
     ) -> Result<OperationId, CoreError> {
+        let GattOperationPath {
+            index: path_index,
+            caller_lease,
+        } = path.into();
         self.check_effect_room()?;
         let Some(parsed_policy) = OverflowPolicy::from_str(policy) else {
             return Err(err(
@@ -4471,7 +4711,8 @@ impl Central {
             ));
         }
         self.check_path_fresh(path_index)?;
-        self.require_gatt_link(path_index, "subscribe")?;
+        let (connection_lease, _) =
+            self.require_gatt_link(path_index, caller_lease.as_deref(), "subscribe")?;
         let notify = self
             .paths
             .get(path_index)
@@ -4571,6 +4812,7 @@ impl Central {
             )?;
             self.hubs[hub_index].consumers.push(ConsumerRecord {
                 lease: String::from(consumer),
+                connection_lease,
                 state: ConsumerState::Ready,
                 op: Some(id.clone()),
                 stream: Stream::new(limits, parsed_policy),
@@ -4584,6 +4826,7 @@ impl Central {
         }
         self.hubs[hub_index].consumers.push(ConsumerRecord {
             lease: String::from(consumer),
+            connection_lease,
             state: ConsumerState::Enabling,
             op: Some(id.clone()),
             stream: Stream::new(limits, parsed_policy),
@@ -4783,6 +5026,18 @@ impl Central {
             }
         }
         self.hubs[hub_index].consumers[consumer_index].state = ConsumerState::Removing;
+        if self.hubs[hub_index]
+            .consumers
+            .iter()
+            .any(|known| matches!(known.state, ConsumerState::Enabling | ConsumerState::Ready))
+        {
+            // Another consumer owns the physical enablement. This local
+            // release is already confirmed; no later CCCD-disable callback
+            // will arrive to settle it. Keep accepted bytes available to the
+            // host's drain, but admit no further notifications for this owner.
+            self.hubs[hub_index].consumers[consumer_index].state = ConsumerState::Removed;
+            return Ok(false);
+        }
         self.issue_physical_disable(hub_index, consumer, now, out)
     }
 
@@ -5080,7 +5335,8 @@ impl Central {
     /// order). `Ready`, `Removing`, and overflow-`Failed` consumers
     /// release values: bytes admitted before the terminal stay valid
     /// observations (drain, then take the terminal). `Invalid`/`Removed`
-    /// consumers observe `None` so stale values never cross invalidation.
+    /// consumers also drain only bytes accepted before their terminal state;
+    /// delivery never admits new bytes to either state.
     /// Popping frees the stream bytes so the bound recycles. Length-only
     /// slots carry no bytes: takes skip past them (freeing their ledger
     /// sizes) so every returned value pairs with its own size.
@@ -5100,7 +5356,8 @@ impl Central {
             ConsumerState::Ready
             | ConsumerState::Removing
             | ConsumerState::Failed
-            | ConsumerState::Invalid => {}
+            | ConsumerState::Invalid
+            | ConsumerState::Removed => {}
             _ => return None,
         }
         loop {
@@ -5255,6 +5512,7 @@ impl Central {
         for retained in self.kernel.drain_cleanup(usize::MAX) {
             if retained.state() == CleanupState::ReleaseFailed {
                 for failure in retained.failures().iter() {
+                    self.destroy_kernel_failures.push(failure.clone());
                     failures.push(failure.clone());
                 }
             }
@@ -5267,6 +5525,23 @@ impl Central {
         let record = CleanupRecord::new(None, state, failures)?;
         self.destroy_record = Some(record.clone());
         Ok(record)
+    }
+
+    /// Current physical-disconnect debt plus immutable kernel release failures.
+    /// Unlike `destroy_record`, a confirmed retry can retire a peer's debt;
+    /// the original destruction receipt remains unchanged.
+    pub fn current_shutdown_record(&mut self) -> Result<CleanupRecord, CoreError> {
+        self.destroy_record()?;
+        let mut failures = self.destroy_kernel_failures.clone();
+        for (_, retained) in &self.disconnect_failures {
+            failures.extend_from_slice(retained.failures());
+        }
+        let state = if failures.is_empty() {
+            CleanupState::Released
+        } else {
+            CleanupState::ReleaseFailed
+        };
+        CleanupRecord::new(None, state, failures)
     }
 
     /// Destroy (OPS-04/CLN-05): admission stops, queued work settles as
@@ -5325,6 +5600,7 @@ impl Central {
         for retained in self.kernel.drain_cleanup(usize::MAX) {
             if retained.state() == CleanupState::ReleaseFailed {
                 for failure in retained.failures().iter() {
+                    self.destroy_kernel_failures.push(failure.clone());
                     failures.push(failure.clone());
                 }
             }
@@ -5483,6 +5759,12 @@ impl Central {
         self.connections[index]
             .leases
             .retain(|known| known != lease);
+        self.connections[index]
+            .closing_leases
+            .retain(|known| known != lease);
+        if let Some(successor) = self.remaining_path_owner(index) {
+            self.reassign_path_owner(peer_key, lease, &successor);
+        }
         if self.connections[index].leases.is_empty() && !self.connections[index].state.is_terminal()
         {
             let state = self.connections[index].state;
@@ -5521,12 +5803,168 @@ mod tests {
         ))
     }
 
+    #[test]
+    fn gatt_caller_lease_owns_admission_not_topology_owner() -> Result<(), CoreError> {
+        for write in [false, true] {
+            let mut config = CentralConfig::default();
+            config.kernel.max_operations_per_owner = 1;
+            let mut central = Central::new(
+                fixture_attachment()?,
+                Generation::new("kernel-gen-1")?,
+                config,
+            )?;
+            let mut out = batch();
+            let (peer, path) = live_characteristic(&mut central, &mut out)?;
+            central.paths[path].owner_lease = "client-1".into();
+            let borrowed = central.borrow_connection(&peer, "client-2", 5000, 1100, &mut out)?;
+            central.dispatch_op(&borrowed, &mut out)?;
+            central.settle_op(&borrowed, ContenderKind::Success, true, 1, 1101, &mut out)?;
+            if write {
+                central.start_write(
+                    (path, "client-2"),
+                    "with-response",
+                    1,
+                    Some(20),
+                    true,
+                    5000,
+                    1200,
+                    &mut out,
+                )?;
+            } else {
+                central.start_read((path, "client-2"), 5000, 1200, &mut out)?;
+            }
+            // Both owners retain their own kernel slot. Wrong attribution
+            // consumes client-1's slot for client-2 and rejects this valid read.
+            central.start_read((path, "client-1"), 5000, 1201, &mut out)?;
+        }
+        Ok(())
+    }
+
     fn fixture_central() -> Result<Central, CoreError> {
         Central::new(
             fixture_attachment()?,
             Generation::new("kernel-gen-1")?,
             CentralConfig::default(),
         )
+    }
+
+    #[test]
+    fn disconnecting_link_refuses_new_connection_leases() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (peer, _) = live_characteristic(&mut central, &mut out)?;
+        central.disconnect(&peer, "client-1", 1200, &mut out)?;
+        let before = central.live_operation_count();
+        expect_code(
+            central.connect(&peer, "client-2", 5000, 1201, &mut out),
+            BleErrorCode::LifecycleInvalidState,
+            BleErrorDomain::Connection,
+        )?;
+        expect_code(
+            central.borrow_connection(&peer, "client-2", 5000, 1201, &mut out),
+            BleErrorCode::LifecycleInvalidState,
+            BleErrorDomain::Connection,
+        )?;
+        assert_eq!(central.live_operation_count(), before);
+        assert!(!central.holds_lease(&peer, "client-2"));
+        assert!(
+            central.holds_lease(&peer, "client-1"),
+            "failed cleanup owner stays retryable"
+        );
+        central.note_link_released(&peer)?;
+        central.connect(&peer, "client-2", 5000, 1202, &mut out)?;
+        assert!(central.holds_lease(&peer, "client-2"));
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_gatt_rejects_foreign_leases_and_keeps_consumer_parent() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (peer, path) = live_characteristic(&mut central, &mut out)?;
+        central.borrow_connection(&peer, "client-2", 5000, 1100, &mut out)?;
+        central.start_write(
+            (path, "client-2"),
+            "with-response",
+            1,
+            Some(20),
+            true,
+            5000,
+            1200,
+            &mut out,
+        )?;
+        central.subscribe(
+            (path, "client-2"),
+            "error",
+            4,
+            128,
+            "consumer-b",
+            5000,
+            1201,
+            &mut out,
+        )?;
+        assert_eq!(
+            central.consumers_for_lease(&peer, "client-2"),
+            vec![(path, "consumer-b".into())]
+        );
+        assert!(central.consumers_for_lease(&peer, "client-1").is_empty());
+        central.begin_lease_release(&peer, "client-1")?;
+        assert!(central.holds_lease(&peer, "client-1"));
+        expect_code(
+            central.start_read((path, "client-1"), 5000, 1202, &mut out),
+            BleErrorCode::OwnershipDenied,
+            BleErrorDomain::Connection,
+        )?;
+        expect_code(
+            central.borrow_connection(&peer, "client-1", 5000, 1202, &mut out),
+            BleErrorCode::OwnershipDenied,
+            BleErrorDomain::Connection,
+        )?;
+        expect_code(
+            central.connect(&peer, "client-1", 5000, 1202, &mut out),
+            BleErrorCode::OwnershipDenied,
+            BleErrorDomain::Connection,
+        )?;
+        assert!(!central.release_lease(&peer, "client-1", 1202, &mut out)?);
+        central.start_read((path, "client-2"), 5000, 1203, &mut out)?;
+        let before = central.live_operation_count();
+        for inactive in ["client-1", "foreign", ""] {
+            expect_code(
+                central.start_read((path, inactive), 5000, 1204, &mut out),
+                BleErrorCode::OwnershipDenied,
+                BleErrorDomain::Connection,
+            )?;
+            expect_code(
+                central.start_write(
+                    (path, inactive),
+                    "with-response",
+                    1,
+                    Some(20),
+                    true,
+                    5000,
+                    1204,
+                    &mut out,
+                ),
+                BleErrorCode::OwnershipDenied,
+                BleErrorDomain::Connection,
+            )?;
+            expect_code(
+                central.subscribe(
+                    (path, inactive),
+                    "error",
+                    4,
+                    128,
+                    "refused",
+                    5000,
+                    1204,
+                    &mut out,
+                ),
+                BleErrorCode::OwnershipDenied,
+                BleErrorDomain::Connection,
+            )?;
+        }
+        assert_eq!(central.live_operation_count(), before);
+        Ok(())
     }
 
     fn batch() -> EffectBatch {
@@ -5572,7 +6010,7 @@ mod tests {
             None,
             None,
             GATT_PROP_READ | GATT_PROP_WRITE | GATT_PROP_NOTIFY,
-            "lease-1",
+            "client-1",
         )?;
         Ok((peer, path))
     }
@@ -5924,6 +6362,87 @@ mod tests {
     }
 
     #[test]
+    fn transferred_path_uses_remaining_live_lease_for_implicit_admission() -> Result<(), CoreError>
+    {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (peer, path) = live_characteristic(&mut central, &mut out)?;
+        let generation = central.connection_generation(&peer).unwrap();
+        central.transfer_lease(&peer, "client-1", "client-9", &generation, 1)?;
+        check(
+            central.stored_path(path).unwrap().owner_lease() == "client-9",
+            "path owner follows transfer",
+        );
+        central.start_read(path, 5000, 1200, &mut out)?;
+        Ok(())
+    }
+
+    #[test]
+    fn retired_borrower_path_uses_remaining_nonclosing_lease() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        central.set_sharing_supported(true);
+        let (peer, path) = live_characteristic(&mut central, &mut out)?;
+        let borrow = central.borrow_connection(&peer, "borrower-9", 5000, 1100, &mut out)?;
+        central.dispatch_op(&borrow, &mut out)?;
+        central.settle_op(&borrow, ContenderKind::Success, true, 1, 1101, &mut out)?;
+        central.paths[path].owner_lease = "borrower-9".into();
+        central.release_borrower(&peer, "borrower-9")?;
+        check(
+            central.stored_path(path).unwrap().owner_lease() == "client-1",
+            "path owner follows borrower retirement",
+        );
+        central.start_read(path, 5000, 1200, &mut out)?;
+        Ok(())
+    }
+
+    #[test]
+    fn new_borrower_reclaims_path_after_only_closing_lease_remains() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        central.set_sharing_supported(true);
+        let (peer, path) = live_characteristic(&mut central, &mut out)?;
+        let first = central.borrow_connection(&peer, "borrower-1", 5000, 1100, &mut out)?;
+        central.dispatch_op(&first, &mut out)?;
+        central.settle_op(&first, ContenderKind::Success, true, 1, 1101, &mut out)?;
+        central.begin_lease_release(&peer, "borrower-1")?;
+        check(
+            !central.release_lease(&peer, "client-1", 1102, &mut out)?,
+            "closing borrower retains physical link",
+        );
+        let second = central.borrow_connection(&peer, "borrower-2", 5000, 1103, &mut out)?;
+        central.dispatch_op(&second, &mut out)?;
+        central.settle_op(&second, ContenderKind::Success, true, 1, 1104, &mut out)?;
+        check(
+            central.stored_path(path).unwrap().owner_lease() == "borrower-2",
+            "new borrower becomes path authority",
+        );
+        central.start_read(path, 5000, 1200, &mut out)?;
+        Ok(())
+    }
+
+    #[test]
+    fn retired_closing_borrower_does_not_poison_later_lease_reuse() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        central.set_sharing_supported(true);
+        let (peer, _) = live_characteristic(&mut central, &mut out)?;
+        let first = central.borrow_connection(&peer, "borrower-1", 5000, 1100, &mut out)?;
+        central.dispatch_op(&first, &mut out)?;
+        central.settle_op(&first, ContenderKind::Success, true, 1, 1101, &mut out)?;
+        central.begin_lease_release(&peer, "borrower-1")?;
+        central.release_borrower(&peer, "borrower-1")?;
+        let second = central.borrow_connection(&peer, "borrower-1", 5000, 1102, &mut out)?;
+        central.dispatch_op(&second, &mut out)?;
+        central.settle_op(&second, ContenderKind::Success, true, 1, 1103, &mut out)?;
+        check(
+            central.lease_accepts_work(&peer, "borrower-1"),
+            "new lease is live",
+        );
+        Ok(())
+    }
+
+    #[test]
     fn final_release_ends_link_explicit_disconnect_ends_with_borrowers() -> Result<(), CoreError> {
         let mut central = fixture_central()?;
         let mut out = batch();
@@ -6093,7 +6612,7 @@ mod tests {
             None,
             None,
             GATT_PROP_READ,
-            "lease-1",
+            "client-1",
         )?;
         check(second == first + 1, "second occurrence stored");
         let resolved = central.resolve_path(
@@ -6148,7 +6667,7 @@ mod tests {
                 None,
                 None,
                 GATT_PROP_READ,
-                "lease-1",
+                "client-1",
             ),
             BleErrorCode::ArgumentInvalid,
             BleErrorDomain::Core,
@@ -6244,7 +6763,7 @@ mod tests {
             None,
             None,
             GATT_PROP_READ | GATT_PROP_WRITE | GATT_PROP_NOTIFY,
-            "lease-1",
+            "client-1",
         )?;
         check(second == first, "same table revives its slot");
         check(central.paths.len() == 1, "no historical duplicate");
@@ -6322,7 +6841,7 @@ mod tests {
                 None,
                 None,
                 GATT_PROP_READ | GATT_PROP_WRITE | GATT_PROP_NOTIFY,
-                "lease-1",
+                "client-1",
             )?;
             check(path == first, "slot revived every round");
             check(
@@ -6390,7 +6909,7 @@ mod tests {
             None,
             None,
             GATT_PROP_READ,
-            "lease-1",
+            "client-1",
         )?;
         let read = central.start_read(fresh, 5000, 3001, &mut out)?;
         central.dispatch_op(&read, &mut out)?;
@@ -6623,7 +7142,7 @@ mod tests {
             Some("2902"),
             Some(0),
             GATT_PROP_READ | GATT_PROP_WRITE,
-            "lease-1",
+            "client-1",
         )?;
         let read = central.start_read_descriptor(descriptor, 5000, 2000, &mut out)?;
         central.dispatch_op(&read, &mut out)?;
@@ -6669,7 +7188,7 @@ mod tests {
             None,
             None,
             0,
-            "lease-1",
+            "client-1",
         )?;
         let descriptor = central.register_path(
             &peer,
@@ -6680,7 +7199,7 @@ mod tests {
             Some("2901"),
             Some(0),
             0,
-            "lease-1",
+            "client-1",
         )?;
         let before = central.live_operation_count();
         central.start_read(unflagged, 5000, 2000, &mut out)?;
@@ -6914,6 +7433,35 @@ mod tests {
     }
 
     #[test]
+    fn registered_capabilities_include_optional_rows_without_fabrication() -> Result<(), CoreError>
+    {
+        let mut central = fixture_central()?;
+        let before = central.registered_capability_states();
+        assert!(!before.iter().any(|(id, _)| id == "peer:system-connected"));
+        central.register_capability(CapabilityDescriptor::new(
+            "peer:system-connected",
+            CapabilityState::Limited,
+            &[],
+            &["service-filter-required"],
+            "receipt-directory",
+            EvidenceLevel::Deterministic,
+            "ubm-core",
+            "digest",
+            &["directory"],
+        )?)?;
+        let mut snapshot = central.registered_capability_states();
+        assert!(snapshot.contains(&("peer:system-connected".to_owned(), CapabilityState::Limited)));
+        snapshot.clear();
+        assert!(
+            central
+                .registered_capability_states()
+                .contains(&("peer:system-connected".to_owned(), CapabilityState::Limited))
+        );
+        assert!(!before.iter().any(|(id, _)| id == "peer:system-connected"));
+        Ok(())
+    }
+
+    #[test]
     fn capability_truth_gates_and_parity_survives() -> Result<(), CoreError> {
         let mut central = fixture_central()?;
         central.register_capability(CapabilityDescriptor::new(
@@ -7121,8 +7669,27 @@ mod tests {
             "borrower joins live enablement",
         );
         // Removing one consumer never drops the other's CCCD.
+        central.deliver_notification_value(path, &[0x41])?;
         let disabled = central.unsubscribe(path, "app-a", 2003, &mut out)?;
         check(!disabled, "no physical disable while app-b lives");
+        check(
+            central.consumer_state(path, "app-a") == Some(ConsumerState::Removed),
+            "shared local removal settles without waiting for physical disable",
+        );
+        central.deliver_notification_value(path, &[0x42])?;
+        check(
+            central.take_notification_value(path, "app-a") == Some(vec![0x41]),
+            "accepted bytes survive local removal",
+        );
+        check(
+            central.take_notification_value(path, "app-a").is_none(),
+            "removed consumer accepts no later bytes",
+        );
+        check(
+            central.take_notification_value(path, "app-b") == Some(vec![0x41])
+                && central.take_notification_value(path, "app-b") == Some(vec![0x42]),
+            "surviving consumer retains both values",
+        );
         check(central.physical_cccd_enabled(path), "CCCD stays enabled");
         check(
             central.consumer_state(path, "app-b") == Some(ConsumerState::Ready),
@@ -7374,6 +7941,30 @@ mod tests {
     /// hub holding them neither blocks a new subscription nor reclaims
     /// until they are taken.
     #[test]
+    fn explicit_rediscovery_invalidates_old_hubs_before_replacement() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (peer, path) = live_characteristic(&mut central, &mut out)?;
+        central.subscribe(path, "error", 8, 128, "old", 5000, 2000, &mut out)?;
+        central.settle_subscribe_enable(path, true, 2001, &mut out)?;
+        central.deliver_notification_value(path, &[1])?;
+        central.begin_discovery(&peer)?;
+        check(
+            central.consumer_state(path, "old") == Some(ConsumerState::Invalid),
+            "accepted replacement invalidates old hub before native traversal",
+        );
+        check(
+            central.take_notification_value(path, "old") == Some(vec![1]),
+            "buffered value retained",
+        );
+        check(
+            central.deliver_notification(path, 1)?[0].1 == DeliveryOutcome::DroppedLate,
+            "late old-path notification refused",
+        );
+        Ok(())
+    }
+
+    #[test]
     fn f111_values_held_at_invalidation_drain_before_it() -> Result<(), CoreError> {
         let mut central = fixture_central()?;
         let mut out = batch();
@@ -7416,7 +8007,7 @@ mod tests {
             None,
             None,
             GATT_PROP_READ | GATT_PROP_WRITE | GATT_PROP_NOTIFY,
-            "lease-1",
+            "client-1",
         )?;
         let _again = central.subscribe(revived, "error", 8, 128, "app-b", 5000, 3000, &mut out)?;
         let mut drained = Vec::new();
@@ -7508,6 +8099,36 @@ mod tests {
             "the final record reflects the confirmed release",
         );
         check(record.failures().is_empty(), "no stale failure survives");
+        Ok(())
+    }
+
+    #[test]
+    fn current_shutdown_receipt_reconciles_only_confirmed_peer_debt() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (first, _) = live_characteristic(&mut central, &mut out)?;
+        let second = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:02")?;
+        let op = central.connect(&second, "client-2", 5000, 1500, &mut out)?;
+        central.dispatch_op(&op, &mut out)?;
+        central.settle_op(&op, ContenderKind::Success, true, 0, 1501, &mut out)?;
+        central.note_link_established(&second)?;
+        central.disconnect(&first, "client-1", 2000, &mut out)?;
+        central.disconnect(&second, "client-2", 2000, &mut out)?;
+        central.report_disconnect_failure(&first, BleErrorCode::OperationTimedOut)?;
+        central.report_disconnect_failure(&second, BleErrorCode::ConnectionLost)?;
+        let historical = central.destroy(&mut out)?;
+        assert_eq!(historical.failures().len(), 2);
+        central.note_link_released(&first)?;
+        let current = central.current_shutdown_record()?;
+        assert_eq!(current.failures().len(), 1);
+        assert_eq!(current.failures()[0].code(), BleErrorCode::ConnectionLost);
+        assert_eq!(central.destroy_record()?, historical);
+        central.note_link_released(&second)?;
+        assert_eq!(
+            central.current_shutdown_record()?.state(),
+            CleanupState::Released
+        );
+        assert_eq!(central.destroy_record()?, historical);
         Ok(())
     }
 
@@ -7864,7 +8485,7 @@ mod tests {
             None,
             None,
             GATT_PROP_READ,
-            "lease-1",
+            "client-1",
         )?;
         expect_code(
             central.register_path(
@@ -7876,7 +8497,7 @@ mod tests {
                 None,
                 None,
                 GATT_PROP_READ,
-                "lease-1",
+                "client-1",
             ),
             BleErrorCode::CapabilityLimited,
             BleErrorDomain::Gatt,
@@ -7913,7 +8534,9 @@ mod tests {
         let mut out = batch();
         let (peer, _first) = live_characteristic(&mut central, &mut out)?;
         for service in 1..200u64 {
-            central.register_path(&peer, "180D", service, None, None, None, None, 0, "lease-1")?;
+            central.register_path(
+                &peer, "180D", service, None, None, None, None, 0, "client-1",
+            )?;
         }
         central.admit_database(0xFFFF)?;
         expect_code(
@@ -7931,7 +8554,17 @@ mod tests {
         small.note_link_established(&other)?;
         small.begin_discovery(&other)?;
         small.complete_discovery(&other)?;
-        small.register_path(&first_peer, "180D", 1, None, None, None, None, 0, "lease-1")?;
+        small.register_path(
+            &first_peer,
+            "180D",
+            1,
+            None,
+            None,
+            None,
+            None,
+            0,
+            "client-1",
+        )?;
         small.register_path(&other, "180D", 0, None, None, None, None, 0, "client-2")?;
         small.register_path(&other, "180D", 1, None, None, None, None, 0, "client-2")?;
         Ok(())
@@ -7956,7 +8589,7 @@ mod tests {
                 None,
                 None,
                 GATT_PROP_READ,
-                "lease-1",
+                "client-1",
             )?;
             let answer = central.subscribe(
                 unflagged,
@@ -7996,7 +8629,7 @@ mod tests {
             None,
             None,
             GATT_PROP_READ | GATT_PROP_NOTIFY,
-            "lease-1",
+            "client-1",
         )?;
         let _sub =
             central.subscribe(first, "drop-oldest", 4, 128, "app-a", 5000, 2000, &mut out)?;
@@ -8137,7 +8770,7 @@ mod tests {
             None,
             None,
             GATT_PROP_READ | GATT_PROP_NOTIFY,
-            "lease-1",
+            "client-1",
         )?;
         let _sub = central.subscribe(path, "drop-oldest", 4, 128, "app-a", 5000, 1002, &mut out)?;
         central.settle_subscribe_enable(path, true, 1003, &mut out)?;
@@ -8775,6 +9408,7 @@ mod tests {
             record.failures().len() == 1,
             "exactly one failure preserved",
         );
+        assert_eq!(central.current_shutdown_record()?, record);
         // Legacy `destroy` with a small batch also progresses (drained loop),
         // never `central.destroy.truncated`.
         let mut central2 = fixture_central()?;

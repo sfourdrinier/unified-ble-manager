@@ -1,0 +1,17 @@
+// Test the tracked app templates without generating or installing an Expo app.
+gradle.projectsEvaluated {
+  def library = gradle.rootProject.findProject(':unified-ble-manager')
+  if (library == null) return // Included React/Expo plugin builds have no app library.
+  library.android.sourceSets.test.java.srcDirs += [
+    new File(library.projectDir, '../example-expo/native/android'),
+    new File(library.projectDir, '../example-expo/native/android-test')
+  ]
+  library.tasks.named('testDebugUnitTest').configure {
+    doLast {
+      library.exec {
+        commandLine 'node', new File(library.projectDir, '../example-expo/native/validate-envelopes.cjs'),
+          '--android-xml', new File(library.buildDir, 'test-results/testDebugUnitTest/TEST-com.sfourdrinier.bleplxexample.continuation.ReferenceContinuationModuleTest.xml'), '5'
+      }
+    }
+  }
+}

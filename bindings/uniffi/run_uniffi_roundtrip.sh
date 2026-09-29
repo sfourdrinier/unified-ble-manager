@@ -28,13 +28,18 @@ cargo test -p ubm5_uniffi_echo --locked
 
 echo "--- uniffi: build cdylib + generate bindings (pinned codegen)"
 cargo build -p ubm5_uniffi_echo --locked
-LIB="$ROOT/target/debug/libubm5_uniffi_echo.so"
+case "$(uname -s)" in
+  Darwin) LIB_SUFFIX=dylib ;;
+  *) LIB_SUFFIX=so ;;
+esac
+LIB="$ROOT/target/debug/libubm5_uniffi_echo.$LIB_SUFFIX"
 REGEN=target/regen-bindings
 rm -rf "$REGEN"
 mkdir -p "$REGEN/kotlin" "$REGEN/swift" "$REGEN/python"
 "$BINDGEN" generate --library "$LIB" --language kotlin --out-dir "$REGEN/kotlin"
 "$BINDGEN" generate --library "$LIB" --language swift --out-dir "$REGEN/swift"
 "$BINDGEN" generate --library "$LIB" --language python --out-dir "$REGEN/python"
+node normalize-generated.js "$REGEN"
 
 echo "--- uniffi: reproducibility (regen must match committed recipe)"
 diff -r generated/kotlin "$REGEN/kotlin" && echo "kotlin reproducible"
@@ -46,7 +51,7 @@ PYRUN=target/pyrun
 rm -rf "$PYRUN"
 mkdir -p "$PYRUN"
 cp "$REGEN/python/ubm_echo.py" "$PYRUN/"
-cp "$LIB" "$PYRUN/"
+cp "$LIB" "$PYRUN/libuniffi.$LIB_SUFFIX"
 python3 tests/python_roundtrip.py "$PYRUN"
 
 echo "--- uniffi: versions"

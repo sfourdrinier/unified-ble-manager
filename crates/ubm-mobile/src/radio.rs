@@ -36,9 +36,7 @@ pub trait PlatformRadio: Send + Sync + 'static {
 /// Wakes the JavaScript side of one session: "records are waiting, call
 /// `drain`". Called at most once per armed period, never while a drain is
 /// pending. Must not block.
-pub trait WakeSink: Send + Sync + 'static {
-    fn wake(&self, session_id: u64);
-}
+pub use ubm_desktop::continuation_outbox::WakeSink;
 
 /// Which native radio the host drives. Decides the platform rules the
 /// legacy route applied (delivery-mode checks, connect intents, scan
@@ -1174,23 +1172,7 @@ pub struct Advertisement {
 }
 
 /// Ingress class for bounded queues and drop accounting.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum IngressClass {
-    Advertisement,
-    Notification,
-    Control,
-}
-
-impl IngressClass {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Advertisement => "advertisement",
-            Self::Notification => "notification",
-            Self::Control => "control",
-        }
-    }
-}
+pub use ubm_desktop::continuation_outbox::IngressClass;
 
 /// One unsolicited platform fact.
 #[derive(Debug, Clone, PartialEq, Eq)]

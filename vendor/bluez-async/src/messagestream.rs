@@ -1,27 +1,42 @@
+use crate::match_cleanup::{MatchFailure, MatchLease, MatchRegistry};
 use dbus::Message;
-use dbus::nonblock::{MsgMatch, SyncConnection};
+use dbus::channel::{MatchingReceiver, Token};
+use dbus::message::MatchRule;
+use dbus::nonblock::SyncConnection;
 use futures::Stream;
 use futures::channel::mpsc::UnboundedReceiver;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-/// Wrapper for a stream of D-Bus messages which automatically removes the `MsgMatch` from the D-Bus
-/// connection when it is dropped.
+/// Local callback ownership is distinct from the connection's shared server
+/// rule. A missing local token must never be mistaken for a removed bus rule.
 pub struct MessageStream {
-    msg_match: Option<MsgMatch>,
+    token: Token,
     events: UnboundedReceiver<Message>,
     connection: Arc<SyncConnection>,
+    lease: Option<MatchLease>,
 }
 
 impl MessageStream {
-    pub fn new(msg_match: MsgMatch, connection: Arc<SyncConnection>) -> Self {
-        let (msg_match, events) = msg_match.msg_stream();
-        Self {
-            msg_match: Some(msg_match),
+    pub async fn new(
+        rule: MatchRule<'static>,
+        connection: Arc<SyncConnection>,
+        registry: &Arc<MatchRegistry>,
+        scope: u64,
+    ) -> Result<Self, MatchFailure> {
+        let lease = registry.acquire(rule.match_str(), scope).await?;
+        let (sender, events) = futures::channel::mpsc::unbounded();
+        let token = connection.start_receive(
+            rule,
+            Box::new(move |message, _| sender.unbounded_send(message).is_ok()),
+        );
+        Ok(Self {
+            token,
             events,
             connection,
-        }
+            lease: Some(lease),
+        })
     }
 }
 
@@ -35,8 +50,12 @@ impl Stream for MessageStream {
 
 impl Drop for MessageStream {
     fn drop(&mut self) {
-        let connection = self.connection.clone();
-        let msg_match = self.msg_match.take().unwrap();
-        tokio::spawn(async move { connection.remove_match(msg_match.token()).await.unwrap() });
+        // Retire the local callback before receiver destruction can retire it
+        // itself. Dispatch may temporarily own its token; a closed receiver
+        // then makes the in-flight callback retire on its own.
+        self.connection.stop_receive(self.token);
+        self.events.close();
+        // Even a missing local token leaves server cleanup owned by this lease.
+        drop(self.lease.take());
     }
 }

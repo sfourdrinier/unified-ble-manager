@@ -74,6 +74,23 @@ public final class ForegroundServiceNotificationConfiguration {
     return channelId;
   }
 
+  public ForegroundServiceNotificationConfiguration withText(String title, String body) {
+    return fromValues(channelId, channelName, title, body, iconName, restartWhileSessionIntentExists);
+  }
+
+  @Override public boolean equals(Object other) {
+    if (!(other instanceof ForegroundServiceNotificationConfiguration)) return false;
+    ForegroundServiceNotificationConfiguration value = (ForegroundServiceNotificationConfiguration) other;
+    return channelId.equals(value.channelId) && channelName.equals(value.channelName)
+        && title.equals(value.title) && java.util.Objects.equals(body, value.body)
+        && java.util.Objects.equals(iconName, value.iconName)
+        && restartWhileSessionIntentExists == value.restartWhileSessionIntentExists;
+  }
+
+  @Override public int hashCode() {
+    return java.util.Objects.hash(channelId, channelName, title, body, iconName, restartWhileSessionIntentExists);
+  }
+
   public String getChannelName() {
     return channelName;
   }

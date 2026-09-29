@@ -11,11 +11,14 @@
 // from the core, never a silent system-bus fallback.
 
 import type { BluezPairingGenerationController } from './backends/desktop/bluez-pairing-generation'
+import { admitBluezConnectionPolicy, type BluezConnectionPolicy } from './backends/desktop/bluez-connection-policy'
+export type { BluezConnectionPolicy } from './backends/desktop/bluez-connection-policy'
 import type { BackendProvider, HostNeutralBackendIdentity } from './backend-contract/identity'
 import type { BluezBusKind } from './backends/desktop/platform-identity'
 import {
   admitBluezBusKind,
   createDesktopCoreBleManager,
+  createDesktopCoreProcessHost,
   createDesktopCoreProvider,
   type DesktopCoreManagerOptions
 } from './node-desktop-manager'
@@ -38,6 +41,8 @@ export type {
 } from './backends/desktop/bluez-pairing-generation'
 
 export interface BluezBleManagerAppOptions extends DesktopCoreManagerOptions {
+  /** Trusted LE-bearer implementation/daemon-owner attestation; omission permits scanning only. */
+  readonly connectionPolicy?: BluezConnectionPolicy
   /** The D-Bus bus BlueZ is reached on (`'system'` by default). */
   readonly busKind?: BluezBusKind
   /**
@@ -51,6 +56,7 @@ export interface BluezBleManagerAppOptions extends DesktopCoreManagerOptions {
 }
 
 export interface DbusNextBluezProviderOptions {
+  readonly connectionPolicy?: BluezConnectionPolicy
   readonly busKind: BluezBusKind
   readonly now: () => number
   /** See {@link BluezBleManagerAppOptions.pairingGeneration}. */
@@ -61,11 +67,22 @@ export interface DbusNextBluezProviderOptions {
   readonly binding?: DesktopRustCoreBinding
 }
 
+/** Trusted process owner; ordinary managers created by it borrow the one radio. */
+export function createBluezProcessHost(options: BluezBleManagerAppOptions = {}) {
+  const { busKind = 'system', pairingGeneration, connectionPolicy, ...managerOptions } = options
+  return createDesktopCoreProcessHost('bluez', managerOptions, {
+    bluezBus: admitBluezBusKind(busKind),
+    connectionPolicy: admitBluezConnectionPolicy(connectionPolicy),
+    ...(pairingGeneration === undefined ? {} : { pairingGeneration })
+  })
+}
+
 /** One-call Node BlueZ manager over the shared Rust core. Does not fall back to another backend. */
 export async function createBluezBleManager(options: BluezBleManagerAppOptions = {}): Promise<BleManager> {
-  const { busKind = 'system', pairingGeneration, ...managerOptions } = options
+  const { busKind = 'system', pairingGeneration, connectionPolicy, ...managerOptions } = options
   return createDesktopCoreBleManager('bluez', managerOptions, {
     bluezBus: admitBluezBusKind(busKind),
+    connectionPolicy: admitBluezConnectionPolicy(connectionPolicy),
     ...(pairingGeneration === undefined ? {} : { pairingGeneration })
   })
 }
@@ -87,6 +104,7 @@ export function createDbusNextBluezBackendProvider(
     'node',
     {
       bluezBus: admitBluezBusKind(options.busKind),
+      connectionPolicy: admitBluezConnectionPolicy(options.connectionPolicy),
       ...(options.pairingGeneration === undefined ? {} : { pairingGeneration: options.pairingGeneration })
     }
   )

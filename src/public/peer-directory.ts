@@ -6,7 +6,7 @@ import type {
   PeerDirectoryBackend,
   PeerSource
 } from '../backend-contract/backend'
-import { canonicalUuid } from '../backend-contract/primitives'
+import { canonicalUuidInput } from '../backend-contract/primitives'
 import { normalizeOperationOptions } from './operation-options'
 import type { OperationOptions } from './operation-options'
 import type { BlePeer } from './ble-manager'
@@ -14,6 +14,7 @@ import { assertPeerReference, encodePeerReference, snapshotPeerReference } from 
 import type { PeerReference } from './peer-reference'
 import { rehydratePublicError } from './error-bridge'
 import { normalizeScanObservation } from './scan-query'
+import { awaitWithOperationAdmission } from '../core/unified-ble-core-helpers'
 
 export type { BlePeerState, PeerSource } from '../backend-contract/backend'
 
@@ -25,6 +26,7 @@ export interface KnownPeerQuery extends OperationOptions {
 }
 
 export interface BlePeerDirectory {
+  /** Bounds the read-only query wait; cancellation does not claim native work was cancelled. */
   resolve(reference: PeerReference, options?: OperationOptions): Promise<BlePeer | null>
   known(options?: KnownPeerQuery): Promise<readonly BlePeer[]>
   connected(options?: KnownPeerQuery): Promise<readonly BlePeer[]>
@@ -38,12 +40,50 @@ export function createPublicPeerDirectory(
   now: () => number
 ): BlePeerDirectory {
   if (backend === undefined) return unsupportedPeerDirectory()
+  const query = <Value>(
+    operation: string,
+    options: KnownPeerQuery,
+    read: (options: BackendPeerQuery) => Promise<Value>
+  ): Promise<Value> => {
+    const normalized = toBackendPeerQuery(options, now)
+    let dispatch = () => {
+      // Replaced synchronously by the Promise constructor before it is used.
+    }
+    const pending = new Promise<Value>((resolve, reject) => {
+      dispatch = () => {
+        try {
+          Promise.resolve(read(normalized))
+            .then(value => {
+              // A suspended host may deliver the result before its overdue
+              // timer callback. Recheck the original budget, never renew it.
+              if (normalized.signal?.aborted === true) {
+                throw contractError('operation.aborted', 'core', operation)
+              }
+              if (normalized.deadline !== null && normalized.deadline <= now()) {
+                throw contractError('operation.timed-out', 'core', operation)
+              }
+              return value
+            })
+            .then(resolve, reject)
+        } catch (error) {
+          reject(error)
+        }
+      }
+    })
+    // Install the shared wait observer BEFORE dispatch: even a synchronous
+    // backend-triggered abort must retain observation of a late rejection.
+    const bounded = awaitWithOperationAdmission(pending, normalized, now, operation)
+    if (normalized.signal?.aborted !== true && (normalized.deadline === null || normalized.deadline > now())) {
+      dispatch()
+    }
+    return bounded
+  }
   const invoke = async (
     operation: keyof Omit<PeerDirectoryBackend<string>, 'resolve'>,
     options: KnownPeerQuery = {}
   ): Promise<readonly BlePeer[]> => {
     try {
-      const records = await backend[operation](toBackendPeerQuery(options, now))
+      const records = await query(`peer-directory.${operation}`, options, normalized => backend[operation](normalized))
       return mergePeerDirectoryRecords(records.map(toPublicPeerDirectoryRecord))
     } catch (error) {
       throw rehydratePublicError(error)
@@ -53,7 +93,9 @@ export function createPublicPeerDirectory(
     resolve: async (reference, options = {}) => {
       try {
         assertPeerReference(reference, 'peer-directory.resolve')
-        const record = await backend.resolve(reference, toBackendPeerQuery(options, now))
+        const record = await query('peer-directory.resolve', options, normalized =>
+          backend.resolve(reference, normalized)
+        )
         if (record === null) return null
         return mergePeerDirectoryRecords([toPublicPeerDirectoryRecord(record)])[0] ?? null
       } catch (error) {
@@ -79,15 +121,41 @@ export interface PeerDirectoryRecord {
 
 function toBackendPeerQuery(options: KnownPeerQuery, now: () => number): BackendPeerQuery {
   const normalized = normalizeOperationOptions(options, now)
+  if (options.services !== undefined && !Array.isArray(options.services)) {
+    throw contractError('argument.invalid', 'connection', 'peer-directory.services')
+  }
+  for (const key of ['sources', 'references'] as const) {
+    if (options[key] !== undefined && !Array.isArray(options[key])) {
+      throw contractError('peer.reference-invalid', 'connection', `peer-directory.${key}`)
+    }
+  }
   return {
     signal: normalized.signal,
     deadline: normalized.deadline,
-    sources: options.sources,
-    services: options.services?.map(value => canonicalUuid(typeof value === 'number' ? value.toString(16) : value)),
-    references: options.references?.map((reference, index) => {
-      assertPeerReference(reference, `peer-directory.references[${index}]`)
-      return snapshotPeerReference(reference, `peer-directory.references[${index}]`)
-    }),
+    sources:
+      options.sources === undefined
+        ? undefined
+        : Array.from(options.sources, source => {
+            sourcePriority(source)
+            return source
+          }),
+    services:
+      options.services === undefined
+        ? undefined
+        : Array.from(options.services, value => {
+            try {
+              return canonicalUuidInput(value)
+            } catch {
+              throw contractError('argument.invalid', 'connection', 'peer-directory.services')
+            }
+          }),
+    references:
+      options.references === undefined
+        ? undefined
+        : Array.from(options.references, (reference, index) => {
+            assertPeerReference(reference, `peer-directory.references[${index}]`)
+            return snapshotPeerReference(reference, `peer-directory.references[${index}]`)
+          }),
     includeUnavailable: options.includeUnavailable
   }
 }
@@ -264,6 +332,9 @@ function sourceOrder(sources: readonly PeerSource[]): readonly PeerSource[] {
 }
 
 function sourcePriority(source: PeerSource): number {
+  if (typeof source !== 'string') {
+    throw contractError('peer.reference-invalid', 'connection', 'peer-directory.source')
+  }
   const rank: Record<PeerSource, number> = {
     'system-connected': 0,
     restored: 1,
@@ -274,7 +345,7 @@ function sourcePriority(source: PeerSource): number {
     'backend-cache': 5
   }
   const priority = rank[source]
-  if (priority === undefined) {
+  if (typeof priority !== 'number') {
     throw contractError('peer.reference-invalid', 'connection', 'peer-directory.source')
   }
   return priority

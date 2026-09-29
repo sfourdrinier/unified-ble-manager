@@ -1,6 +1,93 @@
 const { createElectronRendererBleManager } = require('../src/electron-renderer')
 const { BleError } = require('../src/public/errors')
 const { bootstrap } = require('./electron/helpers/public-bootstrap')
+const { contractError } = require('../src/backend-contract/errors')
+
+describe('IPC direct peer-reference connection', () => {
+  const reference = { version: 1, backendId: 'corebluetooth', scope: 'system', opaqueId: 'os-guid' }
+  const peer = {
+    peerId: 'os-guid',
+    reference,
+    name: null,
+    rssi: null,
+    source: 'app-reference',
+    state: { reachability: 'unknown', connection: 'unknown', bond: 'unknown', lastSeenAtMonotonicMs: null }
+  }
+  async function fixture(resolve) {
+    const calls = []
+    const manager = await createElectronRendererBleManager({
+      transport: {
+        invoke: async request => {
+          if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+          if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+          calls.push(request.envelope)
+          if (request.envelope.command === 'peers.resolve') return { kind: 'route', payload: { peer: await resolve() } }
+          if (request.envelope.command === 'operation.cancel')
+            return { kind: 'route', payload: { state: 'cancellation-requested' } }
+          if (request.envelope.command === 'connection.connect')
+            throw contractError('connection.failed', 'connection', 'test.connect-observed')
+          throw Error(`unexpected ${request.envelope.command}`)
+        },
+        subscribe: () => () => undefined,
+        acknowledge: async () => ({ kind: 'event.ack' })
+      }
+    })
+    return { manager, calls }
+  }
+  test('resolves before connect and spends one original deadline', async () => {
+    jest.useFakeTimers()
+    try {
+      let settle
+      const { manager, calls } = await fixture(
+        () =>
+          new Promise(resolve => {
+            settle = resolve
+          })
+      )
+      const result = expect(manager.connect(reference, { timeoutMs: 100 })).rejects.toMatchObject({
+        code: 'connection.failed',
+        operation: 'test.connect-observed'
+      })
+      await jest.advanceTimersByTimeAsync(40)
+      settle(peer)
+      await result
+      const connect = calls.find(call => call.command === 'connection.connect')
+      expect(connect.payload.peerId).toBe('os-guid')
+      expect(connect.payload.budgetMs).toBeLessThanOrEqual(60)
+      expect(connect.payload.budgetMs).toBeGreaterThan(0)
+      await manager.destroy()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+  test.each(['missing', 'wrong-scope', 'abort', 'deadline'])('%s resolution cannot admit a connect', async kind => {
+    jest.useFakeTimers()
+    try {
+      const controller = new AbortController()
+      const { manager, calls } = await fixture(async () => {
+        if (kind === 'wrong-scope') throw contractError('peer.scope-mismatch', 'connection', 'test.resolve')
+        if (kind === 'abort') controller.abort()
+        if (kind === 'deadline') await new Promise(resolve => setTimeout(resolve, 30))
+        return kind === 'missing' ? null : peer
+      })
+      const expected = {
+        missing: 'peer.not-found',
+        'wrong-scope': 'peer.scope-mismatch',
+        abort: 'operation.aborted',
+        deadline: 'operation.timed-out'
+      }[kind]
+      const result = expect(
+        manager.connect(reference, { signal: controller.signal, timeoutMs: 20 })
+      ).rejects.toMatchObject({ code: expected })
+      await jest.advanceTimersByTimeAsync(40)
+      await result
+      expect(calls.some(call => call.command === 'connection.connect')).toBe(false)
+      await manager.destroy()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+})
 
 describe('Electron public manager façade', () => {
   test('projects unsupported security capabilities when IPC has no remote security backend', async () => {

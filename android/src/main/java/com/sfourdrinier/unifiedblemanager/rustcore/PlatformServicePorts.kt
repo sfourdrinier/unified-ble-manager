@@ -75,5 +75,9 @@ internal fun classifyBackgroundFailure(error: Throwable): RadioFailure {
     // The registry's code is legacy's Expo identity (finding 133).
     return RadioFailure(kind, null, error.message ?: error.code, nativeCode = error.code)
   }
+  if (error is SecurityException || error.cause is SecurityException) {
+    val cause = error.cause ?: error
+    return RadioFailure(RadioFailureKind.PERMISSION_DENIED, null, cause.message ?: cause.javaClass.name, nativeCode = cause.javaClass.name)
+  }
   return RadioFailure(RadioFailureKind.PLATFORM, null, error.message ?: error.javaClass.name)
 }

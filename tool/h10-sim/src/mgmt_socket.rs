@@ -457,7 +457,7 @@ impl MgmtAdvertiser {
                 return Err(format!(
                     "read instance record {}: {error}",
                     self.record.display()
-                ))
+                ));
             }
         };
         let record = match InstanceRecord::parse(&text) {

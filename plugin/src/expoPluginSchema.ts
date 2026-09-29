@@ -1,6 +1,15 @@
 // Schema fingerprinting only. This is Node-only build-time code and must not be
 // imported from runtime modules. The hash is not a security primitive.
 import { createHash } from 'node:crypto'
+import {
+  deserializeContinuationSetup,
+  serializeContinuationSetup,
+  normalizeContinuationLink,
+  normalizeContinuationRecording,
+  type ContinuationRecordingConfiguration,
+  type ContinuationLinkConfiguration,
+  type ContinuationSetupWireStep
+} from './generated/continuation-setup'
 
 export type LegacyLocationPolicy = 'auto' | 'required' | 'none'
 export type NativeLoggingLevel = 'off' | 'errors' | 'events'
@@ -28,6 +37,10 @@ export interface UnifiedBleExpoBackgroundContinuation {
   readonly onAppearance?: BackgroundContinuationStrategy
   readonly peerId?: string
   readonly resubscribe?: readonly UnifiedBleExpoContinuationResubscribe[]
+  /** JSON byte arrays for build-time configuration; runtime GATT values use Uint8Array. */
+  readonly setup?: readonly ContinuationSetupWireStep[]
+  readonly link?: ContinuationLinkConfiguration
+  readonly recording?: ContinuationRecordingConfiguration
   readonly headlessTaskName?: string
   readonly foregroundService?: {
     readonly notification: {
@@ -90,6 +103,9 @@ const CONTINUATION_KEYS = Object.freeze([
   'onAppearance',
   'peerId',
   'resubscribe',
+  'setup',
+  'link',
+  'recording',
   'headlessTaskName',
   'foregroundService'
 ])
@@ -372,8 +388,8 @@ function continuationStrategy(value: unknown): BackgroundContinuationStrategy {
 
 function continuationPeerId(value: unknown): string {
   const text = nonEmptyString(value, 'background.continuation.peerId')
-  if (!MAC_PATTERN.test(text)) {
-    throw new Error('background.continuation.peerId must be a MAC address (AA:BB:CC:DD:EE:FF)')
+  if (!MAC_PATTERN.test(text) && !UUID_PATTERN.test(text)) {
+    throw new Error('background.continuation.peerId must be an Android MAC address or canonical Apple peripheral UUID')
   }
   return text.toUpperCase()
 }
@@ -383,6 +399,9 @@ function continuationResubscribeList(
 ): readonly NonNullable<UnifiedBleExpoBackgroundContinuation['resubscribe']>[number][] {
   if (!Array.isArray(value)) {
     throw new Error('background.continuation.resubscribe must be an array when configured')
+  }
+  if (value.length > 64) {
+    throw new Error('background.continuation.resubscribe must contain at most 64 selectors')
   }
   return Object.freeze(value.map(validateContinuationResubscribe))
 }
@@ -395,6 +414,22 @@ function validateContinuation(value: unknown): UnifiedBleExpoBackgroundContinuat
   const peerId = continuation.peerId === undefined ? undefined : continuationPeerId(continuation.peerId)
   const resubscribe =
     continuation.resubscribe === undefined ? undefined : continuationResubscribeList(continuation.resubscribe)
+  if (continuation.setup !== undefined && strategy !== 'native') {
+    throw new Error('background.continuation.setup applies only to native')
+  }
+  const setup =
+    continuation.setup === undefined
+      ? undefined
+      : serializeContinuationSetup(deserializeContinuationSetup(continuation.setup, resubscribe?.length ?? 0))
+  if (continuation.link !== undefined && strategy !== 'native') {
+    throw new Error('background.continuation.link applies only to native')
+  }
+  const link = continuation.link === undefined ? undefined : normalizeContinuationLink(continuation.link)
+  if (continuation.recording !== undefined && strategy !== 'native') {
+    throw new Error('background.continuation.recording applies only to native')
+  }
+  const recording =
+    continuation.recording === undefined ? undefined : normalizeContinuationRecording(continuation.recording)
   const headlessTaskName =
     continuation.headlessTaskName === undefined
       ? undefined
@@ -419,6 +454,9 @@ function validateContinuation(value: unknown): UnifiedBleExpoBackgroundContinuat
     onAppearance: strategy,
     ...(peerId === undefined ? {} : { peerId }),
     ...(resubscribe === undefined ? {} : { resubscribe }),
+    ...(setup === undefined ? {} : { setup }),
+    ...(link === undefined ? {} : { link }),
+    ...(recording === undefined ? {} : { recording }),
     ...(headlessTaskName === undefined ? {} : { headlessTaskName }),
     ...(foregroundService === undefined ? {} : { foregroundService })
   })

@@ -25,7 +25,10 @@ export interface ScenarioRuntime {
 }
 
 /** The runtime every host uses: monotonic `performance.now()`, timers, console lines. */
-export function createConsoleRuntime(host: string): ScenarioRuntime {
+export function createConsoleRuntime(
+  host: string,
+  writeLine: (line: string) => void = line => console.info(line)
+): ScenarioRuntime {
   return {
     host,
     now: () => performance.now(),
@@ -35,8 +38,7 @@ export function createConsoleRuntime(host: string): ScenarioRuntime {
     },
     log(scope, message, detail) {
       const stamp = `[driver:${scope}] +${Math.round(performance.now()).toString()}ms ${host} ${message}`
-      if (detail === undefined) console.log(stamp)
-      else console.log(stamp, JSON.stringify(detail))
+      writeLine(detail === undefined ? stamp : `${stamp} ${JSON.stringify(detail)}`)
     }
   }
 }
@@ -71,6 +73,8 @@ export interface ScenarioCommand {
   /** True when the command acquires a peer and takes the `device` argument. */
   readonly acceptsDevice: boolean
   execute(args: JsonObject): Promise<JsonValue>
+  /** Keep explicitly exported bulk artifacts out of automatic history/log broadcasts. */
+  readonly summarizeResult?: (result: JsonValue) => JsonValue
 }
 
 export interface CommandSpec<Args> {
@@ -81,6 +85,7 @@ export interface CommandSpec<Args> {
   readonly acceptsDevice?: boolean
   readonly parse: (raw: JsonObject) => Args
   readonly run: (args: Args) => Promise<JsonValue>
+  readonly summarizeResult?: (result: JsonValue) => JsonValue
 }
 
 /** Binds an argument parser to its command so remote JSON and UI presets share one validation path. */
@@ -90,7 +95,8 @@ export function defineCommand<Args>(spec: CommandSpec<Args>): ScenarioCommand {
     description: spec.description,
     presets: spec.presets ?? [{ label: spec.label, args: {} }],
     acceptsDevice: spec.acceptsDevice ?? false,
-    execute: async raw => spec.run(spec.parse(raw))
+    execute: async raw => spec.run(spec.parse(raw)),
+    ...(spec.summarizeResult === undefined ? {} : { summarizeResult: spec.summarizeResult })
   }
 }
 
@@ -128,7 +134,11 @@ export class StopAllError extends ScenarioError {
 
   constructor(report: StopAllReport) {
     const summary = report.failures.map(failure => `${failure.scenario}:${failure.step} ${failure.state}`).join(', ')
-    super('scenario.stop-all-failed', `stopping every scenario left ${report.failures.length.toString()} failure(s): ${summary}`, { cause: report })
+    super(
+      'scenario.stop-all-failed',
+      `stopping every scenario left ${report.failures.length.toString()} failure(s): ${summary}`,
+      { cause: report }
+    )
     this.name = 'StopAllError'
     this.report = report
   }
@@ -221,7 +231,10 @@ export abstract class ScenarioController<State extends JsonObject> implements Sc
         )
       }
       const result = await entry.execute(args)
-      this.emit('command-result', { command, result })
+      this.emit('command-result', {
+        command,
+        result: entry.summarizeResult === undefined ? result : entry.summarizeResult(result)
+      })
       return result
     } catch (error) {
       const described = describeError(error)
@@ -269,7 +282,8 @@ export abstract class ScenarioController<State extends JsonObject> implements Sc
 
   private schedulePublish(): void {
     if (this.cancelPendingPublish !== null) return
-    const elapsed = this.lastPublishedAtMs === null ? Number.POSITIVE_INFINITY : this.runtime.now() - this.lastPublishedAtMs
+    const elapsed =
+      this.lastPublishedAtMs === null ? Number.POSITIVE_INFINITY : this.runtime.now() - this.lastPublishedAtMs
     if (elapsed >= SNAPSHOT_MIN_INTERVAL_MS) {
       this.flushSnapshot()
       return
@@ -399,11 +413,15 @@ export const args = {
   },
   none(raw: JsonObject): Record<string, never> {
     const keys = Object.keys(raw)
-    if (keys.length > 0) throw new ScenarioError('scenario.invalid-argument', `unexpected argument(s): ${keys.join(', ')}`)
+    if (keys.length > 0)
+      throw new ScenarioError('scenario.invalid-argument', `unexpected argument(s): ${keys.join(', ')}`)
     return {}
   }
 }
 
 function invalidArgument(key: string, expected: string, value: JsonValue | undefined): ScenarioError {
-  return new ScenarioError('scenario.invalid-argument', `argument "${key}" must be ${expected}; received ${JSON.stringify(value)}`)
+  return new ScenarioError(
+    'scenario.invalid-argument',
+    `argument "${key}" must be ${expected}; received ${JSON.stringify(value)}`
+  )
 }
