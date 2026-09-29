@@ -113,6 +113,17 @@ describe('consumer documentation matches the published package', () => {
     expect(background).toContain('Android-specific task/service strategies')
     expect(background).toMatch(/configured iOS `native`\s+continuation/)
   })
+  test('recording guidance separates peer scope, capture timing and physical retention', () => {
+    const background = read('docs/BACKGROUND.md')
+    expect(background).toContain('A recording is scoped to its declared peer')
+    expect(background).toContain('no per-notification host receive timestamp')
+    expect(background).toContain('Logical clear does not reclaim physical allocation')
+    expect(background).toContain('### Retained rc.13 journals with foreign-peer controls')
+    expect(background).toContain('Do not skip, relabel or automatically acknowledge')
+    expect(background).toContain('A second process is refused before it opens SQLite')
+    expect(background).toContain('up to 16 inactive journal handles')
+    expect(read('src/core/continuation-recording.ts')).toContain('logical record deletion, not file deletion')
+  })
   test('Android restoration distinguishes the authenticated process presence queue from an OS journal', () => {
     const background = read('docs/BACKGROUND.md')
     expect(background).toContain('authenticated process-local presence queue')

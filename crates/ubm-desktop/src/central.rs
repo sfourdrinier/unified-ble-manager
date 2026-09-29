@@ -7176,7 +7176,7 @@ async fn retire_database_routing<B>(inner: &Arc<Inner<B>>, peer_id: &str) {
 mod adapter_tests {
     #[tokio::test]
     async fn peer_directory_scripted_gate_holds_only_after_allowed_reads() {
-        use futures_util::FutureExt;
+        use std::future::Future;
         let central = open().await;
         central.boundary().set_directory_peers(Vec::new());
         central.boundary().block_op(FaultOp::PeerDirectory);
@@ -7190,7 +7190,8 @@ mod adapter_tests {
         );
         let second = central.resolve_peer("second", OpControl::unbounded());
         tokio::pin!(second);
-        assert!(second.as_mut().now_or_never().is_none());
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(second.as_mut().poll(&mut context).is_pending());
         assert_eq!(
             central
                 .boundary()

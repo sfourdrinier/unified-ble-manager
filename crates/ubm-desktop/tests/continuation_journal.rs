@@ -87,6 +87,301 @@ fn registry_retains_owner_and_reopens_persisted_identity_without_path_input() {
 }
 
 #[test]
+fn independent_registries_share_live_authority_and_serialize_export_with_ingress() {
+    let path = path();
+    let writer = JournalRegistry::default();
+    let reader = JournalRegistry::default();
+    writer.configure_directory(path.parent().unwrap()).unwrap();
+    reader.configure_directory(path.parent().unwrap()).unwrap();
+    let journal = writer.open("shared", &json!({}), quota()).unwrap();
+    let export = reader.get("shared").unwrap();
+    assert!(std::sync::Arc::ptr_eq(&journal, &export));
+    journal.append(&json!({}), &json!({"value":1})).unwrap();
+    let prefix = export.prepare(1, 4096).unwrap();
+    journal.append(&json!({}), &json!({"value":2})).unwrap();
+    assert_eq!(export.prepare(1, 4096).unwrap(), prefix);
+    assert_eq!(journal.status().unwrap()["records"], 2);
+}
+
+#[test]
+fn registry_bounds_inactive_handles_across_one_thousand_ids_and_preserves_active_owner() {
+    let path = path();
+    let registry = JournalRegistry::default();
+    registry
+        .configure_directory(path.parent().unwrap())
+        .unwrap();
+    let active = registry.open("active", &json!({}), quota()).unwrap();
+    active.append(&json!({}), &json!({"value":7})).unwrap();
+    let mut inactive = Vec::new();
+    for index in 0..1000 {
+        let journal = registry
+            .open(&format!("inactive-{index}"), &json!({}), quota())
+            .unwrap();
+        journal.stop().unwrap();
+        journal.clear().unwrap();
+        inactive.push(std::sync::Arc::downgrade(&journal));
+    }
+    assert!(
+        inactive
+            .iter()
+            .filter(|journal| journal.strong_count() > 0)
+            .count()
+            <= 16
+    );
+    assert!(std::sync::Arc::ptr_eq(
+        &active,
+        &registry.get("active").unwrap()
+    ));
+    assert_eq!(
+        registry.get("inactive-0").unwrap().status().unwrap()["records"],
+        0
+    );
+    assert_eq!(
+        active.prepare(1, 4096).unwrap()["records"][0]["record"]["value"],
+        7
+    );
+}
+
+#[test]
+fn process_authority_worker() {
+    let Some(directory) = std::env::var_os("UBM_TEST_AUTHORITY_DIRECTORY") else {
+        return;
+    };
+    let registry = JournalRegistry::default();
+    registry
+        .configure_directory(std::path::Path::new(&directory))
+        .unwrap();
+    if std::env::var_os("UBM_TEST_AUTHORITY_CREATE").is_some() {
+        registry
+            .open("shared", &json!({}), quota())
+            .unwrap()
+            .append(&json!({}), &json!({"value":9}))
+            .unwrap();
+        return;
+    }
+    let failure = match registry.get("shared") {
+        Err(failure) => failure,
+        Ok(_) => panic!("foreign process acquired a live recording authority"),
+    };
+    assert_eq!(failure.kind, "storage.busy");
+}
+
+#[test]
+fn process_exit_releases_authority_and_cold_reopen_preserves_rows() {
+    let path = path();
+    let outcome = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "process_authority_worker"])
+        .env("UBM_TEST_AUTHORITY_DIRECTORY", path.parent().unwrap())
+        .env("UBM_TEST_AUTHORITY_CREATE", "1")
+        .status()
+        .unwrap();
+    assert!(outcome.success());
+    let registry = JournalRegistry::default();
+    registry
+        .configure_directory(path.parent().unwrap())
+        .unwrap();
+    assert_eq!(
+        registry.get("shared").unwrap().prepare(1, 4096).unwrap()["records"][0]["record"]["value"],
+        9
+    );
+}
+
+#[test]
+fn authority_capacity_worker() {
+    let Some(directory) = std::env::var_os("UBM_TEST_AUTHORITY_CAPACITY") else {
+        return;
+    };
+    let registry = JournalRegistry::default();
+    registry
+        .configure_directory(std::path::Path::new(&directory))
+        .unwrap();
+    let mut owners = Vec::new();
+    for index in 0..256 {
+        owners.push(
+            registry
+                .open(&format!("owner-{index}"), &json!({}), quota())
+                .unwrap(),
+        );
+    }
+    assert_eq!(
+        registry
+            .open("excess", &json!({}), quota())
+            .err()
+            .unwrap()
+            .kind,
+        "storage.busy"
+    );
+    assert!(std::sync::Arc::ptr_eq(
+        &owners[0],
+        &registry.get("owner-0").unwrap()
+    ));
+    assert!(
+        !std::path::Path::new(&directory)
+            .join("excess.sqlite")
+            .exists()
+    );
+    let weak: Vec<_> = owners.iter().map(std::sync::Arc::downgrade).collect();
+    drop(owners);
+    registry.get("owner-0").unwrap();
+    assert!(weak.iter().filter(|owner| owner.strong_count() > 0).count() <= 17);
+}
+
+#[test]
+fn authority_capacity_refuses_only_new_ids_and_releases_unpinned_handles() {
+    let path = path();
+    let outcome = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "authority_capacity_worker"])
+        .env("UBM_TEST_AUTHORITY_CAPACITY", path.parent().unwrap())
+        .status()
+        .unwrap();
+    assert!(outcome.success());
+}
+
+#[test]
+fn evicted_journals_reopen_the_same_prepared_token_without_acknowledging() {
+    let path = path();
+    let registry = JournalRegistry::default();
+    registry
+        .configure_directory(path.parent().unwrap())
+        .unwrap();
+    let mut prefixes = Vec::new();
+    for index in 0..32 {
+        let id = format!("prepared-{index}");
+        let journal = registry.open(&id, &json!({}), quota()).unwrap();
+        journal.append(&json!({}), &json!({"value":index})).unwrap();
+        let prefix = journal.prepare(1, 4096).unwrap();
+        journal.stop().unwrap();
+        prefixes.push((id, std::sync::Arc::downgrade(&journal), prefix));
+    }
+    let (id, _, prefix) = prefixes
+        .iter()
+        .find(|(_, journal, _)| journal.strong_count() == 0)
+        .unwrap();
+    let reopened = registry.get(id).unwrap();
+    assert_eq!(&reopened.prepare(1, 4096).unwrap(), prefix);
+    assert_eq!(reopened.status().unwrap()["records"], 1);
+}
+
+#[test]
+fn foreign_process_is_refused_before_export_can_contend_with_the_writer() {
+    let path = path();
+    let registry = JournalRegistry::default();
+    registry
+        .configure_directory(path.parent().unwrap())
+        .unwrap();
+    let journal = registry.open("shared", &json!({}), quota()).unwrap();
+    journal.append(&json!({}), &json!({"value":1})).unwrap();
+    let outcome = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "process_authority_worker"])
+        .env("UBM_TEST_AUTHORITY_DIRECTORY", path.parent().unwrap())
+        .status()
+        .unwrap();
+    assert!(outcome.success());
+    journal.append(&json!({}), &json!({"value":2})).unwrap();
+    assert_eq!(journal.status().unwrap()["accepting"], true);
+    assert_eq!(journal.status().unwrap()["records"], 2);
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_authority_is_refused_before_creating_the_recording() {
+    let path = path();
+    let directory = path.parent().unwrap();
+    let target = directory.join("target");
+    std::fs::write(&target, []).unwrap();
+    std::os::unix::fs::symlink(&target, directory.join("shared.authority")).unwrap();
+    let registry = JournalRegistry::default();
+    registry.configure_directory(directory).unwrap();
+    assert_eq!(
+        registry
+            .open("shared", &json!({}), quota())
+            .err()
+            .unwrap()
+            .kind,
+        "storage.permission"
+    );
+    assert!(!directory.join("shared.sqlite").exists());
+    assert_eq!(std::fs::metadata(target).unwrap().len(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn cached_authority_refuses_directory_replacement_at_the_same_path() {
+    let path = path();
+    let directory = path.parent().unwrap();
+    let registry = JournalRegistry::default();
+    registry.configure_directory(directory).unwrap();
+    let journal = registry.open("shared", &json!({}), quota()).unwrap();
+    std::fs::rename(directory, directory.with_extension("original")).unwrap();
+    std::fs::create_dir(directory).unwrap();
+    assert_eq!(
+        registry.get("shared").err().unwrap().kind,
+        "storage.permission"
+    );
+    assert_eq!(
+        registry.configure_directory(directory).err().unwrap().kind,
+        "storage.identity"
+    );
+    assert!(!directory.join("shared.sqlite").exists());
+    assert_eq!(journal.status().unwrap()["records"], 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn cached_authority_refuses_replaced_journal_and_keeps_original_owner() {
+    let path = path();
+    let directory = path.parent().unwrap();
+    let registry = JournalRegistry::default();
+    registry.configure_directory(directory).unwrap();
+    let journal = registry.open("shared", &json!({}), quota()).unwrap();
+    std::fs::rename(
+        directory.join("shared.sqlite"),
+        directory.join("original.sqlite"),
+    )
+    .unwrap();
+    std::fs::write(directory.join("shared.sqlite"), []).unwrap();
+    assert_eq!(
+        registry.get("shared").err().unwrap().kind,
+        "storage.identity"
+    );
+    assert_eq!(journal.status().unwrap()["records"], 0);
+}
+
+#[test]
+fn eviction_pressure_preserves_unpersisted_failure_truth_across_controllers() {
+    let path = path();
+    let directory = path.parent().unwrap();
+    let writer = JournalRegistry::default();
+    writer.configure_directory(directory).unwrap();
+    let journal = writer.open("failed", &json!({}), quota()).unwrap();
+    let lock = rusqlite::Connection::open(directory.join("failed.sqlite")).unwrap();
+    lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let failure = journal.append(&json!({}), &json!({"value":1})).unwrap_err();
+    journal.mark_collection_failure(&failure);
+    assert_eq!(
+        journal.status().unwrap()["collectionFailure"]["persisted"],
+        false
+    );
+    let weak = std::sync::Arc::downgrade(&journal);
+    drop(journal);
+    lock.execute_batch("ROLLBACK").unwrap();
+    for index in 0..32 {
+        writer
+            .open(&format!("pressure-{index}"), &json!({}), quota())
+            .unwrap();
+    }
+    let reader = JournalRegistry::default();
+    reader.configure_directory(directory).unwrap();
+    let journal = reader.get("failed").unwrap();
+    assert!(std::sync::Arc::ptr_eq(&weak.upgrade().unwrap(), &journal));
+    assert_eq!(
+        journal.status().unwrap()["collectionFailure"]["persisted"],
+        false
+    );
+    assert_eq!(journal.status().unwrap()["accepting"], false);
+}
+
+#[test]
 fn terminal_collection_failure_stops_admission_and_survives_restart() {
     let path = path();
     let journal = open(&path);

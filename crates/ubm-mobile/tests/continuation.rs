@@ -1,4 +1,7 @@
 mod common;
+#[path = "../../test-support/recording_fixture.rs"]
+mod recording_fixture;
+use recording_fixture::{complete_fixture_process, isolated_fixture_process};
 
 use common::*;
 use serde_json::json;
@@ -564,15 +567,13 @@ async fn foreground_claim_queues_behind_autonomous_recovery_and_prevents_another
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn durable_mobile_collection_retains_context_and_survives_native_claim() {
+    let Some(root) = isolated_fixture_process(
+        "durable_mobile_collection_retains_context_and_survives_native_claim",
+    ) else {
+        return;
+    };
     for platform in [MobilePlatform::Android, MobilePlatform::Apple] {
-        let directory = std::env::temp_dir().join(format!(
-            "ubm-mobile-recording-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let directory = root.join(platform.as_str());
         std::fs::create_dir(&directory).unwrap();
         let radio = Scripted::polar();
         let (host, _) = open(&radio, platform).await;
@@ -655,21 +656,17 @@ async fn durable_mobile_collection_retains_context_and_survives_native_claim() {
         host.shutdown().await;
         drop(engine);
         drop(host);
-        std::fs::remove_dir_all(directory).unwrap();
     }
+    complete_fixture_process(&root);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn durable_refused_subscription_then_new_database_never_reuses_committed_identity() {
-    let directory = std::env::temp_dir().join(format!(
-        "ubm-recording-recovery-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&directory).unwrap();
+    let Some(directory) = isolated_fixture_process(
+        "durable_refused_subscription_then_new_database_never_reuses_committed_identity",
+    ) else {
+        return;
+    };
     let mut first = true;
     let radio = Scripted::new(Box::new(move |request| {
         if matches!(request, RadioRequest::EnableNotifications { .. }) && first {
@@ -731,24 +728,20 @@ async fn durable_refused_subscription_then_new_database_never_reuses_committed_i
     host.shutdown().await;
     drop(engine);
     drop(host);
-    std::fs::remove_dir_all(directory).unwrap();
+    complete_fixture_process(&directory);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pristine_apple_restored_native_setup_collects_before_att_completion_without_js() {
+    let Some(directory) = isolated_fixture_process(
+        "pristine_apple_restored_native_setup_collects_before_att_completion_without_js",
+    ) else {
+        return;
+    };
     const PEER: &str = "232859A3-172E-CD86-20F1-0D2331118FEC";
     const PMD: &str = "fb005c80-02e7-f387-1cad-8acd2d8df0c8";
     const CP: &str = "fb005c81-02e7-f387-1cad-8acd2d8df0c8";
     const DATA: &str = "fb005c82-02e7-f387-1cad-8acd2d8df0c8";
-    let directory = std::env::temp_dir().join(format!(
-        "ubm-apple-pristine-intake-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&directory).unwrap();
     let (writes, mut received) = tokio::sync::mpsc::unbounded_channel();
     let radio = Scripted::new(Box::new(move |request| match request {
         RadioRequest::Discover { .. } => {
@@ -918,7 +911,7 @@ async fn pristine_apple_restored_native_setup_collects_before_att_completion_wit
     assert_eq!(radio.count(RequestKind::Disconnect), 1);
     drop(engine);
     drop(host);
-    std::fs::remove_dir_all(directory).unwrap();
+    complete_fixture_process(&directory);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

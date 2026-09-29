@@ -32,6 +32,9 @@ use super::{
 use crate::desktop_core::CoreAuthority;
 use crate::AuthenticatedCaller;
 
+#[path = "../../../crates/test-support/recording_fixture.rs"]
+mod recording_fixture;
+
 const HRM_SERVICE: &str = "0000180d-0000-1000-8000-00805f9b34fb";
 /// Notify-only (the Polar H10 heart-rate measurement shape).
 const NOTIFY_ONLY: &str = "00002a37-0000-1000-8000-00805f9b34fb";
@@ -1910,21 +1913,22 @@ fn wire_error(error: &DispatchError) -> Value {
 // Trusted continuation and offline recording use the same Tauri authority.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn trusted_continuation_replays_setup_and_retains_recording_without_offline_radio_open() {
+    let module = module_path!().split_once("::").unwrap().1;
+    let test = format!("{module}::trusted_continuation_replays_setup_and_retains_recording_without_offline_radio_open");
+    let Some(directory) = recording_fixture::isolated_fixture_process(&test) else {
+        return;
+    };
+    trusted_continuation_recording_scenario(&directory).await;
+    recording_fixture::complete_fixture_process(&directory);
+}
+
+async fn trusted_continuation_recording_scenario(directory: &std::path::Path) {
     let harness = Harness::new().await;
     let peer = "native-recorded-peer";
     harness.advertise(peer).await;
-    let directory = std::env::temp_dir().join(format!(
-        "ubm-tauri-recording-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&directory).unwrap();
     harness
         .dispatcher
-        .continuation_configure_recording_directory(&directory)
+        .continuation_configure_recording_directory(directory)
         .await
         .unwrap();
     let declaration = serde_json::json!({
@@ -2135,7 +2139,7 @@ async fn trusted_continuation_replays_setup_and_retains_recording_without_offlin
         panic!("offline recording opened radio")
     }));
     offline
-        .continuation_configure_recording_directory(&directory)
+        .continuation_configure_recording_directory(directory)
         .await
         .unwrap();
     assert_eq!(
@@ -2160,7 +2164,6 @@ async fn trusted_continuation_replays_setup_and_retains_recording_without_offlin
         0
     );
     drop(offline);
-    std::fs::remove_dir_all(directory).unwrap();
 }
 
 // PR210-04 — one peer's hung discovery must not stall another peer's

@@ -1547,6 +1547,7 @@ dependencies = [
  "dbus-tokio",
  "futures",
  "futures-util",
+ "libc",
  "objc2",
  "objc2-core-bluetooth",
  "objc2-foundation",
@@ -1557,6 +1558,7 @@ dependencies = [
  "uuid",
  "windows",
  "windows-future",
+ "windows-sys",
  "zbus",
 ]
 

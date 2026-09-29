@@ -106,7 +106,7 @@ once tagged. Stable `4.0.0` through `4.0.20` are immutable. The unpublished
 `4.0.23`, `4.0.24`, `4.0.25`, `4.0.26`, and `4.0.27` are immutable tagged
 history. `4.0.28` is immutable tagged history. The unpublished
 `v5.0.0-rc.5` tag is immutable after its publish-only Tauri consumer failure.
-The current candidate is `5.0.0-rc.13`; rc.12 is immutable published history.
+The current candidate is `5.0.0-rc.14`; rc.13 is immutable published history.
 
 ```sh
 release_candidate=4.0.0-rc.N
@@ -134,7 +134,29 @@ The first stable tag `v4.0.0` is immutable published history. Do not recreate or
 git tag -a v4.0.0 -m "v4.0.0"
 ```
 
-## Releasing 5.0.0-rc.13
+## Releasing 5.0.0-rc.14
+
+Release only from the exact current `main` commit after the focused recording
+correction PR and canonical CI succeed. Verify `package.json` and the changelog
+identify `5.0.0-rc.14`, the worktree is clean, and all applicable native artifacts
+match the corrected source. Push a new annotated `v5.0.0-rc.14` tag; the existing
+workflow publishes the exact package to npm `next` with provenance and creates
+a GitHub prerelease. Never publish manually or move an earlier tag.
+
+The candidate-specific gates cover independent-store export during acquisition,
+bounded inactive journal ownership, safe cross-process admission, retained
+storage failure truth, append-only loss deltas, control-only journal attachment,
+and two-peer mobile recording through the actual typed controller. Verify the
+patched native binary with the original export/retention controls and a clean
+packed consumer. Repeat physical scenarios only for changed runtime behavior
+or a concrete reproduction; version and documentation changes need no phone
+rerun. Preserve the exact scope and limitations of prior physical evidence.
+This is not stable 5.0 and does not promote backend qualification labels.
+
+## Releasing 5.0.0-rc.13 (historical)
+
+`v5.0.0-rc.13` is immutable published history. The following records its
+release procedure; do not execute its tag-creation instructions again.
 
 `v5.0.0-rc.12` is immutable published history. Release `v5.0.0-rc.13` only
 from the exact current `main` commit after the review-remediation PR and

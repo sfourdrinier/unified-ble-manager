@@ -3597,7 +3597,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-unified-ble-manager"
-version = "5.0.0-rc.13"
+version = "5.0.0-rc.14"
 dependencies = [
  "btleplug",
  "futures-util",
@@ -4128,6 +4128,7 @@ version = "0.1.0"
 dependencies = [
  "btleplug",
  "futures-util",
+ "libc",
  "objc2 0.5.2",
  "objc2-core-bluetooth",
  "rusqlite",
@@ -4137,6 +4138,7 @@ dependencies = [
  "uuid",
  "windows 0.62.2",
  "windows-future 0.3.2",
+ "windows-sys 0.61.2",
  "zbus",
 ]
 

@@ -7,6 +7,9 @@ use ubm_desktop::{
     CharacteristicSnapshot, DesktopCentral, FakeRadio, OpControl, PropertyFlags, RadioEvent,
     ServiceSnapshot,
 };
+#[path = "../../test-support/recording_fixture.rs"]
+mod recording_fixture;
+use recording_fixture::{complete_fixture_process, isolated_fixture_process};
 const PEER: &str = "AA:BB:CC:DD:EE:FF";
 const SERVICE: &str = "0000180d-0000-1000-8000-00805f9b34fb";
 const CHARACTERISTIC: &str = "00002a37-0000-1000-8000-00805f9b34fb";
@@ -200,19 +203,15 @@ async fn pinned_declaration_precheck_compares_full_normalized_identity() {
 
 #[tokio::test]
 async fn unattached_recording_can_retry_after_directory_configuration() {
+    let Some(directory) =
+        isolated_fixture_process("unattached_recording_can_retry_after_directory_configuration")
+    else {
+        return;
+    };
     let (central, engine) = fixture().await;
     let mut order: Value = serde_json::from_str(&declaration()).unwrap();
     order["recording"] = json!({"id":"late-directory","maxBytes":1048576,"maxRecords":1000});
     assert!(engine.execute(PEER, &order.to_string()).await.is_err());
-    let directory = std::env::temp_dir().join(format!(
-        "ubm-late-recording-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&directory).unwrap();
     engine.configure_recording_directory(&directory).unwrap();
     assert_eq!(
         engine.execute(PEER, &order.to_string()).await.unwrap()["event"],
@@ -255,7 +254,7 @@ async fn unattached_recording_can_retry_after_directory_configuration() {
         .unwrap();
     central.shutdown().await;
     drop(engine);
-    std::fs::remove_dir_all(directory).unwrap();
+    complete_fixture_process(&directory);
 }
 
 #[tokio::test]
@@ -318,15 +317,11 @@ async fn desktop_native_setup_observes_early_reply_but_waits_for_att_and_retains
 
 #[tokio::test]
 async fn durable_native_values_survive_radio_claim_and_restart_without_double_delivery() {
-    let directory = std::env::temp_dir().join(format!(
-        "ubm-native-recording-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&directory).unwrap();
+    let Some(directory) = isolated_fixture_process(
+        "durable_native_values_survive_radio_claim_and_restart_without_double_delivery",
+    ) else {
+        return;
+    };
     let (central, engine) = fixture().await;
     engine.configure_recording_directory(&directory).unwrap();
     let mut order: Value = serde_json::from_str(&declaration()).unwrap();
@@ -438,20 +433,16 @@ async fn durable_native_values_survive_radio_claim_and_restart_without_double_de
     reopened.recording_clear("native-test").unwrap();
     reopened_central.shutdown().await;
     drop(reopened);
-    std::fs::remove_dir_all(directory).unwrap();
+    complete_fixture_process(&directory);
 }
 
 #[tokio::test]
 async fn independent_store_stop_is_observed_without_waiting_for_sensor_ingress() {
-    let directory = std::env::temp_dir().join(format!(
-        "ubm-external-stop-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&directory).unwrap();
+    let Some(directory) = isolated_fixture_process(
+        "independent_store_stop_is_observed_without_waiting_for_sensor_ingress",
+    ) else {
+        return;
+    };
     let (central, engine) = fixture().await;
     engine.configure_recording_directory(&directory).unwrap();
     let mut order: Value = serde_json::from_str(&declaration()).unwrap();
@@ -476,20 +467,16 @@ async fn independent_store_stop_is_observed_without_waiting_for_sensor_ingress()
     central.shutdown().await;
     drop(engine);
     drop(offline);
-    std::fs::remove_dir_all(directory).unwrap();
+    complete_fixture_process(&directory);
 }
 
 #[tokio::test]
 async fn recording_stop_during_held_setup_prevents_late_success_and_keeps_release_reachable() {
-    let directory = std::env::temp_dir().join(format!(
-        "ubm-recording-stop-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&directory).unwrap();
+    let Some(directory) = isolated_fixture_process(
+        "recording_stop_during_held_setup_prevents_late_success_and_keeps_release_reachable",
+    ) else {
+        return;
+    };
     let (central, engine) = fixture().await;
     central.boundary().set_mtu(PEER, 247);
     central.boundary().block_op(ubm_desktop::FaultOp::Write);
@@ -529,20 +516,16 @@ async fn recording_stop_during_held_setup_prevents_late_success_and_keeps_releas
     );
     central.shutdown().await;
     drop(engine);
-    std::fs::remove_dir_all(directory).unwrap();
+    complete_fixture_process(&directory);
 }
 
 #[tokio::test]
 async fn reopened_recording_uses_a_distinct_session_epoch_before_new_ingress() {
-    let directory = std::env::temp_dir().join(format!(
-        "ubm-recording-epoch-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&directory).unwrap();
+    let Some(directory) = isolated_fixture_process(
+        "reopened_recording_uses_a_distinct_session_epoch_before_new_ingress",
+    ) else {
+        return;
+    };
     let mut epochs = Vec::new();
     for _ in 0..2 {
         let (central, engine) = fixture().await;
@@ -565,7 +548,7 @@ async fn reopened_recording_uses_a_distinct_session_epoch_before_new_ingress() {
         central.shutdown().await;
     }
     assert_ne!(epochs[0], epochs[1]);
-    std::fs::remove_dir_all(directory).unwrap();
+    complete_fixture_process(&directory);
 }
 
 async fn wait_for_notification_call(central: &DesktopCentral<FakeRadio>, count: usize) {

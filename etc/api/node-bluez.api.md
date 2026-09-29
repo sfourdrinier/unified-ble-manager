@@ -5,7 +5,7 @@
 
 - `ADAPTER_INITIALIZATION_TIMEOUT_MS :: 10000`
 - `BLUEZ_BACKEND_ID :: "unified-ble:bluez-dbus"`
-- `BLUEZ_IMPLEMENTATION_VERSION :: "5.0.0-rc.13"`
+- `BLUEZ_IMPLEMENTATION_VERSION :: "5.0.0-rc.14"`
 - `BLUEZ_PLATFORM_ID :: "unified-ble:linux-bluez"`
 - `BluezBleManagerAppOptions :: { readonly connectionPolicy?: BluezConnectionPolicy | undefined; readonly busKind?: BluezBusKind | undefined; readonly pairingGeneration?: BluezPairingGenerationController | undefined; readonly owner?: string | undefined; readonly binding?: DesktopRustCoreBinding | undefined; readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly randomBytes?: ((length: number) => Uint8Array<ArrayBufferLike>) | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined; readonly background?: { readonly continuation?: unknown; } | undefined }`
 - `BluezBusKind :: "system" | "session"`
@@ -21,7 +21,7 @@
 - `ContinuationRecordingMetadata :: { readonly session: { readonly peerId: string; readonly sessionId: string; readonly backendInstanceId: string; readonly sessionStartedAtUnixNs: string; readonly sessionEpoch: string; }; readonly consumer: { readonly consumer: string; readonly peerId: string; readonly connectionGeneration: string; readonly databaseGeneration: string; readonly selector: BackgroundContinuationResubscribeSelector; } | null }`
 - `ContinuationRecordingPrepareOptions :: { readonly maxItems: number; readonly maxBytes: number }`
 - `ContinuationRecordingStatus :: { readonly recordingId: string; readonly phase: "stopped" | "recording" | "capacity-reached"; readonly accepting: boolean; readonly records: number; readonly bytes: number; readonly lostRecords: number; readonly maxBytes: number; readonly maxRecords: number; readonly encrypted: false; readonly runtimeFailure: (ContinuationRecordingFailure & { readonly persisted: false; }) | null; readonly collectionFailure: (ContinuationRecordingFailure & { readonly persisted: boolean; readonly persistenceFailure?: ContinuationRecordingFailure | undefined; }) | null }`
-- `DESKTOP_RUST_CORE_IMPLEMENTATION_VERSION :: "5.0.0-rc.13"`
+- `DESKTOP_RUST_CORE_IMPLEMENTATION_VERSION :: "5.0.0-rc.14"`
 - `DESKTOP_RUST_CORE_PROFILES :: Readonly<Record<DesktopRustCorePlatform, DesktopRustCoreProfile>>`
 - `DbusNextBluezProviderOptions :: { readonly connectionPolicy?: BluezConnectionPolicy | undefined; readonly busKind: BluezBusKind; readonly now: () => number; readonly pairingGeneration?: BluezPairingGenerationController | undefined; readonly owner?: string | undefined; readonly binding?: DesktopRustCoreBinding | undefined }`
 - `DesktopCoreHost :: { readonly platform: DesktopRustCorePlatform; readonly operationPrefix: string }`

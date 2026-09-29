@@ -2,6 +2,27 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.0.0-rc.14] - 2026-09-29
+
+- Share durable recording authority across independent in-process accessors so
+  export preparation cannot terminate live collection through internal SQLite
+  contention. Refuse competing process access before database admission, retain
+  path identity checks, and keep real storage failures observable.
+- Bound inactive journal handles independently of historical recording IDs.
+  Preserve live owners, prepared prefixes and uncommitted failure evidence;
+  refuse new identities at the authority limit without forgetting existing ones.
+- Persist every accepted ingress-loss delta before volatile queue coalescing or
+  capacity handling. Preserve immutable prepared prefixes and subsequent deltas
+  across acknowledgement and restart.
+- Keep mobile journals scoped to their declared peer without changing ordinary
+  event delivery. Admit undelivered process controls during blocking journal
+  setup, preserving relevant controls and loss while refusing prior consumer
+  ingress. Exercise real Android/Apple host paths through the shared TypeScript
+  recording controller, including multi-prefix replay and native release.
+- Clarify logical clearing, physical retention, absent per-value host receive
+  timing, and explicit archival limitations for malformed older RC journals.
+  These corrections do not promote backend hardware qualification labels.
+
 ## [5.0.0-rc.13] - 2026-09-28
 
 - Retrieve an explicitly supplied, OS-known CoreBluetooth UUID through the same

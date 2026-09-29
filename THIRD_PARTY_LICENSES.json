@@ -4,14 +4,14 @@
   "schemaVersion": "1.0.0",
   "package": {
     "name": "unified-ble-manager",
-    "version": "5.0.0-rc.13"
+    "version": "5.0.0-rc.14"
   },
   "source": {
     "method": "pnpm-lock production graph with installed-manifest license audit + cargo-metadata workspace graph (declared metadata plus exact reviewed cargo license-file evidence) + reviewed bundled source-asset manifests (not linked runtime dependencies)",
     "lockfile": "pnpm-lock.yaml",
     "lockfileSha256": "fea8b9fea3dca31d966c33e5942c5fb0f179c492a8462f90482d0c5dc1bd86d2",
     "cargoLockfile": "Cargo.lock",
-    "cargoLockfileSha256": "d0c13e1b2911974e94a7615ee8f30be76bdc9f0e4381b6e1ccc647cb7491ba72"
+    "cargoLockfileSha256": "c60eea5a7d72b4d58fd65ee8388157fc4c95e78cad58718727221e59ee998fd2"
   },
   "reviewedOverrides": [
     {

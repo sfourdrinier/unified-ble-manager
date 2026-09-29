@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use rusqlite::{Connection, OpenFlags, TransactionBehavior, params};
 use serde_json::{Value, json};
@@ -54,7 +54,51 @@ fn valid_id(id: &str) -> bool {
 #[derive(Default)]
 struct RegistryState {
     directory: Option<PathBuf>,
-    journals: HashMap<String, Arc<ContinuationJournal>>,
+    directory_identity: Option<(u64, u64)>,
+}
+
+const INACTIVE_HANDLES: usize = 16;
+const AUTHORITY_HANDLES: usize = 256;
+
+/// Process-wide authority: separate trusted stores must not create competing
+/// SQLite writers or independent runtime-only failure histories for one path.
+#[derive(Default)]
+struct JournalAuthorities {
+    journals: HashMap<PathBuf, Arc<ContinuationJournal>>,
+}
+impl JournalAuthorities {
+    fn maintain(&mut self, reserved: usize) {
+        let removable: Vec<PathBuf> = self
+            .journals
+            .iter()
+            .filter(|(_, journal)| Arc::strong_count(journal) == 1 && journal.can_close())
+            .map(|(path, _)| path.clone())
+            .collect();
+        // Live readers/writers and uncommitted failure truth are never evicted.
+        // The total authority cap also bounds pinned failure resources; exhaustion
+        // refuses a new recording rather than forgetting an earlier failure.
+        let remove = removable.len().saturating_sub(INACTIVE_HANDLES - reserved);
+        for path in removable.into_iter().take(remove) {
+            self.journals.remove(&path);
+        }
+    }
+    fn admission(&mut self) -> Result<()> {
+        self.maintain(1);
+        if self.journals.len() >= AUTHORITY_HANDLES {
+            return Err(error(
+                "storage.busy",
+                "recording authority capacity reached; existing owners retained",
+            ));
+        }
+        Ok(())
+    }
+}
+fn authorities() -> Result<MutexGuard<'static, JournalAuthorities>> {
+    static AUTHORITIES: OnceLock<Mutex<JournalAuthorities>> = OnceLock::new();
+    AUTHORITIES
+        .get_or_init(Mutex::default)
+        .lock()
+        .map_err(|_| error("storage.io", "recording authority interrupted"))
 }
 
 /// Host-private path authority and durable owners, independent of radio sessions.
@@ -75,6 +119,7 @@ impl JournalRegistry {
             )
             .at("configure"));
         }
+        let identity = path_identity(&canonical)?;
         let mut state = self
             .state
             .lock()
@@ -90,7 +135,17 @@ impl JournalRegistry {
             )
             .at("configure"));
         }
+        if state
+            .directory_identity
+            .is_some_and(|current| current != identity)
+        {
+            return Err(error(
+                "storage.identity",
+                "configured recording directory was replaced",
+            ));
+        }
         state.directory = Some(canonical);
+        state.directory_identity = Some(identity);
         Ok(json!({"state":"configured","encrypted":false}))
     }
     fn location(state: &RegistryState, id: &str) -> Result<PathBuf> {
@@ -103,6 +158,14 @@ impl JournalRegistry {
                 "host has not configured a private recording directory",
             )
         })?;
+        if directory.canonicalize().ok().as_ref() != Some(directory)
+            || Some(path_identity(directory)?) != state.directory_identity
+        {
+            return Err(error(
+                "storage.permission",
+                "configured recording directory changed",
+            ));
+        }
         Ok(directory.join(format!("{id}.sqlite")))
     }
     pub fn open(
@@ -111,33 +174,46 @@ impl JournalRegistry {
         declaration: &Value,
         quota: JournalQuota,
     ) -> Result<Arc<ContinuationJournal>> {
-        let mut state = self
+        let state = self
             .state
             .lock()
             .map_err(|_| error("storage.io", "recording registry interrupted"))?;
         let path = Self::location(&state, id)?;
-        if let Some(journal) = state.journals.get(id) {
+        let mut authorities = authorities()?;
+        if let Some(journal) = authorities.journals.get(&path) {
+            journal.validate_path(&path)?;
             if journal.quota != quota || journal.declaration != encoded(declaration, 65536)? {
                 return Err(error(
                     "storage.identity",
                     "recording identity or quota differs; file retained",
                 ));
             }
-            return Ok(journal.clone());
+            let journal = journal.clone();
+            authorities.maintain(0);
+            return Ok(journal);
         }
-        let journal = Arc::new(ContinuationJournal::open(&path, id, declaration, quota)?);
-        state.journals.insert(id.to_owned(), journal.clone());
+        authorities.admission()?;
+        let authority = lock_authority(&path)?;
+        let mut journal = ContinuationJournal::open(&path, id, declaration, quota)?;
+        journal.authority = Some(authority);
+        let journal = Arc::new(journal);
+        authorities.journals.insert(path, journal.clone());
         Ok(journal)
     }
     pub fn get(&self, id: &str) -> Result<Arc<ContinuationJournal>> {
-        let mut state = self
+        let state = self
             .state
             .lock()
             .map_err(|_| error("storage.io", "recording registry interrupted"))?;
         let path = Self::location(&state, id)?;
-        if let Some(journal) = state.journals.get(id) {
-            return Ok(journal.clone());
+        let mut authorities = authorities()?;
+        if let Some(journal) = authorities.journals.get(&path) {
+            journal.validate_path(&path)?;
+            let journal = journal.clone();
+            authorities.maintain(0);
+            return Ok(journal);
         }
+        authorities.admission()?;
         let metadata = std::fs::symlink_metadata(&path)
             .map_err(|_| error("storage.io", "recording file cannot be inspected").at("lookup"))?;
         if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > (1 << 29) {
@@ -147,6 +223,7 @@ impl JournalRegistry {
             )
             .at("lookup"));
         }
+        let authority = lock_authority(&path)?;
         // Read only bounded identity before the full quota/schema/integrity open.
         // READ_ONLY without CREATE prevents missing IDs creating empty journals.
         let connection = Connection::open_with_flags(
@@ -173,7 +250,7 @@ impl JournalRegistry {
         )?;
         drop(connection);
         let declaration = decode(&declaration)?;
-        let journal = Arc::new(ContinuationJournal::open(
+        let mut journal = ContinuationJournal::open(
             &path,
             id,
             &declaration,
@@ -181,10 +258,95 @@ impl JournalRegistry {
                 max_bytes,
                 max_records,
             },
-        )?);
-        state.journals.insert(id.to_owned(), journal.clone());
+        )?;
+        journal.authority = Some(authority);
+        let journal = Arc::new(journal);
+        authorities.journals.insert(path, journal.clone());
         Ok(journal)
     }
+}
+
+/// Nonblocking process admission happens before opening the recording SQLite
+/// connection. The zero-byte sidecar is not deleted: unlinking a held OS lock
+/// would permit a second authority. Crash/close releases the OS lock itself.
+fn lock_authority(path: &Path) -> Result<std::fs::File> {
+    let lock_path = path.with_extension("authority");
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW).mode(0o600);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x00200000); // FILE_FLAG_OPEN_REPARSE_POINT
+    }
+    let file = options.open(&lock_path).map_err(|_| {
+        error(
+            "storage.permission",
+            "recording authority path cannot be opened",
+        )
+    })?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| error("storage.io", "recording authority cannot be inspected"))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() != 0 {
+        return Err(error(
+            "storage.permission",
+            "recording authority is not an empty regular file",
+        ));
+    }
+    file.try_lock().map_err(|failure| match failure {
+        std::fs::TryLockError::WouldBlock => {
+            error("storage.busy", "recording is owned by another process")
+        }
+        std::fs::TryLockError::Error(_) => {
+            error("storage.io", "recording process authority cannot be locked")
+        }
+    })?;
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn path_identity(path: &Path) -> Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|_| error("storage.io", "recording path cannot be inspected"))?;
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(windows)]
+fn handle_identity(file: &std::fs::File) -> Result<(u64, u64)> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: the File retains a valid handle throughout this call and `info`
+    // supplies an initialized, correctly sized writable output structure.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return Err(error(
+            "storage.io",
+            "recording path identity cannot be inspected",
+        ));
+    }
+    Ok((
+        u64::from(info.dwVolumeSerialNumber),
+        (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+    ))
+}
+
+#[cfg(windows)]
+fn path_identity(path: &Path) -> Result<(u64, u64)> {
+    use std::os::windows::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(0x02200000) // BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+        .open(path)
+        .map_err(|_| error("storage.io", "recording path cannot be inspected"))?;
+    handle_identity(&file)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -317,6 +479,8 @@ fn sql_integer(value: u64) -> Result<i64> {
 /// they are not independent owners. The host authorizes access and retains the
 /// authoritative recording owner. Tokens protect cursor identity, not access.
 pub struct ContinuationJournal {
+    authority: Option<std::fs::File>,
+    file_identity: (u64, u64),
     connection: Mutex<Connection>,
     quota: JournalQuota,
     page_limit: u64,
@@ -327,6 +491,61 @@ pub struct ContinuationJournal {
 }
 
 impl ContinuationJournal {
+    fn validate_path(&self, path: &Path) -> Result<()> {
+        let metadata = std::fs::symlink_metadata(path)
+            .map_err(|_| error("storage.permission", "recording authority path changed"))?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(error(
+                "storage.permission",
+                "recording authority path changed",
+            ));
+        }
+        {
+            if path_identity(path)? != self.file_identity {
+                return Err(error(
+                    "storage.identity",
+                    "recording file was replaced; existing owner retained",
+                ));
+            }
+            if let Some(authority) = &self.authority {
+                let authority_path = path.with_extension("authority");
+                let current = std::fs::symlink_metadata(&authority_path)
+                    .map_err(|_| error("storage.permission", "recording authority path changed"))?;
+                #[cfg(unix)]
+                let held_identity = {
+                    use std::os::unix::fs::MetadataExt;
+                    let held = authority.metadata().map_err(|_| {
+                        error("storage.io", "recording authority cannot be inspected")
+                    })?;
+                    (held.dev(), held.ino())
+                };
+                #[cfg(windows)]
+                let held_identity = handle_identity(authority)?;
+                if !current.is_file()
+                    || current.file_type().is_symlink()
+                    || held_identity != path_identity(&authority_path)?
+                {
+                    return Err(error(
+                        "storage.identity",
+                        "recording authority file was replaced; existing owner retained",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+    fn can_close(&self) -> bool {
+        let Ok(runtime) = self.runtime_failure.lock() else {
+            return false;
+        };
+        let Ok(collection) = self.collection_failure.lock() else {
+            return false;
+        };
+        runtime.is_none()
+            && collection
+                .as_ref()
+                .is_none_or(|failure| failure["persisted"] == true)
+    }
     pub fn validate_metadata(metadata: &Value) -> Result<()> {
         if !metadata.is_object() {
             return Err(error(
@@ -505,6 +724,8 @@ impl ContinuationJournal {
         )?;
         let collection_failure = retained_failure.map(|value| decode(&value)).transpose()?;
         Ok(Self {
+            authority: None,
+            file_identity: path_identity(&path)?,
             connection: Mutex::new(connection),
             quota,
             page_limit,
@@ -862,4 +1083,54 @@ fn prepared(connection: &Connection, token: &str, last: i64, more: bool) -> Resu
         return Err(error("storage.corrupt", "prepared prefix is missing"));
     }
     Ok(json!({"token":token,"records":records,"bytes":bytes,"more":more}))
+}
+
+#[cfg(test)]
+mod authority_tests {
+    use super::*;
+
+    #[test]
+    fn held_export_transaction_blocks_shared_writer_without_sqlite_busy() {
+        let directory =
+            std::env::temp_dir().join(format!("ubm-held-export-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let writer_registry = JournalRegistry::default();
+        let export_registry = JournalRegistry::default();
+        writer_registry.configure_directory(&directory).unwrap();
+        export_registry.configure_directory(&directory).unwrap();
+        let writer = writer_registry
+            .open(
+                "held",
+                &json!({}),
+                JournalQuota {
+                    max_bytes: 1 << 20,
+                    max_records: 100,
+                },
+            )
+            .unwrap();
+        let export = export_registry.get("held").unwrap();
+        let mut connection = export.connection().unwrap();
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        let (ready, started) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            // Deterministic assertion at the admission boundary: the writer
+            // encounters this exact held export mutex, not a second DB handle.
+            assert!(matches!(
+                writer.connection.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+            ready.send(()).unwrap();
+            writer.append(&json!({}), &json!({"value":1})).unwrap();
+            assert_eq!(writer.status().unwrap()["collectionFailure"], Value::Null);
+        });
+        started
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        tx.commit().unwrap();
+        drop(connection);
+        worker.join().unwrap();
+        assert_eq!(export.status().unwrap()["records"], 1);
+    }
 }
