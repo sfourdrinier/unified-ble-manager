@@ -6,15 +6,15 @@
   "metadata": {
     "component": {
       "type": "library",
-      "bom-ref": "pkg:npm/unified-ble-manager@5.0.0-rc.13",
+      "bom-ref": "pkg:npm/unified-ble-manager@5.0.0-rc.14",
       "name": "unified-ble-manager",
-      "version": "5.0.0-rc.13",
+      "version": "5.0.0-rc.14",
       "licenses": [
         {
           "expression": "LicenseRef-UBM-Source-Available-1.0"
         }
       ],
-      "purl": "pkg:npm/unified-ble-manager@5.0.0-rc.13"
+      "purl": "pkg:npm/unified-ble-manager@5.0.0-rc.14"
     },
     "properties": [
       {
@@ -27,7 +27,7 @@
       },
       {
         "name": "unified-ble-manager:cargo-lock-sha256",
-        "value": "d0c13e1b2911974e94a7615ee8f30be76bdc9f0e4381b6e1ccc647cb7491ba72"
+        "value": "c60eea5a7d72b4d58fd65ee8388157fc4c95e78cad58718727221e59ee998fd2"
       },
       {
         "name": "unified-ble-manager:rust-dependency-scope",
@@ -4485,7 +4485,7 @@
       "dependsOn": []
     },
     {
-      "ref": "pkg:npm/unified-ble-manager@5.0.0-rc.13",
+      "ref": "pkg:npm/unified-ble-manager@5.0.0-rc.14",
       "dependsOn": [
         "pkg:npm/%40babel/runtime@7.29.7",
         "pkg:npm/node-addon-api@8.9.0",
@@ -5619,6 +5619,7 @@
         "pkg:cargo/dbus@0.9.12",
         "pkg:cargo/futures-util@0.3.34",
         "pkg:cargo/futures@0.3.34",
+        "pkg:cargo/libc@0.2.189",
         "pkg:cargo/objc2-core-bluetooth@0.2.2",
         "pkg:cargo/objc2-foundation@0.2.2",
         "pkg:cargo/objc2@0.5.2",
@@ -5628,6 +5629,7 @@
         "pkg:cargo/ubm-core@0.1.0",
         "pkg:cargo/uuid@1.26.1",
         "pkg:cargo/windows-future@0.3.2",
+        "pkg:cargo/windows-sys@0.61.2",
         "pkg:cargo/windows@0.62.2",
         "pkg:cargo/zbus@5.19.0"
       ]
