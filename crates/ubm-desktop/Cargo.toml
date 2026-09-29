@@ -42,11 +42,16 @@ uuid = { version = "1", default-features = false, features = ["std"], optional =
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "5", default-features = false, features = ["tokio"], optional = true }
 
+[target.'cfg(unix)'.dependencies]
+# NOFOLLOW for the trusted recording authority lock; no privileged operation.
+libc = "0.2"
+
 # Windows: WinRT pairing (DeviceInformationPairing), GattSession
 # MaintainConnection per connection, adapter listing, selection and
 # presence watch, and the package-identity (`deployment`) diagnostic.
 # Same `windows` major btleplug 0.12 already links (0.62), so no second copy.
 [target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 windows-future = { version = "0.3", optional = true }
 windows = { version = "0.62", optional = true, features = [
     "Devices_Bluetooth",

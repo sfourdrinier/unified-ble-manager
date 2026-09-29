@@ -77,6 +77,27 @@ test('registration and control records retain one shared cursor and explicit nul
   ).toBeNull()
 })
 
+test('peer-scoped lifecycle replay accepts its peer and refuses foreign evidence without consuming it', async () => {
+  const input = batch()
+  input.records = [input.records[0]]
+  input.records[0].metadata.consumer = null
+  input.records[0].record = {
+    t: 'link', peerId: 'peer', connectionGeneration: '1', databaseGeneration: '2', reason: 'peer'
+  }
+  input.bytes = size(input.records)
+  const access = { prepare: jest.fn(async () => input), acknowledge: jest.fn(), clear: jest.fn() }
+  const controller = createContinuationRecordingController(access)
+  expect((await controller.prepare('h10', { maxItems: 20, maxBytes: 2000 })).records[0].record.peerId).toBe('peer')
+  input.records[0].record.peerId = 'foreign-peer'
+  input.bytes = size(input.records)
+  await expect(controller.prepare('h10', { maxItems: 20, maxBytes: 2000 })).rejects.toMatchObject({
+    code: 'protocol.malformed'
+  })
+  expect(access.acknowledge).not.toHaveBeenCalled()
+  expect(access.clear).not.toHaveBeenCalled()
+  expect(input.records[0].record.peerId).toBe('foreign-peer')
+})
+
 test('rejects falsely reported serialized sizes and accounts UTF-8 metadata before returning data', () => {
   const value = batch()
   expect(() => parseContinuationRecordingBatch({ ...value, bytes: 0 }, { maxItems: 20, maxBytes: 2000 })).toThrow()

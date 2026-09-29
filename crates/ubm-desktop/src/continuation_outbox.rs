@@ -243,7 +243,8 @@ fn with_ordinal(mut record: Value, ordinal: u64) -> Value {
 }
 
 impl Outbox {
-    /// Select one durable delivery cursor before admitting any session ingress.
+    /// Select one durable cursor before consumer/data ingress or control delivery.
+    /// Undelivered process controls may precede the blocking journal setup.
     /// Native drain/claim never removes or acknowledges these durable records.
     pub fn attach_journal(
         &self,
@@ -252,17 +253,39 @@ impl Outbox {
     ) -> Result<(), JournalError> {
         ContinuationJournal::validate_metadata(&context)?;
         let mut queues = lock(&self.queues);
-        if self.is_sealed() || queues.ordinal != 0 || queues.durable.is_some() {
+        if self.is_sealed()
+            || queues.durable.is_some()
+            || !queues.data.is_empty()
+            || queues.ordinal != queues.control.len() as u64
+            || queues
+                .control
+                .iter()
+                .any(|entry| entry.record.get("consumer").is_some())
+        {
             return Err(JournalError::invalid(
-                "journal must attach before session ingress",
+                "journal must attach before consumer ingress or delivery",
             ));
         }
-        queues.durable = Some(Durable {
+        let mut durable = Durable {
             journal,
             context,
             consumers: HashMap::new(),
             failure: None,
-        });
+        };
+        // Process controls can arrive after native session creation while its
+        // blocking journal admission is pending. Retain their ordinary delivery
+        // and persist only the declared-peer/global subset under this same lock.
+        for entry in &queues.control {
+            Self::persist(&mut durable, &entry.record, false)?;
+        }
+        if queues.control_lost != 0 {
+            Self::persist(
+                &mut durable,
+                &serde_json::json!({"t":"ingress-drop","class":"control","count":queues.control_lost}),
+                false,
+            )?;
+        }
+        queues.durable = Some(durable);
         self.durable_enabled.store(true, Ordering::SeqCst);
         Ok(())
     }
@@ -346,6 +369,16 @@ impl Outbox {
     }
 
     fn persist(durable: &mut Durable, record: &Value, data: bool) -> Result<(), JournalError> {
+        // Ordinary mobile control delivery is process-wide, while a durable
+        // recording belongs to one declared peer. Foreign controls remain in
+        // the ordinary outbox; they must never acquire this journal's context.
+        // Global controls without a subject are retained unchanged.
+        if !data
+            && let Some(peer) = record.get("peerId").and_then(Value::as_str)
+            && durable.context.get("peerId").and_then(Value::as_str) != Some(peer)
+        {
+            return Ok(());
+        }
         if let Some(failure) = &durable.failure {
             return Err(failure.clone());
         }
@@ -535,6 +568,13 @@ impl Outbox {
 
     /// Queue one control record.
     pub fn push_control(&self, record: Value) {
+        self.push_control_record(record, false);
+    }
+
+    // Journal admission precedes the memory optimization under the same lock
+    // that orders journal attachment and sealing. Durable loss is append-only:
+    // a prepared prefix can never be changed by coalescing a later delta.
+    fn push_control_record(&self, record: Value, coalesce_loss: bool) {
         {
             let mut queues = lock(&self.queues);
             if !self.is_sealed()
@@ -558,10 +598,29 @@ impl Outbox {
                 // The terminal is still retained (or loss-accounted) below.
                 let _ = observer.sender.send(record.clone());
             }
-            if queues.control.len() >= CONTROL_RECORD_CAP {
+            let coalesced = coalesce_loss
+                && queues.control.back_mut().is_some_and(|tail| {
+                    if tail.record["t"] != "ingress-drop" || tail.record["class"] != record["class"]
+                    {
+                        return false;
+                    }
+                    let total = tail.record["count"].as_u64().and_then(|previous| {
+                        record["count"]
+                            .as_u64()
+                            .and_then(|delta| previous.checked_add(delta))
+                    });
+                    if let Some(total) = total
+                        && let Value::Object(map) = &mut tail.record
+                    {
+                        map.insert("count".to_owned(), Value::from(total));
+                        return true;
+                    }
+                    false
+                });
+            if !coalesced && queues.control.len() >= CONTROL_RECORD_CAP {
                 queues.control_lost += 1;
                 queues.control_lost_total += 1;
-            } else {
+            } else if !coalesced {
                 queues.ordinal += 1;
                 let ordinal = queues.ordinal;
                 queues.control.push_back(Entry {
@@ -577,67 +636,26 @@ impl Outbox {
     /// Report one ingress drop, coalescing into an undrained
     /// `ingress-drop` record of the same class at the control tail.
     pub fn push_ingress_drop(&self, class: IngressClass) {
-        {
-            let mut queues = lock(&self.queues);
-            if let Some(tail) = queues.control.back_mut()
-                && tail.record.get("t").and_then(Value::as_str) == Some("ingress-drop")
-                && tail.record.get("class").and_then(Value::as_str) == Some(class.as_str())
-                && let Some(count) = tail.record.get("count").and_then(Value::as_u64)
-                && let Value::Object(map) = &mut tail.record
-            {
-                map.insert("count".to_owned(), Value::from(count + 1));
-                drop(queues);
-                self.signal();
-                return;
-            }
-        }
-        self.push_control(object(vec![
-            ("t", Value::from("ingress-drop")),
-            ("class", Value::from(class.as_str())),
-            ("count", Value::from(1u64)),
-        ]));
+        self.push_ingress_drop_count(class, 1);
     }
 
     /// Report `count` ingress drops at once (signal-overflow accounting),
     /// coalescing into an undrained `ingress-drop` record of the same class
-    /// at the control tail. Past the control cap the count is still kept in
-    /// the cumulative drain counter, never silently discarded.
+    /// at the control tail. The journal admits each delta before coalescing.
+    /// If a new memory record cannot fit, the drain counter reports one
+    /// refused control record, independently of the delta's upstream count.
     pub fn push_ingress_drop_count(&self, class: IngressClass, count: u64) {
         if count == 0 {
             return;
         }
-        {
-            let mut queues = lock(&self.queues);
-            if let Some(tail) = queues.control.back_mut()
-                && tail.record.get("t").and_then(Value::as_str) == Some("ingress-drop")
-                && tail.record.get("class").and_then(Value::as_str) == Some(class.as_str())
-                && let Some(seen) = tail.record.get("count").and_then(Value::as_u64)
-                && let Value::Object(map) = &mut tail.record
-            {
-                map.insert("count".to_owned(), Value::from(seen + count));
-                drop(queues);
-                self.signal();
-                return;
-            }
-        }
-        // The common path queues one record carrying the whole count. When
-        // even that does not fit, the batch collapses into one lost-record
-        // unit: the cumulative counter still moves, so the gap is visible
-        // and the client still reconciles (exact per-class accounting is
-        // kept whenever the queue has room, which is the case the pump
-        // broadcasts into).
-        let full = lock(&self.queues).control.len() >= CONTROL_RECORD_CAP;
-        if full {
-            let mut queues = lock(&self.queues);
-            queues.control_lost += 1;
-            queues.control_lost_total += 1;
-        } else {
-            self.push_control(object(vec![
+        self.push_control_record(
+            object(vec![
                 ("t", Value::from("ingress-drop")),
                 ("class", Value::from(class.as_str())),
                 ("count", Value::from(count)),
-            ]));
-        }
+            ]),
+            true,
+        );
     }
 
     /// Queued data records (retained byte buffers).

@@ -562,6 +562,21 @@ an awaited blocking worker. Existing bounded ingress queues preserve order and b
 application acknowledgement observations are published only after durable
 commit. This is not a throughput or physical background-reliability guarantee.
 
+A recording is scoped to its declared peer. Peer-bearing controls for another
+device remain available through that device's ordinary event delivery, but do
+not belong in this recording. Process-global controls without a peer identity
+remain part of the recording. Ingress-loss deltas are durable evidence even
+when the volatile delivery queue coalesces them or reaches its control limit;
+later deltas never modify an already prepared prefix.
+
+The current recording schema has no per-notification host receive timestamp.
+The session start/epoch and durable ordinal establish context and ordering, not
+arrival spacing. Device timestamps carried in payloads remain unchanged. Do not
+derive an arrival time from export time or assume uniformly spaced arrivals.
+Applications requiring host receive timing cannot obtain it from this schema;
+adding it requires a separately specified native-ingress clock and schema
+compatibility change. This corrective candidate does not invent that timing.
+
 The recording controller has separate operations:
 
 - `status(id)` reports capacity, retained records and failure state.
@@ -575,10 +590,42 @@ The recording controller has separate operations:
   `radioRelease: 'not-requested'` receipt is not a disconnect receipt.
 - `clear(id)` explicitly deletes retained records only after recording is stopped.
 
+Logical clear does not reclaim physical allocation or securely erase payloads.
+SQLite may retain freed pages in the recording file; `status().bytes` measures
+retained logical records, not the file's filesystem allocation. Closing an
+inactive handle does not delete the file. There is no implicit purge or vacuum.
+For physical retention, the trusted application must first stop collection,
+complete native ownership release, safely handle retained data, and close every
+accessor in every process. Only after those owners are gone may its private
+storage policy remove that recording's files. Never unlink an open journal or
+remove a recording with unresolved cleanup or failure evidence. Mobile callers
+have no public file-path authority; `clear` does not promise a mobile file purge.
+
 Native `continuation.claim()` remains a separate radio stop-and-handoff. It
 returns `recording: { id }` when applicable, but never reads, acknowledges, or
 deletes the durable data. Complete radio cleanup and record handling separately.
 Prepared prefixes survive native-session release and process restart.
+
+All trusted accessors in one process share the authority for a canonical
+recording path, including standalone desktop export stores. Export preparation
+and live appends use the same journal mutex rather than competing SQLite writers.
+A second process is refused before it opens SQLite while that authority is
+retained, with `storage.busy`; access is nonblocking, not a wait-and-retry loop.
+Use the owning process's authenticated recording bridge for concurrent export.
+Cold access from a later process is supported after the earlier authority is
+released. Unmanaged applications opening the SQLite file directly do not
+participate in this admission protocol; a real conflicting database lock remains
+an explicit storage failure, never a silently dropped value.
+
+The process retains up to 16 inactive journal handles for reuse. Live accessors,
+in-flight work, and diagnostics that could not be committed remain pinned.
+At 256 retained authorities, admission of a new identity refuses with
+`storage.busy` rather than discarding those obligations; existing identities
+remain accessible. Inactive cached handles still own their process admission
+lock until eviction or process exit. A zero-byte `.authority` sidecar carries
+the OS lock; it is not a recording payload or encryption. Never unlink that
+sidecar while an authority exists, because doing so can admit a competing owner.
+Process exit releases the OS lock without requiring deletion of the sidecar.
 
 Trusted Node/Electron main code configures live storage with
 `await continuation.recordings(privateDirectory)` before executing a recording
@@ -619,6 +666,24 @@ it remains usable after `manager.destroy()` because the recording is not owned
 by that manager's radio lease. Android uses no-backup app storage. Apple uses
 Application Support excluded from backup with protection available after the
 first device unlock; an OS refusal before that unlock remains explicit.
+
+### Retained rc.13 journals with foreign-peer controls
+
+An rc.13 mobile journal may contain a control whose peer differs from its
+recording session. The typed controller continues to reject that prefix with
+`protocol.malformed`; the correction prevents new foreign-peer rows but does
+not rewrite existing evidence. Do not skip, relabel or automatically acknowledge
+those rows. A normal typed export of such a prefix remains unavailable.
+
+Preserve the journal and its prepared token. A trusted native accessor can
+prepare the bounded raw prefix (at most 2,048 rows and 4 MiB) for explicit
+diagnostic archival, retaining each row's original session and subject identity;
+this is not a successfully decoded typed batch. Desktop hosts can use the
+identity-checked `ContinuationRecordingStore.prepare` envelope without opening
+a radio. On mobile, raw native storage controls belong to the trusted native
+host, not a relaxed JavaScript decoder. No automatic migration, row deletion or
+acknowledgement is performed. A consumer must make a separate explicit data
+disposition decision after safe archival; retrying alone returns the same prefix.
 
 ### Capabilities
 

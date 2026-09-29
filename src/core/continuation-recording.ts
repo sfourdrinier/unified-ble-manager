@@ -81,11 +81,13 @@ export interface ContinuationRecordingController {
   ): Promise<{ readonly token: string; readonly acknowledged: true; readonly records: number }>
   /** Stops collection admission, not radio ownership. Retains all unacknowledged records. */
   stop(id: string): Promise<ContinuationRecordingStatus & { readonly radioRelease: 'not-requested' }>
-  /** Explicitly deletes retained records from a stopped recording. */
+  /** Explicit logical record deletion, not file deletion, compaction or secure erase.
+   * Requires a stopped recording; does not release radio ownership. */
   clear(id: string): Promise<{ readonly cleared: true; readonly records: number }>
 }
 
 export interface ContinuationRecordingMetadata {
+  /** Session clock context and ordering, not per-notification host receive timing. */
   readonly session: {
     readonly peerId: string
     readonly sessionId: string
