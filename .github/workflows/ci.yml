@@ -481,7 +481,9 @@ jobs:
         # The mobile scripted-radio harness has a retained teardown race under
         # parallel libtest execution. Keep complete coverage while each test
         # case runs serially until the harness is made concurrency-safe.
-        run: cargo test --locked -- --test-threads=1
+        # Report every failing test target in one run; the gate still fails if
+        # any target fails, rather than hiding later platform-specific failures.
+        run: cargo test --locked --no-fail-fast -- --test-threads=1
 
       - name: Test BlueZ lifecycle on isolated private buses
         if: runner.os == 'Linux'

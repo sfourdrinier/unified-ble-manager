@@ -1,8 +1,11 @@
 //! Real mobile-host fixture driven by the TypeScript recording controller.
 //! stdin/stdout are test transport only; every prepare/ACK reaches SQLite.
 mod common;
+#[path = "../../test-support/recording_fixture.rs"]
+mod recording_fixture;
 
 use common::*;
+use recording_fixture::{complete_fixture_process, isolated_fixture_process};
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 use std::sync::{Arc, Mutex};
@@ -120,19 +123,6 @@ fn commit_response(host: &MobileHost, epoch: u64) {
     });
 }
 
-fn directory(label: &str) -> std::path::PathBuf {
-    let directory = std::env::temp_dir().join(format!(
-        "ubm-mobile-{label}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&directory).unwrap();
-    directory
-}
-
 fn security() -> RadioIngress {
     RadioIngress::SecurityChanged {
         peer_id: OTHER.into(),
@@ -153,7 +143,9 @@ fn respond(value: Value) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mobile_recording_controller_transport() {
-    let directory = directory("peer-scope");
+    let Some(directory) = isolated_fixture_process("mobile_recording_controller_transport") else {
+        return;
+    };
     let platform = match std::env::var("UBM_RECORDING_PLATFORM")
         .unwrap_or_else(|_| "android".into())
         .as_str()
@@ -338,12 +330,16 @@ async fn mobile_recording_controller_transport() {
     drop(engine);
     drop(other);
     drop(host);
-    std::fs::remove_dir_all(directory).unwrap();
+    complete_fixture_process(&directory);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sustained_recording_intake_allows_second_peer_and_control_progress() {
-    let directory = directory("drain-fairness");
+    let Some(directory) = isolated_fixture_process(
+        "sustained_recording_intake_allows_second_peer_and_control_progress",
+    ) else {
+        return;
+    };
     let (radio, ready) = setup_radio();
     let (host, wakes) = open_events(&radio, MobilePlatform::Android).await;
     let other = host.open_session("fairness-other").unwrap();
@@ -473,5 +469,5 @@ async fn sustained_recording_intake_allows_second_peer_and_control_progress() {
     drop(engine);
     drop(other);
     drop(host);
-    std::fs::remove_dir_all(directory).unwrap();
+    complete_fixture_process(&directory);
 }

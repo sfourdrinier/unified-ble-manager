@@ -7,6 +7,10 @@ use ubm_desktop::continuation_outbox::{
     Observation, Outbox, RecordMatcher, WakeSink, encode_base64,
 };
 
+#[path = "../../test-support/recording_fixture.rs"]
+mod recording_fixture;
+use recording_fixture::{complete_fixture_process, isolated_fixture_process};
+
 struct NoWake;
 impl WakeSink for NoWake {
     fn wake(&self, _: u64) {}
@@ -249,49 +253,6 @@ fn assert_fixture_owner_retired(
         1,
         "only the inactive process cache may retain the retired fixture journal"
     );
-}
-
-/// Parent-owned cleanup follows process exit; the child still proves retirement
-/// of every async worker/session before marking the original scenario complete.
-fn isolated_fixture_process(test: &str) -> Option<std::path::PathBuf> {
-    const DIRECTORY_ENV: &str = "UBM_SETUP_FIXTURE_DIRECTORY";
-    const TEST_ENV: &str = "UBM_SETUP_FIXTURE_TEST";
-    if std::env::var(TEST_ENV).ok().as_deref() == Some(test) {
-        return Some(std::env::var_os(DIRECTORY_ENV).unwrap().into());
-    }
-    let directory = std::env::temp_dir().join(format!(
-        "ubm-setup-fixture-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&directory).unwrap();
-    let outcome = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", test, "--nocapture"])
-        .env(DIRECTORY_ENV, &directory)
-        .env(TEST_ENV, test)
-        .status()
-        .unwrap();
-    assert!(
-        outcome.success(),
-        "fixture scenario {test} failed: {outcome}"
-    );
-    assert_eq!(
-        std::fs::read(directory.join("scenario-complete")).unwrap(),
-        b"all assertions passed"
-    );
-    std::fs::remove_dir_all(directory).unwrap();
-    None
-}
-
-fn complete_fixture_process(directory: &std::path::Path) {
-    std::fs::write(
-        directory.join("scenario-complete"),
-        b"all assertions passed",
-    )
-    .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

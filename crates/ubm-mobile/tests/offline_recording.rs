@@ -1,4 +1,7 @@
 mod common;
+#[path = "../../test-support/recording_fixture.rs"]
+mod recording_fixture;
+use recording_fixture::{complete_fixture_process, isolated_fixture_process};
 use serde_json::json;
 use std::sync::Arc;
 use ubm_desktop::continuation_journal::{JournalQuota, JournalRegistry};
@@ -6,15 +9,11 @@ use ubm_mobile::{HostOptions, MobileHost, MobilePlatform};
 
 #[tokio::test]
 async fn offline_recording_cursor_needs_no_radio_and_is_shared_by_later_host() {
-    let directory = std::env::temp_dir().join(format!(
-        "ubm-mobile-offline-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&directory).unwrap();
+    let Some(directory) = isolated_fixture_process(
+        "offline_recording_cursor_needs_no_radio_and_is_shared_by_later_host",
+    ) else {
+        return;
+    };
     let registry = Arc::new(JournalRegistry::default());
     registry.configure_directory(&directory).unwrap();
     registry
@@ -73,5 +72,5 @@ async fn offline_recording_cursor_needs_no_radio_and_is_shared_by_later_host() {
     host.shutdown().await;
     drop(host);
     drop(registry);
-    std::fs::remove_dir_all(directory).unwrap();
+    complete_fixture_process(&directory);
 }

@@ -32,6 +32,9 @@ use super::{
 use crate::desktop_core::CoreAuthority;
 use crate::AuthenticatedCaller;
 
+#[path = "../../../crates/test-support/recording_fixture.rs"]
+mod recording_fixture;
+
 const HRM_SERVICE: &str = "0000180d-0000-1000-8000-00805f9b34fb";
 /// Notify-only (the Polar H10 heart-rate measurement shape).
 const NOTIFY_ONLY: &str = "00002a37-0000-1000-8000-00805f9b34fb";
@@ -1910,46 +1913,13 @@ fn wire_error(error: &DispatchError) -> Value {
 // Trusted continuation and offline recording use the same Tauri authority.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn trusted_continuation_replays_setup_and_retains_recording_without_offline_radio_open() {
-    const DIRECTORY_ENV: &str = "UBM_TAURI_CONTINUATION_TEST_DIRECTORY";
-    if let Some(directory) = std::env::var_os(DIRECTORY_ENV) {
-        let directory = std::path::Path::new(&directory);
-        trusted_continuation_recording_scenario(directory).await;
-        std::fs::write(
-            directory.join("scenario-complete"),
-            b"all assertions passed",
-        )
-        .unwrap();
-        return;
-    }
-    let directory = std::env::temp_dir().join(format!(
-        "ubm-tauri-recording-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&directory).unwrap();
-    // Inactive journal authorities intentionally remain process-owned. Execute
-    // the complete scenario in a child so cleanup proves OS handles were released
-    // by process exit, rather than relying on Unix-only unlink-open-file behavior.
     let module = module_path!().split_once("::").unwrap().1;
     let test = format!("{module}::trusted_continuation_replays_setup_and_retains_recording_without_offline_radio_open");
-    let outcome = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", &test, "--nocapture"])
-        .env(DIRECTORY_ENV, &directory)
-        .status()
-        .unwrap();
-    assert!(
-        outcome.success(),
-        "continuation recording scenario failed: {outcome}"
-    );
-    assert_eq!(
-        std::fs::read(directory.join("scenario-complete")).unwrap(),
-        b"all assertions passed",
-        "the selected child test must actually finish the scenario"
-    );
-    std::fs::remove_dir_all(directory).unwrap();
+    let Some(directory) = recording_fixture::isolated_fixture_process(&test) else {
+        return;
+    };
+    trusted_continuation_recording_scenario(&directory).await;
+    recording_fixture::complete_fixture_process(&directory);
 }
 
 async fn trusted_continuation_recording_scenario(directory: &std::path::Path) {

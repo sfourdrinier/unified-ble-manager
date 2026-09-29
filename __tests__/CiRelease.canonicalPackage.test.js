@@ -348,7 +348,7 @@ describe('ci-release canonical package (4.0)', () => {
     const rustWorkspace = ci.slice(ci.indexOf('  rust-5-0:'), ci.indexOf('  rust-parity-5-0:'))
 
     expect(rustWorkspace).toContain('- name: Test Rust workspace')
-    expect(rustWorkspace).toContain('cargo test --locked -- --test-threads=1')
+    expect(rustWorkspace).toContain('cargo test --locked --no-fail-fast -- --test-threads=1')
   })
 
   // The package gate checks only the public root plus explicit authoring subpaths.
