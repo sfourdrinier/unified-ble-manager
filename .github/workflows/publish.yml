@@ -61,7 +61,7 @@ jobs:
   # Node-API v8 is ABI-stable across the maintained Node lines and modern
   # Electron. Build once per OS/CPU and bundle every binary in npm:
   #   desktop-core (cargo): the shared Rust core every desktop entrypoint
-  #     loads (PR210-03), six targets, each with an identity sidecar.
+  #     loads (PR210-03), maintained targets, each with an identity sidecar.
   #   corebluetooth / winrt (node-gyp): LEGACY addons, unreachable from any
   #     public entrypoint; Phase 4 deletes these legs with native/electron/*.
   native-prebuild:
@@ -156,7 +156,7 @@ jobs:
           cargo --version
           PINNED_TOOLCHAIN="$(grep -E '^channel[[:space:]]*=' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/' || true)"
           test -n "$PINNED_TOOLCHAIN" || { echo "could not parse pinned toolchain channel from rust-toolchain.toml"; exit 1; }
-          rustup target add --toolchain "$PINNED_TOOLCHAIN" aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios aarch64-apple-tvos aarch64-apple-tvos-sim
+          rustup target add --toolchain "$PINNED_TOOLCHAIN" aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-tvos aarch64-apple-tvos-sim
 
       - name: Build RustCore XCFramework from source
         # Canonical builder: seals UBM_BUILD_SOURCE_DIGEST /
@@ -432,7 +432,7 @@ jobs:
       - name: Bind linked Tauri application to exact publish tarball
         run: node scripts/ci/check-tauri-pack-binding.js --receipt "${RUNNER_TEMP}/ubm-tauri-packed-proof.json" --tarball "${PUBLISH_TARBALL}"
 
-      - name: Desktop-core prebuild packaging proof (all six targets + sidecars)
+      - name: Desktop-core prebuild packaging proof (maintained targets + sidecars)
         # PR210-03: exactly the maintained prebuilds, each sidecar naming its
         # binary's sha256 and a sealed release identity; zero bindings/**/*.node.
         run: node scripts/ci/check-napi-artifact-packaging.js --tarball "${PUBLISH_TARBALL}" --require-all-prebuilds

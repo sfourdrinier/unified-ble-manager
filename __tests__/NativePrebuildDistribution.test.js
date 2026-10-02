@@ -1,5 +1,6 @@
 const fs = require('fs')
 const path = require('path')
+const { execFileSync } = require('node:child_process')
 
 const root = path.join(__dirname, '..')
 const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf8').replace(/\r\n/g, '\n')
@@ -21,23 +22,86 @@ describe('native Node-API prebuild distribution', () => {
       }))
     ).toEqual([
       { backend: 'corebluetooth', platform: 'darwin', arch: 'arm64', runner: 'macos-15' },
-      { backend: 'corebluetooth', platform: 'darwin', arch: 'x64', runner: 'macos-15-intel' },
       { backend: 'winrt', platform: 'win32', arch: 'arm64', runner: 'windows-11-arm' },
       { backend: 'winrt', platform: 'win32', arch: 'x64', runner: 'windows-2025' },
       { backend: 'desktop-core', platform: 'linux', arch: 'x64', runner: 'ubuntu-22.04' },
       { backend: 'desktop-core', platform: 'linux', arch: 'arm64', runner: 'ubuntu-22.04-arm' },
       { backend: 'desktop-core', platform: 'darwin', arch: 'arm64', runner: 'macos-15' },
-      { backend: 'desktop-core', platform: 'darwin', arch: 'x64', runner: 'macos-15-intel' },
       { backend: 'desktop-core', platform: 'win32', arch: 'x64', runner: 'windows-2025' },
       { backend: 'desktop-core', platform: 'win32', arch: 'arm64', runner: 'windows-11-arm' }
     ])
-    expect(new Set(NATIVE_PREBUILD_TARGETS.map(target => target.artifactName)).size).toBe(10)
-    expect(new Set(NATIVE_PREBUILD_TARGETS.map(target => target.prebuildPath)).size).toBe(10)
+    expect(NATIVE_PREBUILD_TARGETS).toHaveLength(8)
+    expect(new Set(NATIVE_PREBUILD_TARGETS.map(target => target.artifactName)).size).toBe(
+      NATIVE_PREBUILD_TARGETS.length
+    )
+    expect(new Set(NATIVE_PREBUILD_TARGETS.map(target => target.prebuildPath)).size).toBe(
+      NATIVE_PREBUILD_TARGETS.length
+    )
     for (const target of NATIVE_PREBUILD_TARGETS.filter(entry => entry.backend === 'desktop-core')) {
       expect(target.rustTarget).toEqual(expect.any(String))
       expect(target.sidecarPath).toEqual(expect.any(String))
     }
   })
+
+  test('GitHub matrix derives its maintained targets without Intel macOS runners', () => {
+    const { NATIVE_PREBUILD_TARGETS } = require('../scripts/native-prebuilds/targets')
+    const matrix = JSON.parse(
+      execFileSync(process.execPath, [path.join(root, 'scripts/native-prebuilds/print-github-matrix.js')], {
+        encoding: 'utf8'
+      })
+    )
+    expect(matrix.include).toHaveLength(NATIVE_PREBUILD_TARGETS.length)
+    expect(matrix.include.map(row => row.artifactName)).toEqual(NATIVE_PREBUILD_TARGETS.map(row => row.artifactName))
+    expect(matrix.include.every(row => row.platform !== 'darwin' || row.arch === 'arm64')).toBe(true)
+    expect(matrix.include.some(row => row.runner === 'macos-15-intel')).toBe(false)
+    expect(matrix.include.filter(row => row.arch === 'x64').map(row => row.platform)).toEqual([
+      'win32',
+      'linux',
+      'win32'
+    ])
+  })
+
+  test.each([
+    'native/desktop-core/prebuilds/darwin-x64/ubm_desktop_core.node',
+    'native/electron/corebluetooth/prebuilds/darwin-x64/unified_ble_corebluetooth.node'
+  ])('release verification rejects a staged retired Intel macOS artifact: %s', retired => {
+    const { main } = require('../scripts/native-prebuilds/verify')
+    const segments = retired.split('/').slice(1)
+    const entries = new Map()
+    let directory = path.join(root, 'native')
+    for (const [index, name] of segments.entries()) {
+      const isDirectory = index !== segments.length - 1
+      entries.set(directory, [{ name, isDirectory: () => isDirectory, isFile: () => !isDirectory }])
+      directory = path.join(directory, name)
+    }
+    const existing = jest.spyOn(fs, 'existsSync').mockImplementation(file => entries.has(file))
+    const listing = jest.spyOn(fs, 'readdirSync').mockImplementation(file => entries.get(file))
+    try {
+      expect(() => main([])).toThrow(`Unexpected native prebuilds: ${retired}`)
+    } finally {
+      existing.mockRestore()
+      listing.mockRestore()
+    }
+  })
+
+  test.each(['corebluetooth', 'desktop-core'])(
+    'producer refuses retired Intel macOS target before compiling %s',
+    backend => {
+      const { main } = require('../scripts/native-prebuilds/build')
+      const platform = Object.getOwnPropertyDescriptor(process, 'platform')
+      const arch = Object.getOwnPropertyDescriptor(process, 'arch')
+      Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' })
+      Object.defineProperty(process, 'arch', { ...arch, value: 'x64' })
+      try {
+        expect(() => main(['--backend', backend])).toThrow(
+          `No maintained ${backend} prebuild target exists for darwin-x64`
+        )
+      } finally {
+        Object.defineProperty(process, 'arch', arch)
+        Object.defineProperty(process, 'platform', platform)
+      }
+    }
+  )
 
   test('loads platform prebuilds first while preserving an explicit source-build fallback', () => {
     const sharedLoader = read('native/load-node-api-addon.js')
@@ -56,10 +120,7 @@ describe('native Node-API prebuild distribution', () => {
   })
 
   test('pins a compatible Node-API floor in both native build definitions', () => {
-    for (const binding of [
-      'native/electron/corebluetooth/binding.gyp',
-      'native/electron/winrt/binding.gyp'
-    ]) {
+    for (const binding of ['native/electron/corebluetooth/binding.gyp', 'native/electron/winrt/binding.gyp']) {
       expect(read(binding)).toContain('NAPI_VERSION=8')
     }
   })

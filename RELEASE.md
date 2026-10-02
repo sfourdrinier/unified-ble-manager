@@ -53,7 +53,7 @@ Before a stable release tag is pushed:
 8. the license metadata (`package.json` license field, Cargo `license-file` pointers, SBOM expression) and the license documents (`LICENSE` — the UBM text —, `LICENSE-UBM-SOURCE-AVAILABLE-1.0.md`, `LICENSES/Apache-2.0.txt` for retained Apache material, `NOTICE`) agree.
 9. the npm trusted publisher points at this repository/workflow/environment.
 10. GitHub private vulnerability reporting is enabled for the canonical repository.
-11. the complete macOS/Windows `arm64`/`x64` Node-API prebuild matrix is produced from the release tag and verified under Node and Electron.
+11. the complete five-target desktop Node-API prebuild matrix (macOS `arm64`; Windows/Linux `arm64`/`x64`) is produced from the release tag and verified under Node and Electron. Intel macOS desktop is outside UBM's support policy; iOS/tvOS simulators are `arm64` only and physical iPhone support is unchanged.
 
 ## Required local validation
 
@@ -106,7 +106,9 @@ once tagged. Stable `4.0.0` through `4.0.20` are immutable. The unpublished
 `4.0.23`, `4.0.24`, `4.0.25`, `4.0.26`, and `4.0.27` are immutable tagged
 history. `4.0.28` is immutable tagged history. The unpublished
 `v5.0.0-rc.5` tag is immutable after its publish-only Tauri consumer failure.
-The current candidate is `5.0.0-rc.15`; rc.14 is immutable published history.
+The current candidate is `5.0.0-rc.16`; rc.14 is immutable published history.
+The immutable `v5.0.0-rc.15` tag remains unpublished: its publisher was cancelled
+before npm publication when the Apple architecture policy changed.
 
 ```sh
 release_candidate=4.0.0-rc.N
@@ -134,14 +136,19 @@ The first stable tag `v4.0.0` is immutable published history. Do not recreate or
 git tag -a v4.0.0 -m "v4.0.0"
 ```
 
-## Releasing 5.0.0-rc.15
+## Releasing 5.0.0-rc.16
 
-Release only from the exact current `main` commit after the focused rc.14
-correction PR and canonical CI succeed. Verify `package.json` and the changelog
-identify `5.0.0-rc.15`, the worktree is clean, and refreshed native artifacts match
-the corrected source. Push a new annotated `v5.0.0-rc.15` tag; the existing
+Release only from the exact current `main` commit after the focused corrections
+and Apple Silicon-only distribution PRs and canonical CI succeed. Verify `package.json` and the changelog
+identify `5.0.0-rc.16`, the worktree is clean, and refreshed native artifacts match
+the corrected source. Push a new annotated `v5.0.0-rc.16` tag; the existing
 workflow publishes to npm `next` with provenance and creates a GitHub prerelease.
 Never publish manually or move an earlier tag.
+
+The maintained matrix excludes both Intel macOS desktop producers and the
+Intel-only iOS Simulator Rust target. Verify the emitted desktop matrix and
+arm64-only Apple simulator slices from the packed bytes. Physical iPhone and
+tvOS device support and Windows/Linux x64 targets are unchanged.
 
 Candidate-specific regressions must synchronously force independent storage
 stop followed by late outbox ingress before producer disposal, then prove
@@ -784,7 +791,7 @@ may be bypassed to make a release pass.
 
 For a valid version tag, `.github/workflows/publish.yml`:
 
-1. checks out the tagged commit and builds Node-API v8 prebuilds for macOS and Windows on `arm64` and `x64` native runners;
+1. checks out the tagged commit and builds Node-API v8 prebuilds for macOS `arm64` and Windows/Linux `arm64`/`x64` native runners;
 2. loads each prebuild under Node and the same file under Electron;
 3. assembles and hashes the complete prebuild matrix into `native/PREBUILDS.json`;
 4. verifies tag name and `package.json` version agree;
@@ -816,7 +823,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=5.0.0-rc.15
+version=5.0.0-rc.16
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -827,7 +834,7 @@ npm view "unified-ble-manager@$version" dist.integrity
 
 Then verify:
 
-- npm `next` resolves to `5.0.0-rc.15`, while `latest` remains on the 4.0 stable
+- npm `next` resolves to `5.0.0-rc.16`, while `latest` remains on the 4.0 stable
   line; a stable release moves `latest`;
 - the npm package page shows provenance for the published artifact;
 - the GitHub Release exists at that tag, and is marked prerelease only if the
@@ -835,7 +842,7 @@ Then verify:
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager@5.0.0-rc.15` explicitly and import the documented host
+  `unified-ble-manager@5.0.0-rc.16` explicitly and import the documented host
   entrypoints. A bare install still selects `latest` (the 4.0 line). This
   catches a packaging gap the repository's
   own tests cannot see: `@babel/runtime` shipped undeclared in 4.0.4 and only a

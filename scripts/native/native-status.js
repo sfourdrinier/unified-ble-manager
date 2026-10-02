@@ -21,19 +21,17 @@
 const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
+const { NATIVE_PREBUILD_TARGETS } = require('../native-prebuilds/targets')
 
 const ROOT = path.resolve(__dirname, '..', '..')
 const IDENTITY_SCRIPT = path.join(ROOT, 'scripts', 'release', 'native-build-identity.js')
 
 const GROUPS = Object.freeze(['android', 'apple', 'desktop'])
-const KNOWN_DESKTOP_DIRS = Object.freeze([
-  'darwin-arm64',
-  'darwin-x64',
-  'linux-arm64',
-  'linux-x64',
-  'win32-arm64',
-  'win32-x64'
-])
+const KNOWN_DESKTOP_DIRS = Object.freeze(
+  NATIVE_PREBUILD_TARGETS.filter(entry => entry.backend === 'desktop-core').map(
+    entry => `${entry.platform}-${entry.arch}`
+  )
+)
 const DESKTOP_ADDON = 'ubm_desktop_core.node'
 const DESKTOP_SIDECAR = 'ubm_desktop_core.identity.json'
 const DESKTOP_SIDECAR_SCHEMA = 'ubm-desktop-core-prebuild/1'
@@ -303,6 +301,13 @@ function classifyDesktopDir(root, identity, dir) {
 
 function classifyDesktop(root, identity, platform = process.platform, arch = process.arch) {
   const dir = `${platform}-${arch}`
+  if (!KNOWN_DESKTOP_DIRS.includes(dir)) {
+    const reason =
+      platform === 'darwin'
+        ? 'macOS requires Apple Silicon (arm64)'
+        : `maintained hosts: ${KNOWN_DESKTOP_DIRS.join(', ')}`
+    throw new Error(`unsupported desktop host ${dir}; ${reason}`)
+  }
   const results = [classifyDesktopDir(root, identity, dir)]
   for (const other of KNOWN_DESKTOP_DIRS) {
     if (other === dir) continue

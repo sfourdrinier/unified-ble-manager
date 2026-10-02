@@ -10,7 +10,14 @@ The root import does not open an adapter. Pick the entrypoint for your OS:
 | `unified-ble-manager/node/winrt`         | Windows | shared Rust core over WinRT         |
 | `unified-ble-manager/node/bluez`         | Linux   | shared Rust core over BlueZ         |
 
-All three execute one shared Rust core (`DesktopCentral` in `crates/ubm-desktop`, btleplug plus narrow OS adapters) through one N-API addon. This source targets `5.0.0-rc.15`. Tagged releases ship the addon prebuilt for `linux-x64`, `linux-arm64`, `darwin-arm64`, `darwin-x64`, `win32-x64` and `win32-arm64`, under `native/desktop-core/prebuilds/<platform>-<arch>/`. A normal install compiles nothing and needs no Rust toolchain. The app no longer needs `dbus-next` on Linux.
+All three execute one shared Rust core (`DesktopCentral` in `crates/ubm-desktop`, btleplug plus narrow OS adapters) through one N-API addon. This source targets `5.0.0-rc.16`. Tagged releases ship the addon prebuilt for `linux-x64`, `linux-arm64`, `darwin-arm64`, `win32-x64` and `win32-arm64`, under `native/desktop-core/prebuilds/<platform>-<arch>/`. A normal install compiles nothing and needs no Rust toolchain. The app no longer needs `dbus-next` on Linux.
+
+macOS desktop support is Apple Silicon (`arm64`) only. Windows and Linux desktop support includes `arm64` and `x64`.
+Intel macOS desktop is outside the UBM support policy; this is a package policy,
+not a claim that Apple no longer supports every Intel macOS version. It does not
+provide an Intel desktop source-build support path. iOS/tvOS simulators are `arm64` only;
+physical iPhone support is unchanged. The simulator policy requires an Apple Silicon Mac,
+not an Intel simulator or a Rosetta workaround.
 
 Runtime requirements:
 

@@ -29,7 +29,7 @@ DIR="$ROOT/ios/RustCore"
 # the same table; __tests__/NativeBuildIdentity.test.js keeps them equal.
 DECLARED_LIBRARIES="
 ios-arm64|ios||arm64
-ios-arm64_x86_64-simulator|ios|simulator|arm64,x86_64
+ios-arm64-simulator|ios|simulator|arm64
 tvos-arm64|tvos||arm64
 tvos-arm64-simulator|tvos|simulator|arm64
 "

@@ -36,7 +36,6 @@ const SIDECAR_NAME = 'ubm_desktop_core.identity.json'
 
 const TARGET_LIBRARIES = Object.freeze({
   'aarch64-apple-darwin': 'libubm5_napi_echo.dylib',
-  'x86_64-apple-darwin': 'libubm5_napi_echo.dylib',
   'aarch64-unknown-linux-gnu': 'libubm5_napi_echo.so',
   'x86_64-unknown-linux-gnu': 'libubm5_napi_echo.so',
   'aarch64-pc-windows-msvc': 'ubm5_napi_echo.dll',
@@ -64,6 +63,9 @@ function parseArguments(argv) {
   }
   if (options.profile !== 'debug' && options.profile !== 'release') {
     fail(`--profile must be debug or release, got ${options.profile}`)
+  }
+  if (options.target === 'x86_64-apple-darwin' || (process.platform === 'darwin' && process.arch !== 'arm64')) {
+    fail('Intel macOS is unsupported; macOS requires Apple Silicon (arm64)')
   }
   if (options.target !== null && TARGET_LIBRARIES[options.target] === undefined) {
     fail(`--target must be one of ${Object.keys(TARGET_LIBRARIES).join(', ')}`)

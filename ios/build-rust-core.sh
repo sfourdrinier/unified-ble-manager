@@ -19,13 +19,9 @@
 #
 # Declared matrix (device + simulator, physical-target load in macOS CI):
 #   iOS     device    aarch64-apple-ios
-#           simulator aarch64-apple-ios-sim, x86_64-apple-ios (Intel sims keep
-#                     the historic triple; there is no x86_64-apple-ios-sim)
+#           simulator aarch64-apple-ios-sim (Apple Silicon only)
 #   tvOS    device    aarch64-apple-tvos
-#           simulator aarch64-apple-tvos-sim, arm64-only: x86_64-apple-tvos
-#                     ships no prebuilt std on the pinned stable toolchain
-#                     (Tier 3 — `-Zbuild-std`/nightly only), so no Intel
-#                     tvOS-simulator slice is declared.
+#           simulator aarch64-apple-tvos-sim (Apple Silicon only)
 # The podspec serves both iOS and tvOS (`s.platforms`), so the XCFramework
 # must carry slices for both — an iOS-only framework would fail the tvOS
 # link in consumers.
@@ -55,7 +51,7 @@ ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 CRATE="ubm5_uniffi_echo"
 LIB_NAME="libubm5_uniffi_echo.a"
 MATRIX_DEVICE="aarch64-apple-ios"
-MATRIX_SIM="aarch64-apple-ios-sim x86_64-apple-ios"
+MATRIX_SIM="aarch64-apple-ios-sim"
 MATRIX_TVOS_DEVICE="aarch64-apple-tvos"
 MATRIX_TVOS_SIM="aarch64-apple-tvos-sim"
 

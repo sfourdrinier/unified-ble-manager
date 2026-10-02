@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>unified-ble-manager 5.0.0-rc.15 | Documentation</title>
+    <title>unified-ble-manager 5.0.0-rc.16 | Documentation</title>
     <meta
       name="description"
       content="Unified Bluetooth Low Energy manager for React Native, Electron, Tauri, Web, and desktop"
@@ -18,7 +18,7 @@
       <div id="split-left" class="overflow-auto fs0 height-viewport-100">
         <div class="py1 px2">
           <h3 class="mb0 no-anchor">unified-ble-manager</h3>
-          <div class="mb1"><code>5.0.0-rc.15</code></div>
+          <div class="mb1"><code>5.0.0-rc.16</code></div>
           <input
             placeholder="Filter"
             id="filter-input"
@@ -64,7 +64,7 @@
               This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are
               linked at the bottom. The root import does not turn Bluetooth on.
             </p>
-            <p>This source targets <code>5.0.0-rc.15</code>; verify the published version in the npm registry.</p>
+            <p>This source targets <code>5.0.0-rc.16</code>; verify the published version in the npm registry.</p>
             <h2>Pick a host</h2>
             <table>
               <thead>
@@ -143,7 +143,7 @@
             <h4>Expo / CNG v2</h4>
             <p>
               The Expo v2 schema and <code>unified-ble-manager/expo</code> factory are in this source. After the npm
-              registry lists <code>5.0.0-rc.15</code>, install that exact version and keep it in your lockfile while
+              registry lists <code>5.0.0-rc.16</code>, install that exact version and keep it in your lockfile while
               validating the native build:
             </p>
             <p>The package does not run in Expo Go.</p>
@@ -620,7 +620,7 @@
               supported BLE execution environment because it cannot contain this native module.
             </p>
             <p>
-              Use the v2 plugin options in this <code>5.0.0-rc.15</code> source. Those options match the schema
+              Use the v2 plugin options in this <code>5.0.0-rc.16</code> source. Those options match the schema
               introduced at <code>4.0.0-rc.4</code>. Expo Go cannot load this native module.
             </p>
             <h2>Installation and development build</h2>
@@ -628,7 +628,7 @@
               Pin the package so a later <code>latest</code> bump does not change native plugin options without a
               rebuild:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.15
+            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.16
 pnpm add expo@^57.0.0 expo-dev-client
 npx expo prebuild --clean
 npx expo run:ios
@@ -929,10 +929,16 @@ await manager.background.updateNotification({
             <h1>Electron</h1>
             <p>Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.</p>
             <p>
-              This source targets <code>5.0.0-rc.15</code>. Main executes the shared Rust core
-              (<code>DesktopCentral</code>) through one N-API addon. Tagged releases ship it prebuilt for Linux, macOS
-              and Windows on <code>arm64</code>/<code>x64</code>. The addon is Node-API, so one binary serves Node and
-              modern Electron alike.
+              This source targets <code>5.0.0-rc.16</code>. Main executes the shared Rust core
+              (<code>DesktopCentral</code>) through one N-API addon. Tagged releases ship it prebuilt for macOS Apple
+              Silicon (<code>arm64</code>) and Windows/Linux <code>arm64</code>/<code>x64</code>. The addon is Node-API,
+              so one binary serves Node and modern Electron alike.
+            </p>
+            <p>
+              macOS desktop support is Apple Silicon (<code>arm64</code>) only. Windows and Linux desktop support
+              includes <code>arm64</code> and <code>x64</code>. Intel macOS desktop is outside the UBM support policy,
+              including source-built Electron desktop consumers. This is UBM's package policy, not a blanket claim about
+              Apple's macOS support lifecycle.
             </p>
             <p>
               <code>unified-ble-manager/electron/main</code> and <code>unified-ble-manager/electron/renderer</code> are
@@ -1215,10 +1221,10 @@ await manager.background.updateNotification({
             </p>
             <p>
               Published packages include the desktop-core prebuild for <code>linux-x64</code>, <code>linux-arm64</code>,
-              <code>darwin-arm64</code>, <code>darwin-x64</code>, <code>win32-x64</code> and <code>win32-arm64</code>,
-              each with an identity sidecar (<code>ubm_desktop_core.identity.json</code>: the file's sha256 and the
-              binary's own build identity). The release matrix builds each on its native runner, then loads it under
-              Electron main: the identity is verified, and one central is opened and closed on the synthetic radio
+              <code>darwin-arm64</code>, <code>win32-x64</code> and <code>win32-arm64</code>, each with an identity
+              sidecar (<code>ubm_desktop_core.identity.json</code>: the file's sha256 and the binary's own build
+              identity). The release matrix builds each on its native runner, then loads it under Electron main: the
+              identity is verified, and one central is opened and closed on the synthetic radio
               (<code>scripts/ci/electron-main-smoke.js</code>). Native <code>.node</code> files must remain unpacked
               from ASAR and must be included in the consumer application's signing/notarization process.
             </p>
