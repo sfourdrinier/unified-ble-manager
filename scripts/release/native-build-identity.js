@@ -72,8 +72,7 @@ const APPLE_TARGETS = Object.freeze([
   'aarch64-apple-ios',
   'aarch64-apple-ios-sim',
   'aarch64-apple-tvos',
-  'aarch64-apple-tvos-sim',
-  'x86_64-apple-ios'
+  'aarch64-apple-tvos-sim'
 ])
 
 const ANDROID_DECLARED_ABIS = Object.freeze([
@@ -85,7 +84,6 @@ const NAPI_TARGETS = Object.freeze([
   'aarch64-apple-darwin',
   'aarch64-pc-windows-msvc',
   'aarch64-unknown-linux-gnu',
-  'x86_64-apple-darwin',
   'x86_64-pc-windows-msvc',
   'x86_64-unknown-linux-gnu'
 ])
@@ -101,10 +99,10 @@ const APPLE_DECLARED_LIBRARIES = Object.freeze([
     architectures: Object.freeze(['arm64'])
   }),
   Object.freeze({
-    libraryIdentifier: 'ios-arm64_x86_64-simulator',
+    libraryIdentifier: 'ios-arm64-simulator',
     platform: 'ios',
     variant: 'simulator',
-    architectures: Object.freeze(['arm64', 'x86_64'])
+    architectures: Object.freeze(['arm64'])
   }),
   Object.freeze({
     libraryIdentifier: 'tvos-arm64',

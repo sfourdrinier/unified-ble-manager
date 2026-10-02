@@ -89,6 +89,22 @@ function tempRoot() {
 }
 
 describe('native:status classification', () => {
+  test('desktop status uses the maintained matrix and excludes Intel macOS', () => {
+    const { NATIVE_PREBUILD_TARGETS } = require('../scripts/native-prebuilds/targets')
+    expect(status.KNOWN_DESKTOP_DIRS).toEqual(
+      NATIVE_PREBUILD_TARGETS.filter(entry => entry.backend === 'desktop-core').map(entry => `${entry.platform}-${entry.arch}`)
+    )
+    expect(status.KNOWN_DESKTOP_DIRS).not.toContain('darwin-x64')
+    expect(status.KNOWN_DESKTOP_DIRS).toEqual(expect.arrayContaining(['darwin-arm64', 'linux-x64', 'win32-x64']))
+  })
+
+  test('Intel macOS does not become a fresh supported desktop even with staged artifacts', () => {
+    const root = tempRoot()
+    const current = fixtureCurrent()
+    writeDesktopPrebuild(root, 'darwin-x64', current.napi)
+    expect(() => status.runStatus({ root, identity: fakeIdentity(current), platform: 'darwin', arch: 'x64', only: ['desktop'] }))
+      .toThrow('unsupported desktop host darwin-x64; macOS requires Apple Silicon')
+  })
   test('fresh android reports staged and current digests with its refresh command', () => {
     const root = tempRoot()
     const current = fixtureCurrent()

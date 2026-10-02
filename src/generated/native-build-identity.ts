@@ -31,7 +31,6 @@ export const EXPECTED_NATIVE_BUILD_IDENTITY: ExpectedNativeBuildIdentity = Objec
         'aarch64-apple-darwin',
         'aarch64-pc-windows-msvc',
         'aarch64-unknown-linux-gnu',
-        'x86_64-apple-darwin',
         'x86_64-pc-windows-msvc',
         'x86_64-unknown-linux-gnu'
       ])
@@ -48,8 +47,7 @@ export const EXPECTED_NATIVE_BUILD_IDENTITY: ExpectedNativeBuildIdentity = Objec
         'aarch64-apple-ios',
         'aarch64-apple-ios-sim',
         'aarch64-apple-tvos',
-        'aarch64-apple-tvos-sim',
-        'x86_64-apple-ios'
+        'aarch64-apple-tvos-sim'
       ])
     })
   })

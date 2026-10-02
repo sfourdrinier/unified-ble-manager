@@ -70,6 +70,15 @@ test('verify-rust-core.sh is executable and syntax-clean', () => {
   expect(spawnSync('sh', ['-n', verifier]).status).toBe(0)
 })
 
+test('Apple consumer verifier declares only arm64 simulators alongside both physical platforms', () => {
+  const script = fs.readFileSync(verifier, 'utf8')
+  expect(script).toContain('ios-arm64|ios||arm64')
+  expect(script).toContain('ios-arm64-simulator|ios|simulator|arm64')
+  expect(script).toContain('tvos-arm64|tvos||arm64')
+  expect(script).toContain('tvos-arm64-simulator|tvos|simulator|arm64')
+  expect(script).not.toContain('ios-arm64_x86_64-simulator')
+})
+
 function executesHere() {
   if (process.platform === 'darwin') return true
   const publish = fs.readFileSync(path.join(root, '.github', 'workflows', 'publish.yml'), 'utf8')
@@ -111,10 +120,27 @@ describe('verify-rust-core.sh against a synthetic staging (macOS plutil)', () =>
     stage(
       dir,
       APPLE_DECLARED_LIBRARIES.map(library =>
-        library.libraryIdentifier === 'ios-arm64_x86_64-simulator' ? { ...library, architectures: ['arm64'] } : library
+        library.platform === 'ios' && library.variant === 'simulator'
+          ? { ...library, architectures: ['arm64', 'x86_64'] }
+          : library
       )
     )
     expect(verify(dir).stderr).toContain('differ from the declared set')
+  })
+
+  test('the retired Intel iOS simulator slice identifier fails even with valid hashes', () => {
+    if (!executesHere()) return
+    stage(
+      dir,
+      APPLE_DECLARED_LIBRARIES.map(library =>
+        library.platform === 'ios' && library.variant === 'simulator'
+          ? { ...library, libraryIdentifier: 'ios-arm64_x86_64-simulator', architectures: ['arm64', 'x86_64'] }
+          : library
+      )
+    )
+    const result = verify(dir)
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain('differ from the declared set')
   })
 
   test('a substituted slice fails and names it', () => {

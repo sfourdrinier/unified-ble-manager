@@ -4,7 +4,12 @@
 
 Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.
 
-This source targets `5.0.0-rc.15`. Main executes the shared Rust core (`DesktopCentral`) through one N-API addon. Tagged releases ship it prebuilt for Linux, macOS and Windows on `arm64`/`x64`. The addon is Node-API, so one binary serves Node and modern Electron alike.
+This source targets `5.0.0-rc.16`. Main executes the shared Rust core (`DesktopCentral`) through one N-API addon. Tagged releases ship it prebuilt for macOS Apple Silicon (`arm64`) and Windows/Linux `arm64`/`x64`. The addon is Node-API, so one binary serves Node and modern Electron alike.
+
+macOS desktop support is Apple Silicon (`arm64`) only. Windows and Linux desktop support includes `arm64` and `x64`.
+Intel macOS desktop is outside the UBM support policy, including source-built
+Electron desktop consumers. This is UBM's package policy, not a blanket claim
+about Apple's macOS support lifecycle.
 
 `unified-ble-manager/electron/main` and
 `unified-ble-manager/electron/renderer` are the only Electron entrypoints.
@@ -321,7 +326,7 @@ it does not substitute for the packed router/client boundary smoke or an
 Electron-runtime security test.
 
 Published packages include the desktop-core prebuild for `linux-x64`,
-`linux-arm64`, `darwin-arm64`, `darwin-x64`, `win32-x64` and `win32-arm64`,
+`linux-arm64`, `darwin-arm64`, `win32-x64` and `win32-arm64`,
 each with an identity sidecar (`ubm_desktop_core.identity.json`: the file's
 sha256 and the binary's own build identity). The release matrix builds each on
 its native runner, then loads it under Electron main: the identity is

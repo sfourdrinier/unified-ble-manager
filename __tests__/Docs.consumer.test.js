@@ -604,6 +604,53 @@ describe('consumer documentation matches the published package', () => {
     )
   })
 
+  test.each(['README.md', 'docs/NODE.md', 'docs/ELECTRON.md'])(
+    '%s states the desktop Apple Silicon-only package policy',
+    relativePath => {
+      const guide = read(relativePath)
+      expect(guide).toContain('macOS desktop support is Apple Silicon (`arm64`) only')
+      expect(guide).toContain('Windows and Linux desktop support includes `arm64` and `x64`')
+      expect(guide).toContain('Intel macOS desktop is outside the UBM support policy')
+      expect(guide).not.toContain('`darwin-x64`')
+      expect(guide).not.toMatch(/macOS, Windows and Linux on `arm64`\/`x64`/)
+    }
+  )
+
+  test('release gates require five desktop targets and Apple Silicon-only simulators without changing physical iPhone support', () => {
+    const release = read('RELEASE.md')
+    const invariants = release.split('## Release invariants')[1].split('## Required local validation')[0]
+    const publication = release.split('## What the publish workflow does')[1].split('## Architecture authority')[0]
+    for (const currentPolicy of [invariants, publication]) {
+      expect(currentPolicy).toContain('macOS `arm64`')
+      expect(currentPolicy).toContain('Windows/Linux `arm64`/`x64`')
+      expect(currentPolicy).not.toMatch(/macOS and Windows on `arm64` and `x64`/)
+      expect(currentPolicy).not.toContain('macOS/Windows `arm64`/`x64`')
+    }
+    for (const guide of [read('docs/NODE.md'), invariants]) {
+      expect(guide).toContain('iOS/tvOS simulators are `arm64` only')
+      expect(guide).toContain('physical iPhone support is unchanged')
+      expect(guide).not.toContain('simulator slices are unchanged')
+      expect(guide).not.toContain('does not change iOS/tvOS simulator architecture coverage')
+    }
+  })
+
+  test('packaging guidance delegates the complete desktop matrix to maintained targets', () => {
+    const packaging = read('docs/5.0.0-PACKAGING.md')
+    expect(packaging).toContain('The release invocation requires all maintained desktop-core targets.')
+    expect(packaging).not.toContain('all six desktop-core targets')
+  })
+
+  test('fresh mobile consumers explicitly select arm64 for generic simulator builds', () => {
+    const guide = read('docs/GETTING_STARTED.md')
+    expect(guide).toContain('both bare React Native and Expo')
+    expect(guide).toContain('iOS/tvOS simulators are `arm64` only')
+    expect(guide).toContain('physical iPhone support is unchanged')
+    expect(guide).toContain('UBM does not inject global architecture settings into your app')
+    expect(guide).toMatch(/xcodebuild[\s\S]*?-destination 'generic\/platform=iOS Simulator'[\s\S]*?ARCHS=arm64[\s\S]*?build/)
+    expect(guide).toContain("-destination 'generic/platform=tvOS Simulator'")
+    expect(guide).toContain('`-sdk appletvsimulator`')
+  })
+
   test('consumer teaching pages match current public types and do not teach stale claims', () => {
     const consumerGuides = [
       'README.md',

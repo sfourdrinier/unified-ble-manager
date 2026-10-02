@@ -2,6 +2,19 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.0.0-rc.16] - 2026-10-02
+
+- Ship macOS desktop prebuilds only for Apple Silicon (`arm64`). Retire both
+  Intel macOS producers and reject Intel source-build requests before invoking
+  build tools. Windows and Linux retain `arm64` and `x64` support.
+- Ship the iOS Simulator RustCore slice only for `arm64`; physical iPhone and
+  tvOS device support are unchanged. Align producer, verifier, CI, sealed target
+  identity and consumer documentation with the maintained architectures.
+- Include the rc.15 recording-retirement and public-error corrections below.
+  The immutable rc.15 tag was not published: its publisher was cancelled before
+  npm publication when the Apple architecture policy changed. Backend evidence
+  labels remain unchanged; no metadata-only physical-device rerun is claimed.
+
 ## [5.0.0-rc.15] - 2026-10-02
 
 - Keep expected late-ingress `storage.stopped` refusals separate from uncommitted

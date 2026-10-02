@@ -111,6 +111,15 @@ test('Apple core builder uses the exact pinned rustc and Cargo target directory'
   expect(builder).not.toContain('BUILT_LIB="$ROOT/target/$1/$PROFILE_DIR/$LIB_NAME"')
 })
 
+test('Apple core producer retains physical iOS/tvOS and builds only arm64 simulators', () => {
+  const builder = fs.readFileSync(path.join(root, 'ios', 'build-rust-core.sh'), 'utf8')
+  expect(builder).toContain('MATRIX_DEVICE="aarch64-apple-ios"')
+  expect(builder).toContain('MATRIX_SIM="aarch64-apple-ios-sim"')
+  expect(builder).toContain('MATRIX_TVOS_DEVICE="aarch64-apple-tvos"')
+  expect(builder).toContain('MATRIX_TVOS_SIM="aarch64-apple-tvos-sim"')
+  expect(builder).not.toContain('x86_64-apple-ios')
+})
+
 test('generated UniFFI Swift surface references every attested core symbol', () => {
   const generated = fs.readFileSync(
     path.join(root, 'bindings', 'uniffi', 'generated', 'swift', 'ubm_echo.swift'),

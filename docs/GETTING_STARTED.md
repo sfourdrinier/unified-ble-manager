@@ -4,7 +4,7 @@
 
 This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are linked at the bottom. The root import does not turn Bluetooth on.
 
-This source targets `5.0.0-rc.15`; verify the published version in the npm registry.
+This source targets `5.0.0-rc.16`; verify the published version in the npm registry.
 
 ## Pick a host
 
@@ -29,7 +29,7 @@ Install the exact candidate and commit the resolved lockfile for a known native
 rebuild:
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.15
+pnpm add unified-ble-manager@5.0.0-rc.16
 ```
 
 Declare Android Bluetooth permissions and the BLE hardware feature yourself,
@@ -39,11 +39,11 @@ request runtime permissions on Android 12+, add
 #### Expo / CNG v2
 
 The Expo v2 schema and `unified-ble-manager/expo` factory are in this source.
-After the npm registry lists `5.0.0-rc.15`, install that exact version and keep it in
+After the npm registry lists `5.0.0-rc.16`, install that exact version and keep it in
 your lockfile while validating the native build:
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.15
+pnpm add unified-ble-manager@5.0.0-rc.16
 ```
 
 The package does not run in Expo Go.
@@ -102,6 +102,34 @@ imports compiled under Bundler and NodeNext resolution. The source-tree CNG
 prebuild and Android debug APK/assembly are separate package/plugin and
 Android compile evidence; Apple/Xcode, EAS, and physical-device proof are not
 implied and require their own host- or device-specific runs.
+
+#### Apple simulator architecture
+
+For both bare React Native and Expo, iOS/tvOS simulators are `arm64` only;
+physical iPhone support is unchanged. Use an Apple Silicon Mac with native
+ARM tools. A generic simulator destination can otherwise request both `arm64`
+and `x86_64`, preventing CocoaPods from selecting the shipped XCFramework slice.
+Configure your application's simulator build or CI explicitly with
+`ARCHS=arm64`; UBM does not inject global architecture settings into your app.
+
+After installing pods, a generic iOS simulator compile uses the following
+command (replace `MyApp` with your workspace and scheme):
+
+```sh
+xcodebuild \
+  -workspace ios/MyApp.xcworkspace \
+  -scheme MyApp \
+  -sdk iphonesimulator \
+  -destination 'generic/platform=iOS Simulator' \
+  ARCHS=arm64 \
+  CODE_SIGNING_ALLOWED=NO \
+  build
+```
+
+For a tvOS simulator build, use `-sdk appletvsimulator` and
+`-destination 'generic/platform=tvOS Simulator'` with the same `ARCHS=arm64`.
+This restriction belongs to simulator builds, not physical-device signing or
+Bluetooth permissions.
 
 ### 2. Ask Android for runtime permission
 

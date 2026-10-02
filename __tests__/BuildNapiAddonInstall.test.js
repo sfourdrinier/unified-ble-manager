@@ -8,6 +8,7 @@
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
+const vm = require('node:vm')
 
 const {
   installAddon,
@@ -71,5 +72,31 @@ describe('build-napi-addon install step', () => {
     expect(calls).toEqual([
       { command: 'rustup', args: ['which', '--toolchain', '1.98.1', 'rustc'] }
     ])
+  })
+
+  test.each([
+    ['darwin', 'x64', []],
+    ['darwin', 'arm64', ['--target', 'x86_64-apple-darwin']]
+  ])('rejects Intel macOS before toolchain probes, identity generation or cargo (%s/%s)', (platform, arch, args) => {
+    const calls = []
+    const exits = []
+    const errors = []
+    const entry = { exports: {} }
+    function load(name) {
+      if (name === 'node:child_process') return { execFileSync: (...values) => { calls.push(values); throw new Error('unexpected process') } }
+      return require(name)
+    }
+    load.main = entry
+    const stop = new Error('process stopped')
+    const source = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'ci', 'build-napi-addon.js'), 'utf8')
+    expect(() => vm.runInNewContext(source, {
+      require: load, module: entry,
+      __dirname: path.join(__dirname, '..', 'scripts', 'ci'),
+      process: { argv: ['node', 'build-napi-addon.js', ...args], platform, arch, env: {}, exit: code => { exits.push(code); throw stop } },
+      console: { error: value => errors.push(value), log: () => {} }
+    })).toThrow(stop)
+    expect(exits).toEqual([1])
+    expect(errors.join('\n')).toMatch(/Intel macOS is unsupported; macOS requires Apple Silicon/)
+    expect(calls).toEqual([])
   })
 })

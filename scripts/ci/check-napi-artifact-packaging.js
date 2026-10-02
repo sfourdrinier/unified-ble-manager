@@ -30,7 +30,7 @@
 //      packed manifest, no .node outside the maintained prebuild paths (zero
 //      under bindings/), and every desktop-core prebuild paired with a
 //      sidecar naming its exact sha256. With --require-all-prebuilds it must
-//      carry all six desktop-core targets (the release tarball);
+//      carry all maintained desktop-core targets (the release tarball);
 //   D. (--consumer) an installed packed consumer cannot resolve the dev-only
 //      subpaths, the shipped ./testing entry exposes no Rust/fault-hook
 //      constructors, the Rust source trees are installed for dispatch

@@ -10,7 +10,16 @@ const NODE_API_VERSION = 8
  * shared desktop Rust core (native/desktop-core, PR210-03). Cargo targets
  * carry the Rust target triple the runner builds.
  */
-function target({ backend, platform, arch, runner, addonName, builder = 'node-gyp', moduleDirectory, rustTarget = null }) {
+function target({
+  backend,
+  platform,
+  arch,
+  runner,
+  addonName,
+  builder = 'node-gyp',
+  moduleDirectory,
+  rustTarget = null
+}) {
   const directory = moduleDirectory ?? path.posix.join('native', 'electron', backend)
   const prebuildPath = path.posix.join(directory, 'prebuilds', `${platform}-${arch}`, `${addonName}.node`)
   return Object.freeze({
@@ -56,13 +65,6 @@ const NATIVE_PREBUILD_TARGETS = Object.freeze([
     addonName: 'unified_ble_corebluetooth'
   }),
   target({
-    backend: 'corebluetooth',
-    platform: 'darwin',
-    arch: 'x64',
-    runner: 'macos-15-intel',
-    addonName: 'unified_ble_corebluetooth'
-  }),
-  target({
     backend: 'winrt',
     platform: 'win32',
     arch: 'arm64',
@@ -81,7 +83,6 @@ const NATIVE_PREBUILD_TARGETS = Object.freeze([
   desktopCore('linux', 'x64', 'ubuntu-22.04', 'x86_64-unknown-linux-gnu'),
   desktopCore('linux', 'arm64', 'ubuntu-22.04-arm', 'aarch64-unknown-linux-gnu'),
   desktopCore('darwin', 'arm64', 'macos-15', 'aarch64-apple-darwin'),
-  desktopCore('darwin', 'x64', 'macos-15-intel', 'x86_64-apple-darwin'),
   desktopCore('win32', 'x64', 'windows-2025', 'x86_64-pc-windows-msvc'),
   desktopCore('win32', 'arm64', 'windows-11-arm', 'aarch64-pc-windows-msvc')
 ])

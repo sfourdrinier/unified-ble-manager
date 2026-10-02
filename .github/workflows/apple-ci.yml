@@ -33,14 +33,14 @@ jobs:
         # Source mode builds ios/RustCore/RustCore.xcframework with the
         # explicit `native:apple:prepare` step (ios/build-rust-core.sh)
         # before pod install; it needs the pinned toolchain plus the Apple device/simulator matrix
-        # (aarch64-ios, aarch64-sim, x86_64-sim, aarch64-tvos,
+        # (aarch64-ios, aarch64-sim, aarch64-tvos,
         # aarch64-tvos-sim). Pin single-sourced from rust-toolchain.toml
         # (cargo --version resolves it via rustup).
         run: |
           cargo --version
           PINNED_TOOLCHAIN="$(grep -E '^channel[[:space:]]*=' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/' || true)"
           test -n "$PINNED_TOOLCHAIN" || { echo "could not parse pinned toolchain channel from rust-toolchain.toml"; exit 1; }
-          rustup target add --toolchain "$PINNED_TOOLCHAIN" aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios aarch64-apple-tvos aarch64-apple-tvos-sim
+          rustup target add --toolchain "$PINNED_TOOLCHAIN" aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-tvos aarch64-apple-tvos-sim
 
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
@@ -81,6 +81,7 @@ jobs:
             -configuration Debug \
             -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
+            ARCHS=arm64 \
             CODE_SIGNING_ALLOWED=NO \
             COMPILER_INDEX_STORE_ENABLE=NO \
             build
@@ -106,14 +107,14 @@ jobs:
         # Source mode builds ios/RustCore/RustCore.xcframework with the
         # explicit `native:apple:prepare` step (ios/build-rust-core.sh)
         # before pod install; it needs the pinned toolchain plus the Apple device/simulator matrix
-        # (aarch64-ios, aarch64-sim, x86_64-sim, aarch64-tvos,
+        # (aarch64-ios, aarch64-sim, aarch64-tvos,
         # aarch64-tvos-sim). Pin single-sourced from rust-toolchain.toml
         # (cargo --version resolves it via rustup).
         run: |
           cargo --version
           PINNED_TOOLCHAIN="$(grep -E '^channel[[:space:]]*=' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/' || true)"
           test -n "$PINNED_TOOLCHAIN" || { echo "could not parse pinned toolchain channel from rust-toolchain.toml"; exit 1; }
-          rustup target add --toolchain "$PINNED_TOOLCHAIN" aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios aarch64-apple-tvos aarch64-apple-tvos-sim
+          rustup target add --toolchain "$PINNED_TOOLCHAIN" aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-tvos aarch64-apple-tvos-sim
 
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
@@ -188,6 +189,7 @@ jobs:
             -configuration Debug \
             -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
+            ARCHS=arm64 \
             CODE_SIGNING_ALLOWED=NO \
             COMPILER_INDEX_STORE_ENABLE=NO \
             build

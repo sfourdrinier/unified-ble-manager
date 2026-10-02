@@ -473,10 +473,24 @@ describe('generated TypeScript identity (src/generated/native-build-identity.ts)
       'aarch64-apple-ios',
       'aarch64-apple-ios-sim',
       'aarch64-apple-tvos',
-      'aarch64-apple-tvos-sim',
-      'x86_64-apple-ios'
+      'aarch64-apple-tvos-sim'
     ])
-    expect(computed.bindings.napi.targets.length).toBeGreaterThan(0)
+    expect(computed.bindings.napi.targets).toEqual([
+      'aarch64-apple-darwin',
+      'aarch64-pc-windows-msvc',
+      'aarch64-unknown-linux-gnu',
+      'x86_64-pc-windows-msvc',
+      'x86_64-unknown-linux-gnu'
+    ])
+  })
+
+  test('every declared Apple XCFramework slice is arm64-only', () => {
+    expect(identity.APPLE_DECLARED_LIBRARIES).toEqual([
+      { libraryIdentifier: 'ios-arm64', platform: 'ios', variant: '', architectures: ['arm64'] },
+      { libraryIdentifier: 'ios-arm64-simulator', platform: 'ios', variant: 'simulator', architectures: ['arm64'] },
+      { libraryIdentifier: 'tvos-arm64', platform: 'tvos', variant: '', architectures: ['arm64'] },
+      { libraryIdentifier: 'tvos-arm64-simulator', platform: 'tvos', variant: 'simulator', architectures: ['arm64'] }
+    ])
   })
 
   test('CLI --check reports the committed module is current', () => {
