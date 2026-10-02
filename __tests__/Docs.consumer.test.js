@@ -124,6 +124,32 @@ describe('consumer documentation matches the published package', () => {
     expect(background).toContain('up to 16 inactive journal handles')
     expect(read('src/core/continuation-recording.ts')).toContain('logical record deletion, not file deletion')
   })
+  test('recording retirement distinguishes stopped admission from uncommitted storage failures', () => {
+    const background = read('docs/BACKGROUND.md')
+    expect(background).toContain('`storage.stopped`')
+    expect(background).toContain('normal collection-admission refusal')
+    expect(background).toContain('genuinely uncommitted storage failures remain pinned')
+  })
+  test('scoped helpers document the public error boundary and original application exceptions', () => {
+    const helpers = read('docs/HELPERS.md')
+    expect(helpers).toContain('`BleError`')
+    expect(helpers).toContain('`operation.timed-out`')
+    expect(helpers).toContain('original acquisition deadline')
+    expect(helpers).toContain('original application exception')
+  })
+  test('active release and post-release instructions use the current candidate', () => {
+    const release = read('RELEASE.md')
+    expect(release).toContain(`## Releasing ${packageVersion}\n`)
+    const postRelease = release.split('## Post-release verification')[1].split('## Failed release')[0]
+    expect(postRelease).toContain(`version=${packageVersion}`)
+    expect(postRelease).toContain(`\`${packageVersion}\``)
+    expect(postRelease).toContain(`unified-ble-manager@${packageVersion}`)
+  })
+  test('native identity guidance matches canonical builders that regenerate the expected module', () => {
+    const native = read('docs/NATIVE_ARTIFACTS.md')
+    expect(native).toContain('canonical builders regenerate this module')
+    expect(native).not.toContain('it does not write this file')
+  })
   test('Android restoration distinguishes the authenticated process presence queue from an OS journal', () => {
     const background = read('docs/BACKGROUND.md')
     expect(background).toContain('authenticated process-local presence queue')

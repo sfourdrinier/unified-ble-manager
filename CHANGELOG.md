@@ -2,6 +2,21 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.0.0-rc.15] - 2026-10-02
+
+- Keep expected late-ingress `storage.stopped` refusals separate from uncommitted
+  storage failures. Completed independent-stop recordings can retire into the
+  existing bounded journal cache without overwriting earlier genuine failures.
+  Deterministic coverage exercises 1,000 late-ingress retirement cycles and keeps
+  live ownership, prepared prefixes, admission limits and storage-failure truth.
+- Translate library-generated discovered-connection helper failures into public
+  `BleError` before cleanup aggregation on direct and IPC facades. Preserve the
+  original acquisition deadline, application exception identity and exactly-once
+  connection release, including simultaneous cleanup failure.
+- Keep backend support labels and earlier physical evidence unchanged. Native
+  acceptance checks use synthetic radios, real compiled core and real SQLite;
+  they do not establish new physical-radio qualification.
+
 ## [5.0.0-rc.14] - 2026-09-29
 
 - Share durable recording authority across independent in-process accessors so

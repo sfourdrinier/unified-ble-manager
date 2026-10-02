@@ -106,7 +106,7 @@ once tagged. Stable `4.0.0` through `4.0.20` are immutable. The unpublished
 `4.0.23`, `4.0.24`, `4.0.25`, `4.0.26`, and `4.0.27` are immutable tagged
 history. `4.0.28` is immutable tagged history. The unpublished
 `v5.0.0-rc.5` tag is immutable after its publish-only Tauri consumer failure.
-The current candidate is `5.0.0-rc.14`; rc.13 is immutable published history.
+The current candidate is `5.0.0-rc.15`; rc.14 is immutable published history.
 
 ```sh
 release_candidate=4.0.0-rc.N
@@ -134,7 +134,33 @@ The first stable tag `v4.0.0` is immutable published history. Do not recreate or
 git tag -a v4.0.0 -m "v4.0.0"
 ```
 
-## Releasing 5.0.0-rc.14
+## Releasing 5.0.0-rc.15
+
+Release only from the exact current `main` commit after the focused rc.14
+correction PR and canonical CI succeed. Verify `package.json` and the changelog
+identify `5.0.0-rc.15`, the worktree is clean, and refreshed native artifacts match
+the corrected source. Push a new annotated `v5.0.0-rc.15` tag; the existing
+workflow publishes to npm `next` with provenance and creates a GitHub prerelease.
+Never publish manually or move an earlier tag.
+
+Candidate-specific regressions must synchronously force independent storage
+stop followed by late outbox ingress before producer disposal, then prove
+continuing admission and bounded inactive handles across 1,000 completed cycles.
+Real uncommitted I/O failures must remain visible and pinned; live ownership,
+prepared-prefix replay, restart, cross-process refusal and independent export
+controls remain mandatory. Direct and IPC public helpers must expose `BleError`
+before cleanup aggregation while preserving application exceptions, the original
+deadline and exactly-once release. Run the focused native acceptance against the
+newly built and actual published binary; identify synthetic-radio scope explicitly.
+
+Use the existing clean-worktree preflight and cross-platform/release gates, not
+new workflows. No version-only phone campaign or support-label promotion is
+required. This is a corrective candidate, not final stable 5.0.
+
+## Releasing 5.0.0-rc.14 (historical)
+
+`v5.0.0-rc.14` is immutable published history. The following records its release
+procedure; do not execute its tag-creation instructions again.
 
 Release only from the exact current `main` commit after the focused recording
 correction PR and canonical CI succeed. Verify `package.json` and the changelog
@@ -790,7 +816,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=5.0.0-rc.13
+version=5.0.0-rc.15
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -801,7 +827,7 @@ npm view "unified-ble-manager@$version" dist.integrity
 
 Then verify:
 
-- npm `next` resolves to `5.0.0-rc.13`, while `latest` remains on the 4.0 stable
+- npm `next` resolves to `5.0.0-rc.15`, while `latest` remains on the 4.0 stable
   line; a stable release moves `latest`;
 - the npm package page shows provenance for the published artifact;
 - the GitHub Release exists at that tag, and is marked prerelease only if the
@@ -809,7 +835,7 @@ Then verify:
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager@5.0.0-rc.13` explicitly and import the documented host
+  `unified-ble-manager@5.0.0-rc.15` explicitly and import the documented host
   entrypoints. A bare install still selects `latest` (the 4.0 line). This
   catches a packaging gap the repository's
   own tests cannot see: `@babel/runtime` shipped undeclared in 4.0.4 and only a
