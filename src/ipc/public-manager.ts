@@ -88,6 +88,7 @@ import {
   collectCleanupPhases,
   rehydratePublicError,
   rehydratePublicPromise,
+  rehydratePublicValue,
   runWithCleanup
 } from '../public/error-bridge'
 import { BleError } from '../public/errors'
@@ -327,13 +328,17 @@ export class IpcPublicManagerAdapter implements BleManager {
       readonly gatt: GattDatabase
     }) => Promise<T>
   ): Promise<T> {
-    const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
+    const normalized = rehydratePublicValue(() =>
+      normalizeOperationOptions(options, () => globalThis.performance.now())
+    )
     return this.withConnection(peer, options, async connection => {
       const gatt = await connection.discover(
-        remainingOperationOptions(
-          normalized,
-          () => globalThis.performance.now(),
-          'ipc-public-manager.with-discovered-connection'
+        rehydratePublicValue(() =>
+          remainingOperationOptions(
+            normalized,
+            () => globalThis.performance.now(),
+            'ipc-public-manager.with-discovered-connection'
+          )
         )
       )
       return action(Object.freeze({ connection, gatt }))

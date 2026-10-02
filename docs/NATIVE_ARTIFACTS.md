@@ -41,8 +41,9 @@ sources the digest covers without changing a single artifact's behaviour.
 
 It has its own gate, separate from `native:status`: `pnpm prepack` runs
 `node scripts/release/native-build-identity.js --check`, and a stale file fails
-the build before anything is packed. `pnpm native:refresh` rebuilds artifacts;
-it does not write this file. Regenerate it with
+the build before anything is packed. The canonical builders regenerate this module
+when `pnpm native:refresh` rebuilds a stale artifact. Check-only or no-op refreshes
+do not regenerate it. To regenerate the expected module explicitly, use
 
 ```sh
 node scripts/release/native-build-identity.js --write

@@ -37,6 +37,7 @@ import {
   collectCleanupPhases,
   rehydratePublicError,
   rehydratePublicPromise,
+  rehydratePublicValue,
   runWithCleanup
 } from './error-bridge'
 import { BleError } from './errors'
@@ -1989,10 +1990,12 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
     options: ConnectOptions,
     action: (scope: { readonly connection: BleConnection; readonly gatt: GattDatabase }) => Promise<T>
   ): Promise<T> {
-    const normalized = normalizeOperationOptions(options, this.now)
+    const normalized = rehydratePublicValue(() => normalizeOperationOptions(options, this.now))
     return this.withConnection(peer, options, async connection => {
       const gatt = await connection.discover(
-        remainingOperationOptions(normalized, this.now, 'public-ble-manager.with-discovered-connection')
+        rehydratePublicValue(() =>
+          remainingOperationOptions(normalized, this.now, 'public-ble-manager.with-discovered-connection')
+        )
       )
       return action(Object.freeze({ connection, gatt }))
     })

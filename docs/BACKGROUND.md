@@ -619,6 +619,12 @@ an explicit storage failure, never a silently dropped value.
 
 The process retains up to 16 inactive journal handles for reuse. Live accessors,
 in-flight work, and diagnostics that could not be committed remain pinned.
+A value arriving after an independent accessor stops collection is refused with
+`storage.stopped`. This is a normal collection-admission refusal, not a new
+uncommitted storage failure: once the producer is disposed, the stopped journal
+can enter the bounded inactive cache. Earlier genuinely uncommitted storage failures remain pinned;
+the stopped refusal neither replaces nor clears them. Eviction closes the handle,
+not retained records or a prepared prefix/token on disk.
 At 256 retained authorities, admission of a new identity refuses with
 `storage.busy` rather than discarding those obligations; existing identities
 remain accessible. Inactive cached handles still own their process admission
