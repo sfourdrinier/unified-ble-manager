@@ -785,6 +785,10 @@ impl ContinuationJournal {
             .append_inner(metadata, record)
             .map_err(|failure| failure.at("append"));
         if let Err(failure) = &outcome
+            // A stopped journal normally refuses late producer ingress. This
+            // admission result is returned, not uncommitted failure evidence;
+            // neither pin a retired authority nor overwrite a real earlier fault.
+            && failure.kind != "storage.stopped"
             && let Ok(mut stored) = self.runtime_failure.lock()
         {
             *stored = Some(failure.clone());

@@ -41,6 +41,14 @@ operation or callback fails. If both the callback and cleanup fail, the public
 error bridge preserves both failures in an `AggregateError`. Scan observations
 expose the advertised name as `localName`.
 
+`withDiscoveredConnection()` preserves the original acquisition deadline across
+connect and discovery. Helper-generated option and budget failures are public
+`BleError` instances (`argument.invalid` or `operation.timed-out`), including the
+primary error when cleanup also fails. An original application exception is
+preserved unchanged rather than translated into a library error. Invalid options
+are rejected before acquiring a connection; a budget exhausted after connect
+skips discovery and the callback while still releasing the lease.
+
 ## Notifications
 
 GATT objects are generation-bound views. Subscribe through the characteristic

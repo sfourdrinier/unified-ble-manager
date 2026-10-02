@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use ubm_desktop::continuation_journal::{ContinuationJournal, JournalQuota, JournalRegistry};
 use ubm_desktop::continuation_outbox::{DATA_RECORD_CAP, Outbox, WakeSink};
+#[path = "../../test-support/recording_fixture.rs"]
+mod recording_fixture;
 struct NoWake;
 impl WakeSink for NoWake {
     fn wake(&self, _: u64) {}
@@ -140,6 +142,113 @@ fn registry_bounds_inactive_handles_across_one_thousand_ids_and_preserves_active
         active.prepare(1, 4096).unwrap()["records"][0]["record"]["value"],
         7
     );
+}
+
+#[test]
+fn independent_stop_then_late_ingress_retires_one_thousand_journals() {
+    let Some(directory) = recording_fixture::isolated_fixture_process(
+        "independent_stop_then_late_ingress_retires_one_thousand_journals",
+    ) else {
+        return;
+    };
+    let writer = JournalRegistry::default();
+    let reader = JournalRegistry::default();
+    writer.configure_directory(&directory).unwrap();
+    reader.configure_directory(&directory).unwrap();
+    let active = writer.open("active", &json!({}), quota()).unwrap();
+    active.append(&json!({}), &json!({"value":7})).unwrap();
+    let mut retired = Vec::new();
+    for index in 0..1000 {
+        let id = format!("retired-{index}");
+        let journal = writer.open(&id, &json!({}), quota()).unwrap();
+        let outbox = Outbox::new(1, std::sync::Arc::new(NoWake));
+        outbox
+            .attach_journal(journal.clone(), json!({"epoch":"a"}))
+            .unwrap();
+        outbox
+            .register_journal_consumer("c", json!({"generation":"a"}))
+            .unwrap();
+        reader.get(&id).unwrap().stop().unwrap();
+        assert!(!outbox.is_sealed());
+        // Synchronous ingress occurs before producer disposal: sealing first
+        // would bypass the stopped journal and falsely pass this regression.
+        assert!(matches!(
+            outbox.push_data(json!({"t":"value","consumer":"c","valueB64":"AQ=="})),
+            Err(ubm_desktop::continuation_outbox::DataIngressFailure::Stopped { .. })
+        ));
+        assert!(outbox.is_sealed());
+        assert_eq!(outbox.after_cutoff_loss().items, 1);
+        assert!(outbox.journal_failure().is_none());
+        let status = journal.status().unwrap();
+        assert_eq!(status["phase"], "stopped");
+        assert_eq!(status["records"], 1); // Registration only; late value refused.
+        assert!(status["runtimeFailure"].is_null());
+        assert!(status["collectionFailure"].is_null());
+        drop(outbox);
+        assert_eq!(journal.clear().unwrap()["cleared"], true);
+        let status = journal.status().unwrap();
+        assert_eq!(status["records"], 0);
+        assert_eq!(status["bytes"], 0);
+        retired.push(std::sync::Arc::downgrade(&journal));
+        drop(journal);
+        // Lookup drives normal cache maintenance at each completed checkpoint.
+        assert!(std::sync::Arc::ptr_eq(
+            &active,
+            &writer.get("active").unwrap()
+        ));
+        assert!(
+            retired
+                .iter()
+                .filter(|journal| journal.strong_count() > 0)
+                .count()
+                <= 16
+        );
+    }
+    assert_eq!(active.status().unwrap()["records"], 1);
+    assert_eq!(
+        reader.get("retired-0").unwrap().status().unwrap()["records"],
+        0
+    );
+    recording_fixture::complete_fixture_process(&directory);
+}
+
+#[test]
+fn stopped_refusal_does_not_erase_or_unpin_real_uncommitted_failure() {
+    let path = path();
+    let directory = path.parent().unwrap();
+    let registry = JournalRegistry::default();
+    registry.configure_directory(directory).unwrap();
+    let journal = registry
+        .open("failed-before-stop", &json!({}), quota())
+        .unwrap();
+    let lock = rusqlite::Connection::open(directory.join("failed-before-stop.sqlite")).unwrap();
+    lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let failure = journal.append(&json!({}), &json!({"value":1})).unwrap_err();
+    assert_eq!(failure.kind, "storage.busy");
+    let diagnostic = journal.status().unwrap()["runtimeFailure"].clone();
+    assert_eq!(diagnostic["persisted"], false);
+    lock.execute_batch("ROLLBACK").unwrap();
+    journal.stop().unwrap();
+    assert_eq!(
+        journal
+            .append(&json!({}), &json!({"value":2}))
+            .unwrap_err()
+            .kind,
+        "storage.stopped"
+    );
+    journal.clear().unwrap();
+    assert_eq!(journal.status().unwrap()["runtimeFailure"], diagnostic);
+    let weak = std::sync::Arc::downgrade(&journal);
+    drop(journal);
+    for index in 0..32 {
+        registry
+            .open(&format!("failure-pressure-{index}"), &json!({}), quota())
+            .unwrap();
+    }
+    let retained = registry.get("failed-before-stop").unwrap();
+    assert!(std::sync::Arc::ptr_eq(&weak.upgrade().unwrap(), &retained));
+    assert_eq!(retained.status().unwrap()["runtimeFailure"], diagnostic);
+    assert_eq!(retained.status().unwrap()["records"], 0);
 }
 
 #[test]

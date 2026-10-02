@@ -50,6 +50,15 @@ export function rehydratePublicPromise<Value>(operation: Promise<Value>): Promis
   })
 }
 
+/** Translate a synchronous library operation, never an application callback. */
+export function rehydratePublicValue<Value>(operation: () => Value): Value {
+  try {
+    return operation()
+  } catch (error) {
+    throw rehydratePublicError(error)
+  }
+}
+
 export function collectCleanupPhases(
   results: readonly {
     readonly error?: unknown

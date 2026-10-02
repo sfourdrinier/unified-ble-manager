@@ -197,7 +197,7 @@ describe('IPC public connection controls', () => {
     test('does not start discovery when connection consumes the budget', async () => {
       const { manager, calls, action } = fixture(() => { now = 2_000 })
       await expect(manager.withDiscoveredConnection('peer-1', { timeoutMs: 1_000 }, action)).rejects.toMatchObject({
-        normalized: { code: 'operation.timed-out' }
+        code: 'operation.timed-out'
       })
       expect(calls.discover).toHaveLength(0)
       expect(calls.release).toBe(1)
