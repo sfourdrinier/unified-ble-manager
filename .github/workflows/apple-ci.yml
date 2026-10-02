@@ -33,7 +33,7 @@ jobs:
         # Source mode builds ios/RustCore/RustCore.xcframework with the
         # explicit `native:apple:prepare` step (ios/build-rust-core.sh)
         # before pod install; it needs the pinned toolchain plus the Apple device/simulator matrix
-        # (aarch64-ios, aarch64-sim, x86_64-sim, aarch64-tvos,
+        # (aarch64-ios, aarch64-sim, aarch64-tvos,
         # aarch64-tvos-sim). Pin single-sourced from rust-toolchain.toml
         # (cargo --version resolves it via rustup).
         run: |
@@ -106,7 +106,7 @@ jobs:
         # Source mode builds ios/RustCore/RustCore.xcframework with the
         # explicit `native:apple:prepare` step (ios/build-rust-core.sh)
         # before pod install; it needs the pinned toolchain plus the Apple device/simulator matrix
-        # (aarch64-ios, aarch64-sim, x86_64-sim, aarch64-tvos,
+        # (aarch64-ios, aarch64-sim, aarch64-tvos,
         # aarch64-tvos-sim). Pin single-sourced from rust-toolchain.toml
         # (cargo --version resolves it via rustup).
         run: |

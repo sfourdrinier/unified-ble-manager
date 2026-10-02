@@ -5,6 +5,7 @@ test.each(['publish.yml', 'apple-ci.yml'])('Apple tooling in %s does not install
   const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows', filename), 'utf8')
   expect(workflow).not.toContain('x86_64-apple-ios')
   expect(workflow).not.toContain('x86_64-apple-darwin')
+  expect(workflow).not.toContain('x86_64-sim')
   expect(workflow).toContain('aarch64-apple-ios-sim')
   expect(workflow).toContain('aarch64-apple-ios')
 })
