@@ -640,6 +640,17 @@ describe('consumer documentation matches the published package', () => {
     expect(packaging).not.toContain('all six desktop-core targets')
   })
 
+  test('fresh mobile consumers explicitly select arm64 for generic simulator builds', () => {
+    const guide = read('docs/GETTING_STARTED.md')
+    expect(guide).toContain('both bare React Native and Expo')
+    expect(guide).toContain('iOS/tvOS simulators are `arm64` only')
+    expect(guide).toContain('physical iPhone support is unchanged')
+    expect(guide).toContain('UBM does not inject global architecture settings into your app')
+    expect(guide).toMatch(/xcodebuild[\s\S]*?-destination 'generic\/platform=iOS Simulator'[\s\S]*?ARCHS=arm64[\s\S]*?build/)
+    expect(guide).toContain("-destination 'generic/platform=tvOS Simulator'")
+    expect(guide).toContain('`-sdk appletvsimulator`')
+  })
+
   test('consumer teaching pages match current public types and do not teach stale claims', () => {
     const consumerGuides = [
       'README.md',

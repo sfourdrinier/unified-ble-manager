@@ -103,6 +103,34 @@ prebuild and Android debug APK/assembly are separate package/plugin and
 Android compile evidence; Apple/Xcode, EAS, and physical-device proof are not
 implied and require their own host- or device-specific runs.
 
+#### Apple simulator architecture
+
+For both bare React Native and Expo, iOS/tvOS simulators are `arm64` only;
+physical iPhone support is unchanged. Use an Apple Silicon Mac with native
+ARM tools. A generic simulator destination can otherwise request both `arm64`
+and `x86_64`, preventing CocoaPods from selecting the shipped XCFramework slice.
+Configure your application's simulator build or CI explicitly with
+`ARCHS=arm64`; UBM does not inject global architecture settings into your app.
+
+After installing pods, a generic iOS simulator compile uses the following
+command (replace `MyApp` with your workspace and scheme):
+
+```sh
+xcodebuild \
+  -workspace ios/MyApp.xcworkspace \
+  -scheme MyApp \
+  -sdk iphonesimulator \
+  -destination 'generic/platform=iOS Simulator' \
+  ARCHS=arm64 \
+  CODE_SIGNING_ALLOWED=NO \
+  build
+```
+
+For a tvOS simulator build, use `-sdk appletvsimulator` and
+`-destination 'generic/platform=tvOS Simulator'` with the same `ARCHS=arm64`.
+This restriction belongs to simulator builds, not physical-device signing or
+Bluetooth permissions.
+
 ### 2. Ask Android for runtime permission
 
 The plugin writes the manifest. Android 12+ still needs a runtime request. The library will not do this for you.
