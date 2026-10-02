@@ -289,7 +289,7 @@ describe('build fingerprint (F23)', () => {
     expect(seal.native.apple.staged).toBe(true)
     expect(seal.native.apple.libraryIdentifiers).toEqual(slices)
     expect(seal.native.apple.slices).toHaveLength(4)
-    expect(seal.native.apple.slices[0]).toMatchObject({
+    expect(seal.native.apple.slices.find(entry => entry.slice === 'ios-arm64')).toMatchObject({
       slice: 'ios-arm64',
       file: 'ios/RustCore/RustCore.xcframework/ios-arm64/libubm5_uniffi_echo.a',
       bytes: 8
