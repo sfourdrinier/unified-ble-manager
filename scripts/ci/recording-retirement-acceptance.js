@@ -80,6 +80,44 @@ function handles() {
     }
   }).length
 }
+async function retirementCheckpoint({ store, readHandles, now = Date.now, timeoutMs = 15000 }) {
+  const before = readHandles()
+  if (before === null) return { before, after: null, maintenanceLookups: 0 }
+  const deadline = now() + timeoutMs
+  let after = before
+  let maintenanceLookups = 0
+  // Disposed native ownership does not imply every collector's temporary Arc
+  // has dropped. Drive existing registry admission maintenance using a lookup
+  // that MUST fail before opening/creating any journal. This measures retired
+  // cache handles, not the instantaneous inactive-cache + in-flight total.
+  do {
+    const missing = envelope(await store.status('__maintenance_missing__'))
+    assert.equal(missing.ok, false)
+    assert.equal(missing.error.code, 'platform.failure')
+    assert.equal(missing.error.detail, 'recording file cannot be inspected')
+    assert.equal(missing.error.platform.domain, 'sqlite')
+    assert.equal(missing.error.platform.code, 'storage.io')
+    assert.equal(missing.error.platform.metadata.operation, 'lookup')
+    assert.equal(missing.error.platform.metadata.storageKind, 'storage.io')
+    maintenanceLookups++
+    after = readHandles()
+    if (after <= 16) return { before, after, maintenanceLookups }
+    await yieldTurn()
+  } while (now() < deadline)
+  throw new Error(`retired handles ${after} exceeds 16 after ${maintenanceLookups} maintenance lookups`)
+}
+async function pinnedAuthorityCheckpoint(store, readHandles) {
+  assert.equal(readHandles(), 256)
+  const refusal = envelope(await store.status('__maintenance_missing__'))
+  assert.equal(refusal.ok, false)
+  assert.equal(refusal.error.code, 'platform.failure')
+  assert.equal(refusal.error.detail, 'recording authority capacity reached; existing owners retained')
+  assert.equal(refusal.error.platform.domain, 'sqlite')
+  assert.equal(refusal.error.platform.code, 'storage.busy')
+  assert.equal(refusal.error.platform.metadata.operation, 'journal')
+  assert.equal(refusal.error.platform.metadata.storageKind, 'storage.busy')
+  assert.equal(readHandles(), 256)
+}
 async function context(addon, label) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), `ubm-retirement-${label}-`))
   ownedDirectories.push(directory)
@@ -143,7 +181,7 @@ async function context(addon, label) {
     }
   }
 }
-async function retire(ctx, id) {
+async function retire(ctx, id, checkpoint = async () => undefined) {
   const claim = unwrap(await ctx.central.continuationPrepareClaim(MAX_ITEMS, MAX_BYTES))
   const receipt = unwrap(await ctx.central.continuationAcknowledgeClaim(claim.claimToken))
   assert.equal(receipt.disposed, true)
@@ -152,11 +190,14 @@ async function retire(ctx, id) {
   assert.equal(status.records, 0)
   assert.equal(status.bytes, 0)
   assert.equal(status.collectionFailure, null)
-  return { status, claim }
+  return { status, claim, checkpoint: await checkpoint() }
 }
 async function retention(addon, mode, cycles, baseline) {
   const ctx = await context(addon, mode)
   let completed = 0
+  let maxTransientHandles = 0
+  let maxRetiredHandles = 0
+  const convergenceWitnesses = []
   try {
     for (let index = 0; index < cycles; index++) {
       const id = `r${index}`
@@ -168,26 +209,41 @@ async function retention(addon, mode, cycles, baseline) {
           await ctx.stage(Buffer.from([255, 0]))
         } else unwrap(await ctx.store.stop(id))
       }
-      const { status, claim } = await retire(ctx, id)
+      const { status, claim, checkpoint } = await retire(ctx, id, async () =>
+        baseline ? undefined : retirementCheckpoint({ store: ctx.store, readHandles: handles })
+      )
       if (mode === 'independent-late') {
         assert.equal(claim.afterCutoffLoss.items, 1)
         if (baseline) assert.equal(status.runtimeFailure.kind, 'storage.stopped')
         else assert.equal(status.runtimeFailure, null)
       } else assert.equal(status.runtimeFailure, null)
       completed++
-      const count = handles()
-      if (!baseline && count !== null) assert(count <= 16, `inactive handles ${count} exceeds 16`)
+      if (!baseline && checkpoint.before !== null) {
+        maxTransientHandles = Math.max(maxTransientHandles, checkpoint.before)
+        maxRetiredHandles = Math.max(maxRetiredHandles, checkpoint.after)
+        if (checkpoint.before > 16) convergenceWitnesses.push({ completed, ...checkpoint })
+      }
     }
-    return { mode, completed, journalHandles: handles(), directory: ctx.directory }
+    return {
+      mode,
+      completed,
+      journalHandles: handles(),
+      directory: ctx.directory,
+      maxTransientHandles,
+      maxRetiredHandles,
+      convergenceWitnesses
+    }
   } catch (error) {
     if (!baseline || completed !== 256 || !String(error).includes('authority capacity reached')) {
       throw new Error(`completed=${completed}: ${error.message}`, { cause: error })
     }
+    await pinnedAuthorityCheckpoint(ctx.store, handles)
     return {
       mode,
       completed,
       blockedAt: 257,
       journalHandles: handles(),
+      pinnedFailurePreserved: true,
       directory: ctx.directory,
       refusal: String(error)
     }
@@ -260,7 +316,7 @@ async function main(env = process.env) {
   }
   console.log(JSON.stringify({ identity, baseline, results, exports }, null, 2))
 }
-module.exports = { stoppedIngress, main }
+module.exports = { stoppedIngress, retirementCheckpoint, pinnedAuthorityCheckpoint, retire, main }
 if (require.main === module)
   main().catch(error => {
     console.error(error)
