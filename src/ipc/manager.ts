@@ -1746,6 +1746,10 @@ export class IpcConnection {
     for await (const event of subscription.events) {
       if (event.kind === 'terminal') {
         this.invalidateDatabases().catch(() => undefined)
+        if (event.reason === 'owner-released' && (await this.awaitAppReleaseOutcome())) {
+          this.finishAppReleasedLifecycle()
+          return
+        }
         this.lifecycleEvents.finishWithReason(
           requiredTerminalReason(event.reason, 'ipc-manager.connection-lifecycle'),
           requiredTerminalError(event.error, 'ipc-manager.connection-lifecycle')

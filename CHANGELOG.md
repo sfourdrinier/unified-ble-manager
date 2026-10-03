@@ -19,6 +19,16 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ### Changes
 
+- Share CI/publication Electron smoke launching, including a Linux virtual
+  display, while preserving synthetic-addon admission and process failures.
+- Preserve buffered connection lifecycle platform details within an explicit
+  16 KiB UTF-8 JSON allowance; snapshot metadata and report oversized details
+  as accounted stream overflow after accepted FIFO values drain, rather than
+  silently losing the native cause or earlier accepted transitions.
+- Drain accepted public lifecycle transitions before terminal failure, account
+  their actual bytes, and preserve each subscriber's winning error. Keep early
+  IPC child-release terminals behind the app release's confirmation gate so
+  successful requested disconnects retain their terminal transition.
 - Share stable/prerelease version admission between packaging and publication.
   Stable 5.x versions select `latest`; numbered RCs select `next`. Retain native
   identity, hash, export and exact-content release guards.

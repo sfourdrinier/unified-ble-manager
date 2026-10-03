@@ -109,7 +109,10 @@ describe('canonical package modernization', () => {
     expect(workflow).toContain('node scripts/ci/check-host-exports.js')
     expect(workflow).toContain('node scripts/ci/build-napi-addon.js')
     expect(workflow).not.toContain('corebluetooth-native-boundary')
-    expect(workflow).toContain('./node_modules/.bin/electron --no-sandbox scripts/ci/electron-main-smoke.js')
+    expect(workflow).toContain('bash scripts/ci/run-electron-main-smoke.sh')
+    expect(read('scripts/ci/run-electron-main-smoke.sh')).toContain(
+      'exec xvfb-run -a ./node_modules/.bin/electron --no-sandbox scripts/ci/electron-main-smoke.js'
+    )
     expect(workflow).not.toMatch(/hosts\/electron|createCoreBluetoothBlePort/)
     expect(buildScript).toContain("shell: process.platform === 'win32'")
     expect(electronSmoke).toContain('smokeDesktopCore')

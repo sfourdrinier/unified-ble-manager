@@ -206,7 +206,10 @@ describe('ci-release canonical package (4.0)', () => {
     expect(smoke).toContain('throw new Error(`desktop-core smoke requires')
     expect(smoke).not.toContain('smokeLegacyBoundary')
     expect(smoke).not.toContain('smoke skipped')
-    expect(ci).toContain('./node_modules/.bin/electron --no-sandbox scripts/ci/electron-main-smoke.js')
+    expect(ci).toContain('bash scripts/ci/run-electron-main-smoke.sh')
+    expect(read('scripts/ci/run-electron-main-smoke.sh')).toContain(
+      'exec xvfb-run -a ./node_modules/.bin/electron --no-sandbox scripts/ci/electron-main-smoke.js'
+    )
   })
 
   // R3-F007: Electron L1 smoke does not claim bonding; it proves the public deterministic vertical scenario.

@@ -37,5 +37,15 @@ test('tag publication runs its Linux Electron prebuild smoke with a display serv
   expect(workflow).toContain('bash scripts/ci/install-linux-native-system-dependencies.sh desktop-prebuild')
   expect(installer.split(/\r?\n/).filter(line => line.trim() === 'xvfb')).toHaveLength(1)
   expect(installer.split(/\r?\n/).filter(line => line.trim() === 'xauth')).toHaveLength(1)
-  expect(workflow).toContain('xvfb-run -a ./node_modules/.bin/electron --no-sandbox scripts/ci/electron-main-smoke.js')
+  const launcher = fs.readFileSync(path.join(__dirname, '../scripts/ci/run-electron-main-smoke.sh'), 'utf8')
+  const ci = fs.readFileSync(path.join(__dirname, '../.github/workflows/ci.yml'), 'utf8')
+  expect(workflow).toContain('bash scripts/ci/run-electron-main-smoke.sh')
+  expect(ci).toContain('bash scripts/ci/run-electron-main-smoke.sh')
+  expect(ci).toContain('bash scripts/ci/install-linux-native-system-dependencies.sh tauri-electron')
+  expect(ci).toContain('bash scripts/ci/install-linux-native-system-dependencies.sh desktop-prebuild')
+  expect(launcher).toContain(
+    'exec xvfb-run -a ./node_modules/.bin/electron --no-sandbox scripts/ci/electron-main-smoke.js'
+  )
+  expect(launcher).toContain('exec ./node_modules/.bin/electron scripts/ci/electron-main-smoke.js')
+  expect(installer).toContain('"${bluez_packages[@]}" "${tauri_packages[@]}" "${electron_smoke_packages[@]}"')
 })

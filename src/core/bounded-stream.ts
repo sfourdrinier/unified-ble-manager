@@ -202,15 +202,29 @@ export class CoreBoundedStream<Value> implements BoundedAsyncStream<Value> {
     return this.projectDropOldestRetainedBytes(byteLength)
   }
 
-  terminateForAggregateQuota(byteLength: number): CoreStreamPushResult {
-    this.assertByteLength(byteLength)
-    if (this.isTerminal()) {
+  terminateForAggregateQuota(byteLength: number, error: NormalizedBleError | null = null): CoreStreamPushResult {
+    if (!this.recordRejectedValue(byteLength)) {
       return this.pushResult(false, true)
     }
+    this.closeWithReason('overflow', error)
+    return this.pushResult(false, true)
+  }
+
+  /** Rejects one record while preserving accepted FIFO values before overflow. */
+  finishForRejectedValue(byteLength: number, error: NormalizedBleError | null = null): CoreStreamPushResult {
+    if (!this.recordRejectedValue(byteLength)) {
+      return this.pushResult(false, true)
+    }
+    this.finishWithReason('overflow', error)
+    return this.pushResult(false, true)
+  }
+
+  private recordRejectedValue(byteLength: number): boolean {
+    this.assertByteLength(byteLength)
+    if (this.isTerminal()) return false
     this.droppedItems += 1
     this.droppedBytes += byteLength
-    this.closeWithReason('overflow')
-    return this.pushResult(false, true)
+    return true
   }
 
   overflowCounters(): {

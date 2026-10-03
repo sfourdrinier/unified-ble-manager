@@ -104,13 +104,7 @@ jobs:
         shell: bash
         env:
           UBM_SMOKE_BACKEND: ${{ matrix.backend }}
-        run: |
-          set -euo pipefail
-          if [ "${{ runner.os }}" = "Linux" ]; then
-            xvfb-run -a ./node_modules/.bin/electron --no-sandbox scripts/ci/electron-main-smoke.js
-          else
-            ./node_modules/.bin/electron scripts/ci/electron-main-smoke.js
-          fi
+        run: bash scripts/ci/run-electron-main-smoke.sh
 
       - name: Upload path-preserving native prebuild
         uses: actions/upload-artifact@v7

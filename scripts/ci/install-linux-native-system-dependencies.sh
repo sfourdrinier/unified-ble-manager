@@ -38,8 +38,11 @@ case "${profile}" in
   desktop-prebuild)
     readonly -a packages=("${bluez_packages[@]}" "${electron_smoke_packages[@]}")
     ;;
+  tauri-electron)
+    readonly -a packages=("${bluez_packages[@]}" "${tauri_packages[@]}" "${electron_smoke_packages[@]}")
+    ;;
   *)
-    echo "Usage: $0 <bluez|tauri|desktop-prebuild>" >&2
+    echo "Usage: $0 <bluez|tauri|desktop-prebuild|tauri-electron>" >&2
     exit 64
     ;;
 esac

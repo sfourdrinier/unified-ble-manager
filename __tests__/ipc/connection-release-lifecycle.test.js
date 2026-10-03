@@ -61,12 +61,16 @@ function controlledStream() {
 function stubManager(subscription) {
   return {
     bootstrap: { attachment: { attachmentId: IDENTITY.attachmentId } },
-    subscribeConnectionEvents: async () => subscription,
+    subscribeConnectionEvents: async (_handle, _identity, _signal, _released, publish) => {
+      publish(subscription)
+      return subscription
+    },
     route: async command => {
       if (command === 'connection.disconnect') return { state: 'released', failures: [] }
       throw new Error(`unexpected route ${command}`)
     },
-    retryUnresolvedAdmissionCleanup: async () => []
+    retryUnresolvedAdmissionCleanup: async () => [],
+    confirmConnectionAdmissionRelease: () => undefined
   }
 }
 
@@ -105,6 +109,135 @@ async function releaseWithBareHostClose() {
 }
 
 describe('IPC connection app release lifecycle (finding F4)', () => {
+  function gatedRelease(reason = 'owner-released') {
+    const events = controlledStream()
+    let settleParent
+    let parentEntered
+    const entered = new Promise(resolve => {
+      parentEntered = resolve
+    })
+    const parent = new Promise((resolve, reject) => {
+      settleParent = { resolve, reject }
+    })
+    const subscription = {
+      events,
+      unsubscribe: async () => {
+        events.push({
+          kind: 'terminal',
+          reason,
+          error:
+            reason === 'source-failed'
+              ? {
+                  code: 'platform.transport',
+                  domain: 'connection',
+                  operation: 'lifecycle-events',
+                  platform: null,
+                  retryability: 'caller-decides'
+                }
+              : null
+        })
+        return { state: 'released', failures: [] }
+      }
+    }
+    const manager = stubManager(subscription)
+    manager.route = async () => {
+      parentEntered()
+      return parent
+    }
+    const connection = new IpcConnection(
+      manager,
+      'handle-1',
+      IDENTITY.peerId,
+      IDENTITY.connectionId,
+      IDENTITY.ownerLeaseId,
+      IDENTITY.connectionGeneration
+    )
+    return { connection, events, entered, settleParent }
+  }
+
+  test('an explicit owner terminal waits for a held parent and then delivers one confirmed transition', async () => {
+    const fixture = gatedRelease()
+    const iterator = fixture.connection.events[Symbol.asyncIterator]()
+    let firstSettled = false
+    const first = iterator.next().then(item => {
+      firstSettled = true
+      return item
+    })
+    await flushPump()
+    const cleanup = fixture.connection.disconnect()
+    await fixture.entered
+    await flushPump()
+    expect(firstSettled).toBe(false)
+    fixture.settleParent.resolve({ state: 'released', failures: [] })
+    expect(await cleanup).toEqual({ state: 'released', failures: [] })
+    expect((await first).value.value).toMatchObject({ cause: 'requested-disconnect', current: 'disconnected' })
+    expect((await iterator.next()).value).toMatchObject({ kind: 'terminal', reason: 'owner-released' })
+    expect((await iterator.next()).done).toBe(true)
+  })
+
+  test.each(['refused', 'rejected'])(
+    'an explicit owner terminal does not fabricate parent release when %s',
+    async outcome => {
+      const fixture = gatedRelease()
+      const iterator = fixture.connection.events[Symbol.asyncIterator]()
+      const first = iterator.next()
+      await flushPump()
+      const cleanup = fixture.connection.disconnect().then(
+        value => ({ value }),
+        error => ({ error })
+      )
+      await fixture.entered
+      if (outcome === 'refused')
+        fixture.settleParent.resolve({
+          state: 'release-failed',
+          failures: [
+            {
+              resourceKind: 'connection',
+              error: {
+                code: 'platform.transport',
+                domain: 'connection',
+                operation: 'disconnect',
+                platform: null,
+                retryability: 'caller-decides'
+              }
+            }
+          ]
+        })
+      else fixture.settleParent.reject(new Error('parent refused'))
+      const result = await cleanup
+      if (outcome === 'refused') expect(result.value.state).toBe('release-failed')
+      else expect(result.error.message).toBe('parent refused')
+      expect((await first).value).toMatchObject({ kind: 'terminal', reason: 'owner-released' })
+      expect((await iterator.next()).done).toBe(true)
+    }
+  )
+
+  test('an owner terminal without an app release gate settles without a synthetic transition', async () => {
+    const fixture = gatedRelease()
+    const iterator = fixture.connection.events[Symbol.asyncIterator]()
+    const first = iterator.next()
+    await flushPump()
+    fixture.events.push({ kind: 'terminal', reason: 'owner-released', error: null })
+    expect((await first).value).toMatchObject({ kind: 'terminal', reason: 'owner-released' })
+    expect((await iterator.next()).done).toBe(true)
+  })
+
+  test.each(['source-failed', 'overflow'])(
+    'a winning %s terminal does not wait for or become app release',
+    async reason => {
+      const fixture = gatedRelease(reason)
+      const iterator = fixture.connection.events[Symbol.asyncIterator]()
+      const first = iterator.next()
+      await flushPump()
+      const cleanup = fixture.connection.disconnect()
+      await fixture.entered
+      expect((await first).value).toMatchObject({ kind: 'terminal', reason })
+      fixture.settleParent.resolve({ state: 'released', failures: [] })
+      expect((await cleanup).state).toBe('released')
+      expect((await iterator.next()).done).toBe(true)
+    }
+  )
+
   test('an app-requested disconnect delivers the disconnected event, not a bare end', async () => {
     const { cleanup, first } = await releaseWithBareHostClose()
     expect(cleanup).toMatchObject({ state: 'released' })

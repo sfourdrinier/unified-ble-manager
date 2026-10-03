@@ -522,6 +522,28 @@ merely because a consumer stops reading.
 | diagnostics | 256 / 512 KiB | drop-oldest | increment `droppedOldest`; record redacted range only |
 | restoration replay | 64 / 256 KiB | error | terminal `stream.overflow`; no partial claim of exactly-once replay |
 
+Connection lifecycle streams retain eight transition values with a fixed byte
+budget covering their exact connection identity plus at most 16 KiB of UTF-8
+JSON per `platform` detail. Admitted details are snapshotted and preserved
+without truncation. A detail exceeding that bound ends delivery with an
+explicit `overflow` terminal carrying `stream.overflow`, one rejected item,
+and its complete event byte count, even when a consumer is already waiting.
+Previously accepted lifecycle values drain in FIFO order before this per-record
+refusal terminal; aggregate-quota failure retains its separate fail-fast policy.
+This stream refusal does not change the authoritative connection cleanup
+receipt or invent a native cause. IPC retains its separate message and stream
+quotas; the lifecycle allowance does not bypass those trust-boundary limits.
+Public lifecycle subscribers drain accepted values in FIFO order before the
+source's terminal error. Repeated reads retain that subscriber's winning error
+until iterator return; a local byte overflow cannot be replaced by a later
+source error. New subscribers observe an already-retained source failure
+immediately. Iterator return remains an explicit close, not a drain.
+During an IPC app-requested release, an early child `owner-released` terminal
+waits for that release attempt's existing confirmation gate before ending the
+lifecycle view. Confirmed release publishes `requested-disconnect` if no host
+terminal transition was delivered; refusal does not invent confirmed release
+or native platform detail.
+
 Callers may request `latest`, `drop-oldest`, `drop-newest`, or `error` only
 where the capability descriptor permits it. `latest` replaces an existing
 unconsumed item of the explicitly defined stream key; it does not reorder

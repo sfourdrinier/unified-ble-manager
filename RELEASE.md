@@ -827,7 +827,7 @@ may be bypassed to make a release pass.
 For a valid version tag, `.github/workflows/publish.yml`:
 
 1. checks out the tagged commit and builds Node-API v8 prebuilds for macOS `arm64` and Windows/Linux `arm64`/`x64` native runners;
-2. loads each prebuild under Node and the same file under Electron;
+2. loads each prebuild under Node and the same file under Electron through the shared `scripts/ci/run-electron-main-smoke.sh` launcher (Linux uses Xvfb and `--no-sandbox`; other hosts retain normal Electron launch). Missing addons and smoke failures remain fatal; this synthetic check makes no physical-radio claim;
 3. assembles and hashes the complete prebuild matrix into `native/PREBUILDS.json`;
 4. verifies tag name and `package.json` version agree;
 5. classifies the npm dist-tag (`4.0.0-rc.*` and later stables to `latest`; other prereleases to `next`);

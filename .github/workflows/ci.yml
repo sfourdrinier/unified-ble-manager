@@ -133,12 +133,12 @@ jobs:
         # offline metadata reads succeed on a fresh runner.
         run: cargo fetch --locked
 
-      - name: Install Tauri Linux system dependencies for packed consumer
+      - name: Install Tauri and Electron Linux system dependencies for packed consumer
         # The packed-consumer proof compiles a real external Tauri application.
         # Its GTK/WebKit dependencies are consumer prerequisites, not supplied
         # by the Rust crate, so this lane must match the dedicated Tauri job.
         if: runner.os == 'Linux' && matrix.node == '22'
-        run: bash scripts/ci/install-linux-native-system-dependencies.sh tauri
+        run: bash scripts/ci/install-linux-native-system-dependencies.sh tauri-electron
 
       - name: Install Linux build sysdeps (Node 24)
         # napi -> ubm-desktop -> btleplug -> bluez-async -> libdbus-sys needs
@@ -146,7 +146,7 @@ jobs:
         # rust-parity-5-0 job). The Node 22 lane installs this subset as part
         # of the full Tauri consumer prerequisites above.
         if: runner.os == 'Linux' && matrix.node == '24'
-        run: bash scripts/ci/install-linux-native-system-dependencies.sh bluez
+        run: bash scripts/ci/install-linux-native-system-dependencies.sh desktop-prebuild
 
       - name: Build NAPI dispatch addon (R03 converged path)
         # The bluez-rust-core-routing converged-path tests require the REAL
@@ -252,15 +252,13 @@ jobs:
           set -euo pipefail
           node scripts/ci/check-host-exports.js
 
-      # L3 wiring under the Electron binary on Linux. This uses Electron's
-      # documented CI-safe no-sandbox mode and still executes the public smoke.
+      # L3 wiring under the Electron binary; shared launcher supplies Linux's
+      # display and no-sandbox mode without skipping the public smoke.
       - name: Shared Rust core under Electron main (L3; synthetic radio)
         shell: bash
         env:
           UBM_SMOKE_USE_SOURCE: '1'
-        run: |
-          set -euo pipefail
-          ./node_modules/.bin/electron --no-sandbox scripts/ci/electron-main-smoke.js
+        run: bash scripts/ci/run-electron-main-smoke.sh
 
       # BlueZ soft-probe: never silent success; skip explicitly when daemon/adapter absent (R2-F038 / GAP-CI-LIN).
       - name: BlueZ system soft-probe (L2/L3 soft; mock Jest remains L1)

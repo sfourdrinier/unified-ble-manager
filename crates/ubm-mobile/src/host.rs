@@ -2646,6 +2646,7 @@ mod signal_tests {
             connection_generation: None,
             database_generation: None,
             kind: LifecycleKind::LinkLost,
+            platform: None,
         })
     }
 

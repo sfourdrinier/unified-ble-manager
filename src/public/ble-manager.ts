@@ -18,6 +18,7 @@ import {
   createAttachmentBoundPeerId
 } from '../backend-contract/primitives'
 import type { PeerId } from '../backend-contract/primitives'
+import { utf8ByteLength } from '../backend-contract/serializable'
 import type { BleManager as InternalBleManager } from '../manager/ble-manager'
 import type { BleManagerOptions } from '../manager/ble-manager'
 import type {
@@ -2736,18 +2737,25 @@ class PublicConnectionEventBroadcast implements AsyncIterable<BleConnectionEvent
       stream.closeWithReason(this.terminalReason)
     }
     const iterator = stream[Symbol.asyncIterator]()
+    let winningError: Error | null = null
+    let returned = false
     return {
       next: async () => {
+        if (returned) return { done: true, value: undefined }
+        if (winningError !== null) throw winningError
         const item = await iterator.next()
-        if (this.retainedError !== null) throw this.retainedError
         if (item.done) return { done: true, value: undefined }
         if (item.value.kind === 'value') return { done: false, value: item.value.value }
-        if (item.value.kind === 'overflow') {
-          throw contractError('stream.overflow', 'connection', 'public-connection.events')
+        if (item.value.kind === 'overflow' || item.value.reason === 'overflow') {
+          winningError = contractError('stream.overflow', 'connection', 'public-connection.events')
+        } else if (this.retainedError !== null) {
+          winningError = this.retainedError
         }
+        if (winningError !== null) throw winningError
         return { done: true, value: undefined }
       },
       return: async () => {
+        returned = true
         this.subscribers.delete(stream)
         await iterator.return()
         return { done: true, value: undefined }
@@ -2764,8 +2772,9 @@ class PublicConnectionEventBroadcast implements AsyncIterable<BleConnectionEvent
   private async pump(): Promise<void> {
     try {
       for await (const event of this.source) {
+        const eventBytes = utf8ByteLength(JSON.stringify(event))
         for (const subscriber of [...this.subscribers]) {
-          const result = subscriber.emit(event, 512)
+          const result = subscriber.emit(event, eventBytes)
           if (result.terminated) this.subscribers.delete(subscriber)
         }
       }
@@ -2791,7 +2800,7 @@ class PublicConnectionEventBroadcast implements AsyncIterable<BleConnectionEvent
 
   private closeSubscribers(reason: 'closed' | 'source-failed'): void {
     for (const subscriber of this.subscribers) {
-      subscriber.closeWithReason(reason)
+      subscriber.finishWithReason(reason)
       this.subscribers.delete(subscriber)
     }
   }
