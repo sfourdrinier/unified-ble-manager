@@ -317,12 +317,18 @@ function main() {
     assertNoPrivatePath(path.join(pluginOutputRoot, artifactPath))
   }
 
+  const retiredDesktopRoot = path.join(root, 'native', 'electron')
+  if (fs.existsSync(retiredDesktopRoot) && listFiles(retiredDesktopRoot).length > 0) {
+    throw new Error('Retired desktop producer in source artifact: native/electron')
+  }
+
   const runtimeFiles = [
     ...listFiles(sourceRoot),
     ...listFiles(outputRoot),
     ...listFiles(pluginOutputRoot),
     ...listFiles(path.join(root, 'bin')),
-    ...listFiles(path.join(root, 'native', 'electron')),
+    path.join(root, 'native', 'desktop-core', 'index.js'),
+    path.join(root, 'native', 'load-node-api-addon.js'),
     path.join(root, 'app.plugin.js')
   ].map(filePath => ({
     path: relativeToRoot(filePath),
