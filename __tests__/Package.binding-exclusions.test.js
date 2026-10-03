@@ -5,7 +5,7 @@ const os = require('node:os')
 const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 
-test('explicit binding pack policies retain sources without gitignore fallback or build artifacts', () => {
+test.each([false, true])('explicit binding pack policies retain sources with polluted parent=%s', polluted => {
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-binding-pack-exclusions-'))
   const root = path.join(__dirname, '..')
   const write = (file, contents) => {
@@ -33,11 +33,25 @@ test('explicit binding pack policies retain sources without gitignore fallback o
     write('bindings/wasm/debug.wasm', 'excluded')
     write('native/desktop-core/prebuilds/linux-x64/ubm_desktop_core.node', 'required release binary')
     write('native/other-binding/runtime.wasm', 'non-feasibility artifact remains included')
+    const parentEnvironment = polluted
+      ? {
+          ...process.env,
+          npm_config_verify_deps_before_run: 'false',
+          NPM_CONFIG_PATCHED_DEPENDENCIES: '{}',
+          npm_config__jsr_registry: 'https://jsr.io/'
+        }
+      : process.env
+    // This dependency-free pack fixture owns its package configuration. pnpm
+    // lifecycle variables are not npm configuration and must not leak into it.
+    const environment = Object.fromEntries(
+      Object.entries(parentEnvironment).filter(([key]) => !/^npm_config_/i.test(key))
+    )
     const result = spawnSync(
       process.platform === 'win32' ? 'npm.cmd' : 'npm',
       ['pack', '--ignore-scripts', '--json', '--loglevel=warn'],
       {
         cwd: fixture,
+        env: environment,
         encoding: 'utf8',
         shell: process.platform === 'win32',
         timeout: 30000
